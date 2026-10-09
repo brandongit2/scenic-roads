@@ -222,7 +222,9 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
     let tol = DP_TOL_PX * ext / 256.0;
     let etol = elev_tol(z);
     let pb = progress.then(|| count_bar(ways.len() as u64, format!("z{z} simplify + clip")));
-    let mut pieces: Vec<(u64, TileLine)> = ways
+    // (Each piece with its place along its way: the pieces come from the threads in any order, and
+    // two of one way in one tile may start at the same point.)
+    let mut pieces: Vec<(u64, u32, TileLine)> = ways
         .par_iter()
         .fold(Vec::new, |mut acc, w| {
             let r = w.rec;
@@ -270,7 +272,9 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
             }
             let attr = [r.network, (r.maxspeed / 2).min(255) as u8, r.lanes, surface::code(w.surface)];
             let colour = if r.colour != 0 { (r.colour & 0xff_ffff) + 1 } else { 0 };
+            let mut seq = 0u32;
             clip_to_grid(&pts, ext, |tx, ty, piece| {
+                seq += 1;
                 if !keep(tx, ty) {
                     return;
                 }
@@ -305,7 +309,7 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
                     tl.drape.push(tl.drape[0]);
                     tl.sc.push(tl.sc[0]);
                 }
-                acc.push((roadcore::archive::tile_key(z, tx, ty), tl));
+                acc.push((roadcore::archive::tile_key(z, tx, ty), seq, tl));
             });
             if let Some(pb) = &pb {
                 pb.inc(1);
@@ -322,14 +326,22 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
     if let Some(pb) = pb {
         pb.finish_and_clear();
     }
+    sort_pieces(&mut pieces);
+    pieces.into_iter().map(|(k, _, t)| (k, t)).collect()
+}
+
+/// `cut`'s pieces (tile key, place along the way, line) in order: by tile, draw order, way, then
+/// along the way by where each starts (two starting at the same point: by their place), whatever
+/// order the threads gave them in.
+fn sort_pieces(pieces: &mut [(u64, u32, TileLine)]) {
     pieces.par_sort_unstable_by(|a, b| {
         a.0.cmp(&b.0)
-            .then(draw_key(a.1.style).cmp(&draw_key(b.1.style)))
-            .then(a.1.way.cmp(&b.1.way))
+            .then(draw_key(a.2.style).cmp(&draw_key(b.2.style)))
+            .then(a.2.way.cmp(&b.2.way))
             // Pieces of one way in one tile: in order along it.
-            .then(a.1.pts.first().cmp(&b.1.pts.first()))
+            .then(a.2.pts.first().cmp(&b.2.pts.first()))
+            .then(a.1.cmp(&b.1))
     });
-    pieces
 }
 
 /// A sub-pixel feature merged into a dot.
@@ -481,3 +493,37 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)]) -> Vec<Encoded> 
     encoded
 }
 
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    /// Two pieces of a way in one tile starting at the same point (a road out across a tile's edge
+    /// and back in at a unit's distance from where it started) keep their order along the way,
+    /// whatever order the threads gave them in.
+    #[test]
+    fn pieces_starting_at_one_point_keep_their_order_along_the_way() {
+        let line = |way: u32, pts: Vec<[i32; 2]>| TileLine { way, pts, ..Default::default() };
+        let pieces = vec![
+            (5u64, 1u32, line(9, vec![[4096, 10], [4096, 10]])),
+            (5, 3, line(9, vec![[4096, 10], [3000, 900]])),
+            (5, 2, line(9, vec![[4000, 4], [4096, 10]])),
+            (5, 1, line(3, vec![[7, 7], [8, 8]])),
+            (4, 1, line(9, vec![[1, 1], [2, 2]])),
+        ];
+        let mut want = None;
+        for k in 0..pieces.len() {
+            for rev in [false, true] {
+                let mut v = pieces.clone();
+                v.rotate_left(k);
+                if rev {
+                    v.reverse();
+                }
+                sort_pieces(&mut v);
+                let got: Vec<(u64, u32, u32)> = v.iter().map(|p| (p.0, p.2.way, p.1)).collect();
+                assert_eq!(got, vec![(4, 9, 1), (5, 3, 1), (5, 9, 2), (5, 9, 1), (5, 9, 3)]);
+                want.get_or_insert(got);
+            }
+        }
+    }
+}
