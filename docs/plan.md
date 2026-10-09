@@ -2426,6 +2426,28 @@ planned: a "build twice, compare hashes" test per step.
   reads 1,040 m for its 1,085 m); and a unit that loses more than 20 % of its ways without its
   coverage shrinking holds the publish (the previous catalog keeps serving, and the status says so).
 
+**Tests:** a test holds on any Mac in any state: loaded by builds beside it, unplugged, away from
+home, its owner at the keyboard or not. So no test turns on the wall clock, on the real machine or
+on the order its siblings run in. What it tests is given its time and its machine:
+- A decision is a function of its inputs, the time among them (`edit_held`, `claims::fresh_at`,
+  `runs_at`), tested on its own.
+- Code that waits takes a clock (`store::clock`): the job's waits on workers (`Offload::clock`), the
+  coordinator's leases, workers around and paces (`Shared::clock`), and the pool's member
+  (`Side::set_clock`). Their tests run on a virtual clock that moves only when slept on, a worker's
+  acts set at its moments. They count the waits rather than time them.
+- The agent reads its Mac (power, idleness, home, memory) through `cond::Mac`, fixed in its tests
+  (`Mac::TEST`), with the disk's free space set (`room::TEST_FREE`, `free_set`).
+- An exchange with a real thread or process holds it with a gate (the NAS I/O pool's overrunning
+  operations, the handover test's job) rather than a sleep that might end too soon.
+- What has to happen eventually is waited for until it happens. Only a watchdog bounds the wait (five
+  minutes), and it says what never came. A hang is told from slowness by work that stops moving,
+  not by a run that takes long (`in_order`).
+- File times are set from the time the code under test is given, or far enough off that no slow
+  run reaches them.
+- A test that would see the others' work in the process (its timings run, a group's memory) runs
+  again alone in a process of its own. The unit tests are offline from their start. Tests that
+  read real data (the NAS, `data/build`) are `#[ignore]`d, run with `--ignored`.
+
 **Format bumps:** publish an app that reads both forms, then the data; drop the old reader once
 everything is rebuilt.
 
