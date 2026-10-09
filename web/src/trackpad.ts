@@ -1,5 +1,6 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type Anchor } from './camera3d';
+import { TwoFingers, type Pt } from './twofinger';
 
 /**
  * Trackpad-first navigation, anchored at the cursor:
@@ -11,10 +12,13 @@ import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type
  *   ⌘ Cmd + two-finger drag    → zoom        (vertical)
  *   ⌥ Option + two-finger drag → x rotates, y tilts
  *   right-drag / Ctrl-drag     → rotate + tilt
- * And on a touch screen: one finger pans (as a left-drag); two pinch to zoom, turn to rotate and
- * drag up or down to tilt (MapLibre's own, the pan let go of when the second finger lands); a
- * double tap zooms in there; a long press calls `onLongPress` (main.ts: a menu of links there); a
- * tap's click waits out the double tap's time (`single`).
+ * And on a touch screen: one finger pans (as a left-drag); two pinch to zoom, turn to rotate,
+ * move together to pan and drag up or down side by side to tilt, all about the terrain point
+ * between them (twofinger.ts reads the fingers; the one-finger pan is let go of when the second
+ * lands; the zoom glides on as a trackpad pinch's, nothing else does); a double tap zooms in
+ * there, and a tap then a press dragged down or up zooms in or out about the tapped point; a long
+ * press calls `onLongPress` (main.ts: a menu of links there); a tap's click waits out the double
+ * tap's time (`single`).
  * A mouse wheel zooms with short, snappy easing. Zoom, rotation and tilt keep the 3D point
  * under the cursor fixed on screen (see camera3d.ts).
  */
@@ -45,22 +49,29 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   map.doubleClickZoom.disable(); // replaced by the cursor-anchored zoom below
   map.dragRotate.disable(); // replaced by the cursor-anchored orbit below
   map.dragPan.disable(); // replaced by the ground-anchored pan below
+  // Replaced by the terrain-anchored two-finger gesture and tap-drag zoom below. MapLibre's turn
+  // and tilt pivot about the view centre's point on the pivot plane (sea level on the globe), and
+  // its zoom scales the distance to that plane: over mountains seen from close by they pivoted
+  // kilometres from the fingers, and a pinch overshot several times (tools/check/touch-gestures.mjs).
+  map.touchZoomRotate.disable();
+  map.touchPitch.disable();
   const el = map.getCanvasContainer();
   let lastEvent = 0;
   let burstMouse = false;
   let burstCmd = false;
   // Anchor for the current gesture burst, re-picked when the cursor moves.
   let anchor: { a: Anchor | null; x: number; y: number; t: number } | null = null;
+  // Finer terrain tiles can change the ground under the cursor mid-gesture: an anchor that no
+  // longer sits on it at (px, py) is picked again.
+  const offGround = (a: Anchor | null, px: number, py: number) => {
+    if (!a?.ground) return false;
+    const q = map.project(a.ll);
+    const e = map.queryTerrainElevation(a.ll);
+    return Math.hypot(q.x - px, q.y - py) > 6 || (e !== null && Math.abs(e - a.elev) > 3);
+  };
   const anchorFor = (px: number, py: number): Anchor | null => {
     const now = performance.now();
-    let stale = !anchor || now - anchor.t > 300 || Math.hypot(px - anchor.x, py - anchor.y) > 3;
-    // Finer terrain tiles can change the ground under the cursor mid-gesture: re-pick when the
-    // anchor no longer sits on it.
-    if (!stale && anchor?.a?.ground) {
-      const q = map.project(anchor.a.ll);
-      const e = map.queryTerrainElevation(anchor.a.ll);
-      if (Math.hypot(q.x - px, q.y - py) > 6 || (e !== null && Math.abs(e - anchor.a.elev) > 3)) stale = true;
-    }
+    const stale = !anchor || now - anchor.t > 300 || Math.hypot(px - anchor.x, py - anchor.y) > 3 || offGround(anchor.a, px, py);
     if (stale) anchor = { a: anchorAt(map, px, py), x: px, y: py, t: now };
     anchor!.t = now;
     return anchor!.a;
@@ -160,7 +171,9 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     cancelAnimationFrame(inertia);
     inertia = 0;
   };
-  const pinchStep = (px: number, py: number, dz: number, a: Anchor | null) => {
+  /** A pinch's zoom step (a trackpad's: released when no step comes for PINCH_END_MS; a touch
+   * screen's, `timed` false: when the fingers lift). */
+  const pinchStep = (px: number, py: number, dz: number, a: Anchor | null, timed = true) => {
     stopInertia();
     zLeft = 0;
     const now = performance.now();
@@ -169,10 +182,13 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     pinchAt = { x: px, y: py, a };
     zoomAt(px, py, dz, a);
     clearTimeout(pinchEnd);
-    pinchEnd = window.setTimeout(pinchRelease, PINCH_END_MS);
+    if (timed) pinchEnd = window.setTimeout(pinchRelease, PINCH_END_MS);
   };
   // The fingers have stopped: carry on at the zoom speed of the last steps, decaying.
   const pinchRelease = () => {
+    // (Fingers held still before lifting: their last steps are old, and carry nothing.)
+    const now = performance.now();
+    while (pinchSteps.length && now - pinchSteps[0][0] > PINCH_SAMPLE_MS + PINCH_END_MS) pinchSteps.shift();
     const at = pinchAt;
     if (!at || pinchSteps.length < 2) return void (pinchSteps.length = 0);
     const span = Math.max(16, pinchSteps[pinchSteps.length - 1][0] - pinchSteps[0][0]);
@@ -314,7 +330,9 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   // Left-drag: the ground under the pointer at the start stays under the pointer (MapLibre's own
   // grab where the ground is close to the pivot plane). Clicks still reach MapLibre: nothing here
   // stops the mouse events.
-  let hold: { id: number; a: Anchor; own: boolean; moved: boolean; x0: number; y0: number } | null = null;
+  // A press soon after a tap, near it (tap then drag): dragging zooms about the tapped point.
+  type TapDrag = { a: Anchor | null; x: number; y: number; lastY: number };
+  let hold: { id: number; a: Anchor; own: boolean; moved: boolean; x0: number; y0: number; tapDrag?: TapDrag } | null = null;
   el.addEventListener('pointerdown', (e: PointerEvent) => {
     if (e.pointerType === 'touch') {
       downs++;
@@ -322,10 +340,11 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
       if (e.isPrimary) touches.clear();
       touches.add(e.pointerId);
       if (touches.size > 1) {
-        // (Two fingers: MapLibre's pinch, turn and tilt alone.)
+        // Two fingers: pinch, turn, pan and tilt (below), the one-finger pan let go of.
         unpress();
         lastTap = null;
         letGo();
+        if (touches.size === 2) startTwo();
         return;
       }
     }
@@ -334,6 +353,10 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     const a = anchorAt(map, e.clientX - rect.left, e.clientY - rect.top);
     if (!a) return; // sky
     hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY };
+    if (e.pointerType === 'touch' && lastTap && performance.now() - lastTap.t < DOUBLE_MS) {
+      const px = e.clientX - rect.left, py = e.clientY - rect.top;
+      if (Math.hypot(px - lastTap.x, py - lastTap.y) < 30) hold.tapDrag = { a: anchorAt(map, lastTap.x, lastTap.y), x: lastTap.x, y: lastTap.y, lastY: py };
+    }
     zLeft = 0;
     stopInertia();
     if (e.pointerType === 'touch' && opts.onLongPress) {
@@ -368,10 +391,21 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     }
     const rect = el.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const td = hold.tapDrag;
+    if (td) {
+      // Tap then drag: down zooms in, up out (MapLibre's rate, a level per 128 px), about the
+      // tapped point; not a double tap.
+      lastTap = null;
+      zoomAt(td.x, td.y, (y - td.lastY) / 128, td.a);
+      td.lastY = y;
+      return;
+    }
     if (!hold.own || !panTo(map, hold.a, x, y)) setLocationAt(map, hold.a.ll, x, y);
   });
   const release = (e: PointerEvent) => {
     touches.delete(e.pointerId);
+    touchAt.delete(e.pointerId);
+    if (two && (e.pointerId === two.ids[0] || e.pointerId === two.ids[1])) endTwo();
     if (press?.id === e.pointerId) unpress();
     if (!hold || e.pointerId !== hold.id) return;
     // A finger's tap, the second within DOUBLE_MS and 30 px of the first: zoom in there (its
@@ -394,10 +428,66 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   el.addEventListener('pointerup', release);
   el.addEventListener('pointercancel', release);
 
+  // ---- two fingers on a touch screen ----
+  // The terrain point between the fingers (anchorAt at their midpoint) stays between them: a pinch
+  // dollies the camera toward it (its distance divided by the spread's ratio, the same at every
+  // zoom and over any terrain), a turn orbits it about the vertical, moving the fingers together
+  // carries it with them (panTo), and dragging them up or down side by side tilts about it where
+  // the tilt began. Steps are taken once a frame, from where the fingers are then.
+  const touchAt = new Map<number, Pt>();
+  let two: { ids: [number, number]; g: TwoFingers; a: Anchor | null; raf: number } | null = null;
+  const where = (e: PointerEvent): Pt => {
+    const rect = el.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+  el.addEventListener('pointerdown', (e: PointerEvent) => {
+    if (e.pointerType === 'touch') touchAt.set(e.pointerId, where(e));
+  }, true);
+  el.addEventListener('pointermove', (e: PointerEvent) => {
+    if (e.pointerType !== 'touch' || !touchAt.has(e.pointerId)) return;
+    touchAt.set(e.pointerId, where(e));
+    if (two && !two.raf && (e.pointerId === two.ids[0] || e.pointerId === two.ids[1])) two.raf = requestAnimationFrame(twoStep);
+  }, true);
+  const startTwo = () => {
+    const ids = [...touches].filter((id) => touchAt.has(id)).slice(0, 2) as [number, number];
+    if (ids.length < 2) return;
+    endTwo();
+    stopInertia();
+    zLeft = 0;
+    pinchSteps.length = 0;
+    const g = new TwoFingers(touchAt.get(ids[0])!, touchAt.get(ids[1])!);
+    two = { ids, g, a: anchorAt(map, g.start.x, g.start.y), raf: 0 };
+  };
+  const endTwo = () => {
+    if (!two) return;
+    cancelAnimationFrame(two.raf);
+    two = null;
+    pinchRelease(); // the zoom glides on, if the fingers were still spreading or closing
+  };
+  const twoStep = () => {
+    if (!two) return;
+    two.raf = 0;
+    const pa = touchAt.get(two.ids[0]), pb = touchAt.get(two.ids[1]);
+    if (!pa || !pb) return;
+    const st = two.g.move(pa, pb, performance.now());
+    if (!st) return;
+    const { from, to } = st;
+    if (st.dz || st.dBearing || st.dPitch || to.x !== from.x || to.y !== from.y) dragged = true;
+    if (offGround(two.a, from.x, from.y)) two.a = anchorAt(map, from.x, from.y);
+    const a = two.a;
+    if (st.dz) pinchStep(from.x, from.y, st.dz, a, false);
+    if (st.dBearing || st.dPitch) orbitAt(st.dBearing, st.dPitch, a, from.x, from.y);
+    if (to.x !== from.x || to.y !== from.y) {
+      // The ground between the fingers follows them (off the ground: MapLibre's pan).
+      if (!a?.ground || !panTo(map, a, to.x, to.y)) map.panBy([from.x - to.x, from.y - to.y], { animate: false });
+      if (pinchAt) pinchAt = { x: to.x, y: to.y, a };
+    }
+  };
+
   // Safari pinch (relative to the previous event: the zoom number itself can be re-levelled): a
   // trackpad's. On a touch screen Safari sends these gesture events for two fingers as well; that
-  // pinch, turn and tilt are MapLibre's (above), so these only keep Safari from zooming the page:
-  // zooming here too fought MapLibre's gesture, and the turn and tilt never came.
+  // pinch, turn and tilt are the two-finger gesture's (above), so these only keep Safari from
+  // zooming the page.
   let lastScale = 1;
   let gx = 0, gy = 0;
   let ga: Anchor | null = null;
