@@ -120,10 +120,14 @@ impl UnitZ12 {
         // one phase, its tiles' bytes counted.)
         let p = crate::timings::phase("z12 terrain tiles loaded (packs, else AWS)", crate::timings::Class::NasRead);
         let packs = crate::terrain_pack::ManifestTiles::new(out, "terrain");
+        // (The packs' tiles read in spans, a pack's at once: `get_many`.)
+        let want: Vec<(u32, u32)> = want.iter().copied().collect();
+        let from_packs = packs.get_many(&want.iter().map(|&(x, y)| (Z12, x, y)).collect::<Vec<_>>())?;
         let got: Vec<Result<((u32, u32), Option<Arc<Vec<u8>>>, u8)>> = want
             .par_iter()
-            .map(|&(x, y)| {
-                if let Some(b) = packs.get(Z12, x, y)? {
+            .zip(from_packs)
+            .map(|(&(x, y), from_pack)| {
+                if let Some(b) = from_pack {
                     p.count(b.len() as u64, 1);
                     anyhow::ensure!(decode_terrain_png(&b).is_ok(), "the terrain pack's z12 {x}/{y} doesn't decode");
                     return Ok(((x, y), Some(Arc::new(b)), 0));

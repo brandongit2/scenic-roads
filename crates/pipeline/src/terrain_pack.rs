@@ -458,6 +458,52 @@ impl ManifestTiles {
         Ok(Some(b))
     }
 
+    /// Tiles `want` (each as `get` gives it), read a pack at a time in spans: the tiles' bytes in the
+    /// pack's order, neighbours a gap of under `SPAN_GAP` apart read together, up to `SPAN_MAX` a
+    /// read, the spans in parallel. A unit reading thousands of a pack's tiles makes a few dozen
+    /// reads of the share instead of a round trip a tile, and moves little it doesn't use.
+    pub fn get_many(&self, want: &[(u8, u32, u32)]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
+        use store::sys::PosIo;
+        const SPAN_GAP: u64 = 256 << 10;
+        const SPAN_MAX: u64 = 32 << 20;
+        let mut got: Vec<Option<Vec<u8>>> = vec![None; want.len()];
+        // (Each tile's pack and entry, then by pack, by offset.)
+        let mut by_pack: HashMap<String, (std::sync::Arc<OpenPack>, Vec<(u64, u32, usize)>)> = HashMap::new();
+        for (i, &(z, x, y)) in want.iter().enumerate() {
+            let Some(e) = self.pack(z, x, y)? else { continue };
+            let Some(ent) = e.idx.find(z, x, y) else { continue };
+            by_pack.entry(Self::logical(&self.layer, z, x, y)).or_insert_with(|| (e, Vec::new())).1.push((ent.offset, ent.len, i));
+        }
+        let mut spans: Vec<(std::sync::Arc<OpenPack>, u64, u64, Vec<(u64, u32, usize)>)> = Vec::new();
+        for (_, (e, mut ents)) in by_pack {
+            ents.sort_unstable();
+            for t in ents {
+                let end = t.0 + t.1 as u64;
+                match spans.last_mut() {
+                    Some((p, s0, s1, ts)) if std::sync::Arc::ptr_eq(p, &e) && t.0 <= *s1 + SPAN_GAP && end - *s0 <= SPAN_MAX => {
+                        *s1 = (*s1).max(end);
+                        ts.push(t);
+                    }
+                    _ => spans.push((e.clone(), t.0, end, vec![t])),
+                }
+            }
+        }
+        let read: Vec<anyhow::Result<Vec<(usize, Vec<u8>)>>> = spans
+            .par_iter()
+            .map(|(e, s0, s1, ts)| {
+                let mut b = vec![0u8; (s1 - s0) as usize];
+                e.file.read_exact_at(&mut b, *s0)?;
+                Ok(ts.iter().map(|&(o, l, i)| (i, b[(o - s0) as usize..(o - s0) as usize + l as usize].to_vec())).collect())
+            })
+            .collect();
+        for r in read {
+            for (i, b) in r? {
+                got[i] = Some(b);
+            }
+        }
+        Ok(got)
+    }
+
     /// The pack holding tile (z, x, y) (z6 tile (x, y)'s hi pack: any of its tiles at zoom 9–12)
     /// copied into the copies' folder (`with_copies`) whole, one
     /// sequential read, and read there from now on: its bytes copied, or None when there's no such
@@ -1430,6 +1476,14 @@ pub(crate) mod tests {
         assert_eq!(plain.copy_here(9, 40, 56), None);
         drop(here);
         assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 0, "the copies go with their reader");
+        // Many at once, in spans: the same bytes as one by one, in the order asked, None where
+        // there's none.
+        let mut ask: Vec<(u8, u32, u32)> = want.iter().rev().map(|t| (t.0, t.1, t.2)).collect();
+        ask.insert(3, (10, 200, 120));
+        ask.push((9, 0, 0));
+        let one_by_one: Vec<Option<Vec<u8>>> = ask.iter().map(|t| plain.get(t.0, t.1, t.2).unwrap()).collect();
+        assert_eq!(plain.get_many(&ask).unwrap(), one_by_one);
+        assert_eq!(one_by_one.iter().filter(|t| t.is_none()).count(), 2);
     }
 
     #[test]
