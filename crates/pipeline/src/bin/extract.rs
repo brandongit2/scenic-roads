@@ -611,6 +611,14 @@ fn open_reader(path: &Path, label: &str) -> Result<ElementReader<ProgressRead<st
     Ok(ElementReader::new(ProgressRead { inner: std::io::BufReader::with_capacity(1 << 20, f), pb }))
 }
 
+/// Each way's scenic route, from its (way, route name) pairs in any order: the shortest name, and
+/// of names as short, the first alphabetically (the input's order comes from a parallel read, so
+/// a tie left to it gave one or the other from run to run).
+fn route_per_way(scenic: &mut Vec<(i64, String)>) {
+    scenic.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())).then_with(|| a.1.cmp(&b.1)));
+    scenic.dedup_by_key(|x| x.0);
+}
+
 fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
     let rail_rels_only = args.iter().any(|a| a == "--rail-rels-only");
@@ -809,8 +817,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     // Flag members of scenic routes (shortest route name wins when a way is in several).
-    scenic.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
-    scenic.dedup_by_key(|x| x.0);
+    route_per_way(&mut scenic);
     let mut n_scenic = 0;
     for (id, route) in &scenic {
         if let Ok(i) = ways.binary_search_by_key(id, |w| w.id) {
@@ -1253,4 +1260,32 @@ fn main() -> Result<()> {
     }
     eprintln!("  {:>14}: {:>10.0} km   ({:.0?})", "total", total / 1000.0, t0.elapsed());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// A way on two routes whose names are as long: the same one wins whatever order the read
+    /// gave them in; the shorter name wins over both.
+    #[test]
+    fn a_ways_route_is_the_same_whatever_the_order() {
+        let pairs = vec![(7, "Blue Ridge".to_string()), (7, "Ocean Road".to_string()), (3, "A1A".to_string()), (7, "Seaway Rte".to_string())];
+        let mut want = None;
+        for k in 0..24 {
+            let mut v = pairs.clone();
+            // (Every rotation and reversal of the input.)
+            v.rotate_left(k % 4);
+            if k >= 4 {
+                v.swap(k % 3, 3);
+            }
+            if k % 2 == 1 {
+                v.reverse();
+            }
+            super::route_per_way(&mut v);
+            assert_eq!(v, vec![(3, "A1A".to_string()), (7, "Blue Ridge".to_string())]);
+            want.get_or_insert(v);
+        }
+        let mut v = vec![(7, "Ocean Road".to_string()), (7, "Big Sur".to_string())];
+        super::route_per_way(&mut v);
+        assert_eq!(v, vec![(7, "Big Sur".to_string())]);
+    }
 }
