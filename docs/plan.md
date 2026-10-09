@@ -370,6 +370,8 @@ record changes back through the build Mac's coordinator, which journals them for
       there before they go; a helper's stay until a job of its own packs them), and copies of its
       archives (`packs/`), filled from the NAS's archives;
     - copies of the records' files staging reads (`blobs/`), filled from the store;
+    - copies of the roadside buildings' z8 tiles units read (`buildings/<index hash>/`), filled
+      from `sources/buildings/<release>/`, the next unit's ahead of it;
     - copies of the pageview months' indexes (`items/months/`), filled from `sources/pageviews/`
       (one the NAS lacks stays, for pageviews.py to put there); none goes while an items or
       heritage job reads them.
