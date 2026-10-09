@@ -34,8 +34,8 @@ pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64))
         let name = chm_name(top, left, kind);
         let p = chm.join(&name);
         // Held for the rest of the job (store::cachefile: the blocks read it by name, and a square
-        // room-making deleted would read as none there), and marked used; taken again when it isn't
-        // here whole.
+        // room-making deleted would fail the run, or read as none there), and marked used; taken
+        // again when it isn't here whole.
         let mut held = false;
         for _ in 0..3 {
             if store::cachefile::hold_existing(&p)?.is_some() {

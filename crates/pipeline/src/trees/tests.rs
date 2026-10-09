@@ -554,9 +554,10 @@ fn canopy_squares_from_the_store() {
 
 /// Room-making while tree cover runs (docs/plan.md §8, store::cachefile): the canopy squares a z3
 /// run copies into the agent's cache are read by its blocks by name, and a square room-making
-/// deleted in between read as Meta's "none there" (no trees: a wrong output, said by nothing).
-/// Held as they're copied now: with room-making trimming the cache as fast as it can the whole
-/// time, the run makes what it makes left alone.
+/// deleted in between failed the run ("gone since this run found it"; a block not told which
+/// squares are there would read it as Meta's "none there"). Held as they're copied now: with
+/// room-making trimming the cache as fast as it can the whole time, the run makes what it makes
+/// left alone.
 #[test]
 fn room_making_mid_run_never_reads_a_square_as_none_there() {
     // (No network: what isn't on the scratch NAS fails, never downloads.)
