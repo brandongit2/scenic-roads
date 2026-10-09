@@ -8,7 +8,7 @@
 // the ground does. Draped on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, waterTiles, waterTilesOn } from './basemap';
+import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TILE_SIZE, waterTiles, waterTilesOn } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 
@@ -73,10 +73,11 @@ function setInput(key: string, input: CoastInput) {
 const tilesUrl = (lakes: boolean, key = 'app') => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}&k=${key}`;
 let lakesShown: boolean | null = null;
 
-/** The shading's tiles, CSS px: 512-px tiles at 2 texels a CSS px, the water's own density (its
- * tiles are the very share tiles the water layer draws), so a shore and its thin line fall where
- * full detail puts them (tools/coastcheck --screen: a quarter of the difference at 1 texel). */
-const COAST_TILE_SIZE = 256;
+/** The shading's tiles, as the water's: 512-px tiles at 2 texels a CSS px or more (the finer level
+ * taken: basemap.ts WATER_TILE_SIZE), the water's own density and levels (its tiles are the very
+ * share tiles the water layer draws), so a shore and its thin line fall where full detail puts them
+ * (tools/coastcheck --screen: a quarter of the difference at 1 texel). */
+const COAST_TILE_SIZE = WATER_TILE_SIZE;
 
 /** The source and its layer, the first time the shading shows: over the water, under the rivers
  * drawn as lines. At every zoom (its shore the same water the map draws). */

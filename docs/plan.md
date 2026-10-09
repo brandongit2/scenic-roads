@@ -977,6 +977,10 @@ they treat any raster.
 - **Drawn** (`web/src/basemap.ts`) as a raster source of 256-CSS-px tiles to z18 (a texel a device
   pixel at 2×), linear resampling, no cross-fade (with 3D terrain a draped texture drawn mid-fade
   would keep it). Under the Water switch.
+  - Never stretched: MapLibre is told the tiles are 256/√2 CSS px (`WATER_TILE_SIZE`), so it takes
+    the finer level whenever the zoom isn't whole and a tile is drawn at 0.5–1× its texels (told
+    256, it rounded, and just before each switch stretched the coarser level to 1.41×, softer than
+    1:1: the owner saw it, 8 Oct). The coastal shading's tiles take the same levels.
   - Shrunk, the tiles are sampled between their two nearest mipmap levels (trilinear, a MapLibre
     patch in `web/vite.config.ts`): from the nearer level alone, the small lakes' look jumped at
     each half zoom.
@@ -1024,8 +1028,9 @@ they treat any raster.
     texels a CSS px → 0.08 %; mixing as light, in black and white 10.3 → 0.19 % (in the app's
     dark colours under 0.05 % either way); trilinear mipmaps, the black-and-white jump 0.80 →
     0.50 %; the bytes' any land, Saimaa at z5.4 0.25 → 0.15 %. Always taking the finer tile level
-    as well (never magnified) took the black-and-white jump to 0.01 %, but doubles the water's
-    tiles in view (12 → 30) and changes nothing in the app's colours: not done.
+    as well (never magnified) took the black-and-white jump to 0.01 %, at the cost of the water's
+    tiles in view (12 → 30); first left out as changing nothing in the app's colours, then done
+    (8 Oct) for sharpness, as above.
 - **Cost on the map** (this Mac's Chrome, 1,180 × 820 CSS px at 2×, 2026-10-08): the densest
   views' water takes 24–55 MB of textures (17–39 tiles), against 10–22 MB of the polygons and dots
   of before. The frames' GPU and CPU times are the same within the runs' spread (GPU 2.6–8.5 ms a

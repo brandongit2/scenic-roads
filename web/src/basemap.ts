@@ -206,9 +206,13 @@ export const waterShareTiles = (): string => `${hostFor('base')}/tiles/water/{z}
  * holding any land a shore, as full detail would have it: coastdist.ts), else the basemap's
  * polygons. */
 export const coastInput = () => ({ tiles: basemapTiles(), cov: WATER_TILES ? waterShareTiles() : '' });
-/** The water tiles' size for their pixels (512 px tiles drawn 256 CSS px: a texel a device pixel at
- * 2×), and their deepest zoom (the server's; the map overzooms past it). */
-export const WATER_TILE_SIZE = 256;
+/** The water tiles' size as MapLibre is told it, and their deepest zoom (the server's; the map
+ * overzooms past it). The tiles are 512 px, a texel a device pixel at 2× when drawn 256 CSS px; told
+ * 256/√2, MapLibre (which picks a raster's level as round(zoom + log2(512 / tileSize))) takes the
+ * finer level whenever the zoom isn't whole, so a tile is only ever drawn at 0.5–1× its texels
+ * (sharp, the mipmaps smoothing it: vite.config.ts maplibreWaterMip), never stretched up to 1.41×
+ * just before each switch (blurrier than 1:1, the owner saw: 8 Oct). About 2.5× the tiles in view. */
+export const WATER_TILE_SIZE = 256 / Math.SQRT2;
 export const WATER_MAXZOOM = 18;
 
 /** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
