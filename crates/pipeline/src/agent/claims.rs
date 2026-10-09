@@ -25,7 +25,12 @@ fn path(root: &Path, step: &str, target: &str) -> PathBuf {
 /// Whether claim file `p` is fresh (kept within `STALE`). A time ahead of this Mac's clock (the other
 /// Mac's runs a little ahead, or the NAS's) is fresh.
 fn fresh(p: &Path) -> bool {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok().is_some_and(|t| SystemTime::now().duration_since(t).map_or(true, |age| age < STALE))
+    fresh_at(p, SystemTime::now())
+}
+
+/// `fresh`, at `now`.
+fn fresh_at(p: &Path, now: SystemTime) -> bool {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok().is_some_and(|t| now.duration_since(t).map_or(true, |age| age < STALE))
 }
 
 /// The targets of `step` another agent holds now (fresh claims not `me`'s).
@@ -149,8 +154,9 @@ mod tests {
         assert!(lost(r, "unit", &ts(&["6/31/20", "6/31/21"]), "m4 1"));
         // A claim kept a moment ahead of this Mac's clock is fresh, not stale.
         let ahead = path(r, "unit", "6/31/21");
-        std::fs::File::options().append(true).open(&ahead).unwrap().set_modified(SystemTime::now() + Duration::from_secs(1)).unwrap();
-        assert!(fresh(&ahead) && !claim(r, "unit", &ts(&["6/31/21"]), "m4 1"));
+        let now = SystemTime::now();
+        std::fs::File::options().append(true).open(&ahead).unwrap().set_modified(now + Duration::from_secs(1)).unwrap();
+        assert!(fresh_at(&ahead, now) && !claim(r, "unit", &ts(&["6/31/21"]), "m4 1"));
         // A restarted agent drops its predecessor's claims, not the other Mac's.
         assert!(claim(r, "unit", &ts(&["6/40/20"]), "m4 1"));
         release_host(r, "m4", "m4 9");

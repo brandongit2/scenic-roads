@@ -1091,10 +1091,15 @@ mod tests {
 
     /// A tile AWS gave, waiting in a cache for `age` seconds.
     fn put(dir: &Path, rel: &str, b: &[u8], age: u64) {
+        put_at(dir, rel, b, std::time::SystemTime::now() - std::time::Duration::from_secs(age));
+    }
+
+    /// A tile AWS gave, last written at `t`.
+    fn put_at(dir: &Path, rel: &str, b: &[u8], t: std::time::SystemTime) {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, b).unwrap();
-        std::fs::File::options().append(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age)).unwrap();
+        std::fs::File::options().append(true).open(&p).unwrap().set_modified(t).unwrap();
     }
 
     fn names(store: &Path) -> Vec<String> {
@@ -1107,12 +1112,13 @@ mod tests {
     fn tiles_go_up_packed_by_area_and_come_back() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        // Tiles AWS gave, waiting here (a minute old), one it hasn't, and one too new to pack.
+        // Tiles AWS gave, waiting here (two minutes old), one it hasn't, and one too new to pack
+        // (its time an hour on: still new however long a busy Mac takes to get there).
         put(&dir, "12/2048/1365.png", &png(), 120);
         put(&dir, "12/2049/1365.none", b"", 120);
         put(&dir, "8/128/85.png", &png(), 120);
         put(&dir, "2/1/1.png", &png(), 120);
-        put(&dir, "12/2050/1366.png", &png(), 1);
+        put_at(&dir, "12/2050/1366.png", &png(), std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
         assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 4);
         let index = Index::load(&store).unwrap();
         // 12/2048/1365 is under z6 tile 32/21; 8/128/85 under z3 tile 4/2; 2/1/1 above z3.

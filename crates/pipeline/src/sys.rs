@@ -368,10 +368,13 @@ mod tests {
     #[test]
     fn a_tree_killed_whole() {
         // A shell with two sleeps (as uv with Python): the shell killed, its children too.
-        let mut c = Command::new("/bin/sh").args(["-c", "sleep 30 & sleep 30; wait"]).spawn().unwrap();
+        let mut c = Command::new("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"]).spawn().unwrap();
         let pid = c.id() as i32;
+        // (Waited for as long as a busy Mac takes to start them: five minutes, a watchdog.)
+        let watchdog = || std::time::Instant::now() + std::time::Duration::from_secs(300);
         let mut kids = Vec::new();
-        for _ in 0..250 {
+        let end = watchdog();
+        while std::time::Instant::now() < end {
             kids = children(pid);
             if kids.len() == 2 {
                 break;
@@ -383,7 +386,8 @@ mod tests {
         assert!(!c.wait().unwrap().success());
         // (Gone once launchd has reaped them.)
         let alive = || kids.iter().filter(|&&k| unsafe { libc::kill(k, 0) } == 0).count();
-        for _ in 0..250 {
+        let end = watchdog();
+        while std::time::Instant::now() < end {
             if alive() == 0 {
                 break;
             }

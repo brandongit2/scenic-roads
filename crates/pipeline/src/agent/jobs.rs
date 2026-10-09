@@ -240,6 +240,11 @@ impl Group {
 /// record; removes the record. What it finished, for the agent to record (crate::control::done),
 /// and whether it's gone (`Orphan`).
 pub fn stop_orphan(record: &Path) -> Orphan {
+    stop_orphan_within(record, Duration::from_secs(30))
+}
+
+/// `stop_orphan`, a SIGTERM given `grace` before the SIGKILL.
+fn stop_orphan_within(record: &Path, grace: Duration) -> Orphan {
     let Ok(b) = std::fs::read(record) else { return Orphan::default() };
     let mut found = Orphan::default();
     if let Ok(r) = serde_json::from_slice::<Record>(&b) {
@@ -247,7 +252,7 @@ pub fn stop_orphan(record: &Path) -> Orphan {
         let g = Group { pgid: r.pgid, leader_start: r.leader_start, started: r.started, id: r.id };
         if g.is_the_jobs() {
             eprintln!("agent: stopping {} left running by an earlier agent (group {})", g.id, g.pgid);
-            stop_group(g.pgid, Duration::from_secs(30), || {});
+            stop_group(g.pgid, grace, || {});
             found.left = g.is_the_jobs().then_some(g);
         }
     }
@@ -484,7 +489,7 @@ mod tests {
     fn runs_pauses_and_stops() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 30"]), 2, &[], d.path().join("log"), &rec, None).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 3600"]), 2, &[], d.path().join("log"), &rec, None).unwrap();
         assert!(rec.exists());
         // Running: what it says reaches its log. Paused, it hasn't ended; stopped, it has, by the
         // stop's signal.
@@ -634,17 +639,17 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         // The shell leaves a sleep behind in its group and exits: an orphan, as after a crash.
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 60 & echo started"]), 1, &[], d.path().join("log"), &rec, None).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 3600 & echo started"]), 1, &[], d.path().join("log"), &rec, None).unwrap();
         while r.poll().unwrap().is_none() {
             std::thread::sleep(Duration::from_millis(50));
         }
         let pgid = r.pgid;
         assert!(crate::sys::signal_group(pgid, Signal::Probe), "the sleep is still in the group");
-        // (Before its 30 s grace is up, however loaded the Mac: a SIGTERM that didn't stop it would
-        // have it wait that out.)
+        // (Given ten minutes' grace, it's stopped well before: by the SIGTERM, which a sleep
+        // doesn't outlive; one that didn't stop it would have it wait the grace out.)
         let t = Instant::now();
-        stop_orphan(&rec);
-        assert!(t.elapsed() < Duration::from_secs(30), "stopped by SIGTERM, not after the grace");
+        stop_orphan_within(&rec, Duration::from_secs(600));
+        assert!(t.elapsed() < Duration::from_secs(600), "stopped by SIGTERM, not after the grace");
         assert!(!crate::sys::signal_group(pgid, Signal::Probe));
         assert!(!rec.exists());
     }

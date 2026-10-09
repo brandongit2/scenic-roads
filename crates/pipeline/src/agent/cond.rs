@@ -38,15 +38,61 @@ impl Conditions {
     }
 }
 
+/// What an agent reads of the Mac it runs on: its power, its user's idleness, whether it's at
+/// home, its memory. The real Mac's; or a test's, fixed, so the agents a test runs do the same
+/// whichever Mac runs it, unplugged or loaded, at home or away, its owner at the keyboard or not (a
+/// build Mac unplugged at 18 % failed the pool's tests, 8 Oct).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mac {
+    Real,
+    Fixed { ac: bool, battery: Option<u8>, idle_s: u64, home: bool, mem_gb: f64, mem_free_pct: u8 },
+}
+
+impl Mac {
+    /// A test's Mac: on mains, at home, in use, 16 GB with three quarters free.
+    pub const TEST: Mac = Mac::Fixed { ac: true, battery: None, idle_s: 0, home: true, mem_gb: 16.0, mem_free_pct: 75 };
+
+    /// `power`.
+    pub fn power(&self) -> (bool, Option<u8>) {
+        match *self {
+            Mac::Real => power(),
+            Mac::Fixed { ac, battery, .. } => (ac, battery),
+        }
+    }
+
+    /// `idle_seconds`.
+    pub fn idle_seconds(&self) -> u64 {
+        match *self {
+            Mac::Real => idle_seconds(),
+            Mac::Fixed { idle_s, .. } => idle_s,
+        }
+    }
+
+    /// Whether the NAS answers by its LAN name (store::nas::at_home).
+    pub fn at_home(&self) -> bool {
+        match *self {
+            Mac::Real => store::nas::at_home(),
+            Mac::Fixed { home, .. } => home,
+        }
+    }
+
+    /// `resources`: a fixed Mac's memory its own, its disk's free space as the agent's tests set it
+    /// (super::room::disk_free), no load or NAS measured.
+    pub fn resources(&self, home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
+        match *self {
+            Mac::Real => resources(home, root, cache_gb, nas_ms),
+            Mac::Fixed { mem_gb, mem_free_pct, .. } => {
+                Resources { mem_gb, mem_free_pct: Some(mem_free_pct), cores: 8, load1: None, disk_free_gb: super::room::disk_free(home).ok().map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), cache_gb, nas_ms, nas_free_tb: None }
+            }
+        }
+    }
+}
+
 /// On mains power, and the battery's charge: `pmset -g ps` names the source ("Now drawing from
 /// 'AC Power'") and lists the battery ("-InternalBattery-0 (id=…)	89%; charging; …"). A Mac without
 /// a battery says AC too. When pmset can't be read, mains is assumed (a broken probe shouldn't stop
-/// all work). In tests, always mains: the agents they run mustn't wait on the battery of whichever
-/// Mac runs them (a build Mac unplugged at 18 % failed the pool's tests, 8 Oct).
+/// all work).
 pub fn power() -> (bool, Option<u8>) {
-    if cfg!(test) {
-        return (true, None);
-    }
     match Command::new("/usr/bin/pmset").args(["-g", "ps"]).output() {
         Ok(o) => parse_power(&String::from_utf8_lossy(&o.stdout)),
         Err(_) => (true, None),

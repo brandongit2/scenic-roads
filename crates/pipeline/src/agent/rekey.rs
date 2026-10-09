@@ -944,11 +944,12 @@ mod tests {
     fn a_hi_pack_older_than_its_areas_lo_pack_by_the_files_times() {
         let d = tempfile::tempdir().unwrap();
         let m: BTreeMap<String, String> = [("layers/terrain/hi/6-28-16", "a"), ("layers/terrain/hi/6-29-16", "b"), ("layers/terrain/lo/3-3-2", "c"), ("layers/terrain/hi/6-30-16", "missing")].into_iter().map(|(l, n)| (l.to_string(), format!("{l}.{n}.pack"))).collect();
+        let now = std::time::SystemTime::now();
         let at = |l: &str, secs_ago: u64| {
             let p = d.path().join(&m[l]);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             let f = std::fs::File::create(&p).unwrap();
-            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago)).unwrap();
+            f.set_modified(now - std::time::Duration::from_secs(secs_ago)).unwrap();
         };
         // The lo pack written last; 6/28/16's hi pack 20 minutes before it (the same run), 6/29/16's
         // three hours before (an earlier run's).

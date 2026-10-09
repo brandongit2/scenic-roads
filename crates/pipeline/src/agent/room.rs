@@ -1092,10 +1092,14 @@ mod tests {
     }
 
     fn bytes(p: &Path, b: &[u8], age_s: u64) {
+        bytes_at(p, b, SystemTime::now() - Duration::from_secs(age_s));
+    }
+
+    fn bytes_at(p: &Path, b: &[u8], t: SystemTime) {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, b).unwrap();
         let f = std::fs::File::options().append(true).open(p).unwrap();
-        f.set_modified(SystemTime::now() - Duration::from_secs(age_s)).unwrap();
+        f.set_modified(t).unwrap();
     }
 
     /// A whole file of `p`'s kind (crate::whole), `age_s` old; its length.
@@ -1197,10 +1201,11 @@ mod tests {
         let root = &d.path().join("nas");
         let nas = &root.join("sources");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        // Tiles AWS gave, the NAS without them; one too new to pack.
+        // Tiles AWS gave, the NAS without them; one too new to pack (written as the run goes: its
+        // time an hour on, so it's still new however long a busy Mac takes to get there).
         let a = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000);
         whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
-        whole(&c.join("aws-terrarium/12/2049/1365.png"), 1);
+        bytes_at(&c.join("aws-terrarium/12/2049/1365.png"), &crate::whole::testfiles::png(), SystemTime::now() + Duration::from_secs(3600));
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         make_room_spared(c, nas, a, a, &disk).unwrap();

@@ -723,10 +723,10 @@ const EDIT_HOLD: Duration = Duration::from_secs(15 * 60);
 const EDIT_HOLD_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// While a run of edits (its first and last: `Agent::edited_at`) holds the regions' work: how long
-/// ago the last was, and how long the hold has left.
-fn edit_held(edited: Option<(std::time::SystemTime, std::time::SystemTime)>) -> Option<(Duration, Duration)> {
+/// ago the last was, and how long the hold has left (at `now`).
+fn edit_held(edited: Option<(std::time::SystemTime, std::time::SystemTime)>, now: std::time::SystemTime) -> Option<(Duration, Duration)> {
     let (first, last) = edited?;
-    let (run, age) = (first.elapsed().ok()?, last.elapsed().ok()?);
+    let (run, age) = (now.duration_since(first).ok()?, now.duration_since(last).ok()?);
     (age < EDIT_HOLD && run < EDIT_HOLD_MAX).then(|| (age, (EDIT_HOLD - age).min(EDIT_HOLD_MAX - run)))
 }
 
@@ -761,6 +761,8 @@ pub struct Agent {
     /// The memory's total and free MB as a test sets them (`start_second`), so a test doesn't
     /// depend on what the Mac running it has free.
     mem_set: Option<(u64, u64)>,
+    /// The Mac it reads its conditions and resources from (a test's fixed one: cond::Mac::TEST).
+    pub(crate) mac: cond::Mac,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
@@ -983,7 +985,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1769,7 +1771,7 @@ impl Agent {
     /// One loop; true when a job just ended (look again soon).
     fn step(&mut self) -> Result<bool> {
         let slept = self.sleep.slept();
-        let home = store::nas::at_home();
+        let home = self.mac.at_home();
         // Back home with the share mounted through Tailscale (mounted while away): unmounted while
         // nothing runs, and mounted again by the LAN name below, at the LAN's speed.
         if home && self.idle() && self.o.root.is_none() {
@@ -1796,8 +1798,8 @@ impl Agent {
         if self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
             self.toward_goal.store(self.goal(), std::sync::atomic::Ordering::Relaxed);
         }
-        let (ac, battery) = cond::power();
-        let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: cond::idle_seconds() };
+        let (ac, battery) = self.mac.power();
+        let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: self.mac.idle_seconds() };
         self.note_conditions(&c, slept);
         self.pool_switch(root.as_deref());
         let mut waiting: Vec<Waiting> = Vec::new();
@@ -2342,7 +2344,7 @@ impl Agent {
         if free < need && !LIGHT.contains(&b.as_str()) {
             return Some(format!("needs {} GB free on the disk ({} GB free{}): room is made once the job beside it ({beside}) ends", need >> 30, free >> 30, self.floor_words()));
         }
-        let res = cond::resources(&self.o.home, None, None, None);
+        let res = self.mac.resources(&self.o.home, None, None, None);
         let total = (res.mem_gb * 1024.0) as u64;
         let theirs = crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20).max(self.spec_peak(&r.spec));
         let mine = self.spec_peak(spec);
@@ -2595,7 +2597,7 @@ impl Agent {
                 return;
             }
         }
-        let res = cond::resources(&self.o.home, None, None, None);
+        let res = self.mac.resources(&self.o.home, None, None, None);
         let (total_mb, free_mb) = self.mem_set.unwrap_or_else(|| {
             let total_mb = (res.mem_gb * 1024.0) as u64;
             (total_mb, res.mem_free_pct.map_or(0, |p| total_mb * p as u64 / 100))
@@ -2704,7 +2706,7 @@ impl Agent {
             });
         }
         let ms = ANSWERED_MS.load(std::sync::atomic::Ordering::Relaxed);
-        cond::resources(&self.o.home, root, bytes.map(|b| (b.cheap as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
+        self.mac.resources(&self.o.home, root, bytes.map(|b| (b.cheap as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
     }
 
     /// This Mac's caches between jobs (room::trim, room::clear), each on a thread of its own while the
@@ -3424,7 +3426,7 @@ impl Agent {
             let why = self.tiles.borrow().unread().next().map(|(c, e)| format!(": {c}, {e}")).unwrap_or_default();
             waiting.push(Waiting { step: Some("unit".into()), what: "Building the areas".into(), why: format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len()) });
         }
-        let edit_hold = edit_held(self.edited_at.get());
+        let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
         // manifest.)
         let unmerged = self.handoff_bases(root).iter().any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
@@ -3740,7 +3742,7 @@ impl Agent {
         // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
-            let mem_mb = (cond::resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
+            let mem_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
             let light_s = if self.last_cond.is_some_and(|c| c.user_active()) { forecast::IN_USE_S } else { 0.0 };
             machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light_s, mem_mb, busy_s: busy(1, speed), unit_extra_s });
         }
@@ -4221,7 +4223,7 @@ impl Agent {
         }
         if self.pool_mode == Some(pool::Mode::Shadow) && self.shadow.is_none() && !self.shadow_failed && self.restart_for.is_none() {
             match shadow::Shadow::open(r, &self.o.home.join("shadow"), &self.o.home, &self.app) {
-                Ok(Some(sh)) => self.shadow = Some(sh),
+                Ok(Some(sh)) => self.shadow = Some(sh.on(self.mac)),
                 Ok(None) => {}
                 Err(e) => {
                     eprintln!("agent: the pool's shadow run: {e:#}; not tried again in this process");
@@ -4735,6 +4737,15 @@ fn batch_size(step: &str) -> usize {
     }
 }
 
+/// An agent for a test: it reads the test's fixed Mac (cond::Mac::TEST), not the one running it.
+#[cfg(test)]
+fn test_agent(o: Options) -> Result<Agent> {
+    Agent::new(o).map(|mut a| {
+        a.mac = cond::Mac::TEST;
+        a
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4785,7 +4796,7 @@ mod tests {
     }
 
     fn agent(root: &Path, home: &Path) -> Agent {
-        Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
+        test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
     }
 
     #[test]
@@ -4811,9 +4822,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         // A 20 GB target, which the disk has (40 GB free): a terrain run's 55 GB and a unit's 30
         // past it don't fit, nor can the (empty) caches make them. Each waits, saying why; a job
@@ -4891,7 +4902,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.free_set = Some(40 << 30);
         let (used, idle) = (home.join("cache/base/base/6-1-1.0000000000000001.base"), home.join("cache/base/base/6-1-2.0000000000000002.base"));
         put(&used, &[0; 1000]);
@@ -4921,9 +4932,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         std::fs::create_dir_all(home.join("cache/base/base")).unwrap();
         std::fs::write(home.join("cache/base/base/6-1-1.0000000000000001.base"), vec![0u8; 1000]).unwrap();
@@ -4967,7 +4978,7 @@ mod tests {
         // The build Mac's coordinator offers slope, which this helper fits.
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
         a.client = Some(crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1"));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
@@ -5024,7 +5035,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.free_set = Some(40 << 30);
         a.mem_set = Some((16 << 10, 12 << 10));
@@ -5034,7 +5045,7 @@ mod tests {
             let step = id.split(' ').next().unwrap();
             let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
             let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
         };
         // Someone at the Mac: beside the map tiles, the heritage chain (network), not a unit.
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -5069,14 +5080,14 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.free_set = Some(40 << 30);
         let job = |id: &str| {
             let step = id.split(' ').next().unwrap();
             let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
             let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
         };
         let stop = |a: &mut Agent| {
             for s in a.slots.iter_mut() {
@@ -5129,7 +5140,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         let r = build::Round { began: 100, regions: vec!["a".into()], last: false, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false };
         a.keep_round(r.clone()).unwrap();
         let file = || -> build::Round { serde_json::from_slice(&std::fs::read(home.join(ROUND_FILE)).unwrap()).unwrap() };
@@ -5143,14 +5154,14 @@ mod tests {
         assert!(f.over && f.units.is_empty() && f.began == 100);
         // A dry run beside it (a second agent on this Mac, planning only): its rounds its own, never
         // the file the real one's jobs read.
-        let dry = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let dry = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
         dry.keep_round(build::Round { began: 200, ..r }).unwrap();
         assert_eq!(file().began, 100);
     }
 
     /// An agent that runs jobs (no dry run), the NAS at `root`: the build Mac's, or a helper's.
     fn running_agent(root: &Path, home: &Path, helper: bool) -> Agent {
-        Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper }).unwrap()
+        test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper }).unwrap()
     }
 
     /// A forecast made now: the build done (nothing left to build), or not.
@@ -5160,7 +5171,7 @@ mod tests {
 
     /// A job that waits half a minute, needing nothing.
     fn waiting_job(id: &str) -> JobSpec {
-        JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None }
+        JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None }
     }
 
     fn put(p: &Path, b: &[u8]) {
@@ -5289,7 +5300,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         // (Not one loop at a time: the trim isn't waited for.)
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // A trim under way (one that waits to be let go): the loop isn't held, and jobs start
         // meanwhile (what they use they hold: store::cachefile).
@@ -5321,7 +5332,7 @@ mod tests {
         let mut a = running_agent(&root, &home, false);
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // (A process group of its own, as a job's.)
-        let mut left = std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]).process_group(0).spawn().unwrap();
+        let mut left = std::process::Command::new("/bin/sh").args(["-c", "sleep 3600"]).process_group(0).spawn().unwrap();
         let pgid = left.id() as i32;
         let group = |leader_start: u64| jobs::Group { pgid, leader_start, started: now_s() - 5, id: "unit 6/1/1".into() };
         // Its group's id another program's now (another leader's start time): not the job's.
@@ -5346,7 +5357,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let c = home.join("cache");
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         let (go, wait) = std::sync::mpsc::channel::<()>();
         a.caches_task = Some(CachesTask { ask: None, toward: None, began: Instant::now(), thread: std::thread::spawn(move || wait.recv().map(|()| room::Freed::default()).map_err(anyhow::Error::from)) });
@@ -5431,7 +5442,7 @@ mod tests {
         // Asked while a job an earlier agent left runs here (its programs may not hold what they
         // use): not cleared, and why said; the ask taken up all the same.
         use std::os::unix::process::CommandExt;
-        let mut left = std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]).process_group(0).spawn().unwrap();
+        let mut left = std::process::Command::new("/bin/sh").args(["-c", "sleep 3600"]).process_group(0).spawn().unwrap();
         let pgid = left.id() as i32;
         a.orphans.push(jobs::Group { pgid, leader_start: crate::sys::process_start(pgid).unwrap(), started: now_s() - 5, id: "backup".into() });
         let r = room::request_clear(&home, "scenic clean on m4").unwrap();
@@ -5462,7 +5473,7 @@ mod tests {
         assert_eq!(a.mem.cleared.as_ref().map(|f| f.asked), Some(Some(r.at)));
         // A dry run beside it (another agent runs the jobs) takes up no ask.
         room::request_clear(&home, "scenic clean on m4").unwrap();
-        let mut dry = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let mut dry = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
         *dry.forecast.borrow_mut() = Some(forecast_now(true));
         dry.tend_caches(Some(&root), true);
         assert!(home.join(room::CLEAR_REQUEST).exists());
@@ -5680,12 +5691,14 @@ mod tests {
         a.coverage(&root, &none, "2026-09-28", &[], false).unwrap();
         assert!(a.edited_at.get().is_none());
         a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.2"), true).unwrap();
-        assert!(edit_held(a.edited_at.get()).is_some_and(|(age, left)| age < EDIT_HOLD && left <= EDIT_HOLD));
+        let (first, last) = a.edited_at.get().unwrap();
+        assert_eq!(edit_held(Some((first, last)), last), Some((Duration::ZERO, EDIT_HOLD)));
         // A run of edits holds the work an hour at most.
-        let ago = |m: u64| std::time::SystemTime::now() - Duration::from_secs(m * 60);
-        assert!(edit_held(Some((ago(50), ago(1)))).is_some_and(|(_, left)| left <= Duration::from_secs(10 * 60)));
-        assert!(edit_held(Some((ago(61), ago(1)))).is_none());
-        assert!(edit_held(Some((ago(20), ago(16)))).is_none());
+        let now = std::time::SystemTime::now();
+        let ago = |m: u64| now - Duration::from_secs(m * 60);
+        assert_eq!(edit_held(Some((ago(50), ago(1))), now), Some((Duration::from_secs(60), Duration::from_secs(10 * 60))));
+        assert!(edit_held(Some((ago(61), ago(1))), now).is_none());
+        assert!(edit_held(Some((ago(20), ago(16))), now).is_none());
     }
 
     #[test]
@@ -5698,7 +5711,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v1")).unwrap();
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
-        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: true, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: true, once: true, helper: false }).unwrap();
         assert_eq!(a.app, "v1");
         a.step().unwrap();
         let st = read_status(Some(&root), &home).unwrap();
@@ -5890,16 +5903,21 @@ mod pool_tests {
     }
 
     /// Loops `a` until `done` says so, at most a minute.
+    /// Steps `a` until `done` (its jobs and listings run meanwhile, as long as a busy Mac takes:
+    /// `WATCHDOG` is a watchdog, not a measure).
     fn until(a: &mut Agent, done: impl Fn(&Agent) -> bool) {
-        for _ in 0..240 {
+        let end = Instant::now() + WATCHDOG;
+        loop {
             a.step().unwrap();
             if done(a) {
                 return;
             }
+            assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", read_status(None, &a.o.home).map(|s| s.waiting));
             std::thread::sleep(Duration::from_millis(250));
         }
-        panic!("not done in a minute: {:?}", read_status(None, &a.o.home).map(|s| s.waiting));
     }
+
+    const WATCHDOG: Duration = Duration::from_secs(300);
 
     fn stop_jobs(a: &mut Agent) {
         for k in 0..SLOTS {
@@ -5913,7 +5931,7 @@ mod pool_tests {
     fn the_pool_off_leaves_the_agent_as_it_was() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        let mut a = Agent::new(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
         assert!(a.pool.is_none() && a.pool_mode == Some(pool::Mode::Off));
         a.step().unwrap();
         // The build Mac named the writer, as before; nothing of the pool's written.
@@ -5930,7 +5948,7 @@ mod pool_tests {
     fn the_switch_changing_restarts_the_agent_into_it() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        let mut a = Agent::new(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
         a.step().unwrap();
         assert!(a.pool_restart().is_none());
         switch_on(&r, pool::ENABLED);
@@ -5952,7 +5970,7 @@ mod pool_tests {
         let bin = app(d.path());
         let home = d.path().join("app-folder/agent");
         // (`--helper` passed, as the M1's launch file does: the pool says what it is.)
-        let mut a = Agent::new(Options { root: Some(r.clone()), home: home.clone(), bin: bin.clone(), dry_run: false, once: true, helper: true }).unwrap();
+        let mut a = test_agent(Options { root: Some(r.clone()), home: home.clone(), bin: bin.clone(), dry_run: false, once: true, helper: true }).unwrap();
         let run = a.pool.as_ref().expect("the pool's part");
         assert_eq!((run.role, run.gates.leads), (pool::Role::Lead, Some(1)));
         assert!(!a.o.helper && a.coord.is_some(), "it leads: its coordinator runs");
@@ -5999,14 +6017,14 @@ mod pool_tests {
         let bin = app(d.path());
         // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
         // folder (and member) of its own; its `--helper` or not, the pool says.
-        let dry = Agent::new(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: true, once: true, helper: false }).unwrap();
+        let dry = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: true, once: true, helper: false }).unwrap();
         assert!(dry.pool.is_none(), "a dry run takes no part");
         drop(dry);
-        let mut lead = Agent::new(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = Agent::new(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         assert_eq!(m.pool.as_ref().unwrap().role, pool::Role::Member);
         assert!(m.o.helper && m.coord.is_none());
         let (il, im) = (lead.pool.as_ref().unwrap().side.member().id.clone(), m.pool.as_ref().unwrap().side.member().id.clone());
@@ -6044,14 +6062,16 @@ mod pool_tests {
         let r = nas(d.path());
         switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
-        // (Its slope job takes a few seconds: the ask comes while it runs.)
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", "step=\"$1\"\n[ \"$step\" = slope ] && sleep 4\n");
+        // (Its slope job runs until the test opens its gate: the ask comes while it runs, however
+        // slowly a busy Mac takes the handover.)
+        let gate = d.path().join("gate");
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
-        let mut lead = Agent::new(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = Agent::new(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         let im = m.pool.as_ref().unwrap().side.member().id.clone();
         lead.pool.as_mut().unwrap().side.know(&im);
         lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
@@ -6059,15 +6079,16 @@ mod pool_tests {
         // The owner asks the lead, from its menu, to hand the build to the member, mid-job.
         crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
         fn both(lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool) {
-            for _ in 0..240 {
+            let end = Instant::now() + WATCHDOG;
+            loop {
                 lead.step().unwrap();
                 m.step().unwrap();
                 if done(lead, m) {
                     return;
                 }
+                assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", lead.pool.as_ref().unwrap().controls.kept.asked);
                 std::thread::sleep(Duration::from_millis(250));
             }
-            panic!("not done in a minute: {:?}", lead.pool.as_ref().unwrap().controls.kept.asked);
         }
         both(&mut lead, &mut m, &|_, m| m.pool.as_ref().unwrap().side.driver().leads() == Some(2));
         // The member leads term 2 in this process (it restarts into its part once its slot is free);
@@ -6077,6 +6098,8 @@ mod pool_tests {
         both(&mut lead, &mut m, &|l, _| l.pool.as_ref().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.state == lead::State::Done));
         assert!(lead.pool_restart().is_some_and(|w| w.contains("no longer leads")), "{:?}", lead.pool_restart());
         assert!(m.pool_restart().is_some_and(|w| w.contains("leads term 2")));
+        assert!(m.slots[0].running.is_some(), "the job still runs");
+        std::fs::write(&gate, b"").unwrap();
         // The job, granted in term 1, ran on: its entry reached the new lead's records.
         both(&mut lead, &mut m, &|_, m| m.slots[0].running.is_none() && m.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")));
         // The statuses say so: the old lead's view, the history's terms.
@@ -6132,7 +6155,7 @@ mod pool_tests {
         let home = d.path().join("app-folder/agent");
         let id = crate::pool::member_id(&home).unwrap();
         let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
-        let mut a = Agent::new(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
         assert!(a.pool.is_none() && a.coord.is_none() && !a.o.dry_run, "waiting, not a dry run for good");
         a.step().unwrap();
         let st = read_status(Some(&r), &home).unwrap();
@@ -6197,7 +6220,7 @@ mod pool_tests {
     }
 
     fn agent_dry(root: &Path, home: &Path) -> Agent {
-        Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
+        test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
     }
 
     #[test]
@@ -6206,7 +6229,7 @@ mod pool_tests {
         let r = nas(d.path());
         switch_on(&r, pool::SHADOW);
         let home = d.path().join("home");
-        let mut a = Agent::new(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
         assert_eq!(a.pool_mode, Some(pool::Mode::Shadow));
         assert!(a.pool.is_none());
         a.step().unwrap();

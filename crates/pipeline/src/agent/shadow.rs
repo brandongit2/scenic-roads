@@ -116,9 +116,17 @@ pub struct Shadow {
     /// The gates as last logged.
     gates: Option<serde_json::Value>,
     compared: Option<Instant>,
+    /// The Mac whose power and place it reads (a test's fixed one).
+    mac: cond::Mac,
 }
 
 impl Shadow {
+    /// The same, reading `mac`'s power and place (the agent's).
+    pub fn on(mut self, mac: cond::Mac) -> Shadow {
+        self.mac = mac;
+        self
+    }
+
     /// A shadow run of the agent whose folder is `live`, over the project folder `root`, its own
     /// folder `home`. None when another process is this member already.
     pub fn open(root: &Path, home: &Path, live: &Path, app: &str) -> Result<Option<Shadow>> {
@@ -129,7 +137,7 @@ impl Shadow {
         let Some(side) = Side::open(home, &dir, &locks, app, nas, true)? else { return Ok(None) };
         let w: Watched = std::fs::read(dir.join("watch.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("shadow.jsonl")).with_context(|| format!("open {}", dir.join("shadow.jsonl").display()))?;
-        let mut s = Shadow { side, root: root.to_path_buf(), live: live.to_path_buf(), dir, w, log, reassert: false, gates: None, compared: None };
+        let mut s = Shadow { side, root: root.to_path_buf(), live: live.to_path_buf(), dir, w, log, reassert: false, gates: None, compared: None, mac: cond::Mac::Real };
         // (A first run reads the history from its end: what happened before isn't shadowed.)
         if s.w.seq == 0 {
             s.w.seq = history(&s.live).last().map_or(0, |e| e.seq);
@@ -177,8 +185,8 @@ impl Shadow {
         for (e, _) in &entries {
             self.note("handed", serde_json::json!({ "key": e.key(), "step": e.step, "done": e.handoff.done.as_ref().map(|d| d.1.len()), "changes": e.handoff.changes.len() }));
         }
-        let (ac, battery) = cond::power();
-        let able = store::nas::at_home() && (ac || battery.is_none_or(|b| b >= cond::BATTERY_MIN));
+        let (ac, battery) = self.mac.power();
+        let able = self.mac.at_home() && (ac || battery.is_none_or(|b| b >= cond::BATTERY_MIN));
         let out = self.side.step(Give { entries, able, reassert: self.reassert, ..Default::default() }, &pool::check);
         if out.fresh {
             self.reassert = false;
