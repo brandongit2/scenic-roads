@@ -59,7 +59,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/rawpack.rs", "put_up", "deletes through drop_copy (store::cachefile)"),
     ("crates/pipeline/src/rawpack.rs", "merge_due", "deletes through drop_copy (store::cachefile)"),
     ("crates/pipeline/src/rawpack.rs", "commit", "deletes through drop_copy (store::cachefile)"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "main", "the steps' arguments: where their caches are"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "the steps' arguments: where their caches are"),
     ("crates/pipeline/src/bin/scenic-build.rs", "registers_extract", "the registers' snapshot, which room-making never deletes"),
     ("crates/pipeline/src/agent/mod.rs", "plan", "counts the pack cache's bytes"),
     ("crates/pipeline/src/agent/mod.rs", "region_work", "a job's arguments: where its caches are"),

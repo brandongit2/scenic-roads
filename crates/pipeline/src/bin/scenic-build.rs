@@ -322,11 +322,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // outlines, as global/spoken, which the servers read.
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
             let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
-            let p = phase("the outlines read", Class::NasRead);
-            let o = pipeline::outlines::Outlines::open(&outlines)?;
-            drop(p);
-            let p = phase("the languages spoken where worked out", Class::Compute);
-            let s = o.spoken()?;
+            // (The outlines read from the NAS as it works through them: one phase.)
+            let p = phase("the languages spoken where worked out from the outlines", Class::NasRead);
+            let s = pipeline::outlines::Outlines::open(&outlines)?.spoken()?;
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("spoken.bin");
             std::fs::write(&local, s.to_bytes())?;

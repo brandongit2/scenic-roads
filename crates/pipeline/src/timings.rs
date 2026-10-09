@@ -294,7 +294,9 @@ fn open(name: &str, class: Class) -> Phase {
     let me = std::thread::current().id();
     // (Its parent: the phase open on this thread; in a sub-phase, it's folded into that one.)
     let inner = STACK.with(|s| s.borrow().last().map(|o| o.idx));
-    if inner.is_some_and(|i| r.accs[i].parent.is_some()) {
+    // (Nor under one of its own name: a library's phase inside the step's that already says it,
+    // the records saved within "records saved".)
+    if inner.is_some_and(|i| r.accs[i].parent.is_some() || r.accs[i].name == name) {
         return Phase::none();
     }
     let parent = inner;
