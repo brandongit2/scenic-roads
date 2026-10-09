@@ -118,6 +118,7 @@ impl Out {
 
     /// `open`, a round's job's (`as_of`: its round's file and when it began, `UNITS_AS_OF_ENV`).
     pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&str>) -> Result<Self> {
+        let _p = crate::timings::phase("records read", crate::timings::Class::NasRead);
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
         let as_of = as_of.map(read_as_of).transpose()?;
@@ -165,6 +166,8 @@ impl Out {
         let sha = if existed { None } else { Some(sha256_file(local)?) };
         let got = store::naming::write_atomic(&self.root, logical, ext, store::naming::Source::File(local))?;
         anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
+        // (Its bytes, to the phase it's uploaded in: crate::timings.)
+        crate::timings::count(if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) }, 1);
         if existed {
             // In use again: a fresh time keeps GC's age rule from taking it before a catalog does.
             if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
@@ -219,6 +222,7 @@ impl Out {
     /// changes saved meanwhile are kept), and the unverified uploads likewise. A helper's job hands
     /// them off instead (crate::handoff).
     pub fn save(&mut self) -> Result<()> {
+        let _p = crate::timings::phase("records saved", crate::timings::Class::NasWrite);
         if let Some(dir) = &self.handoff {
             if self.changes.is_empty() && self.pending.is_empty() && self.checked.is_empty() {
                 return Ok(());

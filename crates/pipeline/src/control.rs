@@ -172,6 +172,8 @@ pub fn safe_point(step: &str) {
 /// done): whether or not the pause has been lifted meanwhile, as it didn't do the rest.
 pub fn stop_paused(step: &str) -> ! {
     eprintln!("{step}: paused at a safe point; the rest goes on when the build does");
+    // (Its timings kept, as a run that didn't finish.)
+    crate::timings::finish(false);
     std::process::exit(PAUSED_EXIT)
 }
 

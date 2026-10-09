@@ -145,6 +145,13 @@ fn positional(args: &[String]) -> Vec<String> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let step = args.get(1).cloned().unwrap_or_default();
+    // Its phases' times (pipeline::timings: the log's table, the agent's record), however it ends.
+    pipeline::timings::job(&step, || step_main(&args, &step))
+}
+
+fn step_main(args: &[String], step: &str) -> Result<()> {
+    let args: Vec<String> = args.to_vec();
+    let step = step.to_string();
     // tail-spec U: unit U's tail as a task gives it a worker (its steps, where its places lie, the
     // data servers it may read), for tools/check/tail.mjs; nothing read or written.
     if step == "tail-spec" {

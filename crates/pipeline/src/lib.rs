@@ -49,6 +49,7 @@ pub mod summits;
 pub mod water;
 pub mod watercov;
 pub mod sys;
+pub mod timings;
 pub mod terr;
 pub mod terrain_north;
 pub mod terrain_pack;
