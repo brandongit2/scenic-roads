@@ -485,7 +485,13 @@ mod tests {
 
         // Its first results checked (the coordinator says): a spoilt one is found, the row made
         // here, the worker gets no more work.
-        c.shared.lock().unwrap().workers.get_mut("m1").unwrap().checked = 0;
+        // (Measured fast again, as above: its first row, a test thread on a loaded Mac, may have
+        // measured it slower than this Mac's run, and the coordinator gives such a worker none.)
+        {
+            let mut s = c.shared.lock().unwrap();
+            s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
+            s.workers.get_mut("m1").unwrap().checked = 0;
+        }
         let w = worker(&url, &tok, "m1", sq.path().into(), p.join("m1b"), true, false);
         piece(p, sq.path(), "spoilt", Some(&patient));
         w.join().unwrap().unwrap();
