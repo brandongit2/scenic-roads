@@ -19,6 +19,42 @@ use store::range::{RangeRead, Slice};
 use store::sys::PosIo;
 use store::IoError;
 
+/// Whether the internet may be asked, before any request to it: refused (an error naming `url`)
+/// under SCENIC_FETCH_OFFLINE=1, or once a test said so (`go_offline`), so a check on scratch data
+/// never downloads, whatever path reaches the network. Every request to the internet asks this
+/// first (tests/cache_accessor.rs checks each one does).
+pub fn online(url: &str) -> Result<()> {
+    // (This Mac itself isn't the internet: a coordinator's or a test server's.)
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?']).next().unwrap_or("");
+    let host = host.rsplit_once('@').map_or(host, |h| h.1);
+    let host = if host.starts_with('[') { host.split(']').next().map(|h| &h[1..]).unwrap_or("") } else { host.split(':').next().unwrap_or("") };
+    if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+        return Ok(());
+    }
+    if OFFLINE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var("SCENIC_FETCH_OFFLINE").is_ok_and(|v| !v.is_empty() && v != "0") {
+        bail!("{url}: no network here (SCENIC_FETCH_OFFLINE)");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn offline_refuses_the_internet_not_this_mac() {
+    go_offline();
+    assert!(online("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/1/0/0.png").is_err());
+    assert!(online("http://example.org:8080/x").is_err());
+    for u in ["http://127.0.0.1:18270/net/x", "http://localhost/x", "http://[::1]:9/x"] {
+        assert!(online(u).is_ok(), "{u}");
+    }
+}
+
+static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// No network for the rest of this process (`online`): a test's.
+pub fn go_offline() {
+    OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Every request names the map, as the steps' own do.
 pub const USER_AGENT: &str = "scenic-roads/0.1 (personal offline map)";
 
@@ -675,6 +711,7 @@ mod net {
         /// The file's length and first bytes; None when the server has no such file.
         fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>)>> {
             self.retrying(url, || {
+                crate::fetch::online(url)?;
                 let mut r = match self.agent.get(url).header("Range", format!("bytes=0-{}", READ_AHEAD - 1)).call() {
                     Ok(r) => r,
                     Err(e) => return Ok(Err(e.to_string())),
@@ -711,6 +748,7 @@ mod net {
         /// Bytes `s..e` of the file.
         fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
             self.retrying(url, || {
+                crate::fetch::online(url)?;
                 let mut r = match self.agent.get(url).header("Range", format!("bytes={s}-{}", e - 1)).call() {
                     Ok(r) => r,
                     Err(err) => return Ok(Err(err.to_string())),
@@ -736,6 +774,7 @@ mod net {
         fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
             let mut last = String::new();
             for attempt in 0..8u64 {
+                crate::fetch::online(url)?;
                 match self.agent.get(url).call() {
                     Ok(mut r) => match r.status().as_u16() {
                         200 => match r.body_mut().with_config().limit(64 << 20).read_to_vec() {

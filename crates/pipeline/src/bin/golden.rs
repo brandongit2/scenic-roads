@@ -29,6 +29,7 @@ struct Http(ureq::Agent);
 
 impl Http {
     fn get(&self, url: &str) -> Result<(u16, Vec<u8>)> {
+        pipeline::fetch::online(url)?;
         let mut r = self.0.get(url).header("Accept-Encoding", "identity").call().with_context(|| format!("GET {url}"))?;
         let st = r.status().as_u16();
         let b = r.body_mut().with_config().limit(200 << 20).read_to_vec()?;

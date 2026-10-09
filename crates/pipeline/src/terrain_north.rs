@@ -170,6 +170,7 @@ impl Cells for GloStore {
 
 /// Downloads `url` to `to` (beside it first, then renamed), as the map's other sources are.
 fn download(url: &str, to: &Path) -> Result<()> {
+    crate::fetch::online(url)?;
     let agent = crate::terrain_pack::agent();
     let mut r = agent.get(url).call().with_context(|| url.to_string())?;
     let b = r.body_mut().with_config().limit(200_000_000).read_to_vec().with_context(|| url.to_string())?;
