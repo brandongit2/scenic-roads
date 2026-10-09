@@ -174,14 +174,14 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
                rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v3,
-               copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), legacy/ (today's map's build
-               inputs, until the cutover)
+               copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), registers/ (the heritage
+               registers' snapshot and its seeds: §6, Hand-made inputs)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
 markdata/      per z6 tile: landmark points
 ovdata/        per z3 tile: area and park details
 global/        worldwide files: road values per unit (roads/), road → units, rail frequencies,
-               landmark totals, heritage/, legacy/ (today's converted files)
+               landmark totals, heritage/ (the overlays' summary and sources)
 layers/<layer>/  root, lo and hi packs; basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates (not served; trees-mid/: tree cover's mids, §6)
 cache/         what units keep for their later runs, shared by both Macs: dem-units/, scenic-units/
@@ -256,8 +256,7 @@ record changes back through the build Mac's coordinator, which journals them for
   by the same rule, their other files (the planet download, the pass's answers) 14 days after the
   newer pass completed, then the empty folders.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (registers,
-  the basemap's data, the DEM seed, the rail sources with the files they replaced, today's legacy
-  inputs), translations, descriptions, inputs, state, app and nas.
+  the basemap's data, the DEM seed, the rail sources with the files they replaced), translations, descriptions, inputs, state, app and nas.
 
 **Backups.**
 - Daily, the agent copies the user's folders and `inputs/` into a content-addressed store under
@@ -528,8 +527,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   (`downloads.json` in its home, never the NAS).
 - **The World, zoomed out:** the essentials, and the basemap's zooms 0–10. The essentials are the
   build's worldwide files (`global/`: rail frequencies, the road → units index, landmark totals,
-  heritage summaries, today's converted layer files and details, roads' English names, the spoken
-  languages), every layer's root and lo packs (zooms 0–8), and the landmark points and area
+  heritage summaries, roads' English names, the spoken languages), every layer's root and lo packs (zooms 0–8), and the landmark points and area
   details (markdata, ovdata): 7.8 GB of catalog 14's 251 GB (2026-10-06). Not the pass's area
   outlines (2.7 GB, read only to make regions). The basemap's zooms 0–10 are 1.7 GB of its 28.5.
 - **A region, or a view** (the ground on screen when it was downloaded): every layer's hi pack,
@@ -573,8 +571,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   fills later, what doesn't fit waits ("waiting for room"), and nothing downloaded goes for it.
 - **The build Mac:** its jobs don't need the mirror. The pack and lo jobs read a base pack from it
   where it has one (a downloaded region's), else from their own cache (`agent/cache/base`, copied
-  from the NAS); the heritage and landmark conversion reads today's converted files from it where
-  it has them, else from the NAS. Nothing is deleted from the mirror while that Mac's own agent runs
+  from the NAS); the marks and overlays jobs read the heritage job's files from it where it has
+  them, else from the NAS. Nothing is deleted from the mirror while that Mac's own agent runs
   a job, so a job never loses a file it's opening.
 - **Pack indexes** are cached on a Mac as they're read (`idx/`), for offline starts; none is
   fetched ahead.
@@ -681,8 +679,7 @@ the region. Each entry is one of these:
   packs and mid), and a z3 tile its zoomed-out tree cover.
 
 **Today's set** (since 2026-10-05): 88 recipes in `inputs/regions/`, by political unit, every one
-of them OpenStreetMap boundaries (`osm:` relations from the pass's outline set). The cutover's 34
-are in `tools/cutover/regions`.
+of them OpenStreetMap boundaries (`osm:` relations from the pass's outline set).
 - **Canada:** its 13 provinces and territories.
 - **The US:** every state, DC and Puerto Rico (the other territories later).
 - **The UK and Ireland:** England, Scotland, Wales and Northern Ireland, and Ireland (which replaced
@@ -907,7 +904,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     same bytes (`tools/check/treeblock-same.mjs`: four real rows, natively and as WebAssembly, and
     the NAS's packs).
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
-  World Heritage dots' ids. Until its first run, today's converted packs serve.
+  World Heritage dots' ids.
 - **3D buildings (phase 7, under way):** `docs/buildings3d.md`. Every building in the coverage, from
   the Overture release the roadside buildings read: its height measured or from its floors, else
   estimated from Microsoft's figure, its neighbours, GHSL or its size and kind; tiles z12–14 per z6
@@ -1095,12 +1092,12 @@ they treat any raster.
   `global/roads/<u>`, with `byroad`: its ways sorted by road, so a profile finds a road's ways with
   one binary search.
 - Lengths include parts outside the coverage: a road's length is a fact about the road.
-- Elevation smoothing keeps today's local continuation rule (`Net.cont`); it runs in base(U).
+- Elevation smoothing uses a local continuation rule (`Net.cont`); it runs in base(U).
 
 ### Per unit: base(U)
 
-The unit job runs today's steps on a unit-sized folder, wiped at each run:
-1. **extract:** on U's piece, U's ways that touch the coverage, by today's rules. Rail tracks without
+The unit job runs the unit's programs on a unit folder, wiped at each run:
+1. **extract:** on U's piece, U's ways that touch the coverage. Rail tracks without
    a route relation are kept by type.
 2. **Elevations:** `elev` (`pipeline::dem`), DEMs by location, on U's slice of the per-vertex DEM
    cache (the seed, and the units' kept samples, which win); FABDEM's tiles from the NAS (`sources/fabdem/`, each
@@ -1235,24 +1232,72 @@ in a chain of their own (§8):
   - `railfreq` matches the pairs onto the rail ways of the pass's rail set that touch the coverage:
     the set clipped to the tiles within 20 km of it, `extract` at 8 m (as the units), then the ways
     touching it.
-- **The rail sources** (`sources/rail/`, docs/formats.md) start from today's build's
-  (`scenic-build rail-seed`, run once by hand): its 131 zips, the catalogue with the 1,545 feeds
-  checked for it (the 1,420 found without rail routes, or without routes.txt, seeded as unanswered,
-  so rail-feeds asks again once: today's check could take an answer cut short for none), and the
-  MTR's lines. The seeded zips count from the day today's figures were
-  counted (2026-09-30), so the job gives today's figures again; two were already out of date then
-  (Chiltern Railways', Madrid's Cercanías'), and are fetched again as above. rail-seed writes the
-  catalogue last, once the rest is saved, so a seeding cut short holds the chain until it's run
-  again, adding only what's missing. It never replaces a file: MTR pairs made again
-  (`make data/rail/pairs-mtr.bin`) go in with `scenic-build put sources/rail/mtr-pairs bin
-  data/rail/pairs-mtr.bin --root <NAS project folder>` (and `mtr.json` as `sources/rail/mtr`),
-  which the rail job's key follows.
+- **The rail sources** (`sources/rail/`, docs/formats.md): the jobs add the checks, zips and days;
+  the catalogue and the MTR's lines are put there by hand (Hand-made inputs, below), and the chain
+  waits for the catalogue.
 - **Planned:**
   - Japan's ODPT and Taiwan's TDX feeds, behind the keys `inputs/keys.env` names for them
     (`ODPT_KEY`; `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`), each a keyed feed in `dem/railfeeds.py`
     once there are values to fetch with. ODPT's licence allows no redistribution of its raw feeds;
     TDX asks for a credit line (`pipeline::rules::CREDITS`);
   - the catalogue and the timetables fetched again every ~6 months (§8).
+
+### Hand-made inputs
+
+What no job makes, kept on the NAS with how it was made, so it can be made again. The scripts run in
+the repository's `dem/` (`uv run python <script>`); `scenic-build` takes `--root <NAS project
+folder> --scratch <local dir>` as for every step.
+
+- **The heritage registers' snapshot** (`sources/registers/legacy`, a tar.zst; the heritage-sites
+  and heritage jobs read it): a folder as `dem/heritage.py` reads it, without `osm/` (the pass's
+  sets replace it). In it: the registers downloaded by hand (`fhd.xlsx`, Parks Canada's Directory of
+  Federal Heritage Designations, open data; the provinces' and countries' registers under `qc/`,
+  `on/`, `ns/`, `nb/`, `uk/`, `ie/`, `gg/`, `fr/`, `es/`, `pt/`, `ad/`, `jp/`, `tw/`, `hk/`,
+  `sg/`, UNESCO's under `unesco/` and `whc.xml`), what heritage.py and the chain cached (`wd-*.csv`,
+  `wd/`, `crhp/`), the descriptions written then (`desc/`), and what two scripts make from them:
+  - `federal.py --dir <folder>`: `federal.json`, the federal designations located. It reads
+    `fhd.xlsx`, `wd-canada.csv`, and the provinces and named places as GeoJSON lines in
+    `<folder>/osm/`: `osmium tags-filter <planet> r/admin_level=4 -o prov.osm.pbf` then `osmium
+    export prov.osm.pbf -f geojsonseq --geometry-types=polygon -o osm/prov.geojsonseq`, and the
+    pass's `named` set exported as `osm/named.geojsonseq`.
+  - `crhp.py --dir <folder>`: `crhp.json`, the Canadian Register of Historic Places' provincial and
+    municipal places (its pages cached in `<folder>/crhp/`).
+  - Then `scenic-build registers-import --from <folder>` puts it in as `sources/registers/legacy`;
+    the heritage jobs' keys follow it.
+- **Its seeds** (`sources/registers/legacy-seeds`): park facts (`areas/wikidata.json`), the
+  pageview months the chain counted before the items job's cache (`pageviews/months/`), and the
+  names table the heritage layers' English comes from (`names/english.json`, read by
+  `dem/names.py` `english_at`). Nothing makes them again (§10).
+- **Ferry timetables** (`inputs/ferries/freq/`, which the ferries job reads):
+  - `gtfs-<feed>.json`, sailings counted from operators' GTFS feeds: `gtfs.py --feeds
+    inputs/ferries/gtfs-feeds.json --lines <lines.json> --cache inputs/ferries/gtfs --out
+    inputs/ferries/freq` (`--refresh` asks for newer zips). `gtfs-feeds.json` is the verified feed
+    list (how it was found: `gtfs-feeds.md`, `operators.txt`); `gtfs/` the zips today's counts came
+    from; `lines.json` the lines `ferries.py` writes into its `--src` folder (the ferries job's
+    work folder: its osmium exports of the pass's ferries set, as `pipeline::ovconv::ferries_job`
+    makes them).
+  - `timetables-*.json`, sailings looked up by hand from operators' published timetables, each with
+    its page: the researchers' brief, batches and not-found lists are in
+    `inputs/ferries/research/` (`PROMPT.md`).
+- **The rail catalogue** (`sources/rail/catalogue`): the Mobility Database's `feeds_v2.csv`
+  (files.mobilitydatabase.org), downloaded once: `scenic-build put sources/rail/catalogue csv
+  feeds_v2.csv`.
+- **The MTR's lines** (`sources/rail/mtr`, `mtr.json`: researched by hand from MTR's published
+  frequencies) and their stop pairs (`sources/rail/mtr-pairs`): `mtrpairs.py --mtr mtr.json
+  --stations hk-stations.geojsonseq --out pairs-mtr.bin`, the stations from the pass's `rail` set
+  (`osmium extract -b 113.8,22.1,114.5,22.6`, then `osmium tags-filter … n/railway=station,halt,stop,tram_stop
+  n/public_transport=station w/railway=station` and `osmium export … -f geojsonseq`); then
+  `scenic-build put sources/rail/mtr-pairs bin pairs-mtr.bin` (and `mtr.json` as `sources/rail/mtr`).
+  The rail job's key follows them.
+- **Translations' method** (§7): the translators' brief, batches and raw outputs behind
+  `translations/` (`inputs/names/tr-2026-09/`, `TRANSLATORS.md` the brief;
+  `translations/0-converted/conversion-log.txt` how they became the tables), and the scripts that
+  sized the work (`inputs/names/analysis/`: `latinwords.py`, `namecount.py`).
+- **Descriptions' method** (§7): the writers' briefs (`inputs/descriptions/briefs-2026-09/`:
+  `WRITERS.md`, `FIXERS.md`, `RESEARCH.md`); the lists to write and today's brief are the build
+  Mac's (`descriptions/todo/`, tools/names/descriptions-todo.md).
+- **Fonts** (`app/fonts/` on the NAS, `data/fonts` in a checkout): MapLibre's glyph ranges of three
+  Noto Sans styles, `scripts/fonts.sh <folder>`.
 
 ### Job keys
 
@@ -1500,9 +1545,7 @@ them).
 - **The basemap:** `name:en` and `name:fr` in the 2026-09-28 pass's; from the next pass, Planetiler
   keeps `osmpass::BASEMAP_LANGUAGES` (the coverage's languages and its neighbours', `ja-Latn`,
   `ja_rm`, `ja-Hira`, `ja_kana`, `zh-Latn-pinyin`…).
-- **Roads:** their own English is each unit's `global/roaden/<u>` (OSM's `name:en`). Not today's
-  converted table, `global/legacy/road-en`, which filed one road's English for every road of its
-  name: of its 36,673 ways the units' English lacks, the units hold 5 (2026-10-08). Roads carry no
+- **Roads:** their own English is each unit's `global/roaden/<u>` (OSM's `name:en`). Roads carry no
   language tags: they're looked up in the languages spoken where they are.
 - **Not carried yet:** Wikidata's English labels (the landmark jobs keep the English Wikipedia
   title, `w_en`, in the popup records, not as the thing's English), roads' language tags (§10).
@@ -2139,8 +2182,8 @@ between jobs into the other way. On:
      no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.
      Stations and ferries drop the packs they no longer make.
    - **Rail service**, from the start (it reads no unit): `rail-feeds`, then `rail` (§6, Rail
-     service). Nothing before the rail sources are seeded (`scenic-build rail-seed`), which the
-     status says.
+     service). Nothing before the rail catalogue is on the NAS (§6, Hand-made inputs), which
+     the status says.
    - **Landmarks**, from the start, each step once what it reads is built
      (`agent::build::landmarks_work`): the candidates (once the pass's hiking-route ends are made);
      their peaks once every candidate is, the pass's summits are made and the terrain within 30 km
@@ -2279,7 +2322,7 @@ everything is rebuilt.
 - `scenic` is the user's command and the agent;
 - `scenic-build` holds the build steps;
 - `server` serves the map;
-- `extract`, `tile` and `scenic-metrics` are today's steps, which units run (the rail job runs
+- `extract`, `elev`, `areaflags`, `landcover`, `tile` and `scenic-metrics` are the unit's programs (the rail job runs
   `extract` and `railfreq`, the tree cover job `trees`);
 - the app also carries `dem/` (the Python steps), Scenic.app (the menu bar item), `web/` and
   `fonts/`. The Python steps run in `dem/.venv` beside them, which uv makes from the app's lock file
@@ -2290,7 +2333,7 @@ everything is rebuilt.
 
 ## 9. Sizes
 
-**Measured** (the 2026-09-28 planet's pass, and today's converted data on the NAS, 2026-10-03):
+**Measured** (the 2026-09-28 planet's pass):
 
 | | |
 |---|---|
@@ -2301,8 +2344,6 @@ everything is rebuilt.
 | OSM pieces (all land) | ~58 GB (measured as the cut finished) |
 | basemap (worldwide) | 28.6 GB (its input 16.3 GB; Planetiler needs ~6× its input while it runs; 46 min) |
 | water (worldwide) | 75,683 tiles, 1.38 GB (z0–8 0.56 GB, z9 0.82 GB), from 25.4 million z14 tiles of 2026-09-28's basemap in 4.5 min on the build Mac, the basemap read from the NAS (2026-10-08); deeper zooms drawn by the server |
-| today's 34 regions, converted | base packs 26.4 GB (181 units), hidata 5.8 GB, layers 80.3 GB (including both basemaps), markdata 0.1 GB, global 1.6 GB |
-| today's build inputs (`sources/legacy`) | 105.4 GB, until the cutover |
 | NAS | 8.5 TB free of 35 TB |
 
 **Estimated:**
@@ -2324,20 +2365,14 @@ passes' sources at most.
 
 At each phase's end an Opus agent reviews the work against this plan.
 
-1. **Foundations, on today's data: done.**
+1. **Foundations: done.**
    - The `store` crate: packs, catalogs, content naming, the I/O pool, mounting, the mirror.
-   - Today's data converted into NAS packs, base packs and a catalog.
-   - The server serves from them: lazy, paged, by id plus location, offline start, names attached.
-     The client follows.
-   - Golden checks: Singapore (400/400 ways equal) and nine places against the legacy server (way
-     info, profiles, every tile layer and popup details equal).
-   - Left: a speed check against the legacy measurements (README) once this Mac's mirror is
-     complete.
+   - The server serves from packs, base packs and catalogs: lazy, paged, by id plus location,
+     offline start, names attached. The client follows.
 2. **Agent and moves: done.**
    - The agent (recipes, heartbeat, conditions with the battery rule, batches, progress and
      checklist, backups, GC).
-   - Both Macs' data moved to the NAS. Local copies deleted, and the legacy `data/build` gone from
-     both Macs.
+   - Both Macs' data moved to the NAS, the local copies deleted.
    - Descriptions moved to `descriptions/`. The menu bar item.
 3. **The OSM pass and global-source layers: mostly done.**
    - **Built:**
@@ -2352,43 +2387,37 @@ At each phase's end an Opus agent reviews the work against this plan.
    - **Not built:** the sea mask.
 4. **Per-unit pipeline and rankings: mostly done.**
    - **Built:**
-     - base(U): the pilot (Northumberland and the Scottish Borders) matched today's data, with the
-       same ways, elevations within 1.8 m and every scenic channel and flag;
+     - base(U);
      - heritage sites and flags;
      - labels, stations, ferries;
      - the landmark jobs: pois, peaks, items, marks;
-     - the rest of the heritage chain and its consumers, checked against today's: 17 outputs and
-       every overlay pack byte for byte; fame differs where today's was stale;
-     - the rail service (trains a day), checked against today's on a scratch copy of the NAS's
-       sources: every one of the 131 feeds with the same typical day, trips and duplicates, the
-       same 38,445 stop pairs with the same trains, and 185,557 of today's 185,604 rail ways with
-       the same trains a day (34 differ and 13 have none, where the same trains take a parallel
-       track or OSM changed since); two runs give the same bytes.
+     - the rest of the heritage chain and its consumers;
+     - the rail service (trains a day); two runs give the same bytes.
    - **Built:** the names and descriptions to-do lists (§7).
    - **Not built:** determinism tests, validation.
 5. **Browser: done.**
    - Built:
-     - landmarks, stations, ferries and overlays by view (In view answers equal to the legacy
-       worker's in 163 views);
+     - landmarks, stations, ferries and overlays by view;
      - zoomed-out queries;
      - the Regions panel (add, rename, remove; regions and the view kept on each Mac);
      - the status bar;
      - catalog switching;
      - the water's coverage at every zoom, and the shoreline check.
    - **Not built:** drawing, splitting and merging regions.
-6. **Cutover: mostly done.**
-   1. Done: today's 34 regions, as 34 recipes (`tools/cutover/regions`), built from the 2026-09-28
-      pass into a held catalog and compared with today's map by `compare` (its report,
-      `inputs/hold-catalog.compare-2026-10-04.md`: the same 181 units, their counts and
-      distributions within 0.2 %); the hold released on 2026-10-04
-      (`inputs/hold-catalog.released-2026-10-04`), so the map serves the pass's build.
-   2. Done: the regions as 88 recipes by political unit (§5), every one built (284 units) and
-      published (catalog 14, 2026-10-06).
-   3. Left: deleting the converted legacy data, once nothing the map reads comes from it. The
-      served catalog lists 38 of its files (`global/legacy/`), which the server reads: the popups'
-      details (`details-*`), roads' English (`road-en`, under the units' own `global/roaden/<u>`),
-      and the whole layer files the map fetches by name (`/api/layer/…`: ferries, stations,
-      overlays) where the overlays job has no copy of its own (`global/heritage/`).
+6. **Cutover: done.** The regions as 88 recipes by political unit (§5), every one built (284 units)
+   and published (catalog 14, 2026-10-06). The build before the agent and its conversion are
+   deleted from the code.
+   - **Left:**
+     - the NAS's files from that build, which nothing reads now: `global/legacy/`,
+       `layers/basemap/legacy-*`, `sources/legacy/` (deleted once an app without their readers is
+       published);
+     - the fallbacks to them in `agent::build` (`heritage_src`, `overlays_key`) and
+       `markconv::heritage_source` (`markconv::LEGACY`), unused while the registers' snapshot is
+       there;
+     - names that still say legacy for live code and data: `pipeline::legacy` (the units' tile and
+       their base packs) and `sources/registers/legacy{,-seeds}` (to be `inputs/heritage/registers`);
+     - the `terrain` and `slope` programs' build-folder modes (`terrain --scan` is live);
+     - the registers' seeds, which nothing makes again (§6, Hand-made inputs).
 7. **Features,** each on its own.
    - Built: the terrain repair (`roadcore::grid::repair_terrain`, in the terrain job and the
      worldwide z8: §6, README "Terrain repair"). One pass that takes broken towers and pits whole,
@@ -2575,7 +2604,7 @@ At each phase's end an Opus agent reviews the work against this plan.
   - a closed lid stops building, and nothing is lost while it waits;
   - the M1 builds units too when it's open (§8, Two Macs); everything else waits for the M4.
 - **Dense units:**
-  - the densest (Kanto, a 3 GB base pack converted) is first built in the cutover;
+  - the densest (Kanto, a 3 GB base pack);
   - if a unit or its 110 km halo doesn't fit in 48 GB, units split into z7 or z8 tiles, and pack(T)
     by z7.
 - **Remote DEM servers** may be slow or change. Today's cache seeds the units, and their new samples
@@ -2603,9 +2632,8 @@ pausing, which with the pool on would hold an owner's download off for hours.
   kind's line: the kind is the point of the key. The converted lines keep the old lookup's reach
   instead: each holds for the other table's kinds where that table had no line, and for the
   languages the old boxes reached besides an area's own (the owner's choice, 2026-10-08).
-- Roads' own English is the units' `global/roaden/<u>` alone: today's converted table copied one
-  road's English to every road of its name, the copying the design removes, and its ways the units
-  lack English for are gone from them (5 of 36,673 remain).
+- Roads' own English is the units' `global/roaden/<u>` alone: one road's English isn't copied to
+  every road of its name.
 - The converted lines hold for their area's languages (the area tables kept no places).
 
 **v7 (2026-10-03):**
@@ -2642,17 +2670,15 @@ pausing, which with the pool on would hold an owner's download off for hours.
   on a greater one's flank, a lobe of its ringing) on the tile with what was found filled in. What's
   broken is judged by steepness and by context (it towers over flat ground), so a summit AWS drew
   too sharp, among rough ground, stays.
-- **base(U) runs today's steps on a unit-sized folder,** staged from the build manifest. The pilot
-  matched today's data.
+- **base(U) runs the unit's programs on a unit folder,** staged from the build manifest.
 - **Landmarks, stations and ferries have jobs of their own,** and pack(T) writes no landmark tiles
   (`docs/phase5.md`). Otherwise every road pack would depend on worldwide rankings.
 - **Heritage sites and flags come before the units, in their own job;** the rest of the heritage chain
   comes after the landmark candidates. Wikidata and pageview outages mustn't hold up the roads.
 - **Roads and landmarks build as two chains,** for the same reason; the rail service is a third
   (an operator's server down mustn't hold up the roads either).
-- **The rail service reuses today's feeds:** the legacy build's zips, catalogue and checks seed its
-  sources (the user asked, 2026-10-04, that what the research sessions collected be reused, and only
-  what new coverage needs be fetched). A zip counts from the day it was fetched, so it's never
+- **The rail service keeps the feeds it has** (the user asked, 2026-10-04, that what was collected
+  be reused, and only what new coverage needs be fetched). A zip counts from the day it was fetched, so it's never
   fetched again just because time passed.
 - **The rail feeds' countries come from the coverage** (§6, Rail service), so a region in another
   country has its own feeds.
@@ -2662,8 +2688,6 @@ pausing, which with the pool on would hold an owner's download off for hours.
   without the NAS being gone.
 - **Power: mains, or the battery down to 30 %** (asked for 2026-10-03); caffeinate per job.
 - **The menu bar item,** with progress to the end (asked for 2026-10-03).
-- **The cutover keeps today's 34 regions as 34 recipes,** with Gibraltar as an `osm:` relation.
-  Keeping the legacy outlines makes the comparison like for like.
 - **What the internet answered is kept on the NAS** (§4, Downloads): the items job's and the
   heritage chain's Wikidata and Wikipedia answers, a pass's at a time, as an archive each step
   writes as it starts and ends. They were on the build Mac alone, so another Mac leading the build

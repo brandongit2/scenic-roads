@@ -407,12 +407,12 @@ Aimed at 120 Hz: a frame has 8.3 ms of CPU and of GPU time.
 - **Glyphs between frames** (`glyphs.ts`). Chinese, Japanese and Korean characters aren't in the served fonts, so MapLibre draws them on a canvas (TinySDF), every glyph a tile asks for at once: a tile of new Japanese names was a 50–70 ms task mid-gesture. They're drawn in the browser's idle time between frames now (2 ms at a time when none comes within 100 ms), the tile's labels waiting for them as before.
 - **Draped textures at a steady pace** (`drape.ts`). With 3D terrain MapLibre draws the flat layers into a texture per terrain tile and drapes those. It dropped a tile's textures to redraw them in the next frame whenever a tile of any source under it loaded (even of a source with nothing draped: stops and sights, rail stops), and whenever a source first had tiles under it; turning a tilted view brings in tiles of eight draped sources at their own pace, a hundred a second, and frames redrew up to twenty textures (0.3–0.5 ms of GPU each). Tiles of sources with nothing draped now leave the textures alone, and while the camera moves at most two existing textures are redrawn a frame, the rest a few frames later; a terrain tile without textures is drawn at once, and at rest all as before.
 
-**Loading.** Cold loads with every landmark and overlay on, landmarks and overlays by view against whole files (measured 2026-10-03, `docs/phase5.md`):
-- **London z7:** the map is done in 3.3 s, against 4.7 s.
-- **The Alps at z8, tilted:** 2.9 s, against 4.7 s.
-- **Europe at z4.5:** 4.3–4.7 s, against 5.7–5.9 s.
-- **Data:** 1.7–9.3 MB of landmark and overlay data, against 35.6 MB.
-- **Memory:** 53–74 MB of JavaScript heap, against 186–232 MB.
+**Loading.** Cold loads with every landmark and overlay on, landmarks and overlays by view (measured 2026-10-03, `docs/phase5.md`):
+- **London z7:** the map is done in 3.3 s.
+- **The Alps at z8, tilted:** 2.9 s.
+- **Europe at z4.5:** 4.3–4.7 s.
+- **Data:** 1.7–9.3 MB of landmark and overlay data.
+- **Memory:** 53–74 MB of JavaScript heap.
 
 - **Compressed once.** Whole layer files are served only while a catalog lists them. They're gzipped once per content and translations version, kept in memory, and served with an ETag.
 - **Cached for good.** Data URLs carry a content version, so a versioned response is cached for good while that version is current. A repeat visit downloads nothing, not even a revalidation, and changed data gets new URLs.

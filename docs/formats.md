@@ -66,7 +66,7 @@ Every unit is a z6 tile (a tile key). A way's owner unit is the z6 tile of its f
 ## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one unit owns
 
 Meta: `{"fmt": 1, "unit": "z/x/y", "ways", "verts", "samples", "extent": [w, s, e, n] E7 of all
-owned geometry, "source": "legacy:<build>" | "pass:<date>", "scenic": bool, "drape": bool (whether
+owned geometry, "source": "pass:<date>", "scenic": bool, "drape": bool (whether
 those sections are there), "summary": {…}}`. `summary` (packs from 2026-10-03 on; the catalog works
 it out from the sections for older ones) is what the map's meta adds up: `extent`, `ways`,
 `vertices`, `elev_min`/`elev_max` (roads, not rail, metres), `hist` (road km by 10 m of elevation at
@@ -77,16 +77,16 @@ segment midpoints, 256 bands) and `rail_km` (track km per service group).
 | `ways` | `WayRec` (48 B, roadcore) | sorted by (z9 key of first vertex, Morton of first vertex); `vstart` is local; `name`, `ref_`, `surface`, `route` index `strings` |
 | `verts` | `[i32; 2]` | densified geometry |
 | `elevu` | `u16` | processed elevation, decimetres + 5,000 (−500 to 6,053.5 m; `final.u16`); packs made before 2026-10-03 have `elev` instead: `i16`, decimetres, clamped at ±3,200 m (`final.i16`). Readers take either (`roadcore::elev`) |
-| `raw` | `f32` | raw DEM sample (legacy `elev.f32`), NaN = none |
+| `raw` | `f32` | raw DEM sample (the unit folder's `elev.f32`), NaN = none |
 | `grade` | `u8` | \|grade\|, 0.5 % units |
 | `src` | `u8` | DEM source (`DemSource`) |
 | `scenic` | `[u8; 13]` | per-vertex channels (`roadcore::scenic::ch`) |
-| `drape` | `i16` | drape height, metres (legacy `vterrain.i16`) |
+| `drape` | `i16` | drape height, metres (the unit folder's `vterrain.i16`) |
 | `strings` | UTF-8 lines | line 0 is the empty string |
 | `samples` | `Sample` (24 B) | `way` is the local way index; grouped by way, in way order |
 | `samplech` | `[u8; 13]` | per sample |
 | `sub9` | `(u64 z9 key, u32 first way, u32 way count)` | ways grouped by the z9 tile of their first vertex |
-| `rail` | `(u32 way, u32 relation lo, u32 relation hi, u32 pad)` | rail ways' primary route relation (legacy `rail-rels.bin`) |
+| `rail` | `(u32 way, u32 relation lo, u32 relation hi, u32 pad)` | rail ways' primary route relation (the unit folder's `rail-rels.bin`) |
 
 ## Road values (`global/roads/<z>-<x>-<y>.<h>.sect`): per owned way of a unit
 
@@ -201,8 +201,7 @@ carry `main`/`sub` (and `cmain`/`csub` from `cn`) as the layer files do.
 
 ## Overlays, stations and ferries by view (pipeline::ovconv; docs/phase5.md)
 
-Made by `convert-legacy-overlays` from today's files, and by the `overlays`, `stations` and
-`ferries` jobs from the pass. The `overlays` job also writes `global/heritage/{layer-summary,
+Made by the `overlays`, `stations` and `ferries` jobs from the pass. The `overlays` job also writes `global/heritage/{layer-summary,
 heritage-sources}`.
 
 - **Areas** `layers/ov-{heritage-areas,indigenous,special,whs}/{root,lo,hi}` (encoding `mvt`,
@@ -383,7 +382,7 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   "markdata": {"6/32/21": "<logical>"},
   "ovdata": {"3/4/2": "<logical>"},
   "global": {"railfreq": "global/railfreq", "roadunits": "global/roadunits", "marks/summary": "…",
-             "legacy/<stem>": "…", "heritage/<stem>": "…", "outlines": "sources/osm/<date>/outlines"},
+             "heritage/<stem>": "…", "outlines": "sources/osm/<date>/outlines"},
   "meta": {"…": "the map's meta, added up from the units' summaries: minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
   "credits": [{"what": "Road elevation, Japan", "source": "Created by editing GSI Tiles …",
                "terms": "GSI terms of use (Public Data License 1.0)", "areas": [[122.5, 20.0, 154.0, 46.5]]}],
@@ -558,8 +557,8 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
 - Overlays by view: `/tiles/ov/{heritage-areas,indigenous,special,whs}/{z}/{x}/{y}`,
   `/tiles/stations/{z}/{x}/{y}` (MVT, names attached), `/tiles/ferries/{z}/{x}/{y}` (a block,
   names on ways and lines); `/api/overlays/detail/{harea,indigenous,special}/{id}?own=3/x/y`;
-  `/api/park` from ovdata when the catalog has it. `/api/meta` says `ovTiles`, `stationTiles`,
-  `ferryBlocks`, and versions the tiles as `ov-<name>.tiles`, `stations.tiles`, `ferries.tiles`.
+  `/api/park` from ovdata. `/api/meta` versions the tiles as `ov-<name>.tiles`, `stations.tiles`,
+  `ferries.tiles`; `/api/layer/summary` is the overlays job's `global/heritage/layer-summary`.
 - Drives, rides and rail lines take `approx=1` (zoomed out): answered from hidata's summaries when
   every hidata of the view plus margin has them, and for drives and rides when the window is at
   least 2 km; the answer says `approx`.
@@ -602,7 +601,7 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
   recipes, without `regions`, for a catalog that records none).
 - Names: MVT tiles and API JSON (ways, drives, `/api/names`) carry `main` and, when there is one,
   `sub`; JSON layer files, ferry blocks and marks tiles carry `main` only where it differs from the
-  name; popup records (`/api/detail`, `/api/marks/detail`, `/api/overlays/detail`, `/api/park`) are
+  name; popup records (`/api/marks/detail`, `/api/overlays/detail`, `/api/park`) are
   served as stored.
 
 ## RT road tiles, version 7
@@ -624,9 +623,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   `railfreq`'s per-way-index output; each way once); `global/marks/summary`
   (`{fmt, kinds, tiers}`); `global/roaden/<u>` (JSON `{OSM way id: English}`: the unit's roads whose
   `name:en` isn't their name; the server's roads' own English); `global/spoken` (the `spoken` job's: the languages spoken where, as
-  `names::spoken::Spoken::to_bytes`, the format of a Mac's `names/spoken-*.bin`); `global/heritage/*`;
-  `global/legacy/*`
-  (today's converted files; `road-en` is no longer read).
+  `names::spoken::Spoken::to_bytes`, the format of a Mac's `names/spoken-*.bin`); `global/heritage/*`
+  (the overlays job's summary and sources).
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
 - **Worldwide z8 terrain:** `sources/terrain-z8-v3` (one RDPACK of every z8 tile, meta without scope
   or root) and `sources/terrain-z8-v3-max` (each tile's maximum, f32).
@@ -647,7 +645,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   starts and ends, tar then zstd with its checksum; one that doesn't read whole moved aside as
   `<name>.bad-<unix seconds>`): `sources/items/<date>/answers.tar.zst`, the items job's cache
   files as dem/items.py keeps them (`facts-<date>.jsonl`, a JSON line per item asked:
-  `{qid, …poidetails.py's record}`, or `{qid, sl: 0, missing: true}` for one QLever doesn't know;
+  `{qid, …its facts (items.py `wikidata`)}`, or `{qid, sl: 0, missing: true}` for one QLever doesn't know;
   `wp-<date>.jsonl`, `{qid, n (its Wikipedia articles), arts: ["<lang>|<title>", …]}`;
   `fetched-<date>.json`, `{first, last}`: the days anything was fetched), and
   `sources/items/<date>/heritage-<id>.tar.zst`, the heritage chain's: the files of the pass's copy
@@ -688,7 +686,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   `sources/fabdem/<tile>_FABDEM_V1-2.tif`
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
   have);
-  `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed
+  `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (the per-vertex DEM cache's seed, which
   the build Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).
 - **The rail sources** (`sources/rail/`, content-named, in the build manifest; `pipeline::rail`, plan
@@ -699,14 +697,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     `subdivision`, `url`, `licence`, and the check's `size_mb`, `rail_routes`, `examples` and
     `status`: "ok"; a definite answer ("http <code>", "no size given", "no range requests", "not a
     zip", "no routes.txt", "an unknown compression…", "routes.txt unreadable (…)", and
-    today's build's "no routes.txt (or no range requests)"); or "no answer (…)", which is checked
-    again (as is an older "http <code>" with a 429 or a 5xx). The checks seeded from today's build
-    that found no rail routes (or no routes.txt) start as "no answer (today's check, asked again)":
-    its check could take an answer cut short for none;
+    the first checks' "no routes.txt (or no range requests)"); or "no answer (…)", which is checked
+    again (as is an older "http <code>" with a 429 or a 5xx, and the first checks' "no answer
+    (today's check, asked again)");
   - `gtfs/<feed id>.zip`: each feed's GTFS, as fetched;
   - `fetched.json`: `{zip's content name: "YYYY-MM-DD"}`, the day its timetable counts from (the day
-    it was fetched, or last fetched again unchanged; the zips seeded from today's build, the day
-    today's figures were counted);
+    it was fetched, or last fetched again unchanged; the first zips, 2026-09-30);
   - `feeds.json`: `{fmt: 1, feeds: […]}`, the coverage's feeds in the order railgtfs.py reads them,
     each `{id, provider, name?, country, url, licence, replaces?, rail_routes?}` with `zip` (its
     content name) and `fetched`, or without them, a `status` saying why it's left out ("replaced by

@@ -12,22 +12,11 @@ packs held top landmarks and per-cell counts.
 
 ## Why
 
-**Before:** the client fetched whole worldwide files on first use (`/api/layer/<name>`): stops and
-sights per kind, heritage (61 MB), heritage areas, Indigenous lands, special areas, World Heritage
-outlines, summits, stations and ferries. Its landmarks worker indexed them to compute:
-- the In view statistics;
-- the dots' layout;
-- MapLibre point tiles (`lmk://`).
+Worldwide files loaded whole couldn't scale: a worldwide heritage file alone would be gigabytes. So
+the client loads what the view needs, and the server answers the In view statistics.
 
-That couldn't scale past today's regions: a worldwide heritage file alone would be gigabytes.
+## What the user sees
 
-**Now:** a catalog with the new layers loads them by view. The whole-file path stays only for
-catalogs without them.
-
-## What changes for the user
-
-- **Today's regions look and answer the same:** dots, names, popups, the In view numbers and
-  histograms. The golden test holds the In view answer to the legacy worker's exactly.
 - **Zoomed out (below zoom 6),** the specks (dots below the size range) are drawn from counts per cell
   made at build time.
   - At zoom 6 and up, they come from every point.
@@ -36,7 +25,6 @@ catalogs without them.
   - The sized dots and names are the same.
 - **One deliberate limit:** zoomed out with a locked range (auto off) low enough to size more dots than
   the tiles hold, the 5,000 most prominent of the rest are sized and the others show as specks.
-  Before, every one was sized (up to ~300 k).
 
 ## Ids
 
@@ -50,14 +38,13 @@ stations, or ferries.
     `n123:peak` for an OSM id that is a point twice, a point of interest and a covered bridge);
   - **World Heritage sites' dots:** `whc:<site id>`;
   - **Canada's federal designations:** `reg:dfhd:<DFHD id>`;
-  - **every other heritage point,** components included, built from the pass or converted:
+  - **every other heritage point,** components included:
     `legacy:heritage|<tier>|<lon E7>,<lat E7>|<name>|<url>`;
-  - **converted points of interest:** their OSM id (from details-poi) when no other point of
-    the group has it, else `legacy:poi|<kind>|<lon E7>,<lat E7>|<name>`;
   - **areas:** the OSM id when unique, else `legacy:<layer>|<name>|<box centre E7>`;
   - **stations:** a stop merged from several members takes its first member's `id × 4 + type`, nodes
-    before ways, each by id; converted stops take `legacy:station|<name>|<lon>,<lat>`;
+    before ways, each by id;
   - **ferries:** ways `way × 4 + 1`; terminals `legacy:terminal|…`.
+  - (`legacy:` is only the references' prefix: changing it would change the ids.)
 - **Repeats:** a reference occurring more than once gets `#2`, `#3`, … in the byte order of its
   records' canonical JSON. Exact duplicates are kept that way, so the counts stay.
 - **Clashes:** the ids are then sorted and checked. A clash (different references, one id) moves the
@@ -80,8 +67,8 @@ sorted by kind then id (a catalog map like `base`). Sections:
 - `pts`, 28 B per point:
   - lon, lat: i32 E7;
   - fa, ia, mz: f32 (ia is 20000 when unknown, as the worker reads it; mz is NaN when none);
-  - rank: u32, the point's place in its kind's order. It's the tie-break: converted points take the
-    legacy file's order, the `marks` job its sorted output;
+  - rank: u32, the point's place in its kind's order (the `marks` job's sorted output). It's the
+    tie-break;
   - kz: u8, the lowest zoom whose thinned tile keeps the point (6: none);
   - class: u8 (heritage: level class + 3 × group, as dotData);
   - tier: u8 (heritage);
@@ -108,8 +95,7 @@ marks tile format.
 
 **`global/marks/summary`**: `{fmt, kinds, tiers}`.
 - Kinds are counted by their `kind` property (rest areas and picnic sites apart), components left out.
-- The area overlays' totals come from `layer-summary`: the overlays job's (`global/heritage/`), else
-  today's (`global/legacy/`).
+- The area overlays' totals come from `layer-summary`, the overlays job's (`global/heritage/`).
 
 ### The marks tile format
 
@@ -140,7 +126,7 @@ Heritage component's `cn`. Served gzip'd.
 - **`GET /api/marks/specks/{kind}/{z}/{x}/{y}?q=…`** (z ≤ 5): the speck cells of the points that pass
   the kind's filters, unknowns and switched-off tiers, and that the tile doesn't keep. Made from
   markdata over the tile, and cached per tile and query.
-- **`POST /api/marks/view`**: today's worker `query`, in Rust, over the `pts` of the z6 tiles meeting
+- **`POST /api/marks/view`**: the In view query, in Rust, over the `pts` of the z6 tiles meeting
   the outline. It returns the same JSON as the worker's `result`:
   - the 512-bin score histogram and the scores at the given ranks;
   - per kind, its count and best-known named point;
@@ -168,31 +154,25 @@ Heritage component's `cn`. Served gzip'd.
     when none holds the point.
 - **The marks version:** requests carry it, a hash of the marks files' content names and the
   translations' version. A mismatch answers 409, and the client asks again after switching.
-- While the catalog lists `global/legacy/*`, `/api/layer/*` and `/api/detail/{layer}/{i}` stay.
+- **`GET /api/layer/summary`**: the overlays job's `layer-summary` (the area overlays' counts).
 
 ### Exactness
 
-The golden test (`tools/golden-marks`) compares the server's answers with the legacy worker's code,
-run under Node on today's files with the same requests: several places, zooms, balances, ranks,
-filters and tier switches. They must be exactly equal:
+The server's answers are computed as the app computes the dots, exactly:
 - **Score:** `(1 − b)·min(1, fa/5) + b·clamp((log10(max(0.05, ia)) + 1.3)/5.6, 0, 1)`, in f64 from
-  the f32 fa and ia, as the worker computes it.
+  the f32 fa and ia, as the app computes it (`landmarkScoreOf`).
   - The server's log10 is `marks::log10_js`: V8's fdlibm log10, with the fused multiply-adds clang
     makes on arm64, so it matches Node bit for bit.
 - **Degrees:** from E7 as `e7 as f64 / 1e7`. A division gives back the JSON double for up to 7
   decimals; a multiply by 1e-7 can be off by one ulp.
-- **Outline and bounds:** parsed as f64, not truncated; across the antimeridian (west > east), as in
-  the worker.
+- **Outline and bounds:** parsed as f64, not truncated; across the antimeridian (west > east).
 - **Ties:**
   - the best per kind is the highest fa, then the lowest rank;
-  - the top lists go by score, then the kind's place in the request, then rank (the worker's
-    stable insertion);
-  - the scores at ranks come from the scores rounded to f32 (the worker's Float32Array sort);
+  - the top lists go by score, then the kind's place in the request, then rank;
+  - the scores at ranks come from the scores rounded to f32;
   - the summit is the first in view in the summits list's own order (height descending as stored,
     then fame ascending).
 - **Filters and histograms:** over the f64 values, binned as filterHists.
-
-Done 2026-10-03: equal in 163 views, every block, and 15,170 popups.
 
 ## Areas: heritage areas, Indigenous lands, special areas, World Heritage outlines
 
@@ -205,7 +185,7 @@ Done 2026-10-03: equal in 163 views, every block, and 15,170 popups.
   - It holds area details by id and park records (name, bbox, tags, Wikidata).
   - The owner is the z3 tile of the feature's or park's box centre.
 - **Routes:** `GET /api/overlays/detail/{layer}/{id}?own=3/x/y` (`/api/areas/` is the Regions
-  panel's); `/api/park` from ovdata when the catalog has it.
+  panel's); `/api/park` from ovdata.
 - **Client:**
   - vector sources;
   - the area histograms come from `querySourceFeatures`, de-duplicated by feature id;
@@ -227,7 +207,7 @@ Done 2026-10-03: equal in 163 views, every block, and 15,170 popups.
     (from zoom 3), and its ways' lines' records.
 - **Client:** ferries.ts merges blocks by id.
 - **In-view kilometres and histograms:** each way carries its full length, and its share in view is
-  measured on the geometry loaded, so the numbers stay within 0.5 % of the whole files' zoomed out.
+  measured on the geometry loaded.
 
 ## Server, generally
 
@@ -242,22 +222,22 @@ Done 2026-10-03: equal in 163 views, every block, and 15,170 popups.
 
 ## Client
 
-| Before | Now |
+| What | How |
 |---|---|
-| a kind's file loaded whole into the worker | per kind, tiles: z6 blocks from zoom 6 (and back below 5.75), thinned tiles at floor(zoom) below (±0.25); a tilted view's far ground from thinned tiles two zooms coarser; held as typed arrays and raw props (decoded for a lmk tile, a popup or a list); the least recently used dropped past 256 MB |
-| the worker's `query` | `/api/marks/view`, asked and parsed by the worker; `applyResult` unchanged; `extra` joins its kind's points, de-duplicated by id |
-| the summits file | the view's highest named peak |
-| `count`, tier counts, `layer-summary` | `/api/marks/count`; totals from `global/marks/summary` |
-| a source's dot layout | per kind over the loaded tiles and extras, laid out again (debounced 60 ms) when they change; the order within a z4 chunk is the files' (fame, then rank), so the draw order and the zoom-6-and-up specks are the same |
-| — | below zoom 6, speck cells become pseudo-points: fa 0 and ia 0.05 (score 0 at any balance); the cell's count weighs it in visWords; class "the rest" in its tier's group colour (heritage), else 0 |
-| filter masks per source | per kind, as before; below zoom 6 a filtered kind's cells come from `/api/marks/specks`, its unfiltered cells hidden until they arrive |
-| `lmk://` tiles from the whole index | from the loaded points and extras, the same caps; `TileNames.ids` a Float64Array |
-| area overlays as GeoJSON | vector sources |
-| `stations.json` | a vector source |
-| ferries files | blocks for the view, merged by id |
-| details by `i` | marks by `{kind, id, at}`, areas by `{layer, id, own}`; cache keys `mark:` and `area:` (the legacy `layer:i` keys can't collide with them) |
+| a kind's points | per kind, tiles: z6 blocks from zoom 6 (and back below 5.75), thinned tiles at floor(zoom) below (±0.25); a tilted view's far ground from thinned tiles two zooms coarser; held as typed arrays and raw props (decoded for a lmk tile, a popup or a list); the least recently used dropped past 256 MB |
+| the In view query | `/api/marks/view`, asked and parsed by the worker; `extra` joins its kind's points, de-duplicated by id |
+| the highest named peak in view | the In view answer's |
+| counts, tier counts | `/api/marks/count`; totals from `global/marks/summary`; the areas' from `/api/layer/summary` |
+| a kind's dot layout | over the loaded tiles and extras, laid out again (debounced 60 ms) when they change; the order within a z4 chunk is fame, then rank |
+| specks below zoom 6 | speck cells become pseudo-points: fa 0 and ia 0.05 (score 0 at any balance); the cell's count weighs it in visWords; class "the rest" in its tier's group colour (heritage), else 0 |
+| filter masks | per kind; below zoom 6 a filtered kind's cells come from `/api/marks/specks`, its unfiltered cells hidden until they arrive |
+| `lmk://` tiles | from the loaded points and extras, at most 5,000 below zoom 11; `TileNames.ids` a Float64Array |
+| area overlays | vector sources |
+| stations | a vector source |
+| ferries | blocks for the view, merged by id |
+| details | marks by `{kind, id, at}`, areas by `{layer, id, own}` (cache keys `mark:` and `area:`), parks by name near a point |
 
-The whole-file path stays for catalogs without the new layers (every kind or none).
+A catalog without the points' tiles shows none.
 
 ## Build
 
@@ -266,7 +246,7 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 
 | Job | Reads | Writes |
 |---|---|---|
-| OSM pass sets | the filtered planet | `summits` (`-v2`): natural=peak and volcano nodes and ways, with or without `ele`, worldwide; `hikes`: hiking and foot route relations with their member ways; `named`: today's heritage filter (historic, heritage, museum/attraction/viewpoint, lighthouse, station, church and place of worship, protected area and park, military) plus `ref:whc` and `heritage:operator=whc`; `marks`: the point kinds' tags (read by no job yet) |
+| OSM pass sets | the filtered planet | `summits` (`-v2`): natural=peak and volcano nodes and ways, with or without `ele`, worldwide; `hikes`: hiking and foot route relations with their member ways; `named`: the heritage chain's filter (historic, heritage, museum/attraction/viewpoint, lighthouse, station, church and place of worship, protected area and park, military) plus `ref:whc` and `heritage:operator=whc`; `marks`: the point kinds' tags (read by no job yet) |
 | `trailends` (per pass) | the `hikes` set | `work/trailends/<d>`: every simple linear hiking route's two ends worldwide (way ends used once, exactly two), with the route's name and relation id |
 | `terrain-z8` (once; network) | AWS's raw z8 tiles (the build Mac's raw-tile cache) | `sources/terrain-z8-v3` (not served): every z8 tile repaired, and `-v3-max`: each tile's maximum after the repair |
 | `summits` (per pass) | the `summits` set, `terrain-z8` | `work/summits/<d>`: every summit (OSM id, E7 position, kind, `ele` as the candidates have them, its `z8` overlay value), nodes then ways, each by id |
@@ -275,8 +255,8 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 | `pois` (per unit) | U's piece, `work/trailends/<d>`, the coverage near U | `work/pois/<u>`: U's candidates (below) |
 | `peaks` (per unit; network) | `work/pois/<u>`'s peaks, `work/summits/<d>`, z12 within 30 km of each peak (the terrain packs, else the same tile from the raw-tile cache, processed alike), `terrain-z8` | `work/peaks/<u>`: prominence and isolation by candidate key |
 | `items` (per pass; network) | the QIDs of every current unit's candidates | `sources/items/<d>/{facts,views,meta}` |
-| `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the seeds | `work/heritage/<d>/…`: today's chain's outputs ("Heritage and area flags") |
-| `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the facts and views (else today's, `sources/legacy/m1/`), the heritage points (the pass's when the heritage job's outputs are in the manifest, else today's `global/legacy`) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
+| `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the seeds | `work/heritage/<d>/…`: the chain's outputs ("Heritage and area flags") |
+| `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the items job's facts and views, the heritage points (the pass's heritage job's outputs; without them, the converted build's `global/legacy`, a fallback to go: plan §10) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` (off) | the heritage job's outputs, `work/marks/heritage-dots` | `ov-*` packs, `ovdata`, `global/heritage/{layer-summary,heritage-sources}` |
 | `stations` (roads chain) | the `rail` set, the built units' tiles | `stations` packs |
 | `ferries` (roads chain) | the `ferries` set (worldwide), `inputs/ferries/freq` | `ferries` packs |
@@ -291,8 +271,7 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 **Network jobs** (terrain, terrain-z8, peaks, items, heritage): a tile or answer that can't be
 fetched fails the job (retried later), never counts as "none".
 
-**Run by hand:** `registers-import` (the registers snapshot), `convert-legacy-marks` and
-`convert-legacy-overlays` (today's points and overlays).
+**Run by hand:** `registers-import` (the registers snapshot: plan §6, Hand-made inputs).
 
 **Determinism across units:**
 - **Peaks:**
@@ -310,22 +289,8 @@ fetched fails the job (retried later), never counts as "none".
     leaving and coming back would show other ends.
   - At the coverage's edge, a point kept outside it can still drop one inside and take its name: the
     clip comes after the dedup, so every unit agrees.
-- **The municipal heritage dedupe (40 m)** runs once, in heritage-sites, inside today's heritage.py,
+- **The municipal heritage dedupe (40 m)** runs once, in heritage-sites, inside heritage.py,
   over the whole cover.
-
-**Where today's steps went:**
-
-| Today | Job | Language |
-|---|---|---|
-| extract.rs POIs | `pois` (extract `--candidates`, with the pass's `trailends`) | Rust, today's rules, keeping OSM ids and tags (no 60 m matching) |
-| poidetails.py | `pois` (kept tags, `length_m`, `viewpoint`, the re-kinds), `items` (facts), `marks` | Rust; Python for the fetches |
-| peaks.rs | `peaks` (`pipeline::peaks`) | Rust |
-| heritage.py (with heritage_eu.py) | `heritage-sites`, unchanged; federal.py's and crhp.py's outputs are in the snapshot | Python |
-| heritagewd.py, heritagedetails.py, areadetails.py, whsshapes.py (on the filtered planet within the cover), filterprops.py, pageviews.py, interest.py, layers.py | `heritage` | Python, unchanged |
-| pageviews.py, for the candidates | `items` (dem/items.py) | Python |
-| filterprops.py, interest.py, layers.py, for stops & sights | `marks` | Rust, sorted so it's deterministic, rounding as Python does (half-even on the exact binary value; mz from the unrounded ia), distances across the antimeridian |
-| rail stops | `stations` (`pipeline::stations`) | Rust |
-| ferries.py, hand timetables | `ferries` (gtfs.py's results among the timetables) | Python |
 
 ### The landmark jobs, step by step
 
@@ -336,7 +301,7 @@ lies near it.
 - A key must name everything read.
 
 - **Candidates, their own job per unit (`pois`)**, so that a change to their rules doesn't make
-  every unit again. The unit's own extract keeps today's points, since its view step reads the
+  every unit again. The unit's own extract keeps its own points, since its view step reads the
   viewpoints for the road flags.
   - **The run:** `pois` runs extract on U's piece with `--candidates` and the pass's `trailends`,
     then writes `work/pois/<u>` (zstd JSON lines sorted by key).
@@ -349,19 +314,18 @@ lies near it.
     per unit).
   - **The clip** comes after the dedup: to the points U owns that are in the coverage (nodes inside
     it; ways with a node inside it).
-  - **Kinds** as today's map has them:
+  - **Kinds:**
     - natural=peak (nodes, and ways' centres);
-    - a viewpoint that is also a volcano is re-kinded to a peak, as poidetails.py did. Pure
+    - a viewpoint that is also a volcano is re-kinded to a peak. Pure
       volcanoes aren't points: they are often a crater node beside the rim's peaks, and they stay in
       the summits. This applies in the candidates only, not in the unit's points.
   - **Each candidate** carries:
     - `key, kind, lon, lat` (E7 integers);
     - `name, ele, osm, qid` (the `wikidata` tag as tagged);
     - `en`: `name:en`; in Japan `name:ja-Latn` or `name:ja_rm`;
-    - kept tags (poidetails' lists; not `image`, which today's details never had and which would move
-      fame);
-    - what poidetails.py added: `length_m` for covered bridges (its planar formula over the way's own
-      nodes, rounded half-even), and `viewpoint: "yes"` for peaks tagged tourism=viewpoint.
+    - kept tags (`marksjob::detail_keys`; not `image`, which would move fame);
+    - `length_m` for covered bridges (planar over the way's own nodes, rounded half-even), and
+      `viewpoint: "yes"` for peaks tagged tourism=viewpoint.
 - **`trailends`** (per pass): the `hikes` set's routes (route=hiking or foot).
   - It finds each way's end nodes and keeps the ends used once; exactly two make a simple linear
     route.
@@ -372,12 +336,8 @@ lies near it.
     with each tile's maximum.
   - It's coverage-free, so the isolation searches and the coarse floods give the same answer
     whatever is built.
-  - **Why raw z8:** AWS's own z8 comes from a coarser source than today's (made again from z9 near
-    roads). Measured on 864 mountainous z8 tiles of today's packs (max ≥ 1,000 m; 51.7 M land
-    pixels), today minus raw:
-    - per pixel: mean −0.1 m; |diff| median 0.0, p95 6.2 m, p99 34.5 m (max 1,514 m, a repair);
-    - each tile's maximum: p5 −15.8, median and p95 0.0, extremes −103 and +200 m (a summit today's
-      z9 means kept).
+  - **Why raw z8:** the packs' z8 depends on the coverage (made again from z9 near roads); the raw
+    one doesn't.
 - **`summits`** (per pass): the `summits` set (natural=peak or volcano, nodes and ways), nodes then
   ways, each by id.
   - **A summit has one identity:** the same position and `ele` whether it's read as a candidate or as
@@ -390,18 +350,13 @@ lies near it.
     - at most 1,500 m over the highest z8 pixel within one pixel;
     - at most twice that plus 300 m. Feet tagged as metres overshoot by 2.28 times the height, which a
       fixed margin lets through below ~1,100 m.
-- **`peaks`** (per unit, network): `pipeline::peaks`, today's peaks.rs as a library, on U's peak
-  candidates. On today's archive and candidates it gives today's peaks.json byte for byte.
+- **`peaks`** (per unit, network): `pipeline::peaks`, on U's peak candidates.
   - **z12:** a tile is the terrain pack's when the manifest has it, else AWS's raw tile from the build
     Mac's cache, processed the same way.
     - The tile is read back from the PNG `process` returns (quantised as stored), never from its
       floats.
     - A tile not cached is fetched; a failed fetch fails the job.
     - Packs the terrain job made from raw are the same bytes.
-    - Today's packs came from the legacy terrain step, which repaired stored tiles again. On 2,406
-      land z12 tiles, 2,390 are byte-identical to the raw tile processed alike. The other 16 differ
-      by under half a metre along coasts, or in one to three single pixels by 126–303 m, which the
-      peaks' own despike clamps either way. Every tile's maximum is equal.
   - **Summits near a peak:** each summit within 28 km + 2 × (150 m + 2 pixels) gets, all from z12 the
     same way for every unit:
     - its summit pixel: the highest within 150 m;
@@ -426,22 +381,13 @@ lies near it.
   - **"Sea"** is ≤ 0 m, and `process` clamps every negative value to 0, so polders and depressions
     count as sea until the planned sea mask (plan §6).
   - **Output:** `work/peaks/<u>`, by candidate key: e, p, pl, c, ce, iso, il, hi.
-  - **Checked** (`examples/peaks_check`):
-    - **The Sierra Nevada's 8,235 peaks** in 6.7 s; 8,225 are identical to today's peaks.json.
-      - Of the rest, three pairs swap a near-tied claim (the check's positions are today's floats, not
-        OSM's E7), and two coarse cols come out 14 and 22 m higher.
-      - Two overlapping halves agree with the whole run on every shared peak.
-    - **Famous peaks:** Mont Blanc, Fuji, Ben Nevis, Yushan, Robson and Washington keep today's
-      height, prominence (Robson +10 m) and nearest higher pixel.
-      - Isolations are a little shorter as great-circle distances: Fuji 2,076.3 km (Wikipedia
-        2,077), Ben Nevis 738.6 km (739), Mont Blanc 2,804.7 km.
-      - Mont Blanc's flood spends its 40M pixels and stops at the same col as today's (128 m, a lower
-        bound in both): 54 s, 3.4 GB.
+  - **Isolations** are great-circle distances: Fuji 2,076.3 km (Wikipedia 2,077), Ben Nevis
+    738.6 km (739), Mont Blanc 2,804.7 km. Mont Blanc's flood spends its 40M pixels and stops at a
+    col (128 m, a lower bound): 54 s, 3.4 GB.
 - **`items`** (Python, network, per pass; dem/items.py) runs after the candidates exist.
   - **QIDs:** those of the current units' candidates. The heritage records' items stay with the
     heritage job.
-  - **Facts** as poidetails.py fetched them, for single-QID tags. As before, a multi-QID tag gets no
-    facts.
+  - **Facts** (dem/items.py `wikidata`), for single-QID tags; a multi-QID tag gets no facts.
   - **Pageviews** for the first QID: the mean of four months pinned per pass. The months are the last
     November, February, May and August that ended at least 20 days before the pass, so their dumps
     are out.
@@ -475,43 +421,28 @@ lies near it.
   - **Repeats:** an OSM id that repeats gets a reference from its key, as `assign_ids` needs.
   - **Descriptions** aren't read here: they're applied when serving (plan §7).
 - **The checks:**
-  1. **Port:** `pipeline::peaks` on today's archive and `pois.json`, with today's overlay rule, gives
-     today's `peaks.json` byte for byte. Done.
-  2. **Determinism:** a unit run twice gives the same bytes, and two neighbouring units agree on every
+  1. **Determinism:** a unit run twice gives the same bytes, and two neighbouring units agree on every
      point and peak within 10 km of their border. Done for candidates (Taiwan) and peaks (overlapping
      halves).
-  3. **One planet:** a region-sized extract and the union of its units' candidates are the same
-     (counts, E7 positions, OSM ids, tags). In the cutover's comparison.
-  4. **Against today's files:** nodes by exact E7 position, then by details-poi's `osm`; adds, removes
-     and moves per kind; trailheads per source. In the cutover's comparison.
-  5. **Peaks:** exact where both used the same z12 and finished in the fine stage (those that went
-     coarse differ by design, reported apart). Otherwise, of peaks with ≥ 50 m prominence, 95 %
-     within |Δe| ≤ 30 m, |Δp| ≤ max(20 m, 10 %), |Δiso| ≤ max(0.5 km, 10 %), and the rest listed.
-     Today's lower bounds (`pl`, `il`) are checked as new ≥ old. Done for the Sierra Nevada.
-  6. **marks:**
-     - exact on today's inputs: done (marks_regression);
-     - then new candidates with today's facts and pageviews, then fresh facts: in the cutover's
-       comparison. That compares per kind the fa rank correlation, the top 100 per z6 tile (≥ 90 %
-       the same), the mz and kz histograms, a dozen In view answers (top 60), and screenshots.
+  2. **One planet:** a region-sized extract and the union of its units' candidates are the same
+     (counts, E7 positions, OSM ids, tags).
 
 ### Heritage and area flags
 
 **Status:** built and run: heritage-sites and the units' flags, the heritage job, the overlays job
 and the server's switch to their outputs (checked below).
 
-**The approach.** Today's heritage chain (heritage.py, heritagewd.py, heritagedetails.py,
+**The approach.** The heritage chain (heritage.py, heritagewd.py, heritagedetails.py,
 areadetails.py, whsshapes.py, filterprops.py's heritage part, pageviews.py, interest.py's heritage
-part, layers.py) runs unchanged.
+part, layers.py) runs in Python.
 - It runs in a stand-in root laid out as the repository: `dem/` holds the app's scripts, and
   `data/heritage/` the registers' snapshot.
 - It's split into two jobs: the units need only heritage.py's output, and the rest needs Wikidata and
   the pageview dumps, whose outages mustn't hold up the roads.
 
 - **The registers' snapshot** is one archive in the manifest, `sources/registers/legacy`.
-  - It's imported with `scenic-build registers-import`: 9,337 files, 261 MB, since thousands of small
-    files copy slowly over SMB.
-  - It's the build Mac's `data/heritage` without `osm/`: today's map was built there. (The other
-    Mac's copy has an older federal.json, with 1,346 Parks Canada sites against 1,347.)
+  - It's imported with `scenic-build registers-import` (plan §6, Hand-made inputs): 9,337 files,
+    261 MB, since thousands of small files copy slowly over SMB.
   - The jobs extract it once per archive and clone it per pass (APFS). So a pass's runs share the
     caches the scripts add, and a new pass or snapshot starts from the snapshot again.
   - What the scripts fetched for the pass (the files of its copy the snapshot lacks or has
@@ -521,69 +452,41 @@ part, layers.py) runs unchanged.
     start when it was stopped. The heritage job's export of the pass's named places (3 GB) goes as
     it ends (finished or failed): each run makes it again.
 - **`heritage-sites`** runs after slope, before the units.
-  - **The cover:** the z12 tiles within 20 km of the coverage (exact, `Coverage::meets_rect`). It
-    replaces today's analysis grid (z11) through heritage.py's `--tiles`.
+  - **The cover:** the z12 tiles within 20 km of the coverage (exact, `Coverage::meets_rect`),
+    through heritage.py's `--tiles`.
   - **The designated areas:** the pass's `areas` set, clipped to the cover (`osmium extract -s smart`,
-    the tiles as rectangles), stands for today's areas.geojsonseq. heritage.py writes the areas'
+    the tiles as rectangles), as heritage.py's areas.geojsonseq. heritage.py writes the areas'
     polygons with their flag bits instead of rasterising them.
   - **Outputs:** `work/heritage/<d>/base/<file>`, and per z6 tile:
     - the sites' positions: `pos/6-x-y`, E7, sorted;
     - the polygons whose bounding box meets the tile: `areas/6-x-y`, keyed by content.
   - **Key:** the step's version, the pass, its areas set, the snapshot, the coverage. It took 96 s for
-    today's regions.
+    the 34 regions of 2026-10-03.
 - **The units** (`UNIT_V` 3) read the slices of the z6 tiles within U + 30 km.
   - `heritage.json` feeds the flags step.
   - The `areaflags` program (pipeline::areaflags) rasterises the
     polygons onto the unit's own grid, chosen by bounding box. Mercator is monotone per axis, so no
     polygon touching an edge tile is dropped.
   - Their keys name those slices.
-- **Checks:**
-  - **Reproduction:** today's heritage.py in the stand-in root, on today's grid and the snapshot,
-    gives today's outputs exactly.
-    - grid.areas.u8 matches byte for byte.
-    - The sites, heritage areas, special areas and Indigenous lands are equal once the properties
-      later steps add are set aside.
-  - **Per unit:** rasterised per unit, six units' grids equal today's on all ~6,100 tiles they share
-    with it, and two neighbouring units agree on all 228 tiles they share.
-  - **The new cover against today's grid:** 61 sites are added and 24 dropped, of 224,010.
-    - In: roadless places within 20 km (Pimachiowin Aki, Okinoshima, northern Parks Canada sites).
-    - Out: places today's grid reached past borders along roads (northern Sardinia from Corsica,
-      Korea's Gaya tumuli).
+- **Checks:** two neighbouring units agree on all 228 grid tiles they share.
 - **The `heritage` job** (in the landmarks chain, after items, before marks) runs the rest of the
   chain on the heritage-sites outputs, in the same stand-in root, over the same cover.
-  - **Its OSM inputs** are the pass's areas and named objects within the cover (named with today's
-    exact filter; the set also keeps the World Heritage tags). For whsshapes, it uses the filtered
-    planet within the cover: one clip per pass and cover, in the cache, which is what today's
-    regional extracts were.
-  - **Seeds:** today's park facts, pageview months and names table (`sources/registers/legacy-seeds`,
-    7 MB).
+  - **Its OSM inputs** are the pass's areas and named objects within the cover (named with the
+    chain's filter; the set also keeps the World Heritage tags). For whsshapes, it uses the filtered
+    planet within the cover: one clip per pass and cover, in the cache.
+  - **Seeds:** park facts, pageview months and the names table (`sources/registers/legacy-seeds`,
+    7 MB; plan §6, Hand-made inputs).
   - **Pageviews:** the months are the items job's cache, and pageviews.py takes the pass's months
     (`--epoch`, the items job's rule).
-  - **English:** the layers' `en` comes from today's names table.
+  - **English:** the layers' `en` comes from the seeds' names table.
   - **Failures:** heritagewd's short descriptions, and the special areas' and UNESCO sites' Wikidata
     labels, fail the run when a query fails. Every cache is written through a temporary file.
   - **Outputs:** `work/heritage/<d>/<stem>`.
-- **The switch.**
-  - Marks and the server take the pass's heritage whenever the heritage job's outputs are in the
-    manifest: `markconv::heritage_source`, and the server's `global/heritage/…` over today's.
-  - **The marks job** then saves the World Heritage dots' ids (`work/marks/heritage-dots`).
+- **Its readers.**
+  - Marks take the pass's heritage from the heritage job's outputs (`markconv::heritage_source`).
+  - **The marks job** saves the World Heritage dots' ids (`work/marks/heritage-dots`).
   - **The overlays job** (after marks) makes the area overlays and parks from the same outputs, with
-    those ids. ovconv kept them in step by replaying today's whole marks assignment.
-  - **Until the heritage job's first run,** catalogs keep today's heritage points and area overlays.
-- **Checks of the chain:**
-  - **Reproduction:** today's whole chain in the stand-in root, on today's inputs and the seeds, made
-    17 of today's outputs byte for byte: every details file, the area layers, the World Heritage
-    outlines and sites, props-heritage. It needed no query or download, since every answer was
-    cached.
-  - **Fame:** heritage and layer-heritage differ only in fame.
-    - Today's lacks pageviews for 2,280 sites (recent World Heritage inscriptions, Japanese and
-      Taiwanese register sites…): its fame was worked out before the build Mac's last pageview run.
-    - The run's totals equal that last run's for all 63,618 items.
-  - **The switch on those outputs:**
-    - the overlays job makes all 309 of today's overlay packs and ovdata byte for byte (with today's
-      dots);
-    - the heritage points match today's by reference, with 4,885 of 224,095 differing in fame and
-      what follows from it (pv, fa, mz, ia).
+    those ids, and the server reads its `global/heritage/…`.
 
 ## Storage
 
@@ -597,24 +500,7 @@ part, layers.py) runs unchanged.
   a newer pass completes; a unit's `work/pois` and `work/peaks` leave it with the prune once the unit
   is out of the candidates' set (plan §5, Shrinking).
 
-## Today's regions
-
-1. `scenic-build convert-legacy-marks` wrote markdata and the marks packs from `global/legacy/*`: the
-   legacy fa, ia and mz, file order as rank, and ids as above.
-2. **Golden:** the view answers equal the legacy worker's exactly, and details match by id.
-   Screenshots match except the zoomed-out specks.
-3. The client followed; both formats work, every kind or none.
-4. Overlays, stations and ferries were converted the same way (`convert-legacy-overlays`,
-   `pipeline::ovconv`). The app switches on the catalog's layers (meta `ovTiles`, `stationTiles`,
-   `ferryBlocks`).
-   - Checked against today's files: the same stops drawn (London 500, Paris 952); ferries' in-view km,
-     routes and terminal colours equal; area popups with their details.
-5. The new jobs reproduce today's data. On the legacy inputs, `marks` reproduces fa, ia and mz exactly
-   (marks_regression). The rest comes with the cutover's comparison.
-
-Steps 1–4 are done, and step 5's legacy-input regression too.
-
-## Sizes (measured from today's files)
+## Sizes (measured 2026-10-03, the 34 regions then built)
 
 - **Points:** 582,665, plus 1,768 World Heritage components, in 251 z6 tiles. The densest tiles hold
   47 k (Spain, peaks) and 43.9 k (London).
@@ -624,8 +510,7 @@ Steps 1–4 are done, and step 5's legacy-input regression too.
 - **markdata per z6:** London about 5 MB (pts 1.2, props 1.3, info 1.8, fvals).
 - **Speck cells at z5:** 274 k cells stand for 517 k points not kept (at 512² per tile; more at the
   1,024² chosen), at most 27.9 k per kind and tile.
-- **The densest view in the browser** (zoom 5.75–6): 247–313 k points, where the whole files always
-  held 584 k.
+- **The densest view in the browser** (zoom 5.75–6): 247–313 k points of 584 k.
 - **Server In view cost:**
 
 | View | z6 tiles | Points | pts read | Cold from the NAS | Warm or mirrored |
@@ -637,18 +522,17 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 
 **Measured 2026-10-03:**
 - **Setup:** bench Chrome, headless, 1512×900 @2, every landmark and overlay on, the same app.
-- **The two catalogs:** by view (catalog 5) and whole files (catalog 3), with both servers reading the
-  NAS without a mirror.
+- **The server** read the NAS without a mirror.
 
-| | by view | files |
-|---|---|---|
-| heap after load (London z7 / Alps z8 tilted / Europe z4.5) | 74 / 53 / 54 MB | 186 / 232 / 213 MB |
-| cold load: boot / map done / quiet, Europe z4.5 | 4.3–4.7 / 4.3–4.7 / 6.4–6.9 s | 4.9–5.2 / 5.7–5.9 / 7.1–7.4 s |
-| the same, London z7 | 2.7 / 3.3 / 5.3 s | 2.4 / 4.7 / 6.0 s |
-| the same, Alps z8 tilted | 2.9 / 2.9 / 5.1 s | 2.3 / 4.7 / 6.6 s |
-| landmark and overlay data at load | 1.7–9.3 MB | 35.6 MB |
-| pan / pinch / orbit, London z7 (fps, uncapped) | 215 / 177 / 173 | 220 / 176 / 192 |
-| the same, Europe z4.5 | 194 / 84 / 143 | 183 / 88 / 152 |
+| | |
+|---|---|
+| heap after load (London z7 / Alps z8 tilted / Europe z4.5) | 74 / 53 / 54 MB |
+| cold load: boot / map done / quiet, Europe z4.5 | 4.3–4.7 / 4.3–4.7 / 6.4–6.9 s |
+| the same, London z7 | 2.7 / 3.3 / 5.3 s |
+| the same, Alps z8 tilted | 2.9 / 2.9 / 5.1 s |
+| landmark and overlay data at load | 1.7–9.3 MB |
+| pan / pinch / orbit, London z7 (fps, uncapped) | 215 / 177 / 173 |
+| the same, Europe z4.5 | 194 / 84 / 143 |
 
 ## Risks
 
@@ -656,9 +540,9 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
   zooms 2–5, auto and locked, filtered and not.
 - **Continental queries cold from the NAS:** the section caches and the mirror; zoomed out, the
   summaries in hidata (below).
-- **Fame and isolation drift once recomputed:** the legacy-input regression comes first.
+- **Fame and isolation drift once recomputed** with new facts and pageviews: each pass moves them.
 - **Peaks read z8 terrain worldwide:** cached on the build Mac.
-- **Registers:** today's snapshot, imported by hand. Planned: fetched per jurisdiction, with stable
+- **Registers:** one snapshot, imported by hand (plan §6, Hand-made inputs). Planned: fetched per jurisdiction, with stable
   record ids.
 - **Fetch volume for ~1 M QIDs worldwide:** limited to the coverage's candidates; everything again at
   each pass (twice a year), only new QIDs in between.
