@@ -1,6 +1,6 @@
 //! GeoTIFF and Cloud Optimized GeoTIFF reading over byte ranges (`store::range::RangeRead`), as
 //! GDAL reads them, for the elevation and land cover steps: NRCan's HRDEM and MRDEM (LZW), USGS
-//! 3DEP (LZW, floating-point predictor), FABDEM (Deflate, horizontal predictor), Taiwan's MOI DTM
+//! 3DEP (LZW, floating-point predictor), FABDEM (Deflate, horizontal predictor)
 //! and ESA WorldCover (Deflate). Classic TIFF and BigTIFF in either byte order; tiles or strips;
 //! overviews; no compression, LZW, Deflate or Zstandard; predictor 1, 2 or 3; 8- to 64-bit integer
 //! and floating-point samples, of which band 1 is read. The georeferencing as GDAL computes it

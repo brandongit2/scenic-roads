@@ -1,9 +1,11 @@
 //! The elevation step end to end, over synthetic DEMs held in memory: each source where it serves,
 //! sampled at the right pixel of the right image, the fall-through to the next source, FABDEM's
-//! store (a tile downloaded once, the open sea remembered), the cache reused, Taiwan's FABDEM
-//! samples taken again once the MOI DTM is there, and an interrupted run resumed.
+//! store (a tile downloaded once, the open sea remembered), the cache reused, and an interrupted
+//! run resumed.
 
 use super::*;
+use crate::geotiff::key;
+use anyhow::bail;
 use crate::fetch::{testzip::zip, MapFetch};
 use crate::geotiff::testtiff::{make_images, Opts};
 use crate::geotiff::write_f32;
@@ -65,13 +67,11 @@ struct Fixture {
     verts: Vec<[i32; 2]>,
     want: Vec<Want>,
     fetch: MapFetch,
-    moi: PathBuf,
 }
 
 const NB: (f64, f64) = (-66.5, 46.0);
 const PA: (f64, f64) = (-76.6, 40.6);
 const TOKYO: (f64, f64) = (139.7, 35.7);
-const TAIPEI: (f64, f64) = (121.5, 24.01);
 const PARIS: (f64, f64) = (2.35, 48.85);
 
 impl Fixture {
@@ -164,25 +164,7 @@ impl Fixture {
             want.push((if lidar { DemSource::Gsi5a } else { DemSource::Gsi10 } as u8, value));
         }
 
-        // Taipei: the MOI DTM (TWD97 / TM2 zone 121, strips, Deflate, horizontal predictor).
-        let tm = proj::TransverseMercator::tm2(121.0);
-        let (mx, my) = tm.project(TAIPEI.0, TAIPEI.1).unwrap();
-        let ogt = [mx - 1000.0, 20.0, 0.0, my + 1000.0, 0.0, -20.0];
-        let of = Field(20.0, 0.05, 0.1);
-        const TWD97_TM2: &[u16] = &[1, 1, 0, 2, key::MODEL_TYPE, 0, 1, 1, key::PROJECTED_CS_TYPE, 0, 1, 3826];
-        let (moi, _) = make_images(&[(100, 100)], Opts { tile: None, rows: 7, compression: 8, predictor: 2, keys: TWD97_TM2, ..Opts::default() }, ogt, Some("-32767"), &|_, x, y, _| of.at(x as f64, y as f64));
-        let moi_dir = dir.path().join("moi");
-        std::fs::create_dir_all(&moi_dir).unwrap();
-        std::fs::write(moi_dir.join("taiwan.tif"), moi).unwrap();
-        for v in grid(TAIPEI.0, TAIPEI.1, 1, (0.003, 0.003)) {
-            let (lon, lat) = ll(v);
-            let (x, y) = tm.project(lon, lat).unwrap();
-            let (cf, rf) = pixel(ogt, x, y);
-            verts.push(v);
-            want.push((DemSource::Moi as u8, Some(of.at(cf, rf))));
-        }
-
-        // FABDEM: Taiwan beyond the MOI DTM from the store; Paris downloaded from its zip; the open
+        // FABDEM: Taiwan from the store; Paris downloaded from its zip; the open
         // sea remembered (N53W009), or learnt (the zip without the tile, the zip that isn't there).
         let store = dir.path().join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -222,15 +204,15 @@ impl Fixture {
         let build = dir.path().join("build");
         std::fs::create_dir_all(&build).unwrap();
         std::fs::write(build.join("verts.bin"), bytemuck::cast_slice(&verts)).unwrap();
-        Fixture { moi: moi_dir.join("taiwan.tif"), dir, verts, want, fetch }
+        Fixture { dir, verts, want, fetch }
     }
 
     fn build(&self) -> PathBuf {
         self.dir.path().join("build")
     }
 
-    fn config(&self, moi: bool) -> Config {
-        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, moi_dtm: if moi { vec![self.moi.clone()] } else { Vec::new() }, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false }
+    fn config(&self) -> Config {
+        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false }
     }
 
     fn outputs(&self) -> (Vec<f32>, Vec<u8>) {
@@ -263,7 +245,7 @@ impl Fetch for Counting<'_> {
 #[test]
 fn every_source_where_it_serves() {
     let f = Fixture::new();
-    let stats = run(&f.config(true), &f.fetch).unwrap();
+    let stats = run(&f.config(), &f.fetch).unwrap();
     let (elev, src) = f.outputs();
     for (i, (&(s, v), (&e, &got))) in f.want.iter().zip(elev.iter().zip(&src)).enumerate() {
         assert_eq!(got, s, "vertex {i} at {:?}", f.verts[i]);
@@ -275,7 +257,7 @@ fn every_source_where_it_serves() {
     }
     let count = |c: DemSource| f.want.iter().filter(|w| w.0 == c as u8).count();
     assert!(count(DemSource::Hrdem) > 10 && count(DemSource::Mrdem) > 0 && count(DemSource::Gsi5a) > 0 && count(DemSource::Gsi10) > 0, "the fixture exercises each fall-through");
-    assert_eq!((stats.hrdem, stats.mrdem, stats.usgs3dep, stats.gsi5a, stats.gsi10, stats.moi, stats.fabdem, stats.missing), (count(DemSource::Hrdem), count(DemSource::Mrdem), 25, count(DemSource::Gsi5a), count(DemSource::Gsi10), 9, 10, 3));
+    assert_eq!((stats.hrdem, stats.mrdem, stats.usgs3dep, stats.gsi5a, stats.gsi10, stats.fabdem, stats.missing), (count(DemSource::Hrdem), count(DemSource::Mrdem), 25, count(DemSource::Gsi5a), count(DemSource::Gsi10), 10, 3));
     // The store: Paris's tile downloaded (whole, as it reads), the open sea learnt.
     let store = f.dir.path().join("store");
     assert!(crate::whole::tiff_file_whole(&store.join("N48E002_FABDEM_V1-2.tif")));
@@ -290,12 +272,11 @@ fn every_source_where_it_serves() {
     assert_eq!(stats_file["vertices"], f.verts.len());
 
     // Again: every vertex from the cache but the open sea's, sampled again (from the store's
-    // `.none`s, asking nothing), and Taiwan's from FABDEM (with the MOI DTM here, those are always
-    // taken again).
+    // `.none`s, asking nothing).
     let first = std::fs::read(f.build().join("elev.f32")).unwrap();
     let counting = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
-    let again = run(&f.config(true), &counting).unwrap();
-    assert_eq!(again.sampled_this_run, 4);
+    let again = run(&f.config(), &counting).unwrap();
+    assert_eq!(again.sampled_this_run, 3);
     assert_eq!(std::fs::read(f.build().join("elev.f32")).unwrap(), first);
     assert!(counting.asked.lock().unwrap().is_empty());
 }
@@ -312,14 +293,14 @@ fn a_store_this_worker_cant_write_gives_what_it_has_and_the_rest_is_read_in_plac
     };
     let before = listed();
     std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let stats = run(&f.config(true), &f.fetch);
+    let stats = run(&f.config(), &f.fetch);
     std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
     let stats = stats.unwrap();
     // The same elevations as a run that stores Paris's tile, and nothing written to the store.
     assert_eq!(listed(), before);
     let ro = f.outputs();
     let whole = Fixture::new();
-    let whole_stats = run(&whole.config(true), &whole.fetch).unwrap();
+    let whole_stats = run(&whole.config(), &whole.fetch).unwrap();
     assert_eq!((stats.fabdem, stats.missing), (whole_stats.fabdem, whole_stats.missing));
     assert_eq!(ro.1, whole.outputs().1);
     assert!(ro.0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
@@ -337,42 +318,13 @@ fn a_store_only_read_is_neither_written_nor_pruned() {
         v
     };
     let before = listed();
-    let stats = run(&Config { fabdem_read_only: true, ..f.config(true) }, &f.fetch).unwrap();
+    let stats = run(&Config { fabdem_read_only: true, ..f.config() }, &f.fetch).unwrap();
     assert_eq!(listed(), before, "nothing written or removed");
     let whole = Fixture::new();
-    let whole_stats = run(&whole.config(true), &whole.fetch).unwrap();
+    let whole_stats = run(&whole.config(), &whole.fetch).unwrap();
     assert_eq!((stats.fabdem, stats.missing), (whole_stats.fabdem, whole_stats.missing));
     assert_eq!(f.outputs().1, whole.outputs().1);
     assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
-}
-
-#[test]
-fn the_moi_dtm_missing_is_none_and_unlistable_is_an_error() {
-    let d = tempfile::tempdir().unwrap();
-    assert!(moi_files(&d.path().join("none")).unwrap().is_empty());
-    std::fs::write(d.path().join("a.tif"), b"x").unwrap();
-    std::fs::write(d.path().join("b.txt"), b"x").unwrap();
-    assert_eq!(moi_files(d.path()).unwrap(), [d.path().join("a.tif")]);
-    // (A file where the folder should be: it can't be listed.)
-    assert!(moi_files(&d.path().join("a.tif")).is_err());
-}
-
-#[test]
-fn taiwan_sampled_again_once_the_moi_dtm_is_there() {
-    let f = Fixture::new();
-    // Without the MOI DTM, Taiwan's points come from FABDEM (or nowhere, beyond its tile).
-    run(&f.config(false), &f.fetch).unwrap();
-    let (_, src) = f.outputs();
-    let taiwan: Vec<usize> = (0..f.verts.len()).filter(|&i| in_taiwan(f.verts[i][0] as f64 * 1e-7, f.verts[i][1] as f64 * 1e-7)).collect();
-    assert_eq!(taiwan.len(), 10);
-    assert!(taiwan.iter().all(|&i| src[i] == DemSource::Fabdem as u8));
-    // With it, those cached FABDEM samples are taken again: from the MOI DTM where it has them.
-    let stats = run(&f.config(true), &f.fetch).unwrap();
-    assert_eq!(stats.sampled_this_run, 13);
-    let (_, src) = f.outputs();
-    for &i in &taiwan {
-        assert_eq!(src[i], f.want[i].0, "vertex {i}");
-    }
 }
 
 #[test]
@@ -380,17 +332,17 @@ fn an_interrupted_run_resumes() {
     let f = Fixture::new();
     let paris = fabdem::zip_url("N40E000-N50E010");
     let failing = Counting { inner: &f.fetch, asked: Mutex::default(), fail: Some(paris.clone()) };
-    assert!(run(&f.config(true), &failing).is_err());
+    assert!(run(&f.config(), &failing).is_err());
     let progress: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f.build().join("dem-progress.json")).unwrap()).unwrap();
     let done: Vec<&str> = progress["done"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-    assert!(done.contains(&"cache") && done.contains(&"hrdem:10_3") && done.contains(&"mrdem") && done.contains(&"gsi:dem_png") && done.contains(&"moi:taiwan.tif"), "{done:?}");
+    assert!(done.contains(&"cache") && done.contains(&"hrdem:10_3") && done.contains(&"mrdem") && done.contains(&"gsi:dem_png"), "{done:?}");
     // Resumed: what was done isn't asked for again, and the outputs are a whole run's.
     let resumed = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
-    run(&f.config(true), &resumed).unwrap();
+    run(&f.config(), &resumed).unwrap();
     let asked = resumed.asked.lock().unwrap().clone();
     assert!(asked.iter().all(|u| u.contains("bris.ac.uk")), "{asked:?}");
     let whole = Fixture::new();
-    run(&whole.config(true), &whole.fetch).unwrap();
+    run(&whole.config(), &whole.fetch).unwrap();
     assert_eq!(f.outputs().1, whole.outputs().1);
     assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
 }

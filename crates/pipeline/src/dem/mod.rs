@@ -8,9 +8,6 @@
 //!   3. NRCan MRDEM 30 m (Canada and the border).
 //! - Japan, in GSI's own order per pixel (`gsi`): 5. lidar (1A, then 5A), 6. photogrammetry
 //!   (5B, 5C), at z15; 7. the 10 m DEM (z14).
-//! - Taiwan: 8. the MOI 20 m DTM, GeoTIFFs put by hand in the NAS's inputs/moi-dtm/
-//!   ($SCENIC_MOI_DTM, else data/sources/moi-dtm); FABDEM without them, and cached FABDEM values
-//!   in Taiwan are sampled again once they're there.
 //! - Elsewhere, and points none of the above cover: 4. FABDEM v1-2 30 m (`fabdem`).
 //!
 //! Only the blocks (and GSI tiles) holding vertices are read (`crate::fetch`). Incremental: the
@@ -27,8 +24,8 @@ pub mod proj;
 pub mod sample;
 
 use crate::fetch::Fetch;
-use crate::geotiff::{key, Tiff};
-use anyhow::{bail, ensure, Context, Result};
+use crate::geotiff::Tiff;
+use anyhow::{ensure, Context, Result};
 use rayon::prelude::*;
 use roadcore::DemSource;
 use sample::sample_raster;
@@ -63,10 +60,6 @@ pub fn usgs_url(t: &str) -> String {
 
 pub fn in_japan(lon: f64, lat: f64) -> bool {
     lon > 122.5 && lon < 154.0 && lat > 20.0 && lat < 46.5
-}
-
-pub fn in_taiwan(lon: f64, lat: f64) -> bool {
-    lon > 118.0 && lon <= 122.5 && lat > 21.5 && lat < 26.6
 }
 
 /// A vertex's cache key: `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), as `crate::unit`'s DEM cache.
@@ -113,74 +106,6 @@ pub fn usgs_groups(lon: &[f64], lat: &[f64], idx: &[u32]) -> Vec<(String, Vec<u3
     out
 }
 
-/// The MOI DTM's GeoTIFFs in `dir` (`*.tif`, by name): none when there's no such folder, an error
-/// when it can't be listed now (a NAS that doesn't answer isn't a NAS without the DTM: Taiwan's
-/// points would come from FABDEM instead, without a word).
-pub fn moi_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    let rd = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
-    };
-    let mut v = Vec::new();
-    for e in rd {
-        let p = e.with_context(|| format!("list {}", dir.display()))?.path();
-        if p.extension().is_some_and(|x| x == "tif") {
-            v.push(p);
-        }
-    }
-    v.sort();
-    Ok(v)
-}
-
-/// How a raster's coordinates follow from WGS 84 longitude and latitude.
-enum Crs {
-    Geographic,
-    Tm(proj::TransverseMercator),
-}
-
-impl Crs {
-    fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
-        match self {
-            Crs::Geographic => (lon, lat),
-            Crs::Tm(t) => t.project(lon, lat).unwrap_or((f64::NAN, f64::NAN)),
-        }
-    }
-}
-
-/// A raster's CRS from its GeoKeys: geographic, or a transverse Mercator (Taiwan's TM2 zones on
-/// TWD97 or TWD67, UTM, or one the keys define), with no datum shift, as PROJ has none for these.
-fn crs_of(t: &Tiff) -> Result<Crs> {
-    let k = t.geo_keys();
-    if k.short(key::MODEL_TYPE) == Some(2) {
-        return Ok(Crs::Geographic);
-    }
-    let tm = |lon0: f64, k0: f64, x0: f64, (a, rf): (f64, f64)| Crs::Tm(proj::TransverseMercator::new(lon0, 0.0, k0, x0, 0.0, a, rf));
-    let aust = (6378160.0, 298.25);
-    Ok(match k.short(key::PROJECTED_CS_TYPE) {
-        Some(3826) => tm(121.0, 0.9999, 250000.0, proj::Ellipsoid::GRS80),
-        Some(3825) => tm(119.0, 0.9999, 250000.0, proj::Ellipsoid::GRS80),
-        Some(3828) => tm(121.0, 0.9999, 250000.0, aust),
-        Some(3827) => tm(119.0, 0.9999, 250000.0, aust),
-        Some(c @ 32601..=32660) => tm((c - 32600) as f64 * 6.0 - 183.0, 0.9996, 500000.0, proj::Ellipsoid::WGS84),
-        c if (c.is_none() || c == Some(32767)) && k.short(key::PROJ_COORD_TRANS) == Some(1) => {
-            ensure!(k.short(key::PROJ_LINEAR_UNITS).is_none_or(|u| u == 9001), "linear units {:?}", k.short(key::PROJ_LINEAR_UNITS));
-            let ell = match k.short(key::GEOG_ELLIPSOID) {
-                Some(7030) => proj::Ellipsoid::WGS84,
-                Some(7003) => aust,
-                Some(7019) | None => match (k.double(key::GEOG_SEMI_MAJOR_AXIS), k.double(key::GEOG_INV_FLATTENING)) {
-                    (Some(a), Some(rf)) => (a, rf),
-                    _ => proj::Ellipsoid::GRS80,
-                },
-                Some(e) => bail!("ellipsoid {e}"),
-            };
-            let d = |id: u16, default: f64| k.double(id).unwrap_or(default);
-            Crs::Tm(proj::TransverseMercator::new(d(key::PROJ_NAT_ORIGIN_LONG, 0.0), d(key::PROJ_NAT_ORIGIN_LAT, 0.0), d(key::PROJ_SCALE_AT_NAT_ORIGIN, 1.0), d(key::PROJ_FALSE_EASTING, 0.0), d(key::PROJ_FALSE_NORTHING, 0.0), ell.0, ell.1))
-        }
-        c => bail!("projected CRS {c:?} isn't one this step knows"),
-    })
-}
-
 /// The run's settings: the `elev` program's arguments and environment.
 pub struct Config {
     pub build: PathBuf,
@@ -189,8 +114,6 @@ pub struct Config {
     /// Where the last run's per-vertex cache is (`dem-cache.*`), and this run's goes.
     pub cache: PathBuf,
     pub no_cache: bool,
-    /// Taiwan's MOI DTM files.
-    pub moi_dtm: Vec<PathBuf>,
     /// FABDEM's store, where each tile is downloaded once (None: read in place at Bristol).
     pub fabdem_store: Option<PathBuf>,
     /// The store only read (a task's worker: docs/workers.md §2): a tile it hasn't, or hasn't
@@ -209,7 +132,6 @@ pub struct Stats {
     pub gsi5a: usize,
     pub gsi5: usize,
     pub gsi10: usize,
-    pub moi: usize,
     pub missing: usize,
     pub sampled_this_run: usize,
     pub seconds: f64,
@@ -323,9 +245,8 @@ impl Progress {
 }
 
 /// The last run's cache (`dem-cache.*` in `cache`: sorted keys, elevations, sources) for the
-/// vertices it has. With the MOI DTM here, Taiwan's vertices sampled from FABDEM are dropped, to
-/// be sampled again from it.
-fn reuse(cache: &Path, verts: &[[i32; 2]], prog: &mut Progress, moi: bool) -> Result<()> {
+/// vertices it has.
+fn reuse(cache: &Path, verts: &[[i32; 2]], prog: &mut Progress) -> Result<()> {
     let ck = cache.join("dem-cache.keys.u64");
     if !std::fs::metadata(&ck).is_ok_and(|m| m.len() > 0) {
         return Ok(());
@@ -353,18 +274,6 @@ fn reuse(cache: &Path, verts: &[[i32; 2]], prog: &mut Progress, moi: bool) -> Re
     }
     let n = verts.len();
     println!("cache: reused {} of {} vertices ({:.1} %)", th(hit), th(n), hit as f64 / n.max(1) as f64 * 100.0);
-    if moi {
-        let mut redo = 0;
-        for (i, v) in verts.iter().enumerate() {
-            if prog.src[i] == DemSource::Fabdem as u8 && in_taiwan(v[0] as f64 * 1e-7, v[1] as f64 * 1e-7) {
-                prog.set(i, f32::NAN, 0);
-                redo += 1;
-            }
-        }
-        if redo > 0 {
-            println!("cache: {} Taiwanese vertices sampled from FABDEM, now from the MOI DTM", th(redo));
-        }
-    }
     Ok(())
 }
 
@@ -420,7 +329,7 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
     let mut prog = Progress::open(b, stamp, n)?;
     if !prog.resumed {
         if !cfg.no_cache {
-            reuse(&cfg.cache, verts, &mut prog, !cfg.moi_dtm.is_empty())?;
+            reuse(&cfg.cache, verts, &mut prog)?;
         }
         prog.mark("cache")?;
     }
@@ -558,31 +467,6 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
     }
 
     drop(p);
-    let p = phase("MOI sampled", Class::NasRead);
-    // ---- 6. Taiwan: the MOI 20 m DTM (a file per island group) ---------------------------------
-    let tw: Vec<u32> = elsewhere.iter().copied().filter(|&i| in_taiwan(lon[i as usize], lat[i as usize])).collect();
-    if !tw.is_empty() {
-        for path in &cfg.moi_dtm {
-            let file = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let name = format!("moi:{file}");
-            if prog.done(&name) {
-                continue;
-            }
-            let rest = left(&loc_elev, &tw);
-            let t = Tiff::open(Arc::new(PlainFile::open(path).with_context(|| path.display().to_string())?)).with_context(|| path.display().to_string())?;
-            let crs = crs_of(&t).with_context(|| format!("MOI {file}"))?;
-            let (px, py): (Vec<f64>, Vec<f64>) = rest.iter().map(|&i| crs.project(lon[i as usize], lat[i as usize])).unzip();
-            let v = sample_raster(&t, 0, &px, &py, pool.as_ref()).with_context(|| format!("MOI {file}"))?;
-            let got = put(&mut loc_elev, &mut loc_src, &rest, &v, DemSource::Moi);
-            got_all += got;
-            said(got_all, miss.len());
-            println!("  MOI {file}: {}/{}", th(got), th(rest.len()));
-            prog.scatter(&miss, &loc_elev, &loc_src);
-            prog.mark(&name)?;
-        }
-    }
-
-    drop(p);
     let p = phase("FABDEM sampled", Class::Net);
     // ---- 4. FABDEM 30 m (the rest outside North America, and North American points none of the
     // national DEMs cover, e.g. Saint-Pierre-et-Miquelon) -------------------------------------------
@@ -651,7 +535,6 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         gsi5a: counts[DemSource::Gsi5a as usize],
         gsi5: counts[DemSource::Gsi5 as usize],
         gsi10: counts[DemSource::Gsi10 as usize],
-        moi: counts[DemSource::Moi as usize],
         missing: counts[0],
         sampled_this_run: miss.len(),
         seconds: (t_start.elapsed().as_secs_f64() * 10.0).round() / 10.0,

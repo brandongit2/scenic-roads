@@ -378,8 +378,8 @@ pub struct Coordinator {
 pub const WEB_HOSTS: [&str; 5] = ["data.bris.ac.uk", "cyberjapandata.gsi.go.jp", "canelevation-dem.s3.ca-central-1.amazonaws.com", "prd-tnm.s3.amazonaws.com", "esa-worldcover.s3.eu-central-1.amazonaws.com"];
 
 /// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
-/// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain), Taiwan's DTM.
-pub const NAS_PATHS: [&str; 2] = ["sources/", "inputs/moi-dtm/"];
+/// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain).
+pub const NAS_PATHS: [&str; 1] = ["sources/"];
 
 /// A request for work.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -1197,7 +1197,7 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     let t1 = std::time::Instant::now();
     let old = rekey::v1::unit_keys(&cov, &date, &m, Some(&reach), &digests);
     let t_old = t1.elapsed().as_secs_f64();
-    let new: BTreeMap<String, Option<String>> = build::unit_keys(&cov, &date, &m, Some(&reach), &digests, &tiles).into_iter().map(|(u, k)| (u.slash(), k)).collect();
+    let new: BTreeMap<String, Option<String>> = build::unit_keys(&cov, &date, &m, Some(&reach), &tiles).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     let t_new = t1.elapsed().as_secs_f64() - t_old;
     let times = rekey::FileTimes::new(root);
     let older = |x: u32, y: u32| times.hi_older(&m, x, y);
@@ -2465,7 +2465,6 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
         cache: PathBuf::from(opt(args, "--cache").context("--cache <dir>")?),
         buildings: Some(bdir),
-        moi_dtm: Some(out.root().join("inputs/moi-dtm")),
         sources: Some(out.root().join("sources")),
         shared: Some(shared),
         chm: None,
@@ -2519,7 +2518,6 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
         cache: PathBuf::from(opt(args, "--cache-dir").unwrap_or_else(|| "data/cache".into())),
         buildings: opt(args, "--buildings").map(PathBuf::from),
-        moi_dtm: Some(out.root().join("inputs/moi-dtm")),
         sources: Some(out.root().join("sources")),
         shared: Some(out.root().join("cache")),
         chm: None,

@@ -19,7 +19,7 @@ import { join } from "node:path";
 const [, , unit, snap, bdir, wasmDir, nas, mirror, first = "elevations (elev)"] = process.argv;
 const spec = JSON.parse(execFileSync("target/release/scenic-build", ["tail-spec", unit], { encoding: "utf8" }));
 // What crate::coord's `net` serves: the NAS's paths a task reads, and the data servers.
-const NAS_PATHS = ["sources/", "inputs/moi-dtm/"];
+const NAS_PATHS = ["sources/"];
 const WEB_HOSTS = spec.web_hosts;
 const UA = "scenic-roads/0.1 (personal offline map)";
 

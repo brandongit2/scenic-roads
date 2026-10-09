@@ -3849,7 +3849,7 @@ impl Agent {
         // (As re-keyed: agent::rekey.)
         let times = rekey::FileTimes::new(root);
         rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-        build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &inputs, &tiles)
+        build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &tiles)
     }
 
     /// The records re-keyed (agent::rekey), and written whole when that changed anything: the build
@@ -4380,8 +4380,7 @@ impl Agent {
 }
 
 /// What jobs read from inputs/ beside the manifest, by digest: the ferry timetables
-/// ("ferries-freq", by content), Taiwan's MOI DTM ("moi-dtm", by names, sizes and times: large
-/// files, put there by hand), which keys inputs/keys.env holds ("keys", `key_names`), and the 3D
+/// ("ferries-freq", by content), which keys inputs/keys.env holds ("keys", `key_names`), and the 3D
 /// buildings' downloaded sources ("bld-release", "bldprep 6/x/y", "bldprep-rows 6/x/y":
 /// crate::bld::sources::digests).
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
@@ -4396,21 +4395,6 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
     // then waits).
     inputs.insert("regions".into(), regions_digest(root).unwrap_or_else(|| "?".into()));
-    if let Ok(rd) = std::fs::read_dir(root.join("inputs/moi-dtm")) {
-        let mut files: Vec<String> = rd
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "tif"))
-            .filter_map(|e| {
-                let md = e.metadata().ok()?;
-                let t = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-                Some(format!("{} {} {t}", e.file_name().to_string_lossy(), md.len()))
-            })
-            .collect();
-        files.sort();
-        if !files.is_empty() {
-            inputs.insert("moi-dtm".into(), store::naming::hash16(files.join("\n").as_bytes()));
-        }
-    }
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
     // The 3D buildings' sources: what each z6 tile's bldprep reads, and its rows.
     inputs.extend(crate::bld::sources::digests(root, crate::buildtiles::RELEASE));

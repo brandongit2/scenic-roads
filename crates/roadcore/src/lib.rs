@@ -155,8 +155,6 @@ pub enum DemSource {
     Gsi5 = 6,
     /// GSI 10 m (Japan).
     Gsi10 = 7,
-    /// Taiwan MOI 20 m DTM.
-    Moi = 8,
 }
 
 /// Number of DEM source codes, `None` included.
@@ -172,7 +170,6 @@ impl DemSource {
             5 => "GSI lidar (5 m)",
             6 => "GSI (5 m)",
             7 => "GSI (10 m)",
-            8 => "MOI DTM (20 m)",
             _ => "none",
         }
     }

@@ -162,9 +162,8 @@ deletions over SMB bypass it (tested 2026-10-02).
 
 ```
 translations/  descriptions/  the user's drop-ins (descriptions/README.md); todo/: the agent's lists (§7)
-inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), moi-dtm/
-               (Taiwan's DTM, put there by hand), keys.env (API keys, KEY=value lines: the rail
-               feeds'), hold-catalog
+inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), keys.env
+               (API keys, KEY=value lines: the rail feeds'), hold-catalog
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/
                (the pass's items' facts and pageviews, and the answers Wikidata and Wikipedia gave
@@ -356,7 +355,7 @@ record changes back through the build Mac's coordinator, which journals them for
     apart; FABDEM's `.none` only once its zip's own file list lacks the tile.
   - **What's fetched again** is new data (a planet, Wikidata facts and pageviews, timetables, an
     Overture release), or a window of a dataset read in small windows where nothing kept covers it
-    yet: the national DEMs (USGS, HRDEM, MRDEM, GSI, the MOI DTM) at points not sampled before
+    yet: the national DEMs (USGS, HRDEM, MRDEM, GSI) at points not sampled before
     (each point's height is kept once sampled), ESA WorldCover for grid tiles the packs lack.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`, on each Mac that runs an agent).
   Those a trim or a clear empties (§8, Room on the disk) are copies of what the NAS keeps, or made
@@ -705,8 +704,7 @@ units' ones (DEM order, densification, road network codes) are versioned by area
 `pipeline::rules`: a unit's key names the versions of the rules where its ways go, so a changed
 rule (its version bumped) reruns only the units it applies to. The plan is modules declared per ISO
 3166-1 country or 3166-2 subdivision, with defaults:
-- DEM order (`pipeline::dem`, the `elev` program; Taiwan's MOI DTM from `inputs/moi-dtm/` when it's
-  there, which reruns Taiwan's units) and densification spacing (8 m in North America and Japan, 15 m
+- DEM order (`pipeline::dem`, the `elev` program; Taiwan from FABDEM) and densification spacing (8 m in North America and Japan, 15 m
   elsewhere: `extract`);
 - heritage registers (the snapshot, `dem/heritage.py`);
 - timetables:
@@ -1346,8 +1344,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
-  go, its heritage slices, the roadside buildings' index, Taiwan's MOI DTM files where its ways meet
-  Taiwan, and the terrain tiles it reads, by their contents (`agent::build::unit_terrain`: each
+  go, its heritage slices, the roadside buildings' index, and the terrain tiles it reads, by their contents (`agent::build::unit_terrain`: each
   tile's XXH3 from its pack's index, no tile read): of what it stages (terrain z0–12 over its tile
   + 30 km), every z11 tile (its grid: canopy, views, flags) and, at the points of the ways it owns
   (its owned box, and along its long ways' segments: `prep`'s drape at every vertex and its

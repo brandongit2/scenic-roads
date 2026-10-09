@@ -386,8 +386,6 @@ pub struct Tools {
     /// Overture building boxes: a folder of `.f32` files (the unit's tiles staged by
     /// `buildtiles::stage`), when there are any.
     pub buildings: Option<PathBuf>,
-    /// Taiwan's MOI DTM GeoTIFFs (the NAS's `inputs/moi-dtm/`), for elev.
-    pub moi_dtm: Option<PathBuf>,
     /// The NAS's `sources/`, where downloads are kept, each downloaded once: Meta's canopy squares
     /// (`canopy/`) and FABDEM's tiles (`fabdem/`); the local caches fill from it. None: local
     /// caches alone.
@@ -838,7 +836,7 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
 /// `<prog>.wasm` in a web worker), its arguments and environment, in which `{dir}` is the unit's
 /// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
 /// roadside buildings, `{store}` the NAS's canopy store to download into, and what's read where it
-/// lies: `{sources}` the NAS's sources, `{moi}` its MOI DTM, `{chm}` its canopy squares, `{net}`
+/// lies: `{sources}` the NAS's sources, `{chm}` its canopy squares, `{net}`
 /// the DEM servers' files (crate::offload::places; an environment variable whose value names a
 /// place the worker doesn't have is left out).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -910,7 +908,7 @@ pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
 /// canopy, views, buildings (with `buildings`) and flags. Every program is Rust, and gives the same
 /// bytes natively and as WebAssembly (tools/check/same.py, tail.mjs), so any worker can run it. The
 /// data the elevations and canopy read is read where it lies: the DEM servers' files and the NAS's
-/// (`{net}`, `{sources}`, `{moi}`, `{chm}`: a browser's through the coordinator, a Mac's as this
+/// (`{net}`, `{sources}`, `{chm}`: a browser's through the coordinator, a Mac's as this
 /// Mac reads them).
 pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
     // What each step reads of the unit's folder, earlier steps' outputs too: a task sends what's
@@ -952,7 +950,7 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
         what: "elevations (elev)".into(),
         prog: "elev".into(),
         args: vec!["{dir}".into(), "--cache".into(), "{dir}/dem-cache".into()],
-        env: env(&[("SCENIC_FABDEM_STORE", "{sources}/fabdem"), ("SCENIC_MOI_DTM", "{moi}"), ("SCENIC_FETCH_MIRROR", "{net}")]),
+        env: env(&[("SCENIC_FABDEM_STORE", "{sources}/fabdem"), ("SCENIC_FETCH_MIRROR", "{net}")]),
         reads: mine(&["verts.bin", "dem-cache/*"]),
     };
     let grade = Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new(), reads: mine(&["ways.bin", "verts.bin", "elev.f32", "strings.txt"]) };
@@ -981,7 +979,6 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
         let v = put(&v, "{scache}", Some(&scache))?;
         let v = put(&v, "{buildings}", tools.buildings.as_deref())?;
         let v = put(&v, "{sources}", tools.sources.as_deref())?;
-        let v = put(&v, "{moi}", tools.moi_dtm.as_deref())?;
         let v = put(&v, "{chm}", tools.chm.as_deref())?;
         let v = put(&v, "{store}", store.as_deref())?;
         (!v.contains("{net}")).then_some(v)

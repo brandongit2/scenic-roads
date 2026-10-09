@@ -1071,7 +1071,7 @@ fn main() -> Result<()> {
 
     // ---- Assemble, drop gated minor roads, densify --------------------------------
     // North America (west of 40° W) and Japan (GSI) have 1–10 m lidar and DEMs; elsewhere the DEMs
-    // are 20–30 m (Taiwan's MOI DTM, FABDEM). (Versioned as "spacing" in pipeline::rules; the
+    // are 30 m (FABDEM). (Versioned as "spacing" in pipeline::rules; the
     // units' reach densifies long ways the same way, pipeline::reach::LongWay::touches.)
     const COARSE_SPACING_M: f64 = 15.0;
     let spacing_at = |p: [i32; 2]| {

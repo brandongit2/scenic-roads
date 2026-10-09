@@ -306,7 +306,7 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
             }
         };
         if why.is_empty() {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, digests, &build::terrain_digest(&read)));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read)));
             if !outputs {
                 out.empty.push(t.clone());
             }

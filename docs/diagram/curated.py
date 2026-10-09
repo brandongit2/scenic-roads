@@ -75,7 +75,7 @@ GROUPS = [
          'roads’ elevations (elev): HRDEM, 3DEP, MRDEM in North America, GSI in Japan, FABDEM elsewhere',
          'chosen by hand (pipeline::rules); HRDEM’s tile lists committed once',
          'rules.rs; dem/hrdem_2m_tiles.txt, hrdem_tile_index.geojson',
-         'README’s table; the tile lists’ origin not recorded. Taiwan’s MOI DTM was never put in inputs/moi-dtm/ (403): FABDEM serves Taiwan',
+         'README’s table; the tile lists’ origin not recorded.',
          'the order is in code; the tile lists from NRCan again'),
         ('doc', None, 'base', 'Languages by territory',
          'the spoken job: which languages a name is looked up in, and which to-do list it goes on',

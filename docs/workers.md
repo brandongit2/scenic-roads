@@ -62,18 +62,16 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   through the canopy run in the job (`unit::keep_here`), which downloads it there; the rest is the
   task.
 - **Read where they lie** (`/net`): a task's places name what it reads outside its folder:
-  `{sources}` the NAS's `sources/` (FABDEM's store, the canopy squares: `{chm}`), `{moi}` its MOI
-  DTM, `{net}` the DEM servers' files, laid out as `crate::fetch`'s mirror folders are
+  `{sources}` the NAS's `sources/` (FABDEM's store, the canopy squares: `{chm}`), `{net}` the DEM servers' files, laid out as `crate::fetch`'s mirror folders are
   (`<host>/<path>`). A browser reads them through the coordinator (`/work/net/<lease>/nas/<path>`
-  under `sources/` and `inputs/moi-dtm/` only, `…/web/<host>/<path>` for the five DEM and land
+  under `sources/` only, `…/web/<host>/<path>` for the five DEM and land
   cover servers only, over HTTPS: `?probe` says what's there, `?list` a folder's entries, a range
   its bytes; nothing written), a 1 MB block at a time as a program reads them (web/work/runtime.js:
   synchronous requests, a WASI call can't wait; 64 MB of blocks kept); a server's "none" is its
   `.none` file. The coordinator fetches the servers' files over HTTPS only, following no redirect
   (none of the five redirects), keeps a couple of dozen open, and serves 8 MB at most a request; a
   NAS file or folder it can't read now, or read whole, is a 503, never "not there" or fewer files (a
-  task fails rather than take FABDEM for Taiwan's missing MOI DTM, as an unlistable folder would
-  otherwise have it). A native worker reads
+  task fails rather than take another source for one it couldn't read). A native worker reads
   the NAS at its own mount and the servers as the build Mac does, and, like a browser, only reads
   the NAS's stores (`Tools::stores_read_only`, `SCENIC_STORES_READ_ONLY`): a FABDEM tile the store
   hasn't whole is read in place inside Bristol's zip (`dem::fabdem::stored`, the same values the

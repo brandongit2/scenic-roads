@@ -340,7 +340,7 @@ pub fn owner() -> u32 {
 pub fn places() -> serde_json::Value {
     serde_json::json!({
         "{dir}": "/u", "{cache}": "/cache", "{scache}": "/u/scache", "{buildings}": "/b", "{store}": null,
-        "{sources}": "/net/nas/sources", "{moi}": "/net/nas/inputs/moi-dtm", "{chm}": "/net/nas/sources/canopy", "{net}": "/net/web",
+        "{sources}": "/net/nas/sources", "{chm}": "/net/nas/sources/canopy", "{net}": "/net/web",
     })
 }
 
@@ -405,7 +405,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             _ => Ok(None),
         }
     };
-    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: nas("{moi}")?, sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, stores_read_only: true, spacing_m: 8, snap: None };
+    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, stores_read_only: true, spacing_m: 8, snap: None };
     crate::unit::take_peak();
     let t = std::time::Instant::now();
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
@@ -616,7 +616,7 @@ mod tests {
         let mut ran = false;
         let mut here = || {
             ran = true;
-            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None })
+            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None })
         };
         let s = o.settle(&t, &dir, false, Patience { here_s: None }, &mut here).unwrap().unwrap();
         assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));
@@ -707,7 +707,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (c, url, o, dir, bin, runs) = setup(d.path());
         let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
-        let here = |dir: &Path| crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None });
+        let here = |dir: &Path| crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None });
         let p = Patience { here_s: Some(30.0) };
         let status = |t: &Offered| o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1;
         let unit = Unit::parse("6/1/1").unwrap();

@@ -34,6 +34,7 @@ pub const RULES: &[Rule] = &[
     // pipeline::dem: the DEM sources and their order.
     Rule { name: "dem-north-america", version: 1, areas: NORTH_AMERICA },
     Rule { name: "dem-japan", version: 1, areas: JAPAN },
+    // (Taiwan takes FABDEM: it has no national DEM of its own here.)
     Rule { name: "dem-taiwan", version: 1, areas: TAIWAN },
     Rule { name: "dem-fabdem", version: 1, areas: WORLD },
     // extract: densification (8 m in North America and Japan, 15 m elsewhere).
@@ -69,7 +70,6 @@ pub fn dem_rules_of(src: u8, lon: i32, lat: i32) -> Vec<usize> {
     match src {
         1..=3 => vec![0],
         5..=7 => vec![1],
-        8 => vec![2],
         4 => {
             let mut v = vec![3];
             if meets(NORTH_AMERICA) {
@@ -87,8 +87,8 @@ pub fn dem_rules_of(src: u8, lon: i32, lat: i32) -> Vec<usize> {
     }
 }
 
-/// Whether the box w, s, e, n (E7) meets Taiwan, where the MOI DTM (`inputs/moi-dtm/`, put there by
-/// hand) is the DEM when it's there: its files' digest enters those units' keys.
+/// Whether the box w, s, e, n (E7) meets Taiwan (the units' keys of the scheme before P8 had its DEM
+/// files' digest there: agent::rekey::v1).
 pub fn meets_taiwan(b: [i32; 4]) -> bool {
     let a = TAIWAN[0];
     let (w, s, e, n) = (b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7);
@@ -196,13 +196,7 @@ pub const CREDITS: &[Credit] = &[
         areas: JAPAN,
     },
     Credit {
-        what: "Road elevation, Taiwan",
-        source: "內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料 (Ministry of the Interior, Taiwan, 20 m DTM, 2025 edition). The Open Data is made available to the public under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. Open Government Data License: https://data.gov.tw/license",
-        terms: "Open Government Data License 1.0",
-        areas: TAIWAN,
-    },
-    Credit {
-        what: "Road elevation, Europe, Hong Kong, Singapore (and Taiwan without the MOI DTM)",
+        what: "Road elevation, Europe, Hong Kong, Singapore, Taiwan",
         source: "FABDEM v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022). FABDEM is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.",
         terms: "CC BY-NC-SA 4.0 (non-commercial)",
         areas: WORLD,
@@ -503,7 +497,7 @@ mod tests {
         for w in ["Road elevation, Japan", "Japan heritage", "Rail service frequency", "UNESCO World Heritage"] {
             assert!(tokyo.contains(&w), "{w}");
         }
-        assert!(tokyo[0].starts_with("Roads, water") && tokyo.contains(&"Road elevation, Europe, Hong Kong, Singapore (and Taiwan without the MOI DTM)"));
+        assert!(tokyo[0].starts_with("Roads, water") && tokyo.contains(&"Road elevation, Europe, Hong Kong, Singapore, Taiwan"));
         for w in ["Road elevation, North America", "France heritage", "Taiwan heritage", "Forest leaf type, Europe"] {
             assert!(!tokyo.contains(&w), "{w}");
         }
@@ -532,7 +526,7 @@ mod tests {
     fn licence_notices_kept() {
         let has = |what: &str, terms: &str| CREDITS.iter().any(|c| c.what == what && c.terms.contains(terms));
         assert!(has("Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries", "© OpenStreetMap contributors, ODbL"));
-        assert!(has("Road elevation, Europe, Hong Kong, Singapore (and Taiwan without the MOI DTM)", "CC BY-NC-SA 4.0"));
+        assert!(has("Road elevation, Europe, Hong Kong, Singapore, Taiwan", "CC BY-NC-SA 4.0"));
         assert!(has("UNESCO World Heritage", "CC BY-SA 4.0"));
         assert!(has("Portugal heritage", "CC BY-NC 4.0"));
         assert!(has("Ontario heritage", "Personal non-commercial use only"));
@@ -544,7 +538,7 @@ mod tests {
         assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
         // (The 3D buildings' credit names the release they're built from.)
         assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::RELEASE)));
-        assert_eq!(CREDITS.len(), 44);
+        assert_eq!(CREDITS.len(), 43);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
         assert!(v[0].get("areas").is_none() && v[1]["areas"][0][2] == -40.0);
