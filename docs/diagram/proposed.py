@@ -46,7 +46,7 @@ def build(check=False):
     n_lab = d.card('base', 'd1', max(n_base.b + 22, n_wat.b + 14), 'labels', 'Python', ['ranked worldwide: places,', 'water and parks; their', 'English, kana, languages'],
                    [(['layers/labels/'], 'packs · MVT z0–12')], scope='global')
     s_pl = d.src('osm', cy, 'OSM pass', ['the basemap’s part: water,', 'borders, parks, places;', 'the labels set'], minh=n_base.h)
-    c_pin = d.cur('base', s_pl.b + 10, 'Planetiler’s pins', ['its jar, Natural Earth, water', 'polygons, lake centrelines'],
+    c_pin = d.cur('base', s_pl.b + 10, 'The basemap’s pinned versions', ['its jar, Natural Earth, water', 'polygons, lake centrelines'],
                   'downloaded by hand', 'part')
     b_lab = d.layer('base', max(n_lab.y + 6, b_coast.b + 8), 'Place labels', ['placed by importance'])
     p_lab = d.pill('base', b_lab.my, ['/tiles/labels'], note='names attached')
@@ -160,16 +160,14 @@ def build(check=False):
                   [(['sources/terrain-z8-v3'], 'one pack')], scope='global')
     n_t6 = d.card('terr', 'd4', n_slope.b + 22, 'per z6 tile · under way', 'Rust', ['terrain and slope as a piece', 'per z6 tile, assembled per z3', 'pack, as tree cover is (#32)'],
                   [(['the same packs'], 'redone a piece at a time')], later=True)
-    c_rep = d.cur('terr', s_bw.b + 10, 'The repair’s thresholds', ['what counts as broken: 100 m,', '63°, seams, walled patches'],
-                  'tuned by hand on the coverage', 'doc')
     p_t = d.pill('terr', cy + 12, ['/tiles/terrain'], note='the pack for the tile')
     b_terr = d.layer('terr', 0, '3D terrain · hill-shading', ['elevation tint'], cy=p_t.my)
     b_cont = d.layer('terr', b_terr.b + 8, 'Contour lines', ['traced from terrain tiles'], computed=True)
     b_slope = d.layer('terr', b_cont.b + 8, 'Slope tint', ['colour per quarter, averaged'])
     p_s = d.pill('terr', b_slope.my, ['/tiles/slope'], note='z12 made when asked')
     d.arrow('terr', (s_aws.r, n_terr.y + 18), (n_terr.l, n_terr.y + 18))
-    xt = n_terr.l - 12   # GLO-30, the water and the repair's thresholds join the terrain step on one trunk
-    for k, sb, yin in [('terr', s_glo, n_terr.y + 46), ('base', s_bw, n_terr.y + 74), ('terr', c_rep, n_terr.y + 102)]:
+    xt = n_terr.l - 12   # GLO-30 and the water join the terrain step on one trunk
+    for k, sb, yin in [('terr', s_glo, n_terr.y + 46), ('base', s_bw, n_terr.y + 74)]:
         d.arrow(k, (sb.r, sb.y + 18), (xt, sb.y + 18), (xt, yin), (n_terr.l, yin))
     d.arrow('terr', (n_terr.r, n_slope.y + 18), (n_slope.l, n_slope.y + 18))
     d.arrow('terr', (s_aws.r, s_aws.y + 40), (n_terr.l - 28, s_aws.y + 40), (n_terr.l - 28, n_z8.y + 18), (n_z8.l, n_z8.y + 18))
@@ -178,7 +176,7 @@ def build(check=False):
     d.to_layer('terr', p_t, b_terr)
     d.arrow('terr', (p_t.r, p_t.my + 8), (b_cont.l - 12, p_t.my + 8), (b_cont.l - 12, b_cont.my), (b_cont.l, b_cont.my))
     d.to_layer('terr', p_s, b_slope)
-    y1 = max(n_terr.b, n_z8.b, b_slope.b, c_rep.b) + PAD
+    y1 = max(n_terr.b, n_z8.b, b_slope.b, s_bw.b) + PAD
     d.lane('TERRAIN', y0, y1)
     l4_bottom = y1
 
@@ -234,7 +232,6 @@ def build(check=False):
                   [(['work/bld/<z6>'], 'sectioned · per z14 block')], scope='area', shared=True)
     s_bld = d.src('bldg', y2, 'Overture buildings', ['release 2026-09-23.1, on S3:', 'footprints; heights or floors', 'for ~46 % in the coverage'])
     s_gh = d.src('bldg', s_bld.b + 8, 'GHSL building heights', ['EC JRC: the mean height in', 'each ~90 m cell, 2018'])
-    c_fit = d.cur('bldg', s_gh.b + 10, 'Storey heights · fills', ['fits per country, measured', 'once, copied into the code'], 'a one-off measurement (B0)', 'part')
     n_b3 = d.card('bldg', 'd4', n_bp.y, '3D buildings', 'Rust', ['heights: measured, else floors,', 'neighbours, GHSL, size, kind;', 'later PLATEAU’s, BD TOPO’s'],
                   [(['layers/buildings/'], 'packs · MVT z12–14')], scope='area', shared=True, task=True)
     p_bld = d.pill('bldg', n_b3.y + 40, ['/tiles/buildings'], note=['z12–14, overzoomed;', 'once in a catalog'], later=True)
@@ -244,16 +241,15 @@ def build(check=False):
     d.arrow('bldg', (s_bld.r, n_bf.y + 18), (n_bf.l, n_bf.y + 18)) if s_bld.b > n_bf.y + 22 else \
         d.arrow('bldg', (s_bld.r, s_bld.b - 12), (s_bld.r + 14, s_bld.b - 12), (s_bld.r + 14, n_bf.y + 18), (n_bf.l, n_bf.y + 18))
     yg = max(s_gh.y + 18, n_bf.y + 46)
-    d.arrow('bldg', (s_gh.r, yg), (n_bf.l, yg))
+    if yg > s_gh.y + 18:
+        d.arrow('bldg', (s_gh.r, s_gh.y + 18), (n_bf.l - 12, s_gh.y + 18), (n_bf.l - 12, yg), (n_bf.l, yg))
+    else:
+        d.arrow('bldg', (s_gh.r, yg), (n_bf.l, yg))
     d.arrow('bldg', (n_bf.r, n_bp.y + 18), (n_bp.l, n_bp.y + 18))
     d.arrow('bldg', (n_bp.r, n_b3.y + 18), (n_b3.l, n_b3.y + 18))
-    yft = max(c_fit.y + 20, n_bf.b + 12)
-    xft = n_b3.l + 40
-    d.arrow('bldg', (c_fit.r, c_fit.y + 20), (n_bf.l - 12, c_fit.y + 20), (n_bf.l - 12, yft), (xft, yft), (xft, n_b3.b),
-            label='the fits', at=(n_bf.r + 8, yft - 5))
     d.arrow('bldg', (n_b3.r, p_bld.my), (p_bld.l, p_bld.my))
     d.to_layer('bldg', p_bld, b_bld, dashed=True)
-    s_can = d.src('land', max(c_fit.b, n_b3.b, yft) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery) ·', 'Copernicus HRL · NALCMS'],
+    s_can = d.src('land', max(s_gh.b, n_bf.b, n_bp.b, n_b3.b) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery) ·', 'Copernicus HRL · NALCMS'],
                   kept=['sources/canopy/ (10°)', 'sources/trees/leaf/'])
     n_trees = d.card('land', 'd1', s_can.y + 30, 'tree cover', 'Rust', ['cover · height · leaf type,', 'z9–12 per z6 tile, clipped', 'to the coverage; its mid'],
                      [(['layers/trees-*/ hi'], 'packs · Terrarium WebP'), (['work/trees-mid/'], 'its z8 tiles and values')], scope='area', shared=True, task=True)

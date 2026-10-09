@@ -1289,10 +1289,9 @@ folder> --scratch <local dir>` as for every step.
   n/public_transport=station w/railway=station` and `osmium export … -f geojsonseq`); then
   `scenic-build put sources/rail/mtr-pairs bin pairs-mtr.bin` (and `mtr.json` as `sources/rail/mtr`).
   The rail job's key follows them.
-- **Translations' method** (§7): the translators' brief, batches and raw outputs behind
-  `translations/` (`inputs/names/tr-2026-09/`, `TRANSLATORS.md` the brief;
-  `translations/0-converted/conversion-log.txt` how they became the tables), and the scripts that
-  sized the work (`inputs/names/analysis/`: `latinwords.py`, `namecount.py`).
+- **Translations' method** (§7): `translations/0-converted/conversion-log.txt`, how the earlier
+  translation work became the tables, and the scripts that sized the work (`inputs/names/analysis/`:
+  `latinwords.py`, `namecount.py`).
 - **Descriptions' method** (§7): the writers' briefs (`inputs/descriptions/briefs-2026-09/`:
   `WRITERS.md`, `FIXERS.md`, `RESEARCH.md`); the lists to write and today's brief are the build
   Mac's (`descriptions/todo/`, tools/names/descriptions-todo.md).
