@@ -810,11 +810,15 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the cache
     when it lacks one; north of 60°N, Copernicus DEM GLO-30 (`sources/copernicus-dem/`, below); and
     the water of the latest pass's basemap (below). **The terrain depends on AWS's tiles, GLO-30's
-    tiles, the basemap and the code**, each pinned in the terrain job's key (agent::build:
-    `TERRAIN_V`, `terrain_pack::NORTH_PIN`, the basemap's content name), so a rebuild with the same
-    key gives identical packs. A new pass makes a new basemap, whose content name changes every
-    terrain piece's and assembly's key: the terrain is made again after each pass (every piece, the
-    assemblies and the root, about 2 h), and the steps after it again where its tiles' bytes changed (slope everywhere; units and
+    tiles, the basemap's water and the code**, each pinned in the terrain job's key (agent::build:
+    `TERRAIN_V`, `terrain_pack::NORTH_PIN`, and the digest of the water the target reads), so a
+    rebuild with the same key gives identical packs. A piece reads the basemap's `water` tile at the
+    zoom of each tile it makes (its z9–12 tiles near the coverage, no margin: a tile's water is its
+    own basemap tile), its lakes' levels from those alone; an assembly reads its z3 tile's z6–8
+    water tiles (none coarser) and its pieces' mids (their lakes' levels). Their digests (Job keys)
+    are worked out once a basemap by the `terrain-water` job, so a new pass makes again only the
+    pieces whose water changed and the assemblies of their areas (each assembly too when its z6–8
+    water changed), and the steps after them where their tiles' bytes changed (slope, units and
     peaks where a tile they read changed). GLO-30's tiles don't change (the bucket's of May 2022);
     a tile the coverage newly wants is fetched into the store by the job.
   - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass that takes what
@@ -1320,11 +1324,28 @@ folder> --scratch <local dir>` as for every step.
 ### Job keys
 
 A job's key is its step version plus what it reads, mostly by content name. The ones that cascade:
+- **terrain-water (one):** the water source's pin (the latest pass's basemap's content name) and
+  what the terrain's targets read of it (each piece with the coverage's fingerprint that decides
+  its tiles, each assembly), run when the source's digests file (`work/water-idx/<hash16 of the
+  pin>`, formats.md) lacks one of them: a new basemap, or the coverage grown. It reads the
+  basemap's water under each piece's tiles and each assembly's z6–8 (on 2026-10-09, 398 pieces and
+  18 areas, 1.06 million tiles, the basemap read over SMB: 13.5 min on the build Mac the first
+  time, under other work, 6 min again; 10 and 7 min on the M1), keeping the digests the file has
+  for the same reads. The plan itself reads only the file (a few KB, kept beside the terrain
+  indexes), so it stays fast. The digest of a target's water (`terrain_water::tiles_digest`) is over
+  its tiles with water, each by the polygons as the terrain reads them (`polys_digest`: their
+  kind, OSM id, rings; a lake without an id by its place in the tile, not its value), so only a
+  change the terrain could see changes it; a lake fill (Canada's, #124) joins as part of the
+  water source, its pin then naming it, and changes the digests of the tiles it adds lakes to.
+  Until a target's digest is there its key is unknown ("?"): it's neither current nor made, and
+  its area waits, units and all;
 - **terrain (a piece, per z6 tile):** the coverage within 20 km of its tile (which decides its
-  tiles), GLO-30 (`NORTH_PIN`) and the basemap its water comes from, by content name;
+  tiles), GLO-30 (`NORTH_PIN`) and the digest of the water it reads (`agent::build::water_key`:
+  `TERRAIN_WATER_V`; "-" without a basemap);
 - **terrain-lo (an assembly, per z3 tile):** its pieces' mids by content ("-" for a piece without
   one: it can't be assembled until each has, but its key with every mid "-" is what the records of
-  an area's whole run are read as: §8, A new key scheme) and the basemap; `TERRAIN_LO_V`;
+  an area's whole run are read as: §8, A new key scheme) and the digest of its z6–8 water;
+  `TERRAIN_LO_V`;
 - **slope (a piece, per z6 tile):** its terrain hi pack (which tiles it works out) and every
   terrain tile it can read, by content, from the packs' indexes (`agent::build::slope_piece_reads`):
   each tile it works out from its terrain (a z12 one, or one its children don't all cover) and the
@@ -1696,6 +1717,20 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     same (Order), and its job's record then holds. A record of the old scheme stale under it, or an
     area's whole run merged late (byte for byte what its pieces make), changes nothing derived but
     the pieces without records. `scenic-build p5-check terrain` says what it would do, reading only.
+  - **The terrain's water** (2026-10-09: its pieces' and assemblies' keys named the basemap by
+    content name; they name the digest of the water each reads, Job keys), read likewise, in
+    memory: a z3 tile's whole run's record is read by the water's digests of the basemap it was
+    made from, the latest's or an earlier one's whose digests the manifest names (each source's
+    file is kept: `rekey::derive` tries them in turn), so its pieces made from an earlier basemap
+    are current where its water is the latest's; and a piece's or an assembly's record under the
+    key that named a basemap (`rekey::v2`: an older app's job) is read under its key now by that
+    basemap's digests. A record whose basemap's digests aren't there yet (the terrain-water job
+    not run) is kept as it is, its targets' keys unknown meanwhile. `scenic-build
+    water-key-check` says what it does with the records, reading only: on 2026-10-09 the 18 areas'
+    whole runs' records read as their 398 pieces and assemblies, and 16 pieces' and an assembly's
+    records of the keys that named the basemap under their keys now, none to make; a new basemap
+    with the same water, none; one with ten pieces' water changed, those ten (deriving 2.7 s a
+    plan's first time, 0.46 s after).
   - **Tree cover** (§6, Trees: a z3 tile's whole run, keyed on the coverage inside it, became a
     piece per z6 tile and an assembly per z3 tile): a z3 tile current under the old key pins its
     pieces' inputs (the coverage inside a z6 tile follows from the coverage inside its z3 tile: the
@@ -2518,7 +2553,8 @@ At each phase's end an Opus agent reviews the work against this plan.
      pages and the map's polish built, not yet published), then PLATEAU.
    - Built (8 October): the terrain fix (§6, Terrain): GLO-30 north of 60°N, the water flattened
      from the basemap, the seam spikes' and walled patches' rules. Terrain now depends on AWS's
-     tiles, GLO-30's and the pass's basemap (pinned in its key: a new pass makes it again). Gaps: a
+     tiles, GLO-30's and the pass's basemap's water (pinned in its key by the digest of what each
+     piece reads: a new pass makes again where its water changed, §6, Job keys). Gaps: a
      lake across two z6 tiles may take two levels a metre or two apart; the worldwide z8 and the
      peaks' z12 outside the packs take the new rules but not GLO-30 nor the water; rivers are left
      as AWS has them.

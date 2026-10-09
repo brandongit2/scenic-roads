@@ -682,7 +682,14 @@ class, id) within a tile. The client sends the id with the clicked point.
   of the piece made, by column then row, `quad-9-<x>-<y>`: its 2×2 means, f32 × 128 × 128 row by
   row, little-endian; then `lake-ids`, u64, and `lake-levels`, f32, the piece's lakes' levels by
   id); `work/slope-mid/6-x-y` (sectioned: a slope piece's mid; meta `{fmt: 1, step: "slope", tile,
-  v}`, `v` `SLOPE_V`; `<z>-<x>-<y>`, each of its z6–8 tiles' PNG as stored, by zoom, column, row).
+  v}`, `v` `SLOPE_V`; `<z>-<x>-<y>`, each of its z6–8 tiles' PNG as stored, by zoom, column, row);
+  `work/water-idx/<hash16 of the pin>` (plain JSON: the terrain's water digests of a water source,
+  one per source, kept when it's replaced; `{fmt: 1, step: "terrain-water", pin, digests}`, `pin`
+  the source's (the basemap's content name), `digests` by terrain target, "6/x/y" a piece and
+  "3/x/y" an assembly, each `[from, digest]`: `from` what decides the tiles it reads (a piece's
+  coverage fingerprint within 20 km; "z6-8" an assembly's), `digest` a hash16 over its tiles with
+  water, a line each, `z/x/y <XXH3 of the polygons as the terrain reads them, hex>`, or "-" for
+  none: pipeline::terrain_water::WaterIdx).
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; the answers Wikidata and
   Wikipedia gave for the pass (pipeline::answers; not content-named, rewritten whole as a step
   starts and ends, tar then zstd with its checksum; one that doesn't read whole moved aside as
