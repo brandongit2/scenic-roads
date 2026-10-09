@@ -14,7 +14,7 @@ import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, wit
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
 import { paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
-import { CASING_CLASSES_MASK, RAIL0, RAIL_GROUPS } from './config';
+import { BG, CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp } from './config';
 import { mapScheme, rgb, schemeUniforms } from './mapschemes';
 import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from './rail';
 import type { FeatureSummary } from './overlays';
@@ -28,7 +28,7 @@ import { idle } from './idle';
 import { mapTasks } from './maptasks';
 import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
-import { cdfOf, passes, scaleU } from './ui/scale';
+import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
 import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
@@ -1295,25 +1295,42 @@ async function main() {
   const hudOff = () => document.body.classList.contains('hud-off');
   let pickAt: { x: number; y: number } | null = null;
   const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
-  const colourOf = (hv: HoverInfo) => {
-    const s = store.s;
+  const cssOfRgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
+  /** A CSS colour ('#rrggbb' or 'rgb(r,g,b)') mixed toward the map's background, `k` of it kept. */
+  const mixBg = (css: string, k: number) => {
+    const m = /^#([0-9a-f]{6})$/i.exec(css);
+    const c = m ? [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) / 255) : (css.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map((v) => Number(v) / 255);
+    return cssOfRgb(c.map((v, i) => BG[i] + (v - BG[i]) * k));
+  };
+  /** A rail line's colour and opacity at a point as the rail layer draws it (roads/layer.ts
+   * endColour), for the stop dot there: its colour (by line, service, single or the metric's
+   * palette, a highlight's misses grey) mixed toward the background by the class's colour strength
+   * at this zoom (tunnels at 45 %, misses at most 85 %), and with a metric the scale's low-end fade
+   * as its opacity. The dots took the bare colour, so on a tunnel or at the low end of the scale a
+   * stop shone brighter than its line. */
+  const railLookOf = (hv: HoverInfo): { c: string; a: number } => {
+    const r = store.s.rail;
     const cls = hv.style & 15;
-    if (cls >= RAIL0) {
-      const r = s.rail;
-      const lc = hv.tile.data!.lineColour[hv.hit.line];
-      if (r.colour === 'line') return lc ? hex(lc - 1) : RAIL_GROUP_COLOURS[cls - RAIL0];
-      if (r.colour === 'group') return RAIL_GROUP_COLOURS[cls - RAIL0];
-      if (r.colour === 'single') return r.single;
+    let col: string, a = 1;
+    let fade = interp(FADE_Z, FADES[cls], map.getZoom()) * ((hv.style & 64) !== 0 ? 0.45 : 1);
+    const lc = hv.tile.data!.lineColour[hv.hit.line];
+    if (r.colour === 'line') col = lc ? hex(lc - 1) : RAIL_GROUP_COLOURS[cls - RAIL0];
+    else if (r.colour === 'group') col = RAIL_GROUP_COLOURS[cls - RAIL0];
+    else if (r.colour === 'single') col = r.single;
+    else {
       const v = railMetricOf(r.metric, { elev: hv.elev, grade: hv.grade, ground: hv.ground, bridge: (hv.style & 96) === 32, tunnel: (hv.style & 64) !== 0, ch: hv.ch, freq: hv.fq }, r.weights);
-      if (Number.isNaN(v)) return '#5c6673';
-      if (!passes(v, r.threshold, railCur)) return '#3a414c';
-      return paletteRgb(r.palette, scaleU(v, railCur, r.equalize ? railCdf : null));
+      if (Number.isNaN(v)) col = '#5c6673';
+      else {
+        const u = scaleU(v, railCur, r.equalize ? railCdf : null);
+        a = fadeAlpha(u, r.lowFade, r.lowSpan);
+        if (passes(v, r.threshold, railCur)) col = paletteRgb(r.palette, u);
+        else {
+          col = cssOfRgb(DIM_GREY);
+          fade = Math.min(fade, 0.85);
+        }
+      }
     }
-    if (s.mode === 'map') return mapScheme(s.mapScheme).fill[cls] ?? '#888';
-    const val = metricOf(s.mode, hv.elev, hv.grade, hv.ch, s.weights);
-    let u = Math.max(0, Math.min(1, (val - cur[0]) / (cur[1] - cur[0])));
-    if (s.equalize && cdf) u = cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
-    return paletteRgb(s.palette, u);
+    return { c: mixBg(col, fade), a };
   };
   // Rail stop and ferry terminal dots in the colour of their line at that point; each shows only
   // once coloured (stations.ts, ferries.ts). In idle time (idle.ts), after a render, at most every
@@ -1323,13 +1340,15 @@ async function main() {
   let dotsAt = 0;
   function* colourDots(): Generator<void, void> {
     dotsAt = performance.now();
-    const key = [rails.drawnCount, JSON.stringify({ ...store.s.rail, opacity: 1 }), railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights)].join('|');
+    // (The zoom while the lines' colour strength follows it: railLookOf.)
+    const fz = Math.min(FADE_Z[FADE_Z.length - 1], Math.round(map.getZoom() * 4) / 4);
+    const key = [rails.drawnCount, JSON.stringify({ ...store.s.rail, opacity: 1 }), railCur.join(), JSON.stringify(store.s.ferry), JSON.stringify(store.s.lineWeights), fz].join('|');
     const all = key !== dotsKey;
     dotsKey = key;
     const p = rails.progress();
     const colourAt = (lng: number, lat: number) => {
       const hv = rails.pickNear(lng, lat, 4);
-      return hv === undefined ? undefined : hv ? colourOf(hv) : null;
+      return hv === undefined ? undefined : hv ? railLookOf(hv) : null;
     };
     yield* stations.recolour(colourAt, all, p.loaded >= p.wanted);
     yield* ferries.recolourTerminals(all);
