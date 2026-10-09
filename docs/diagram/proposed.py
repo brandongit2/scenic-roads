@@ -110,7 +110,7 @@ def build(check=False):
     n_hs = d.card('place', 'd1', cy, 'heritage sites', 'Python', ['heritage.py on the registers', 'over the coverage + 20 km,', 'sliced per area'],
                   [(['work/heritage/<date>/'], 'positions · areas per z6')], scope='global')
     c_regs = d.cur('place', cy, 'Registers (a snapshot)', ['UNESCO · Parks Canada · NRHP ·', 'Mérimée · NHLE · 文化財 …;', 'park facts, English names'],
-                   'hand downloads, old scripts', ('part', 'partly; being documented'))
+                   'hand downloads, scripts by hand', 'part')
     s_osm2 = d.src('osm', c_regs.b + 10, 'OSM pieces · sets', ['POIs · designated areas ·', 'summits · hiking routes'])
     s_wd = d.src('place', s_osm2.b + 8, 'Wikidata · Wikipedia', ['facts; pageviews, four', 'months a pass, all languages'])
     n_poi = d.card('place', 'd1', n_hs.b + 22, 'candidates · peaks', 'Rust', ['each area’s points; prominence', 'and isolation over z12 and', 'the worldwide z8'],
@@ -276,8 +276,8 @@ def build(check=False):
     n_st = d.card('net', 'd1', n_rf.b + 22, 'rail stops · ferries', 'Rust · Py', ['stops near the built areas;', 'ferries worldwide, with', 'their sailings a day'],
                   [(['layers/stations/ · ferries/'], 'packs · MVT, GeoJSON blocks')], scope='global')
     s_tt = d.src('net', cy, 'Rail feeds (GTFS)', ['Mobility Database, operators’', 'own: found and fetched by', 'the job'], kept=['sources/rail/gtfs/'])
-    c_mtr = d.cur('net', s_tt.b + 10, 'The MTR’s lines', ['Hong Kong’s trains: stations,', 'headways, from mtr.com.hk'], 'Claude research, by hand', ('part', 'partly; being documented'))
-    c_fy = d.cur('net', c_mtr.b + 10, 'Ferry timetables', ['sailings a day: 40 operators’', 'GTFS counted, pages read'], 'Claude research; gtfs.py by hand', ('part', 'partly; being documented'))
+    c_mtr = d.cur('net', s_tt.b + 10, 'The MTR’s lines', ['Hong Kong’s trains: stations,', 'headways, from mtr.com.hk'], 'Claude research, by hand', 'part')
+    c_fy = d.cur('net', c_mtr.b + 10, 'Ferry timetables', ['sailings a day: 40 operators’', 'GTFS counted, pages read'], 'Claude research; gtfs.py by hand', 'part')
     s_osm6 = d.src('osm', c_fy.b + 8, 'OSM sets', ['the world’s tracks, stations,', 'routes and ferries'])
     p_rf = d.pill('net', n_rf.y + 30, ['/api/railfreq'], note='trains a day, per way')
     b_rf = d.layer('net', 0, 'Trains a day', ['rail lines coloured and', 'filtered by it'], cy=p_rf.my)
