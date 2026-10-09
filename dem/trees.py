@@ -41,6 +41,8 @@ from rasterio.transform import from_bounds
 from rasterio.windows import Window
 from PIL import Image
 
+from timings import phase
+
 ZMAX, ZBLOCK, ZMIN = 12, 8, 4
 TS = 256
 BS = TS << (ZMAX - ZBLOCK)  # block size in z12 pixels (4096)
@@ -367,12 +369,14 @@ def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> boo
                 if not waiting:
                     print(f"canopy: waiting for another job's download ({lock})", file=sys.stderr, flush=True)
                     waiting = True
-                time.sleep(20)
+                with phase("another job's download waited for", "wait"):
+                    time.sleep(20)
                 continue
             os.write(fd, f"{socket.gethostname()} {os.getpid()}".encode())
             os.close(fd)
             try:
-                download(chm_urls(kept.name), kept, coming)
+                with phase("the canopy squares downloaded to the NAS", "net"):
+                    download(chm_urls(kept.name), kept, coming)
             finally:
                 lock.unlink(missing_ok=True)
 
@@ -382,7 +386,8 @@ def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> boo
         if not kept_whole(p):
             kept = store / p.name
             fetch_once(kept, (lambda f, j=j: said((j + f) / 2)) if said else None)
-            whole.copy(kept, p)
+            with phase("the canopy squares copied from the NAS", "nas-read"):
+                whole.copy(kept, p)
             if said:
                 said((j + 1) / 2)
         if p.stat().st_size == 0:
@@ -471,46 +476,53 @@ def z3_main(args: dict) -> None:
     for d in (chm, leaf_dir, out):
         d.mkdir(parents=True, exist_ok=True)
     workers = int(args.get("--workers", "6"))
-    load_shapes(args["--coverage"])
+    with phase("the coverage read", "compute"):
+        load_shapes(args["--coverage"])
 
     def meets(w, s, e, n):
         return any(shapes_meeting(w, s, e, n))
 
     # The zoom-8 blocks of the z3 tile that the coverage meets.
-    k = 1 << (ZBLOCK - 3)
-    blocks = [(bx, by) for bx in range(qx * k, (qx + 1) * k) for by in range(qy * k, (qy + 1) * k) if meets(*tile_bounds(ZBLOCK, bx, by))]
-    # The canopy squares they touch, fetched when missing, and their leaf types.
-    want = set()
-    for bx, by in blocks:
-        w, s, e, n = tile_bounds(ZBLOCK, bx, by)
-        for top in range(math.ceil(n / 10) * 10, math.floor(s / 10) * 10, -10):
-            for left in range(math.floor(w / 10) * 10, math.ceil(e / 10) * 10, 10):
-                if top > s and top - 10 < n and left < e and left + 10 > w:
-                    want.add((top, left))
+    with phase("the coverage read", "compute"):
+        k = 1 << (ZBLOCK - 3)
+        blocks = [(bx, by) for bx in range(qx * k, (qx + 1) * k) for by in range(qy * k, (qy + 1) * k) if meets(*tile_bounds(ZBLOCK, bx, by))]
+        # The canopy squares they touch, fetched when missing, and their leaf types.
+        want = set()
+        for bx, by in blocks:
+            w, s, e, n = tile_bounds(ZBLOCK, bx, by)
+            for top in range(math.ceil(n / 10) * 10, math.floor(s / 10) * 10, -10):
+                for left in range(math.floor(w / 10) * 10, math.ceil(e / 10) * 10, 10):
+                    if top > s and top - 10 < n and left < e and left + 10 > w:
+                        want.add((top, left))
     sqs = []
-    for i, (top, left) in enumerate(sorted(want)):
-        print(f"progress: {i}/{len(want)} canopy squares", file=sys.stderr, flush=True)
-        # (And within the square, as its files come.)
-        if canopy_square(chm, store, top, left, lambda f, i=i: progress(i + f, len(want), "canopy squares")):
-            sqs.append((top, left))
-    print(f"progress: {len(want)}/{len(want)} canopy squares", file=sys.stderr, flush=True)
-    leaftype.make(sqs, leaf_dir, leaf_dir.parent, lambda done, total: progress(done, total, "leaf-type squares"))
+    with phase("the canopy squares fetched", "mixed"):
+        for i, (top, left) in enumerate(sorted(want)):
+            print(f"progress: {i}/{len(want)} canopy squares", file=sys.stderr, flush=True)
+            # (And within the square, as its files come.)
+            if canopy_square(chm, store, top, left, lambda f, i=i: progress(i + f, len(want), "canopy squares")):
+                sqs.append((top, left))
+        print(f"progress: {len(want)}/{len(want)} canopy squares", file=sys.stderr, flush=True)
+    with phase("the leaf-type squares made", "mixed"):
+        leaftype.make(sqs, leaf_dir, leaf_dir.parent, lambda done, total: progress(done, total, "leaf-type squares"))
     print(f"trees z3 {qx},{qy}: {len(blocks)} zoom-8 blocks, {len(sqs)} canopy squares ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
     meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
-    writers = {v: Writer(out / f"trees-{v}.tiles", meta) for v in VARS}
-    tops: dict[str, dict] = {v: {} for v in VARS}
-    # (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
-    print(f"progress: 0/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
-    with Pool(workers, initializer=load_shapes, initargs=(args["--coverage"],)) as pool:
-        for i, ((bx, by), tiles, t) in enumerate(pool.imap_unordered(z3_block, [(bx, by, str(chm), str(leaf_dir), sqs) for bx, by in blocks])):
-            for name, z, x, y, blob, raw in tiles:
-                writers[name].add(z, x, y, blob, raw)
-            for v in VARS:
-                tops[v][(bx, by)] = t[v]
-            print(f"progress: {i + 1}/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
-    lower_zooms(tops, VARS, writers, lambda done, total: progress(done, total, "zoom 7–4 tiles"))
-    for v, wtr in writers.items():
-        print(f"trees-{v}.tiles: {wtr.finish()} tiles", file=sys.stderr)
+    with phase("the zoom-8 blocks made", "compute"):
+        writers = {v: Writer(out / f"trees-{v}.tiles", meta) for v in VARS}
+        tops: dict[str, dict] = {v: {} for v in VARS}
+        # (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
+        print(f"progress: 0/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
+        with Pool(workers, initializer=load_shapes, initargs=(args["--coverage"],)) as pool:
+            for i, ((bx, by), tiles, t) in enumerate(pool.imap_unordered(z3_block, [(bx, by, str(chm), str(leaf_dir), sqs) for bx, by in blocks])):
+                for name, z, x, y, blob, raw in tiles:
+                    writers[name].add(z, x, y, blob, raw)
+                for v in VARS:
+                    tops[v][(bx, by)] = t[v]
+                print(f"progress: {i + 1}/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
+    with phase("the zoom 7–4 tiles made", "compute"):
+        lower_zooms(tops, VARS, writers, lambda done, total: progress(done, total, "zoom 7–4 tiles"))
+    with phase("the archives finished", "disk"):
+        for v, wtr in writers.items():
+            print(f"trees-{v}.tiles: {wtr.finish()} tiles", file=sys.stderr)
     print(f"trees z3 {qx},{qy}: done in {time.time() - t0:.0f} s", file=sys.stderr)
 
 

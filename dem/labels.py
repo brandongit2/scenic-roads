@@ -54,6 +54,7 @@ from shapely import wkb as swkb
 
 from interest import isolation, min_zoom
 from names import differs
+from timings import phase
 
 MAXZ = 12
 # The smallest spacing the app allows (px): a label is in the tiles from the zoom it could show at it.
@@ -371,61 +372,69 @@ def main() -> None:
     t0 = time.time()
     progress(0, 6, "steps (the label points)")
     # (osmium's bars say how far the step is: a third of it each.)
-    run_osmium(["tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], lambda f: progress(f / 3, 6, "steps (the label points)"))
+    with phase("the label points filtered by osmium", "compute"):
+        run_osmium(["tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], lambda f: progress(f / 3, 6, "steps (the label points)"))
     # Only named areas become labels: the unnamed (most lakes and ponds) go before their nodes are
     # read. Members of a named relation stay (as its references), named or not.
     all_areas = AREAS.with_name(AREAS.name.replace(".osm.pbf", "-all.osm.pbf"))
-    run_osmium(["tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(all_areas)], lambda f: progress((1 + f) / 3, 6, "steps (the label points)"))
-    run_osmium(["tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], lambda f: progress((2 + f) / 3, 6, "steps (the label points)"))
-    all_areas.unlink(missing_ok=True)
+    with phase("the areas filtered by osmium", "compute"):
+        run_osmium(["tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(all_areas)], lambda f: progress((1 + f) / 3, 6, "steps (the label points)"))
+    with phase("the named areas filtered by osmium", "compute"):
+        run_osmium(["tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], lambda f: progress((2 + f) / 3, 6, "steps (the label points)"))
+        all_areas.unlink(missing_ok=True)
     # kind, class, name, lon, lat, score, own English, area (km²), zoom by population, kana reading,
     # OSM's languages, OSM object.
     rows: list[tuple[str, str, str, float, float, float, str | None, float | None, float | None, str | None, str | None, str]] = []
     progress(1, 6, "steps (reading the points)")
-    Points(rows).apply_file(str(NODES))
+    with phase("the label points read", "compute"):
+        Points(rows).apply_file(str(NODES))
     print(f"{len(rows)} label points ({time.time() - t0:.0f} s)", file=sys.stderr)
     # Node locations in a sparse index on disk (16 bytes a node): pyosmium's default switches to a
     # dense array as big as the highest node id (about 100 GB for the planet's ids).
-    idx = AREAS.with_name("labels-nodes.idx")
-    idx.unlink(missing_ok=True)
-    progress(2, 6, "steps (reading the named areas)")
-    Areas(rows).apply_file(str(AREAS), locations=True, idx=f"sparse_file_array,{idx}")
-    idx.unlink(missing_ok=True)
+    with phase("the named areas read", "compute"):
+        idx = AREAS.with_name("labels-nodes.idx")
+        idx.unlink(missing_ok=True)
+        progress(2, 6, "steps (reading the named areas)")
+        Areas(rows).apply_file(str(AREAS), locations=True, idx=f"sparse_file_array,{idx}")
+        idx.unlink(missing_ok=True)
     print(f"{len(rows)} labels read ({time.time() - t0:.0f} s)", file=sys.stderr)
-    keep = dedupe(rows, np.array([r[5] for r in rows]), np.array([r[3] for r in rows]), np.array([r[4] for r in rows]))
-    rows = [r for r, k in zip(rows, keep) if k]
+    with phase("the duplicates left out", "compute"):
+        keep = dedupe(rows, np.array([r[5] for r in rows]), np.array([r[3] for r in rows]), np.array([r[4] for r in rows]))
+        rows = [r for r, k in zip(rows, keep) if k]
     print(f"{len(keep) - len(rows)} duplicates left out ({time.time() - t0:.0f} s)", file=sys.stderr)
-    kinds = np.array([r[0] for r in rows])
-    lon = np.array([r[3] for r in rows])
-    lat = np.array([r[4] for r in rows])
-    score = np.array([r[5] for r in rows])
-    # Areas: the zoom where √area spans one pixel; ms where it spans SIZE_PX.
-    zs = np.array([min_zoom(r[4], math.sqrt(r[7])) if r[7] else np.nan for r in rows])
-    ms = zs + math.log2(SIZE_PX)
-    # The zoom by size or population, relative to the default spacing as mz is.
-    absz = np.fmin(zs + math.log2(BIG_PX), np.array([r[8] if r[8] is not None else np.nan for r in rows])) - math.log2(DEFAULT_PX)
-    mz = np.zeros(len(rows))
-    progress(3, 6, "steps (each label's isolation)")
-    for k in ("place", "state", "water", "park"):
-        idx = np.nonzero(kinds == k)[0]
-        if not len(idx):
-            continue
-        ia = isolation(lon[idx], lat[idx], score[idx])
-        mz[idx] = [min_zoom(float(lat[i]), float(d)) for i, d in zip(idx, ia)]
-        mz[idx] = np.fmin(mz[idx], absz[idx])
-        print(f"  {k}: {len(idx)}, isolation done ({time.time() - t0:.0f} s)", file=sys.stderr)
-    lat_c = np.clip(lat, -85.05, 85.05)
-    tx = (lon + 180) / 360
-    ty = 0.5 - np.log(np.tan(np.pi / 4 + np.radians(lat_c) / 2)) / (2 * np.pi)
-    # (ms shifts by half the spacing's log2: up to this much sooner at MIN_PX.)
-    first = np.clip(np.floor(np.fmax(mz + math.log2(MIN_PX), ms - 0.5 * math.log2(DEFAULT_PX / MIN_PX))), 0, MAXZ).astype(int)
-    tiles: dict[tuple[int, int, int], list[int]] = defaultdict(list)
-    progress(4, 6, "steps (the tiles each label shows in)")
-    for i in range(len(rows)):
-        for z in range(first[i], MAXZ + 1):
-            n = 1 << z
-            tiles[(z, min(n - 1, int(tx[i] * n)), min(n - 1, int(ty[i] * n)))].append(i)
-    print(f"{len(tiles)} tiles ({time.time() - t0:.0f} s)", file=sys.stderr)
+    with phase("the isolation measured", "compute"):
+        kinds = np.array([r[0] for r in rows])
+        lon = np.array([r[3] for r in rows])
+        lat = np.array([r[4] for r in rows])
+        score = np.array([r[5] for r in rows])
+        # Areas: the zoom where √area spans one pixel; ms where it spans SIZE_PX.
+        zs = np.array([min_zoom(r[4], math.sqrt(r[7])) if r[7] else np.nan for r in rows])
+        ms = zs + math.log2(SIZE_PX)
+        # The zoom by size or population, relative to the default spacing as mz is.
+        absz = np.fmin(zs + math.log2(BIG_PX), np.array([r[8] if r[8] is not None else np.nan for r in rows])) - math.log2(DEFAULT_PX)
+        mz = np.zeros(len(rows))
+        progress(3, 6, "steps (each label's isolation)")
+        for k in ("place", "state", "water", "park"):
+            idx = np.nonzero(kinds == k)[0]
+            if not len(idx):
+                continue
+            ia = isolation(lon[idx], lat[idx], score[idx])
+            mz[idx] = [min_zoom(float(lat[i]), float(d)) for i, d in zip(idx, ia)]
+            mz[idx] = np.fmin(mz[idx], absz[idx])
+            print(f"  {k}: {len(idx)}, isolation done ({time.time() - t0:.0f} s)", file=sys.stderr)
+        lat_c = np.clip(lat, -85.05, 85.05)
+        tx = (lon + 180) / 360
+        ty = 0.5 - np.log(np.tan(np.pi / 4 + np.radians(lat_c) / 2)) / (2 * np.pi)
+        # (ms shifts by half the spacing's log2: up to this much sooner at MIN_PX.)
+        first = np.clip(np.floor(np.fmax(mz + math.log2(MIN_PX), ms - 0.5 * math.log2(DEFAULT_PX / MIN_PX))), 0, MAXZ).astype(int)
+    with phase("the labels placed in tiles", "compute"):
+        tiles: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+        progress(4, 6, "steps (the tiles each label shows in)")
+        for i in range(len(rows)):
+            for z in range(first[i], MAXZ + 1):
+                n = 1 << z
+                tiles[(z, min(n - 1, int(tx[i] * n)), min(n - 1, int(ty[i] * n)))].append(i)
+        print(f"{len(tiles)} tiles ({time.time() - t0:.0f} s)", file=sys.stderr)
     en_cache: dict[int, str | None] = {}
 
     def english(i: int) -> str | None:
@@ -434,25 +443,26 @@ def main() -> None:
             en_cache[i] = own.strip() if own and differs(rows[i][2], own) else None
         return en_cache[i]
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    w = Writer(OUT, json.dumps({"format": "pbf", "layer": "l", "maxzoom": MAXZ}))
-    step = max(1, len(tiles) // 100)
-    for k, (z, x, y) in enumerate(sorted(tiles)):
-        if k % step == 0:
-            progress(k, len(tiles), "label tiles written")
-        n = 1 << z
-        ids = sorted(tiles[(z, x, y)], key=lambda i: -score[i])
-        pts = []
-        for i in ids:
-            kind, cls, name = rows[i][0], rows[i][1], rows[i][2]
-            pts.append((round((tx[i] * n - x) * EXTENT), round((ty[i] * n - y) * EXTENT), i,
-                        {"n": name, "en": english(i), "kana": rows[i][9] if english(i) is None else None, "l": rows[i][10], "o": rows[i][11],
-                         "k": kind, "c": cls, "mz": round(float(mz[i]), 2),
-                         "ms": None if math.isnan(ms[i]) else round(float(ms[i]), 2), "s": round(float(score[i]), 2)}))
-        raw = encode(pts)
-        w.add(z, x, y, gzip.compress(raw, 6), len(raw))
-    progress(len(tiles), len(tiles), "label tiles written")
-    count = w.finish()
+    with phase("the label tiles made and written", "compute"):
+        OUT.parent.mkdir(parents=True, exist_ok=True)
+        w = Writer(OUT, json.dumps({"format": "pbf", "layer": "l", "maxzoom": MAXZ}))
+        step = max(1, len(tiles) // 100)
+        for k, (z, x, y) in enumerate(sorted(tiles)):
+            if k % step == 0:
+                progress(k, len(tiles), "label tiles written")
+            n = 1 << z
+            ids = sorted(tiles[(z, x, y)], key=lambda i: -score[i])
+            pts = []
+            for i in ids:
+                kind, cls, name = rows[i][0], rows[i][1], rows[i][2]
+                pts.append((round((tx[i] * n - x) * EXTENT), round((ty[i] * n - y) * EXTENT), i,
+                            {"n": name, "en": english(i), "kana": rows[i][9] if english(i) is None else None, "l": rows[i][10], "o": rows[i][11],
+                             "k": kind, "c": cls, "mz": round(float(mz[i]), 2),
+                             "ms": None if math.isnan(ms[i]) else round(float(ms[i]), 2), "s": round(float(score[i]), 2)}))
+            raw = encode(pts)
+            w.add(z, x, y, gzip.compress(raw, 6), len(raw))
+        progress(len(tiles), len(tiles), "label tiles written")
+        count = w.finish()
     print(f"labels.tiles: {len(rows)} labels in {count} tiles, {OUT.stat().st_size / 1e6:.0f} MB ({time.time() - t0:.0f} s)", file=sys.stderr)
 
 

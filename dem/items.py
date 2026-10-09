@@ -43,6 +43,7 @@ from pathlib import Path
 import heritagewd
 import pageviews
 from heritagewd import sparql, val
+from timings import count, phase
 
 # Items fetched between cache writes.
 CHUNK = 5000
@@ -117,6 +118,7 @@ def read_jsonl(p: Path) -> dict[str, dict]:
     if not p.exists():
         return out
     b = p.read_bytes()
+    count(len(b), 1)
     whole = b[: b.rfind(b"\n") + 1]
     if len(whole) != len(b):
         with open(p, "r+b") as f:
@@ -155,11 +157,12 @@ def main() -> None:
     cache, out = Path(a.cache), Path(a.out)
     cache.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
-    want = json.loads(Path(a.qids).read_text())
-    facts_q = sorted(set(want.get("facts", [])))
-    views_q = sorted(set(want.get("views", [])))
-    dpath = cache / f"fetched-{a.epoch}.json"
-    fetched = load_json(dpath, {})
+    with phase("the item list and caches read", "disk"):
+        want = json.loads(Path(a.qids).read_text())
+        facts_q = sorted(set(want.get("facts", [])))
+        views_q = sorted(set(want.get("views", [])))
+        dpath = cache / f"fetched-{a.epoch}.json"
+        fetched = load_json(dpath, {})
 
     def note_fetch() -> None:
         today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
@@ -168,9 +171,10 @@ def main() -> None:
         write_json(dpath, fetched)
 
     # Facts: this epoch's, only the new items fetched.
-    fpath = cache / f"facts-{a.epoch}.jsonl"
-    facts = {q: {k: v for k, v in r.items() if k != "qid"} for q, r in read_jsonl(fpath).items()}
-    todo = [q for q in facts_q if q not in facts]
+    with phase("the item list and caches read", "disk"):
+        fpath = cache / f"facts-{a.epoch}.jsonl"
+        facts = {q: {k: v for k, v in r.items() if k != "qid"} for q, r in read_jsonl(fpath).items()}
+        todo = [q for q in facts_q if q not in facts]
     part(1)
     print(f"facts: {len(facts_q)} items, {len(todo)} to fetch", file=sys.stderr, flush=True)
     for k in range(0, len(todo), CHUNK):
@@ -179,17 +183,20 @@ def main() -> None:
         print(f"progress: {k}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
         chunk = todo[k:k + CHUNK]
         said = lambda n, k=k: print(f"progress: {k + n}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
-        got = wikidata(chunk, said)
+        with phase("facts fetched from Wikidata", "net"):
+            got = wikidata(chunk, said)
         # Items QLever doesn't know (merged, deleted) are remembered as such, not asked again.
-        rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in chunk]
-        append_jsonl(fpath, rows)
-        for r in rows:
-            facts[r["qid"]] = {k2: v for k2, v in r.items() if k2 != "qid"}
-        note_fetch()
+        with phase("the caches appended", "disk"):
+            rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in chunk]
+            append_jsonl(fpath, rows)
+            for r in rows:
+                facts[r["qid"]] = {k2: v for k2, v in r.items() if k2 != "qid"}
+            note_fetch()
 
     # Each item's Wikipedia articles: this epoch's.
     wpath = cache / f"wp-{a.epoch}.jsonl"
-    wp = read_jsonl(wpath)
+    with phase("the item list and caches read", "disk"):
+        wp = read_jsonl(wpath)
     need = [q for q in views_q if q not in wp]
     part(2)
     print(f"articles: {len(views_q)} items, {len(need)} to look up", file=sys.stderr, flush=True)
@@ -198,32 +205,37 @@ def main() -> None:
         # (Said again after each of the chunk's batches, as the facts' are.)
         said = lambda n, k=k: print(f"progress: {k + n}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
         rows = [{"qid": q, **r} for q, r in heritagewd.wikipedias(need[k:k + CHUNK], said).items()]
-        append_jsonl(wpath, rows)
-        wp.update((r["qid"], r) for r in rows)
-        note_fetch()
+        with phase("the caches appended", "disk"):
+            append_jsonl(wpath, rows)
+            wp.update((r["qid"], r) for r in rows)
+            note_fetch()
 
     # Pageviews over the epoch's four months (pageviews.month_views caches each month's counts).
     months = months_before(a.epoch)
     pageviews.OUT = cache
-    arts_of = {q: [x for x in wp.get(q, {}).get("arts", []) if "|" in x and x.split("|", 1)[0] in pageviews.LANGS] for q in views_q}
-    norm = lambda x: x.split("|", 1)[0] + "|" + x.split("|", 1)[1].replace(" ", "_")
-    wanted = {norm(x) for arts in arts_of.values() for x in arts}
+    with phase("the articles listed", "compute"):
+        arts_of = {q: [x for x in wp.get(q, {}).get("arts", []) if "|" in x and x.split("|", 1)[0] in pageviews.LANGS] for q in views_q}
+        norm = lambda x: x.split("|", 1)[0] + "|" + x.split("|", 1)[1].replace(" ", "_")
+        wanted = {norm(x) for arts in arts_of.values() for x in arts}
     part(3)
     print(f"views: {len(wanted)} articles over {', '.join(months)}", file=sys.stderr, flush=True)
     per_month = pageviews.months_views(months, wanted)
-    views = {q: round(sum(pm.get(norm(x), 0) for pm in per_month for x in arts) / len(months), 1) for q, arts in arts_of.items() if arts}
+    with phase("the views summed", "compute"):
+        views = {q: round(sum(pm.get(norm(x), 0) for pm in per_month for x in arts) / len(months), 1) for q, arts in arts_of.items() if arts}
 
-    write_json(out / "facts.json", {q: facts[q] for q in facts_q if not facts[q].get("missing")})
-    write_json(out / "views.json", views)
-    write_json(out / "meta.json", {"epoch": a.epoch, "months": months, "fetched": [fetched.get("first"), fetched.get("last")], "facts": len(facts_q), "views": len(views)})
+    with phase("the outputs written", "disk"):
+        write_json(out / "facts.json", {q: facts[q] for q in facts_q if not facts[q].get("missing")})
+        write_json(out / "views.json", views)
+        write_json(out / "meta.json", {"epoch": a.epoch, "months": months, "fetched": [fetched.get("first"), fetched.get("last")], "facts": len(facts_q), "views": len(views)})
     # Older epochs' caches go, and months before this epoch's (later epochs' months are later).
-    for p in cache.iterdir():
-        stem = p.name.split(".", 1)[0]
-        if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched", "kept") and stem.split("-", 1)[1] < a.epoch:
-            p.unlink()
-    for p in (cache / "months").iterdir() if (cache / "months").is_dir() else ():
-        if p.is_file() and p.name[:7] < months[0]:
-            p.unlink()
+    with phase("the old caches deleted", "disk"):
+        for p in cache.iterdir():
+            stem = p.name.split(".", 1)[0]
+            if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched", "kept") and stem.split("-", 1)[1] < a.epoch:
+                p.unlink()
+        for p in (cache / "months").iterdir() if (cache / "months").is_dir() else ():
+            if p.is_file() and p.name[:7] < months[0]:
+                p.unlink()
     print(f"items: {len(facts_q)} facts, {len(views)} items with views", file=sys.stderr)
 
 

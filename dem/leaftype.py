@@ -39,6 +39,8 @@ import rasterio
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject
 
+from timings import phase
+
 UA = "scenic-roads/0.1 (personal offline map)"
 RES = 0.0005
 N = int(round(10 / RES))
@@ -161,16 +163,17 @@ def europe_square(top: int, left: int, out: Path, progress=None) -> None:
     # so its classes aren't compared, only where there's data.
     old = None
     path = out / f"lat{top}_lon{left}.tif"
-    if path.exists():
-        import whole
+    with phase("today's squares read", "nas-read"):
+        if path.exists():
+            import whole
 
-        if whole.tiff_whole(path):
-            try:
-                with rasterio.open(path) as d:
-                    if (d.width, d.height) == (N, N):
-                        old = d.read(1)
-            except rasterio.errors.RasterioIOError:
-                old = None
+            if whole.tiff_whole(path):
+                try:
+                    with rasterio.open(path) as d:
+                        if (d.width, d.height) == (N, N):
+                            old = d.read(1)
+                except rasterio.errors.RasterioIOError:
+                    old = None
     kept_old = 0
 
     def fetch(j):
@@ -214,20 +217,22 @@ def europe_square(top: int, left: int, out: Path, progress=None) -> None:
         return a
 
     print(f"lat{top}_lon{left}: {len(jobs)} EEA chunks", flush=True)
-    with ThreadPoolExecutor(2) as ex:
-        for i, ((r0, c0, h, w, bb), chunk) in enumerate(zip(jobs, ex.map(fetch, jobs))):
-            if chunk is None:
-                raise RuntimeError(f"EEA leaf type: the request for {bb} keeps failing")
-            a[r0:r0 + h, c0:c0 + w] = lut[chunk]
-            # (The square's save counts as one chunk more.)
-            if progress:
-                progress((i + 1) / (len(jobs) + 1))
+    with phase("the EEA's chunks fetched", "net"):
+        with ThreadPoolExecutor(2) as ex:
+            for i, ((r0, c0, h, w, bb), chunk) in enumerate(zip(jobs, ex.map(fetch, jobs))):
+                if chunk is None:
+                    raise RuntimeError(f"EEA leaf type: the request for {bb} keeps failing")
+                a[r0:r0 + h, c0:c0 + w] = lut[chunk]
+                # (The square's save counts as one chunk more.)
+                if progress:
+                    progress((i + 1) / (len(jobs) + 1))
     if kept_old:
         print(f"  {kept_old} chunks kept from today's square", flush=True)
-    save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out)
-    import shutil
+    with phase("the squares written", "nas-write"):
+        save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out)
+        import shutil
 
-    shutil.rmtree(parts, ignore_errors=True)
+        shutil.rmtree(parts, ignore_errors=True)
 
 
 def fetch_nalcms(tif: Path):
@@ -237,46 +242,47 @@ def fetch_nalcms(tif: Path):
 
     if tif.exists():
         return
-    tif.parent.mkdir(parents=True, exist_ok=True)
-    head = subprocess.run(["curl", "-sS", "--fail", "-A", UA, "-r", f"{NALCMS_MEMBER_OFFSET}-{NALCMS_MEMBER_OFFSET + 511}", NALCMS_ZIP],
-                          capture_output=True, check=True).stdout
-    if len(head) < 30 or head[:4] != b"PK\x03\x04":
-        raise SystemExit("NALCMS: unexpected zip layout")
-    crc, csize, usize, nlen, elen = struct.unpack("<IIIHH", head[14:30])
-    if csize != NALCMS_COMPRESSED:
-        raise SystemExit(f"NALCMS: the zip's member is {csize:,} bytes, not {NALCMS_COMPRESSED:,}")
-    start = NALCMS_MEMBER_OFFSET + 30 + nlen + elen
-    tmp = whole.tmp_name(tif)
-    print(f"streaming NALCMS GeoTIFF ({NALCMS_COMPRESSED / 1e9:.1f} GB compressed)…")
-    p = subprocess.Popen(["curl", "-sS", "--fail", "-A", UA, "-r", f"{start}-{start + NALCMS_COMPRESSED - 1}", NALCMS_ZIP], stdout=subprocess.PIPE)
-    dec = zlib.decompressobj(-15)
-    got = out_n = 0
-    out_crc = 0
-    try:
-        with tmp.open("wb") as f:
-            while chunk := p.stdout.read(8 << 20):
-                b = dec.decompress(chunk)
+    with phase("NALCMS's GeoTIFF downloaded", "net"):
+        tif.parent.mkdir(parents=True, exist_ok=True)
+        head = subprocess.run(["curl", "-sS", "--fail", "-A", UA, "-r", f"{NALCMS_MEMBER_OFFSET}-{NALCMS_MEMBER_OFFSET + 511}", NALCMS_ZIP],
+                              capture_output=True, check=True).stdout
+        if len(head) < 30 or head[:4] != b"PK\x03\x04":
+            raise SystemExit("NALCMS: unexpected zip layout")
+        crc, csize, usize, nlen, elen = struct.unpack("<IIIHH", head[14:30])
+        if csize != NALCMS_COMPRESSED:
+            raise SystemExit(f"NALCMS: the zip's member is {csize:,} bytes, not {NALCMS_COMPRESSED:,}")
+        start = NALCMS_MEMBER_OFFSET + 30 + nlen + elen
+        tmp = whole.tmp_name(tif)
+        print(f"streaming NALCMS GeoTIFF ({NALCMS_COMPRESSED / 1e9:.1f} GB compressed)…")
+        p = subprocess.Popen(["curl", "-sS", "--fail", "-A", UA, "-r", f"{start}-{start + NALCMS_COMPRESSED - 1}", NALCMS_ZIP], stdout=subprocess.PIPE)
+        dec = zlib.decompressobj(-15)
+        got = out_n = 0
+        out_crc = 0
+        try:
+            with tmp.open("wb") as f:
+                while chunk := p.stdout.read(8 << 20):
+                    b = dec.decompress(chunk)
+                    f.write(b)
+                    out_n += len(b)
+                    out_crc = zlib.crc32(b, out_crc)
+                    got += len(chunk)
+                    print(f"\r  {got / NALCMS_COMPRESSED:.0%}", end="", flush=True)
+                b = dec.flush()
                 f.write(b)
                 out_n += len(b)
                 out_crc = zlib.crc32(b, out_crc)
-                got += len(chunk)
-                print(f"\r  {got / NALCMS_COMPRESSED:.0%}", end="", flush=True)
-            b = dec.flush()
-            f.write(b)
-            out_n += len(b)
-            out_crc = zlib.crc32(b, out_crc)
-            f.flush()
-            os.fsync(f.fileno())
-        print()
-        if p.wait() != 0:
-            raise SystemExit("NALCMS download failed")
-        if not dec.eof or out_n != usize or out_crc != crc:
-            raise SystemExit(f"NALCMS: {out_n:,} bytes, CRC {out_crc:08x}; the zip says {usize:,}, {crc:08x}")
-        tmp.rename(tif)
-    except BaseException:
-        p.kill()
-        tmp.unlink(missing_ok=True)
-        raise
+                f.flush()
+                os.fsync(f.fileno())
+            print()
+            if p.wait() != 0:
+                raise SystemExit("NALCMS download failed")
+            if not dec.eof or out_n != usize or out_crc != crc:
+                raise SystemExit(f"NALCMS: {out_n:,} bytes, CRC {out_crc:08x}; the zip says {usize:,}, {crc:08x}")
+            tmp.rename(tif)
+        except BaseException:
+            p.kill()
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def north_america_squares(todo: list, out: Path, tif: Path, progress=None) -> None:
@@ -287,12 +293,14 @@ def north_america_squares(todo: list, out: Path, tif: Path, progress=None) -> No
     fetch_nalcms(tif)
     with rasterio.open(tif) as src:
         for k, (top, left) in enumerate(todo):
-            t0 = time.time()
-            dst = np.full((N, N), 255, np.uint8)
-            # NALCMS has no class 0: it is the background outside the continent (no data).
-            reproject(rasterio.band(src, 1), dst, dst_transform=from_origin(left, top, RES, RES), dst_crs="EPSG:4326",
-                      resampling=Resampling.nearest, src_nodata=0, dst_nodata=255, num_threads=4)
-            save(top, left, NA_MAP[dst], "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°", out)
+            with phase("the NALCMS squares resampled", "compute"):
+                t0 = time.time()
+                dst = np.full((N, N), 255, np.uint8)
+                # NALCMS has no class 0: it is the background outside the continent (no data).
+                reproject(rasterio.band(src, 1), dst, dst_transform=from_origin(left, top, RES, RES), dst_crs="EPSG:4326",
+                          resampling=Resampling.nearest, src_nodata=0, dst_nodata=255, num_threads=4)
+            with phase("the squares written", "nas-write"):
+                save(top, left, NA_MAP[dst], "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°", out)
             print(f"    ({time.time() - t0:.0f} s)")
             if progress:
                 progress(k + 1)
@@ -306,7 +314,8 @@ def make(sqs: list, out: Path, store: Path, progress=None) -> None:
     def meets(box, top, left):
         return left < box[2] and left + 10 > box[0] and top - 10 < box[3] and top > box[1]
 
-    missing = [(t, l) for t, l in sqs if not ((out / f"lat{t}_lon{l}.tif").exists() and complete(out / f"lat{t}_lon{l}.tif"))]
+    with phase("the squares made checked", "nas-read"):
+        missing = [(t, l) for t, l in sqs if not ((out / f"lat{t}_lon{l}.tif").exists() and complete(out / f"lat{t}_lon{l}.tif"))]
     eea = [(t, l) for t, l in missing if meets(EEA_BOX, t, l)]
     na = [(t, l) for t, l in missing if meets(NALCMS_BOX, t, l) and not meets(EEA_BOX, t, l)]
 

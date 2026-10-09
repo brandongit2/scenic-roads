@@ -22,6 +22,8 @@ from pathlib import Path
 import duckdb
 import numpy as np
 
+from timings import phase
+
 def connect(threads: int | None = None):
     config = {"custom_user_agent": "scenic-roads/0.1 (personal offline map)"}
     if threads:
@@ -64,24 +66,27 @@ def _scan(i: int, url: str, parts: str, z: int) -> int:
 def world(parts: Path, z: int, workers: int, release: str) -> None:
     parts.mkdir(parents=True, exist_ok=True)
     src = f"s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*.parquet"
-    files = [r[0] for r in connect().execute(f"SELECT file FROM glob('{src}') ORDER BY file").fetchall()]
+    with phase("the release's files listed on S3", "net"):
+        files = [r[0] for r in connect().execute(f"SELECT file FROM glob('{src}') ORDER BY file").fetchall()]
     # (An empty listing is a release Overture no longer serves, or a failed listing: never an
     # empty world.)
     if not files:
         sys.exit(f"buildings: no files for release {release} ({src})")
-    listed = parts / "files.json"
-    if listed.exists() and json.loads(listed.read_text()) != files:
-        sys.exit(f"buildings: release {release}'s files aren't those its parts were made from ({listed})")
-    listed.write_text(json.dumps(files))
-    todo = [(i, f) for i, f in enumerate(files) if not (parts / f"{i:04d}" / ".done").exists()]
+    with phase("the file list checked and written", "disk"):
+        listed = parts / "files.json"
+        if listed.exists() and json.loads(listed.read_text()) != files:
+            sys.exit(f"buildings: release {release}'s files aren't those its parts were made from ({listed})")
+        listed.write_text(json.dumps(files))
+        todo = [(i, f) for i, f in enumerate(files) if not (parts / f"{i:04d}" / ".done").exists()]
     print(f"buildings: {len(files)} files in release {release}, {len(todo)} to scan", file=sys.stderr, flush=True)
     done, n, t0 = len(files) - len(todo), 0, time.time()
-    with ProcessPoolExecutor(workers) as ex:
-        for fut in as_completed([ex.submit(_scan, i, f, str(parts), z) for i, f in todo]):
-            n += fut.result()
-            done += 1
-            print(f"buildings: {n:,} so far ({time.time() - t0:.0f} s)", file=sys.stderr)
-            print(f"progress: {done}/{len(files)} files", file=sys.stderr, flush=True)
+    with phase("the files' boxes scanned from S3", "net"):
+        with ProcessPoolExecutor(workers) as ex:
+            for fut in as_completed([ex.submit(_scan, i, f, str(parts), z) for i, f in todo]):
+                n += fut.result()
+                done += 1
+                print(f"buildings: {n:,} so far ({time.time() - t0:.0f} s)", file=sys.stderr)
+                print(f"progress: {done}/{len(files)} files", file=sys.stderr, flush=True)
 
 
 def main() -> None:
