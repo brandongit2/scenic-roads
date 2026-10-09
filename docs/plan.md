@@ -1718,9 +1718,36 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   copied here and merged, those copies spared; the OSM pass, its own 80 GB less the pack cache it
   clears; the M1's helper, 15 GB, but a terrain run's as here), the local copies of what the NAS
   keeps (Meta's canopy squares, AWS's raw terrain tiles, the copies of the records' files staging
-  reads, `blobs/`, and of the pageview months' indexes, `items/months/`, but while an items or
-  heritage job, this one or one beside, reads them) lose files until it has a sixth more (the OSM
-  pass: what it needs), so the next jobs start without deleting again.
+  reads, `blobs/`, and of the pageview months' indexes, `items/months/`) lose files until it has a
+  sixth more (the OSM pass: what it needs), so the next jobs start without deleting again.
+  - **Mid-job, safely by design** (`store::cachefile`, `dem/cachefile.py`):
+    room-making, a trim, a clear and the freeing toward the target may delete any cache file no
+    running job uses, at any moment, with jobs running. Every read of the caches goes through one
+    accessor, which gets the file or fills it from where that cache fills from (the NAS's stores,
+    else the source it fills from first) when it's missing, so a wrong deletion costs a fetch,
+    never a failure. A job holds each cache file it uses with a shared `flock`, taken as it opens
+    it and kept to its end (a unit job lets each area's go once the next is under way; a raw tile,
+    read whole at once, only while it's read); children that open it by name (osmium, the Python
+    steps, scenic-metrics) are covered, the lock being on the file. A file is deleted only under an
+    exclusive lock taken without waiting, its name checked to still be that file, and unlinked
+    while it's held; one in use is passed over (deleting an open file would free nothing anyway).
+    Nothing in the caches is renamed over a file: a file is made under a temporary name of its
+    own, held from its making (so a half-made one is never taken), and named only if the name is
+    free. So a job that opened a file a deleter then took finds it has no name left once it has
+    its lock, and fills it again: it never holds a name that's gone. A guard test fails on any new
+    code that names a cache path outside the accessor (`tests/cache_accessor.rs`), and chaos tests
+    run real steps (a terrain area, tree cover's z3 run, the DEM seed's slices, the records' copies,
+    pageviews.py's lookups) while every cache file no job holds is deleted as fast as it can be:
+    the outputs come out byte-identical.
+    - What can't be filled again stays while it can't: the DEM seed while the NAS hasn't it whole,
+      the heritage clip while the pass's filtered planet isn't there, raw tiles and pageview
+      months the NAS lacks (rules below).
+    - What the jobs queued and running read (`room::Hints`: a terrain run's area's archives, a
+      unit's canopy squares and the copies of its packs, tree cover's squares, the pageview months
+      for an items or heritage job) goes last, so it isn't fetched twice; only a hint: a stale one
+      costs a fetch.
+    - Not while a job an earlier agent left runs on the Mac (its programs may be an app's from
+      before the locks): until it ends, nothing of the caches is deleted while it runs.
   - Canopy squares and copies not read in the last hour go first, each by its own use, the least
     recently used first: one listing of the NAS's canopy folder answers for every square (hundreds
     of MB a file), and a copy of a recorded file needs no listing at all (the records name only
@@ -1742,8 +1769,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     one used when it opens it). A file that isn't whole itself (cut short, or temporary) is
     deleted, not kept.
   - The OSM pass counts those copies as room.
-  - **After the build** (`room::trim`): once the build has nothing left to build and no job runs
-    on the Mac (nor one an earlier agent left that couldn't be shown stopped), its agent, at home
+  - **After the build** (`room::trim`): once the build has nothing left to build (and no job an
+    earlier agent left runs on the Mac, nor one that couldn't be shown stopped), its agent, at home
     (through Tailscale it would take hours), empties those copies by the same rules, once, and
     again only after a job (not a daily one) has run there since: a helper all of them, the build
     Mac all but the canopy squares, which every pass's areas read again and which never change.
@@ -1763,7 +1790,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     in about 20 min; the heritage clip, an hour of osmium), writes an ask in that Mac's agent's
     folder (`clear-request.json`, as a pause is asked for, signed with the Mac's name as its
     agent goes by), which the agent takes up within seconds, renaming it aside as it does (an ask
-    written meanwhile waits its turn): between jobs, once the build is done, it empties every
+    written meanwhile waits its turn): once the build is done (jobs running keep what they use),
+    it empties every
     cache a later job fills again from the NAS or makes again from it (§4, Caches), the canopy
     squares too, by the same rules (the DEM seed only while the NAS has it whole; the heritage
     jobs' planet clip only while the pass's filtered planet it's clipped from is in the NAS's
@@ -1771,7 +1799,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     and says what it freed (`caches.cleared`); else it says why
     not (`caches.declined`, the last clear done kept apart); the ask goes either way. The menu
     shows the item with what it would free (`caches.clearable`, and cache by cache,
-    `caches.each`), disabled with why while the build has work, a job runs there, its agent
+    `caches.each`), disabled with why while the build has work, a job an earlier agent left runs
+    there, its agent
     hasn't written its status for six minutes, or they hold nothing; "Clearing…" while the ask
     waits or is under way; and "Freed N GB" once it's done. `scenic clean` waits for the same
     answer.
@@ -1791,8 +1820,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       them. A helper asks the build Mac for no work its disk can't fit past the target; a lease it
       can't start for the target alone it gives back without a failure held against its targets,
       and asks for none for ten minutes (or until a job ends, or the disk has the room).
-    - While no job runs on the Mac (nor one an earlier agent left) and the disk is short of the
-      target, or of the least room a job waiting for it needs past it, the agent frees its caches
+    - Whenever the disk is short of the target, or of the least room a job waiting for it needs
+      past it (jobs running or not; not while a job an earlier agent left runs), the agent frees its caches
       toward that, whether or not the build has work left, on a thread of its own as a trim's: the
       copies by room-making's rules and order (the canopy squares too), then the others a clear
       empties, the cheapest to fill again first: the copies of the NAS's files, the base packs a
@@ -1808,8 +1837,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       status says so (`caches.room.short`, and a line in `waiting`), as it does while the NAS
       isn't reachable (what goes must be kept there); it's logged and, when it freed anything, in
       the history. Until the target is lowered or off, nothing else refills the caches.
-    - It never deletes what a job uses: only while none runs here, and no job starts until it's
-      done.
+    - It never deletes what a job uses: what a job holds stays (Mid-job, above).
     - **With the mirror's reserve** (`--reserve-gb` in `tools/app/install.sh`: 50 GB on the M1,
       150 GB on the build Mac): the server's mirror copies downloads only while that much stays
       free (nothing downloaded goes for it). The two floors are apart: the mirror never frees for
@@ -1818,7 +1846,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       its reserve and the target that the agent freed; the agent then stays short of the target,
       with nothing more of its own to free, and says so (§10, Gaps).
   - A trim, a clear or a freeing toward the target runs on a thread of the agent's own: its loop
-    goes on beating, and no job starts on the Mac until it's done.
+    goes on beating, and jobs start and run meanwhile (room-making before a job isn't tried while
+    one runs: it frees already).
   - Nothing goes through a link: a folder or file of the caches that's a link, at any depth (the
     raw tiles' packer passes them over too), or a folder in the NAS's project folder by its real
     path, is left as it is (and not counted), so the NAS's own files never go.

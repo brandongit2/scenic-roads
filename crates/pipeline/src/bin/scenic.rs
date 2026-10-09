@@ -28,13 +28,14 @@
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic clean [--yes]                clear this Mac's build caches (what later jobs copy back
-//!                                       from the NAS or make again) once the build is done and no
-//!                                       job runs here, after a y/N (--yes: none): its agent does it,
-//!                                       and says what it freed
+//!                                       from the NAS or make again) once the build is done (jobs
+//!                                       running keep what they use), after a y/N (--yes: none): its
+//!                                       agent does it, and says what it freed
 //!   scenic room [<GB> | off]            this Mac's disk room target: the free space its agent
-//!                                       keeps, freeing its caches to it as far as needed and
-//!                                       starting no job that would cross it, until it's lowered or
-//!                                       off; with none, how it stands
+//!                                       keeps, freeing its caches to it as far as needed, jobs
+//!                                       running or not (what they use stays), and starting no job
+//!                                       that would cross it, until it's lowered or off; with none,
+//!                                       how it stands
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!
@@ -323,7 +324,7 @@ fn room(args: &[String]) -> Result<()> {
             set_target(&home, Some(bytes), &by)?;
             let short = free.map(|f| bytes.saturating_sub(f)).unwrap_or(0);
             if short > 0 {
-                println!("the disk room target is {}: this Mac's agent frees {} of its caches between jobs, as far as needed, and starts no job that would cross it (`scenic room` says how it stands)", size(bytes), size(short));
+                println!("the disk room target is {}: this Mac's agent frees {} of its caches as far as needed, now, jobs running or not (what they use stays), and starts no job that would cross it (`scenic room` says how it stands)", size(bytes), size(short));
             } else {
                 println!("the disk room target is {}: the disk has that free; this Mac's agent starts no job that would cross it", size(bytes));
             }

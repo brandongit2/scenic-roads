@@ -484,13 +484,19 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         items/months/ lose files: chm10/'s, the archives', blobs/' and the months'
                         idle an hour first, then the rest least recently used first (loose raw
                         tiles a folder at a time; empty markers kept; a canopy file the NAS lacks
-                        copied there first, or kept; a month the NAS lacks kept; the months kept
-                        while an items or heritage job reads them), until the Mac has a sixth more
+                        copied there first, or kept; a month the NAS lacks kept; what the queued
+                        jobs read last, room::Hints), until the Mac has a sixth more
                         free than the job needs (the OSM pass: what it needs). Once the build is
                         done, the agent trims the same four by the same rules (the build Mac keeps
                         chm10/); on the owner's ask, it clears them, base/, the seed (while the NAS
                         has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md §4
                         and §8, agent::room). Never through a link, nor in the NAS's folder.
+                        Each file is read and made through store::cachefile (dem/cachefile.py):
+                        a job holds a shared flock on each file it uses, to its end; a file is
+                        made as <name>.<pid>.<n>.tmp beside its name, locked from its making, and
+                        given the name by a hard link only if the name is free (never renamed
+                        over one); room-making deletes a file only under an exclusive flock taken
+                        without waiting, jobs running or not.
 agent/member            this Mac's member id in the pool (docs/pool.md §5): `m-<16 hex>`, then the
                         Mac's hardware UUID, a line each (crate::pool::member_id; made once)
 agent/pool/             the pool's part of the agent (crate::agent::pool; only with the pool on):

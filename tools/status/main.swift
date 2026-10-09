@@ -1188,7 +1188,7 @@ func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: Stri
     var title = "Disk Room: \(free.map(gb) ?? "?") free"
     title += target.map { " · target \(gb($0))" } ?? " · no target"
     let r = own?.caches?.room
-    var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, and starts no job that would cross it, until it's lowered or off."
+    var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, jobs running or not (what they use stays), and starts no job that would cross it, until it's lowered or off."
     if let t = target, r?.target?.size == t, let why = r?.short { tip = "Short of it: \(why)" }
     if let t = target, r?.target?.size == t, let f = r?.toward, f.bytes > 0 { tip += "\nFreed toward it \(clock(f.at)): \(freedText(f))" }
     var choices = roomPresets.filter { p in disk.map { p << 30 < $0 } ?? true }.map { (title: "Keep \($0) GB Free", gb: $0, on: target == $0 << 30) }
@@ -1213,11 +1213,11 @@ func freedText(_ f: Freed) -> String {
 }
 
 /// The menu's item for this Mac's build caches (none without an agent here): Clear the Build's
-/// Caches with what it would free, enabled once the build is done and no job runs here (why not, in
+/// Caches with what it would free, enabled once the build is done (why not, in
 /// its tooltip); while an ask waits, that it's clearing.
 func cachesItem(_ own: Own?, now: Int, asked: Bool) -> (title: String, enabled: Bool, tip: String)? {
     guard let own = own, let c = own.caches else { return nil }
-    if asked { return ("Clearing the Build's Caches… (asked; this Mac's agent does it between jobs)", false, "") }
+    if asked { return ("Clearing the Build's Caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "") }
     let title = "Clear the Build's Caches" + (c.clearable.map { " (\(gb($0)))" } ?? "")
     if now - own.beat > outOfTouch { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?") }
     if let why = c.why_not { return (title, false, "Not now: \(why)") }
@@ -1428,7 +1428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             for li in leadItems(v, me: p.member) { m.addItem(leadMenuItem(li)) }
         }
         // This Mac's build caches, cleared on an ask to its agent (crates/pipeline/src/agent/
-        // room.rs), which does it between jobs once the build is done, and says what it freed.
+        // room.rs), which does it once the build is done, and says what it freed.
         if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
             let it = NSMenuItem(title: c.title, action: c.enabled ? #selector(clearCaches) : nil, keyEquivalent: "")
             it.target = self
