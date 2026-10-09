@@ -5,14 +5,16 @@
 //! since the records name only files the NAS has, a copy can be deleted without asking it.
 //!
 //! Layout: `<dir>/<content name>` (the name's folders kept), each copy's modification time its last
-//! use, so the least recently used go first (`evict`). A copy is written under a temporary name
-//! and renamed once its length matches, so a reader never sees half of one; two processes copying
-//! the same file both finish with the same bytes under the one name.
+//! use, so the least recently used go first (`evict`). A copy is made and held through
+//! crate::cachefile: under a temporary name, named once its length matches, so a reader never sees
+//! half of one (two processes copying the same file: the first named wins); held by the job that
+//! asked for it, so room-making leaves it while that job runs.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
 
 #[derive(Clone, Debug)]
 pub struct Blobs {
@@ -34,42 +36,25 @@ impl Blobs {
     }
 
     /// A whole local copy of `content` (under the NAS root `root`), copied first if it isn't here;
+    /// held by this process (crate::cachefile: room-making leaves it until the job lets go) and
     /// marked used.
     pub fn get(&self, root: &Path, content: &str) -> io::Result<PathBuf> {
         let local = self.path_of(content);
         let src = root.join(content);
-        if let Ok(m) = fs::metadata(&local) {
-            // (A copy's length is its source's: content-named files are written whole, once.)
-            if m.is_file() {
-                touch(&local);
-                return Ok(local);
-            }
-        }
-        let parent = local.parent().ok_or_else(|| io::Error::other("a content name without a folder"))?;
-        fs::create_dir_all(parent)?;
-        let tmp = crate::naming::tmp_path(&local);
-        let copied = (|| -> io::Result<()> {
-            let n = crate::sys::copy_data(&src, &tmp)?;
+        crate::cachefile::hold(&local, &mut |tmp| {
+            let n = crate::sys::copy_data(&src, tmp)?;
             let want = fs::metadata(&src)?.len();
             if n != want {
                 return Err(io::Error::other(format!("{}: copied {n} of {want} bytes", src.display())));
             }
-            fs::rename(&tmp, &local)
-        })();
-        if let Err(e) = copied {
-            fs::remove_file(&tmp).ok();
-            return Err(e);
-        }
-        Ok(local)
+            Ok(())
+        })
     }
 
-    /// The copy of `content` if it's here (marked used), else None: nothing fetched.
+    /// The copy of `content` if it's here (held, and marked used, as `get`), else None: nothing
+    /// fetched.
     pub fn have(&self, content: &str) -> Option<PathBuf> {
-        let local = self.path_of(content);
-        fs::metadata(&local).ok().filter(|m| m.is_file()).map(|_| {
-            touch(&local);
-            local
-        })
+        crate::cachefile::hold_existing(&self.path_of(content)).ok().flatten()
     }
 
     /// Every copy here: (path, length, last use).
@@ -100,18 +85,12 @@ impl Blobs {
             if !tmp && now.duration_since(used).unwrap_or_default() < keep {
                 continue;
             }
-            if fs::remove_file(&p).is_ok() {
+            // (Not one a job holds: crate::cachefile.)
+            if let crate::cachefile::Removed::Freed(_) = crate::cachefile::try_remove(&p) {
                 freed += len;
             }
         }
         freed
-    }
-}
-
-/// Marks a copy used now (its modification time; failure only costs eviction order).
-fn touch(p: &Path) {
-    if let Ok(f) = fs::File::options().write(true).open(p) {
-        f.set_modified(SystemTime::now()).ok();
     }
 }
 
@@ -131,6 +110,48 @@ fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
 mod tests {
     use super::*;
 
+    /// Room-making mid-job (crate::cachefile): copies deleted as fast as they can be, each between
+    /// its uses, are copied again; each read gives the NAS's bytes.
+    #[test]
+    fn copies_deleted_under_a_job_are_copied_again() {
+        let d = tempfile::tempdir().unwrap();
+        let (nas, local) = (d.path().join("nas"), d.path().join("local"));
+        let names: Vec<String> = (0..20).map(|i| format!("layers/a/6-1-{i}.{i:016x}.pack")).collect();
+        for (i, n) in names.iter().enumerate() {
+            fs::create_dir_all(nas.join(n).parent().unwrap()).unwrap();
+            fs::write(nas.join(n), vec![i as u8; 1000 + i]).unwrap();
+        }
+        let b = Blobs::new(&local);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let freed = std::thread::scope(|s| {
+            let deleter = s.spawn(|| {
+                let mut n = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n += crate::cachefile::remove_tree(&local).freed;
+                }
+                n
+            });
+            let mut wrong = Vec::new();
+            for _ in 0..30 {
+                for (i, n) in names.iter().enumerate() {
+                    match b.get(&nas, n).and_then(|p| fs::read(&p).map(|b| (p, b))) {
+                        Ok((p, got)) => {
+                            if got != vec![i as u8; 1000 + i] {
+                                wrong.push(format!("{n}: {} bytes", got.len()));
+                            }
+                            crate::cachefile::release(&p);
+                        }
+                        Err(e) => wrong.push(format!("{n}: {e}")),
+                    }
+                }
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(wrong.is_empty(), "{wrong:?}");
+            deleter.join().unwrap()
+        });
+        assert!(freed > 0);
+    }
+
     #[test]
     fn copies_once_and_evicts_the_least_recently_used() {
         let d = tempfile::tempdir().unwrap();
@@ -142,6 +163,9 @@ mod tests {
         let b = Blobs::new(&local);
         let a = b.get(&nas, "layers/a/6-1-2.0000000000000001.pack").unwrap();
         assert_eq!(fs::read(&a).unwrap(), vec![7u8; 100]);
+        // (Held: room-making leaves it.)
+        assert_eq!(crate::cachefile::try_remove(&a), crate::cachefile::Removed::InUse);
+        crate::cachefile::release(&a);
         // Copied once: a second ask is served here even with the NAS gone.
         fs::remove_dir_all(&nas).unwrap();
         assert_eq!(b.get(&nas, "layers/a/6-1-2.0000000000000001.pack").unwrap(), a);
@@ -150,6 +174,7 @@ mod tests {
         assert_eq!(b.bytes(), 100);
         // Used just now: kept within `keep`, deleted past it.
         assert_eq!(b.evict(1, Duration::from_secs(3600)), 0);
+        crate::cachefile::release(&a);
         assert_eq!(b.evict(1, Duration::ZERO), 100);
         assert_eq!(b.bytes(), 0);
     }

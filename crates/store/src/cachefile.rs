@@ -113,6 +113,19 @@ pub fn release(path: &Path) {
     }
 }
 
+/// EINVAL's number.
+fn libc_einval() -> i32 {
+    #[cfg(unix)]
+    return libc::EINVAL;
+    #[cfg(not(unix))]
+    22
+}
+
+/// `e`, saying what was done to which file.
+fn with(e: io::Error, what: &str, p: &Path) -> io::Error {
+    io::Error::new(e.kind(), format!("{what} {}: {e}", p.display()))
+}
+
 #[cfg(unix)]
 fn id(m: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
@@ -156,10 +169,10 @@ fn open_shared(path: &Path) -> io::Result<Option<File>> {
     let f = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) => return Err(with(e, "open", path)),
     };
     #[cfg(unix)]
-    lock(&f, libc::LOCK_SH)?;
+    lock(&f, libc::LOCK_SH).map_err(|e| with(e, "lock", path))?;
     let m = f.metadata()?;
     // (Deleted while it was being locked: no name left, or its name another file's now.)
     if links(&m) == 0 || std::fs::metadata(path).map(|n| id(&n)).ok() != Some(id(&m)) {
@@ -256,43 +269,96 @@ pub fn tmp_of(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.{}.{}.tmp", crate::sys::pid(), TMP.fetch_add(1, Ordering::Relaxed)))
 }
 
-/// Makes the cache file at `path` when it isn't there: a temporary file beside it, made and locked
-/// (shared) at once, then written by `fill` in place (it may truncate and rewrite it, never rename
-/// another file onto it: a writer that does is followed to its file), then given `path`'s name only
-/// if that's still free (another process's copy made meanwhile wins; this one goes). Held by this
-/// process (as `hold`). The folder is made (again, if room-making took it meanwhile).
-pub fn create(path: &Path, fill: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = tmp_of(path);
-    let made = File::options().read(true).write(true).create_new(true).open(&tmp);
-    let made = match made {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
-            File::options().read(true).write(true).create_new(true).open(&tmp)?
+/// Makes folder `d` of the caches (and those above it), as `create_dir_all`, but made again when
+/// room-making takes one, empty, as it's made (which `create_dir_all` gives up on: EEXIST, ENOENT,
+/// or as it goes on macOS, EINVAL).
+pub fn make_dir(d: &Path) -> io::Result<()> {
+    let mut last = None;
+    for _ in 0..100 {
+        match std::fs::create_dir_all(d) {
+            Ok(()) => return Ok(()),
+            Err(_) if d.is_dir() => return Ok(()),
+            Err(e) => last = Some(e),
         }
-        r => r?,
-    };
-    #[cfg(unix)]
-    lock(&made, libc::LOCK_SH)?;
+    }
+    Err(with(last.unwrap_or_else(|| io::Error::other("no folder")), "make", d))
+}
+
+/// A temporary file beside cache file `path` (`tmp_of`), made and locked (shared) at once, so
+/// room-making never takes it while it's written: its name and the file (read and write). The
+/// folder is made (again, if room-making took it meanwhile). Named with `publish`, or deleted.
+pub fn scratch(path: &Path) -> io::Result<(PathBuf, File)> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    for _ in 0..100 {
+        // (A folder room-making takes as it's made, empty: made again.)
+        make_dir(dir)?;
+        let tmp = tmp_of(path);
+        let f = match File::options().read(true).write(true).create_new(true).open(&tmp) {
+            Ok(f) => f,
+            // (Its folder taken meanwhile: gone, or, as it goes, EINVAL on macOS.)
+            Err(e) if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc_einval()) => continue,
+            Err(e) => return Err(with(e, "make", &tmp)),
+        };
+        #[cfg(unix)]
+        lock(&f, libc::LOCK_SH)?;
+        // (Taken between its making and its lock: another made.)
+        if links(&f.metadata()?) == 0 {
+            continue;
+        }
+        return Ok((tmp, f));
+    }
+    Err(io::Error::other(format!("{}: no temporary file could be kept beside it", path.display())))
+}
+
+/// Gives scratch file `tmp` (its open file `f`, from `scratch`) the name `path` if that's free
+/// (another process's copy made meanwhile wins: this one goes), held by this process (as `hold`);
+/// the temporary name goes either way. (A writer that put another file at `tmp`: that one.)
+pub fn publish(f: File, tmp: &Path, path: &Path) -> io::Result<()> {
     let r = (|| -> io::Result<()> {
-        fill(&tmp)?;
-        // (A writer that put another file at the name: that one held, from now.)
-        let f = match std::fs::metadata(&tmp) {
-            Ok(m) if id(&m) == id(&made.metadata()?) => made,
-            Ok(_) => open_shared(&tmp)?.ok_or_else(|| io::Error::other(format!("{}: gone as it was written", tmp.display())))?,
+        let f = match std::fs::metadata(tmp) {
+            Ok(m) if id(&m) == id(&f.metadata()?) => f,
+            Ok(_) => open_shared(tmp)?.ok_or_else(|| io::Error::other(format!("{}: gone as it was written", tmp.display())))?,
             Err(e) => return Err(e),
         };
-        match std::fs::hard_link(&tmp, path) {
+        match std::fs::hard_link(tmp, path) {
             Ok(()) => keep(f, path),
             // (Another copy made meanwhile: that one's used.)
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(e),
+            Err(e) => Err(with(e, "name", path)),
         }
     })();
-    std::fs::remove_file(&tmp).ok();
+    std::fs::remove_file(tmp).ok();
     r
+}
+
+/// Makes the cache file at `path` when it isn't there: a scratch file beside it (`scratch`), written
+/// by `fill` in place (it may truncate and rewrite it, never rename another file onto it: a writer
+/// that does is followed to its file), then named (`publish`).
+pub fn create(path: &Path, fill: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
+    let (tmp, f) = scratch(path)?;
+    if let Err(e) = fill(&tmp) {
+        std::fs::remove_file(&tmp).ok();
+        return Err(with(e, "fill", &tmp));
+    }
+    publish(f, &tmp, path)
+}
+
+/// Locks open cache file `f` shared, as `scratch` does: one a job writes under a name of its own
+/// (a spool), which room-making then leaves.
+pub fn lock_shared(f: &File) -> io::Result<()> {
+    #[cfg(unix)]
+    lock(f, libc::LOCK_SH)?;
+    #[cfg(not(unix))]
+    let _ = f;
+    Ok(())
+}
+
+/// Makes the cache file at `path` with bytes `b` when it isn't there, not held after (a small file
+/// read whole when it's read: a raw tile, a "none there" marker).
+pub fn put(path: &Path, b: &[u8]) -> io::Result<()> {
+    create_bytes(path, b)?;
+    release(path);
+    Ok(())
 }
 
 /// Makes the cache file at `path` with bytes `b` when it isn't there (`create`).
@@ -379,9 +445,10 @@ pub fn try_remove_all(paths: &[PathBuf]) -> Option<u64> {
     }).sum())
 }
 
-/// Deletes a damaged cache file a job found (cut short): waits for the exclusive lock (a deleter's
-/// is momentary; another job holding it waits as long as it does, up to a minute, then it's left),
-/// checks the name still names it, and unlinks it. This process's own hold on it goes first.
+/// Deletes a damaged cache file a job found (cut short: no use to anyone), so it's filled again:
+/// with the exclusive lock when it can be had within seconds (a deleter's is momentary), else
+/// anyway (another job holding it holds bytes no one can use: its own open file stays readable).
+/// This process's own hold on it goes first. Only while its name still names the file looked at.
 pub fn discard(path: &Path) {
     release(path);
     #[cfg(unix)]
@@ -390,12 +457,8 @@ pub fn discard(path: &Path) {
         let Ok(f) = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) else { return };
         let Ok(m) = f.metadata() else { return };
         let t = std::time::Instant::now();
-        while lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err() {
-            if t.elapsed() > std::time::Duration::from_secs(60) {
-                eprintln!("cache: {} isn't whole, but another job holds it: left", path.display());
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        while lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err() && t.elapsed() < std::time::Duration::from_secs(3) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         if std::fs::symlink_metadata(path).ok().map(|n| id(&n)) == Some(id(&m)) {
             std::fs::remove_file(path).ok();
