@@ -2,7 +2,7 @@
 # Build the step programs for WebAssembly (wasm32-wasip1), the builds web workers run (docs/workers.md),
 # into target/wasm32-wasip1/release/*.wasm. zstd's C is compiled to WebAssembly too (the real zstd:
 # the same compressed bytes as natively), with Homebrew's LLVM and WASI libc:
-#   brew install llvm@22 wasi-libc; rustup target add wasm32-wasip1
+#   brew install rustup llvm@22 wasi-libc (the toolchain and its wasm32-wasip1 target: rust-toolchain.toml)
 #
 #   tools/app/wasm.sh
 set -euo pipefail

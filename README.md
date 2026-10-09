@@ -358,7 +358,9 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 - **The M1** (16 GB) helps when it's open (`tools/app/install.sh --helper`): its agent takes the jobs that fit the memory it spares (6 GB) of terrain, slope, tree cover, areas and the landmarks' candidates and peaks (the steps the status marks ⇄), else an area's last steps; its jobs put their files on the NAS themselves and hand their record changes back.
 - **Any device** on the LAN or the tailnet can help from the build page, with no key: it takes an area's last steps, and a z8 area's 3D buildings (`bldtile`), as WebAssembly, the same bytes as the build Mac's (a worker's first three results are checked against the build Mac's own run, then one in eight). The page shows the whole build to anyone on the LAN or the tailnet.
 - **The pool:** any Mac leading the build, handed over from any Mac's menu, the build page, the map's build panel or `scenic lead`, and taken over when its lead is gone (`docs/pool.md`; its first phase is built and switched on since 8 Oct 2026, `state/pool/enabled`; its controls, phase 3, built; the proactive offer taken by itself only once `scenic lead auto on`). Planned: every job handing off, placement and pages talking to every Mac (phase 4).
-- **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node.
+- **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node. Rust is Homebrew's rustup
+  (`brew install rustup`, with `/opt/homebrew/opt/rustup/bin` on the PATH); the version and the
+  WebAssembly target come from `rust-toolchain.toml`, the same on both Macs.
 - **The agent** needs [uv](https://docs.astral.sh/uv/), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
 
 ## Rendering notes

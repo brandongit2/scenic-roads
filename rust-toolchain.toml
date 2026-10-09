@@ -1,0 +1,7 @@
+# The Rust both Macs build with, the same everywhere (rustup reads this file: Homebrew's rustup on
+# each Mac, /opt/homebrew/opt/rustup/bin on the PATH). The WebAssembly target is the web workers'
+# builds' (tools/app/wasm.sh). Changing the version here moves both Macs to it on their next build.
+[toolchain]
+channel = "1.98.1"
+targets = ["wasm32-wasip1"]
+components = ["clippy"]
