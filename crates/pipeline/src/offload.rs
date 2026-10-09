@@ -169,8 +169,22 @@ impl Offload {
     /// Settles task `t` of the unit in `dir`; with `wait` false only when a worker finished or
     /// failed it (None otherwise). `here` runs its steps in `dir`.
     pub fn settle(&self, t: &Offered, dir: &Path, wait: bool, p: Patience, here: &mut dyn FnMut() -> Result<()>) -> Result<Option<Settled>> {
+        use crate::timings::{phase, Class};
         let root = t.root.clone();
-        self.settle_with(t, wait, p, here, &mut |st| take(st, dir), &mut |st, since| same(st, dir, &root, since))
+        self.settle_with(
+            t,
+            wait,
+            p,
+            here,
+            &mut |st| {
+                let _p = phase("a worker's results taken in", Class::Disk);
+                take(st, dir)
+            },
+            &mut |st, since| {
+                let _p = phase("a worker's results checked against this Mac's", Class::Disk);
+                same(st, dir, &root, since)
+            },
+        )
     }
 
     /// Task `t`'s status, after waiting on it as `p` allows (the build pausing: not at all): a
@@ -180,6 +194,7 @@ impl Offload {
     /// then, a worker holding it, while its pace says it'll be back before this Mac's own run would
     /// end.
     fn wait_on(&self, t: &Offered, mut st: serde_json::Value, p: Patience) -> Result<serde_json::Value> {
+        let _p = crate::timings::phase("waiting on other workers", crate::timings::Class::Wait);
         let status = || self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).map(|r| r.1);
         let began = std::time::Instant::now();
         let mut held: Option<(std::time::Instant, String)> = None;
@@ -310,6 +325,19 @@ pub fn places() -> serde_json::Value {
     })
 }
 
+/// A task's kind, by its first step: "tail" (a unit's last steps), or the 3D buildings' or tree
+/// cover's (crate::bld::task::KIND, crate::trees::task::KIND).
+pub fn task_kind(spec: &serde_json::Value) -> String {
+    let first = &spec["runs"][0];
+    if first["prog"] == crate::bld::task::KIND {
+        crate::bld::task::KIND.to_string()
+    } else if first["what"] == crate::trees::task::KIND {
+        crate::trees::task::KIND.to_string()
+    } else {
+        "tail".to_string()
+    }
+}
+
 /// Runs task `lease` here, natively (a worker's agent: the M1's): its files fetched from the
 /// coordinator into `dir`, its steps run over them with the programs in `bin`, and the files they
 /// changed sent back; what to hand back with its done (outputs, inputs removed, time, peak memory).
@@ -333,6 +361,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     })));
     // (Each input's hash: what's written back unchanged isn't sent, the unit's folder has it.)
     let mut sent = std::collections::HashMap::new();
+    let fetching = crate::timings::phase("its files fetched from the coordinator", crate::timings::Class::Net);
     for (p, n) in &inputs {
         let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
         let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
@@ -340,8 +369,10 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
         sent.insert(p.clone(), store::naming::hash16(&b));
         let f = dir.join(rel);
         std::fs::create_dir_all(f.parent().unwrap())?;
+        fetching.count(b.len() as u64, 1);
         std::fs::write(&f, b)?;
     }
+    drop(fetching);
     // (What the steps write is told by its time: after this.)
     std::thread::sleep(std::time::Duration::from_millis(20));
     let started = std::time::SystemTime::now();
@@ -363,6 +394,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     crate::unit::on_stage(None);
     crate::agent::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
     let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
+    let sending = crate::timings::phase("what they wrote sent back", crate::timings::Class::Net);
     let mut outputs = Vec::new();
     for (rel, f) in files_under(&dir.join("u"), "u")? {
         let written = std::fs::metadata(&f)?.modified()? >= started || !had.contains(rel.as_str());
@@ -374,6 +406,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             continue;
         }
         client.put_bytes(&format!("/work/out/{lease}/{rel}"), &b)?;
+        sending.count(b.len() as u64, 1);
         outputs.push(crate::coord::task::Output { path: rel, size: b.len() as u64 });
     }
     let removed: Vec<&str> = had.iter().filter(|p| p.starts_with("u/") && !dir.join(p).exists()).copied().collect();

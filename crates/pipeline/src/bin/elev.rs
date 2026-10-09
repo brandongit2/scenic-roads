@@ -38,6 +38,7 @@ fn main() -> Result<()> {
     let moi = env_dir("SCENIC_MOI_DTM").unwrap_or_else(|| PathBuf::from("data/sources/moi-dtm"));
     let read_only = std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
     let cfg = Config { build, workers, cache, no_cache, moi_dtm: dem::moi_files(&moi)?, fabdem_store: env_dir("SCENIC_FABDEM_STORE"), fabdem_read_only: read_only };
-    dem::run(&cfg, &Fetcher::from_env())?;
+    // (Its phases, for the unit job's phase that runs it: pipeline::timings.)
+    pipeline::timings::job("elev", || dem::run(&cfg, &Fetcher::from_env()))?;
     Ok(())
 }

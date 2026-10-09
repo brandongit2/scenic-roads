@@ -218,6 +218,8 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
     for n in ["keys.u64", "elev.f32", "src.u8"] {
         std::fs::remove_file(dst.join(format!("dem-cache.{n}"))).ok();
     }
+    use crate::timings::{sub, Class};
+    let p = sub("the seed's samples", Class::Disk);
     let mut all: Vec<(u64, f32, u8)> = Vec::new();
     let open = |n: &str| roadcore::mmap(&cache.join(format!("dem-cache.{n}")));
     if let (Ok(km), Ok(em), Ok(sm)) = (open("keys.u64"), open("elev.f32"), open("src.u8")) {
@@ -226,6 +228,8 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
         dem_valid_in_box(keys, elev, &sm[..], b, SEED_DEM_VERSIONS, &mut all);
     }
     let seed = all.len();
+    drop(p);
+    let reading = sub("units' kept samples read", Class::NasRead);
     // Each unit's file, by its name: the newest when there are two (one being replaced).
     let mut files: std::collections::BTreeMap<String, (PathBuf, Option<[i32; 4]>)> = Default::default();
     for e in std::fs::read_dir(units_dir).into_iter().flatten().flatten() {
@@ -251,6 +255,7 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
             eprintln!("  DEM cache: {} can't be read now; passed over", p.display());
             continue;
         };
+        reading.count(m.len() as u64, 1);
         let Some((n, ub, made)) = dem_head(&m) else {
             eprintln!("  DEM cache: {} isn't whole; passed over", p.display());
             continue;
@@ -262,6 +267,8 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
         let elev: Vec<f32> = bytemuck::pod_collect_to_vec(&m[DEM_HEAD + 8 * n..DEM_HEAD + 12 * n]);
         dem_valid_in_box(&keys, &elev, &m[DEM_HEAD + 12 * n..], b, made, &mut newer);
     }
+    drop(reading);
+    let _p = sub("merged and written", Class::Disk);
     // The units' samples first, so a stable dedup keeps theirs (by file name order among them).
     newer.extend(all);
     newer.sort_by_key(|e| e.0);
@@ -570,27 +577,37 @@ impl Areas {
     }
 }
 
-/// Times the parts of a unit's build done in-process, logged as its programs' times are: each lap
-/// "  <what>: <time since the last lap>" (and said as a stage finished: `on_stage`).
-pub struct Laps(std::time::Instant);
+/// A part of a unit's build done in-process: a phase of the job's (crate::timings), logged as its
+/// programs' times are, "  <what>: <time>", and said as a stage finished (`on_stage`) when it
+/// `end`s. (Ended by an error instead, its time is the phase's alone.)
+pub struct Stage {
+    what: String,
+    t: std::time::Instant,
+    _p: crate::timings::Phase,
+}
 
-impl Default for Laps {
-    fn default() -> Self {
-        Laps(std::time::Instant::now())
+/// Starts stage `what` of class `class`.
+pub fn stage(what: &str, class: crate::timings::Class) -> Stage {
+    Stage { what: what.to_string(), t: std::time::Instant::now(), _p: crate::timings::phase(what, class) }
+}
+
+impl Stage {
+    pub fn end(self) {
+        let took = self.t.elapsed();
+        eprintln!("  {}: {took:.0?}", self.what);
+        stage_said(&self.what, 1.0, Some(took));
     }
 }
 
-impl Laps {
-    pub fn lap(&mut self, what: &str) {
-        let took = self.0.elapsed();
-        eprintln!("  {what}: {took:.0?}");
-        stage_said(what, 1.0, Some(took));
-        self.0 = std::time::Instant::now();
-    }
-
-    /// Starts the next lap now (after a part timed on its own, such as a step's program).
-    pub fn skip(&mut self) {
-        self.0 = std::time::Instant::now();
+/// What a unit's step program mostly waits on, for its phase (crate::timings): its elevations read
+/// the DEM servers' files (and say their own phases), the land cover downloads ESA's, the canopy
+/// reads the canopy squares; the rest compute over the unit's folder.
+pub fn program_class(what: &str) -> crate::timings::Class {
+    use crate::timings::Class;
+    match what {
+        "elevations (elev)" => Class::Mixed,
+        "land cover (landcover)" => Class::Net,
+        _ => Class::Compute,
     }
 }
 
@@ -642,6 +659,9 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
 
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let f = std::fs::File::options().create(true).append(true).open(log)?;
+    // (Its phase, the program's own phases under it where it says them.)
+    let _p = crate::timings::phase(what, program_class(what));
+    crate::timings::child(&mut c);
     let t = std::time::Instant::now();
     let mut child = c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped()).spawn().with_context(|| format!("start {what}"))?;
     // Its errors into its log as they come, and how far it says it is passed on as its stage's
@@ -747,13 +767,14 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     let mut c = Command::new(tools.bin.join("extract"));
     c.arg(dir).arg(tools.spacing_m.to_string()).arg(piece);
     run_in(c, "extract", &log, dir, tools)?;
-    let mut laps = Laps::default();
+    use crate::timings::Class;
+    let s = stage("subset to the coverage", Class::Compute);
     rep.piece_ways = roadcore::Ways::open(dir)?.ways().len();
     // 2. Only what touches the coverage goes on.
     let (kw, kv) = subset(dir, |_, vs| cov.touches(vs))?;
-    laps.lap("subset to the coverage");
     (rep.kept_ways, rep.kept_verts) = (kw, kv);
     if kw == 0 {
+        s.end();
         return Ok(rep);
     }
     let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
@@ -767,20 +788,24 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
         let w = roadcore::Ways::open(dir)?;
         w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
     };
+    s.end();
+    let s = stage("DEM cache slice", Class::NasRead);
     // (The seed held for this unit, copied again if room-making took it: store::cachefile.)
     if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
         dem_seed(root, &tools.cache)?;
     }
     rep.dem_cache = dem_cache_slice(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"))?;
-    laps.lap("DEM cache slice");
+    s.end();
     // 4. The global-source layers the steps read, from the packs.
+    let s = stage("layers staged from the packs", Class::NasRead);
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
-    laps.lap("layers staged from the packs");
+    s.end();
     // The heritage sites around the unit (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
+    let s = stage("heritage inputs", Class::NasRead);
     (rep.heritage, rep.areas) = heritage(b, dir)?;
-    laps.lap("heritage inputs");
+    s.end();
     let mut c = Command::new(tools.bin.join("areaflags"));
     c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
     run_in(c, "area flags (areaflags)", &log, dir, tools)?;
@@ -794,6 +819,7 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
     // unchanged), restored over the staged grids they were made from.
     if let Some(c) = carry {
+        let s = stage("scenic results restored", Class::NasRead);
         match c.restore(dir) {
             Ok(Some(n)) => eprintln!("unit {}: {n} samples' scenic results from its last run", u.slash()),
             Ok(None) => {}
@@ -803,7 +829,7 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
                 std::fs::remove_dir_all(crate::scache::unit_dir(dir)).ok();
             }
         }
-        laps.lap("scenic results restored");
+        s.end();
     }
     Ok(rep)
 }

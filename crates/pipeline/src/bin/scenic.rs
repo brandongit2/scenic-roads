@@ -542,7 +542,9 @@ fn main() -> Result<()> {
             let client = pipeline::coord::client::Client::at(urls, std::env::var("SCENIC_COORD_TOKEN").unwrap_or_default(), &std::env::var("SCENIC_WORKER").unwrap_or_default());
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let root = opt(&args, "--root").map(PathBuf::from);
-            let r = pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref());
+            // (Timed as a task of its kind: a tail's, a 3D buildings' area's, tree cover's blocks'.)
+            let kind = format!("task {}", pipeline::offload::task_kind(&spec));
+            let r = pipeline::timings::job(&kind, || pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref()));
             std::fs::remove_dir_all(&dir).ok();
             let v = match &r {
                 Ok(t) => serde_json::json!({ "ok": true, "task": t }),

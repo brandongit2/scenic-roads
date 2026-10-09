@@ -408,8 +408,10 @@ fn said(got: usize, of: usize) {
 /// Samples the DEMs at the build folder's vertices (`verts.bin`) not in the cache: writes
 /// `elev.f32`, `src.u8`, `dem-stats.json` and the cache for the next run.
 pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
+    use crate::timings::{phase, Class};
     let t_start = std::time::Instant::now();
     let b = &cfg.build;
+    let p = phase("the cache's heights reused", Class::Disk);
     let va = roadcore::Array::<[i32; 2]>::open(&b.join("verts.bin"))?;
     let verts = va.get();
     let n = verts.len();
@@ -422,6 +424,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         }
         prog.mark("cache")?;
     }
+    drop(p);
+    let p = phase("the points sorted by source", Class::Compute);
     let miss: Vec<u32> = (0..n as u32).filter(|&i| prog.elev[i as usize].is_nan()).collect();
     println!("{} vertices need DEM sampling", th(miss.len()));
     // (Those with a height so far, as each source's file or tile is sampled.)
@@ -444,7 +448,10 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         (x[i as usize], y[i as usize]) = p;
     }
     let pool = pool(cfg.workers);
+    drop(p);
 
+    // (Each source's files read where they lie, a range at a time, and sampled: its phase.)
+    let p = phase("HRDEM sampled", Class::Net);
     // ---- 1. HRDEM lidar (the 2 m mosaic's 8 m overview) ----------------------------------------
     let mut tiles: Vec<(String, Vec<u32>)> = Vec::new();
     for (tid, bb) in hrdem_tiles()? {
@@ -471,6 +478,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         prog.mark(&name)?;
     }
 
+    drop(p);
+    let p = phase("3DEP sampled", Class::Net);
     // ---- 2. USGS 3DEP 1/3" ------------------------------------------------------------------------
     let rest = left(&loc_elev, &local);
     let mut groups = usgs_groups(&lon, &lat, &rest);
@@ -500,6 +509,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         prog.mark(&name)?;
     }
 
+    drop(p);
+    let p = phase("MRDEM sampled", Class::Net);
     // ---- 3. MRDEM 30 m ----------------------------------------------------------------------------
     if !prog.done("mrdem") {
         let rest = left(&loc_elev, &local);
@@ -517,6 +528,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         prog.mark("mrdem")?;
     }
 
+    drop(p);
+    let p = phase("GSI sampled", Class::Net);
     // ---- 5. Japan: GSI 5 m (lidar, then photogrammetry), then 10 m ------------------------------
     let jp: Vec<u32> = elsewhere.iter().copied().filter(|&i| in_japan(lon[i as usize], lat[i as usize])).collect();
     if !jp.is_empty() {
@@ -544,6 +557,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         }
     }
 
+    drop(p);
+    let p = phase("MOI sampled", Class::NasRead);
     // ---- 6. Taiwan: the MOI 20 m DTM (a file per island group) ---------------------------------
     let tw: Vec<u32> = elsewhere.iter().copied().filter(|&i| in_taiwan(lon[i as usize], lat[i as usize])).collect();
     if !tw.is_empty() {
@@ -567,6 +582,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         }
     }
 
+    drop(p);
+    let p = phase("FABDEM sampled", Class::Net);
     // ---- 4. FABDEM 30 m (the rest outside North America, and North American points none of the
     // national DEMs cover, e.g. Saint-Pierre-et-Miquelon) -------------------------------------------
     let uncovered = left(&loc_elev, &local);
@@ -616,7 +633,9 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         prog.mark(&name)?;
     }
     drop(pool);
+    drop(p);
     said(miss.len(), miss.len());
+    let _p = phase("heights and the cache written", Class::Disk);
 
     // ---- the outputs, their stats, and the cache for the next run --------------------------------
     let mut counts = [0usize; 256];

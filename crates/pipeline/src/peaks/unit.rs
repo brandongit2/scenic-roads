@@ -84,16 +84,21 @@ pub struct UnitZ12 {
 
 impl UnitZ12 {
     pub fn load(out: &crate::out::Out, raw: &crate::terrain_pack::RawTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
+        // (From the terrain packs on the NAS, else AWS's raw tiles, cached or fetched: in parallel,
+        // one phase, its tiles' bytes counted.)
+        let p = crate::timings::phase("z12 terrain tiles loaded (packs, else AWS)", crate::timings::Class::NasRead);
         let packs = crate::terrain_pack::ManifestTiles::new(out, "terrain");
         let got: Vec<Result<((u32, u32), Option<Arc<Vec<u8>>>, u8)>> = want
             .par_iter()
             .map(|&(x, y)| {
                 if let Some(b) = packs.get(Z12, x, y)? {
+                    p.count(b.len() as u64, 1);
                     anyhow::ensure!(decode_terrain_png(&b).is_ok(), "the terrain pack's z12 {x}/{y} doesn't decode");
                     return Ok(((x, y), Some(Arc::new(b)), 0));
                 }
                 match raw.get(Z12, x, y)?.0 {
                     Some(b) => {
+                        p.count(b.len() as u64, 1);
                         // A cached tile that doesn't decode is fetched again, once.
                         let b = if decode_terrain_png(&b).is_ok() { b } else { raw.refetch(Z12, x, y)?.with_context(|| format!("AWS's z12 {x}/{y} is gone"))? };
                         anyhow::ensure!(decode_terrain_png(&b).is_ok(), "AWS's z12 {x}/{y} doesn't decode");

@@ -1027,7 +1027,7 @@ impl Agent {
             let sent = (|| -> Result<crate::coord::client::Handed> {
                 // A task's: its outputs and what it took.
                 if let Some(t) = result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)).map(|r| &r["task"]).filter(|t| t.is_object()) {
-                    let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), ..Default::default() };
+                    let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), timings: read_timings(&d), ..Default::default() };
                     return client.done(&d);
                 }
                 // (A unit job's has its done record; one without, a task's cut short, went wrong.)
@@ -1259,6 +1259,7 @@ impl Agent {
                     format!("SCENIC_COORD_URLS={}", contact.0),
                     format!("SCENIC_COORD_TOKEN={}", contact.1),
                     format!("SCENIC_WORKER={}", self.host),
+                    format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display()),
                     s(&self.o.bin.join("scenic")),
                     "run-task".into(),
                     "--spec".into(),
