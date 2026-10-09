@@ -4,7 +4,9 @@ goes into inputs/, translations/, descriptions/ and sources/ (the curated inputs
 published app and copy what you download."""
 from html import escape as E
 
-from diag import W, Diagram, rpath
+from diag import W, Diagram, rpath, wrap
+
+LINE = 18.5
 
 
 def build(check=False):
@@ -12,11 +14,20 @@ def build(check=False):
     tx = d.tx
     el, ar, lb = [], [], []
 
+    def lines_of(items, w):
+        """Each item wrapped to the box's width (a string is one paragraph)."""
+        items = [items] if isinstance(items, str) else items
+        return [ln for it in items for ln in wrap('st-l', it, w - 28)]
+
+    def need(n):
+        """A box's height for n lines under its title."""
+        return 49 + LINE * (n - 1) + 14
+
     def box(x, y, w, h, title, lines=(), nas=False):
         el.append(f'<rect class="st-box{" nas" if nas else ""}" x="{x}" y="{y}" width="{w}" height="{h}" rx="9"/>')
-        el.append(tx('st-t', x + 14, y + 23, title, w - 28))
+        el.append(tx('st-t', x + 14, y + 25, title, w - 28))
         for i, s in enumerate(lines):
-            el.append(tx('st-l', x + 14, y + 45 + 16.5 * i, s, w - 28))
+            el.append(tx('st-l', x + 14, y + 49 + LINE * i, s, w - 28))
 
     def arrow(*pts, label=None, at=None, anchor='start', dashed=False):
         ar.append(f'<path class="st-a{" dashed" if dashed else ""}" d="{rpath(pts)}" marker-end="url(#sm-a)"/>')
@@ -33,40 +44,49 @@ def build(check=False):
             ('work/ · cache/', 'build intermediates; what each area keeps for its next run, on either Mac'),
             ('app/ · catalog/', 'the app your Macs run; a catalog a round: every file the map reads'),
             ('state/', 'who leads (terms); the journal; the records: what each file is made from')]
-    top, hh = 16, 47 + 16.5 * len(rows) + 6
-    box(16, top, 212, hh, 'Online sources', ['OSM planet, twice a year', 'AWS terrain · GLO-30', 'DEMs · canopy · land cover',
-                                            'Overture · GHSL buildings', 'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'])
-    nx, nw = 286, 560
+    top = 16
+    sx, sw = 16, 196
+    nx, nw, fw = 270, 590, 172
+    ax, aw = 928, 330
+    bx = 1328
+    src_l = lines_of(['OSM planet, twice a year', 'AWS terrain · GLO-30', 'DEMs · canopy · land cover', 'Overture · GHSL buildings',
+                      'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'], sw)
+    rows_l = [(f, wrap('st-l', t, nw - fw - 14)) for f, t in rows]
+    mac_l = lines_of(['the map is always on (a launcher)', 'copy what you download: the World, zoomed out; regions; views',
+                      'read the rest from the NAS (timeouts, an offline banner)', 'Regions panel → recipes in inputs/',
+                      'menu bar: the build, who leads', 'each helps build (below)'], aw)
+    brw_l = lines_of(['the map: MapLibre and WebGL', 'the build page, on any device (below)'], W - 16 - bx)
+    hh = max(need(len(src_l)), need(len(mac_l)), need(sum(len(t) for _, t in rows_l)), need(len(brw_l)))
+    box(sx, top, sw, hh, 'Online sources', src_l)
     box(nx, top, nw, hh, 'NAS · the source of truth', nas=True)
-    for i, (f, s) in enumerate(rows):
-        y = top + 47 + 16.5 * i
-        el.append(tx('st-f', nx + 14, y, f, 138))
-        el.append(tx('st-l', nx + 160, y, s, nw - 174))
-    ax, aw = 904, 360
-    box(ax, top, aw, hh, 'Your Macs', ['the map is always on (a launcher)', 'copy what you download: the World,',
-                                       'zoomed out; regions; views', 'read the rest from the NAS (timeouts,', 'an offline banner)',
-                                       'Regions panel → recipes in inputs/', 'menu bar: the build, who leads', 'each helps build (below)'])
-    bx = 1326
-    box(bx, top, W - 16 - bx, hh, 'Browser', ['the map: MapLibre', 'and WebGL', 'the build page, on', 'any device (below)'])
-    by, bh = top + hh + 52, 74
-    lw = 440
-    box(nx, by, lw, bh, 'The lead (the M4 today) · and every member', ['two jobs at once, staged on its SSD; paused while asleep,',
-                                                                       'away from the NAS or on battery below 30 %; nothing lost'])
+    y = top + 49
+    for f, ts in rows_l:
+        el.append(tx('st-f', nx + 14, y, f, fw - 10))
+        for i, t in enumerate(ts):
+            el.append(tx('st-l', nx + fw, y + LINE * i, t, nw - fw - 14))
+        y += LINE * len(ts)
+    box(ax, top, aw, hh, 'Your Macs', mac_l)
+    box(bx, top, W - 16 - bx, hh, 'Browser', brw_l)
+    lw = 460
+    lead_l = lines_of('two jobs at once, staged on its SSD; paused while asleep, away from the NAS or on battery below 30 %; nothing lost', lw)
+    hand_l = lines_of('you, Claude agents (translators, writers, research), downloads a script can’t make', aw)
+    by, bh = top + hh + 56, need(max(len(lead_l), len(hand_l)))
+    box(nx, by, lw, bh, 'The lead (the M4 today) · and every member', lead_l)
     hx = ax
-    box(hx, by, aw, bh, 'Made by hand (the curated inputs, below)', ['you, Claude agents (translators, writers,',
-                                                                     'research), downloads a script can’t make'])
+    box(hx, by, aw, bh, 'Made by hand (the curated inputs, below)', hand_l)
 
     mid = top + hh / 2
-    arrow((228, top + 46), (nx, top + 46), label='the planet', at=(257, top + 39), anchor='middle')
-    arrow((122, top + hh), (122, by + bh / 2), (nx, by + bh / 2), label='downloads (kept on the NAS)', at=(130, by + bh / 2 - 7))
-    arrow((nx + nw, top + 46), (ax, top + 46), label='copies', at=(875, top + 39), anchor='middle')
-    arrow((nx + nw, top + 96), (ax, top + 96), label='on demand', at=(875, top + 89), anchor='middle', dashed=True)
-    arrow((ax, top + hh - 50), (nx + nw, top + hh - 50), label='recipes', at=(875, top + hh - 57), anchor='middle', dashed=True)
-    arrow((ax + aw, mid), (bx, mid), label='tiles · JSON', at=(1295, mid - 7), anchor='middle')
-    arrow((nx + 200, top + hh), (nx + 200, by), label='inputs', at=(nx + 192, top + hh + 30), anchor='end')
-    arrow((nx + 360, by), (nx + 360, top + hh), label='outputs', at=(nx + 368, top + hh + 30))
+    arrow((sx + sw, top + 49), (nx, top + 49), label='the planet', at=((sx + sw + nx) / 2, top + 41), anchor='middle')
+    arrow((sx + sw / 2, top + hh), (sx + sw / 2, by + bh / 2), (nx, by + bh / 2), label='downloads (kept on the NAS)', at=(sx + sw / 2 + 8, by + bh / 2 - 8))
+    gx = (nx + nw + ax) / 2
+    arrow((nx + nw, top + 49), (ax, top + 49), label='copies', at=(gx, top + 41), anchor='middle')
+    arrow((nx + nw, top + 104), (ax, top + 104), label='on demand', at=(gx, top + 96), anchor='middle', dashed=True)
+    arrow((ax, top + hh - 54), (nx + nw, top + hh - 54), label='recipes', at=(gx, top + hh - 62), anchor='middle', dashed=True)
+    arrow((ax + aw, mid), (bx, mid), label='tiles · JSON', at=((ax + aw + bx) / 2, mid - 8), anchor='middle')
+    arrow((nx + 200, top + hh), (nx + 200, by), label='inputs', at=(nx + 192, top + hh + 33), anchor='end')
+    arrow((nx + 360, by), (nx + 360, top + hh), label='outputs', at=(nx + 368, top + hh + 33))
     xh = nx + nw - 50
-    arrow((hx, by + bh / 2), (xh, by + bh / 2), (xh, top + hh), label='by hand', at=(xh + 8, top + hh + 30))
+    arrow((hx, by + bh / 2), (xh, by + bh / 2), (xh, top + hh), label='by hand', at=(xh + 8, top + hh + 33))
 
     h = by + bh + 14
     aria = ('Where the data lives. The NAS is the source of truth: the translation and description folders with their to-do '

@@ -43,11 +43,11 @@ def mini(kind):
     if kind in diag.REPRO:
         return f'<svg width="30" height="16">{diag.repro_mark(15, 8, kind, r=5)}</svg>'
     if kind == 'shared':
-        return f'<svg width="30" height="16" class="c-osm"><text class="tool" x="15" y="12.5" text-anchor="middle" style="font-size:14px">{diag.SHARED}</text></svg>'
+        return f'<svg width="30" height="16" class="c-osm"><text class="tool" x="15" y="12.5" text-anchor="middle" style="font-size:15px">{diag.SHARED}</text></svg>'
     t = diag.TAB[kind]
-    w = 5.6 * len(t) + 14
-    return (f'<svg width="{w + 2:.0f}" height="15" class="c-osm"><path class="tab {kind}" d="M1,14.5 V4 Q1,1 4,1 H{w - 2:.1f} Q{w + 1:.1f},1 {w + 1:.1f},4 V14.5 Z"/>'
-            f'<text class="tab-t" x="{w / 2 + 1:.1f}" y="11" text-anchor="middle">{E(t)}</text></svg>')
+    w = diag.width('tab-t', t) + 14
+    return (f'<svg width="{w + 2:.0f}" height="17" class="c-osm"><path class="tab {kind}" d="M1,16.5 V4 Q1,1 4,1 H{w - 2:.1f} Q{w + 1:.1f},1 {w + 1:.1f},4 V16.5 Z"/>'
+            f'<text class="tab-t" x="{w / 2 + 1:.1f}" y="12.2" text-anchor="middle">{E(t)}</text></svg>')
 
 
 classes = [('base', 'Map context'), ('place', 'Places & heritage'), ('terr', 'Elevation & terrain'), ('net', 'Road, rail & ferry network'),

@@ -159,16 +159,16 @@ GROUPS = [
 
 CSS = """
 .cur-list{margin:0 0 18px;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
-.cur-list>h3{font:600 10.5px/1 var(--sans);letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin:0 0 6px}
-.cur-list>p{margin:0 0 10px;color:var(--muted);font-size:12.5px;max-width:980px}
-.cur-list h4{font:600 12px/1.2 var(--sans);color:var(--fg);margin:14px 0 4px}
-.cur-row,.cur-head{display:grid;grid-template-columns:minmax(150px,1.05fr) 1.1fr 1.25fr 1fr 1.25fr 1fr;gap:4px 14px;padding:6px 0;border-top:1px solid var(--rule);font-size:12px;line-height:1.4;color:var(--muted)}
-.cur-head{font:600 10px/1.2 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--faint);border-top:0;padding:2px 0 4px}
-.cur-row b{display:flex;gap:7px;align-items:flex-start;font:600 12.5px/1.3 var(--sans);color:var(--fg)}
+.cur-list>h3{font:600 11.5px/1 var(--sans);letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin:0 0 6px}
+.cur-list>p{margin:0 0 10px;color:var(--muted);font-size:14px;max-width:1080px}
+.cur-list h4{font:600 13.5px/1.2 var(--sans);color:var(--fg);margin:14px 0 4px}
+.cur-row,.cur-head{display:grid;grid-template-columns:minmax(150px,1.05fr) 1.1fr 1.25fr 1fr 1.25fr 1fr;gap:4px 14px;padding:6px 0;border-top:1px solid var(--rule);font-size:13.5px;line-height:1.4;color:var(--muted)}
+.cur-head{font:600 11px/1.2 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--faint);border-top:0;padding:2px 0 4px}
+.cur-row b{display:flex;gap:7px;align-items:flex-start;font:600 14px/1.3 var(--sans);color:var(--fg)}
 .cur-row b svg{flex:none;margin-top:1px}
-.cur-row .v{display:block;font:400 10.5px/1.3 var(--mono);color:var(--muted);margin:2px 0 0 21px}
-.cur-row code{font:400 11px var(--mono);color:var(--fg)}
-.cur-row>span>i{display:none;font-style:normal;color:var(--faint);font:600 9.5px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
+.cur-row .v{display:block;font:400 12px/1.3 var(--mono);color:var(--muted);margin:2px 0 0 23px}
+.cur-row code{font:400 12.5px var(--mono);color:var(--fg)}
+.cur-row>span>i{display:none;font-style:normal;color:var(--faint);font:600 10.5px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
 .cur-row svg .rp{fill:var(--surface);stroke:var(--fg);stroke-width:1.1}
 .cur-row svg .rp.full,.cur-row svg .rp-half{fill:var(--fg)}
 .cur-row svg .rp-x{stroke:var(--fg);stroke-width:1.1;stroke-linecap:round}
@@ -184,7 +184,7 @@ def html():
     for title, items in GROUPS:
         rows.append(f'<h4>{E(title)}</h4><div class="cur-head" aria-hidden="true">' + ''.join(f'<span>{E(h)}</span>' for h in HEAD) + '</div>')
         for lvl, words, k, name, feeds, by, where, doc, remake in items:
-            mark = f'<svg width="12" height="12" aria-hidden="true">{diag.repro_mark(6, 6, lvl, r=4.6)}</svg>'
+            mark = f'<svg width="13" height="13" aria-hidden="true">{diag.repro_mark(6.5, 6.5, lvl, r=5)}</svg>'
             cells = [feeds, by, where, doc, remake]
             rows.append(f'<div class="cur-row c-{k}"><span><b><span class="k"></span>{mark}{E(name)}</b>'
                         f'<span class="v">{E(words or diag.REPRO[lvl])}</span></span>'

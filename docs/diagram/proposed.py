@@ -109,9 +109,9 @@ def build(check=False):
     cy = y0 + 24
     n_hs = d.card('place', 'd1', cy, 'heritage sites', 'Python', ['heritage.py on the registers', 'over the coverage + 20 km,', 'sliced per area'],
                   [(['work/heritage/<date>/'], 'positions · areas per z6')], scope='global')
-    c_regs = d.cur('place', cy, 'Registers (a snapshot)', ['UNESCO · Parks Canada · NRHP', 'Mérimée · NHLE · 文化財 …;', 'park facts, English names'],
+    c_regs = d.cur('place', cy, 'Registers (a snapshot)', ['UNESCO · Parks Canada · NRHP ·', 'Mérimée · NHLE · 文化財 …;', 'park facts, English names'],
                    'hand downloads, old scripts', ('part', 'partly; being documented'))
-    s_osm2 = d.src('osm', c_regs.b + 10, 'OSM pieces · sets', ['POIs · designated areas', 'summits · hiking routes'])
+    s_osm2 = d.src('osm', c_regs.b + 10, 'OSM pieces · sets', ['POIs · designated areas ·', 'summits · hiking routes'])
     s_wd = d.src('place', s_osm2.b + 8, 'Wikidata · Wikipedia', ['facts; pageviews, four', 'months a pass, all languages'])
     n_poi = d.card('place', 'd1', n_hs.b + 22, 'candidates · peaks', 'Rust', ['each area’s points; prominence', 'and isolation over z12 and', 'the worldwide z8'],
                    [(['work/pois/ · work/peaks/'], 'per area')], scope='area', shared=True)
@@ -129,7 +129,7 @@ def build(check=False):
     b_ov = d.layer('place', 0, 'Area overlays', ['heritage areas, Indigenous', 'lands, World Heritage outlines'], cy=p_ov.my)
     d.arrow('place', (c_regs.r, n_hs.y + 18), (n_hs.l, n_hs.y + 18))
     d.arrow('osm', (s_osm2.r, s_osm2.my), (s_osm2.r + 14, s_osm2.my), (s_osm2.r + 14, n_poi.y + 18), (n_poi.l, n_poi.y + 18))
-    yw = max(n_poi.b, n_items.b) + 6
+    yw = max(n_poi.b, n_items.b, s_wd.b) + 8
     d.arrow('place', (s_wd.l + 90, s_wd.b), (s_wd.l + 90, yw), (n_items.l + 60, yw), (n_items.l + 60, n_items.b))
     d.arrow('place', (n_poi.r, n_items.y + 18), (n_items.l, n_items.y + 18))
     d.arrow('place', (n_hs.r, n_hc.y + 18), (n_hc.l, n_hc.y + 18))
@@ -148,7 +148,7 @@ def build(check=False):
     # ---- 4. terrain: per z3 pack near the coverage -----------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12', 'kept raw, never edited'],
+    s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12;', 'kept raw, never edited'],
                   kept=['sources/aws-terrarium/', 'an area’s tiles packed'])
     s_glo = d.src('terr', s_aws.b + 8, 'Copernicus GLO-30', ['30 m, north of 59.5° N, where', 'AWS mixes datums'], kept=['sources/copernicus-dem/'])
     s_bw = d.src('base', s_glo.b + 8, 'The basemap’s water', ['lakes to their shore’s level,', 'the sea to 0 m'])
@@ -194,7 +194,7 @@ def build(check=False):
     n_tile = d.card('net', 'd4', cy, 'roads & rails', 'Rust', ['per z6 tile: the areas within', '110 km and their road values;', 'climbs, tiles, query parts'],
                     [(['layers/roads/ · rails/'], 'packs · RT v7 z4–14'), (['hidata/<z6>'], 'query parts · summaries')], scope='area')
     s_osm4 = d.src('osm', cy, 'OSM pieces', ['roads · rail lines'])
-    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.)', 'GSI (Japan) · FABDEM 30 m', 'read by range, road blocks only'],
+    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.) ·', 'GSI (Japan) · FABDEM 30 m;', 'read by range, road blocks only'],
                   kept=['sources/fabdem/', 'sources/dem-cache/'])
     c_dem = d.cur('terr', s_dem.b + 10, 'Which DEM where', ['the sources and their order by', 'area; HRDEM’s tile lists'], 'chosen by hand', 'part')
     p_road = d.pill('net', n_tile.y + 30, ['/tiles/roads · rails', '/api/road · profile'], note=['the pack for the tile;', 'APIs by OSM id'])
@@ -253,7 +253,7 @@ def build(check=False):
             label='the fits', at=(n_bf.r + 8, yft - 5))
     d.arrow('bldg', (n_b3.r, p_bld.my), (p_bld.l, p_bld.my))
     d.to_layer('bldg', p_bld, b_bld, dashed=True)
-    s_can = d.src('land', max(c_fit.b, n_b3.b, yft) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery)', 'Copernicus HRL · NALCMS'],
+    s_can = d.src('land', max(c_fit.b, n_b3.b, yft) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery) ·', 'Copernicus HRL · NALCMS'],
                   kept=['sources/canopy/ (10°)', 'sources/trees/leaf/'])
     n_trees = d.card('land', 'd1', s_can.y + 30, 'tree cover', 'Rust', ['cover · height · leaf type,', 'z9–12 per z6 tile, clipped', 'to the coverage; its mid'],
                      [(['layers/trees-*/ hi'], 'packs · Terrarium WebP'), (['work/trees-mid/'], 'its z8 tiles and values')], scope='area', shared=True, task=True)

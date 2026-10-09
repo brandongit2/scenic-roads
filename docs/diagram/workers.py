@@ -5,9 +5,9 @@ journal into the term's records. Every job, the lead's too, hands its results to
 pool leaves for later is planned."""
 from html import escape as E
 
-from diag import W, Diagram, rpath
+from diag import W, Diagram, rpath, wrap
 
-LINE = 16.5
+LINE = 18.5
 
 
 def build(check=False):
@@ -17,12 +17,13 @@ def build(check=False):
     fr, el, ar, lb = [], [], [], []
 
     def box(x, y, w, title, lines=(), cls='', h=None):
-        """A machine or part of one: its title, then its lines; h: at least this tall."""
-        hh = max(h or 0, 45 + LINE * (len(lines) - 1) + 14 if lines else 36)
+        """A machine or part of one: its title, then its lines (one paragraph, wrapped to the box); h: at least this tall."""
+        lines = wrap('st-l', lines, w - 28) if lines else []
+        hh = max(h or 0, 49 + LINE * (len(lines) - 1) + 14 if lines else 40)
         el.append(f'<rect class="st-box{" " + cls if cls else ""}" x="{x}" y="{y}" width="{w}" height="{hh:.1f}" rx="9"/>')
-        el.append(tx('st-t', x + 14, y + 23, title, w - 28))
+        el.append(tx('st-t', x + 14, y + 25, title, w - 28))
         for i, s in enumerate(lines):
-            el.append(tx('st-l', x + 14, y + 45 + LINE * i, s, w - 28))
+            el.append(tx('st-l', x + 14, y + 49 + LINE * i, s, w - 28))
         return (x, y, w, hh)
 
     def arrow(*pts, label=None, at=None, anchor='start', dashed=False):
@@ -49,12 +50,12 @@ def build(check=False):
                    'renewed by a beat each minute: a lapsed', 'lease’s work is offered again; its state is the',
                    'term’s, on the NAS; checks a worker’s first', 'three tasks, then one in eight; waits on a',
                    'worker’s task only if it’s measured faster']
-    iy = top + 40
+    iy = top + 42
     agent = box(ix, iy, iw, 'Its agent', agent_lines)
     coord = box(cx, iy, iw, 'Its coordinator', coord_lines)
     bh = max(agent[3], coord[3]) + 56
     fr.append(f'<rect class="st-box group" x="{bx}" y="{top}" width="{bw}" height="{bh:.1f}" rx="9"/>')
-    fr.append(tx('st-t', bx + 14, top + 23, 'The lead (the M4 today, 48 GB) · any Mac can lead', bw - 28))
+    fr.append(tx('st-t', bx + 14, top + 25, 'The lead (the M4 today, 48 GB) · any Mac can lead', bw - 28))
 
     # The workers: a device's page (tasks), the M1 (jobs, and tasks when no job fits it).
     wx, ww = 1148, W - 16 - 1148
