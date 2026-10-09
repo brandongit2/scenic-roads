@@ -564,8 +564,11 @@ mod tests {
         let cov = coverage();
         let areas = job::areas_of(&files);
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        // (The coordinator and the job on a virtual clock: the job's waits are counted in it.)
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
         let url = format!("http://127.0.0.1:{port}");
-        let o = crate::offload::Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
+        let o = crate::offload::Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job")).clock(clock.clone());
         let scratch = d.path().join("job");
         // No worker around: nothing offered, every area run here.
         let mut offers = Offers::new(Some(&o), &scratch, t, areas.len());
@@ -622,9 +625,8 @@ mod tests {
         offers.made_here(10, 2.0);
         assert!(offers.records[&1] > 0);
         assert_eq!(offers.here_s(1), Some(0.2 * offers.records[&1] as f64));
-        let began = std::time::Instant::now();
         let dir = offers.result(&files, &cov, &areas, 1).unwrap().unwrap();
-        assert!(began.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(clock.slept().0, 0, "never waited");
         let mut third: Tiles = Vec::new();
         take_area(&dir, a8, &mut collect(&mut third)).unwrap();
         assert_eq!(third, want);

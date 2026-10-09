@@ -336,6 +336,7 @@ pub fn here_run<'a>(shapes: &'a mask::Shapes, inp: &'a Inputs<'a>) -> impl Fn(&[
 mod tests {
     use super::*;
     use crate::coord::client::Client;
+    use std::sync::{Arc, Mutex};
     use crate::trees::{blocks_files, block_files as one_block, mask::Shapes, tests::squares_dir, Run, Source, MID};
 
     /// Over blocks 8/132–133, rows 88 and 89: two rows of two in piece 6/33/22, the squares'
@@ -377,12 +378,10 @@ mod tests {
     }
 
     /// Piece 6/33/22's run in `dir/out`, with `offload`.
-    fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) -> std::time::Duration {
+    fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
         std::fs::write(d.join("cov.json"), COV).unwrap();
         let a = Run { tile: (6, 33, 22), coverage: d.join("cov.json"), chm: sq.into(), chm_store: d.join("store"), leaf: sq.into(), out: d.join(out), dem: d.into() };
-        let t = std::time::Instant::now();
         rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap().install(|| super::super::z6_with(&a, offload)).unwrap();
-        t.elapsed()
     }
 
     /// Whether two pieces' runs wrote the same bytes.
@@ -390,25 +389,30 @@ mod tests {
         LAYERS.iter().map(|l| format!("trees-{l}.tiles")).chain([MID.to_string()]).all(|f| std::fs::read(a.join(&f)).unwrap() == std::fs::read(b.join(&f)).unwrap())
     }
 
-    /// A worker in a thread: asks until it's given a row (each 0.2 s, up to 20 s), runs the program's
-    /// code over it as `trees --blocks` does (its squares in `sq`), sends what it wrote (`spoil`: a
-    /// tile spoilt first), done; or, `hold`, holds it and never says.
-    fn worker(url: &str, token: &str, name: &str, sq: PathBuf, home: PathBuf, spoil: bool, hold: bool) -> std::thread::JoinHandle<Option<serde_json::Value>> {
+    /// A coordinator on a virtual clock, and the clock: the job's waits are counted in it, and a
+    /// worker acts at its moments (`worker`).
+    fn coordinator(p: &Path) -> (crate::coord::Coordinator, String, Arc<store::clock::Virtual>) {
+        let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        (c, format!("http://127.0.0.1:{port}"), clock)
+    }
+
+    /// A worker on the clock: a second from now (the job's first moment of waiting) it asks for a
+    /// row and, given one, runs the program's code over it as `trees --blocks` does (its squares in
+    /// `sq`), sends what it wrote (`spoil`: a tile spoilt first), done; or, `hold`, holds it and
+    /// never says. The task it was given, once it was.
+    fn worker(clock: &store::clock::Virtual, url: &str, token: &str, name: &str, sq: PathBuf, home: PathBuf, spoil: bool, hold: bool) -> Arc<Mutex<Option<serde_json::Value>>> {
         let m = Client::at(vec![url.to_string()], token.to_string(), name);
-        std::thread::spawn(move || {
+        let given = Arc::new(Mutex::new(None));
+        let slot = given.clone();
+        clock.after(std::time::Duration::from_secs(1), move || {
             let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
-            let mut g = None;
-            for _ in 0..100 {
-                if let Some(x) = m.ask(&ask).unwrap() {
-                    g = Some(x);
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            let g = g?;
+            let Some(g) = m.ask(&ask).unwrap() else { return };
             let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+            *slot.lock().unwrap() = Some(task.clone());
             if hold {
-                return Some(task);
+                return;
             }
             let u = home.join("u");
             std::fs::create_dir_all(&u).unwrap();
@@ -438,8 +442,8 @@ mod tests {
             }
             let done = crate::coord::Done { lease: g.lease, outputs, peak_mb: 400, secs: 0.5, ..Default::default() };
             assert_eq!(m.done(&done).unwrap(), crate::coord::client::Handed::Taken);
-            Some(task)
-        })
+        });
+        given
     }
 
     #[test]
@@ -448,9 +452,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path();
         piece(p, sq.path(), "alone", None);
-        let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
-        let url = format!("http://127.0.0.1:{port}");
-        let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job"));
+        let (c, url, clock) = coordinator(p);
+        let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job")).clock(clock.clone());
         let tok = c.contact.token.clone();
         let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         // No worker around: nothing offered, the same piece.
@@ -467,12 +470,11 @@ mod tests {
             s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
             s.workers.get_mut("m1").unwrap().checked = 3;
         }
-        // (Waited on until it's back, here and below: this is the exchange, not the waiting rule,
-        // and the worker is a thread of this test, as slow as the Mac running it.)
-        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient")).waiting(crate::offload::Waiting::UntilDone);
-        let w = worker(&url, &tok, "m1", sq.path().into(), p.join("m1"), false, false);
+        // (Waited on until it's back, here and below: this is the exchange, not the waiting rule.)
+        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient")).waiting(crate::offload::Waiting::UntilDone).clock(clock.clone());
+        let w = worker(&clock, &url, &tok, "m1", sq.path().into(), p.join("m1"), false, false);
         piece(p, sq.path(), "taken", Some(&patient));
-        let task = w.join().unwrap().unwrap();
+        let task = w.lock().unwrap().take().expect("it was given the row");
         assert_eq!((task["unit"].as_str(), task["blocks"].as_str()), (Some("8/132/89"), Some("8/132/89,8/133/89")));
         assert_eq!(task["runs"][0]["prog"], "trees");
         assert!(same_piece(&p.join("alone"), &p.join("taken")));
@@ -485,16 +487,16 @@ mod tests {
 
         // Its first results checked (the coordinator says): a spoilt one is found, the row made
         // here, the worker gets no more work.
-        // (Measured fast again, as above: its first row, a test thread on a loaded Mac, may have
-        // measured it slower than this Mac's run, and the coordinator gives such a worker none.)
+        // (Measured fast again, as above: its pace as the test says, whatever its first row was
+        // measured at.)
         {
             let mut s = c.shared.lock().unwrap();
             s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
             s.workers.get_mut("m1").unwrap().checked = 0;
         }
-        let w = worker(&url, &tok, "m1", sq.path().into(), p.join("m1b"), true, false);
+        let w = worker(&clock, &url, &tok, "m1", sq.path().into(), p.join("m1b"), true, false);
         piece(p, sq.path(), "spoilt", Some(&patient));
-        w.join().unwrap().unwrap();
+        assert!(w.lock().unwrap().is_some(), "it was given the row");
         assert!(same_piece(&p.join("alone"), &p.join("spoilt")));
         assert!(c.shared.lock().unwrap().workers["m1"].bad);
     }
@@ -504,33 +506,29 @@ mod tests {
         let sq = squares_dir();
         let d = tempfile::tempdir().unwrap();
         let p = d.path();
-        // (The piece made with no one offered anything: the time the others are held to, with room
-        // for a loaded Mac, rather than a fixed one: 10 s held on this Mac, not on the build Mac
-        // with a build beside it, where the piece alone took ~19 s.)
-        let alone = piece(p, sq.path(), "alone", None);
-        let no_wait = alone.mul_f64(1.5) + std::time::Duration::from_secs(5);
-        let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
-        let url = format!("http://127.0.0.1:{port}");
-        let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job"));
+        piece(p, sq.path(), "alone", None);
+        let (c, url, clock) = coordinator(p);
+        let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job")).clock(clock.clone());
         let tok = c.contact.token.clone();
         let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         // A page measured slower than this Mac, asking: never given the row, never waited for.
         let slow = Client::at(vec![url.clone()], tok.clone(), "slow");
         assert!(slow.ask(&ask).unwrap().is_none());
         c.shared.lock().unwrap().tasks.paces.insert(("slow".into(), KIND.into()), 2.0);
-        let took = piece(p, sq.path(), "slow", Some(&o));
-        assert!(took < no_wait, "not waited for: {took:?} (alone {alone:?})");
+        piece(p, sq.path(), "slow", Some(&o));
+        assert_eq!(clock.slept().0, 0, "not waited for");
         assert!(slow.ask(&ask).unwrap().is_none(), "given none");
         assert!(same_piece(&p.join("alone"), &p.join("slow")));
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
-        // One not measured takes the row and holds it: the row made here at its turn, at once (no
-        // wait on it); the coordinator keeps it for that worker to finish, to measure it.
+        // One not measured takes the row in the moment it's given (once an hour) and holds it: the
+        // row made here at its turn, at once (no wait on it); the coordinator keeps it for that
+        // worker to finish, to measure it.
         let new = Client::at(vec![url.clone()], tok.clone(), "new");
         assert!(new.ask(&ask).unwrap().is_none());
-        let w = worker(&url, &tok, "new", sq.path().into(), p.join("new"), false, true);
-        let took = piece(p, sq.path(), "held", Some(&o));
-        assert!(w.join().unwrap().is_some(), "it took the row");
-        assert!(took < no_wait, "raced at once: {took:?} (alone {alone:?})");
+        let w = worker(&clock, &url, &tok, "new", sq.path().into(), p.join("new"), false, true);
+        piece(p, sq.path(), "held", Some(&o));
+        assert!(w.lock().unwrap().is_some(), "it took the row");
+        assert_eq!(clock.slept(), (1, std::time::Duration::from_secs(1)), "a moment for it to take it, then raced at once");
         assert!(same_piece(&p.join("alone"), &p.join("held")));
         let s = c.shared.lock().unwrap();
         assert!(s.tasks.by_id.values().all(|t| t.measuring.is_some()), "kept only to measure it");

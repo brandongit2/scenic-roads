@@ -35,6 +35,8 @@ pub struct Offload {
     lease_wait: std::time::Duration,
     /// How long a job waits on a worker holding a task (`Waiting`).
     waiting: Waiting,
+    /// The time its waits are measured and slept in (a test's virtual one: `clock`).
+    clock: std::sync::Arc<dyn store::clock::Clock>,
 }
 
 /// How long a job waits on a worker holding one of its tasks.
@@ -111,12 +113,18 @@ impl Offload {
         let version = std::env::current_exe().and_then(std::fs::metadata).map(|m| format!("{:x}-{:x}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
         let dir = scratch.join("tasks");
         std::fs::remove_dir_all(&dir).ok();
-        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT, waiting: Waiting::ByPace }
+        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real() }
     }
 
     /// The same, waiting on a worker holding a task as `w` says.
     pub fn waiting(mut self, w: Waiting) -> Offload {
         self.waiting = w;
+        self
+    }
+
+    /// The same, its waits measured and slept in `clock` (a test's virtual clock).
+    pub fn clock(mut self, clock: std::sync::Arc<dyn store::clock::Clock>) -> Offload {
+        self.clock = clock;
         self
     }
 
@@ -215,7 +223,9 @@ impl Offload {
     fn wait_on(&self, t: &Offered, mut st: serde_json::Value, p: Patience) -> Result<serde_json::Value> {
         let _p = crate::timings::phase("waiting on other workers", crate::timings::Class::Wait);
         let status = || self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).map(|r| r.1);
-        let began = std::time::Instant::now();
+        let clock = &*self.clock;
+        let since = |t: std::time::Instant| clock.now().saturating_duration_since(t);
+        let began = clock.now();
         let mut held: Option<(std::time::Instant, String)> = None;
         // (Whether to give a worker a moment to take it: decided on the first status.)
         let mut lease_wait = None;
@@ -224,7 +234,7 @@ impl Offload {
                 return Ok(st);
             }
             match st["state"].as_str() {
-                Some("offered") if held.is_none() && began.elapsed() < self.lease_wait => {
+                Some("offered") if held.is_none() && since(began) < self.lease_wait => {
                     let wait = *lease_wait.get_or_insert_with(|| {
                         let takers = st["takers"].as_array().cloned().unwrap_or_default();
                         let fast = takers.iter().any(|w| w["pace"].as_f64().is_some_and(crate::coord::task::beats));
@@ -236,21 +246,21 @@ impl Offload {
                     }
                 }
                 Some("leased") => {
-                    let since = held.get_or_insert_with(|| (std::time::Instant::now(), st["worker"].as_str().unwrap_or("").to_string())).0;
-                    if self.waiting == Waiting::ByPace && !p.wait_on(since.elapsed().as_secs_f64(), st["age_s"].as_f64().unwrap_or(0.0), st["pace"].as_f64()) {
+                    let from = held.get_or_insert_with(|| (clock.now(), st["worker"].as_str().unwrap_or("").to_string())).0;
+                    if self.waiting == Waiting::ByPace && !p.wait_on(since(from).as_secs_f64(), st["age_s"].as_f64().unwrap_or(0.0), st["pace"].as_f64()) {
                         let pace = st["pace"].as_f64().map_or("not measured".to_string(), |p| format!("{p:.2}× this Mac's time"));
                         eprintln!("offload: task {}: {} has it (its pace {pace}), not back before this Mac's run would be: run here too", t.id, st["worker"].as_str().unwrap_or(""));
                         return Ok(st);
                     }
                 }
                 _ => {
-                    if let Some((since, w)) = &held {
-                        eprintln!("offload: task {}: waited {:.0} s on {w} ({})", t.id, since.elapsed().as_secs_f64(), st["state"].as_str().unwrap_or("gone"));
+                    if let Some((from, w)) = &held {
+                        eprintln!("offload: task {}: waited {:.0} s on {w} ({})", t.id, since(*from).as_secs_f64(), st["state"].as_str().unwrap_or("gone"));
                     }
                     return Ok(st);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            clock.sleep(std::time::Duration::from_secs(1));
             st = status()?;
         }
     }
@@ -268,9 +278,9 @@ impl Offload {
         // (This Mac's run timed, when it runs it: the worker's pace is measured against it.)
         let mut ran = None;
         let mut here = || -> Result<()> {
-            let began = std::time::Instant::now();
+            let began = self.clock.now();
             here()?;
-            ran = Some(began.elapsed().as_secs_f64());
+            ran = Some(self.clock.now().saturating_duration_since(began).as_secs_f64());
             Ok(())
         };
         let state = st["state"].as_str().unwrap_or("gone").to_string();
@@ -309,7 +319,9 @@ impl Offload {
                 }
             }
         };
-        let here_s = ran.or(p.here_s);
+        // (A run the clock saw take no time, a test's virtual clock, is no measure: the estimate
+        // stands.)
+        let here_s = ran.filter(|&s| s > 0.0).or(p.here_s);
         let r = self.client.post_json(&format!("/task/{}/close", t.id), &serde_json::json!({ "checked": checked, "here_s": here_s }));
         if r.is_ok_and(|r| r.1["measuring"] == true) {
             eprintln!("offload: task {}: kept for its worker to finish, to measure its pace", t.id);
@@ -579,6 +591,7 @@ fn same(st: &serde_json::Value, dir: &Path, sent: &Path, since: std::time::Syste
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn a_native_worker_runs_a_task_and_the_job_takes_it() {
@@ -598,7 +611,7 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into(), "{dir}/kept.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT, waiting: Waiting::ByPace };
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real() };
         let u = Unit::parse("6/1/1").unwrap();
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.
@@ -667,11 +680,13 @@ mod tests {
     }
 
     /// A coordinator, a job's Offload and a unit's folder with a stand-in step (it writes one file),
-    /// in `d`: (the coordinator, its address, the job's Offload, the folder, the step's programs,
-    /// its runs).
-    fn setup(d: &Path) -> (crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
+    /// in `d`, both on a virtual clock: (the clock, the coordinator, its address, the job's Offload,
+    /// the folder, the step's programs, its runs).
+    fn setup(d: &Path) -> (Arc<store::clock::Virtual>, crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
         use std::os::unix::fs::PermissionsExt;
         let (c, port) = crate::coord::start_for_test(&d.join("coord"), "m4", "");
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
         let dir = d.join("unit");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("in.bin"), b"in").unwrap();
@@ -681,77 +696,91 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3), waiting: Waiting::ByPace };
-        (c, url, o, dir, bin, runs)
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3), waiting: Waiting::ByPace, clock: clock.clone() };
+        (clock, c, url, o, dir, bin, runs)
     }
 
-    /// A worker in a thread: asks after `after`, runs the task it's given (its own run at least
-    /// `took`) and hands it back.
-    fn worker(url: &str, token: &str, name: &str, bin: &Path, home: PathBuf, after: f64, took: f64) -> std::thread::JoinHandle<crate::coord::client::Handed> {
+    /// A worker on the clock: `after` seconds from now it asks and runs the task it's given, and
+    /// `took` seconds later hands it back (how that went, once it has).
+    fn worker(clock: &Arc<store::clock::Virtual>, url: &str, token: &str, name: &str, bin: &Path, home: PathBuf, after: f64, took: f64) -> Arc<Mutex<Option<crate::coord::client::Handed>>> {
         let (m, bin) = (Client::at(vec![url.to_string()], token.to_string(), name), bin.to_path_buf());
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs_f64(after));
+        let handed = Arc::new(Mutex::new(None));
+        let (h, c) = (handed.clone(), clock.clone());
+        clock.after(std::time::Duration::from_secs_f64(after), move || {
             let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
-            let g = m.ask(&ask).unwrap().unwrap();
+            let g = m.ask(&ask).unwrap().expect("given the task");
             let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
             let r = run_task(&m, g.lease, &task, &home, &bin, None).unwrap();
-            std::thread::sleep(std::time::Duration::from_secs_f64(took));
-            let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), secs: took, ..Default::default() };
-            m.done(&done).unwrap()
-        })
+            c.after(std::time::Duration::from_secs_f64(took), move || {
+                let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), secs: took, ..Default::default() };
+                *h.lock().unwrap() = Some(m.done(&done).unwrap());
+            });
+        });
+        handed
     }
 
     #[test]
-    // (Its times have room for a loaded Mac running the whole suite: a build beside it, 8 Oct.)
     fn a_page_is_waited_on_only_once_its_pace_beats_this_mac() {
+        // (On a virtual clock, the coordinator's and the job's: the waits are counted in it, the
+        // workers act at its moments, and this Mac's own run takes a tenth of a second of it.)
+        use std::time::Duration;
         let d = tempfile::tempdir().unwrap();
-        let (c, url, o, dir, bin, runs) = setup(d.path());
+        let (clock, c, url, o, dir, bin, runs) = setup(d.path());
         let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
-        let here = |dir: &Path| crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None });
+        let here = |dir: &Path| {
+            clock.advance(Duration::from_millis(100));
+            crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None })
+        };
         let p = Patience { here_s: Some(30.0) };
         let status = |t: &Offered| o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1;
         let unit = Unit::parse("6/1/1").unwrap();
-        let secs = |t: std::time::Instant| t.elapsed().as_secs_f64();
+        // How long the job waited (slept) on the clock since `from`.
+        let waited = |from: (u64, Duration)| clock.slept().1 - from.1;
         // No one asking but one sparing too little for it (300 MB at least): taken back at once.
         let small = Client::at(vec![url.clone()], c.contact.token.clone(), "phone");
         assert!(small.ask(&crate::coord::Ask { mem_mb: 200, ..ask.clone() }).unwrap().is_none());
         let t = o.offer(unit, &dir, None, &runs).unwrap();
         assert_eq!(status(&t)["takers"], serde_json::json!([]));
-        let began = std::time::Instant::now();
-        assert!(matches!(o.settle(&t, &dir, true, p, &mut || here(&dir)).unwrap().unwrap(), Settled::Here(None)) && secs(began) < 2.5, "taken back at once: {}", secs(began));
+        let began = clock.slept();
+        assert!(matches!(o.settle(&t, &dir, true, p, &mut || here(&dir)).unwrap().unwrap(), Settled::Here(None)));
+        assert_eq!(waited(began), Duration::ZERO, "taken back at once");
 
         // A page not measured, asking: the job gives it a moment (once this hour), it takes the
         // task a second later, and the job, its pace unknown, runs it at once itself; the
-        // coordinator keeps it for the page to finish (2 s), and its pace is measured.
+        // coordinator keeps it for the page to finish (2 s later), and its pace is measured: 2 s
+        // against this Mac's tenth of a second.
         let m1 = Client::at(vec![url.clone()], c.contact.token.clone(), "ipad");
         assert!(m1.ask(&ask).unwrap().is_none());
         let t = o.offer(unit, &dir, None, &runs).unwrap();
         assert_eq!(status(&t)["takers"], serde_json::json!([{ "worker": "ipad", "pace": null, "explore": true }]));
-        let w = worker(&url, &c.contact.token, "ipad", &bin, d.path().join("m1"), 1.0, 2.0);
-        let began = std::time::Instant::now();
+        let w = worker(&clock, &url, &c.contact.token, "ipad", &bin, d.path().join("m1"), 1.0, 2.0);
+        let began = clock.slept();
         assert!(matches!(o.settle(&t, &dir, true, p, &mut || here(&dir)).unwrap().unwrap(), Settled::Here(None)));
-        assert!((1.0..4.0).contains(&secs(began)), "raced once taken: {}", secs(began));
+        assert_eq!(waited(began), Duration::from_secs(1), "raced once taken");
         assert!(!t.root.exists());
-        assert_eq!(w.join().unwrap(), crate::coord::client::Handed::Taken);
+        assert!(w.lock().unwrap().is_none(), "the page is still at it");
+        clock.advance(Duration::from_secs(10));
+        assert_eq!(*w.lock().unwrap(), Some(crate::coord::client::Handed::Taken));
         let pace = c.shared.lock().unwrap().tasks.pace("ipad", "tail").unwrap();
-        assert!(pace > 10.0, "2 s against this Mac's milliseconds: {pace}");
+        assert!((pace - 20.0).abs() < 1e-9, "2 s against this Mac's 0.1: {pace}");
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty(), "closed once measured");
 
         // Measured slow: never waited for, though it asks.
         assert!(m1.ask(&ask).unwrap().is_none());
         let t = o.offer(unit, &dir, None, &runs).unwrap();
-        let began = std::time::Instant::now();
-        assert!(matches!(o.settle(&t, &dir, true, p, &mut || here(&dir)).unwrap().unwrap(), Settled::Here(None)) && secs(began) < 2.5, "taken back at once: {}", secs(began));
+        let began = clock.slept();
+        assert!(matches!(o.settle(&t, &dir, true, p, &mut || here(&dir)).unwrap().unwrap(), Settled::Here(None)));
+        assert_eq!(waited(began), Duration::ZERO, "taken back at once");
 
         // Another not measured, asking but never taking it: waited for once (the job's 3 s), not
         // again within the hour.
         let m2 = Client::at(vec![url.clone()], c.contact.token.clone(), "phone2");
         assert!(m2.ask(&ask).unwrap().is_none());
-        for want in [3.0, 0.0] {
+        for want in [3, 0] {
             let t = o.offer(unit, &dir, None, &runs).unwrap();
-            let began = std::time::Instant::now();
+            let began = clock.slept();
             assert!(matches!(o.settle(&t, &dir, true, p, &mut || here(&dir)).unwrap().unwrap(), Settled::Here(None)));
-            assert!((want..want + 2.5).contains(&secs(began)), "{want}: {}", secs(began));
+            assert_eq!(waited(began), Duration::from_secs(want));
         }
 
         // Measured fast (a fifth of this Mac's time), its results trusted (no check now): waited
@@ -770,17 +799,18 @@ mod tests {
             o.client.post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({})).unwrap();
             t = o.offer(unit, &dir, None, &runs).unwrap();
         }
-        let w = worker(&url, &c.contact.token, "m1", &bin, d.path().join("fast"), 1.0, 1.0);
-        let began = std::time::Instant::now();
+        let w = worker(&clock, &url, &c.contact.token, "m1", &bin, d.path().join("fast"), 1.0, 1.0);
+        let began = clock.slept();
         let mut ran = false;
         let s = o.settle(&t, &dir, true, p, &mut || Ok(ran = true)).unwrap().unwrap();
-        assert_eq!(w.join().unwrap(), crate::coord::client::Handed::Taken);
-        assert!(matches!(s, Settled::Remote(ref w) if w == "m1") && !ran && secs(began) >= 2.0);
+        assert_eq!(*w.lock().unwrap(), Some(crate::coord::client::Handed::Taken));
+        assert!(matches!(s, Settled::Remote(ref w) if w == "m1") && !ran);
+        assert_eq!(waited(began), Duration::from_secs(2), "a second for it to take it, one for it to finish");
         assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"in");
-        // Its pace weighed in: half the last, half this one's (1 s from its lease against the 30 s taken
-        // for here).
+        // Its pace weighed in: half the last, half this one's (1 s from its lease against the 30 s
+        // taken for here).
         let pace = c.shared.lock().unwrap().tasks.pace("m1", "tail").unwrap();
-        assert!((0.1..0.3).contains(&pace), "{pace}");
+        assert!((pace - (0.5 * 0.2 + 0.5 / 30.0)).abs() < 1e-9, "{pace}");
         assert!(c.tail_takers(), "the forecast's units give it a moment");
     }
 

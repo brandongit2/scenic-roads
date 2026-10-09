@@ -143,6 +143,7 @@ impl Nas for Overlay {
 /// Mac sleeps).
 struct Clocked<'a> {
     nas: &'a dyn Nas,
+    clock: &'a dyn store::clock::Clock,
     start: Instant,
     /// Both clocks moved on this far (s): the tests' way of letting time pass.
     ahead: u64,
@@ -171,10 +172,10 @@ impl Nas for Clocked<'_> {
 
 impl Io for Clocked<'_> {
     fn now(&self) -> u64 {
-        crate::agent::jobs::now_s() + self.ahead
+        self.clock.wall().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) + self.ahead
     }
     fn awake(&self) -> u64 {
-        self.start.elapsed().as_secs() + self.ahead
+        self.clock.now().saturating_duration_since(self.start).as_secs() + self.ahead
     }
 }
 
@@ -301,6 +302,8 @@ pub struct Side {
     conds: Option<Conds>,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
+    /// Its clocks (a test's virtual one: `set_clock`).
+    clock: Arc<dyn store::clock::Clock>,
 }
 
 impl Side {
@@ -327,7 +330,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, ahead: 0 }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -377,8 +380,15 @@ impl Side {
         self.io().now()
     }
 
+    /// Its clocks from now on `clock` (a test's virtual one: time then passes only as the test
+    /// lets it, however slowly a busy Mac steps it).
+    pub fn set_clock(&mut self, clock: Arc<dyn store::clock::Clock>) {
+        self.start = clock.now();
+        self.clock = clock;
+    }
+
     fn io(&self) -> Clocked<'_> {
-        Clocked { nas: &*self.nas, start: self.start, ahead: self.ahead }
+        Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead }
     }
 
     /// The listings asked for and not handed back yet (asked, being made, made).
@@ -433,7 +443,7 @@ impl Side {
         self.folders.extend(folders.into_iter().flatten());
         let heard = Heard { msgs, asks: give.asks, entries, listed: self.made.pop_front(), settled: give.settled, able: give.able, reassert: give.reassert, members: self.members.iter().cloned().collect() };
         self.conds = give.conds;
-        let io = Clocked { nas: &*self.nas, start: self.start, ahead: self.ahead };
+        let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
         let Some(driver) = self.driver.as_mut() else { return Out { stop: self.stopped.clone(), ..Default::default() } };
         let mut out = driver.step(&io, heard, check);
         let kept = self.keep();
@@ -520,10 +530,11 @@ impl Side {
     fn post(&mut self, to: &str, m: Msg) {
         self.members.insert(to.to_string());
         if let Msg::Tell(keys) = &m {
-            if self.told.get(to).is_some_and(|(k, at)| k == keys && at.elapsed() < TELL_AGAIN) {
+            let now = self.clock.now();
+            if self.told.get(to).is_some_and(|(k, at)| k == keys && now.saturating_duration_since(*at) < TELL_AGAIN) {
                 return;
             }
-            self.told.insert(to.to_string(), (keys.clone(), Instant::now()));
+            self.told.insert(to.to_string(), (keys.clone(), now));
         }
         // (Numbered from the clock in milliseconds, and on from the last: never again across this
         // member's processes.)
@@ -567,13 +578,14 @@ impl Side {
         if hb.pool.member.is_empty() {
             return;
         }
-        if self.beat.as_ref().is_some_and(|(b, at, ahead)| *b == hb && at.elapsed() + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY) {
+        let now = self.clock.now();
+        if self.beat.as_ref().is_some_and(|(b, at, ahead)| *b == hb && now.saturating_duration_since(*at) + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY) {
             return;
         }
         let mut stamped = hb.clone();
-        stamped.pool.beat = crate::agent::jobs::now_s() + self.ahead;
+        stamped.pool.beat = self.now();
         match serde_json::to_vec(&stamped).map_err(anyhow::Error::from).and_then(|b| self.nas.write_whole(&crate::pool::beat::path(&self.me.id), &b)) {
-            Ok(()) => self.beat = Some((hb, Instant::now(), self.ahead)),
+            Ok(()) => self.beat = Some((hb, now, self.ahead)),
             Err(e) => eprintln!("pool: heartbeat: {e:#}"),
         }
     }
@@ -581,7 +593,8 @@ impl Side {
     /// The members' heartbeats listed every ten minutes (a lead's, two), off the loop.
     fn list_members(&mut self) {
         let every = if self.driver().leads().is_some() { MEMBERS_EVERY_LEAD } else { MEMBERS_EVERY };
-        if self.members_listed.is_none_or(|t| t.elapsed() >= every) && !self.members_queued {
+        let now = self.clock.now();
+        if self.members_listed.is_none_or(|t| now.saturating_duration_since(t) >= every) && !self.members_queued {
             self.members_queued = true;
         }
     }
@@ -595,10 +608,10 @@ impl Side {
             (Kind::Journal(l), Err(e)) => {
                 eprintln!("pool: listing the journal: {e:#}; made again in a minute");
                 self.asked.push_front(l);
-                self.failed_at = Some(Instant::now());
+                self.failed_at = Some(self.clock.now());
             }
             (Kind::Members, Ok(names)) => {
-                self.members_listed = Some(Instant::now());
+                self.members_listed = Some(self.clock.now());
                 self.members_queued = false;
                 let found: Vec<String> = names.iter().filter_map(|n| n.strip_suffix(".json")).filter(|m| crate::pool::is_member_id(m)).map(str::to_string).collect();
                 self.members.extend(found);
@@ -609,14 +622,15 @@ impl Side {
             (Kind::Members, Err(e)) => {
                 eprintln!("pool: listing the members: {e:#}");
                 self.members_queued = false;
-                self.members_listed = Some(Instant::now());
+                self.members_listed = Some(self.clock.now());
             }
         }
     }
 
     /// The next listing begun, when none is being made: the journal's asked first.
     fn next_listing(&mut self) {
-        if self.making.is_some() || self.failed_at.is_some_and(|t| t.elapsed() < AGAIN) {
+        let now = self.clock.now();
+        if self.making.is_some() || self.failed_at.is_some_and(|t| now.saturating_duration_since(t) < AGAIN) {
             return;
         }
         let nas = self.nas.clone();
@@ -1288,25 +1302,32 @@ mod tests {
 
     fn side(root: &Path, home: &Path) -> Side {
         let nas: SharedNas = Arc::new(Share::new(root));
-        Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().expect("its lock")
+        // (Its clocks virtual: time passes as the test says, `ahead`, however slowly a busy Mac
+        // steps it.)
+        let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().expect("its lock");
+        s.set_clock(store::clock::Virtual::new());
+        s
     }
 
     fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
         Ok(())
     }
 
-    /// Steps `s` until `done` says so (each step's listings made off its loop meanwhile), at most
-    /// ten times.
+    /// Steps `s` until `done` says so (each step's listings made off its loop meanwhile, as long
+    /// as a busy Mac takes: five minutes is a watchdog, not a measure).
     fn until(s: &mut Side, give: impl Fn() -> Give, done: impl Fn(&Out) -> bool) -> Out {
-        for _ in 0..40 {
+        let end = Instant::now() + WATCHDOG;
+        loop {
             let out = s.step(give(), &any);
             if done(&out) {
                 return out;
             }
+            assert!(Instant::now() < end, "not done in {WATCHDOG:?} of steps");
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!("not done in 40 steps");
     }
+
+    const WATCHDOG: Duration = Duration::from_secs(300);
 
     fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {
         let l = format!("base/{}", target.replace('/', "-"));
@@ -1454,11 +1475,20 @@ mod tests {
         let home = d.path().join("a/agent");
         let nas = Arc::new(Flaky(Share::new(&r), Default::default()));
         let mut a = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone(), false).unwrap().unwrap();
+        a.set_clock(store::clock::Virtual::new());
         a.step(Give { able: true, ..Default::default() }, &any);
-        std::thread::sleep(Duration::from_millis(200));
-        let out = a.step(Give { able: true, ..Default::default() }, &any);
-        assert!(!out.caught_up && a.failed_at.is_some(), "the failed one isn't handed back");
-        a.failed_at = Some(Instant::now() - AGAIN);
+        // (Stepped until the failed listing, made off the loop, is back.)
+        let end = Instant::now() + WATCHDOG;
+        let out = loop {
+            let out = a.step(Give { able: true, ..Default::default() }, &any);
+            if a.failed_at.is_some() {
+                break out;
+            }
+            assert!(Instant::now() < end, "the failing listing never came back");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(!out.caught_up, "the failed one isn't handed back");
+        a.failed_at = a.failed_at.map(|t| t - AGAIN);
         let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
         assert!(out.listed_at.is_some());
         assert!(nas.1.load(std::sync::atomic::Ordering::SeqCst) >= 2, "made again");
@@ -1629,6 +1659,7 @@ mod tests {
         let home = d.path().join("s/agent");
         let nas: SharedNas = Arc::new(Overlay::new(&r));
         let mut s = Side::open(&home, &home.join("pool-shadow"), home.parent().unwrap(), "development", nas, true).unwrap().unwrap();
+        s.set_clock(store::clock::Virtual::new());
         let id = s.member().id.clone();
         let e = unit_entry(&id, LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
         until(&mut s, || Give { able: true, ..Default::default() }, |o| o.caught_up);

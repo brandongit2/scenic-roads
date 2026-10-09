@@ -796,7 +796,10 @@ mod tests {
             let mac = |n: &str| {
                 let home = d.join(n).join("agent");
                 let nas: SharedNas = Arc::new(Share::new(&r));
-                let side = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().unwrap();
+                let mut side = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().unwrap();
+                // (Its clocks virtual: time passes as the test says, `pass`, however slowly a busy
+                // Mac steps it.)
+                side.set_clock(store::clock::Virtual::new());
                 Mac { conds: HOME, run: Run::new(side, Role::Member, Gates::default()), home, root: r.clone() }
             };
             let (mut a, mut b) = (mac("a"), mac("b"));
@@ -839,18 +842,20 @@ mod tests {
             }
         }
 
-        /// Steps the Macs in turn until `done`, at most 60 rounds.
+        /// Steps the Macs in turn until `done` (their listings made off the loop meanwhile, as long
+        /// as a busy Mac takes: five minutes is a watchdog, not a measure).
         pub(super) fn until(macs: &mut [&mut Mac], done: impl Fn(&[&mut Mac]) -> bool) {
-            for _ in 0..60 {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
+            loop {
                 for m in macs.iter_mut() {
                     m.go();
                 }
                 if done(macs) {
                     return;
                 }
+                assert!(std::time::Instant::now() < end, "not done in five minutes: {:?}", macs.iter().map(|m| m.run.controls.kept.asked.clone()).collect::<Vec<_>>());
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
-            panic!("not done in 60 rounds: {:?}", macs.iter().map(|m| m.run.controls.kept.asked.clone()).collect::<Vec<_>>());
         }
 
         #[test]

@@ -5,6 +5,7 @@
 pub mod blobs;
 pub mod cachefile;
 pub mod catalog;
+pub mod clock;
 pub mod iopool;
 pub mod mirror;
 pub mod naming;

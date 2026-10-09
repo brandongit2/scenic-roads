@@ -177,9 +177,10 @@ impl Tasks {
         Some(t.out.join(safe(path)?))
     }
 
-    /// The worker says it's done: every output it names is here, whole, or it isn't done. Its unit,
-    /// if it has one.
-    pub fn done(&mut self, lease: u64, worker: &str, outputs: Vec<Output>, removed: Vec<String>, secs: f64, peak_mb: u64) -> anyhow::Result<Option<String>> {
+    /// The worker says it's done (at `now`): every output it names is here, whole, or it isn't
+    /// done. Its unit, if it has one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn done(&mut self, lease: u64, worker: &str, outputs: Vec<Output>, removed: Vec<String>, secs: f64, peak_mb: u64, now: Instant) -> anyhow::Result<Option<String>> {
         let t = self.by_lease(lease, worker).ok_or_else(|| anyhow::anyhow!("no such task lease"))?;
         for o in &outputs {
             let p = t.out.join(safe(&o.path).ok_or_else(|| anyhow::anyhow!("bad path {}", o.path))?);
@@ -187,7 +188,7 @@ impl Tasks {
             anyhow::ensure!(n == o.size, "{}: {} bytes here, {} said", o.path, n, o.size);
         }
         anyhow::ensure!(removed.iter().all(|r| t.inputs.contains_key(r)), "it removed what it wasn't given");
-        t.wall_s = t.leased_at.map(|at| at.elapsed().as_secs_f64());
+        t.wall_s = t.leased_at.map(|at| now.saturating_duration_since(at).as_secs_f64());
         t.state = State::Done { worker: worker.to_string(), outputs, removed, secs, peak_mb };
         Ok(t.spec["unit"].as_str().map(str::to_string))
     }
@@ -356,9 +357,9 @@ mod tests {
         let up = ts.upload(1, "phone", "u/out.bin").unwrap();
         std::fs::create_dir_all(up.parent().unwrap()).unwrap();
         std::fs::write(&up, b"12345").unwrap();
-        assert!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 9 }], vec![], 1.0, 400).is_err());
-        assert!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/x".into()], 1.0, 400).is_err());
-        assert_eq!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/a.bin".into()], 1.0, 400).unwrap().as_deref(), Some("6/1/1"));
+        assert!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 9 }], vec![], 1.0, 400, t0).is_err());
+        assert!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/x".into()], 1.0, 400, t0).is_err());
+        assert_eq!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/a.bin".into()], 1.0, 400, t0).unwrap().as_deref(), Some("6/1/1"));
         assert!(!ts.withdraw(small), "a done task isn't withdrawn");
         assert_eq!(ts.close(small), None);
         assert!(!up.exists());

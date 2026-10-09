@@ -233,10 +233,17 @@ pub struct Shared {
     pub lead_asks: Vec<crate::control::LeadRequest>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
+    /// The time its leases, workers' paces and their being around are reckoned in (a test's
+    /// virtual one).
+    pub clock: std::sync::Arc<dyn store::clock::Clock>,
 }
 
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 impl Shared {
+    pub fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
     fn save_leases(&self) {
         if let Err(e) = self.leases.save(&self.dir.join("leases.json")) {
             eprintln!("coordinator: saving the leases: {e:#}");
@@ -531,7 +538,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), dir: dir.to_path_buf() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -597,8 +604,8 @@ impl Coordinator {
     /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them;
     /// its id.
     pub fn hold(&self, step: &str, targets: &[(String, String)]) -> Option<u64> {
-        let now = Instant::now();
         let mut s = self.shared.lock().unwrap();
+        let now = s.now();
         let held = s.leases.held(step, now);
         if targets.iter().any(|t| held.contains(&t.0)) {
             return None;
@@ -615,14 +622,17 @@ impl Coordinator {
     /// Keeps this Mac's job's lease alive; false when it lapsed (the job paused too long, or the
     /// agent was stuck) and another may be building its targets.
     pub fn renew(&self, id: u64, progress: Option<String>) -> bool {
-        self.shared.lock().unwrap().leases.renew(id, &self.me, progress, Instant::now())
+        let mut s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.leases.renew(id, &self.me, progress, now)
     }
 
     /// Ends this Mac's job's lease; `done`: the targets it recorded (not offered again until the plan
     /// shows them; the rest are free again).
     pub fn finish(&self, id: u64, done: &[(String, String)]) {
         let mut s = self.shared.lock().unwrap();
-        if let Some(l) = s.leases.finish(id, &self.me, Instant::now()) {
+        let now = s.now();
+        if let Some(l) = s.leases.finish(id, &self.me, now) {
             if let Work::Job { step, .. } = &l.work {
                 for (t, k) in done {
                     s.done.insert((step.clone(), t.clone()), k.clone());
@@ -663,7 +673,8 @@ impl Coordinator {
 
     /// The targets of `step` held now, by anyone.
     pub fn held(&self, step: &str) -> BTreeSet<String> {
-        self.shared.lock().unwrap().leases.held(step, Instant::now())
+        let s = self.shared.lock().unwrap();
+        s.leases.held(step, s.now())
     }
 
     /// Leases past their deadline dropped (their workers went quiet): a task's offered again.
@@ -671,11 +682,12 @@ impl Coordinator {
         let mut s = self.shared.lock().unwrap();
         // (None while the build is paused: every lease held, a paused or asleep worker's work not
         // given to another.)
+        let now = s.now();
         if s.paused.is_some() {
-            s.leases.hold_all(Instant::now());
+            s.leases.hold_all(now);
             return Vec::new();
         }
-        let gone = s.leases.expire(Instant::now());
+        let gone = s.leases.expire(now);
         for l in &gone {
             let (step, targets) = match &l.work {
                 Work::Job { step, targets } => (Some(step.clone()), targets.iter().map(|t| t.0.clone()).collect()),
@@ -690,7 +702,6 @@ impl Coordinator {
             s.save_leases();
         }
         // (Failures past their longest wait forgotten.)
-        let now = Instant::now();
         s.failed.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(3600 * 32));
         gone
     }
@@ -743,7 +754,7 @@ impl Coordinator {
     /// (worker, step, targets), the history kept, and the memory each worker spares (MB).
     pub fn for_forecast(&self) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>, u64)>, Vec<history::Event>, BTreeMap<String, u64>) {
         let s = self.shared.lock().unwrap();
-        let now = Instant::now();
+        let now = s.now();
         // (Each with how long ago it was granted.)
         let leased = s
             .leases
@@ -765,7 +776,8 @@ impl Coordinator {
     pub fn tail_takers(&self) -> bool {
         let s = self.shared.lock().unwrap();
         let mb = s.tasks.typical_mb("tail").unwrap_or(0);
-        s.workers.iter().any(|(n, w)| !w.bad && w.seen.elapsed() < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb && s.tasks.pace(n, "tail").is_some_and(task::beats))
+        let now = s.now();
+        s.workers.iter().any(|(n, w)| !w.bad && now.saturating_duration_since(w.seen) < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb && s.tasks.pace(n, "tail").is_some_and(task::beats))
     }
 
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
@@ -805,7 +817,7 @@ impl Coordinator {
     /// by this Mac's wall clock), the pause. Taken under the lock, written by the caller without it.
     pub fn pool_state(&self) -> PoolState {
         let s = self.shared.lock().unwrap();
-        let (now, unix) = (Instant::now(), unix_now());
+        let (now, unix) = (s.now(), unix_now());
         let failed = s.failed.iter().map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n)).collect();
         PoolState { leases: s.leases.snapshot(), costs: s.costs.clone(), failed, pause: s.paused.clone(), pause_at: s.pause_at }
     }
@@ -814,7 +826,7 @@ impl Coordinator {
     /// these, its costs and failures added, its pause if it's the later.
     pub fn load_pool_state(&self, p: &PoolState) -> Result<usize> {
         let mut s = self.shared.lock().unwrap();
-        let (now, unix) = (Instant::now(), unix_now());
+        let (now, unix) = (s.now(), unix_now());
         let n = s.leases.restore(&p.leases, now)?;
         s.costs.extend(p.costs.clone());
         for (w, k, at, n) in &p.failed {
@@ -837,7 +849,8 @@ impl Coordinator {
     /// The workers around now (asked within two minutes), for the heartbeat: (name, worker).
     pub fn workers(&self) -> Vec<(String, Worker)> {
         let s = self.shared.lock().unwrap();
-        s.workers.iter().filter(|(_, w)| w.seen.elapsed() < AROUND).map(|(n, w)| (n.clone(), w.clone())).collect()
+        let now = s.now();
+        s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).map(|(n, w)| (n.clone(), w.clone())).collect()
     }
 }
 
@@ -985,7 +998,8 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
     s.pause_at = at;
     // (Every lease held a whole TTL again, as the build pauses or goes on: none lapses for the time it
     // was paused.)
-    s.leases.hold_all(Instant::now());
+    let now = s.now();
+    s.leases.hold_all(now);
     if s.paused != pause {
         eprintln!("coordinator: {}", pause.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
         let e = match &pause {
@@ -1058,7 +1072,7 @@ fn plain(s: &str, max: usize) -> String {
 #[cfg(not(target_os = "wasi"))]
 fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller: &Caller) -> Result<(u16, serde_json::Value)> {
     let local = caller.local;
-    let now = Instant::now();
+    let now = shared.lock().unwrap().now();
     // (While the build is paused, every lease is held, whatever went quiet meanwhile.)
     {
         let mut s = shared.lock().unwrap();
@@ -1283,7 +1297,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 }
                 Work::Task { id } => {
                     let kind = s.tasks.kind_of(*id);
-                    let unit = match s.tasks.done(d.lease, &d.worker, d.outputs, d.removed, d.secs, d.peak_mb) {
+                    let unit = match s.tasks.done(d.lease, &d.worker, d.outputs, d.removed, d.secs, d.peak_mb, now) {
                         Ok(u) => u,
                         Err(e) => return Ok((422, serde_json::json!({ "error": format!("{e:#}") }))),
                     };
@@ -1703,7 +1717,7 @@ mod http {
     /// The most connections at once, how long a request's headers may take to arrive (and an idle
     /// connection to stay open), and a connection's whole life.
     const CONNECTIONS: usize = 512;
-    const HEADERS_MAX: Duration = Duration::from_secs(20);
+    pub(super) const HEADERS_MAX: Duration = Duration::from_secs(20);
     const CONNECTION_MAX: Duration = Duration::from_secs(3 * 3600);
 
     /// Takes connections: one from elsewhere, or past the cap, is closed before a byte is read;
@@ -2525,16 +2539,19 @@ mod tests {
         assert!(!sw.contains("__PAGE__") && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/worker.js""#) && !sw.contains(r#""/work/sw.js""#));
         let icon = get("/work/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
-        // A connection whose headers don't come is closed once their time is up. (Timed from before
-        // it's made: the server's clock can't start before this one, however slowly this test's
-        // thread goes on.)
+        // A connection whose headers don't come is closed by the server once their time is up, not
+        // before. (Timed from before it's made: the server's clock can't start before this one,
+        // however slowly this test's thread goes on. This end's own wait is a watchdog: a read that
+        // runs it out means the server never closed it, which a busy Mac doesn't explain.)
         let t = Instant::now();
         let mut slow = std::net::TcpStream::connect(&addr).unwrap();
         slow.write_all(b"GET /work/ HTTP/1.1\r\nHost").unwrap();
-        slow.set_read_timeout(Some(Duration::from_secs(40))).unwrap();
+        slow.set_read_timeout(Some(Duration::from_secs(600))).unwrap();
         let mut b = [0u8; 64];
-        let n = slow.read(&mut b).unwrap_or(0);
-        assert!(t.elapsed() >= Duration::from_secs(15) && t.elapsed() < Duration::from_secs(35), "closed after {:?} with {n} bytes", t.elapsed());
+        match slow.read(&mut b) {
+            Ok(n) => assert!(t.elapsed() >= http::HEADERS_MAX, "closed after {:?} with {n} bytes, before the headers' time was up", t.elapsed()),
+            Err(e) => panic!("the server never closed it: no answer in {:?} ({e})", t.elapsed()),
+        }
         drop(held);
     }
 
