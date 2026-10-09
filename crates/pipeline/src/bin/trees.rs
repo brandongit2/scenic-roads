@@ -41,6 +41,11 @@ const USAGE: &str = "usage: trees --z3 x,y --coverage cov.json --chm dir --chm-s
        trees --assemble --out dir <block out dir>…";
 
 fn main() -> Result<()> {
+    // (Its phases, for the job's phase that runs it: pipeline::timings.)
+    pipeline::timings::job("trees", run)
+}
+
+fn run() -> Result<()> {
     let mut opts: BTreeMap<String, String> = BTreeMap::new();
     let (mut assemble, mut assemble_lo) = (false, false);
     let mut rest: Vec<PathBuf> = Vec::new();

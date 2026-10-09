@@ -426,8 +426,11 @@ pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
 /// every area's tiles go into the pack in its turn, the same bytes wherever it was made.
 pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
+    use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
+    let p = phase("the normalized files read", Class::NasRead);
     let files = work_files(out, t)?;
+    drop(p);
     let logical = super::pack_logical(t.x, t.y);
     let local = out.scratch_file(&format!("{logical}.pack"));
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
@@ -438,18 +441,23 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     let mut sum = Summary::default();
     for (k, &a) in areas.iter().enumerate() {
         crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
-        offers.top_up(&files, cov, &areas, k)?;
+        {
+            let _p = phase("areas offered to other workers", Class::Net);
+            offers.top_up(&files, cov, &areas, k)?;
+        }
         let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
             n += 1;
             w.add(z, x, y, gz, raw)
         };
         let s = match offers.result(&files, cov, &areas, k)? {
             Some(dir) => {
+                let _p = phase("another worker's area taken in", Class::Disk);
                 let s = super::task::take_area(&dir, Unit { z: 8, x: a.0, y: a.1 }, &mut add)?;
                 std::fs::remove_dir_all(&dir).ok();
                 s
             }
             None => {
+                let _p = phase("areas' tiles made here", Class::Compute);
                 let here = std::time::Instant::now();
                 let s = area_tiles(&files, cov, t, a, &mut add)?;
                 offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());
@@ -469,7 +477,9 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
         eprintln!("bldtiles {}: no building in the coverage ({:.0?})", t.slash(), t0.elapsed());
         return Ok(sum);
     }
+    let p = phase("uploaded", Class::NasWrite);
     sum.pack = Some(out.put_file(&logical, "pack", &local)?);
+    drop(p);
     out.save()?;
     eprintln!("bldtiles {}: {} buildings and {} parts in {} tiles ({:.0?})", t.slash(), sum.buildings, sum.parts, sum.tiles.iter().sum::<u64>(), t0.elapsed());
     Ok(sum)

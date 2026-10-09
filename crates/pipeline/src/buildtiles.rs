@@ -143,21 +143,22 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     let free = crate::agent::room::disk_free(&parts)?;
     let started = std::fs::read_dir(&parts)?.flatten().filter(|e| e.path().join(".done").exists()).count();
     anyhow::ensure!(free >= PARTS_ROOM || started > 0, "the scan's parts need ~{} GB free; {} GB free", PARTS_ROOM >> 30, free >> 30);
+    use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
-    let st = std::process::Command::new("uv")
-        .current_dir(dem)
-        .args(["run", "python", "buildings.py", "--world"])
-        .arg(&parts)
-        .args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", RELEASE])
-        .status()
-        .context("run buildings.py")?;
+    let p = phase("buildings.py", Class::Mixed);
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(dem).args(["run", "python", "buildings.py", "--world"]).arg(&parts).args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", RELEASE]);
+    crate::timings::child(&mut c);
+    let st = c.status().context("run buildings.py")?;
     anyhow::ensure!(st.success(), "buildings.py: {st}");
+    drop(p);
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());
     // Every file of the release scanned whole.
     let files: Vec<String> = serde_json::from_slice(&std::fs::read(parts.join("files.json")).context("the release's files (files.json)")?)?;
     let done = (0..files.len()).filter(|i| parts.join(format!("{i:04}/.done")).exists()).count();
     anyhow::ensure!(!files.is_empty() && done == files.len(), "{done} of the release's {} files scanned", files.len());
     // Each tile's parts, from every file of the release.
+    let p = phase("the scan's parts listed", Class::Disk);
     let mut by_tile: BTreeMap<Unit, Vec<PathBuf>> = BTreeMap::new();
     for d in std::fs::read_dir(&parts)? {
         let d = d?.path();
@@ -171,16 +172,22 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
             by_tile.entry(t).or_default().push(f);
         }
     }
+    drop(p);
     let total = by_tile.len() as u64;
+    // (Each tile's parts read and sorted, then written to the NAS and read back: a phase each,
+    // over the tiles.)
     let mut index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: BTreeMap::new() };
     let t1 = std::time::Instant::now();
     for (k, (t, files)) in by_tile.iter().enumerate() {
+        let p = phase("each tile's parts read and sorted", Class::Disk);
         let mut v: Vec<[f32; 4]> = Vec::new();
         for f in files {
             each_box(f, |b| v.push(b))?;
         }
         let v = canonical(v);
         let bytes: &[u8] = bytemuck::cast_slice(&v);
+        drop(p);
+        let p = phase("tiles written to the NAS and read back", Class::NasWrite);
         let dest = tile_path(out.root(), *t);
         // (Written whole by a run cut short: as it is.)
         if std::fs::metadata(&dest).map(|m| m.len()).ok() != Some(bytes.len() as u64) {
@@ -191,7 +198,9 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
             let back = std::fs::read(&tmp).with_context(|| format!("read back {}", tmp.display()))?;
             anyhow::ensure!(store::naming::hash16(&back) == store::naming::hash16(bytes), "{}: read back differs", tmp.display());
             std::fs::rename(&tmp, &dest)?;
+            p.count(bytes.len() as u64, 1);
         }
+        drop(p);
         index.tiles.insert(t.slash(), v.len() as u64);
         crate::agent::jobs::report(k as u64 + 1, total, "tiles");
     }
@@ -200,8 +209,11 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     eprintln!("buildings: {n} buildings in {} tiles ({:.0?})", index.tiles.len(), t1.elapsed());
     let local = scratch.join("index.json");
     std::fs::write(&local, serde_json::to_vec(&index)?)?;
+    let p = phase("the index uploaded", Class::NasWrite);
     out.put_file(&index_logical(), "json", &local)?;
+    drop(p);
     out.save()?;
+    let _p = phase("the scan's parts removed", Class::Disk);
     std::fs::remove_dir_all(&parts).ok();
     Ok(())
 }

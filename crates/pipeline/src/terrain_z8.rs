@@ -30,7 +30,10 @@ pub fn max_logical() -> String {
 /// Makes it from the raw tiles (fetched into `raw`'s cache when missing; a fetch that fails fails
 /// the build) and uploads the pack and the maxima. Returns (tiles, tiles AWS has none of).
 pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
+    use crate::timings::{phase, Class};
     let n = 1u32 << Z;
+    // (AWS's tiles, cached or fetched, repaired as they come, in parallel: one phase.)
+    let p = phase("the world's z8 tiles fetched and repaired", Class::Net);
     let done = std::sync::atomic::AtomicUsize::new(0);
     let made: Vec<Result<(u32, u32, Option<(Vec<u8>, f32)>)>> = (0..n * n)
         .into_par_iter()
@@ -62,7 +65,9 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
             None => none += 1,
         }
     }
+    drop(p);
     // In key order (x, then y, at one zoom).
+    let p = phase("the pack written", Class::Disk);
     tiles.sort_by_key(|t| (t.0, t.1));
     let local = out.scratch_file("terrain-z8.pack");
     let mut w = store::pack::PackWriter::create(&local, serde_json::json!({"layer": "terrain-z8", "encoding": "terrarium-png", "version": V}), false)?;
@@ -72,8 +77,11 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
     w.finish()?;
     let mfile = out.scratch_file("terrain-z8.max.f32");
     std::fs::write(&mfile, bytemuck::cast_slice(&maxes))?;
+    drop(p);
+    let p = phase("uploaded", Class::NasWrite);
     out.put_file(&logical(), "pack", &local)?;
     out.put_file(&max_logical(), "f32", &mfile)?;
+    drop(p);
     out.save()?;
     std::fs::remove_file(&local).ok();
     std::fs::remove_file(&mfile).ok();

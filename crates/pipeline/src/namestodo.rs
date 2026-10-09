@@ -586,20 +586,34 @@ fn put(path: &Path, bytes: &[u8]) -> Result<()> {
 /// `descriptions/todo/` under it: the root itself for the job, a scratch folder to look first),
 /// with the translations of `translations` (the root's `translations/` for the job).
 pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progress: &dyn Fn(&str, u64, u64)) -> Result<Report> {
+    use crate::timings::{phase, Class};
+    let p = phase("the catalog, the languages spoken and the translations read", Class::NasRead);
     let cat = store::catalog::latest(&root.join("catalog"))?.context("no catalog")?;
     let spoken = spoken_for(root, &cat, scratch)?;
     let mut names = Names::load(translations)?;
     names.take_warnings();
+    drop(p);
     let units = unit_tiles(&cat);
     let mut lists = Lists { names: &names, spoken: &spoken, entries: HashMap::new(), report: Report::default() };
+    // (Each kind's names read from the map's files on the NAS and sorted into the lists as they
+    // come: a phase a kind.)
+    let p = phase("the labels' names gathered", Class::NasRead);
     labels(root, &cat, &units, &coverage(&cat), &mut lists, progress)?;
+    drop(p);
+    let p = phase("the roads' names gathered", Class::NasRead);
     roads(root, &cat, &mut lists, progress)?;
+    drop(p);
+    let p = phase("the landmarks' names gathered", Class::NasRead);
     let done = described(&root.join("descriptions"));
     let mut want = Vec::new();
     landmarks(root, &cat, &mut lists, &done, &mut want, progress)?;
+    drop(p);
+    let p = phase("the areas gathered", Class::NasRead);
     let mut wanted_areas = Vec::new();
     areas(root, &cat, &done, &mut wanted_areas)?;
+    drop(p);
     let Lists { entries, mut report, .. } = lists;
+    let _p = phase("the lists sorted and written", Class::NasWrite);
 
     // The translations' lists.
     let mut by_lang: BTreeMap<Lang, Vec<(String, Kind, Entry)>> = BTreeMap::new();

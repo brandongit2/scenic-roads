@@ -185,7 +185,11 @@ fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()
     } else {
         (std::process::Command::new(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")), "the trees program")
     };
-    let st = c.current_dir(dem).args(args).status().with_context(|| format!("run {prog}"))?;
+    // (Its phase, its own under it: crate::timings.)
+    let _p = crate::timings::phase(if python { "trees.py" } else { "the trees program" }, crate::timings::Class::Mixed);
+    c.current_dir(dem).args(args);
+    crate::timings::child(&mut c);
+    let st = c.status().with_context(|| format!("run {prog}"))?;
     anyhow::ensure!(st.success(), "{prog}: {st}");
     Ok(())
 }
@@ -226,6 +230,7 @@ pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path
 /// Uploads z3 tile `q`'s packs from its whole run's archives in `dir`, dropping its packs it no
 /// longer makes.
 pub fn put_area(out: &mut Out, q: Unit, dir: &Path) -> Result<()> {
+    let _p = crate::timings::phase("packs uploaded", crate::timings::Class::NasWrite);
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
@@ -332,6 +337,7 @@ fn check_same(out: &Out, made: &[(String, Option<String>)], what: &str) -> Resul
 /// each must come out with the content name the manifest has (its mid, when it has one), else an
 /// error and nothing uploaded.
 pub fn put_piece(out: &mut Out, t: Unit, dir: &Path, expect_same: bool) -> Result<()> {
+    let p = crate::timings::phase("packs and mid made", crate::timings::Class::Disk);
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;
@@ -343,6 +349,7 @@ pub fn put_piece(out: &mut Out, t: Unit, dir: &Path, expect_same: bool) -> Resul
     std::fs::copy(dir.join(crate::trees::MID), &mid).with_context(|| format!("{}'s mid", t.slash()))?;
     made.push((mid_logical(t.x, t.y), Some(mid)));
     let what = format!("piece {}", t.slash());
+    drop(p);
     put_made(out, made, expect_same.then_some(what.as_str()))?;
     eprintln!("trees {}: {} hi packs and its mid", t.slash(), LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/hi/{}", t.dash())).is_some()).count());
     Ok(())
@@ -351,6 +358,7 @@ pub fn put_piece(out: &mut Out, t: Unit, dir: &Path, expect_same: bool) -> Resul
 /// Uploads a run's files (`made`), dropping from the manifest those it made none of; with `same`,
 /// once each is checked against the manifest (`check_same`), else nothing.
 fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
+    let p = crate::timings::phase("packs uploaded", crate::timings::Class::NasWrite);
     if let Some(what) = same {
         let names: Vec<(String, Option<String>)> = made
             .iter()
@@ -378,6 +386,7 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
             None => {}
         }
     }
+    drop(p);
     out.save()
 }
 
@@ -432,6 +441,7 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: Unit, scratch: &Path, workers:
 /// dropping the manifest's of a layer it made none of. `expect_same`: each as the manifest has it,
 /// else an error and nothing uploaded.
 pub fn put_lo(out: &mut Out, q: Unit, dir: &Path, expect_same: bool) -> Result<()> {
+    let p = crate::timings::phase("packs made", crate::timings::Class::Disk);
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;
@@ -440,6 +450,7 @@ pub fn put_lo(out: &mut Out, q: Unit, dir: &Path, expect_same: bool) -> Result<(
         made.push((format!("layers/{layer}/lo/{}", q.dash()), p.map(|p| p.local)));
     }
     let what = format!("assembly {}", q.slash());
+    drop(p);
     put_made(out, made, expect_same.then_some(what.as_str()))?;
     eprintln!("trees-lo {}: {} lo packs", q.slash(), LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/lo/{}", q.dash())).is_some()).count());
     Ok(())

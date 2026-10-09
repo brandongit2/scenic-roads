@@ -40,7 +40,11 @@ pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
     let content = out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?;
     let mirror = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
     let path = mirror.filter(|p| p.exists()).unwrap_or_else(|| out.path(content));
-    std::fs::read(&path).with_context(|| format!("read {}", path.display()))
+    // (Its own phase, or a sub-phase of the one reading it: crate::timings.)
+    let p = crate::timings::phase("the heritage outputs read", crate::timings::Class::NasRead);
+    let b = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    p.count(b.len() as u64, 1);
+    Ok(b)
 }
 
 /// A point for the marks: its kind (an index of KINDS), place, record, the filters' values, lean

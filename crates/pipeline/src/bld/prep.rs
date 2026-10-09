@@ -714,14 +714,13 @@ impl Prepped {
 pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
     let t0 = std::time::Instant::now();
-    let mut child = std::process::Command::new("uv")
-        .current_dir(dem)
-        .args(["run", "python", "bldprep.py", "--root"])
-        .arg(out.root())
-        .args(["--tile", &t.slash(), "--release", release])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .context("run bldprep.py")?;
+    use crate::timings::{phase, Class};
+    // (bldprep.py reading the sources as this reads its stream: one phase, its own under it.)
+    let streamed = phase("bldprep.py, its stream read", Class::Mixed);
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(dem).args(["run", "python", "bldprep.py", "--root"]).arg(out.root()).args(["--tile", &t.slash(), "--release", release]).stdout(std::process::Stdio::piped());
+    crate::timings::child(&mut c);
+    let mut child = c.spawn().context("run bldprep.py")?;
     // The stream read on its own thread, a few frames ahead, so Python reads on while records are
     // made here.
     let stdout = child.stdout.take().context("bldprep.py's stdout")?;
@@ -776,6 +775,7 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     reader.join().ok();
     let st = child.wait().context("bldprep.py")?;
     ensure!(st.success(), "bldprep.py for {}: {st}", t.slash());
+    drop(streamed);
     eprintln!("bldprep {}: {} frames read in {:.0?}: {:?}", t.slash(), total, t0.elapsed(), p.stats);
     let logical = super::work_logical(t.x, t.y);
     if p.is_empty() {
@@ -786,8 +786,12 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
         return Ok(p.stats);
     }
     let local = out.scratch_file(&format!("{logical}.sect"));
+    let w = phase("the normalized file written", Class::Disk);
     let st = p.write(t, release, &local)?;
+    drop(w);
+    let w = phase("uploaded", Class::NasWrite);
     let name = out.put_file(&logical, "sect", &local)?;
+    drop(w);
     out.save()?;
     eprintln!("bldprep {}: {} buildings, {} parts -> {name} ({:.0?})", t.slash(), st.buildings, st.parts, t0.elapsed());
     Ok(st)

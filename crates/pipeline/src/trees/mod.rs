@@ -664,6 +664,7 @@ type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>);
 /// and their leaf-type squares made; the coverage's shapes, the blocks and the canopy squares
 /// there, with trees.py's line.
 fn begin(a: &Run) -> Result<Begun> {
+    use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
     for d in [&a.chm, &a.leaf, &a.out] {
         std::fs::create_dir_all(d).with_context(|| d.display().to_string())?;
@@ -678,6 +679,7 @@ fn begin(a: &Run) -> Result<Begun> {
     want.sort_unstable();
     want.dedup();
     let mut sqs = Vec::new();
+    let p = phase("canopy squares here (the NAS's store, else fetched)", Class::NasRead);
     for (i, &(top, left)) in want.iter().enumerate() {
         crate::agent::jobs::report(i as u64, want.len() as u64, "canopy squares");
         // (And within the square, as its files come.)
@@ -687,7 +689,10 @@ fn begin(a: &Run) -> Result<Begun> {
         }
     }
     crate::agent::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
+    drop(p);
+    let p = phase("leaf-type squares made", Class::Mixed);
     squares::leaf_types(&sqs, &a.leaf, &a.dem)?;
+    drop(p);
     eprintln!("trees z{z} {x},{y}: {} zoom-8 blocks, {} canopy squares ({:.0} s)", blocks.len(), sqs.len(), t0.elapsed().as_secs_f64());
     Ok((shapes, blocks, sqs))
 }
@@ -730,6 +735,7 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
     let (shapes, blocks, sqs) = begin(a)?;
     let mut w = Writers::create(&a.out)?;
     let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
+    let p = crate::timings::phase("zoom-8 blocks made", crate::timings::Class::Compute);
     each_block(a, &shapes, &blocks, sqs, |at, b| {
         for t in &b.tiles {
             w.add(t)?;
@@ -737,6 +743,8 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
         tops.insert(at, b.tops.to_bytes()?);
         Ok(())
     })?;
+    drop(p);
+    let _p = crate::timings::phase("zoom 7 to 4 made and the archives written", crate::timings::Class::Compute);
     for t in pyramid::lower(&tops, &|done, total| crate::agent::jobs::report(done, total, "zoom 7–4 tiles"))? {
         w.add(&t)?;
     }
@@ -766,8 +774,14 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
 /// `z6_with`'s blocks once begun (`begin`: the coverage's `shapes`, the `blocks` they meet, the
 /// canopy squares there `sqs`), its run begun at `t0`.
 pub fn z6_blocks(a: &Run, shapes: &mask::Shapes, blocks: &[(u32, u32)], sqs: Vec<(i32, i32)>, offload: Option<&crate::offload::Offload>, t0: std::time::Instant) -> Result<[usize; 3]> {
+    use crate::timings::{phase, Class};
     let coverage = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
+    let p = phase("rows of blocks offered to other workers", Class::Net);
     let offers = task::Offers::offer(offload, (a.tile.1, a.tile.2), &coverage, blocks, &sqs, &a.out.join("offload").join("results"));
+    drop(p);
+    // (Made here on rayon's threads, others' taken in their turn, and written as they come: one
+    // phase.)
+    let p = phase("zoom-8 blocks made (some by other workers)", Class::Compute);
     let fetch = crate::fetch::MapFetch::default();
     let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     let here = task::here_run(shapes, &inp);
@@ -807,6 +821,8 @@ pub fn z6_blocks(a: &Run, shapes: &mask::Shapes, blocks: &[(u32, u32)], sqs: Vec
         },
     )?;
     std::fs::remove_dir_all(a.out.join("offload")).ok();
+    drop(p);
+    let _p = phase("its mid and archives written", Class::Disk);
     write_mid(&a.out.join(MID), (a.tile.1, a.tile.2), &mid)?;
     Ok(end(a, w.finish()?, t0))
 }
@@ -892,6 +908,7 @@ pub fn assemble_lo(mids: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync
     let mut z8: Vec<Tile> = Vec::new();
     let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
     let mut tiles: BTreeMap<(u32, u32), PathBuf> = BTreeMap::new();
+    let reading = crate::timings::phase("the pieces' mids read", crate::timings::Class::NasRead);
     for p in mids {
         let m = read_mid(p)?;
         if let Some(other) = tiles.insert(m.tile, p.clone()) {
@@ -904,6 +921,8 @@ pub fn assemble_lo(mids: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync
         z8.extend(m.z8);
         tops.extend(m.tops);
     }
+    drop(reading);
+    let _p = crate::timings::phase("zoom 8 to 4 made and the archives written", crate::timings::Class::Compute);
     // (By block and layer, whatever order the mids came in.)
     z8.sort_by_key(|t| (t.x, t.y, t.layer));
     let mut w = Writers::create(out)?;

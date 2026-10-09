@@ -205,6 +205,7 @@ fn areas_and_parks(
             Some((f, _)) => details_by_i(out, src, f)?,
             None => HashMap::new(),
         };
+        let p = crate::timings::phase("the areas' features and ids made", crate::timings::Class::Compute);
         let mut src: Vec<IdSource> = Vec::new();
         // Per feature: it, its id (outlines: their dot's), its details record, its owner.
         let mut made: Vec<(Feature, Option<u64>, String, String)> = Vec::new();
@@ -262,6 +263,7 @@ fn areas_and_parks(
             }
         }
         areas += made.len();
+        drop(p);
         let feats: Vec<Feature> = made.into_iter().map(|m| m.0).collect();
         wrote.extend(write_tiles(out, a.layer, LAYER, &feats, want, ntiles)?);
         eprintln!("overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})", a.layer, feats.len(), t0.elapsed());
@@ -280,6 +282,7 @@ fn areas_and_parks(
         parks += 1;
     }
     // ovdata, per z3 tile.
+    let _p = crate::timings::phase("ovdata made and uploaded", crate::timings::Class::NasWrite);
     let n_ov = owned.len();
     for (tile, keys) in owned {
         let u = Unit::parse(&tile).unwrap();
@@ -370,11 +373,14 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
         c
     };
     let set_s = set.to_string_lossy().into_owned();
+    let p = crate::timings::phase("the ferries set filtered and exported (osmium)", crate::timings::Class::NasRead);
     run(osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]), "osmium (ferry routes)")?;
     run(osmium(&["export", "ferries.osm.pbf", "-f", "geojsonseq", "--geometry-types=linestring", "-a", "type,id", "-o", "ways.geojsonseq", "--overwrite"]), "osmium export (ways)")?;
     run(osmium(&["cat", "ferries.osm.pbf", "-t", "relation", "-f", "opl", "-o", "relations.opl", "--overwrite"]), "osmium cat (relations)")?;
     run(osmium(&["tags-filter", &set_s, "nw/amenity=ferry_terminal", "-o", "terminals.osm.pbf", "--overwrite"]), "osmium (terminals)")?;
     run(osmium(&["export", "terminals.osm.pbf", "-f", "geojsonseq", "-a", "type,id", "-o", "terminals.geojsonseq", "--overwrite"]), "osmium export (terminals)")?;
+    drop(p);
+    let p = crate::timings::phase("the timetables copied here", crate::timings::Class::NasRead);
     let freq = out.root().join("inputs/ferries/freq");
     let mut n_freq = 0;
     for e in std::fs::read_dir(&freq).with_context(|| format!("{} (the timetables)", freq.display()))?.flatten() {
@@ -383,9 +389,13 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
             n_freq += 1;
         }
     }
+    drop(p);
+    let p = crate::timings::phase("ferries.py", crate::timings::Class::Mixed);
     let mut py = Command::new("uv");
     py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work);
+    crate::timings::child(&mut py);
     run(py, "ferries.py")?;
+    drop(p);
     let fc: Value = serde_json::from_slice(&std::fs::read(work.join("ferries.json"))?)?;
     let lines: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(work.join("ferry-lines.json"))?)?;
     eprintln!("ferries: {} features, {} lines ({n_freq} timetable files)", fc["features"].as_array().map_or(0, Vec::len), lines.len());
@@ -395,6 +405,8 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
 
 /// Ferries as blocks (see the module's docs), from ferries.json and ferry-lines.json as written.
 fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value>, ntiles: &mut usize) -> Result<usize> {
+    // (Made, then written: their own phases below this one.)
+    let _p = crate::timings::phase("the ferries' blocks made and written", crate::timings::Class::Mixed);
     let feats = fc["features"].as_array().context("ferries: no features")?;
     // Per feature: its geometry (a way's line, a terminal's point), properties, id.
     struct F {
@@ -500,6 +512,8 @@ fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
 /// Writes a layer's tiles (gzipped, in packs by scope).
 /// The features as vector tiles in the layer's packs; the packs' logical names.
 fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<Vec<String>> {
+    use crate::timings::{phase, Class};
+    let p = phase("vector tiles cut", Class::Compute);
     let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
     let mut err = None;
     vtgen::tiles(mvt_layer, feats, 0, MAXZ, want, &mut |z, x, y, raw| match names::mvt::gzip(&raw) {
@@ -511,6 +525,8 @@ fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], w
     if let Some(e) = err {
         return Err(e);
     }
+    drop(p);
+    let _p = phase("their packs uploaded", Class::NasWrite);
     let mut wrote = Vec::new();
     let n = packs.len().max(1) as f64;
     for (k, ((scope, rz, rx, ry), mut tiles)) in packs.into_iter().enumerate() {
@@ -556,7 +572,10 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     let logical = crate::osmpass::set_name(date, "rail");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let t0 = std::time::Instant::now();
+    let p = crate::timings::phase("the rail set's stops read", crate::timings::Class::NasRead);
     let all = crate::stations::stops(&set)?;
+    drop(p);
+    let p = crate::timings::phase("the stops in the coverage kept", crate::timings::Class::Compute);
     let cover = hi_cover(out);
     let kept: Vec<&crate::stations::Stop> = all
         .iter()
@@ -583,6 +602,7 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
         })
         .collect();
     made.sort_by_key(|f| f.id);
+    drop(p);
     let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
     let mut ntiles = 0;
     let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles)?;
