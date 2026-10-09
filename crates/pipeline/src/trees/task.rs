@@ -467,8 +467,11 @@ mod tests {
             s.tasks.paces.insert(("m1".into(), KIND.into()), 0.2);
             s.workers.get_mut("m1").unwrap().checked = 3;
         }
+        // (Waited on until it's back, here and below: this is the exchange, not the waiting rule,
+        // and the worker is a thread of this test, as slow as the Mac running it.)
+        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient")).waiting(crate::offload::Waiting::UntilDone);
         let w = worker(&url, &tok, "m1", sq.path().into(), p.join("m1"), false, false);
-        piece(p, sq.path(), "taken", Some(&o));
+        piece(p, sq.path(), "taken", Some(&patient));
         let task = w.join().unwrap().unwrap();
         assert_eq!((task["unit"].as_str(), task["blocks"].as_str()), (Some("8/132/89"), Some("8/132/89,8/133/89")));
         assert_eq!(task["runs"][0]["prog"], "trees");
@@ -484,7 +487,7 @@ mod tests {
         // here, the worker gets no more work.
         c.shared.lock().unwrap().workers.get_mut("m1").unwrap().checked = 0;
         let w = worker(&url, &tok, "m1", sq.path().into(), p.join("m1b"), true, false);
-        piece(p, sq.path(), "spoilt", Some(&o));
+        piece(p, sq.path(), "spoilt", Some(&patient));
         w.join().unwrap().unwrap();
         assert!(same_piece(&p.join("alone"), &p.join("spoilt")));
         assert!(c.shared.lock().unwrap().workers["m1"].bad);

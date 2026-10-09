@@ -33,6 +33,19 @@ pub struct Offload {
     dir: PathBuf,
     /// How long a task no one took waits for a worker to take it (`LEASE_WAIT`).
     lease_wait: std::time::Duration,
+    /// How long a job waits on a worker holding a task (`Waiting`).
+    waiting: Waiting,
+}
+
+/// How long a job waits on a worker holding one of its tasks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waiting {
+    /// While the worker's pace says it'll be back before this Mac's own run would end
+    /// (`Patience::wait_on`): every job.
+    ByPace,
+    /// Until the worker hands it back, or its lease lapses: tests of the exchange itself, whose
+    /// worker is a thread of the test (the waiting rule has tests of its own).
+    UntilDone,
 }
 
 /// A task offered: its id and folder.
@@ -98,7 +111,13 @@ impl Offload {
         let version = std::env::current_exe().and_then(std::fs::metadata).map(|m| format!("{:x}-{:x}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
         let dir = scratch.join("tasks");
         std::fs::remove_dir_all(&dir).ok();
-        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT }
+        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT, waiting: Waiting::ByPace }
+    }
+
+    /// The same, waiting on a worker holding a task as `w` says.
+    pub fn waiting(mut self, w: Waiting) -> Offload {
+        self.waiting = w;
+        self
     }
 
     /// The job its tasks are kept under (`Offer::owner`).
@@ -218,7 +237,7 @@ impl Offload {
                 }
                 Some("leased") => {
                     let since = held.get_or_insert_with(|| (std::time::Instant::now(), st["worker"].as_str().unwrap_or("").to_string())).0;
-                    if !p.wait_on(since.elapsed().as_secs_f64(), st["age_s"].as_f64().unwrap_or(0.0), st["pace"].as_f64()) {
+                    if self.waiting == Waiting::ByPace && !p.wait_on(since.elapsed().as_secs_f64(), st["age_s"].as_f64().unwrap_or(0.0), st["pace"].as_f64()) {
                         let pace = st["pace"].as_f64().map_or("not measured".to_string(), |p| format!("{p:.2}× this Mac's time"));
                         eprintln!("offload: task {}: {} has it (its pace {pace}), not back before this Mac's run would be: run here too", t.id, st["worker"].as_str().unwrap_or(""));
                         return Ok(st);
@@ -579,7 +598,7 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into(), "{dir}/kept.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT };
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT, waiting: Waiting::ByPace };
         let u = Unit::parse("6/1/1").unwrap();
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.
@@ -662,7 +681,7 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3) };
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3), waiting: Waiting::ByPace };
         (c, url, o, dir, bin, runs)
     }
 
