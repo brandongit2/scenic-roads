@@ -67,11 +67,26 @@ impl Sources<'_> {
 }
 
 /// The basemap the terrain's water comes from: the latest pass's (`layers/basemap/world-<date>`),
-/// its logical and content names. Its content name is in the terrain's key (agent::build), so a new
-/// pass's basemap makes the terrain again.
+/// its logical and content names. The terrain's keys name its water by digests of what each target
+/// reads of it (`water_source_pin`, agent::build), so a new pass's basemap makes again the terrain
+/// whose water changed.
 pub fn water_pin(m: &std::collections::BTreeMap<String, String>) -> Option<(&str, &str)> {
     let prefix = "layers/basemap/world-";
     m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).last().map(|(l, c)| (l.as_str(), c.as_str()))
+}
+
+/// The pin of the terrain's water source as the jobs open it (`SourceFiles`: `WaterSource::pin`),
+/// from the manifest alone: the latest pass's basemap's content name; None without one. What the
+/// terrain's keys name the water by (agent::build: its digests, crate::terrain_water::WaterIdx).
+pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Option<String> {
+    water_pin(m).map(|(_, c)| c.to_string())
+}
+
+/// The terrain's water source, open (its pin `water_source_pin`'s): the latest pass's basemap.
+pub fn open_water(out: &Out) -> anyhow::Result<crate::terrain_water::BasemapWater> {
+    use anyhow::Context;
+    let (_, c) = water_pin(&out.manifest).context("no basemap (layers/basemap/world-<date>): the terrain's water is the latest pass's basemap's")?;
+    crate::terrain_water::BasemapWater::open(&out.path(c), c)
 }
 
 /// GLO-30 as the terrain reads it (the bucket's tiles of May 2022), in the terrain's key.
@@ -88,12 +103,9 @@ impl SourceFiles {
     /// Under `out`'s root, the latest pass's basemap; GLO-30's tiles fetched into the store when
     /// it lacks one the coverage wants (`fetch`).
     pub fn open(out: &Out, fetch: bool) -> anyhow::Result<SourceFiles> {
-        use anyhow::Context;
         let _p = crate::timings::phase("GLO-30's store and the basemap's water opened", crate::timings::Class::NasRead);
         let north = crate::terrain_north::GloStore::open(&out.root().join("sources/copernicus-dem"), fetch)?;
-        let (_, c) = water_pin(&out.manifest).context("no basemap (layers/basemap/world-<date>): the terrain's water is the latest pass's basemap's")?;
-        let water = crate::terrain_water::BasemapWater::open(&out.path(c), c)?;
-        Ok(SourceFiles { north, water })
+        Ok(SourceFiles { north, water: open_water(out)? })
     }
 
     pub fn sources<'a>(&'a self, coarse: Option<&'a Coarse<'a>>) -> Sources<'a> {

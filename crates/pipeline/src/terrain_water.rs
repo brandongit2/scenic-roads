@@ -408,6 +408,126 @@ pub fn flatten(e: &mut [f32], wt: &WaterTile, levels: &HashMap<u64, f32>) -> usi
     n
 }
 
+/// Bit 63 of a lake's key: one of its tile's own (no OSM id: `polys_of_mvt`).
+const OWN: u64 = 1 << 63;
+#[cfg(test)]
+pub const OWN_FOR_TESTS: u64 = OWN;
+
+/// A tile's water as the terrain reads it (`WaterSource::polys`), as a digest: its polygons in
+/// order (their kind, their key, their rings' points), what `water_tile` makes of them; 0 for none.
+/// A lake's key of its tile's own counts as such, not by its value (its feature's place in the
+/// tile, which other water moves): it's never shared, so its value changes no pixel.
+pub fn polys_digest(polys: &[Poly]) -> u64 {
+    if polys.is_empty() {
+        return 0;
+    }
+    let mut h = xxhash_rust::xxh3::Xxh3::new();
+    for p in polys {
+        h.update(&[match p.kind {
+            Kind::Sea => 1u8,
+            Kind::Lake => 2,
+        }]);
+        h.update(&if p.kind == Kind::Lake && p.id & OWN != 0 { OWN } else { p.id }.to_le_bytes());
+        h.update(&(p.rings.len() as u64).to_le_bytes());
+        for r in &p.rings {
+            h.update(&(r.len() as u64).to_le_bytes());
+            for pt in r {
+                h.update(&pt[0].to_bits().to_le_bytes());
+                h.update(&pt[1].to_bits().to_le_bytes());
+            }
+        }
+    }
+    h.digest() | 1
+}
+
+/// The digest of the water `src` has in the tiles `tiles` (each read as the terrain reads it, in
+/// parallel): over each tile with water, its zoom, column, row and `polys_digest`; "-" when none
+/// has any. What keys a terrain piece or assembly on the water it reads (agent::build).
+pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)]) -> Result<String> {
+    use rayon::prelude::*;
+    let got: Vec<Result<u64>> = tiles.par_iter().map(|&(z, x, y)| src.polys(z, x, y).map(|p| polys_digest(&p))).collect();
+    let mut lines = String::new();
+    for (&(z, x, y), d) in tiles.iter().zip(got) {
+        let d = d?;
+        if d != 0 {
+            lines.push_str(&format!("{z}/{x}/{y} {d:016x}\n"));
+        }
+    }
+    Ok(if lines.is_empty() { "-".into() } else { store::naming::hash16(lines.as_bytes()) })
+}
+
+/// The water digests of a water source (`WaterSource::pin`: the basemap's content name) in the build
+/// manifest: `work/water-idx/<hash16 of the pin>` (`WaterIdx`), one a source, kept when the source
+/// is replaced (a record of terrain made from it is read by them: agent::rekey::derive).
+pub fn idx_logical(pin: &str) -> String {
+    format!("{IDX_PREFIX}{}", store::naming::hash16(pin.as_bytes()))
+}
+
+pub const IDX_PREFIX: &str = "work/water-idx/";
+
+/// The water digests' format.
+pub const IDX_FMT: u64 = 1;
+
+/// A water source's digests (`tiles_digest`) of what each terrain target reads of it: JSON,
+/// `{"fmt": 1, "step": "terrain-water", "pin": <its pin>, "digests": {<target>: [<from>, <digest>]}}`,
+/// a target a piece ("6/x/y": its z9–12 tiles near the coverage, `terrain_pack::piece_levels`; from:
+/// the coverage's fingerprint that decides them) or an assembly ("3/x/y": its z6–8 tiles; from
+/// "z6-8"). Made by the `terrain-water` job (`make_idx`), which keeps those made before whose from
+/// is the coverage's still.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WaterIdx {
+    pub fmt: u64,
+    pub step: String,
+    pub pin: String,
+    pub digests: std::collections::BTreeMap<String, (String, String)>,
+}
+
+impl WaterIdx {
+    /// Target `t`'s digest, if made from `from`.
+    pub fn get(&self, t: &str, from: &str) -> Option<&str> {
+        self.digests.get(t).filter(|(f, _)| f == from).map(|(_, d)| d.as_str())
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<WaterIdx> {
+        let w: WaterIdx = serde_json::from_slice(b)?;
+        anyhow::ensure!(w.fmt == IDX_FMT && w.step == "terrain-water", "not terrain water digests of format {IDX_FMT}");
+        Ok(w)
+    }
+}
+
+/// An assembly's water reads' from (`WaterIdx`).
+pub const AREA_FROM: &str = "z6-8";
+
+/// The water tiles z3 tile `q`'s assembly reads: z6–8, the whole of it (none coarser: `polys`).
+pub fn area_tiles(q: (u32, u32)) -> Vec<(u8, u32, u32)> {
+    (6..=8u8).flat_map(|z| {
+        let s = 1u32 << (z - 3);
+        (q.0 * s..(q.0 + 1) * s).flat_map(move |x| (q.1 * s..(q.1 + 1) * s).map(move |y| (z, x, y)))
+    }).collect()
+}
+
+/// A terrain target's water reads: the target, what decides them (`WaterIdx`'s from), its tiles.
+pub type Reads = (String, String, Vec<(u8, u32, u32)>);
+
+/// The digests `want` asks for (target, from, the tiles it reads), those `prior` (the same source's,
+/// made before) has with the same from kept, the others worked out from `src`; `progress` told each
+/// target done.
+pub fn make_idx(src: &dyn WaterSource, prior: Option<&WaterIdx>, want: &[Reads], progress: &dyn Fn(u64, u64)) -> Result<WaterIdx> {
+    let mut out = WaterIdx { fmt: IDX_FMT, step: "terrain-water".into(), pin: src.pin(), digests: Default::default() };
+    if let Some(p) = prior.filter(|p| p.pin == out.pin) {
+        out.digests = p.digests.clone();
+    }
+    let n = want.len() as u64;
+    for (k, (t, from, tiles)) in want.iter().enumerate() {
+        if out.get(t, from).is_none() {
+            let d = tiles_digest(src, tiles)?;
+            out.digests.insert(t.clone(), (from.clone(), d));
+        }
+        progress(k as u64 + 1, n);
+    }
+    Ok(out)
+}
+
 /// A tile's water, if its source has some there (an empty tile: None).
 pub fn tile_water(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Option<Arc<WaterTile>>> {
     let polys = src.polys(z, x, y)?;
