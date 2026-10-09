@@ -454,7 +454,9 @@ fn results_in_order_on_any_threads() {
 fn items_with_parallel_work_of_their_own_never_hang_it() {
     // (The pool's threads once waited in `in_order` for room, and an item's parallel work waiting on
     // such a thread never ended: many items, more than its window, each with parallel work (the
-    // first slow), and a pool thread busy as it starts, as z3's blocks. A hang is told from a slow
+    // first slow), and a pool thread busy as it starts, as z3's blocks. The items' parallel work
+    // runs in the test's own pool, the one `in_order` is called from: never queued behind the other
+    // tests' work in rayon's global pool, which can hold it for minutes. A hang is told from a slow
     // run by its work: none of it moves for two minutes, however slowly a busy Mac runs it.)
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -466,7 +468,7 @@ fn items_with_parallel_work_of_their_own_never_hang_it() {
     let (tx, rx) = std::sync::mpsc::channel();
     let done = steps.clone();
     std::thread::spawn(move || {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(14).build().unwrap();
+        let pool = std::sync::Arc::new(rayon::ThreadPoolBuilder::new().num_threads(14).build().unwrap());
         for _ in 0..RUNS {
             let got = pool.install(|| {
                 rayon::spawn(|| std::thread::sleep(std::time::Duration::from_millis(100)));
@@ -475,14 +477,16 @@ fn items_with_parallel_work_of_their_own_never_hang_it() {
                     ITEMS as usize,
                     |i| {
                         let pause = std::time::Duration::from_micros(if i == 0 { 3000 } else { 150 });
-                        Ok((0..STEPS)
-                            .into_par_iter()
-                            .map(|x| {
-                                std::thread::sleep(pause);
-                                done.fetch_add(1, Relaxed);
-                                x * i as u64
-                            })
-                            .sum::<u64>())
+                        Ok(pool.install(|| {
+                            (0..STEPS)
+                                .into_par_iter()
+                                .map(|x| {
+                                    std::thread::sleep(pause);
+                                    done.fetch_add(1, Relaxed);
+                                    x * i as u64
+                                })
+                                .sum::<u64>()
+                        }))
                     },
                     |_| {},
                     |_, v| {
