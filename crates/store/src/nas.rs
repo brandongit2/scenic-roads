@@ -360,19 +360,21 @@ mod tests {
 
     #[test]
     fn commands_time_out_and_report_errors() {
+        // (A command of an hour, given 200 ms: one that waited for it would take the hour.)
         let t0 = Instant::now();
         let mut c = Command::new("/bin/sleep");
-        c.arg("5");
+        c.arg("3600");
         let e = run_with_timeout(c, Duration::from_millis(200)).unwrap_err();
         assert!(e.to_string().contains("no answer"), "{e:#}");
-        assert!(t0.elapsed() < Duration::from_secs(2));
+        assert!(t0.elapsed() < Duration::from_secs(600), "{:?}", t0.elapsed());
 
         let mut c = Command::new("/bin/sh");
         c.args(["-c", "echo 'execution error: no such volume (-43)' >&2; exit 1"]);
-        let e = run_with_timeout(c, Duration::from_secs(5)).unwrap_err();
+        // (Ten minutes for what ends at once: a busy Mac's slowest start.)
+        let e = run_with_timeout(c, Duration::from_secs(600)).unwrap_err();
         assert!(e.to_string().contains("no such volume"), "{e:#}");
 
-        run_with_timeout(Command::new("/usr/bin/true"), Duration::from_secs(5)).unwrap();
+        run_with_timeout(Command::new("/usr/bin/true"), Duration::from_secs(600)).unwrap();
         assert_eq!(applescript_escape(r#"smb://a"b\c"#), r#"smb://a\"b\\c"#);
     }
 

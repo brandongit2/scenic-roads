@@ -48,7 +48,9 @@ fn offline_refuses_the_internet_not_this_mac() {
     }
 }
 
-static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// (The unit tests' process is offline from its start, whichever test runs first: none reaches the
+/// internet.)
+static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(cfg!(test));
 
 /// No network for the rest of this process (`online`): a test's.
 pub fn go_offline() {

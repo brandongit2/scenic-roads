@@ -643,8 +643,11 @@ mod tests {
             std::fs::write(t.join(n), b"xyz").unwrap();
         }
         hold_existing(&t.join("a/2")).unwrap();
+        // (A sibling test's child may hold a copy of a descriptor a moment, between its fork and
+        // its exec: removed again until only the held file is left, five minutes a watchdog.)
         let mut r = remove_tree(&t);
-        for _ in 0..100 {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while std::time::Instant::now() < end {
             if r.left == 3 {
                 break;
             }
