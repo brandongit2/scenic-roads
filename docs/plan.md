@@ -884,7 +884,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 - **Slope:** z11 and coarser are stored, from transient z12 Horn slope. The server makes z12 on
   demand with the same encoder and an LRU (56 % of the full archive). Two steps
   (`pipeline::slope_pack`), as terrain's: **slope**, a piece per z6 tile near the coverage (its z9–11,
-  its hi pack, and its mid, `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs:
+  its hi pack, and its mid, `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its
+  own z6 tile's hi pack copied into the job's scratch whole first, one sequential read, where tile by
+  tile it took thousands of round trips to the share; the others' few tiles read where they are):
   Horn's method reads a pixel's border from the tiles west, east, north and south of each tile at
   its zoom (a missing one is its nearest ancestor's, up to eight levels up), so a piece's edge tiles
   read its neighbours' edge strips, in other areas' packs and the root too; and **slope-lo**, an

@@ -513,11 +513,19 @@ pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
     let p = phase("the terrain packs' indexes read", Class::NasRead);
-    let terr = ManifestTiles::new(out, "terrain");
+    let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
     let total = piece_set(&has, t).len() as u64 + 1;
     let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    drop(p);
+    // Its own z6 tile's terrain pack, which it reads thousands of tiles of (each a round trip to
+    // the share), copied here whole, one sequential read; its neighbours' few edge tiles read where
+    // they are.
+    let p = phase("its terrain pack copied here", Class::NasRead);
+    if let Some(n) = terr.copy_here(9, t.0 << 3, t.1 << 3) {
+        p.count(n, 1);
+    }
     drop(p);
     on("slope tiles worked out", 0, total);
     let p = phase("slope tiles worked out (the terrain read as needed)", Class::Compute);

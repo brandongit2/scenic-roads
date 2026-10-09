@@ -392,14 +392,32 @@ pub struct ManifestTiles {
     /// The layer's packs as the manifest named them when it was made (logical → file): its own,
     /// so the job may write packs while it reads (slope_pack::build_q_with).
     files: HashMap<String, std::path::PathBuf>,
-    open: Mutex<HashMap<String, Option<std::sync::Arc<(std::fs::File, u64, store::pack::PackIndex)>>>>,
+    open: Mutex<HashMap<String, Option<std::sync::Arc<OpenPack>>>>,
+    /// Where a pack read tile by tile throughout is copied whole and read from then on
+    /// (`with_copies`, `copy_here`), and the copies made, deleted with this.
+    copies: Option<(std::path::PathBuf, Mutex<Vec<std::path::PathBuf>>)>,
+}
+
+/// A pack open: its file and index.
+struct OpenPack {
+    file: std::fs::File,
+    idx: store::pack::PackIndex,
 }
 
 impl ManifestTiles {
     pub fn new(out: &Out, layer: &str) -> Self {
         let prefix = format!("layers/{layer}/");
         let files = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, c)| (l.clone(), out.path(c))).collect();
-        ManifestTiles { layer: layer.to_string(), files, open: Mutex::new(HashMap::new()) }
+        ManifestTiles { layer: layer.to_string(), files, open: Mutex::new(HashMap::new()), copies: None }
+    }
+
+    /// `new`, the packs `copy_here` is asked for copied into `dir` (the job's scratch) whole and
+    /// read there; the copies deleted when this goes. The same bytes either way: a pack is
+    /// content-named, never rewritten.
+    pub fn with_copies(out: &Out, layer: &str, dir: std::path::PathBuf) -> Self {
+        let mut t = Self::new(out, layer);
+        t.copies = Some((dir, Mutex::new(Vec::new())));
+        t
     }
 
     pub fn logical(layer: &str, z: u8, x: u32, y: u32) -> String {
@@ -410,19 +428,20 @@ impl ManifestTiles {
         }
     }
 
+    fn open_file(p: &std::path::Path) -> anyhow::Result<std::sync::Arc<OpenPack>> {
+        let file = std::fs::File::open(p)?;
+        let len = file.metadata()?.len();
+        let idx = store::pack::PackIndex::read_from(&FileSource(&file, len))?;
+        Ok(std::sync::Arc::new(OpenPack { file, idx }))
+    }
+
     /// The open pack holding tile (z, x, y), if the manifest has it.
-    fn pack(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<std::sync::Arc<(std::fs::File, u64, store::pack::PackIndex)>>> {
+    fn pack(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<std::sync::Arc<OpenPack>>> {
         let logical = Self::logical(&self.layer, z, x, y);
         let mut open = self.open.lock().unwrap();
         if !open.contains_key(&logical) {
             let v = match self.files.get(&logical) {
-                Some(p) => {
-                    let f = std::fs::File::open(p)?;
-                    let len = f.metadata()?.len();
-                    let src = FileSource(&f, len);
-                    let idx = store::pack::PackIndex::read_from(&src)?;
-                    Some(std::sync::Arc::new((f, len, idx)))
-                }
+                Some(p) => Some(Self::open_file(p)?),
                 None => None,
             };
             open.insert(logical.clone(), v);
@@ -433,15 +452,52 @@ impl ManifestTiles {
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         use store::sys::PosIo;
         let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
-        let Some(ent) = e.2.find(z, x, y) else { return Ok(None) };
+        let Some(ent) = e.idx.find(z, x, y) else { return Ok(None) };
         let mut b = vec![0u8; ent.len as usize];
-        e.0.read_exact_at(&mut b, ent.offset)?;
+        e.file.read_exact_at(&mut b, ent.offset)?;
         Ok(Some(b))
+    }
+
+    /// The pack holding tile (z, x, y) (z6 tile (x, y)'s hi pack: any of its tiles at zoom 9–12)
+    /// copied into the copies' folder (`with_copies`) whole, one
+    /// sequential read, and read there from now on: its bytes copied, or None when there's no such
+    /// pack, no copies' folder, or the copy failed (then it's read from the NAS, as before).
+    pub fn copy_here(&self, z: u8, x: u32, y: u32) -> Option<u64> {
+        let logical = Self::logical(&self.layer, z, x, y);
+        let (Some((dir, made)), Some(src)) = (&self.copies, self.files.get(&logical)) else { return None };
+        let dst = dir.join(src.file_name()?);
+        let copied = (|| -> anyhow::Result<(std::sync::Arc<OpenPack>, u64)> {
+            std::fs::create_dir_all(dir)?;
+            made.lock().unwrap().push(dst.clone());
+            let n = store::sys::copy_data(src, &dst)?;
+            anyhow::ensure!(n == std::fs::metadata(src)?.len(), "copied {n} bytes of {}", src.display());
+            Ok((Self::open_file(&dst)?, n))
+        })();
+        match copied {
+            Ok((e, n)) => {
+                self.open.lock().unwrap().insert(logical, Some(e));
+                Some(n)
+            }
+            Err(err) => {
+                eprintln!("{logical}: not copied here, read from the NAS ({err:#})");
+                None
+            }
+        }
     }
 
     /// Whether the layer has tile (z, x, y), from its pack's index alone.
     pub fn has(&self, z: u8, x: u32, y: u32) -> anyhow::Result<bool> {
-        Ok(self.pack(z, x, y)?.is_some_and(|e| e.2.find(z, x, y).is_some()))
+        Ok(self.pack(z, x, y)?.is_some_and(|e| e.idx.find(z, x, y).is_some()))
+    }
+}
+
+impl Drop for ManifestTiles {
+    fn drop(&mut self) {
+        if let Some((_, made)) = &self.copies {
+            for p in made.lock().unwrap().iter() {
+                std::fs::remove_file(p).ok();
+            }
+        }
     }
 }
 
@@ -1336,6 +1392,45 @@ pub fn build_root(out: &mut Out, raw: &RawTiles, src: &Sources) -> anyhow::Resul
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A pack copied here reads the same tiles as the NAS's, and the copy goes with the reader: a
+    /// pack it isn't asked to copy, or none there, is read where it is.
+    #[test]
+    fn a_pack_copied_here_reads_the_same_and_goes_with_its_reader() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let mut out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
+        for z in 9..=10u8 {
+            let s = 1u32 << (z - 6);
+            for x in 5 * s..6 * s {
+                for y in 7 * s..8 * s {
+                    tiles.push((z, x, y, format!("tile {z}/{x}/{y}").into_bytes(), 1));
+                }
+            }
+        }
+        let want: Vec<(u8, u32, u32, Vec<u8>)> = tiles.iter().map(|t| (t.0, t.1, t.2, t.3.clone())).collect();
+        crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, 5, 7), &mut tiles.into_iter()).unwrap();
+        let copies = d.path().join("copies");
+        let plain = ManifestTiles::new(&out, "terrain");
+        let here = ManifestTiles::with_copies(&out, "terrain", copies.clone());
+        let read = |m: &ManifestTiles| want.iter().map(|t| m.get(t.0, t.1, t.2).unwrap()).collect::<Vec<_>>();
+        let all: Vec<Option<Vec<u8>>> = want.iter().map(|t| Some(t.3.clone())).collect();
+        assert_eq!(read(&plain), all);
+        // Some read from the NAS's first, then the rest from the copy.
+        assert_eq!(here.get(9, 40, 56).unwrap(), Some(b"tile 9/40/56".to_vec()));
+        let n = here.copy_here(9, 40, 56).unwrap();
+        assert_eq!(n, std::fs::metadata(out.path(out.get("layers/terrain/hi/6-5-7").unwrap())).unwrap().len());
+        assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 1);
+        assert_eq!(read(&here), all);
+        assert!(here.has(10, 85, 120).unwrap() && !here.has(10, 200, 120).unwrap());
+        assert_eq!(here.get(10, 200, 120).unwrap(), None);
+        // No such pack: nothing copied. And none copied by a reader without a copies' folder.
+        assert_eq!(here.copy_here(9, 0, 0), None);
+        assert_eq!(plain.copy_here(9, 40, 56), None);
+        drop(here);
+        assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 0, "the copies go with their reader");
+    }
 
     #[test]
     fn a_build_says_how_far_it_is() {
