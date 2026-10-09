@@ -140,6 +140,7 @@ impl RunRec {
 }
 
 /// A phase's running totals.
+#[derive(Clone)]
 struct Acc {
     name: String,
     class: Class,
@@ -163,6 +164,9 @@ struct Open {
     overlapped: AtomicBool,
     thread: std::thread::ThreadId,
     children: Mutex<Vec<PathBuf>>,
+    /// When it opened, and the CPU then: a span still open as the run ends counts to then.
+    t0: Instant,
+    cpu0: Option<u64>,
 }
 
 struct Run {
@@ -324,6 +328,8 @@ fn open(name: &str, class: Class) -> Phase {
         overlapped: AtomicBool::new(false),
         thread: me,
         children: Mutex::new(Vec::new()),
+        t0: Instant::now(),
+        cpu0: cpu_us(),
     });
     // (Another thread's phase open now, or opening while this one is: both overlap.)
     let mut over = false;
@@ -533,8 +539,22 @@ pub fn snapshot(ok: bool) -> Option<RunRec> {
 }
 
 fn record_of(r: &Run, ok: bool) -> RunRec {
+    // (Spans still open, a phase held past the run's end or a thread's still going: counted to now.)
+    let mut accs = r.accs.clone();
+    let now_cpu = cpu_us();
+    for o in &r.open {
+        let a = &mut accs[o.idx];
+        a.wall_ns += o.t0.elapsed().as_nanos() as u64;
+        if let (Some(c0), Some(c1)) = (o.cpu0, now_cpu) {
+            a.cpu_us = Some(a.cpu_us.unwrap_or(0) + c1.saturating_sub(c0));
+        }
+        a.n += 1;
+        a.bytes += o.bytes.load(Ordering::Relaxed);
+        a.files += o.files.load(Ordering::Relaxed);
+        a.overlapped |= o.overlapped.load(Ordering::Relaxed);
+    }
     let rec_of = |i: usize| {
-        let a = &r.accs[i];
+        let a = &accs[i];
         let mut sub: Vec<PhaseRec> = r
             .accs
             .iter()
@@ -568,8 +588,8 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
             sub,
         }
     };
-    let phases: Vec<PhaseRec> = (0..r.accs.len())
-        .filter(|&i| r.accs[i].parent.is_none() && r.accs[i].n > 0)
+    let phases: Vec<PhaseRec> = (0..accs.len())
+        .filter(|&i| accs[i].parent.is_none() && accs[i].n > 0)
         .map(rec_of)
         .collect();
     let wall_s = r.t0.elapsed().as_secs_f64();
@@ -1069,9 +1089,13 @@ mod tests {
             .join()
             .unwrap();
         }
+        // A span still open as the run ends: counted to then.
+        let held = phase("held open", Class::Disk);
+        held.count(3, 1);
         let r = snapshot(true).unwrap();
         let names: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["loop stage", "parent", "main work", "beside"]);
+        assert_eq!(names, ["loop stage", "parent", "main work", "beside", "held open"]);
+        assert_eq!((r.phases[4].n, r.phases[4].bytes), (1, 3));
         let l = &r.phases[0];
         assert_eq!((l.n, l.bytes, l.files), (3, 45, 3));
         assert!(l.wall_s >= 0.015);
@@ -1090,6 +1114,7 @@ mod tests {
         assert!((r.untimed_s - (r.wall_s - r.timed_s()).max(0.0)).abs() < 1e-9);
         assert!(table(&r).contains("(untimed)"));
         finish(true);
+        drop(held);
         assert!(!on());
         // Nothing timed after.
         let _p = phase("after", Class::Compute);
