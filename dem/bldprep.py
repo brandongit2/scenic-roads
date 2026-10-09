@@ -44,6 +44,8 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from timings import phase
+
 MAGIC = b"BLDP1\n"
 K_BUILDINGS, K_PARTS, K_GHSL, K_END = 1, 2, 3, 9
 GHSL_DIR = "sources/ghsl/R2023A"
@@ -267,43 +269,47 @@ def main() -> None:
     pbox = grown(box, PART_MARGIN_DEG)
     t0 = time.time()
     out = Out(open(sys.stdout.fileno(), "wb", buffering=8 << 20, closefd=False))
-    listed = json.loads((base / "buildings.json").read_text())["files"]
-    footers = json.loads(gzip.decompress((base / "footers.json.gz").read_bytes()))
+    with phase("the file list and footers read", "nas-read"):
+        listed = json.loads((base / "buildings.json").read_text())["files"]
+        footers = json.loads(gzip.decompress((base / "footers.json.gz").read_bytes()))
     # The row groups meeting T, file by file in name order.
-    jobs, files = [], []
-    for name in sorted(listed):
-        part = "type=building_part/" in name
-        b = pbox if part else box
-        foot = footers.get(f"release/{a.release}/{name}")
-        if foot is None or foot.get("etag") != listed[name]["etag"]:
-            # (Far from T, it isn't read: skipped, as the agent's keys skip it,
-            # pipeline::bld::sources. Its listed box, else taken as meeting T.)
-            if not meets(listed[name].get("bbox") or [-180.0, -90.0, 180.0, 90.0], b):
-                continue
-            raise SystemExit(f"{name}: footers.json.gz doesn't list it as downloaded (etag)")
-        rgs = [k for k, g in enumerate(foot["rgs"]) if meets(g, b)]
-        if rgs:
-            files.append([name, listed[name]["etag"], rgs])
-            jobs += [(str(base / name), k, part, b, f"{name.rsplit('/', 1)[-1][:10]}#{k}") for k in rgs]
+    with phase("the row groups meeting the tile picked", "compute"):
+        jobs, files = [], []
+        for name in sorted(listed):
+            part = "type=building_part/" in name
+            b = pbox if part else box
+            foot = footers.get(f"release/{a.release}/{name}")
+            if foot is None or foot.get("etag") != listed[name]["etag"]:
+                # (Far from T, it isn't read: skipped, as the agent's keys skip it,
+                # pipeline::bld::sources. Its listed box, else taken as meeting T.)
+                if not meets(listed[name].get("bbox") or [-180.0, -90.0, 180.0, 90.0], b):
+                    continue
+                raise SystemExit(f"{name}: footers.json.gz doesn't list it as downloaded (etag)")
+            rgs = [k for k, g in enumerate(foot["rgs"]) if meets(g, b)]
+            if rgs:
+                files.append([name, listed[name]["etag"], rgs])
+                jobs += [(str(base / name), k, part, b, f"{name.rsplit('/', 1)[-1][:10]}#{k}") for k in rgs]
     log(f"{a.tile}: {len(jobs)} row groups in {len(files)} files")
-    used = ghsl(root, box, out)
+    with phase("the GHSL windows read", "nas-read"):
+        used = ghsl(root, box, out)
     rows = 0
-    with ThreadPoolExecutor(a.jobs) as ex:
-        ahead = 2 * a.jobs
-        futs = [ex.submit(read_rg, j) for j in jobs[:ahead]]
-        for k in range(len(jobs)):
-            r = futs[k].result()
-            futs[k] = None
-            if k + ahead < len(jobs):
-                futs.append(ex.submit(read_rg, jobs[k + ahead]))
-            if r is None:
-                continue
-            header, cols = r
-            header.update(k=k, of=len(jobs))
-            rows += header["n"]
-            out.frame(K_PARTS if jobs[k][2] else K_BUILDINGS, header, cols)
-            if (k + 1) % 50 == 0:
-                log(f"{k + 1}/{len(jobs)} row groups, {rows:,} rows ({time.time() - t0:.0f} s)")
+    with phase("the row groups read and sent", "mixed"):
+        with ThreadPoolExecutor(a.jobs) as ex:
+            ahead = 2 * a.jobs
+            futs = [ex.submit(read_rg, j) for j in jobs[:ahead]]
+            for k in range(len(jobs)):
+                r = futs[k].result()
+                futs[k] = None
+                if k + ahead < len(jobs):
+                    futs.append(ex.submit(read_rg, jobs[k + ahead]))
+                if r is None:
+                    continue
+                header, cols = r
+                header.update(k=k, of=len(jobs))
+                rows += header["n"]
+                out.frame(K_PARTS if jobs[k][2] else K_BUILDINGS, header, cols)
+                if (k + 1) % 50 == 0:
+                    log(f"{k + 1}/{len(jobs)} row groups, {rows:,} rows ({time.time() - t0:.0f} s)")
     out.frame(K_END, {"release": a.release, "tile": a.tile, "files": files, "ghsl": used, "rows": rows}, [])
     out.f.flush()
     log(f"{a.tile}: {rows:,} rows from {len(jobs)} row groups in {time.time() - t0:.0f} s")

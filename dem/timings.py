@@ -148,7 +148,9 @@ def record(ok: bool = True) -> dict:
 
 def _write() -> None:
     to = os.environ.get("SCENIC_PHASES_TO")
-    if not to:
+    # (A pool's worker process imports this too: the step's own process writes them.)
+    import multiprocessing
+    if not to or multiprocessing.parent_process() is not None:
         return
     try:
         tmp = f"{to}.{os.getpid()}.tmp"

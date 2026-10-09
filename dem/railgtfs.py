@@ -41,6 +41,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
+from timings import phase
+
 
 def mode_of(t: int) -> int | None:
     if t in (0, 5) or 900 <= t <= 999:
@@ -136,74 +138,76 @@ def has_service(zpath: Path, anchor: date) -> bool:
 
 
 def process(zpath: Path, anchor: date, seen: set, pairs: dict, weekly: dict, seen_week: set) -> dict:
-    z = zipfile.ZipFile(zpath)
-    routes = rail_routes(z)
-    if not routes:
-        return {"status": "no rail routes"}
-    trips = {t["trip_id"]: (t["route_id"], t["service_id"]) for t in rows(z, "trips.txt") if t.get("route_id") in routes}
-    days = service_days(z, anchor)
-    day = typical_day(trips, days, anchor)
-    if day is None:
-        return {"status": "stale (no weekday service in the window)"}
-    active = {tid for tid, (_, sid) in trips.items() if day in days.get(sid, ())}
-    # Its week, for trains that don't run that day: trip → days it runs that week.
-    week = [day - timedelta(days=day.weekday()) + timedelta(days=k) for k in range(7)]
-    in_week = {tid: n for tid, (_, sid) in trips.items() if tid not in active and (n := sum(d in days.get(sid, ()) for d in week))}
-    runs: dict[str, list[int]] = defaultdict(list)
-    for fr in rows(z, "frequencies.txt"):
-        if fr.get("trip_id") in active:
-            a, b, hw = secs(fr["start_time"]), secs(fr["end_time"]), int(float(fr.get("headway_secs") or 0) or 0)
-            if a >= 0 and b > a and hw > 0:
-                runs[fr["trip_id"]] += list(range(a, b, hw))
-    stops = {}
-    for s in rows(z, "stops.txt"):
-        try:
-            ll = (float(s["stop_lon"]), float(s["stop_lat"]))
-        except (KeyError, ValueError):
-            continue
-        if abs(ll[0]) > 0.01 or abs(ll[1]) > 0.01:  # 0,0: no location given
-            stops[s["stop_id"]] = ll
-    calls: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
-    for st in rows(z, "stop_times.txt"):
-        tid = st.get("trip_id")
-        if tid in active or tid in in_week:
+    with phase("the feeds' tables read", "mixed"):
+        z = zipfile.ZipFile(zpath)
+        routes = rail_routes(z)
+        if not routes:
+            return {"status": "no rail routes"}
+        trips = {t["trip_id"]: (t["route_id"], t["service_id"]) for t in rows(z, "trips.txt") if t.get("route_id") in routes}
+        days = service_days(z, anchor)
+        day = typical_day(trips, days, anchor)
+        if day is None:
+            return {"status": "stale (no weekday service in the window)"}
+        active = {tid for tid, (_, sid) in trips.items() if day in days.get(sid, ())}
+        # Its week, for trains that don't run that day: trip → days it runs that week.
+        week = [day - timedelta(days=day.weekday()) + timedelta(days=k) for k in range(7)]
+        in_week = {tid: n for tid, (_, sid) in trips.items() if tid not in active and (n := sum(d in days.get(sid, ()) for d in week))}
+        runs: dict[str, list[int]] = defaultdict(list)
+        for fr in rows(z, "frequencies.txt"):
+            if fr.get("trip_id") in active:
+                a, b, hw = secs(fr["start_time"]), secs(fr["end_time"]), int(float(fr.get("headway_secs") or 0) or 0)
+                if a >= 0 and b > a and hw > 0:
+                    runs[fr["trip_id"]] += list(range(a, b, hw))
+        stops = {}
+        for s in rows(z, "stops.txt"):
             try:
-                seq = int(st["stop_sequence"])
+                ll = (float(s["stop_lon"]), float(s["stop_lat"]))
             except (KeyError, ValueError):
                 continue
-            calls[tid].append((seq, st["stop_id"], secs(st.get("departure_time") or st.get("arrival_time") or "")))
-    n_trips = n_dup = 0
-    for tid, c in calls.items():
-        c.sort()
-        c = [x for x in c if x[1] in stops]  # calls at stops with no location are passed over
-        pts = [stops[s] for _, s, _ in c]
-        if len(c) < 2:
-            continue
-        mode = routes[trips[tid][0]][0]
-        t0, t1 = c[0][2], c[-1][2]
-        if tid in in_week:
-            # Not on the typical day: its runs that week, a seventh each.
-            key = (round(pts[0][0], 2), round(pts[0][1], 2), t0 // 60, round(pts[-1][0], 2), round(pts[-1][1], 2), t1 // 60, mode)
-            if key in seen_week:
+            if abs(ll[0]) > 0.01 or abs(ll[1]) > 0.01:  # 0,0: no location given
+                stops[s["stop_id"]] = ll
+        calls: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
+        for st in rows(z, "stop_times.txt"):
+            tid = st.get("trip_id")
+            if tid in active or tid in in_week:
+                try:
+                    seq = int(st["stop_sequence"])
+                except (KeyError, ValueError):
+                    continue
+                calls[tid].append((seq, st["stop_id"], secs(st.get("departure_time") or st.get("arrival_time") or "")))
+    with phase("the trains counted", "compute"):
+        n_trips = n_dup = 0
+        for tid, c in calls.items():
+            c.sort()
+            c = [x for x in c if x[1] in stops]  # calls at stops with no location are passed over
+            pts = [stops[s] for _, s, _ in c]
+            if len(c) < 2:
                 continue
-            seen_week.add(key)
-            for a, b in zip(pts, pts[1:]):
-                if a != b:
-                    weekly[(round(a[0], 5), round(a[1], 5), round(b[0], 5), round(b[1], 5), mode)] += in_week[tid] / 7
-            continue
-        starts = runs.get(tid) or [None]
-        for off in starts:
-            dt = 0 if off is None else off - (t0 if t0 >= 0 else 0)
-            key = (round(pts[0][0], 2), round(pts[0][1], 2), (t0 + dt) // 60, round(pts[-1][0], 2), round(pts[-1][1], 2), (t1 + dt) // 60, mode)
-            if key in seen:
-                n_dup += 1
+            mode = routes[trips[tid][0]][0]
+            t0, t1 = c[0][2], c[-1][2]
+            if tid in in_week:
+                # Not on the typical day: its runs that week, a seventh each.
+                key = (round(pts[0][0], 2), round(pts[0][1], 2), t0 // 60, round(pts[-1][0], 2), round(pts[-1][1], 2), t1 // 60, mode)
+                if key in seen_week:
+                    continue
+                seen_week.add(key)
+                for a, b in zip(pts, pts[1:]):
+                    if a != b:
+                        weekly[(round(a[0], 5), round(a[1], 5), round(b[0], 5), round(b[1], 5), mode)] += in_week[tid] / 7
                 continue
-            seen.add(key)
-            n_trips += 1
-            for a, b in zip(pts, pts[1:]):
-                if a != b:
-                    k = (round(a[0], 5), round(a[1], 5), round(b[0], 5), round(b[1], 5), mode)
-                    pairs[k] += 1
+            starts = runs.get(tid) or [None]
+            for off in starts:
+                dt = 0 if off is None else off - (t0 if t0 >= 0 else 0)
+                key = (round(pts[0][0], 2), round(pts[0][1], 2), (t0 + dt) // 60, round(pts[-1][0], 2), round(pts[-1][1], 2), (t1 + dt) // 60, mode)
+                if key in seen:
+                    n_dup += 1
+                    continue
+                seen.add(key)
+                n_trips += 1
+                for a, b in zip(pts, pts[1:]):
+                    if a != b:
+                        k = (round(a[0], 5), round(a[1], 5), round(b[0], 5), round(b[1], 5), mode)
+                        pairs[k] += 1
     return {"status": "ok", "day": day.isoformat(), "trips": n_trips, "duplicates": n_dup, "rail_routes": len(routes)}
 
 
@@ -214,7 +218,8 @@ def main():
     ap.add_argument("--used", required=True, help="per feed: its day, trips and duplicates")
     ap.add_argument("--today", help="every feed's window at this day (YYYY-MM-DD), not the day it was fetched")
     a = ap.parse_args()
-    feeds = json.loads(Path(a.feeds).read_text())["feeds"]
+    with phase("the feed list read", "disk"):
+        feeds = json.loads(Path(a.feeds).read_text())["feeds"]
     today = date.fromisoformat(a.today) if a.today else None
     replaced = {r: f["id"] for f in feeds if f.get("path") for r in f.get("replaces", ())}
     pairs: dict[tuple, int] = defaultdict(int)
@@ -240,19 +245,20 @@ def main():
         print(f"{feed['id']:<28} {feed.get('provider', '')[:40]:<40} {res.get('status')}  {res.get('day', '')} trips {res.get('trips', 0)} dup {res.get('duplicates', 0)}", file=sys.stderr, flush=True)
     print(f"progress: {len(feeds)}/{len(feeds)} feeds", file=sys.stderr, flush=True)
     # Pairs with no train on the typical day take their weekly average.
-    n_week = 0
-    for k, v in weekly.items():
-        if not pairs.get(k):
-            pairs[k] = v
-            n_week += 1
-    out = Path(a.out)
-    tmp = out.with_name(out.name + ".tmp")
-    with tmp.open("wb") as f:
-        for (ax, ay, bx, by, m), n in pairs.items():
-            f.write(struct.pack("<ffffBf", ax, ay, bx, by, m, float(n)))
-    tmp.replace(out)
-    print(f"{n_week} stop pairs served only on other days of the week (weekly average)", file=sys.stderr)
-    Path(a.used).write_text(json.dumps(used, ensure_ascii=False, indent=1))
+    with phase("the stop pairs written", "disk"):
+        n_week = 0
+        for k, v in weekly.items():
+            if not pairs.get(k):
+                pairs[k] = v
+                n_week += 1
+        out = Path(a.out)
+        tmp = out.with_name(out.name + ".tmp")
+        with tmp.open("wb") as f:
+            for (ax, ay, bx, by, m), n in pairs.items():
+                f.write(struct.pack("<ffffBf", ax, ay, bx, by, m, float(n)))
+        tmp.replace(out)
+        print(f"{n_week} stop pairs served only on other days of the week (weekly average)", file=sys.stderr)
+        Path(a.used).write_text(json.dumps(used, ensure_ascii=False, indent=1))
     ok = [u for u in used if u.get("status") == "ok"]
     print(f"{len(pairs)} stop pairs from {len(ok)} feeds, {sum(u['trips'] for u in ok)} trains, {sum(u['duplicates'] for u in ok)} duplicates dropped", file=sys.stderr)
 

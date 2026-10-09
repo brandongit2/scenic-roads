@@ -20,6 +20,8 @@ import json
 import sys
 from pathlib import Path
 
+from timings import phase
+
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 W = ROOT / "data" / "heritage" / "wd"
@@ -71,45 +73,48 @@ def long_descriptions() -> dict[str, dict]:
 
 
 def assemble() -> None:
-    items = best_items()
-    sd = json.loads((W / "enwiki-shortdesc.json").read_text()) if (W / "enwiki-shortdesc.json").exists() else {}
-    long = long_descriptions()
-    ex = {}
-    if (D / "extracts.jsonl").exists():
-        for line in open(D / "extracts.jsonl", encoding="utf-8"):
-            r = json.loads(line)
-            ex[r["qid"]] = r
-    fc = json.load(open(B / "heritage.json"))
-    n = nl = 0
-    with open(B / "details-heritage.jsonl", "w", encoding="utf-8") as out:
-        for i, f in enumerate(fc["features"]):
-            f["properties"]["i"] = i
-            r = items.get(i)
-            if not r:
-                continue
-            art = article(r)
-            short = (sd.get(r["wiki"].get("en", "")) if "en" in r["wiki"] else None) or r["desc"].get("en") \
-                or next((r["desc"][l] for l in LOCAL if l in r["desc"]), None)
-            rec = {"i": i, "qid": r["qid"], "sl": r["sl"]}
-            if short:
-                rec["short"] = short
-            for k in ("inception", "inst", "style", "arch"):
-                if k in r:
-                    rec[k] = r[k]
-            if art:
-                rec["wiki"] = {"lang": art[0], "title": art[1]}
-            lg = long.get(r["qid"])
-            if lg:
-                src = ex.get(r["qid"], {})
-                rec["long"] = lg["long"]
-                rec["long_src"] = {"refs": lg["src"]} if lg.get("src") else \
-                    {"lang": src.get("lang", art[0] if art else "en"), "title": src.get("title", art[1] if art else "")}
-                nl += 1
-            out.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            n += 1
-    tmp = B / "heritage.json.tmp"
-    tmp.write_text(json.dumps(fc, ensure_ascii=False, separators=(",", ":")))
-    tmp.rename(B / "heritage.json")
+    with phase("the items, descriptions and sites read", "disk"):
+        items = best_items()
+        sd = json.loads((W / "enwiki-shortdesc.json").read_text()) if (W / "enwiki-shortdesc.json").exists() else {}
+        long = long_descriptions()
+        ex = {}
+        if (D / "extracts.jsonl").exists():
+            for line in open(D / "extracts.jsonl", encoding="utf-8"):
+                r = json.loads(line)
+                ex[r["qid"]] = r
+        fc = json.load(open(B / "heritage.json"))
+    with phase("the site details made and written", "compute"):
+        n = nl = 0
+        with open(B / "details-heritage.jsonl", "w", encoding="utf-8") as out:
+            for i, f in enumerate(fc["features"]):
+                f["properties"]["i"] = i
+                r = items.get(i)
+                if not r:
+                    continue
+                art = article(r)
+                short = (sd.get(r["wiki"].get("en", "")) if "en" in r["wiki"] else None) or r["desc"].get("en") \
+                    or next((r["desc"][l] for l in LOCAL if l in r["desc"]), None)
+                rec = {"i": i, "qid": r["qid"], "sl": r["sl"]}
+                if short:
+                    rec["short"] = short
+                for k in ("inception", "inst", "style", "arch"):
+                    if k in r:
+                        rec[k] = r[k]
+                if art:
+                    rec["wiki"] = {"lang": art[0], "title": art[1]}
+                lg = long.get(r["qid"])
+                if lg:
+                    src = ex.get(r["qid"], {})
+                    rec["long"] = lg["long"]
+                    rec["long_src"] = {"refs": lg["src"]} if lg.get("src") else \
+                        {"lang": src.get("lang", art[0] if art else "en"), "title": src.get("title", art[1] if art else "")}
+                    nl += 1
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                n += 1
+    with phase("the sites written with their indexes", "disk"):
+        tmp = B / "heritage.json.tmp"
+        tmp.write_text(json.dumps(fc, ensure_ascii=False, separators=(",", ":")))
+        tmp.rename(B / "heritage.json")
     print(f"details-heritage.jsonl: {n} of {len(fc['features'])} sites with Wikidata, {nl} with a long description", file=sys.stderr)
 
 

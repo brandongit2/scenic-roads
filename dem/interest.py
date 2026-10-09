@@ -41,6 +41,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 import whsshapes
+from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
@@ -139,7 +140,8 @@ def isolation(lon: np.ndarray, lat: np.ndarray, score: np.ndarray) -> np.ndarray
 
 
 def main() -> None:
-    views = json.loads(PV.read_text()) if PV.exists() else {}
+    with phase("the layers and details read", "disk"):
+        views = json.loads(PV.read_text()) if PV.exists() else {}
     if not views:
         print("interest: no pageviews yet (pageviews.py); fame from sitelinks only", file=sys.stderr)
 
@@ -150,85 +152,93 @@ def main() -> None:
         return (0.3 * math.log10(1 + sl) if sl else 0.0), None
 
     # ---- stops & sights ----
-    pfc = json.load(open(B / "pois.json"))
-    det = jsonl("details-poi.jsonl")
-    feats = pfc["features"]
-    group = [("rest" if f["properties"]["kind"] in ("rest_area", "picnic_site") else f["properties"]["kind"]) for f in feats]
-    size = []
-    for f in feats:
-        p = f["properties"]
-        k = p["kind"]
-        size.append(p.get("pr") if k == "peak" and p.get("pr") is not None else p.get("ele") if k in ("peak", "viewpoint")
-                    else p.get("h") if k == "waterfall" else (p.get("fh") or p.get("h") or p.get("rg")) if k == "lighthouse"
-                    else p.get("len") if k == "covered_bridge" else None)
-    base = np.zeros(len(feats))
-    fa_, pv_ = [0.0] * len(feats), [None] * len(feats)
-    for g in set(group):
-        idx = [i for i, x in enumerate(group) if x == g]
-        sp = percentile([size[i] for i in idx])
-        for n, i in enumerate(idx):
-            p = feats[i]["properties"]
-            d = det.get(p.get("i"), {})
-            qid = (d.get("wikidata") or "").split(";")[0].strip() or None
-            if g == "viewpoint" and not VIEW_ITEM.search((d.get("wd") or {}).get("d_en", "").lower()):
-                qid = None
-            f, pv = fame(qid, (d.get("wd") or {}).get("sl", 0) if qid else 0)
-            rich = sum(bool(d.get(t)) for t in ("wikidata", "wikipedia", "description", "website", "image")) / 3
-            tie = 0.5 * bool(p.get("name")) + 0.2 * min(1.0, rich) + 0.3 * sp[n]
-            base[i] = f + 0.01 * tie
-            fa_[i], pv_[i] = f, pv
-    ia = np.zeros(len(feats))
-    lon = np.array([f["geometry"]["coordinates"][0] for f in feats])
-    lat = np.array([f["geometry"]["coordinates"][1] for f in feats])
-    for g in set(group):
-        idx = np.array([i for i, x in enumerate(group) if x == g])
-        ia[idx] = isolation(lon[idx], lat[idx], base[idx])
-        print(f"interest: {g:15s} {len(idx):7d}, {int((ia[idx] >= 20).sum())} best within 20 km", file=sys.stderr, flush=True)
-    for i, f in enumerate(feats):
-        p = f["properties"]
-        for k in ("fa", "pv", "ia", "mz"):
-            p.pop(k, None)
-        p["fa"] = round(float(base[i]), 3)
-        if pv_[i]:
-            p["pv"] = round(pv_[i])
-        p["ia"] = round(float(ia[i]), 1)
-        p["mz"] = min_zoom(lat[i], float(ia[i]))
-    write(pfc, "pois.json")
+    with phase("the layers and details read", "disk"):
+        pfc = json.load(open(B / "pois.json"))
+        det = jsonl("details-poi.jsonl")
+    with phase("the fame scored", "compute"):
+        feats = pfc["features"]
+        group = [("rest" if f["properties"]["kind"] in ("rest_area", "picnic_site") else f["properties"]["kind"]) for f in feats]
+        size = []
+        for f in feats:
+            p = f["properties"]
+            k = p["kind"]
+            size.append(p.get("pr") if k == "peak" and p.get("pr") is not None else p.get("ele") if k in ("peak", "viewpoint")
+                        else p.get("h") if k == "waterfall" else (p.get("fh") or p.get("h") or p.get("rg")) if k == "lighthouse"
+                        else p.get("len") if k == "covered_bridge" else None)
+        base = np.zeros(len(feats))
+        fa_, pv_ = [0.0] * len(feats), [None] * len(feats)
+        for g in set(group):
+            idx = [i for i, x in enumerate(group) if x == g]
+            sp = percentile([size[i] for i in idx])
+            for n, i in enumerate(idx):
+                p = feats[i]["properties"]
+                d = det.get(p.get("i"), {})
+                qid = (d.get("wikidata") or "").split(";")[0].strip() or None
+                if g == "viewpoint" and not VIEW_ITEM.search((d.get("wd") or {}).get("d_en", "").lower()):
+                    qid = None
+                f, pv = fame(qid, (d.get("wd") or {}).get("sl", 0) if qid else 0)
+                rich = sum(bool(d.get(t)) for t in ("wikidata", "wikipedia", "description", "website", "image")) / 3
+                tie = 0.5 * bool(p.get("name")) + 0.2 * min(1.0, rich) + 0.3 * sp[n]
+                base[i] = f + 0.01 * tie
+                fa_[i], pv_[i] = f, pv
+    with phase("the isolation measured", "compute"):
+        ia = np.zeros(len(feats))
+        lon = np.array([f["geometry"]["coordinates"][0] for f in feats])
+        lat = np.array([f["geometry"]["coordinates"][1] for f in feats])
+        for g in set(group):
+            idx = np.array([i for i, x in enumerate(group) if x == g])
+            ia[idx] = isolation(lon[idx], lat[idx], base[idx])
+            print(f"interest: {g:15s} {len(idx):7d}, {int((ia[idx] >= 20).sum())} best within 20 km", file=sys.stderr, flush=True)
+        for i, f in enumerate(feats):
+            p = f["properties"]
+            for k in ("fa", "pv", "ia", "mz"):
+                p.pop(k, None)
+            p["fa"] = round(float(base[i]), 3)
+            if pv_[i]:
+                p["pv"] = round(pv_[i])
+            p["ia"] = round(float(ia[i]), 1)
+            p["mz"] = min_zoom(lat[i], float(ia[i]))
+    with phase("the layers written", "disk"):
+        write(pfc, "pois.json")
 
     # ---- heritage sites ----
-    hfc = json.load(open(B / "heritage.json"))
-    hdet = jsonl("details-heritage.jsonl")
-    hf = hfc["features"]
-    whs = whsshapes.load_sites()
-    role = whsshapes.roles(hf, whs)
-    base = np.zeros(len(hf))
-    for i, f in enumerate(hf):
-        p = f["properties"]
-        d = hdet.get(p.get("i"), {})
-        fm, pv = fame(d.get("qid"), d.get("sl", 0))
-        sid = whsshapes.whs_id(p)
-        for q in whs.get(sid, {}).get("q", []) if sid else []:
-            if views.get(q) and math.log10(1 + views[q]) > fm:
-                fm, pv = math.log10(1 + views[q]), views[q]
-        tie = 0.5 * bool(p.get("name")) + 0.2 * bool(d.get("qid")) + 0.3 * (5 - (p.get("level") or 5)) / 4
-        base[i] = fm + 0.01 * tie
-        for k in ("fa", "pv", "ia", "mz"):
-            p.pop(k, None)
-        p["fa"] = round(float(base[i]), 3)
-        if pv:
-            p["pv"] = round(pv)
+    with phase("the layers and details read", "disk"):
+        hfc = json.load(open(B / "heritage.json"))
+        hdet = jsonl("details-heritage.jsonl")
+        hf = hfc["features"]
+        whs = whsshapes.load_sites()
+    with phase("the fame scored", "compute"):
+        role = whsshapes.roles(hf, whs)
+        base = np.zeros(len(hf))
+        for i, f in enumerate(hf):
+            p = f["properties"]
+            d = hdet.get(p.get("i"), {})
+            fm, pv = fame(d.get("qid"), d.get("sl", 0))
+            sid = whsshapes.whs_id(p)
+            for q in whs.get(sid, {}).get("q", []) if sid else []:
+                if views.get(q) and math.log10(1 + views[q]) > fm:
+                    fm, pv = math.log10(1 + views[q]), views[q]
+            tie = 0.5 * bool(p.get("name")) + 0.2 * bool(d.get("qid")) + 0.3 * (5 - (p.get("level") or 5)) / 4
+            base[i] = fm + 0.01 * tie
+            for k in ("fa", "pv", "ia", "mz"):
+                p.pop(k, None)
+            p["fa"] = round(float(base[i]), 3)
+            if pv:
+                p["pv"] = round(pv)
     # Isolation among the sites as the map shows them: a merged site once, at its dot.
-    at = {i: whs[sid]["dot"] for i, (r, sid) in role.items() if r == "lead"}
-    keep = np.array([i for i in range(len(hf)) if role.get(i, ("",))[0] != "part"], dtype=np.int64)
-    lon = np.array([at[i][0] if i in at else hf[i]["geometry"]["coordinates"][0] for i in keep])
-    lat = np.array([at[i][1] if i in at else hf[i]["geometry"]["coordinates"][1] for i in keep])
-    ia = isolation(lon, lat, base[keep])
-    for n, i in enumerate(keep):
-        hf[i]["properties"]["ia"] = round(float(ia[n]), 1)
-        hf[i]["properties"]["mz"] = min_zoom(lat[n], float(ia[n]))
+    with phase("the isolation measured", "compute"):
+        at = {i: whs[sid]["dot"] for i, (r, sid) in role.items() if r == "lead"}
+        keep = np.array([i for i in range(len(hf)) if role.get(i, ("",))[0] != "part"], dtype=np.int64)
+        lon = np.array([at[i][0] if i in at else hf[i]["geometry"]["coordinates"][0] for i in keep])
+        lat = np.array([at[i][1] if i in at else hf[i]["geometry"]["coordinates"][1] for i in keep])
+        ia = isolation(lon, lat, base[keep])
+        for n, i in enumerate(keep):
+            hf[i]["properties"]["ia"] = round(float(ia[n]), 1)
+            hf[i]["properties"]["mz"] = min_zoom(lat[n], float(ia[n]))
     print(f"interest: heritage        {len(keep):7d}, {int((ia >= 20).sum())} best within 20 km "
           f"({len(at)} World Heritage Sites as one dot, {len(hf) - len(keep)} of their components apart)", file=sys.stderr)
-    write(hfc, "heritage.json")
+    with phase("the layers written", "disk"):
+        write(hfc, "heritage.json")
 
 
 def min_zoom(lat: float, ia_km: float) -> float:

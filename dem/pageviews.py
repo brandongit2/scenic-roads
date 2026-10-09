@@ -41,6 +41,7 @@ from pathlib import Path
 
 import cachefile
 import heritagewd
+from timings import count, phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
@@ -172,29 +173,33 @@ def _sweep(d: Path) -> None:
 def _copy_into(src: Path, dst: Path) -> None:
     """Copies src into dst in place (a cachefile scratch file), its length checked. (Its bytes count
     on the progress line as its month's index's: `_indexes`.)"""
-    with open(src, "rb") as a, open(dst, "wb") as b:
-        shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied")), b, 4 << 20)
-        b.flush()
-        os.fsync(b.fileno())
-    if dst.stat().st_size != src.stat().st_size:
-        raise OSError(f"{dst}: {dst.stat().st_size} of {src.stat().st_size} bytes copied")
+    with phase("the months' indexes copied from the NAS", "nas-read"):
+        with open(src, "rb") as a, open(dst, "wb") as b:
+            shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied")), b, 4 << 20)
+            b.flush()
+            os.fsync(b.fileno())
+        if dst.stat().st_size != src.stat().st_size:
+            raise OSError(f"{dst}: {dst.stat().st_size} of {src.stat().st_size} bytes copied")
+        count(dst.stat().st_size, 1)
 
 
 def _copy_whole(src: Path, dst: Path) -> None:
     """Copies src to dst by a temporary name (this Mac's and process's), flushed, its length checked.
     (Its bytes count on the progress line as its month's index's: `_indexes`.)"""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f"{dst.name}.{socket.gethostname().split('.')[0]}.{os.getpid()}.tmp")
-    try:
-        with open(src, "rb") as a, open(tmp, "wb") as b:
-            shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied")), b, 4 << 20)
-            b.flush()
-            os.fsync(b.fileno())
-        if tmp.stat().st_size != src.stat().st_size:
-            raise OSError(f"{dst}: {tmp.stat().st_size} of {src.stat().st_size} bytes copied")
-        tmp.replace(dst)
-    finally:
-        tmp.unlink(missing_ok=True)
+    with phase("the months' indexes copied to the NAS", "nas-write"):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(f"{dst.name}.{socket.gethostname().split('.')[0]}.{os.getpid()}.tmp")
+        try:
+            with open(src, "rb") as a, open(tmp, "wb") as b:
+                shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied")), b, 4 << 20)
+                b.flush()
+                os.fsync(b.fileno())
+            if tmp.stat().st_size != src.stat().st_size:
+                raise OSError(f"{dst}: {tmp.stat().st_size} of {src.stat().st_size} bytes copied")
+            tmp.replace(dst)
+            count(src.stat().st_size, 1)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def _langs_of(wanted: set[str]) -> set[str]:
@@ -289,7 +294,8 @@ def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
     with _lock:
         _streamed.clear()
         _indexes.clear()
-    _planned[0] = sum(_plan(m, wanted) for m in months)
+    with phase("the work planned", "mixed"):
+        _planned[0] = sum(_plan(m, wanted) for m in months)
     stop = threading.Event()
 
     def report() -> None:
@@ -298,8 +304,9 @@ def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
 
     threading.Thread(target=report, daemon=True).start()
     try:
-        with ThreadPoolExecutor(2) as ex:
-            return list(ex.map(lambda m: month_views(m, wanted), months))
+        with phase("the months' views counted", "mixed"):
+            with ThreadPoolExecutor(2) as ex:
+                return list(ex.map(lambda m: month_views(m, wanted), months))
     finally:
         stop.set()
         _report(final=True)
@@ -329,103 +336,105 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
 
 
 def _look_up(month: str, index: Path, wanted: set[str]) -> dict[str, int]:
-    t0 = time.time()
-    # (Marked used: the build agent's room-making lets the least recently used copies go first.)
-    try:
-        os.utime(index)
-    except OSError:
-        pass
-    views: dict[str, int] = {}
-    # (Its compressed bytes count on the progress line as they're read: `_indexes`.)
-    with open(index, "rb") as raw, zstd.open(_Counted(raw, (month, "read")), "rt", encoding="utf-8") as f:
-        for line in f:
-            key, _, n = line.rstrip("\n").partition("\t")
-            if key in wanted:
-                # (A page's lines are summed: its access kinds, adjacent or not.)
-                views[key] = views.get(key, 0) + int(n)
-    print(f"  {month}: {len(views)} of {len(wanted)} articles with views, from its index ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
+    with phase("the months' indexes read", "disk"):
+        t0 = time.time()
+        # (Marked used: the build agent's room-making lets the least recently used copies go first.)
+        try:
+            os.utime(index)
+        except OSError:
+            pass
+        views: dict[str, int] = {}
+        # (Its compressed bytes count on the progress line as they're read: `_indexes`.)
+        with open(index, "rb") as raw, zstd.open(_Counted(raw, (month, "read")), "rt", encoding="utf-8") as f:
+            for line in f:
+                key, _, n = line.rstrip("\n").partition("\t")
+                if key in wanted:
+                    # (A page's lines are summed: its access kinds, adjacent or not.)
+                    views[key] = views.get(key, 0) + int(n)
+        print(f"  {month}: {len(views)} of {len(wanted)} articles with views, from its index ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
     return views
 
 
 def _stream_index(month: str) -> Path:
     """Streams a month's dump into its index, here then on the NAS: every article of the map's
     languages, its views summed over the dump's adjacent lines for it (its access kinds)."""
-    local = OUT / "months" / f"{month}.tsv.zst"
-    local.parent.mkdir(parents=True, exist_ok=True)
-    print(f"  {month}: streaming its dump, every article of the map's languages counted", file=sys.stderr, flush=True)
-    y, m = month.split("-")
-    langs = "|".join(sorted(LANGS))
-    t0 = time.time()
-    # curl | bzip2 -dc | grep, each one's exit checked: a download cut short (curl's error, bzip2's
-    # truncated stream) fails the month instead of keeping what arrived as its index. curl's bytes
-    # reach bzip2 through here, counted (the progress line's: a few MB a second). A download that
-    # stalls (under 10 kB/s for five minutes) is given up.
-    curl = subprocess.Popen(["curl", "-sSL", "--fail", "--connect-timeout", "30", "--speed-limit", "10000", "--speed-time", "300", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
-    bz = subprocess.Popen(["bzip2", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    grep = subprocess.Popen(["grep", "-E", f"^({langs})\\.wikipedia "], stdin=bz.stdout, stdout=subprocess.PIPE,
-                            env={**os.environ, "LC_ALL": "C"}, text=True, encoding="utf-8", errors="replace")
-    bz.stdout.close()
-    with _lock:
-        _streamed.setdefault(month, [0, 0])
+    with phase("the months' dumps streamed into indexes", "net"):
+        local = OUT / "months" / f"{month}.tsv.zst"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        print(f"  {month}: streaming its dump, every article of the map's languages counted", file=sys.stderr, flush=True)
+        y, m = month.split("-")
+        langs = "|".join(sorted(LANGS))
+        t0 = time.time()
+        # curl | bzip2 -dc | grep, each one's exit checked: a download cut short (curl's error, bzip2's
+        # truncated stream) fails the month instead of keeping what arrived as its index. curl's bytes
+        # reach bzip2 through here, counted (the progress line's: a few MB a second). A download that
+        # stalls (under 10 kB/s for five minutes) is given up.
+        curl = subprocess.Popen(["curl", "-sSL", "--fail", "--connect-timeout", "30", "--speed-limit", "10000", "--speed-time", "300", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
+        bz = subprocess.Popen(["bzip2", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        grep = subprocess.Popen(["grep", "-E", f"^({langs})\\.wikipedia "], stdin=bz.stdout, stdout=subprocess.PIPE,
+                                env={**os.environ, "LC_ALL": "C"}, text=True, encoding="utf-8", errors="replace")
+        bz.stdout.close()
+        with _lock:
+            _streamed.setdefault(month, [0, 0])
 
-    def pump() -> None:
-        try:
-            while chunk := curl.stdout.read1(1 << 20):
-                bz.stdin.write(chunk)
-                with _lock:
-                    _streamed[month][0] += len(chunk)
-        except BrokenPipeError:
-            # (bzip2 stopped, or grep and so bzip2: their exits say why. curl, with no one left to
-            # read it, would wait on its full pipe for good.)
-            curl.kill()
-        finally:
-            curl.stdout.close()
+        def pump() -> None:
             try:
-                bz.stdin.close()
+                while chunk := curl.stdout.read1(1 << 20):
+                    bz.stdin.write(chunk)
+                    with _lock:
+                        _streamed[month][0] += len(chunk)
             except BrokenPipeError:
-                pass
+                # (bzip2 stopped, or grep and so bzip2: their exits say why. curl, with no one left to
+                # read it, would wait on its full pipe for good.)
+                curl.kill()
+            finally:
+                curl.stdout.close()
+                try:
+                    bz.stdin.close()
+                except BrokenPipeError:
+                    pass
 
-    pumper = threading.Thread(target=pump, daemon=True)
-    pumper.start()
-    # (Written held, a cachefile scratch file: the agent's room-making leaves it.)
-    tmp, held = cachefile.scratch(local)
-    published = False
-    rows = 0
-    try:
-        with zstd.open(tmp, "wt", encoding="utf-8") as out:
-            out.write(f"#langs\t{','.join(sorted(LANGS))}\n")
-            last, total = None, 0
-            for line in grep.stdout:
-                # wiki title page_id access monthly_total hourly
-                f = line.split(" ", 5)
-                if len(f) < 5 or not f[4].isdigit():
-                    continue
-                key = f"{f[0][:-10]}|{f[1]}"
-                if key != last:
-                    if last is not None:
-                        out.write(f"{last}\t{total}\n")
-                        rows += 1
-                    last, total = key, 0
-                total += int(f[4])
-            if last is not None:
-                out.write(f"{last}\t{total}\n")
-                rows += 1
-        pumper.join()
-        rc = (curl.wait(), bz.wait(), grep.wait())
-        # (grep exits 1 when nothing matched.)
-        if rc[0] != 0 or rc[1] != 0 or rc[2] not in (0, 1):
-            raise RuntimeError(f"{month}: download failed (curl {rc[0]}, bzip2 {rc[1]}, grep {rc[2]})")
-        with open(tmp, "rb") as f:
-            os.fsync(f.fileno())
-        # (One here that didn't count every language goes: never renamed over.)
-        cachefile.discard(local)
-        published, f = True, held
-        cachefile.publish(f, tmp, local)
-        cachefile.hold_existing(local)
-    finally:
-        if not published:
-            held.close()
-        tmp.unlink(missing_ok=True)
+        pumper = threading.Thread(target=pump, daemon=True)
+        pumper.start()
+        # (Written held, a cachefile scratch file: the agent's room-making leaves it.)
+        tmp, held = cachefile.scratch(local)
+        published = False
+        rows = 0
+        try:
+            with zstd.open(tmp, "wt", encoding="utf-8") as out:
+                out.write(f"#langs\t{','.join(sorted(LANGS))}\n")
+                last, total = None, 0
+                for line in grep.stdout:
+                    # wiki title page_id access monthly_total hourly
+                    f = line.split(" ", 5)
+                    if len(f) < 5 or not f[4].isdigit():
+                        continue
+                    key = f"{f[0][:-10]}|{f[1]}"
+                    if key != last:
+                        if last is not None:
+                            out.write(f"{last}\t{total}\n")
+                            rows += 1
+                        last, total = key, 0
+                    total += int(f[4])
+                if last is not None:
+                    out.write(f"{last}\t{total}\n")
+                    rows += 1
+            pumper.join()
+            rc = (curl.wait(), bz.wait(), grep.wait())
+            # (grep exits 1 when nothing matched.)
+            if rc[0] != 0 or rc[1] != 0 or rc[2] not in (0, 1):
+                raise RuntimeError(f"{month}: download failed (curl {rc[0]}, bzip2 {rc[1]}, grep {rc[2]})")
+            with open(tmp, "rb") as f:
+                os.fsync(f.fileno())
+            # (One here that didn't count every language goes: never renamed over.)
+            cachefile.discard(local)
+            published, f = True, held
+            cachefile.publish(f, tmp, local)
+            cachefile.hold_existing(local)
+        finally:
+            if not published:
+                held.close()
+            tmp.unlink(missing_ok=True)
     if STORE:
         # (One that fails is tried again the next time the month is looked up: _index.)
         try:
@@ -443,44 +452,49 @@ def main() -> None:
     global MONTHS
     if "--epoch" in sys.argv:
         MONTHS = months_before(sys.argv[sys.argv.index("--epoch") + 1])
-    OUT.mkdir(parents=True, exist_ok=True)
-    qids: set[str] = set()
-    for line in open(W / "items.jsonl", encoding="utf-8"):
-        r = json.loads(line)
-        if r.get("wiki"):
-            qids.add(r["qid"])
-    for line in open(B / "details-poi.jsonl", encoding="utf-8"):
-        q = json.loads(line).get("wikidata", "")
-        if q.startswith("Q"):
-            qids.add(q.split(";")[0].strip())
-    # World Heritage Sites' components' items (whsshapes.py): a site is as well known as its best
-    # known part (the Rideau Canal's own item has no articles; the canal's has).
-    if (B / "whs-sites.json").exists():
-        for s in json.loads((B / "whs-sites.json").read_text()).values():
-            qids.update(s.get("q", []))
-    # Every item's Wikipedia articles (shared cache with heritagewd.py).
-    wp: dict[str, dict] = {}
-    wp_path = W / "wp.jsonl"
-    if wp_path.exists():
-        for line in open(wp_path, encoding="utf-8"):
+    with phase("the item lists and article cache read", "disk"):
+        OUT.mkdir(parents=True, exist_ok=True)
+        qids: set[str] = set()
+        for line in open(W / "items.jsonl", encoding="utf-8"):
             r = json.loads(line)
-            wp[r["qid"]] = r
-    need = sorted(qids - set(wp))
+            if r.get("wiki"):
+                qids.add(r["qid"])
+        for line in open(B / "details-poi.jsonl", encoding="utf-8"):
+            q = json.loads(line).get("wikidata", "")
+            if q.startswith("Q"):
+                qids.add(q.split(";")[0].strip())
+        # World Heritage Sites' components' items (whsshapes.py): a site is as well known as its best
+        # known part (the Rideau Canal's own item has no articles; the canal's has).
+        if (B / "whs-sites.json").exists():
+            for s in json.loads((B / "whs-sites.json").read_text()).values():
+                qids.update(s.get("q", []))
+        # Every item's Wikipedia articles (shared cache with heritagewd.py).
+        wp: dict[str, dict] = {}
+        wp_path = W / "wp.jsonl"
+        if wp_path.exists():
+            for line in open(wp_path, encoding="utf-8"):
+                r = json.loads(line)
+                wp[r["qid"]] = r
+        need = sorted(qids - set(wp))
     print(f"{len(qids)} items; articles to look up for {len(need)}", file=sys.stderr, flush=True)
     if need:
         for q, r in heritagewd.wikipedias(need).items():
             wp[q] = {"qid": q, **r}
-        heritagewd.write_atomic(wp_path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
-    arts_of = {q: [a for a in wp.get(q, {}).get("arts", []) if "|" in a and a.split("|", 1)[0] in LANGS] for q in qids}
+        with phase("the article cache written", "disk"):
+            heritagewd.write_atomic(wp_path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
+    with phase("the articles listed", "compute"):
+        arts_of = {q: [a for a in wp.get(q, {}).get("arts", []) if "|" in a and a.split("|", 1)[0] in LANGS] for q in qids}
 
-    wanted = {a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_") for arts in arts_of.values() for a in arts}
+        wanted = {a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_") for arts in arts_of.values() for a in arts}
     print(f"{len(wanted)} articles; months {', '.join(MONTHS)}", file=sys.stderr, flush=True)
     per_month = months_views(MONTHS, wanted)
-    views = {a: sum(pm.get(a, 0) for pm in per_month) for a in wanted}
-    months = len(MONTHS)
-    per_item = {q: round(sum(views.get(a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_"), 0) for a in arts) / months, 1)
-                for q, arts in arts_of.items() if arts}
-    heritagewd.write_atomic(OUT / "items.json", json.dumps(per_item, ensure_ascii=False))
+    with phase("the views summed", "compute"):
+        views = {a: sum(pm.get(a, 0) for pm in per_month) for a in wanted}
+        months = len(MONTHS)
+        per_item = {q: round(sum(views.get(a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_"), 0) for a in arts) / months, 1)
+                    for q, arts in arts_of.items() if arts}
+    with phase("the views written", "disk"):
+        heritagewd.write_atomic(OUT / "items.json", json.dumps(per_item, ensure_ascii=False))
     top = sorted(per_item.items(), key=lambda x: -x[1])[:10]
     print(f"items.json: {len(per_item)} items; most read: {top}", file=sys.stderr)
 

@@ -72,6 +72,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from timings import phase
+
 UA = "scenic-roads/0.1 (personal offline map)"
 S3 = "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/"
 TYPES = ("building_part", "building")
@@ -351,27 +353,29 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
     base = Path(args.root) / "sources/overture" / rel.replace(".", "-")
     base.mkdir(parents=True, exist_ok=True)
     # Every file's row groups (cached: a release's files never change).
-    cache_path = base / "footers.json.gz"
-    cache = {}
-    if cache_path.exists():
-        try:
-            cache = json.loads(gzip.decompress(cache_path.read_bytes()))
-        except (OSError, ValueError) as e:
-            log(f"{cache_path}: unreadable ({e}); reading the footers again")
-    listed = []
-    for t in TYPES:
-        prefix = f"release/{rel}/theme=buildings/type={t}/"
-        files = s3_list(prefix)
-        if not files and cache:
-            # The release gone from S3 (Overture keeps about two months): the footers read before
-            # list its files, so the coverage's files here are known whole and skipped; one the
-            # coverage needs and that isn't here fails (it waits for the next pinned release).
-            files = [{"key": k, "size": v["size"], "etag": v["etag"]} for k, v in sorted(cache.items()) if k.startswith(prefix)]
-            log(f"overture {rel}: no {t} files on S3 now; going by the {len(files)} footers read before")
-        if not files:
-            raise SystemExit(f"Overture's release {rel} has no {t} files on S3 (gone, or another name?)")
-        listed += files
-    log(f"overture {rel}: {len(listed)} files listed, {gb(sum(f['size'] for f in listed))}")
+    with phase("the footers' cache read", "nas-read"):
+        cache_path = base / "footers.json.gz"
+        cache = {}
+        if cache_path.exists():
+            try:
+                cache = json.loads(gzip.decompress(cache_path.read_bytes()))
+            except (OSError, ValueError) as e:
+                log(f"{cache_path}: unreadable ({e}); reading the footers again")
+    with phase("the release's files listed on S3", "net"):
+        listed = []
+        for t in TYPES:
+            prefix = f"release/{rel}/theme=buildings/type={t}/"
+            files = s3_list(prefix)
+            if not files and cache:
+                # The release gone from S3 (Overture keeps about two months): the footers read before
+                # list its files, so the coverage's files here are known whole and skipped; one the
+                # coverage needs and that isn't here fails (it waits for the next pinned release).
+                files = [{"key": k, "size": v["size"], "etag": v["etag"]} for k, v in sorted(cache.items()) if k.startswith(prefix)]
+                log(f"overture {rel}: no {t} files on S3 now; going by the {len(files)} footers read before")
+            if not files:
+                raise SystemExit(f"Overture's release {rel} has no {t} files on S3 (gone, or another name?)")
+            listed += files
+        log(f"overture {rel}: {len(listed)} files listed, {gb(sum(f['size'] for f in listed))}")
     todo = [f for f in listed if cache.get(f["key"], {}).get("etag") != f["etag"]]
     if todo:
         log(f"reading {len(todo)} files' footers")
@@ -384,23 +388,26 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
                 log(f"footers: {done[0]}/{len(todo)}")
             return f, r
 
-        with ThreadPoolExecutor(min(4, args.jobs + 1)) as ex:
-            for f, r in ex.map(one, todo):
-                cache[f["key"]] = {"etag": f["etag"], "size": f["size"], **r}
-        write_json(cache_path, cache, gz=True)
+        with phase("the files' footers read from S3", "net"):
+            with ThreadPoolExecutor(min(4, args.jobs + 1)) as ex:
+                for f, r in ex.map(one, todo):
+                    cache[f["key"]] = {"etag": f["etag"], "size": f["size"], **r}
+        with phase("the footers' cache written", "nas-write"):
+            write_json(cache_path, cache, gz=True)
     from shapely.geometry import box
-    jobs = []
-    for f in listed:
-        c = cache[f["key"]]
-        hit = [g for g in c["rgs"] if cov.intersects(box(g[0], g[1], g[2], g[3]))]
-        if not hit:
-            continue
-        rel_path = f["key"].split(f"release/{rel}/", 1)[1]
-        jobs.append({
-            "src": "overture", "url": S3 + f["key"], "dest": base / rel_path, "size": f["size"], "etag": f["etag"],
-            "name": rel_path, "rows": c["rows"], "row_groups": len(c["rgs"]), "rows_near": sum(g[4] for g in hit),
-            "bbox": [min(g[0] for g in c["rgs"]), min(g[1] for g in c["rgs"]), max(g[2] for g in c["rgs"]), max(g[3] for g in c["rgs"])],
-        })
+    with phase("the files meeting the coverage picked", "compute"):
+        jobs = []
+        for f in listed:
+            c = cache[f["key"]]
+            hit = [g for g in c["rgs"] if cov.intersects(box(g[0], g[1], g[2], g[3]))]
+            if not hit:
+                continue
+            rel_path = f["key"].split(f"release/{rel}/", 1)[1]
+            jobs.append({
+                "src": "overture", "url": S3 + f["key"], "dest": base / rel_path, "size": f["size"], "etag": f["etag"],
+                "name": rel_path, "rows": c["rows"], "row_groups": len(c["rgs"]), "rows_near": sum(g[4] for g in hit),
+                "bbox": [min(g[0] for g in c["rgs"]), min(g[1] for g in c["rgs"]), max(g[2] for g in c["rgs"]), max(g[3] for g in c["rgs"])],
+            })
     return jobs, base, cache
 
 
@@ -410,19 +417,21 @@ def ghsl_jobs(args, cov) -> tuple[list[dict], Path]:
     from shapely.geometry import box
     base = Path(args.root) / "sources/ghsl" / GHSL_RELEASE
     base.mkdir(parents=True, exist_ok=True)
-    page = get_bytes(GHSL_URL).decode("utf-8", "replace")
+    with phase("the GHSL tiles listed", "net"):
+        page = get_bytes(GHSL_URL).decode("utf-8", "replace")
     names = sorted(set(re.findall(rf'href="({GHSL_PRODUCT}_R(\d+)_C(\d+)\.zip)"', page)))
     if not names:
         raise SystemExit(f"GHSL: no tiles listed at {GHSL_URL}")
-    jobs = []
-    for name, r, c in names:
-        top = GHSL_TOP - GHSL_DEG * (int(r) - 1)
-        left = GHSL_LEFT + GHSL_DEG * (int(c) - 1)
-        if top - GHSL_DEG < -90 or top > 90.5:
-            continue
-        b = [left, top - GHSL_DEG, left + GHSL_DEG, top]
-        if cov.intersects(box(*b)):
-            jobs.append({"src": "ghsl", "url": GHSL_URL + name, "dest": base / name, "size": None, "etag": None, "name": name, "bbox": b})
+    with phase("the files meeting the coverage picked", "compute"):
+        jobs = []
+        for name, r, c in names:
+            top = GHSL_TOP - GHSL_DEG * (int(r) - 1)
+            left = GHSL_LEFT + GHSL_DEG * (int(c) - 1)
+            if top - GHSL_DEG < -90 or top > 90.5:
+                continue
+            b = [left, top - GHSL_DEG, left + GHSL_DEG, top]
+            if cov.intersects(box(*b)):
+                jobs.append({"src": "ghsl", "url": GHSL_URL + name, "dest": base / name, "size": None, "etag": None, "name": name, "bbox": b})
 
     # Each tile's size (the listing rounds them), so one already here is known whole.
     def head(j):
@@ -431,8 +440,9 @@ def ghsl_jobs(args, cov) -> tuple[list[dict], Path]:
                 return int(r.headers["Content-Length"])
         j["size"] = retried(j["name"], once)
 
-    with ThreadPoolExecutor(3) as ex:
-        list(ex.map(head, jobs))
+    with phase("the GHSL tiles listed", "net"):
+        with ThreadPoolExecutor(3) as ex:
+            list(ex.map(head, jobs))
     return jobs, base
 
 
@@ -687,7 +697,8 @@ def main() -> None:
 
     log(f"bldfetch: pid {os.getpid()} on {HOST}, root {root}, {args.jobs} transfers at once, "
         f"{'no cap' if args.max_mb_s <= 0 else f'at most {args.max_mb_s:g} MB/s'}")
-    cov, what = coverage(args)
+    with phase("the coverage read", "mixed"):
+        cov, what = coverage(args)
     log(f"coverage: {len(what)} regions ({', '.join(what[:6])}{', …' if len(what) > 6 else ''}), grown {args.margin_km:g} km")
 
     jobs, ov_base, ov_cache, gh_base = [], None, {}, None
@@ -705,9 +716,10 @@ def main() -> None:
         log(f"ghsl: {len(gh)} tiles meet the coverage, {gb(sum(j['size'] for j in gh))}")
         jobs += gh
 
-    known = sum(j["size"] for j in jobs)
-    here = {j["name"] for j in jobs if j["dest"].exists() and j["dest"].stat().st_size == j["size"]}
-    log(f"{len(jobs)} files, {len(here)} already here; {gb(known - sum(j['size'] for j in jobs if j['name'] in here))} to fetch")
+    with phase("the files here checked", "nas-read"):
+        known = sum(j["size"] for j in jobs)
+        here = {j["name"] for j in jobs if j["dest"].exists() and j["dest"].stat().st_size == j["size"]}
+        log(f"{len(jobs)} files, {len(here)} already here; {gb(known - sum(j['size'] for j in jobs if j['name'] in here))} to fetch")
     # (What's left to fetch: the files here already take no more room.)
     left = known - sum(j["size"] for j in jobs if j["name"] in here)
     free = os.statvfs(root)
@@ -792,13 +804,15 @@ def main() -> None:
 
     # GHSL's small tiles first, then Overture's parts, then its buildings.
     order = sorted(jobs, key=lambda j: (j["src"] != "ghsl", "type=building_part/" not in j["name"], j["name"]))
-    with ThreadPoolExecutor(args.jobs) as ex:
-        list(ex.map(one, order))
+    with phase("the files downloaded to the NAS", "net"):
+        with ThreadPoolExecutor(args.jobs) as ex:
+            list(ex.map(one, order))
     stop_report.set()
     log(prog.line())
     if STOP.is_set():
         log("stopped; what was fetched is kept, and a run again goes on from there")
-    save()
+    with phase("the indexes written", "nas-write"):
+        save()
     if failed:
         raise SystemExit(f"{len(failed)} files failed: {', '.join(failed[:5])}{' …' if len(failed) > 5 else ''} (run again to retry)")
     if not STOP.is_set():

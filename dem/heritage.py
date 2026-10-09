@@ -62,6 +62,7 @@ from shapely.ops import transform as shp_transform
 from tqdm import tqdm
 
 import heritage_eu
+from timings import phase
 
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
@@ -77,22 +78,23 @@ def get(url: str, params: dict | None = None, accept: str | None = None) -> byte
     h = dict(UA)
     if accept:
         h["Accept"] = accept
-    for attempt in range(12):
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=180) as r:
-                return r.read()
-        except urllib.error.HTTPError as e:
-            if attempt == 11:
-                raise
-            # Respect rate limits (the Wikidata query service may allow only 1 request/min).
-            wait = int(e.headers.get("Retry-After") or 0) or (65 if e.code == 429 else 2 ** attempt)
-            print(f"  HTTP {e.code}; waiting {wait} s", file=sys.stderr)
-            time.sleep(wait)
-        except Exception as e:  # noqa: BLE001
-            if attempt == 11:
-                raise
-            print(f"  retry ({e})", file=sys.stderr)
-            time.sleep(2 ** min(attempt, 6))
+    with phase("sources downloaded", "net"):
+        for attempt in range(12):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=180) as r:
+                    return r.read()
+            except urllib.error.HTTPError as e:
+                if attempt == 11:
+                    raise
+                # Respect rate limits (the Wikidata query service may allow only 1 request/min).
+                wait = int(e.headers.get("Retry-After") or 0) or (65 if e.code == 429 else 2 ** attempt)
+                print(f"  HTTP {e.code}; waiting {wait} s", file=sys.stderr)
+                time.sleep(wait)
+            except Exception as e:  # noqa: BLE001
+                if attempt == 11:
+                    raise
+                print(f"  retry ({e})", file=sys.stderr)
+                time.sleep(2 ** min(attempt, 6))
     raise RuntimeError("unreachable")
 
 
@@ -105,9 +107,10 @@ def sparql(q: str, cache: str) -> list[dict]:
     if path.exists():
         b = path.read_bytes()
     else:
-        b = get("https://query.wikidata.org/sparql", {"query": q}, accept="text/csv")
-        path.write_bytes(b)
-        time.sleep(61)  # stay under the query service's rate limit
+        with phase("sources downloaded", "net"):
+            b = get("https://query.wikidata.org/sparql", {"query": q}, accept="text/csv")
+            path.write_bytes(b)
+            time.sleep(61)  # stay under the query service's rate limit
     return list(csv.DictReader(io.StringIO(b.decode("utf-8"))))
 
 
@@ -541,7 +544,8 @@ def main():
     b = Path(args[0] if args else "../data/build")
     areas_path = b.parent / "areas" / "areas.geojsonseq"
     # What's covered: the build's analysis grid (z11), or the job's tiles.
-    tiles = {tuple(t) for t in np.fromfile(Path(tiles_path) if tiles_path else b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
+    with phase("the covered tiles read", "disk"):
+        tiles = {tuple(t) for t in np.fromfile(Path(tiles_path) if tiles_path else b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
     n_tiles = 2 ** zoom
 
     def covered(lon, lat):
@@ -561,104 +565,113 @@ def main():
     for i, (label, fn) in enumerate(registers):
         # (A line the build agent shows as this job's progress, the register under way in brackets.)
         print(f"progress: {i}/{len(registers)} registers ({label})", file=sys.stderr, flush=True)
-        r = fn()
-        pts, ars = r if isinstance(r, tuple) else (r, [])
-        pts = [f for f in pts if covered(*f["geometry"]["coordinates"])]
-        counts[label] = len(pts) + len(ars)
-        print(f"heritage: {label:34s} {len(pts):6d} sites, {len(ars):4d} areas")
-        sites += pts
-        harea += ars
+        with phase("the registers read", "mixed"):
+            r = fn()
+            pts, ars = r if isinstance(r, tuple) else (r, [])
+            pts = [f for f in pts if covered(*f["geometry"]["coordinates"])]
+            counts[label] = len(pts) + len(ars)
+            print(f"heritage: {label:34s} {len(pts):6d} sites, {len(ars):4d} areas")
+            sites += pts
+            harea += ars
     print(f"progress: {len(registers)}/{len(registers)} registers", file=sys.stderr, flush=True)
-    for f in sites + harea:
-        for k in ("name", "name_en"):
-            if k in f["properties"]:
-                v = tidy_quotes(f["properties"][k])
-                # Registers that shout ("FRANK SLIDE"): title case.
-                f["properties"][k] = v.title() if v and v.isupper() and len(v) > 3 else v
-    n0 = len(sites)
-    sites = dedupe(sites)
+    with phase("the sites tidied and deduplicated", "compute"):
+        for f in sites + harea:
+            for k in ("name", "name_en"):
+                if k in f["properties"]:
+                    v = tidy_quotes(f["properties"][k])
+                    # Registers that shout ("FRANK SLIDE"): title case.
+                    f["properties"][k] = v.title() if v and v.isupper() and len(v) > 3 else v
+        n0 = len(sites)
+        sites = dedupe(sites)
     print(f"heritage: {n0 - len(sites)} municipal duplicates dropped")
-    write_json(b / "heritage.json", {"type": "FeatureCollection", "features": sites})
-    write_json(b / "heritage-areas.json", {"type": "FeatureCollection", "features": harea})
+    with phase("the sites and heritage areas written", "disk"):
+        write_json(b / "heritage.json", {"type": "FeatureCollection", "features": sites})
+        write_json(b / "heritage-areas.json", {"type": "FeatureCollection", "features": harea})
     by = {}
     for f in sites:
         by[f["properties"]["level"]] = by.get(f["properties"]["level"], 0) + 1
     print("heritage.json:", len(sites), "sites by level", dict(sorted(by.items())))
 
     # Special places: official registries, else Wikidata.
-    sp = special_official()
-    if sp is None:
-        print("special areas: special-official.json missing — falling back to Wikidata")
-        sp = special_wikidata()
-    sp = [s for s in sp if covered(s["lon"], s["lat"])]
-    # Entries by the OSM name to look for; several can share one (e.g. a biosphere reserve named
-    # for the national park it surrounds), so each is matched on its own.
-    hints: dict[str, list[int]] = {}
-    for i, s in enumerate(sp):
-        hints.setdefault(norm_name(s.get("polygon_hint") or s["name"]), []).append(i)
+    with phase("the special places read", "mixed"):
+        sp = special_official()
+        if sp is None:
+            print("special areas: special-official.json missing — falling back to Wikidata")
+            sp = special_wikidata()
+        sp = [s for s in sp if covered(s["lon"], s["lat"])]
+        # Entries by the OSM name to look for; several can share one (e.g. a biosphere reserve named
+        # for the national park it surrounds), so each is matched on its own.
+        hints: dict[str, list[int]] = {}
+        for i, s in enumerate(sp):
+            hints.setdefault(norm_name(s.get("polygon_hint") or s["name"]), []).append(i)
 
     print("protected areas & Indigenous lands (OSM)…")
-    special_feats, indigenous_feats, matched = [], [], set()
-    # The polygons in degrees, with their bits (rasterised below, or by the units: --tiles).
-    shapes_ll: list[tuple] = []
-    for line in tqdm(open(areas_path), desc="areas", unit="poly"):
-        f = json.loads(line.strip("\x1e"))
-        p = f["properties"]
-        try:
-            g = shape(f["geometry"])
-        except Exception:  # noqa: BLE001
-            continue
-        if g.is_empty:
-            continue
-        name = p.get("name", "")
-        ptitle = p.get("protection_title", "")
-        for i in hints.get(norm_name(name), []):
-            s = sp[i]
-            # Use the mapped boundary only if it plausibly is the designated area: biosphere
-            # reserves and geoparks are usually far larger than the park named in the hint.
-            if i in matched or (s.get("area_km2") and g.area * 111.32 ** 2 * math.cos(math.radians(s["lat"])) < 0.5 * s["area_km2"]):
+    with phase("the protected areas and Indigenous lands read", "compute"):
+        special_feats, indigenous_feats, matched = [], [], set()
+        # The polygons in degrees, with their bits (rasterised below, or by the units: --tiles).
+        shapes_ll: list[tuple] = []
+        for line in tqdm(open(areas_path), desc="areas", unit="poly"):
+            f = json.loads(line.strip("\x1e"))
+            p = f["properties"]
+            try:
+                g = shape(f["geometry"])
+            except Exception:  # noqa: BLE001
                 continue
-            if g.distance(Point(s["lon"], s["lat"])) < 0.3:
-                matched.add(i)
-                special_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003)),
-                                      "properties": {k: v for k, v in s.items() if k not in ("lon", "lat")}})
-                shapes_ll.append((g.simplify(0.0002, preserve_topology=True), SPECIAL))
-        if p.get("boundary") == "aboriginal_lands":
-            bit = INDIGENOUS
-            indigenous_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003, preserve_topology=True)),
-                                     "properties": {"name": name}})
-        elif (p.get("boundary") == "national_park" or p.get("leisure") == "nature_reserve"
-              or p.get("protect_class") in ("1", "1a", "1b", "2", "3", "4", "5", "6") or PARK_TITLE.search(ptitle)):
-            bit = PARK
-        else:
-            continue
-        shapes_ll.append((g.simplify(0.0002, preserve_topology=True), bit))
-    for i, s in enumerate(sp):
-        if i in matched:
-            continue
-        r_km = math.sqrt(s["area_km2"] / math.pi) if s.get("area_km2") else (15.0 if s["kind"] != "dark_sky" else 8.0)
-        r_km = min(max(r_km, 3.0), 60.0)
-        circ = Point(s["lon"], s["lat"]).buffer(r_km / 111.0, 48)
-        circ = shp_transform(lambda x, y, lo=s["lon"], la=s["lat"]: (lo + (x - lo) / math.cos(math.radians(la)), y), circ)
-        special_feats.append({"type": "Feature", "geometry": mapping(circ),
-                              "properties": {**{k: v for k, v in s.items() if k not in ("lon", "lat")}, "approx": True}})
-        shapes_ll.append((circ, SPECIAL))
-    print(f"special areas: {len(sp)} ({len(matched)} with OSM boundaries)")
-    for f in harea:
-        shapes_ll.append((shape(f["geometry"]), HERITAGE))
-    write_json(b / "special.json", {"type": "FeatureCollection", "features": special_feats})
-    write_json(b / "indigenous.json", {"type": "FeatureCollection", "features": indigenous_feats})
-    write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "built": date or datetime.now(timezone.utc).isoformat()[:19]})
+            if g.is_empty:
+                continue
+            name = p.get("name", "")
+            ptitle = p.get("protection_title", "")
+            for i in hints.get(norm_name(name), []):
+                s = sp[i]
+                # Use the mapped boundary only if it plausibly is the designated area: biosphere
+                # reserves and geoparks are usually far larger than the park named in the hint.
+                if i in matched or (s.get("area_km2") and g.area * 111.32 ** 2 * math.cos(math.radians(s["lat"])) < 0.5 * s["area_km2"]):
+                    continue
+                if g.distance(Point(s["lon"], s["lat"])) < 0.3:
+                    matched.add(i)
+                    special_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003)),
+                                          "properties": {k: v for k, v in s.items() if k not in ("lon", "lat")}})
+                    shapes_ll.append((g.simplify(0.0002, preserve_topology=True), SPECIAL))
+            if p.get("boundary") == "aboriginal_lands":
+                bit = INDIGENOUS
+                indigenous_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003, preserve_topology=True)),
+                                         "properties": {"name": name}})
+            elif (p.get("boundary") == "national_park" or p.get("leisure") == "nature_reserve"
+                  or p.get("protect_class") in ("1", "1a", "1b", "2", "3", "4", "5", "6") or PARK_TITLE.search(ptitle)):
+                bit = PARK
+            else:
+                continue
+            shapes_ll.append((g.simplify(0.0002, preserve_topology=True), bit))
+    with phase("the remaining areas drawn", "compute"):
+        for i, s in enumerate(sp):
+            if i in matched:
+                continue
+            r_km = math.sqrt(s["area_km2"] / math.pi) if s.get("area_km2") else (15.0 if s["kind"] != "dark_sky" else 8.0)
+            r_km = min(max(r_km, 3.0), 60.0)
+            circ = Point(s["lon"], s["lat"]).buffer(r_km / 111.0, 48)
+            circ = shp_transform(lambda x, y, lo=s["lon"], la=s["lat"]: (lo + (x - lo) / math.cos(math.radians(la)), y), circ)
+            special_feats.append({"type": "Feature", "geometry": mapping(circ),
+                                  "properties": {**{k: v for k, v in s.items() if k not in ("lon", "lat")}, "approx": True}})
+            shapes_ll.append((circ, SPECIAL))
+        print(f"special areas: {len(sp)} ({len(matched)} with OSM boundaries)")
+        for f in harea:
+            shapes_ll.append((shape(f["geometry"]), HERITAGE))
+    with phase("the area layers written", "disk"):
+        write_json(b / "special.json", {"type": "FeatureCollection", "features": special_feats})
+        write_json(b / "indigenous.json", {"type": "FeatureCollection", "features": indigenous_feats})
+        write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "built": date or datetime.now(timezone.utc).isoformat()[:19]})
     if tiles_path is not None:
-        tmp = b / "area-shapes.geojsonseq.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            for g, bit in shapes_ll:
-                f.write(json.dumps({"type": "Feature", "geometry": mapping(g), "properties": {"bit": int(bit)}}, separators=(",", ":")) + "\n")
-        os.replace(tmp, b / "area-shapes.geojsonseq")
+        with phase("the area shapes written", "disk"):
+            tmp = b / "area-shapes.geojsonseq.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for g, bit in shapes_ll:
+                    f.write(json.dumps({"type": "Feature", "geometry": mapping(g), "properties": {"bit": int(bit)}}, separators=(",", ":")) + "\n")
+            os.replace(tmp, b / "area-shapes.geojsonseq")
         print(f"area-shapes.geojsonseq: {len(shapes_ll)} polygons (the units rasterise them)")
         return
     print(f"rasterising {len(shapes_ll)} polygons")
-    rasterise(b, [(shp_transform(to_merc, g), bit) for g, bit in shapes_ll])
+    with phase("the areas rasterised", "compute"):
+        rasterise(b, [(shp_transform(to_merc, g), bit) for g, bit in shapes_ll])
     print("done — now run: scenic <build> flags")
 
 

@@ -64,6 +64,7 @@ from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
 import railgtfs
+from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
 # A stale cached zip is fetched again when this runs this many days or more after its day.
@@ -482,14 +483,16 @@ def main():
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    cover = coverage(a.coverage)
-    countries = {c for c in a.countries.split(",") if c}
-    have = keys(a.keys)
-    cache = json.loads(Path(a.cache).read_text())
-    checked = {c["id"]: c for c in json.loads(Path(a.checked).read_text())} if Path(a.checked).exists() else {}
-    # The first day each feed's server gave no answer, kept from run to run until the job completes.
-    silent_path = out / "unanswered.json"
-    silent: dict[str, str] = json.loads(silent_path.read_text()) if silent_path.exists() else {}
+    with phase("the coverage read", "compute"):
+        cover = coverage(a.coverage)
+    with phase("the checks, keys and the NAS's list read", "disk"):
+        countries = {c for c in a.countries.split(",") if c}
+        have = keys(a.keys)
+        cache = json.loads(Path(a.cache).read_text())
+        checked = {c["id"]: c for c in json.loads(Path(a.checked).read_text())} if Path(a.checked).exists() else {}
+        # The first day each feed's server gave no answer, kept from run to run until the job completes.
+        silent_path = out / "unanswered.json"
+        silent: dict[str, str] = json.loads(silent_path.read_text()) if silent_path.exists() else {}
     waiting: list[str] = []  # no answer yet: the run fails, and is tried again
     failed: list[str] = []  # other failures of the run
 
@@ -500,17 +503,20 @@ def main():
         return since if (today() - date.fromisoformat(since)).days >= NO_ANSWER_DAYS else None
 
     # The catalogue's feeds here, each checked once (again while one gets no answer).
-    cands = catalogue_feeds(a.catalogue, cover, countries)
-    todo = [dict(c) for c in cands if c["id"] not in checked or unanswered(checked[c["id"]])]
+    with phase("the catalogue's feeds listed", "compute"):
+        cands = catalogue_feeds(a.catalogue, cover, countries)
+        todo = [dict(c) for c in cands if c["id"] not in checked or unanswered(checked[c["id"]])]
     print(f"{len(cands)} catalogue feeds where the coverage is ({', '.join(sorted(countries))}); {len(todo)} to check", file=sys.stderr, flush=True)
     done = []
-    with ThreadPoolExecutor(8) as ex:
-        for k, c in enumerate(ex.map(check, todo)):
-            progress(k + 1, len(todo), "feeds checked")
-            done.append(c)
-    for c in done:
-        checked[c["id"]] = c
-    write_json(out / "checked.json", sorted(checked.values(), key=lambda c: c["id"]))
+    with phase("the catalogue's feeds checked", "net"):
+        with ThreadPoolExecutor(8) as ex:
+            for k, c in enumerate(ex.map(check, todo)):
+                progress(k + 1, len(todo), "feeds checked")
+                done.append(c)
+    with phase("the lists written", "disk"):
+        for c in done:
+            checked[c["id"]] = c
+        write_json(out / "checked.json", sorted(checked.values(), key=lambda c: c["id"]))
     left_out: dict[str, str] = {}  # a feed's status, when its check has had no answer for too long
     for c in done:
         if not unanswered(c):
@@ -570,20 +576,22 @@ def main():
         if c:
             cached = {**rec, "zip": "cache", "fetched": c["fetched"]}
             day = date.fromisoformat(c["fetched"])
-            try:
-                fresh = railgtfs.has_service(Path(c["path"]), day)
-            except OSError as e:
-                # Not read now (the NAS): the run fails, and is tried again, rather than fetching it.
-                failed.append(f"{i}: its zip on the NAS can't be read now ({e.__class__.__name__}: {e})")
-                return "trying", rec
-            except (zipfile.BadZipFile, KeyError, csv.Error, zlib.error, EOFError) as e:
-                # Its tables can't be read (railgtfs.py can't count it either): as one out of date.
-                print(f"{i}: its zip can't be read ({e.__class__.__name__}: {e})", file=sys.stderr, flush=True)
-                fresh = False
+            with phase("the NAS's zips checked for service", "nas-read"):
+                try:
+                    fresh = railgtfs.has_service(Path(c["path"]), day)
+                except OSError as e:
+                    # Not read now (the NAS): the run fails, and is tried again, rather than fetching it.
+                    failed.append(f"{i}: its zip on the NAS can't be read now ({e.__class__.__name__}: {e})")
+                    return "trying", rec
+                except (zipfile.BadZipFile, KeyError, csv.Error, zlib.error, EOFError) as e:
+                    # Its tables can't be read (railgtfs.py can't count it either): as one out of date.
+                    print(f"{i}: its zip can't be read ({e.__class__.__name__}: {e})", file=sys.stderr, flush=True)
+                    fresh = False
             if fresh or (today() - day).days < REFETCH_DAYS:
                 return "zip", cached
             try:
-                ok, why = fetch(f, dest, key)
+                with phase("the feeds' zips downloaded", "net"):
+                    ok, why = fetch(f, dest, key)
             except NoAnswer as e:
                 why = f"no answer ({e})"
                 ok = False
@@ -594,7 +602,8 @@ def main():
             print(f"{i}: out of date in the cache; fetched again", file=sys.stderr, flush=True)
             return "zip", {**rec, "zip": "new", "fetched": today().isoformat()}
         try:
-            ok, why = fetch(f, dest, key)
+            with phase("the feeds' zips downloaded", "net"):
+                ok, why = fetch(f, dest, key)
         except NoAnswer as e:
             if since := no_answer_since(i):
                 status = f"no answer since {since} (last tried {today()}): {e}"
@@ -609,14 +618,16 @@ def main():
         print(f"{i}: left out ({why})", file=sys.stderr, flush=True)
         return "out", {**rec, "status": why}
 
-    feeds = []
-    for k, f in enumerate(order):
-        progress(k, len(order), "feeds' zips")
-        state, rec = place(f)
-        if state != "trying":
-            feeds.append(rec)
-    progress(len(order), len(order), "feeds' zips")
-    write_json(silent_path, dict(sorted(silent.items())))
+    with phase("the feeds' zips placed", "mixed"):
+        feeds = []
+        for k, f in enumerate(order):
+            progress(k, len(order), "feeds' zips")
+            state, rec = place(f)
+            if state != "trying":
+                feeds.append(rec)
+        progress(len(order), len(order), "feeds' zips")
+    with phase("the lists written", "disk"):
+        write_json(silent_path, dict(sorted(silent.items())))
     n_new = sum(1 for f in feeds if f.get("zip") == "new")
     n_cache = sum(1 for f in feeds if f.get("zip") == "cache")
     print(f"{len(order)} feeds: {n_cache} from the cache, {n_new} fetched, {len(feeds) - n_cache - n_new} left out, {len(order) - len(feeds)} to try again", file=sys.stderr, flush=True)
@@ -626,7 +637,8 @@ def main():
         for m in failed + waiting:
             print(m, file=sys.stderr)
         sys.exit(3)
-    write_json(out / "feeds.json", {"feeds": feeds})
+    with phase("the lists written", "disk"):
+        write_json(out / "feeds.json", {"feeds": feeds})
 
 
 if __name__ == "__main__":

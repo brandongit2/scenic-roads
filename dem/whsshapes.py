@@ -49,6 +49,7 @@ from shapely.geometry import mapping, shape
 from shapely.ops import polylabel
 
 import heritage_eu
+from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
@@ -152,36 +153,42 @@ def outlines(names: dict[str, str], km2: dict[str, float]) -> dict[str, list[tup
     sites' inscribed areas, where UNESCO gives them."""
     # Its Wikidata items: the site and its components (P757), and items part of one (P361).
     site_of: dict[str, str] = {}
-    for r in heritage_eu.wd_sparql("SELECT ?item ?id WHERE { ?item wdt:P757 ?id }", W / "wd-p757.json"):
-        base = re.match(r"\d+", r["id"])
-        if base and base.group() in names:
-            site_of[r["item"].rsplit("/", 1)[-1]] = base.group()
-    parts = heritage_eu.wd_sparql("SELECT ?part ?whole WHERE { ?whole wdt:P757 ?id . ?part wdt:P361 ?whole }", W / "wd-parts.json")
-    for r in parts:
-        whole, part = r["whole"].rsplit("/", 1)[-1], r["part"].rsplit("/", 1)[-1]
-        if whole in site_of:
-            site_of.setdefault(part, site_of[whole])
+    with phase("the Wikidata items read", "disk"):
+        for r in heritage_eu.wd_sparql("SELECT ?item ?id WHERE { ?item wdt:P757 ?id }", W / "wd-p757.json"):
+            base = re.match(r"\d+", r["id"])
+            if base and base.group() in names:
+                site_of[r["item"].rsplit("/", 1)[-1]] = base.group()
+        parts = heritage_eu.wd_sparql("SELECT ?part ?whole WHERE { ?whole wdt:P757 ?id . ?part wdt:P361 ?whole }", W / "wd-parts.json")
+        for r in parts:
+            whole, part = r["whole"].rsplit("/", 1)[-1], r["part"].rsplit("/", 1)[-1]
+            if whole in site_of:
+                site_of.setdefault(part, site_of[whole])
     print(f"{len(site_of)} Wikidata items")
 
     # Their OSM objects: everything tagged wikidata or ref:whc (tags only), picked by value, then
     # those objects with their geometry (a filter on thousands of values at once is slow).
     tagged = W / "tagged.osm.pbf"
-    run("osmium", "tags-filter", str(OSM), "nwr/wikidata", "nwr/ref:whc", "nwr/heritage:operator=whc", "-R", "-o", str(tagged), "--overwrite")
-    opl = subprocess.Popen(["osmium", "cat", str(tagged), "-f", "opl", "-o", "-"], stdout=subprocess.PIPE, text=True, encoding="utf-8")
-    want = []
-    for line in opl.stdout:
-        m = re.search(r"(?:^| T)(?:.*,)?wikidata=(Q\d+)", line)
-        if (m and m.group(1) in site_of) or "ref:whc=" in line or "heritage:operator=whc" in line:
-            want.append(line.split(" ", 1)[0])
-    opl.wait()
-    ids = W / "ids.txt"
-    ids.write_text("\n".join(want) + "\n")
+    with phase("the tagged objects filtered by osmium", "compute"):
+        run("osmium", "tags-filter", str(OSM), "nwr/wikidata", "nwr/ref:whc", "nwr/heritage:operator=whc", "-R", "-o", str(tagged), "--overwrite")
+    with phase("the sites' objects picked", "compute"):
+        opl = subprocess.Popen(["osmium", "cat", str(tagged), "-f", "opl", "-o", "-"], stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        want = []
+        for line in opl.stdout:
+            m = re.search(r"(?:^| T)(?:.*,)?wikidata=(Q\d+)", line)
+            if (m and m.group(1) in site_of) or "ref:whc=" in line or "heritage:operator=whc" in line:
+                want.append(line.split(" ", 1)[0])
+        opl.wait()
+        ids = W / "ids.txt"
+        ids.write_text("\n".join(want) + "\n")
     print(f"{len(want)} OSM objects")
     pbf = W / "whs.osm.pbf"
     # (exit 1: some objects weren't found, e.g. a relation member outside our extracts)
-    run("osmium", "getid", "-r", str(OSM), "-i", str(ids), "-o", str(pbf), "--overwrite", ok=(0, 1))
-    run("osmium", "export", str(pbf), "-f", "geojsonseq", "-a", "type,id", "--geometry-types=linestring,polygon", "-o", str(W / "whs.geojsonseq"), "--overwrite")
-    run("osmium", "cat", str(pbf), "-t", "relation", "-f", "opl", "-o", str(W / "relations.opl"), "--overwrite")
+    with phase("the sites' objects extracted by osmium", "compute"):
+        run("osmium", "getid", "-r", str(OSM), "-i", str(ids), "-o", str(pbf), "--overwrite", ok=(0, 1))
+    with phase("the sites' objects exported by osmium", "compute"):
+        run("osmium", "export", str(pbf), "-f", "geojsonseq", "-a", "type,id", "--geometry-types=linestring,polygon", "-o", str(W / "whs.geojsonseq"), "--overwrite")
+    with phase("the relations listed by osmium", "compute"):
+        run("osmium", "cat", str(pbf), "-t", "relation", "-f", "opl", "-o", str(W / "relations.opl"), "--overwrite")
 
     def site(tags: dict) -> str | None:
         ref = re.match(r"\d+", tags.get("ref:whc") or tags.get("whc:ref") or "")
@@ -191,43 +198,45 @@ def outlines(names: dict[str, str], km2: dict[str, float]) -> dict[str, list[tup
 
     # Route, waterway and site relations of a site pass it on to their member ways (not areas'
     # relations: their ways are the area's edges).
-    member_site: dict[str, str] = {}
-    for line in (W / "relations.opl").open(encoding="utf-8"):
-        tm, mm = re.search(r" T(\S*)", line), re.search(r" M(\S*)", line)
-        if not tm or not mm:
-            continue
-        tags = dict(kv.split("=", 1) for kv in tm.group(1).split(",") if "=" in kv)
-        s = site(tags)
-        if not s or tags.get("type") in ("multipolygon", "boundary") or not_extent(tags):
-            continue
-        for m in mm.group(1).split(","):
-            k = m.split("@", 1)[0]
-            if k.startswith("w"):
-                member_site.setdefault(k, s)
+    with phase("the relations' members read", "compute"):
+        member_site: dict[str, str] = {}
+        for line in (W / "relations.opl").open(encoding="utf-8"):
+            tm, mm = re.search(r" T(\S*)", line), re.search(r" M(\S*)", line)
+            if not tm or not mm:
+                continue
+            tags = dict(kv.split("=", 1) for kv in tm.group(1).split(",") if "=" in kv)
+            s = site(tags)
+            if not s or tags.get("type") in ("multipolygon", "boundary") or not_extent(tags):
+                continue
+            for m in mm.group(1).split(","):
+                k = m.split("@", 1)[0]
+                if k.startswith("w"):
+                    member_site.setdefault(k, s)
 
     # A closed way comes out twice, as a line and as an area: one of them, by its tags.
-    found: dict[str, dict[bool, dict]] = defaultdict(dict)
-    for line in (W / "whs.geojsonseq").open(encoding="utf-8"):
-        f = json.loads(line.lstrip("\x1e"))
-        p = f["properties"]
-        found[f"{p['@type'][0]}{p['@id']}"][f["geometry"]["type"] in ("Polygon", "MultiPolygon")] = f
-    out: dict[str, list[tuple[shapely.Geometry, bool]]] = defaultdict(list)
-    skipped: dict[str, int] = defaultdict(int)
-    for key, by in found.items():
-        f = by.get(False) if False in by and (True not in by or linear(by[False]["properties"])) else by[True]
-        p = f["properties"]
-        s = site(p) or member_site.get(key)
-        if not s:
-            continue
-        g = shape(f["geometry"]).simplify(0.00015, preserve_topology=True)
-        if g.is_empty:
-            continue
-        area = g.geom_type in ("Polygon", "MultiPolygon")
-        if not_extent(p) or (area and not tagged_whs(p) and s in km2
-                             and g.area * 111.32 ** 2 * math.cos(math.radians(g.centroid.y)) > TOO_LARGE * km2[s]):
-            skipped[names[s]] += 1
-            continue
-        out[s].append((g, area))
+    with phase("the outlines picked and simplified", "compute"):
+        found: dict[str, dict[bool, dict]] = defaultdict(dict)
+        for line in (W / "whs.geojsonseq").open(encoding="utf-8"):
+            f = json.loads(line.lstrip("\x1e"))
+            p = f["properties"]
+            found[f"{p['@type'][0]}{p['@id']}"][f["geometry"]["type"] in ("Polygon", "MultiPolygon")] = f
+        out: dict[str, list[tuple[shapely.Geometry, bool]]] = defaultdict(list)
+        skipped: dict[str, int] = defaultdict(int)
+        for key, by in found.items():
+            f = by.get(False) if False in by and (True not in by or linear(by[False]["properties"])) else by[True]
+            p = f["properties"]
+            s = site(p) or member_site.get(key)
+            if not s:
+                continue
+            g = shape(f["geometry"]).simplify(0.00015, preserve_topology=True)
+            if g.is_empty:
+                continue
+            area = g.geom_type in ("Polygon", "MultiPolygon")
+            if not_extent(p) or (area and not tagged_whs(p) and s in km2
+                                 and g.area * 111.32 ** 2 * math.cos(math.radians(g.centroid.y)) > TOO_LARGE * km2[s]):
+                skipped[names[s]] += 1
+                continue
+            out[s].append((g, area))
     if skipped:
         print("not the sites' extent (settlements, administrative areas, regions, regional parks, too large): "
               + ", ".join(f"{n} {k}" for k, n in sorted(skipped.items(), key=lambda kv: -kv[1])[:12]))
@@ -310,38 +319,45 @@ def centre(geoms: list[tuple[shapely.Geometry, bool]], comps: list[tuple[float, 
 
 def main() -> None:
     W.mkdir(parents=True, exist_ok=True)
-    names, cats, comps = our_sites()
+    with phase("the sites read", "disk"):
+        names, cats, comps = our_sites()
     print(f"{len(names)} World Heritage Sites in our regions")
-    unesco = unesco_list()
-    km2 = {str(x["id_no"]): x["area_hectares"] / 100 for x in unesco if x.get("area_hectares")}
+    with phase("UNESCO's list read", "disk"):
+        unesco = unesco_list()
+        km2 = {str(x["id_no"]): x["area_hectares"] / 100 for x in unesco if x.get("area_hectares")}
     shapes = outlines(names, km2)
 
-    feats, per = [], defaultdict(int)
-    for s, gs in shapes.items():
-        for g, area in gs:
-            gj = json.loads(json.dumps(mapping(g)), parse_float=lambda v: round(float(v), 5))
-            feats.append({"type": "Feature", "geometry": gj, "properties": {"id": int(s), "n": names[s], "c": cats[s], **({"a": 1} if area else {})}})
-            per[s] += 1
-    (B / "whs-shapes.json").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False, separators=(",", ":")))
+    with phase("the outlines' features made", "compute"):
+        feats, per = [], defaultdict(int)
+        for s, gs in shapes.items():
+            for g, area in gs:
+                gj = json.loads(json.dumps(mapping(g)), parse_float=lambda v: round(float(v), 5))
+                feats.append({"type": "Feature", "geometry": gj, "properties": {"id": int(s), "n": names[s], "c": cats[s], **({"a": 1} if area else {})}})
+                per[s] += 1
+    with phase("the outlines written", "disk"):
+        (B / "whs-shapes.json").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False, separators=(",", ":")))
     print(f"{len(feats)} lines and areas for {len(per)} of {len(names)} sites → {B / 'whs-shapes.json'}")
     for s, n in sorted(per.items(), key=lambda kv: -kv[1])[:8]:
         print(f"  {names[s]}: {n}")
 
-    items = site_items(names, comps, unesco)
-    sites: dict[str, dict] = {}
-    for s in names:
-        rec: dict = {"q": items.get(s, [])}
-        cs = sorted(set(comps[s]))
-        if len(cs) > 1:
-            dot = centre(shapes.get(s, []), cs)
-            kx = math.cos(math.radians(dot[1]))
-            lead = min(cs, key=lambda c: ((c[0] - dot[0]) * kx) ** 2 + (c[1] - dot[1]) ** 2)
-            rec.update(n=len(comps[s]), dot=list(dot), lead=list(lead))
-            km = math.hypot((lead[0] - dot[0]) * kx, lead[1] - dot[1]) * 111.2
-            print(f"  one dot: {names[s][:52]:52s} {len(comps[s]):4d} components, {len(shapes.get(s, []))} outlines; "
-                  f"dot {dot[1]:.4f}, {dot[0]:.4f} ({km:.1f} km from the nearest component)")
-        sites[s] = rec
-    SITES.write_text(json.dumps(sites, ensure_ascii=False, separators=(",", ":")))
+    with phase("the sites' items found", "compute"):
+        items = site_items(names, comps, unesco)
+    with phase("the sites' dots placed", "compute"):
+        sites: dict[str, dict] = {}
+        for s in names:
+            rec: dict = {"q": items.get(s, [])}
+            cs = sorted(set(comps[s]))
+            if len(cs) > 1:
+                dot = centre(shapes.get(s, []), cs)
+                kx = math.cos(math.radians(dot[1]))
+                lead = min(cs, key=lambda c: ((c[0] - dot[0]) * kx) ** 2 + (c[1] - dot[1]) ** 2)
+                rec.update(n=len(comps[s]), dot=list(dot), lead=list(lead))
+                km = math.hypot((lead[0] - dot[0]) * kx, lead[1] - dot[1]) * 111.2
+                print(f"  one dot: {names[s][:52]:52s} {len(comps[s]):4d} components, {len(shapes.get(s, []))} outlines; "
+                      f"dot {dot[1]:.4f}, {dot[0]:.4f} ({km:.1f} km from the nearest component)")
+            sites[s] = rec
+    with phase("the sites written", "disk"):
+        SITES.write_text(json.dumps(sites, ensure_ascii=False, separators=(",", ":")))
     print(f"{sum('dot' in r for r in sites.values())} sites in several components get one dot → {SITES}")
 
 

@@ -36,6 +36,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import names
+from timings import phase
 
 F = Path()
 OUT = Path()
@@ -238,260 +239,267 @@ def line_ends(coords_list: list[list]) -> list[list[float]]:
 
 
 def main() -> None:
-    ways = {}
-    for line in (F / "ways.geojsonseq").open(encoding="utf-8"):
-        line = line.lstrip("\x1e").strip()
-        if not line:
-            continue
-        f = json.loads(line)
-        if f["geometry"]["type"] != "LineString":
-            continue
-        p = f["properties"]
-        ways[int(p["@id"])] = {"tags": {k: v for k, v in p.items() if not k.startswith("@")}, "coords": f["geometry"]["coordinates"]}
-    rels = read_relations(F / "relations.opl")
-    routes = {r["id"]: r for r in rels if r["tags"].get("type") == "route" and r["tags"].get("route") == "ferry"}
-    masters = [r for r in rels if r["tags"].get("type") == "route_master"]
-    master_of = {}
-    for m in masters:
-        for typ, ref, _ in m["members"]:
-            if typ == "r" and ref in routes:
-                master_of[ref] = m
-
-    # ---- Lines -------------------------------------------------------------------
-    groups: dict[tuple, list[int]] = defaultdict(list)
-    for rid, r in routes.items():
-        t = r["tags"]
-        if closed(t):
-            continue
-        who = (t.get("network") or t.get("operator") or "").lower()
-        if rid in master_of:
-            key = ("m", master_of[rid]["id"])
-        elif t.get("ref"):
-            key = ("ref", who, t["ref"].lower())
-        elif t.get("from") and t.get("to"):
-            key = ("ports", who, tuple(sorted((t["from"].lower(), t["to"].lower()))))
-        else:
-            key = ("r", rid)
-        groups[key].append(rid)
-
-    lines: dict[str, dict] = {}
-    way_lines: dict[int, list[str]] = defaultdict(list)
-    for key, rids in groups.items():
-        rids.sort()
-        lid = f"r{rids[0]}"
-        base = dict(master_of[rids[0]]["tags"]) if key[0] == "m" else {}
-        tags: dict = {}
-        for rid in rids:  # first relation wins per key, the route master's tags on top
-            for k, v in routes[rid]["tags"].items():
-                tags.setdefault(k, v)
-        for k, v in base.items():
-            if k not in ("type", "route_master"):
-                tags[k] = v
-        wids = []
-        for rid in rids:
-            for typ, ref, role in routes[rid]["members"]:
-                if typ == "w" and ref in ways and role in ("", "forward", "backward", "main", "route") and ref not in wids:
-                    wids.append(ref)
-        if not wids:
-            continue
-        lines[lid] = {"tags": tags, "ways": wids, "rels": rids}
-        for w in wids:
-            way_lines[w].append(lid)
-
-    # Named ferry ways outside any route relation: one line per (name, operator).
-    loose: dict[tuple, list[int]] = defaultdict(list)
-    for wid, w in ways.items():
-        t = w["tags"]
-        if t.get("route") != "ferry" or wid in way_lines or closed(t):
-            continue
-        key = (t.get("name", "").lower(), (t.get("operator") or "").lower()) if t.get("name") else ("way", wid)
-        loose[key].append(wid)
-    for key, wids in loose.items():
-        wids.sort()
-        lid = f"w{wids[0]}"
-        tags = dict(ways[wids[0]]["tags"])
-        for wid in wids[1:]:
-            for k, v in ways[wid]["tags"].items():
-                tags.setdefault(k, v)
-        lines[lid] = {"tags": tags, "ways": wids, "rels": []}
-        for w in wids:
-            way_lines[w].append(lid)
-
-    # ---- Frequencies from feeds and timetables ------------------------------------
-    freq: dict[str, dict] = {}
-    for src in sorted((F / "freq").glob("*.json")) if (F / "freq").exists() else []:
-        for rec in json.loads(src.read_text()):
-            lid = rec.get("line")
-            if isinstance(rec.get("headway"), str):  # "20 minutes", "2 hours (peak)"
-                m = re.match(r"\s*(\d+(?:\.\d+)?)\s*(h|hour|hours|hr)?", rec["headway"])
-                rec["headway"] = (float(m[1]) * (60 if m[2] else 1)) if m else None
-            if rec.get("per_day") is None and rec.get("per_week") is not None:
-                rec["per_day"] = round(rec["per_week"] / 7, 3)
-            if rec.get("per_day") is None and rec.get("headway") is None:
-                continue
-            if lid in lines and (lid not in freq or rank(rec) < rank(freq[lid])):
-                freq[lid] = rec
-
-    out_lines = {}
-    n_src = defaultdict(int)
-    for lid, L in lines.items():
-        t = L["tags"]
-        km = sum(seg_km(ways[w]["coords"]) for w in L["ways"])
-        dur = minutes(t.get("duration"))
-        if is_cable(t) or any(is_cable(ways[w]["tags"]) for w in L["ways"]):
-            g = CABLE
-        elif (dur is not None and dur >= 150) or (dur is None and km >= 80):
-            g = LONG
-        elif is_urban(t):
-            g = URBAN
-        else:
-            g = CROSSING
-        season, season_text = season_of(t)
-        vehicles = carries_vehicles(t) or any(carries_vehicles(ways[w]["tags"]) for w in L["ways"])
-        rec = freq.get(lid)
-        info = {
-            "name": clean_name(t.get("name") or t.get("name:en") or ""),
-            "ref": t.get("ref", ""),
-            "operator": t.get("operator", ""),
-            "network": t.get("network", ""),
-            "from": t.get("from", ""),
-            "to": t.get("to", ""),
-            "via": t.get("via", ""),
-            "group": g,
-            "km": round(km, 1),
-            "duration": dur,
-            "vehicles": vehicles,
-            "bicycle": t.get("bicycle", ""),
-            "roundtrip": t.get("roundtrip") == "yes",
-            "colour": t.get("colour", ""),
-            "website": t.get("website") or t.get("url") or t.get("operator:website") or "",
-            "wikidata": t.get("wikidata", ""),
-            "osm": [f"relation/{r}" for r in L["rels"]] or [f"way/{w}" for w in L["ways"][:3]],
-            "season": season,
-            "seasonText": season_text,
-            "ends": line_ends([ways[w]["coords"] for w in L["ways"]]),
-        }
-        season_txt_osm = t.get("seasonal", "") + " " + (t.get("opening_hours") or "")
-        if rec:
-            info["freq"] = {k: rec[k] for k in ("per_day", "per_day_low", "headway", "days", "months", "overnight", "source", "url", "checked") if k in rec}
-            if rec.get("season"):
-                info["season"] = {"year": 1, "some-days": 2, "seasonal": 3}.get(rec["season"], info["season"])
-                info["seasonText"] = rec.get("season_text") or info["seasonText"]
-            n_src[rec.get("kind", "timetable")] += 1
-        else:
-            hw, span = minutes(t.get("interval")), daily_span(t.get("opening_hours"))
-            if hw and 1 <= hw <= 24 * 60:
-                info["freq"] = {"headway": hw, "source": "OpenStreetMap interval tag", "url": f"https://www.openstreetmap.org/{info['osm'][0]}"}
-                if span and hw <= span:
-                    info["freq"]["per_day"] = round(span / hw)
-                    n_src["osm"] += 1
-                else:
-                    n_src["osm (headway only)"] += 1
-        # Months a year: year-round lines 12; seasonal ones from their published months (research or
-        # GTFS), else their OSM season/opening hours; unknown otherwise.
-        mo = None
-        if info["season"] in (1, 2):
-            mo = 12.0
-        else:
-            mo = months_of_text(info.get("freq", {}).get("months", ""))
-            if mo is None and info["season"] == 3:
-                mo = months_of_text(info["seasonText"]) or months_of_text(season_txt_osm)
-        if mo is not None:
-            info["months"] = mo
-        en = names.english_at(info["name"], info["ends"][0] if info["ends"] else None)
-        if en:
-            info["en"] = en
-        out_lines[lid] = info
-
-    # ---- Features -----------------------------------------------------------------
-    PRIORITY = [LONG, CROSSING, URBAN, CABLE]
-    feats = []
-    for wid, lids in way_lines.items():
-        infos = [out_lines[l] for l in lids]
-        gs = {i["group"] for i in infos}
-        g = next(x for x in PRIORITY if x in gs)
-        # Sailings over the way: lines between different ports add up (routes sharing a stretch);
-        # lines between the same two ports (duplicate OSM relations, one operator's line and an
-        # all-operator one) count once, at the highest figure.
-        groups: list[tuple[list, float]] = []  # (ends, highest sailings) per pair of ports
-        for i in infos:
-            pd = i.get("freq", {}).get("per_day")
-            if pd is None:
-                continue
-            a, b = i["ends"]
-            for gi, (ends, best) in enumerate(groups):
-                c, d = ends
-                if max(seg_km([a, c]), seg_km([b, d])) < 3 or max(seg_km([a, d]), seg_km([b, c])) < 3:
-                    groups[gi] = (ends, max(best, pd))
-                    break
-            else:
-                groups.append(([a, b], pd))
-        known = [g[1] for g in groups]
-        seasons = [i["season"] for i in infos if i["season"]]
-        colour = next((i["colour"] for i in infos if i["colour"]), "")
-        props = {
-            "g": g,
-            "gb": sum(1 << x for x in gs),
-            "car": int(any(i["vehicles"] for i in infos)),
-            "f": round(sum(known), 1) if known else -1,
-            # Shortest published headway (min) where no line on the way has a daily count.
-            "hw": min((i["freq"]["headway"] for i in infos if i.get("freq", {}).get("headway")), default=0) if not known else 0,
-            "fp": int(any(i.get("freq", {}).get("per_day") is None for i in infos)) if known else 0,  # partial: some lines unknown
-            "s": min(seasons) if seasons else 0,
-            # Months a year (the longest-running line on the way), -1 unknown.
-            "m": max((i["months"] for i in infos if "months" in i), default=-1),
-            "col": colour,
-            "op": next((i["operator"] or i["network"] for i in infos if i["operator"] or i["network"]), ""),
-            "n": next((i["name"] for i in infos if i["name"]), ""),
-            "lines": ",".join(lids),
-        }
-        en = names.english_at(props["n"], ways[wid]["coords"][0])
-        if en:
-            props["en"] = en
-        coords = [[round(x, 6), round(y, 6)] for x, y in ways[wid]["coords"]]
-        feats.append({"type": "Feature", "id": wid, "geometry": {"type": "LineString", "coordinates": coords}, "properties": props})
-
-    # Terminals: named ferry terminals within 1 km of a line's ends.
-    ends = []
-    for L in lines.values():
-        for w in L["ways"]:
-            c = ways[w]["coords"]
-            ends += [c[0], c[-1]]
-    cell = defaultdict(list)
-    for x, y in ends:
-        cell[(round(x * 50), round(y * 50))].append((x, y))
-    n_term = 0
-    tpath = F / "terminals.geojsonseq"
-    if tpath.exists():
-        for line in tpath.open(encoding="utf-8"):
+    with phase("the ferry ways and relations read", "disk"):
+        ways = {}
+        for line in (F / "ways.geojsonseq").open(encoding="utf-8"):
             line = line.lstrip("\x1e").strip()
             if not line:
                 continue
             f = json.loads(line)
-            name = f["properties"].get("name")
-            if not name:
+            if f["geometry"]["type"] != "LineString":
                 continue
-            geom = f["geometry"]
-            if geom["type"] == "Point":
-                x, y = geom["coordinates"]
-            else:
-                ring = {"Polygon": lambda c: c[0], "MultiPolygon": lambda c: c[0][0]}.get(geom["type"], lambda c: c)(geom["coordinates"])
-                x, y = sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)
-            near = any(
-                seg_km([[x, y], [ex, ey]]) < 1.0
-                for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                for ex, ey in cell.get((round(x * 50) + dx, round(y * 50) + dy), [])
-            )
-            if near:
-                n_term += 1
-                en = names.english_at(name, (x, y))
-                feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(x, 6), round(y, 6)]},
-                              "properties": {"kind": "terminal", "n": name, **({"en": en} if en else {})}})
+            p = f["properties"]
+            ways[int(p["@id"])] = {"tags": {k: v for k, v in p.items() if not k.startswith("@")}, "coords": f["geometry"]["coordinates"]}
+        rels = read_relations(F / "relations.opl")
+    with phase("the lines grouped", "compute"):
+        routes = {r["id"]: r for r in rels if r["tags"].get("type") == "route" and r["tags"].get("route") == "ferry"}
+        masters = [r for r in rels if r["tags"].get("type") == "route_master"]
+        master_of = {}
+        for m in masters:
+            for typ, ref, _ in m["members"]:
+                if typ == "r" and ref in routes:
+                    master_of[ref] = m
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "ferries.json").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False, separators=(",", ":")))
-    (OUT / "ferry-lines.json").write_text(json.dumps(out_lines, ensure_ascii=False, separators=(",", ":")))
-    (F / "lines.json").write_text(json.dumps({lid: {**i, "tags": lines[lid]["tags"]} for lid, i in out_lines.items()}, ensure_ascii=False, indent=1))
+        # ---- Lines -------------------------------------------------------------------
+        groups: dict[tuple, list[int]] = defaultdict(list)
+        for rid, r in routes.items():
+            t = r["tags"]
+            if closed(t):
+                continue
+            who = (t.get("network") or t.get("operator") or "").lower()
+            if rid in master_of:
+                key = ("m", master_of[rid]["id"])
+            elif t.get("ref"):
+                key = ("ref", who, t["ref"].lower())
+            elif t.get("from") and t.get("to"):
+                key = ("ports", who, tuple(sorted((t["from"].lower(), t["to"].lower()))))
+            else:
+                key = ("r", rid)
+            groups[key].append(rid)
+
+        lines: dict[str, dict] = {}
+        way_lines: dict[int, list[str]] = defaultdict(list)
+        for key, rids in groups.items():
+            rids.sort()
+            lid = f"r{rids[0]}"
+            base = dict(master_of[rids[0]]["tags"]) if key[0] == "m" else {}
+            tags: dict = {}
+            for rid in rids:  # first relation wins per key, the route master's tags on top
+                for k, v in routes[rid]["tags"].items():
+                    tags.setdefault(k, v)
+            for k, v in base.items():
+                if k not in ("type", "route_master"):
+                    tags[k] = v
+            wids = []
+            for rid in rids:
+                for typ, ref, role in routes[rid]["members"]:
+                    if typ == "w" and ref in ways and role in ("", "forward", "backward", "main", "route") and ref not in wids:
+                        wids.append(ref)
+            if not wids:
+                continue
+            lines[lid] = {"tags": tags, "ways": wids, "rels": rids}
+            for w in wids:
+                way_lines[w].append(lid)
+
+        # Named ferry ways outside any route relation: one line per (name, operator).
+        loose: dict[tuple, list[int]] = defaultdict(list)
+        for wid, w in ways.items():
+            t = w["tags"]
+            if t.get("route") != "ferry" or wid in way_lines or closed(t):
+                continue
+            key = (t.get("name", "").lower(), (t.get("operator") or "").lower()) if t.get("name") else ("way", wid)
+            loose[key].append(wid)
+        for key, wids in loose.items():
+            wids.sort()
+            lid = f"w{wids[0]}"
+            tags = dict(ways[wids[0]]["tags"])
+            for wid in wids[1:]:
+                for k, v in ways[wid]["tags"].items():
+                    tags.setdefault(k, v)
+            lines[lid] = {"tags": tags, "ways": wids, "rels": []}
+            for w in wids:
+                way_lines[w].append(lid)
+
+    # ---- Frequencies from feeds and timetables ------------------------------------
+    with phase("the frequencies read", "disk"):
+        freq: dict[str, dict] = {}
+        for src in sorted((F / "freq").glob("*.json")) if (F / "freq").exists() else []:
+            for rec in json.loads(src.read_text()):
+                lid = rec.get("line")
+                if isinstance(rec.get("headway"), str):  # "20 minutes", "2 hours (peak)"
+                    m = re.match(r"\s*(\d+(?:\.\d+)?)\s*(h|hour|hours|hr)?", rec["headway"])
+                    rec["headway"] = (float(m[1]) * (60 if m[2] else 1)) if m else None
+                if rec.get("per_day") is None and rec.get("per_week") is not None:
+                    rec["per_day"] = round(rec["per_week"] / 7, 3)
+                if rec.get("per_day") is None and rec.get("headway") is None:
+                    continue
+                if lid in lines and (lid not in freq or rank(rec) < rank(freq[lid])):
+                    freq[lid] = rec
+
+    with phase("the lines described", "compute"):
+        out_lines = {}
+        n_src = defaultdict(int)
+        for lid, L in lines.items():
+            t = L["tags"]
+            km = sum(seg_km(ways[w]["coords"]) for w in L["ways"])
+            dur = minutes(t.get("duration"))
+            if is_cable(t) or any(is_cable(ways[w]["tags"]) for w in L["ways"]):
+                g = CABLE
+            elif (dur is not None and dur >= 150) or (dur is None and km >= 80):
+                g = LONG
+            elif is_urban(t):
+                g = URBAN
+            else:
+                g = CROSSING
+            season, season_text = season_of(t)
+            vehicles = carries_vehicles(t) or any(carries_vehicles(ways[w]["tags"]) for w in L["ways"])
+            rec = freq.get(lid)
+            info = {
+                "name": clean_name(t.get("name") or t.get("name:en") or ""),
+                "ref": t.get("ref", ""),
+                "operator": t.get("operator", ""),
+                "network": t.get("network", ""),
+                "from": t.get("from", ""),
+                "to": t.get("to", ""),
+                "via": t.get("via", ""),
+                "group": g,
+                "km": round(km, 1),
+                "duration": dur,
+                "vehicles": vehicles,
+                "bicycle": t.get("bicycle", ""),
+                "roundtrip": t.get("roundtrip") == "yes",
+                "colour": t.get("colour", ""),
+                "website": t.get("website") or t.get("url") or t.get("operator:website") or "",
+                "wikidata": t.get("wikidata", ""),
+                "osm": [f"relation/{r}" for r in L["rels"]] or [f"way/{w}" for w in L["ways"][:3]],
+                "season": season,
+                "seasonText": season_text,
+                "ends": line_ends([ways[w]["coords"] for w in L["ways"]]),
+            }
+            season_txt_osm = t.get("seasonal", "") + " " + (t.get("opening_hours") or "")
+            if rec:
+                info["freq"] = {k: rec[k] for k in ("per_day", "per_day_low", "headway", "days", "months", "overnight", "source", "url", "checked") if k in rec}
+                if rec.get("season"):
+                    info["season"] = {"year": 1, "some-days": 2, "seasonal": 3}.get(rec["season"], info["season"])
+                    info["seasonText"] = rec.get("season_text") or info["seasonText"]
+                n_src[rec.get("kind", "timetable")] += 1
+            else:
+                hw, span = minutes(t.get("interval")), daily_span(t.get("opening_hours"))
+                if hw and 1 <= hw <= 24 * 60:
+                    info["freq"] = {"headway": hw, "source": "OpenStreetMap interval tag", "url": f"https://www.openstreetmap.org/{info['osm'][0]}"}
+                    if span and hw <= span:
+                        info["freq"]["per_day"] = round(span / hw)
+                        n_src["osm"] += 1
+                    else:
+                        n_src["osm (headway only)"] += 1
+            # Months a year: year-round lines 12; seasonal ones from their published months (research or
+            # GTFS), else their OSM season/opening hours; unknown otherwise.
+            mo = None
+            if info["season"] in (1, 2):
+                mo = 12.0
+            else:
+                mo = months_of_text(info.get("freq", {}).get("months", ""))
+                if mo is None and info["season"] == 3:
+                    mo = months_of_text(info["seasonText"]) or months_of_text(season_txt_osm)
+            if mo is not None:
+                info["months"] = mo
+            en = names.english_at(info["name"], info["ends"][0] if info["ends"] else None)
+            if en:
+                info["en"] = en
+            out_lines[lid] = info
+
+    # ---- Features -----------------------------------------------------------------
+    with phase("the ways' features made", "compute"):
+        PRIORITY = [LONG, CROSSING, URBAN, CABLE]
+        feats = []
+        for wid, lids in way_lines.items():
+            infos = [out_lines[l] for l in lids]
+            gs = {i["group"] for i in infos}
+            g = next(x for x in PRIORITY if x in gs)
+            # Sailings over the way: lines between different ports add up (routes sharing a stretch);
+            # lines between the same two ports (duplicate OSM relations, one operator's line and an
+            # all-operator one) count once, at the highest figure.
+            groups: list[tuple[list, float]] = []  # (ends, highest sailings) per pair of ports
+            for i in infos:
+                pd = i.get("freq", {}).get("per_day")
+                if pd is None:
+                    continue
+                a, b = i["ends"]
+                for gi, (ends, best) in enumerate(groups):
+                    c, d = ends
+                    if max(seg_km([a, c]), seg_km([b, d])) < 3 or max(seg_km([a, d]), seg_km([b, c])) < 3:
+                        groups[gi] = (ends, max(best, pd))
+                        break
+                else:
+                    groups.append(([a, b], pd))
+            known = [g[1] for g in groups]
+            seasons = [i["season"] for i in infos if i["season"]]
+            colour = next((i["colour"] for i in infos if i["colour"]), "")
+            props = {
+                "g": g,
+                "gb": sum(1 << x for x in gs),
+                "car": int(any(i["vehicles"] for i in infos)),
+                "f": round(sum(known), 1) if known else -1,
+                # Shortest published headway (min) where no line on the way has a daily count.
+                "hw": min((i["freq"]["headway"] for i in infos if i.get("freq", {}).get("headway")), default=0) if not known else 0,
+                "fp": int(any(i.get("freq", {}).get("per_day") is None for i in infos)) if known else 0,  # partial: some lines unknown
+                "s": min(seasons) if seasons else 0,
+                # Months a year (the longest-running line on the way), -1 unknown.
+                "m": max((i["months"] for i in infos if "months" in i), default=-1),
+                "col": colour,
+                "op": next((i["operator"] or i["network"] for i in infos if i["operator"] or i["network"]), ""),
+                "n": next((i["name"] for i in infos if i["name"]), ""),
+                "lines": ",".join(lids),
+            }
+            en = names.english_at(props["n"], ways[wid]["coords"][0])
+            if en:
+                props["en"] = en
+            coords = [[round(x, 6), round(y, 6)] for x, y in ways[wid]["coords"]]
+            feats.append({"type": "Feature", "id": wid, "geometry": {"type": "LineString", "coordinates": coords}, "properties": props})
+
+    # Terminals: named ferry terminals within 1 km of a line's ends.
+    with phase("the terminals placed", "compute"):
+        ends = []
+        for L in lines.values():
+            for w in L["ways"]:
+                c = ways[w]["coords"]
+                ends += [c[0], c[-1]]
+        cell = defaultdict(list)
+        for x, y in ends:
+            cell[(round(x * 50), round(y * 50))].append((x, y))
+        n_term = 0
+        tpath = F / "terminals.geojsonseq"
+        if tpath.exists():
+            for line in tpath.open(encoding="utf-8"):
+                line = line.lstrip("\x1e").strip()
+                if not line:
+                    continue
+                f = json.loads(line)
+                name = f["properties"].get("name")
+                if not name:
+                    continue
+                geom = f["geometry"]
+                if geom["type"] == "Point":
+                    x, y = geom["coordinates"]
+                else:
+                    ring = {"Polygon": lambda c: c[0], "MultiPolygon": lambda c: c[0][0]}.get(geom["type"], lambda c: c)(geom["coordinates"])
+                    x, y = sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)
+                near = any(
+                    seg_km([[x, y], [ex, ey]]) < 1.0
+                    for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    for ex, ey in cell.get((round(x * 50) + dx, round(y * 50) + dy), [])
+                )
+                if near:
+                    n_term += 1
+                    en = names.english_at(name, (x, y))
+                    feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(x, 6), round(y, 6)]},
+                                  "properties": {"kind": "terminal", "n": name, **({"en": en} if en else {})}})
+
+    with phase("the ferry layers written", "disk"):
+        OUT.mkdir(parents=True, exist_ok=True)
+        (OUT / "ferries.json").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False, separators=(",", ":")))
+        (OUT / "ferry-lines.json").write_text(json.dumps(out_lines, ensure_ascii=False, separators=(",", ":")))
+        (F / "lines.json").write_text(json.dumps({lid: {**i, "tags": lines[lid]["tags"]} for lid, i in out_lines.items()}, ensure_ascii=False, indent=1))
     by_g = defaultdict(int)
     for i in out_lines.values():
         by_g[GROUP_NAMES[i["group"]]] += 1

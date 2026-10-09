@@ -42,6 +42,8 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from timings import phase
+
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 W = ROOT / "data" / "heritage" / "wd"
@@ -123,39 +125,40 @@ def shortdescs(titles: list[str]) -> dict[str, str]:
     """English Wikipedia short descriptions, 50 titles a request: every title asked for is in the
     answer ("" when it has none). A batch that can't be fetched (an HTTP error, an error answer,
     no answer after five tries) fails the run instead of leaving titles out."""
-    out: dict[str, str] = {}
-    for i in range(0, len(titles), 50):
-        chunk = titles[i:i + 50]
-        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
-            {"action": "query", "format": "json", "formatversion": 2, "prop": "pageprops", "ppprop": "wikibase-shortdesc",
-             "redirects": 1, "titles": "|".join(chunk)})
-        d, last = None, ""
-        for attempt in range(5):
-            r = subprocess.run(["curl", "-sS", "--fail", "-m", "60", "-A", UA, url], capture_output=True)
-            try:
-                if r.returncode != 0:
-                    raise ValueError(f"curl exit {r.returncode}: {r.stderr.decode(errors='replace').strip()}")
-                d = json.loads(r.stdout)
-                if "error" in d or "query" not in d:
-                    raise ValueError(f"answer without a query: {str(d)[:200]}")
-                break
-            except (ValueError, json.JSONDecodeError) as e:
-                d, last = None, str(e)
-                time.sleep(5 * (attempt + 1))
-        if d is None:
-            raise RuntimeError(f"short descriptions: titles {i}–{i + len(chunk)} failed five times ({last})")
-        out.update((t, "") for t in chunk)
-        back = {n["to"]: n["from"] for n in d.get("query", {}).get("normalized", []) + d.get("query", {}).get("redirects", [])}
-        for p in d.get("query", {}).get("pages", []):
-            sd = p.get("pageprops", {}).get("wikibase-shortdesc")
-            if sd:
-                t = p["title"]
-                while t in back:
+    with phase("short descriptions fetched from Wikipedia", "net"):
+        out: dict[str, str] = {}
+        for i in range(0, len(titles), 50):
+            chunk = titles[i:i + 50]
+            url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+                {"action": "query", "format": "json", "formatversion": 2, "prop": "pageprops", "ppprop": "wikibase-shortdesc",
+                 "redirects": 1, "titles": "|".join(chunk)})
+            d, last = None, ""
+            for attempt in range(5):
+                r = subprocess.run(["curl", "-sS", "--fail", "-m", "60", "-A", UA, url], capture_output=True)
+                try:
+                    if r.returncode != 0:
+                        raise ValueError(f"curl exit {r.returncode}: {r.stderr.decode(errors='replace').strip()}")
+                    d = json.loads(r.stdout)
+                    if "error" in d or "query" not in d:
+                        raise ValueError(f"answer without a query: {str(d)[:200]}")
+                    break
+                except (ValueError, json.JSONDecodeError) as e:
+                    d, last = None, str(e)
+                    time.sleep(5 * (attempt + 1))
+            if d is None:
+                raise RuntimeError(f"short descriptions: titles {i}–{i + len(chunk)} failed five times ({last})")
+            out.update((t, "") for t in chunk)
+            back = {n["to"]: n["from"] for n in d.get("query", {}).get("normalized", []) + d.get("query", {}).get("redirects", [])}
+            for p in d.get("query", {}).get("pages", []):
+                sd = p.get("pageprops", {}).get("wikibase-shortdesc")
+                if sd:
+                    t = p["title"]
+                    while t in back:
+                        out[t] = sd
+                        t = back[t]
                     out[t] = sd
-                    t = back[t]
-                out[t] = sd
-        if i // 50 % 20 == 0:
-            print(f"  short descriptions: {i + len(chunk)}/{len(titles)}", file=sys.stderr, flush=True)
+            if i // 50 % 20 == 0:
+                print(f"  short descriptions: {i + len(chunk)}/{len(titles)}", file=sys.stderr, flush=True)
     return out
 
 
@@ -249,6 +252,7 @@ def wikipedias(qids: list[str], progress=None) -> dict[str, dict]:
     """Per item: the number of Wikipedia articles (any language) and their language|title list.
     (`progress`, when given, is told how many are done after each batch: the items job's progress
     line.)"""
+    p = phase("Wikipedia articles looked up", "net").start()
     out: dict[str, dict] = {}
     for k in range(0, len(qids), 1000):
         chunk = qids[k:k + 1000]
@@ -266,6 +270,7 @@ def wikipedias(qids: list[str], progress=None) -> dict[str, dict]:
             print(f"  Wikipedia articles: {k + len(chunk)}/{len(qids)}", file=sys.stderr, flush=True)
         if progress:
             progress(k + len(chunk))
+    p.end()
     return out
 
 
@@ -282,54 +287,57 @@ def other_article(arts: list[str]) -> tuple[str, str] | None:
 
 
 def main():
-    W.mkdir(parents=True, exist_ok=True)
-    feats = json.load(open(B / "heritage.json"))["features"]
-    # NRHP sites carry the National Archives link; their reference numbers come from the NPS layer.
-    nara = {}
-    nr = ROOT / "data" / "heritage" / "nrhp.json"
-    if nr.exists():
-        for f in json.load(open(nr))["features"]:
-            p = f["properties"]
-            if p.get("NARA_URL") and p.get("NRIS_Refnum"):
-                nara[p["NARA_URL"]] = p["NRIS_Refnum"]
-    by_prop: dict[str, dict[str, list[int]]] = {}
-    for i, f in enumerate(feats):
-        url = f["properties"].get("url") or ""
-        if url in nara:
-            by_prop.setdefault("P649", {}).setdefault(nara[url], []).append(i)
-            continue
-        m = re.search(r"npgallery\.nps\.gov/AssetDetail/NRIS/(\d+)", url)
-        if m:
-            by_prop.setdefault("P649", {}).setdefault(m.group(1), []).append(i)
-            continue
-        for prop, pat in RULES:
-            m = re.search(pat, url)
+    with phase("the sites and NRHP numbers read", "disk"):
+        W.mkdir(parents=True, exist_ok=True)
+        feats = json.load(open(B / "heritage.json"))["features"]
+        # NRHP sites carry the National Archives link; their reference numbers come from the NPS layer.
+        nara = {}
+        nr = ROOT / "data" / "heritage" / "nrhp.json"
+        if nr.exists():
+            for f in json.load(open(nr))["features"]:
+                p = f["properties"]
+                if p.get("NARA_URL") and p.get("NRIS_Refnum"):
+                    nara[p["NARA_URL"]] = p["NRIS_Refnum"]
+    with phase("the register IDs matched", "compute"):
+        by_prop: dict[str, dict[str, list[int]]] = {}
+        for i, f in enumerate(feats):
+            url = f["properties"].get("url") or ""
+            if url in nara:
+                by_prop.setdefault("P649", {}).setdefault(nara[url], []).append(i)
+                continue
+            m = re.search(r"npgallery\.nps\.gov/AssetDetail/NRIS/(\d+)", url)
             if m:
-                by_prop.setdefault(prop, {}).setdefault(m.group(1), []).append(i)
-                break
-    print({p: len(v) for p, v in by_prop.items()}, file=sys.stderr)
+                by_prop.setdefault("P649", {}).setdefault(m.group(1), []).append(i)
+                continue
+            for prop, pat in RULES:
+                m = re.search(pat, url)
+                if m:
+                    by_prop.setdefault(prop, {}).setdefault(m.group(1), []).append(i)
+                    break
+        print({p: len(v) for p, v in by_prop.items()}, file=sys.stderr)
 
     # Results per register ID (data/heritage/wd/ids.jsonl: prop, id, result rows, [] = no item),
     # so a rerun only queries IDs it hasn't seen (new regions, new register entries).
-    id_cache = W / "ids.jsonl"
-    seen: dict[tuple[str, str], list] = {}
-    if id_cache.exists():
-        for line in open(id_cache, encoding="utf-8"):
-            r = json.loads(line)
-            seen[(r["prop"], r["id"])] = r["rows"]
-    else:
-        # From the batch files of earlier runs (batch n of each property's sorted IDs).
-        for prop, ids in by_prop.items():
-            keys = sorted(ids)
-            for k in range(0, len(keys), BATCH):
-                f = W / f"{prop}-{k // BATCH:04d}.json"
-                if f.exists():
-                    rows = json.loads(f.read_text())
-                    got: dict[str, list] = {}
-                    for b in rows:
-                        got.setdefault(val(b, "id"), []).append(b)
-                    for key in keys[k:k + BATCH]:
-                        seen[(prop, key)] = got.get(key, [])
+    with phase("the register ID cache read", "disk"):
+        id_cache = W / "ids.jsonl"
+        seen: dict[tuple[str, str], list] = {}
+        if id_cache.exists():
+            for line in open(id_cache, encoding="utf-8"):
+                r = json.loads(line)
+                seen[(r["prop"], r["id"])] = r["rows"]
+        else:
+            # From the batch files of earlier runs (batch n of each property's sorted IDs).
+            for prop, ids in by_prop.items():
+                keys = sorted(ids)
+                for k in range(0, len(keys), BATCH):
+                    f = W / f"{prop}-{k // BATCH:04d}.json"
+                    if f.exists():
+                        rows = json.loads(f.read_text())
+                        got: dict[str, list] = {}
+                        for b in rows:
+                            got.setdefault(val(b, "id"), []).append(b)
+                        for key in keys[k:k + BATCH]:
+                            seen[(prop, key)] = got.get(key, [])
     jobs = []
     for prop, ids in by_prop.items():
         keys = sorted(k for k in ids if (prop, k) not in seen)
@@ -345,13 +353,15 @@ def main():
             got.setdefault(val(b, "id"), []).append(b)
         return prop, {k: got.get(k, []) for k in keys}
 
-    with ThreadPoolExecutor(2) as ex:
-        for n, (prop, res) in enumerate(ex.map(run, jobs)):
-            for k, rows in res.items():
-                seen[(prop, k)] = rows
-            if n % 25 == 0:
-                print(f"  batches {n + 1}/{len(jobs)}", file=sys.stderr, flush=True)
-    write_atomic(id_cache, "".join(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n" for (prop, k), rows in seen.items()))
+    with phase("register IDs looked up on Wikidata", "net"):
+        with ThreadPoolExecutor(2) as ex:
+            for n, (prop, res) in enumerate(ex.map(run, jobs)):
+                for k, rows in res.items():
+                    seen[(prop, k)] = rows
+                if n % 25 == 0:
+                    print(f"  batches {n + 1}/{len(jobs)}", file=sys.stderr, flush=True)
+    with phase("the register ID cache written", "disk"):
+        write_atomic(id_cache, "".join(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n" for (prop, k), rows in seen.items()))
 
     def record(b: dict) -> dict:
         rec = {
@@ -367,69 +377,81 @@ def main():
                 rec[k] = val(b, k).split("|")
         return rec
 
-    items = []
-    rid_of: dict[int, tuple[str, str]] = {}
-    for prop, ids in by_prop.items():
-        for rid, sites in ids.items():
-            recs = [record(b) for b in seen.get((prop, rid), [])]
-            for i in sites:
-                rid_of[i] = (prop, rid)
-                items.extend({"i": i, "prop": prop, "id": rid, **r} for r in recs)
+    with phase("the records made", "compute"):
+        items = []
+        rid_of: dict[int, tuple[str, str]] = {}
+        for prop, ids in by_prop.items():
+            for rid, sites in ids.items():
+                recs = [record(b) for b in seen.get((prop, rid), [])]
+                for i in sites:
+                    rid_of[i] = (prop, rid)
+                    items.extend({"i": i, "prop": prop, "id": rid, **r} for r in recs)
 
     # Sites with no item, or none with an article in LANGS: the Wikidata item of the OSM feature there.
     linked = {r["i"] for r in items if r["wiki"]}
     todo = [i for i in range(len(feats)) if i not in linked]
     print(f"OSM links: indexing features with a Wikidata item; {len(todo)} sites to link", file=sys.stderr, flush=True)
-    grid, ofeats = osm_index()
-    have_q = {(r["i"], r["qid"]) for r in items}
-    osm_sites: dict[str, list[int]] = {}
-    for i in todo:
-        prop, rid = rid_of.get(i, (None, None))
-        q = osm_link(feats[i], rid if prop in OSM_REF else None, grid, ofeats)
-        if q and (i, q) not in have_q:
-            osm_sites.setdefault(q, []).append(i)
-    new_q = sorted(q for q in osm_sites if ("QID", q) not in seen)
+    with phase("the OSM features with an item indexed", "compute"):
+        grid, ofeats = osm_index()
+    with phase("sites linked through OSM", "compute"):
+        have_q = {(r["i"], r["qid"]) for r in items}
+        osm_sites: dict[str, list[int]] = {}
+        for i in todo:
+            prop, rid = rid_of.get(i, (None, None))
+            q = osm_link(feats[i], rid if prop in OSM_REF else None, grid, ofeats)
+            if q and (i, q) not in have_q:
+                osm_sites.setdefault(q, []).append(i)
+        new_q = sorted(q for q in osm_sites if ("QID", q) not in seen)
     print(f"OSM links: {sum(len(v) for v in osm_sites.values())} sites to {len(osm_sites)} items ({len(new_q)} to look up)", file=sys.stderr, flush=True)
-    with ThreadPoolExecutor(2) as ex:
-        for prop, res in ex.map(run, [("QID", new_q[k:k + BATCH]) for k in range(0, len(new_q), BATCH)]):
-            for k, rows in res.items():
-                seen[(prop, k)] = rows
-    write_atomic(id_cache, "".join(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n" for (prop, k), rows in seen.items()))
-    for q, sites in osm_sites.items():
-        for b in seen.get(("QID", q), []):
-            r = record(b)
-            items.extend({"i": i, "prop": "OSM", "id": q, **r} for i in sites)
+    with phase("OSM-linked items looked up on Wikidata", "net"):
+        with ThreadPoolExecutor(2) as ex:
+            for prop, res in ex.map(run, [("QID", new_q[k:k + BATCH]) for k in range(0, len(new_q), BATCH)]):
+                for k, rows in res.items():
+                    seen[(prop, k)] = rows
+    with phase("the register ID cache written", "disk"):
+        write_atomic(id_cache, "".join(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n" for (prop, k), rows in seen.items()))
+    with phase("the records made", "compute"):
+        for q, sites in osm_sites.items():
+            for b in seen.get(("QID", q), []):
+                r = record(b)
+                items.extend({"i": i, "prop": "OSM", "id": q, **r} for i in sites)
 
     # Wikipedia articles in any language, per item (data/heritage/wd/wp.jsonl).
-    wp_cache = W / "wp.jsonl"
-    wp: dict[str, dict] = {}
-    if wp_cache.exists():
-        for line in open(wp_cache, encoding="utf-8"):
-            r = json.loads(line)
-            wp[r["qid"]] = r
+    with phase("the article cache read", "disk"):
+        wp_cache = W / "wp.jsonl"
+        wp: dict[str, dict] = {}
+        if wp_cache.exists():
+            for line in open(wp_cache, encoding="utf-8"):
+                r = json.loads(line)
+                wp[r["qid"]] = r
     need = sorted({r["qid"] for r in items} - set(wp))
     print(f"Wikipedia articles: {len(need)} items to look up", file=sys.stderr, flush=True)
     for q, r in wikipedias(need).items():
         wp[q] = {"qid": q, **r}
-    write_atomic(wp_cache, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
-    for r in items:
-        w = wp.get(r["qid"], {})
-        r["wpn"] = w.get("n", 0)
-        if not r["wiki"]:
-            other = other_article(w.get("arts", []))
-            if other:
-                r["wiki"][other[0]] = other[1]
-    items.sort(key=lambda r: r["i"])
+    with phase("the article cache written", "disk"):
+        write_atomic(wp_cache, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
+    with phase("the records made", "compute"):
+        for r in items:
+            w = wp.get(r["qid"], {})
+            r["wpn"] = w.get("n", 0)
+            if not r["wiki"]:
+                other = other_article(w.get("arts", []))
+                if other:
+                    r["wiki"][other[0]] = other[1]
+        items.sort(key=lambda r: r["i"])
     print(f"{len({r['i'] for r in items if r['wiki']})} of {len(feats)} sites with a Wikipedia article", file=sys.stderr)
-    write_atomic(W / "items.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in items))
-    titles = sorted({r["wiki"]["en"] for r in items if "en" in r["wiki"]})
-    sd_path = W / "enwiki-shortdesc.json"
-    have = json.loads(sd_path.read_text()) if sd_path.exists() else {}
-    todo = [t for t in titles if t not in have]
+    with phase("the items written", "disk"):
+        write_atomic(W / "items.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in items))
+    with phase("the short description cache read", "disk"):
+        titles = sorted({r["wiki"]["en"] for r in items if "en" in r["wiki"]})
+        sd_path = W / "enwiki-shortdesc.json"
+        have = json.loads(sd_path.read_text()) if sd_path.exists() else {}
+        todo = [t for t in titles if t not in have]
     print(f"{len(items)} sites matched to Wikidata; {len(titles)} English articles ({len(todo)} short descriptions to fetch)", file=sys.stderr)
     # (Titles with no description are "": not asked again.)
     have.update(shortdescs(todo))
-    write_atomic(sd_path, json.dumps(have, ensure_ascii=False))
+    with phase("the short description cache written", "disk"):
+        write_atomic(sd_path, json.dumps(have, ensure_ascii=False))
     print(f"done: {len(have)} short descriptions", file=sys.stderr)
 
 

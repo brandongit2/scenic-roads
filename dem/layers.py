@@ -47,6 +47,7 @@ from shapely.geometry import mapping, shape
 import names
 import whsshapes
 from interest import isolation, min_zoom
+from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
@@ -134,49 +135,56 @@ def same_names(feats: list[dict], kind) -> int:
 
 
 def points(src: str, keep: set[str] | None, heritage: bool) -> None:
-    fc = json.load(open(B / f"{src}.json"))
-    if heritage:
-        fc["features"] = merged_sites(fc["features"])
-    fame = (lambda p: p["fa"] if p.get("fa") is not None else (5 - (p.get("level") or 5)) if heritage else 0.0)
-    fc["features"].sort(key=lambda f: fame(f["properties"]))
-    waits = same_names(fc["features"], (lambda p: "heritage") if heritage else (lambda p: POI_KIND.get(p.get("kind"), p.get("kind"))))
-    props, seen = [], set()
-    wiki = names.wiki_titles() if heritage else {}
-    n_en = 0
-    for f in fc["features"]:
-        p = f["properties"]
-        own = names.site_english(p.get("name") or "", p.get("name_en"), wiki.get(p.get("i")))[0] if heritage else None
-        en = names.english_at(p.get("name"), names.first_point(f["geometry"]), own)
-        if en:
-            p["en"] = en
-            n_en += 1
+    with phase("the layers read", "disk"):
+        fc = json.load(open(B / f"{src}.json"))
+    with phase("the points ordered and repeated names spaced", "compute"):
+        if heritage:
+            fc["features"] = merged_sites(fc["features"])
+        fame = (lambda p: p["fa"] if p.get("fa") is not None else (5 - (p.get("level") or 5)) if heritage else 0.0)
+        fc["features"].sort(key=lambda f: fame(f["properties"]))
+        waits = same_names(fc["features"], (lambda p: "heritage") if heritage else (lambda p: POI_KIND.get(p.get("kind"), p.get("kind"))))
+    with phase("the points' properties made", "compute"):
+        props, seen = [], set()
+        wiki = names.wiki_titles() if heritage else {}
+        n_en = 0
+        for f in fc["features"]:
+            p = f["properties"]
+            own = names.site_english(p.get("name") or "", p.get("name_en"), wiki.get(p.get("i")))[0] if heritage else None
+            en = names.english_at(p.get("name"), names.first_point(f["geometry"]), own)
+            if en:
+                p["en"] = en
+                n_en += 1
+            if keep is not None:
+                rest = {k: v for k, v in p.items() if k not in keep}
+                # (a merged site's dot and its lead component share the record: once)
+                if rest and "i" in p and p["i"] not in seen:
+                    seen.add(p["i"])
+                    props.append({"i": p["i"], **rest})
+                f["properties"] = {k: v for k, v in p.items() if k in keep}
+            f["geometry"]["coordinates"] = rounded(f["geometry"]["coordinates"])
+    with phase("the layers written", "disk"):
+        write(f"layer-{src}.json", fc)
         if keep is not None:
-            rest = {k: v for k, v in p.items() if k not in keep}
-            # (a merged site's dot and its lead component share the record: once)
-            if rest and "i" in p and p["i"] not in seen:
-                seen.add(p["i"])
-                props.append({"i": p["i"], **rest})
-            f["properties"] = {k: v for k, v in p.items() if k in keep}
-        f["geometry"]["coordinates"] = rounded(f["geometry"]["coordinates"])
-    write(f"layer-{src}.json", fc)
-    if keep is not None:
-        tmp = B / f"props-{src}.jsonl.tmp"
-        with open(tmp, "w", encoding="utf-8") as out:
-            for r in sorted(props, key=lambda r: r["i"]):
-                out.write(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n")
-        tmp.replace(B / f"props-{src}.jsonl")
+            tmp = B / f"props-{src}.jsonl.tmp"
+            with open(tmp, "w", encoding="utf-8") as out:
+                for r in sorted(props, key=lambda r: r["i"]):
+                    out.write(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n")
+            tmp.replace(B / f"props-{src}.jsonl")
     print(f"layers: {src}: {len(fc['features'])} points ({n_en} with English; {waits} names wait for a better-known one of the same name)", file=sys.stderr)
 
 
 def whs_outlines() -> None:
     """layer-whs-shapes.json: the World Heritage outlines with i, their site's record (its dot's),
     so an outline opens the site like its dot."""
-    fc = json.load(open(B / "whs-shapes.json"))
-    for f in fc["features"]:
-        i = WHS_RECORD.get(str(f["properties"]["id"]))
-        if i is not None:
-            f["properties"]["i"] = i
-    write("layer-whs-shapes.json", fc)
+    with phase("the layers read", "disk"):
+        fc = json.load(open(B / "whs-shapes.json"))
+    with phase("the points' properties made", "compute"):
+        for f in fc["features"]:
+            i = WHS_RECORD.get(str(f["properties"]["id"]))
+            if i is not None:
+                f["properties"]["i"] = i
+    with phase("the layers written", "disk"):
+        write("layer-whs-shapes.json", fc)
     print(f"layers: whs-shapes: {len(fc['features'])} outlines", file=sys.stderr)
 
 
@@ -186,37 +194,45 @@ POI_KIND = {"rest_area": "rest", "picnic_site": "rest"}
 
 def pois_by_kind() -> None:
     """layer-pois.json split per kind (same order, same properties)."""
-    fc = json.load(open(B / "layer-pois.json"))
-    by: dict[str, list] = {}
-    for f in fc["features"]:
-        k = f["properties"].get("kind") or ""
-        by.setdefault(POI_KIND.get(k, k), []).append(f)
-    for k, feats in by.items():
-        if k:
-            write(f"layer-pois-{k}.json", {"type": "FeatureCollection", "features": feats})
+    with phase("the layers read", "disk"):
+        fc = json.load(open(B / "layer-pois.json"))
+    with phase("the stops split by kind", "compute"):
+        by: dict[str, list] = {}
+        for f in fc["features"]:
+            k = f["properties"].get("kind") or ""
+            by.setdefault(POI_KIND.get(k, k), []).append(f)
+    with phase("the layers written", "disk"):
+        for k, feats in by.items():
+            if k:
+                write(f"layer-pois-{k}.json", {"type": "FeatureCollection", "features": feats})
     # Named peaks by height, compact, for the highest summit in view (the In view panel) without
     # loading every stop.
-    peaks = [(p["ele"], *f["geometry"]["coordinates"], p["name"]) for f in by.get("peak", [])
-             for p in [f["properties"]] if p.get("name") and isinstance(p.get("ele"), (int, float))]
-    peaks.sort(key=lambda r: -r[0])
-    write("layer-summits.json", {"p": [[round(x, 5), round(y, 5), round(e), n] for e, x, y, n in peaks]})
+    with phase("the stops split by kind", "compute"):
+        peaks = [(p["ele"], *f["geometry"]["coordinates"], p["name"]) for f in by.get("peak", [])
+                 for p in [f["properties"]] if p.get("name") and isinstance(p.get("ele"), (int, float))]
+        peaks.sort(key=lambda r: -r[0])
+    with phase("the layers written", "disk"):
+        write("layer-summits.json", {"p": [[round(x, 5), round(y, 5), round(e), n] for e, x, y, n in peaks]})
     print("layers: pois by kind: " + ", ".join(f"{k} {len(v)}" for k, v in sorted(by.items())), file=sys.stderr)
 
 
 def polygons(src: str, simplify: float) -> dict:
-    fc = json.load(open(B / f"{src}.json"))
-    for f in fc["features"]:
-        g = f["geometry"]
-        p = f["properties"]
-        en = names.english_at(p.get("name"), names.first_point(g), p.get("name_en"))
-        if en:
-            p["en"] = en
-        if simplify and g:
-            s = shape(g).simplify(simplify, preserve_topology=True)
-            if not s.is_empty:
-                g = mapping(s)
-        f["geometry"] = {"type": g["type"], "coordinates": rounded(g["coordinates"])}
-    write(f"layer-{src}.json", fc)
+    with phase("the layers read", "disk"):
+        fc = json.load(open(B / f"{src}.json"))
+    with phase("the polygons simplified", "compute"):
+        for f in fc["features"]:
+            g = f["geometry"]
+            p = f["properties"]
+            en = names.english_at(p.get("name"), names.first_point(g), p.get("name_en"))
+            if en:
+                p["en"] = en
+            if simplify and g:
+                s = shape(g).simplify(simplify, preserve_topology=True)
+                if not s.is_empty:
+                    g = mapping(s)
+            f["geometry"] = {"type": g["type"], "coordinates": rounded(g["coordinates"])}
+    with phase("the layers written", "disk"):
+        write(f"layer-{src}.json", fc)
     print(f"layers: {src}: {len(fc['features'])} areas", file=sys.stderr)
     return {"n": len(fc["features"]), "a": [f["properties"].get("a") for f in fc["features"]]}
 
@@ -232,7 +248,8 @@ def main() -> None:
         "indigenous": polygons("indigenous", 0),
         "special": polygons("special", 0),
     }
-    write("layer-summary.json", summary)
+    with phase("the layers written", "disk"):
+        write("layer-summary.json", summary)
 
 
 if __name__ == "__main__":

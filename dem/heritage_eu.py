@@ -67,6 +67,8 @@ from xml.etree import ElementTree as ET
 from pyproj import Transformer
 from shapely.geometry import shape
 
+from timings import phase
+
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 csv.field_size_limit(1 << 26)
@@ -76,22 +78,23 @@ def fetch(url: str, path: Path, params: dict | None = None) -> Path:
     """Download `url` to `path` once (cached)."""
     if path.exists() and path.stat().st_size > 0:
         return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if params:
-        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-    print(f"  downloading {url[:110]}", file=sys.stderr)
-    tmp = path.with_suffix(path.suffix + ".part")
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=600) as r:
-            tmp.write_bytes(r.read())
-    except urllib.error.URLError as e:
-        # Servers that send an incomplete certificate chain: curl verifies them against the
-        # system trust store (which fetches the missing intermediate); verification stays on.
-        if "CERTIFICATE_VERIFY_FAILED" not in str(e):
-            raise
-        import subprocess
-        subprocess.run(["curl", "-sSfL", "-A", UA["User-Agent"], "-o", str(tmp), url], check=True, timeout=600)
-    tmp.replace(path)
+    with phase("sources downloaded", "net"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if params:
+            url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+        print(f"  downloading {url[:110]}", file=sys.stderr)
+        tmp = path.with_suffix(path.suffix + ".part")
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=600) as r:
+                tmp.write_bytes(r.read())
+        except urllib.error.URLError as e:
+            # Servers that send an incomplete certificate chain: curl verifies them against the
+            # system trust store (which fetches the missing intermediate); verification stays on.
+            if "CERTIFICATE_VERIFY_FAILED" not in str(e):
+                raise
+            import subprocess
+            subprocess.run(["curl", "-sSfL", "-A", UA["User-Agent"], "-o", str(tmp), url], check=True, timeout=600)
+        tmp.replace(path)
     return path
 
 
@@ -99,32 +102,33 @@ def arcgis(url: str, where: str, fields: str, cache: Path, page: int = 2000, ext
     """All features of an ArcGIS REST layer (GeoJSON, WGS84), paged by resultOffset; cached."""
     if cache.exists() and cache.stat().st_size > 0:
         return json.loads(cache.read_text())
-    feats, off = [], 0
-    try:  # the layer's object id field (usually OBJECTID) keeps paging stable
-        with urllib.request.urlopen(urllib.request.Request(f"{url}?f=json", headers=UA), timeout=120) as r:
-            oid = json.loads(r.read()).get("objectIdField") or "OBJECTID"
-    except Exception:  # noqa: BLE001
-        oid = "OBJECTID"
-    while True:
-        q = {"where": where, "outFields": fields, "outSR": 4326, "f": "geojson", "orderByFields": oid,
-             "resultOffset": off, "resultRecordCount": page, **(extra or {})}
-        url_q = f"{url}/query?{urllib.parse.urlencode(q)}"
-        with urllib.request.urlopen(urllib.request.Request(url_q, headers=UA), timeout=600) as r:
-            d = json.loads(r.read())
-        if "error" in d:
-            raise RuntimeError(f"{url}: {d['error']}")
-        got = d.get("features", [])
-        feats += got
-        print(f"  {url.rsplit('/services/', 1)[-1][:60]}: {len(feats)}", file=sys.stderr)
-        if len(got) < page and not d.get("exceededTransferLimit") and not d.get("properties", {}).get("exceededTransferLimit"):
-            break
-        off += len(got)
-        if not got:
-            break
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cache.with_name(cache.name + ".tmp")
-    tmp.write_text(json.dumps(feats))
-    tmp.replace(cache)
+    with phase("sources downloaded", "net"):
+        feats, off = [], 0
+        try:  # the layer's object id field (usually OBJECTID) keeps paging stable
+            with urllib.request.urlopen(urllib.request.Request(f"{url}?f=json", headers=UA), timeout=120) as r:
+                oid = json.loads(r.read()).get("objectIdField") or "OBJECTID"
+        except Exception:  # noqa: BLE001
+            oid = "OBJECTID"
+        while True:
+            q = {"where": where, "outFields": fields, "outSR": 4326, "f": "geojson", "orderByFields": oid,
+                 "resultOffset": off, "resultRecordCount": page, **(extra or {})}
+            url_q = f"{url}/query?{urllib.parse.urlencode(q)}"
+            with urllib.request.urlopen(urllib.request.Request(url_q, headers=UA), timeout=600) as r:
+                d = json.loads(r.read())
+            if "error" in d:
+                raise RuntimeError(f"{url}: {d['error']}")
+            got = d.get("features", [])
+            feats += got
+            print(f"  {url.rsplit('/services/', 1)[-1][:60]}: {len(feats)}", file=sys.stderr)
+            if len(got) < page and not d.get("exceededTransferLimit") and not d.get("properties", {}).get("exceededTransferLimit"):
+                break
+            off += len(got)
+            if not got:
+                break
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(cache.name + ".tmp")
+        tmp.write_text(json.dumps(feats))
+        tmp.replace(cache)
     return feats
 
 
@@ -245,12 +249,13 @@ def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl"
                 time.sleep(float(e.headers.get("Retry-After") or 5) * (attempt + 1))
         return {}
     # (A failed search fails the run rather than leave the name untranslated, uncached.)
-    hits = get({"action": "wbsearchentities", "search": name, "language": search_lang, "limit": 1}).get("search", [])
-    labels = {}
-    if hits:
-        ent = get({"action": "wbgetentities", "ids": hits[0]["id"], "props": "labels", "languages": "|".join(langs)})["entities"][hits[0]["id"]]
-        labels = {k: v["value"][:1].upper() + v["value"][1:] for k, v in ent.get("labels", {}).items()}
-    time.sleep(1.0)
+    with phase("sources downloaded", "net"):
+        hits = get({"action": "wbsearchentities", "search": name, "language": search_lang, "limit": 1}).get("search", [])
+        labels = {}
+        if hits:
+            ent = get({"action": "wbgetentities", "ids": hits[0]["id"], "props": "labels", "languages": "|".join(langs)})["entities"][hits[0]["id"]]
+            labels = {k: v["value"][:1].upper() + v["value"][1:] for k, v in ent.get("labels", {}).items()}
+        time.sleep(1.0)
     cache[key] = labels
     return labels
 
@@ -447,23 +452,24 @@ def hes_layer(layer: int, where: str, fields: str, cache: str, step: int = 10000
     path = H / "uk" / cache
     if path.exists() and path.stat().st_size > 0:
         return json.loads(path.read_text())
-    feats, lo = [], 0
-    while True:
-        q = {"where": f"({where}) AND FID >= {lo} AND FID < {lo + step}", "outFields": fields, "outSR": 4326, "f": "geojson",
-             "maxAllowableOffset": 0.0002, "geometryPrecision": 6}
-        with urllib.request.urlopen(urllib.request.Request(f"{HES}/{layer}/query?{urllib.parse.urlencode(q)}", headers=UA), timeout=600) as r:
-            got = json.loads(r.read()).get("features", [])
-        feats += got
-        # Stop past the last FID (a range with nothing in it after one that had features).
-        q2 = {"where": f"FID >= {lo + step}", "returnCountOnly": "true", "f": "json"}
-        with urllib.request.urlopen(urllib.request.Request(f"{HES}/{layer}/query?{urllib.parse.urlencode(q2)}", headers=UA), timeout=600) as r:
-            left = json.loads(r.read()).get("count", 0)
-        print(f"  HES layer {layer}: {len(feats)}", file=sys.stderr)
-        if not left:
-            break
-        lo += step
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(feats))
+    with phase("sources downloaded", "net"):
+        feats, lo = [], 0
+        while True:
+            q = {"where": f"({where}) AND FID >= {lo} AND FID < {lo + step}", "outFields": fields, "outSR": 4326, "f": "geojson",
+                 "maxAllowableOffset": 0.0002, "geometryPrecision": 6}
+            with urllib.request.urlopen(urllib.request.Request(f"{HES}/{layer}/query?{urllib.parse.urlencode(q)}", headers=UA), timeout=600) as r:
+                got = json.loads(r.read()).get("features", [])
+            feats += got
+            # Stop past the last FID (a range with nothing in it after one that had features).
+            q2 = {"where": f"FID >= {lo + step}", "returnCountOnly": "true", "f": "json"}
+            with urllib.request.urlopen(urllib.request.Request(f"{HES}/{layer}/query?{urllib.parse.urlencode(q2)}", headers=UA), timeout=600) as r:
+                left = json.loads(r.read()).get("count", 0)
+            print(f"  HES layer {layer}: {len(feats)}", file=sys.stderr)
+            if not left:
+                break
+            lo += step
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(feats))
     return feats
 
 
@@ -958,27 +964,28 @@ def jp_csv(cat: int, pref: str) -> Path:
     path = H / "jp" / f"{cat}-{pref}.csv"
     if path.exists():
         return path
-    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    op.addheaders = list(UA.items())
-    tok = lambda html: re.search(r'name="_csrfToken" autocomplete="off" value="([^"]*)"', html).group(1)
-    form = lambda t: urllib.parse.urlencode({"_method": "POST", "_csrfToken": t, "screen_id": "index", "page_no": 1,
-                                             "register_sub_id": cat, "seat_pref": pref}).encode()
-    for attempt in range(4):
-        try:
-            t = tok(op.open(f"{JP}/bsys/index", timeout=120).read().decode())
-            html = op.open(f"{JP}/bsys/searchlist", form(t), timeout=300).read().decode()
-            m = re.search(r'utile/csv-list.*?name="_csrfToken" autocomplete="off" value="([^"]*)"', html, re.S)
-            body = op.open(f"{JP}/utile/csv-list", form(m.group(1)), timeout=300).read() if m else b""
-            break
-        except (urllib.error.URLError, TimeoutError, AttributeError) as e:
-            print(f"  kunishitei {cat} {pref}: {e}; again", file=sys.stderr)
-            time.sleep(10 * (attempt + 1))
-    else:
-        raise RuntimeError(f"kunishitei {cat} {pref}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)
-    print(f"  kunishitei {cat} {pref}: {body.count(b'\n') - 1 if body else 0} rows", file=sys.stderr)
-    time.sleep(1)
+    with phase("sources downloaded", "net"):
+        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        op.addheaders = list(UA.items())
+        tok = lambda html: re.search(r'name="_csrfToken" autocomplete="off" value="([^"]*)"', html).group(1)
+        form = lambda t: urllib.parse.urlencode({"_method": "POST", "_csrfToken": t, "screen_id": "index", "page_no": 1,
+                                                 "register_sub_id": cat, "seat_pref": pref}).encode()
+        for attempt in range(4):
+            try:
+                t = tok(op.open(f"{JP}/bsys/index", timeout=120).read().decode())
+                html = op.open(f"{JP}/bsys/searchlist", form(t), timeout=300).read().decode()
+                m = re.search(r'utile/csv-list.*?name="_csrfToken" autocomplete="off" value="([^"]*)"', html, re.S)
+                body = op.open(f"{JP}/utile/csv-list", form(m.group(1)), timeout=300).read() if m else b""
+                break
+            except (urllib.error.URLError, TimeoutError, AttributeError) as e:
+                print(f"  kunishitei {cat} {pref}: {e}; again", file=sys.stderr)
+                time.sleep(10 * (attempt + 1))
+        else:
+            raise RuntimeError(f"kunishitei {cat} {pref}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        print(f"  kunishitei {cat} {pref}: {body.count(b'\n') - 1 if body else 0} rows", file=sys.stderr)
+        time.sleep(1)
     return path
 
 
@@ -1108,21 +1115,22 @@ def sg_dataset(did: str) -> tuple[dict, str]:
 
     path = H / "sg" / f"{did}.geojson"
     if not path.exists():
-        for attempt in range(8):
-            try:
-                with urllib.request.urlopen(urllib.request.Request(f"https://api-open.data.gov.sg/v1/public/api/datasets/{did}/poll-download",
-                                                                   headers=UA), timeout=120) as r:
-                    url = (json.loads(r.read()).get("data") or {}).get("url")
-            except urllib.error.HTTPError as e:
-                if e.code != 429:
-                    raise
-                url = None  # rate-limited without a key: wait
-            if url:
-                break
-            time.sleep(15 * (attempt + 1))
-        else:
-            raise RuntimeError(f"data.gov.sg {did}: no download link")
-        fetch(url, path)
+        with phase("sources downloaded", "net"):
+            for attempt in range(8):
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(f"https://api-open.data.gov.sg/v1/public/api/datasets/{did}/poll-download",
+                                                                       headers=UA), timeout=120) as r:
+                        url = (json.loads(r.read()).get("data") or {}).get("url")
+                except urllib.error.HTTPError as e:
+                    if e.code != 429:
+                        raise
+                    url = None  # rate-limited without a key: wait
+                if url:
+                    break
+                time.sleep(15 * (attempt + 1))
+            else:
+                raise RuntimeError(f"data.gov.sg {did}: no download link")
+            fetch(url, path)
     return json.loads(path.read_text()), time.strftime("%Y-%m-%d", time.localtime(path.stat().st_mtime))
 
 

@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from heritagewd import sparql, val
+from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
@@ -109,54 +110,62 @@ def wd_parks(qids: list[str], save=None) -> dict[str, dict]:
 
 def index_layer(name: str, layer: str, extra=None) -> None:
     path = B / name
-    fc = json.load(open(path))
-    with open(B / f"details-{layer}.jsonl", "w") as out:
-        for i, f in enumerate(fc["features"]):
-            f["properties"]["i"] = i
-            rec = {"i": i, "area_km2": area_km2(f.get("geometry"))}
-            if extra:
-                rec.update(extra(f) or {})
-            out.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(fc, ensure_ascii=False, separators=(",", ":")))
-    tmp.rename(path)
+    with phase("the layers read", "disk"):
+        fc = json.load(open(path))
+    with phase("the area details made and written", "compute"):
+        with open(B / f"details-{layer}.jsonl", "w") as out:
+            for i, f in enumerate(fc["features"]):
+                f["properties"]["i"] = i
+                rec = {"i": i, "area_km2": area_km2(f.get("geometry"))}
+                if extra:
+                    rec.update(extra(f) or {})
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    with phase("the layers written with their indexes", "disk"):
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(fc, ensure_ascii=False, separators=(",", ":")))
+        tmp.rename(path)
     print(f"{name}: {len(fc['features'])} areas", file=sys.stderr)
 
 
 def main():
     # Protected areas and Indigenous lands from OSM.
-    parks, aboriginal = [], {}
-    qids = set()
-    for line in open(AREAS, encoding="utf-8"):
-        d = json.loads(line.lstrip("\x1e"))
-        t = d["properties"]
-        name = t.get("name") or t.get("name:en") or ""
-        if not name:
-            continue
-        rec = {"name": name, "osm": t.get("@type", "way")[0] + str(t.get("@id")), "bbox": bbox(d["geometry"]), "area_km2": area_km2(d["geometry"])}
-        for k in PARK_TAGS:
-            if t.get(k):
-                rec[k] = t[k]
-        if re.fullmatch(r"Q\d+", t.get("wikidata", "")):
-            qids.add(t["wikidata"])
-        if t.get("boundary") == "aboriginal_lands":
-            aboriginal.setdefault(norm(name), []).append(rec)
-        else:
-            parks.append(rec)
-    cache = ROOT / "data" / "areas" / "wikidata.json"
-    have = json.loads(cache.read_text()) if cache.exists() else {}
-    todo = sorted(q for q in qids if q not in have)
+    with phase("the protected areas read and measured", "compute"):
+        parks, aboriginal = [], {}
+        qids = set()
+        for line in open(AREAS, encoding="utf-8"):
+            d = json.loads(line.lstrip("\x1e"))
+            t = d["properties"]
+            name = t.get("name") or t.get("name:en") or ""
+            if not name:
+                continue
+            rec = {"name": name, "osm": t.get("@type", "way")[0] + str(t.get("@id")), "bbox": bbox(d["geometry"]), "area_km2": area_km2(d["geometry"])}
+            for k in PARK_TAGS:
+                if t.get(k):
+                    rec[k] = t[k]
+            if re.fullmatch(r"Q\d+", t.get("wikidata", "")):
+                qids.add(t["wikidata"])
+            if t.get("boundary") == "aboriginal_lands":
+                aboriginal.setdefault(norm(name), []).append(rec)
+            else:
+                parks.append(rec)
+    with phase("the Wikidata cache read", "disk"):
+        cache = ROOT / "data" / "areas" / "wikidata.json"
+        have = json.loads(cache.read_text()) if cache.exists() else {}
+        todo = sorted(q for q in qids if q not in have)
     if todo:
         # Saved after every batch, so a rerun picks up where a failed one stopped.
-        have.update(wd_parks(todo, save=lambda part: cache.write_text(json.dumps({**have, **part}, ensure_ascii=False))))
-        cache.write_text(json.dumps(have, ensure_ascii=False))
-    for rec in parks + [r for rs in aboriginal.values() for r in rs]:
-        w = have.get(rec.get("wikidata", ""))
-        if w:
-            rec["wd"] = w
-    with open(B / "details-park.jsonl", "w") as out:
-        for rec in parks:
-            out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with phase("park facts fetched from Wikidata", "net"):
+            have.update(wd_parks(todo, save=lambda part: cache.write_text(json.dumps({**have, **part}, ensure_ascii=False))))
+        with phase("the Wikidata cache written", "disk"):
+            cache.write_text(json.dumps(have, ensure_ascii=False))
+    with phase("the park details written", "disk"):
+        for rec in parks + [r for rs in aboriginal.values() for r in rs]:
+            w = have.get(rec.get("wikidata", ""))
+            if w:
+                rec["wd"] = w
+        with open(B / "details-park.jsonl", "w") as out:
+            for rec in parks:
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(f"details-park.jsonl: {len(parks)} named protected areas ({sum(1 for r in parks if 'wd' in r)} with Wikidata)", file=sys.stderr)
 
     index_layer("heritage-areas.json", "harea")
