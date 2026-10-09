@@ -60,6 +60,12 @@ fn current_dem_versions() -> [u32; 4] {
 /// Keeps a unit's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
 /// sampled anew) for later runs of it and of its neighbours. Returns how many.
 pub fn dem_samples_keep(dir: &Path, u: Unit, from: &Path) -> Result<usize> {
+    dem_samples_keep_with(dir, u, from, None)
+}
+
+/// `dem_samples_keep`, a copy of the file kept in `copies` too (`keep_dem_copy`), which its
+/// neighbours' slices on this Mac read instead of the NAS's.
+pub fn dem_samples_keep_with(dir: &Path, u: Unit, from: &Path, copies: Option<&Path>) -> Result<usize> {
     let read = |n: &str| std::fs::read(from.join(format!("dem-cache.{n}")));
     let (Ok(kb), Ok(eb), Ok(sb)) = (read("keys.u64"), read("elev.f32"), read("src.u8")) else { return Ok(0) };
     let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&kb);
@@ -85,6 +91,9 @@ pub fn dem_samples_keep(dir: &Path, u: Unit, from: &Path) -> Result<usize> {
     f.extend_from_slice(&sb);
     let name = format!("{}.{}.dem", u.dash(), box_tag(bb));
     crate::whole::write(&dir.join(&name), &f)?;
+    if let Some(c) = copies {
+        keep_dem_copy(&dir.join(&name), c, &f);
+    }
     // Its earlier file (another box), gone.
     let prefix = format!("{}.", u.dash());
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -200,6 +209,60 @@ struct DemRange {
     elev: Vec<f32>,
     srcs: Vec<u8>,
     read: u64,
+    /// The file's entries (all of them read: `whole`).
+    n: u64,
+}
+
+impl DemRange {
+    /// Whether every entry of the file was read.
+    fn whole(&self) -> bool {
+        self.keys.len() as u64 == self.n
+    }
+
+    /// The file's bytes, when it was read whole (`dem_samples_keep`'s layout).
+    fn bytes(&self) -> Option<Vec<u8>> {
+        self.whole().then(|| {
+            let mut f = Vec::with_capacity(DEM_HEAD + 13 * self.keys.len());
+            f.extend_from_slice(DEM_MAGIC);
+            f.extend_from_slice(&self.n.to_le_bytes());
+            for v in self.bx {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in self.made {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+            f.extend_from_slice(bytemuck::cast_slice(&self.keys));
+            f.extend_from_slice(bytemuck::cast_slice(&self.elev));
+            f.extend_from_slice(&self.srcs);
+            f
+        })
+    }
+}
+
+/// This Mac's copy of units' DEM samples file `p` (on the NAS: `<name>`, replaced whole by each of
+/// its unit's runs) in `copies`, named by the file's name, length and modification time, so a copy
+/// is of that file as it is: `<name>.<length>.<mtime ns>`.
+fn dem_copy_name(p: &Path, copies: &Path) -> Option<PathBuf> {
+    let m = std::fs::metadata(p).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(copies.join(format!("{}.{}.{t}", p.file_name()?.to_string_lossy(), m.len())))
+}
+
+/// Keeps `bytes`, units' DEM samples file `p` as written or read whole, as this Mac's copy of it in
+/// `copies` (`dem_copy_name`), and lets the unit's earlier copies go: a cache, the copies of the
+/// NAS's files', so failing costs only reading it again.
+fn keep_dem_copy(p: &Path, copies: &Path, bytes: &[u8]) {
+    let Some(at) = dem_copy_name(p, copies) else { return };
+    if store::cachefile::create_bytes(&at, bytes).is_ok() {
+        store::cachefile::release(&at);
+    }
+    let Some(unit) = p.file_name().map(|n| n.to_string_lossy().split('.').next().unwrap_or("").to_string()) else { return };
+    for e in std::fs::read_dir(copies).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.split('.').next() == Some(unit.as_str()) && e.path() != at {
+            store::cachefile::try_remove(&e.path());
+        }
+    }
 }
 
 /// A units' DEM samples file read for box `b`: its header, the bounds of the entries within `b`'s
@@ -272,7 +335,7 @@ fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
     let keys = bytemuck::pod_collect_to_vec(&take(DEM_HEAD as u64, 8)?);
     let elev = bytemuck::pod_collect_to_vec(&take(DEM_HEAD as u64 + 8 * n, 4)?);
     let srcs = take(DEM_HEAD as u64 + 12 * n, 1)?;
-    Ok(Some(DemRange { bx, made, keys, elev, srcs, read }))
+    Ok(Some(DemRange { bx, made, keys, elev, srcs, read, n }))
 }
 
 /// The entries of sorted DEM cache arrays inside `b` still valid: those whose DEM rules (by their
@@ -299,6 +362,13 @@ fn dem_valid_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], made: 
 /// samples every vertex). The files near `b` are found by the boxes in their names (one listing);
 /// a unit's newest file counts, and one that isn't whole is passed over (it's only a cache).
 pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) -> Result<usize> {
+    dem_cache_slice_with(cache, units_dir, b, dst, None)
+}
+
+/// `dem_cache_slice`, the files read whole kept in `copies` and read from there while they're as
+/// they are on the NAS (`keep_dem_copy`): a unit's own file and its neighbours' above and below it
+/// are read whole by each of them.
+pub fn dem_cache_slice_with(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path, copies: Option<&Path>) -> Result<usize> {
     std::fs::create_dir_all(dst)?;
     for n in ["keys.u64", "elev.f32", "src.u8"] {
         std::fs::remove_file(dst.join(format!("dem-cache.{n}"))).ok();
@@ -336,9 +406,20 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
         }
         // (Read, not mapped: they're on the NAS, where a mapped page lost with the share would end
         // the job. Only the box's longitudes: `dem_range`.)
-        match dem_range(p, b) {
+        // (This Mac's copy of it as it is, when there's one: `keep_dem_copy`.)
+        let copy = copies.and_then(|c| dem_copy_name(p, c)).and_then(|c| store::cachefile::hold_existing(&c).ok().flatten());
+        let got = match &copy {
+            Some(c) => dem_range(c, b),
+            None => dem_range(p, b),
+        };
+        match got {
             Ok(Some(r)) => {
-                reading.count(r.read, 1);
+                if copy.is_none() {
+                    reading.count(r.read, 1);
+                    if let (Some(c), Some(bytes)) = (copies, r.bytes()) {
+                        keep_dem_copy(p, c, &bytes);
+                    }
+                }
                 if !meets(r.bx) {
                     continue;
                 }
@@ -494,6 +575,13 @@ impl Tools {
     /// The units' kept DEM samples (`Tools::shared`, else the local cache).
     pub fn dem_units(&self) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join(DEM_UNITS)
+    }
+
+    /// Where this Mac keeps copies of the shared units' DEM samples it read or wrote whole (among the
+    /// copies of the NAS's files, which room-making may take: `blobs/dem-units/`); none when they're
+    /// this Mac's own (no shared cache).
+    pub fn dem_copies(&self) -> Option<PathBuf> {
+        self.shared.as_ref().map(|_| self.cache.join("blobs").join(DEM_UNITS))
     }
 
     /// Where unit `u`'s scenic results are kept between its runs (crate::scache::Carry).
@@ -827,7 +915,7 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
 /// its neighbours' (new ones aren't sampled twice). A cache: not keeping them (the NAS away) only
 /// costs sampling them again.
 pub fn keep_dem_samples(u: Unit, dir: &Path, tools: &Tools) {
-    if let Err(e) = dem_samples_keep(&tools.dem_units(), u, &dir.join("dem-cache")) {
+    if let Err(e) = dem_samples_keep_with(&tools.dem_units(), u, &dir.join("dem-cache"), tools.dem_copies().as_deref()) {
         eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
     }
 }
@@ -873,7 +961,7 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
         dem_seed(root, &tools.cache)?;
     }
-    rep.dem_cache = dem_cache_slice(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"))?;
+    rep.dem_cache = dem_cache_slice_with(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"), tools.dem_copies().as_deref())?;
     s.end();
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("layers staged from the packs", Class::NasRead);
@@ -1365,6 +1453,52 @@ mod tests {
         let b = std::fs::read(&f).unwrap();
         std::fs::write(&p, &b[..b.len() - 1]).unwrap();
         assert!(dem_range(&p, [0, 0, 1, 1]).unwrap().is_none());
+    }
+
+    #[test]
+    fn kept_samples_read_whole_are_copied_here_and_read_from_the_copy_while_it_is_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let (run, units, copies) = (d.path().join("run"), d.path().join("shared").join(DEM_UNITS), d.path().join("cache/blobs").join(DEM_UNITS));
+        std::fs::create_dir_all(&run).unwrap();
+        let keep = |pts: &[(i32, i32)], elev: f32, copies: Option<&Path>| {
+            let keys: Vec<u64> = pts.iter().map(|&(a, b)| dem_key(a, b)).collect();
+            std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
+            std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&vec![elev; pts.len()])).unwrap();
+            std::fs::write(run.join("dem-cache.src.u8"), vec![1u8; pts.len()]).unwrap();
+            dem_samples_keep_with(&units, Unit { z: 6, x: 1, y: 2 }, &run, copies).unwrap()
+        };
+        let slice = |b: [i32; 4], to: &str, copies: Option<&Path>| {
+            let n = dem_cache_slice_with(&d.path().join("no-seed"), &units, b, &d.path().join(to), copies).unwrap();
+            let el: Vec<f32> = std::fs::read(d.path().join(to).join("dem-cache.elev.f32")).map(|b| bytemuck::pod_collect_to_vec(&b)).unwrap_or_default();
+            (n, el)
+        };
+        let copied = || std::fs::read_dir(&copies).map(|r| r.count()).unwrap_or(0);
+        // Kept elsewhere: read whole from the NAS, then copied here; a slice of a few longitudes
+        // isn't.
+        keep(&[(1, 1), (5, 5), (9, 9)], 7.0, None);
+        assert_eq!(slice([4, 0, 6, 10], "a", Some(&copies)), (1, vec![7.0]));
+        assert_eq!(copied(), 0);
+        assert_eq!(slice([0, 0, 10, 10], "b", Some(&copies)), (3, vec![7.0; 3]));
+        assert_eq!(copied(), 1);
+        let copy = std::fs::read_dir(&copies).unwrap().next().unwrap().unwrap().path();
+        let nas = std::fs::read_dir(&units).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&nas).unwrap());
+        // Read from the copy while it's the file (a copy changed here shows it was read)...
+        let mut b = std::fs::read(&copy).unwrap();
+        b[DEM_HEAD + 8 * 3..DEM_HEAD + 12 * 3].copy_from_slice(bytemuck::cast_slice(&[8.0f32; 3]));
+        std::fs::write(&copy, &b).unwrap();
+        assert_eq!(slice([0, 0, 10, 10], "c", Some(&copies)), (3, vec![8.0; 3]));
+        assert_eq!(slice([0, 0, 10, 10], "d", None), (3, vec![7.0; 3]));
+        // ...not once the unit kept other samples (a new file); kept here, the copy is it, and the
+        // earlier one goes (once no job holds it: the unit job lets its files go unit by unit).
+        store::cachefile::release(&copy);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        keep(&[(1, 1), (5, 5), (9, 9), (9, 10)], 9.0, Some(&copies));
+        assert_eq!(copied(), 1);
+        assert_eq!(slice([0, 0, 10, 10], "e", Some(&copies)), (4, vec![9.0; 4]));
+        let nas = std::fs::read_dir(&units).unwrap().next().unwrap().unwrap().path();
+        let copy = std::fs::read_dir(&copies).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&nas).unwrap());
     }
 
     #[test]
