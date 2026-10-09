@@ -356,14 +356,17 @@ pub fn places() -> serde_json::Value {
     })
 }
 
-/// A task's kind, by its first step: "tail" (a unit's last steps), or the 3D buildings' or tree
-/// cover's (crate::bld::task::KIND, crate::trees::task::KIND).
+/// A task's kind, by its first step: "tail" (a unit's last steps), or the 3D buildings', tree
+/// cover's or terrain's (crate::bld::task::KIND, crate::trees::task::KIND,
+/// crate::terrain_task::KIND).
 pub fn task_kind(spec: &serde_json::Value) -> String {
     let first = &spec["runs"][0];
     if first["prog"] == crate::bld::task::KIND {
         crate::bld::task::KIND.to_string()
     } else if first["what"] == crate::trees::task::KIND {
         crate::trees::task::KIND.to_string()
+    } else if first["what"] == crate::terrain_task::KIND {
+        crate::terrain_task::KIND.to_string()
     } else {
         "tail".to_string()
     }

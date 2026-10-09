@@ -89,7 +89,7 @@ class Timings {
 // A task's kind, as pipeline::offload::task_kind names it.
 function taskKind(task) {
   const first = task.runs[0] || {};
-  return first.prog === "bldtile" ? "bldtile" : first.what === "treeblock" ? "treeblock" : "tail";
+  return first.prog === "bldtile" ? "bldtile" : first.what === "treeblock" ? "treeblock" : first.what === "terrainsub" ? "terrainsub" : "tail";
 }
 
 // A step program's class, as pipeline::unit::program_class has it.

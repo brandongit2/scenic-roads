@@ -105,9 +105,10 @@ mkdir -p $dest.tmp/web $dest.tmp/fonts
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 cp -X target/release/server target/release/scenic target/release/scenic-build target/release/extract \
    target/release/tile target/release/scenic-metrics target/release/elev target/release/areaflags \
-   target/release/landcover target/release/railfreq target/release/trees target/release/bldtile $dest.tmp/
+   target/release/landcover target/release/railfreq target/release/trees target/release/bldtile \
+   target/release/terrainsub $dest.tmp/
 mkdir -p $dest.tmp/wasm
-cp -X target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover,trees,bldtile}.wasm $dest.tmp/wasm/
+cp -X target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover,trees,bldtile,terrainsub}.wasm $dest.tmp/wasm/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
 # The menu bar item (tools/status): an app bundle, built and signed ad hoc on this Mac (codesign

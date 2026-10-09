@@ -15,7 +15,7 @@ export CC_wasm32_wasip1=$llvm/clang AR_wasm32_wasip1=$llvm/llvm-ar CFLAGS_wasm32
 # The page gives each program its memory, capped at what its task may use: one that needs more
 # fails cleanly (docs/workers.md §6).
 export CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--import-memory"
-progs=(extract tile scenic-metrics areaflags elev landcover trees bldtile)
+progs=(extract tile scenic-metrics areaflags elev landcover trees bldtile terrainsub)
 # (Its whole output kept, ~/Library/Logs/scenic/wasm-<time>.log; shown: the last line, or on
 # standard error the errors.)
 mkdir -p ~/Library/Logs/scenic

@@ -117,11 +117,12 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
 }
 
 /// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`),
-/// a row of a tree cover piece's z8 blocks (`trees::task::KIND`).
-pub const PAGE_TASKS: [&str; 3] = ["tail", crate::bld::task::KIND, crate::trees::task::KIND];
+/// a row of a tree cover piece's z8 blocks (`trees::task::KIND`), a terrain piece's z8 subtrees
+/// (`terrain_task::KIND`).
+pub const PAGE_TASKS: [&str; 4] = ["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND];
 
 /// What a task of `kind` for `unit` (its spec's) costs is kept under: "tail 6/x/y", "bldtile 8/x/y",
-/// "treeblock 8/x/y" (a row's first block).
+/// "treeblock 8/x/y" (a row's first block), "terrainsub 8/x/y" (a group's first subtree).
 pub fn task_cost_key(kind: &str, unit: &str) -> String {
     format!("{kind} {unit}")
 }
@@ -397,8 +398,8 @@ pub struct Ask {
     #[serde(default)]
     pub label: Option<String>,
     /// The kinds of work it does: a shared step's jobs (crate::agent::claims::SHARED: it mounts
-    /// the NAS), "tail", "bldtile" or "treeblock" (tasks: a unit's tail, a 3D buildings' z8 area, a
-    /// row of tree cover's z8 blocks).
+    /// the NAS), "tail", "bldtile", "treeblock" or "terrainsub" (tasks: a unit's tail, a 3D
+    /// buildings' z8 area, a row of tree cover's z8 blocks, a terrain piece's z8 subtrees).
     pub can: Vec<String>,
     /// The memory it spares now (MB).
     pub mem_mb: u64,
