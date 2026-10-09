@@ -495,7 +495,11 @@ mod tests {
         let sq = squares_dir();
         let d = tempfile::tempdir().unwrap();
         let p = d.path();
-        piece(p, sq.path(), "alone", None);
+        // (The piece made with no one offered anything: the time the others are held to, with room
+        // for a loaded Mac, rather than a fixed one: 10 s held on this Mac, not on the build Mac
+        // with a build beside it, where the piece alone took ~19 s.)
+        let alone = piece(p, sq.path(), "alone", None);
+        let no_wait = alone.mul_f64(1.5) + std::time::Duration::from_secs(5);
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job"));
@@ -506,7 +510,7 @@ mod tests {
         assert!(slow.ask(&ask).unwrap().is_none());
         c.shared.lock().unwrap().tasks.paces.insert(("slow".into(), KIND.into()), 2.0);
         let took = piece(p, sq.path(), "slow", Some(&o));
-        assert!(took < std::time::Duration::from_secs(10), "not waited for: {took:?}");
+        assert!(took < no_wait, "not waited for: {took:?} (alone {alone:?})");
         assert!(slow.ask(&ask).unwrap().is_none(), "given none");
         assert!(same_piece(&p.join("alone"), &p.join("slow")));
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
@@ -517,7 +521,7 @@ mod tests {
         let w = worker(&url, &tok, "new", sq.path().into(), p.join("new"), false, true);
         let took = piece(p, sq.path(), "held", Some(&o));
         assert!(w.join().unwrap().is_some(), "it took the row");
-        assert!(took < std::time::Duration::from_secs(10), "raced at once: {took:?}");
+        assert!(took < no_wait, "raced at once: {took:?} (alone {alone:?})");
         assert!(same_piece(&p.join("alone"), &p.join("held")));
         let s = c.shared.lock().unwrap();
         assert!(s.tasks.by_id.values().all(|t| t.measuring.is_some()), "kept only to measure it");
