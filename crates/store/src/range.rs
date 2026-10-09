@@ -289,7 +289,7 @@ mod tests {
         check(&m);
         assert_eq!(m.bytes(), b"0123456789");
         check(&b"0123456789".to_vec());
-        let pool = IoPool::new(1, Duration::from_secs(2), dir.path().to_owned());
+        let pool = IoPool::new(1, Duration::from_secs(60), dir.path().to_owned());
         let f = PooledFile::open(&pool, &p).unwrap();
         check(&f);
         let shared: Arc<dyn RangeRead> = Arc::new(f);

@@ -239,7 +239,7 @@ async fn what_a_mac_kept_becomes_downloads_and_the_rest_goes() {
     {
         let m = Mirror::open(home.path().to_owned(), 0).unwrap();
         let all = Wanted { items: cat.files.values().map(|f| Item::File { name: f.file.clone(), size: f.size }).collect() };
-        let pool = store::IoPool::new(2, Duration::from_secs(5), nas.path().to_owned());
+        let pool = store::IoPool::new(2, Duration::from_secs(60), nas.path().to_owned());
         m.sync(&cat, &all, nas.path(), &pool, &Control::FREE).unwrap();
     }
     let s = crate::test_state_with(home.path(), nas.path(), true);

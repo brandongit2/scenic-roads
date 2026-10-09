@@ -494,7 +494,7 @@ mod tests {
     fn latest_through_the_pool() {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().join("catalog");
-        let pool = IoPool::new(2, Duration::from_secs(5), dir.path().to_owned());
+        let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
         assert!(latest_nas(&pool, &d).unwrap().is_none());
         write(&d, &sample(1)).unwrap();
         write(&d, &sample(2)).unwrap();

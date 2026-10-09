@@ -407,7 +407,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("base.sect");
         write(&p);
-        let pool = IoPool::new(2, Duration::from_secs(5), dir.path().to_owned());
+        let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
         let r = SectReader::open(PooledFile::open(&pool, &p).unwrap()).unwrap();
         assert_eq!(bytes(&r.read_pod::<WayRec>("ways").unwrap()), bytes(&ways()));
         assert_eq!(r.read_pod::<[i32; 2]>("verts").unwrap()[10], [10, -10]);

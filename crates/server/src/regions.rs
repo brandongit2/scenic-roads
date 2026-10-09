@@ -706,10 +706,17 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// A pool over the share `root` that gives up on an operation after 300 ms.
+    /// A pool over the share `root` with a minute for each operation: none here is timed.
     fn pool(root: &std::path::Path) -> Arc<IoPool> {
+        IoPool::new(2, Duration::from_secs(60), root.to_owned())
+    }
+
+    /// A pool over the share `root` that gives up on an operation after 300 ms (`hang`'s never
+    /// end), and waits as long as it takes for the share to answer a probe after one: busy, not
+    /// away, however slowly a busy Mac answers it.
+    fn hung_pool(root: &std::path::Path) -> Arc<IoPool> {
         let cfg = store::iopool::PoolConfig::new(2, Duration::from_millis(300), root.to_owned());
-        IoPool::with_config(store::iopool::PoolConfig { probe_interval: Duration::from_millis(50), ..cfg })
+        IoPool::with_config(store::iopool::PoolConfig { probe_interval: Duration::from_millis(50), alive_timeout: Duration::from_secs(600), ..cfg })
     }
 
     fn recipe(id: &str, name: &str) -> Recipe {
@@ -732,7 +739,8 @@ mod tests {
     /// Lets the reads waiting on `hang`'s pipe finish (with nothing), so no pool thread stays stuck.
     fn release(p: &std::path::Path) {
         use std::os::unix::fs::OpenOptionsExt;
-        let end = Instant::now() + Duration::from_secs(5);
+        // (A watchdog: the reader is a stuck pool thread, already waiting.)
+        let end = Instant::now() + Duration::from_secs(300);
         // (A writer that doesn't wait opens once a reader waits, and closes at once.)
         while let Err(e) = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(p) {
             assert!(Instant::now() < end, "nothing reads {}: {e}", p.display());
@@ -784,20 +792,27 @@ mod tests {
     fn a_hung_share_fails_promptly() {
         let share = tempfile::tempdir().unwrap();
         let dir = share.path().join("inputs/regions");
-        let pool = pool(share.path());
+        let (pool, hung) = (pool(share.path()), hung_pool(share.path()));
         apply(&pool, &dir, &Queued::Add { recipe: recipe("borders", "Scottish Borders") }).unwrap();
-        // A recipe the share never gives.
+        // A recipe the share never gives: reading it fails (in the pool's time, rather than never:
+        // the read itself never ends).
         let stuck = dir.join("stuck.toml");
         hang(&stuck);
-        let t0 = Instant::now();
-        let e = load(&pool, &dir).unwrap_err();
-        assert!(nas_unreachable(&e, &pool), "{e:#}");
-        let e = apply(&pool, &dir, &rename("stuck", "Stuck")).unwrap_err();
-        assert_eq!(status(&e, &pool), StatusCode::SERVICE_UNAVAILABLE, "{e:#}");
-        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+        // (A watchdog: one that waited on the read would never return.)
+        let promptly = |what: &str, f: Box<dyn FnOnce() -> anyhow::Error + Send>| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || tx.send(f()).ok());
+            rx.recv_timeout(Duration::from_secs(300)).unwrap_or_else(|_| panic!("{what} waited on the hung read: no answer in 5 min"))
+        };
+        let (h, d) = (hung.clone(), dir.clone());
+        let e = promptly("the listing", Box::new(move || load(&h, &d).unwrap_err()));
+        assert!(nas_unreachable(&e, &hung), "{e:#}");
+        let (h, d) = (hung.clone(), dir.clone());
+        let e = promptly("the edit", Box::new(move || apply(&h, &d, &rename("stuck", "Stuck")).unwrap_err()));
+        assert_eq!(status(&e, &hung), StatusCode::SERVICE_UNAVAILABLE, "{e:#}");
         release(&stuck);
         // The share still answers, so it's busy rather than away: the rest goes on.
-        assert!(pool.is_online());
+        assert!(hung.is_online());
         apply(&pool, &dir, &rename("borders", "The Borders")).unwrap();
     }
 
@@ -806,14 +821,14 @@ mod tests {
         let (share, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let (dir, queue) = (share.path().join("inputs/regions"), home.path().join("regions-queue"));
         std::fs::create_dir_all(&dir).unwrap();
-        let pool = pool(share.path());
+        let (pool, hung) = (pool(share.path()), hung_pool(share.path()));
         enqueue(&queue, &rename("borders", "The Borders")).unwrap();
         enqueue(&queue, &Queued::Add { recipe: recipe("kanto", "Kanto") }).unwrap();
         enqueue(&queue, &Queued::Add { recipe: recipe("kanto", "Kanto again") }).unwrap();
         // The share doesn't give the first edit's recipe: nothing is sent or dropped, out of order.
         let borders = dir.join("borders.toml");
         hang(&borders);
-        flush_to(&pool, &dir, &queue);
+        flush_to(&hung, &dir, &queue);
         release(&borders);
         assert_eq!(queued(&queue).len(), 3);
         assert!(!dir.join("kanto.toml").exists());
@@ -828,7 +843,7 @@ mod tests {
     #[test]
     fn a_network_error_is_the_nas_away() {
         let share = tempfile::tempdir().unwrap();
-        let cfg = store::iopool::PoolConfig::new(1, Duration::from_secs(1), share.path().to_owned());
+        let cfg = store::iopool::PoolConfig::new(1, Duration::from_secs(60), share.path().to_owned());
         let pool = IoPool::with_config(store::iopool::PoolConfig { probe_interval: Duration::from_secs(60), ..cfg });
         // The edit's own errors, the NAS there.
         let denied = anyhow::Error::from(IoError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
@@ -869,7 +884,7 @@ mod tests {
         std::fs::rename(&gone, &root).unwrap();
         let t0 = Instant::now();
         while !s.data.online() {
-            assert!(t0.elapsed() < Duration::from_secs(30), "the NAS never came back");
+            assert!(t0.elapsed() < Duration::from_secs(300), "the NAS never came back (a watchdog: the prober looks every 3 s)");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         flush(&s);

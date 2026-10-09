@@ -44,7 +44,7 @@ struct Nas {
 
 fn nas() -> Nas {
     let dir = tempfile::tempdir().unwrap();
-    let pool = IoPool::new(2, Duration::from_secs(5), dir.path().to_owned());
+    let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
     Nas { dir, pool }
 }
 

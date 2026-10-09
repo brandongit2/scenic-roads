@@ -227,7 +227,7 @@ mod tests {
         let p = dir.path().join("f");
         let data: Vec<u8> = (0..(PAGE as usize * 3 + 100)).map(|i| (i % 251) as u8).collect();
         std::fs::write(&p, &data).unwrap();
-        let pool = store::iopool::IoPool::new(2, std::time::Duration::from_secs(5), dir.path().to_owned());
+        let pool = store::iopool::IoPool::new(2, std::time::Duration::from_secs(60), dir.path().to_owned());
         let f = RemoteFile::new(p, pool);
         for (off, len) in [(0u64, 10usize), (PAGE - 3, 6), (5, PAGE as usize * 2 + 50), (PAGE * 3, 100), (PAGE * 3 + 99, 1)] {
             assert_eq!(read(&f, off, len).unwrap(), data[off as usize..off as usize + len], "{off}+{len}");

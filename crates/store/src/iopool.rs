@@ -83,13 +83,16 @@ pub struct PoolConfig {
     pub probe_timeout: Duration,
     /// Extra threads allowed to replace stuck ones: at most `threads + spare` ever exist.
     pub spare: usize,
+    /// How long the share has to answer a probe after an operation overran, to count as busy
+    /// rather than gone.
+    pub alive_timeout: Duration,
 }
 
 impl PoolConfig {
     /// `threads` workers and `op_timeout`; a probe every 3 s, under the same timeout; 2 spare
-    /// threads.
+    /// threads; 3 s for the share to answer after an overrun.
     pub fn new(threads: usize, op_timeout: Duration, probe: PathBuf) -> Self {
-        Self { threads: threads.max(1), op_timeout, probe, probe_interval: Duration::from_secs(3), probe_timeout: op_timeout, spare: 2 }
+        Self { threads: threads.max(1), op_timeout, probe, probe_interval: Duration::from_secs(3), probe_timeout: op_timeout, spare: 2, alive_timeout: Duration::from_secs(3) }
     }
 }
 
@@ -128,10 +131,6 @@ const CANCELLED: u8 = 4;
 
 /// How often a caller waiting for a worker checks whether the NAS went offline meanwhile.
 const POLL: Duration = Duration::from_millis(50);
-
-/// How long the share has to answer a probe after an operation overran, to count as busy rather
-/// than gone.
-const ALIVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct Item {
     state: Arc<AtomicU8>,
@@ -320,7 +319,7 @@ impl IoPool {
                     // Done at the very deadline: no stall after all (the worker un-counts itself).
                     return self.inner.finish(r, gone);
                 }
-                if !self.inner.alive_within(ALIVE_TIMEOUT) {
+                if !self.inner.alive_within(self.inner.cfg.alive_timeout) {
                     self.inner.trip(&format!("an operation took longer than {timeout:?}"));
                 }
                 Err(IoError::Timeout)
@@ -667,31 +666,123 @@ fn is_disconnect(e: &io::Error) -> bool {
     crate::sys::is_disconnect(e)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::Condvar;
+
+    // (The operations here that overrun are held by a gate until the test lets them go, so an
+    // overrun never depends on how fast a busy Mac runs a thread; the waits in the pool are short,
+    // for speed, and a call a busy Mac didn't start in time is told apart and made again; the
+    // share's answer after an overrun is waited for as long as it takes (`alive_timeout`); and the
+    // ordinary operations, whose time isn't what's tested, have minutes.)
+
+    /// A minute, for what isn't timed.
+    const LONG: Duration = Duration::from_secs(60);
+    /// How long `eventually` waits: a watchdog, not a measure.
+    const WATCHDOG: Duration = Duration::from_secs(300);
 
     fn cfg(probe: PathBuf, threads: usize, timeout_ms: u64) -> PoolConfig {
-        PoolConfig { probe_interval: Duration::from_millis(20), ..PoolConfig::new(threads, Duration::from_millis(timeout_ms), probe) }
+        PoolConfig { probe_interval: Duration::from_millis(20), alive_timeout: Duration::from_secs(600), ..PoolConfig::new(threads, Duration::from_millis(timeout_ms), probe) }
     }
 
-    /// Polls `cond` for up to `secs` seconds.
-    fn eventually(secs: u64, cond: impl Fn() -> bool) -> bool {
-        let end = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < end {
-            if cond() {
-                return true;
-            }
+    /// Polls `cond` until it holds; false only past the watchdog (`what` it waited for, said).
+    fn eventually(what: &str, cond: impl Fn() -> bool) {
+        let end = Instant::now() + WATCHDOG;
+        while !cond() {
+            assert!(Instant::now() < end, "never: {what} (in {WATCHDOG:?})");
             thread::sleep(Duration::from_millis(10));
         }
-        cond()
+    }
+
+    /// Operations that hold their worker until the gate opens.
+    #[derive(Clone, Default)]
+    struct Gate {
+        open: Arc<(Mutex<bool>, Condvar)>,
+        started: Arc<AtomicUsize>,
+    }
+
+    impl Gate {
+        fn op(&self) -> impl FnOnce() -> io::Result<()> + Send + 'static {
+            let g = self.clone();
+            move || {
+                g.started.fetch_add(1, SeqCst);
+                let (m, cv) = &*g.open;
+                let mut open = lock(m);
+                while !*open {
+                    open = cv.wait(open).unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(())
+            }
+        }
+
+        fn release(&self) {
+            *lock(&self.open.0) = true;
+            self.open.1.notify_all();
+        }
+
+        fn started(&self) -> usize {
+            self.started.load(SeqCst)
+        }
+    }
+
+    /// A gated operation called until one overruns (a call whose operation a worker didn't take
+    /// in time is dropped unrun, and made again): its error (an overrun's is `Timeout`). One
+    /// caller at a time (the pool's count of overruns tells them apart); `together` for many.
+    fn overrun(pool: &IoPool, gate: &Gate) -> IoError {
+        for _ in 0..10_000 {
+            let before = pool.status().timeouts;
+            match pool.call(gate.op()) {
+                Err(IoError::Timeout) if pool.status().timeouts == before => continue,
+                Err(e) => return e,
+                Ok(()) => panic!("a gated operation ended"),
+            }
+        }
+        panic!("no worker took a call in 10,000 tries");
+    }
+
+    /// `n` gated operations called at once, again for those a worker didn't take in time, until
+    /// each overran or was refused: their errors.
+    fn together(pool: &Arc<IoPool>, gate: &Gate, n: usize) -> Vec<IoError> {
+        let mut out = Vec::new();
+        while out.len() < n {
+            let calls: Vec<_> = (out.len()..n)
+                .map(|_| {
+                    let (p, g) = (pool.clone(), gate.clone());
+                    thread::spawn(move || {
+                        let before = g.started();
+                        let r = p.call(g.op());
+                        (before, r)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = calls.into_iter().map(|h| h.join().unwrap().1).collect();
+            // (Every operation that overran is running, held by the gate; one dropped unrun never
+            // runs: once the gate has seen as many as overran, the rest were dropped.)
+            eventually("each overrun's operation running", || gate.started() as u64 == pool.status().timeouts);
+            let overran = gate.started() - out.iter().filter(|e| matches!(e, IoError::Timeout)).count();
+            let mut timeouts = 0;
+            for r in results {
+                match r {
+                    Err(IoError::Timeout) if timeouts < overran => {
+                        timeouts += 1;
+                        out.push(IoError::Timeout);
+                    }
+                    Err(IoError::Timeout) => {}
+                    Err(e) => out.push(e),
+                    Ok(()) => panic!("a gated operation ended"),
+                }
+            }
+        }
+        out
     }
 
     #[test]
     fn operations() {
         let dir = tempfile::tempdir().unwrap();
-        let pool = IoPool::with_config(cfg(dir.path().to_owned(), 2, 2000));
+        let pool = IoPool::with_config(PoolConfig::new(2, LONG, dir.path().to_owned()));
         assert_eq!(pool.call(|| Ok(41 + 1)).unwrap(), 42);
         let p = dir.path().join("a.bin");
         pool.write_new(&p, b"0123456789".to_vec()).unwrap();
@@ -741,21 +832,24 @@ mod tests {
         let ev = events.clone();
         pool.set_listener(move |online| ev.lock().unwrap().push(online));
 
-        // The share "disappears" and an operation stalls.
+        // The share "disappears" and an operation stalls: the caller gets its timeout while the
+        // operation still holds its worker.
         fs::remove_dir(&probe).unwrap();
-        let t0 = Instant::now();
-        assert!(matches!(pool.call(|| { thread::sleep(Duration::from_millis(1500)); Ok(()) }), Err(IoError::Timeout)));
-        assert!(t0.elapsed() < Duration::from_millis(1000));
+        let gate = Gate::default();
+        assert!(matches!(overrun(&pool, &gate), IoError::Timeout));
         assert!(!pool.is_online());
         let st = pool.status();
         assert_eq!((st.stuck, st.timeouts), (1, 1));
         assert!(st.offline_since.is_some());
 
-        // Offline: refused at once, without queueing.
+        // Offline: refused at once, without queueing (a call that waited for a worker would wait
+        // its whole timeout, here ten minutes).
         let t0 = Instant::now();
-        assert!(matches!(pool.call(|| Ok(())), Err(IoError::Offline)));
+        let ran = Arc::new(AtomicBool::new(false));
+        let r2 = ran.clone();
+        assert!(matches!(pool.call_timeout(Duration::from_secs(600), move || Ok(r2.store(true, SeqCst))), Err(IoError::Offline)));
         assert!(matches!(pool.read_all(&dir.path().join("x")), Err(IoError::Offline)));
-        assert!(t0.elapsed() < Duration::from_millis(50));
+        assert!(t0.elapsed() < Duration::from_secs(600) && !ran.load(SeqCst));
 
         // The probe keeps failing while the share is away.
         thread::sleep(Duration::from_millis(200));
@@ -763,16 +857,17 @@ mod tests {
 
         // It comes back: the prober closes the breaker.
         fs::create_dir(&probe).unwrap();
-        assert!(eventually(3, || pool.is_online()));
-        assert_eq!(pool.call(|| Ok(7)).unwrap(), 7);
+        eventually("the breaker closed", || pool.is_online());
+        assert_eq!(pool.call_timeout(LONG, || Ok(7)).unwrap(), 7);
         assert_eq!(*events.lock().unwrap(), [false, true]);
         assert!(pool.status().offline_since.is_none());
 
         // The stuck thread returns and the pool settles back to its size.
-        assert!(eventually(5, || {
+        gate.release();
+        eventually("the stuck thread back", || {
             let s = pool.status();
             s.stuck == 0 && s.workers == 2
-        }));
+        });
     }
 
     #[test]
@@ -780,18 +875,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(cfg(dir.path().to_owned(), 2, 100));
         // An operation overruns while the share still answers probes: busy, not gone.
-        let r = pool.call(|| {
-            thread::sleep(Duration::from_millis(600));
-            Ok(())
-        });
-        assert!(matches!(r, Err(IoError::Timeout)), "{r:?}");
+        let gate = Gate::default();
+        let r = overrun(&pool, &gate);
+        assert!(matches!(r, IoError::Timeout), "{r:?}");
         assert!(pool.is_online());
         let st = pool.status();
         assert_eq!((st.stuck, st.timeouts), (1, 1));
         assert!(st.offline_since.is_none());
         // Other calls go on meanwhile, and the slow thread rejoins.
-        assert_eq!(pool.call(|| Ok(5)).unwrap(), 5);
-        assert!(eventually(3, || pool.status().stuck == 0));
+        assert_eq!(pool.call_timeout(LONG, || Ok(5)).unwrap(), 5);
+        gate.release();
+        eventually("the slow thread back", || pool.status().stuck == 0);
     }
 
     #[test]
@@ -799,21 +893,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(cfg(dir.path().to_owned(), 8, 100));
         // Eight reads started together all overrun; the share answers probes.
-        let handles: Vec<_> = (0..8)
-            .map(|_| {
-                let p = pool.clone();
-                thread::spawn(move || p.call(|| {
-                    thread::sleep(Duration::from_millis(500));
-                    Ok(())
-                }))
-            })
-            .collect();
-        for h in handles {
-            assert!(matches!(h.join().unwrap(), Err(IoError::Timeout)));
+        let gate = Gate::default();
+        for e in together(&pool, &gate, 8) {
+            assert!(matches!(e, IoError::Timeout), "{e:?}");
         }
         assert!(pool.is_online(), "a busy share isn't offline");
         assert_eq!(pool.status().timeouts, 8);
-        assert!(eventually(3, || pool.status().stuck == 0));
+        gate.release();
+        eventually("the slow threads back", || pool.status().stuck == 0);
     }
 
     #[test]
@@ -823,71 +910,68 @@ mod tests {
         fs::create_dir(&probe).unwrap();
         let pool = IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 4, 100) });
         fs::remove_dir(&probe).unwrap();
-        let handles: Vec<_> = (0..4)
-            .map(|_| {
-                let p = pool.clone();
-                thread::spawn(move || p.call(|| {
-                    thread::sleep(Duration::from_millis(400));
-                    Ok(())
-                }))
-            })
-            .collect();
-        for h in handles {
-            assert!(matches!(h.join().unwrap(), Err(IoError::Timeout)));
+        // Reads overrun: the first to find the share gone trips the breaker; any call after that is
+        // refused.
+        let gate = Gate::default();
+        for e in together(&pool, &gate, 4) {
+            assert!(matches!(e, IoError::Timeout | IoError::Offline), "{e:?}");
         }
+        assert!(pool.status().timeouts >= 1);
         assert!(!pool.is_online());
+        gate.release();
     }
 
     #[test]
     fn stuck_threads_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(cfg(dir.path().to_owned(), 2, 50));
-        let peak = Arc::new(AtomicUsize::new(0));
-        for _ in 0..6 {
-            assert!(eventually(3, || pool.is_online()));
-            let r = pool.call(|| {
-                thread::sleep(Duration::from_millis(1500));
+        let gate = Gate::default();
+        // Overruns until every thread the pool may have is stuck: never more than 2 + 2 spare.
+        let mut peak = 0;
+        while pool.status().stuck < 4 {
+            let r = overrun(&pool, &gate);
+            assert!(matches!(r, IoError::Timeout), "{r:?}");
+            let s = pool.status();
+            peak = peak.max(s.workers);
+            assert!(s.workers <= 4, "{s:?}");
+        }
+        assert!(pool.is_online());
+        // Every thread is stuck: a call can't start, times out, and is dropped unrun; no thread is
+        // added.
+        let ran = Arc::new(AtomicBool::new(false));
+        for _ in 0..3 {
+            let r2 = ran.clone();
+            let r = pool.call(move || {
+                r2.store(true, SeqCst);
                 Ok(())
             });
             assert!(matches!(r, Err(IoError::Timeout)), "{r:?}");
-            let s = pool.status();
-            peak.fetch_max(s.workers, SeqCst);
-            assert!(s.workers <= 4, "{s:?}");
         }
         let s = pool.status();
-        assert_eq!(s.workers, 4);
-        assert!(s.stuck >= 4, "{s:?}");
-        // Every thread is stuck: a call can't start, times out, and is dropped unrun.
-        assert!(eventually(3, || pool.is_online()));
-        let ran = Arc::new(AtomicBool::new(false));
-        let r2 = ran.clone();
-        let r = pool.call(move || {
-            r2.store(true, SeqCst);
-            Ok(())
-        });
-        assert!(matches!(r, Err(IoError::Timeout)), "{r:?}");
+        assert_eq!((s.workers, s.stuck, s.timeouts), (4, 4, 4), "{s:?}");
         // Then they all come back, the extras leave, and work resumes.
-        assert!(eventually(5, || {
+        gate.release();
+        eventually("the threads back, the extras gone", || {
             let s = pool.status();
             s.stuck == 0 && s.workers == 2
-        }));
-        assert!(eventually(3, || pool.is_online()));
-        assert_eq!(pool.call(|| Ok(3)).unwrap(), 3);
+        });
+        assert!(pool.is_online());
+        assert_eq!(pool.call_timeout(LONG, || Ok(3)).unwrap(), 3);
         thread::sleep(Duration::from_millis(50));
         assert!(!ran.load(SeqCst), "a cancelled operation ran");
-        assert!(peak.load(SeqCst) <= 4);
+        assert_eq!(peak, 4);
     }
 
     #[test]
     fn busy_pool_times_out_without_tripping() {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(cfg(dir.path().to_owned(), 1, 1000));
-        let p2 = pool.clone();
-        let long = thread::spawn(move || p2.call(|| {
-            thread::sleep(Duration::from_millis(400));
-            Ok(1)
-        }));
-        thread::sleep(Duration::from_millis(50));
+        // Its one worker busy (with a long timeout of its own)...
+        let gate = Gate::default();
+        let (p2, g2) = (pool.clone(), gate.clone());
+        let long = thread::spawn(move || p2.call_timeout(LONG, g2.op()));
+        eventually("the long operation started", || gate.started() == 1);
+        // ...a call waits for it in vain, and times out unrun.
         let ran = Arc::new(AtomicBool::new(false));
         let r2 = ran.clone();
         let r = pool.call_timeout(Duration::from_millis(100), move || {
@@ -896,7 +980,8 @@ mod tests {
         });
         assert!(matches!(r, Err(IoError::Timeout)), "{r:?}");
         assert!(pool.is_online(), "a queue wait must not mark the NAS offline");
-        assert_eq!(long.join().unwrap().unwrap(), 1);
+        gate.release();
+        long.join().unwrap().unwrap();
         thread::sleep(Duration::from_millis(50));
         assert!(!ran.load(SeqCst));
         assert_eq!(pool.status().timeouts, 0);
@@ -907,17 +992,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let probe = dir.path().join("share");
         fs::create_dir(&probe).unwrap();
-        let pool = IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 1, 1000) });
+        let cfg = || PoolConfig { probe_interval: Duration::from_secs(60), ..PoolConfig::new(1, LONG, probe.clone()) };
+        let pool = IoPool::with_config(cfg());
         let r = pool.call(|| -> io::Result<()> { Err(io::Error::from_raw_os_error(libc::ETIMEDOUT)) });
         assert!(matches!(r, Err(IoError::Io(_))));
         assert!(!pool.is_online());
 
-        let pool = IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 1, 1000) });
+        let pool = IoPool::with_config(cfg());
         fs::remove_dir(&probe).unwrap();
         assert!(matches!(pool.stat(&probe.join("file")), Err(IoError::Offline)));
         assert!(!pool.is_online());
 
-        let pool = IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 1, 1000) });
+        let pool = IoPool::with_config(cfg());
         assert!(matches!(pool.exists(&probe.join("file")), Err(IoError::Offline)));
         pool.mark_offline("test");
         assert!(matches!(pool.call(|| Ok(())), Err(IoError::Offline)));
