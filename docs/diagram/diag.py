@@ -8,6 +8,22 @@ CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
 TAB = {'area': 'PER AREA', 'pack': 'PER Z3 PACK', 'global': 'WORLDWIDE', 'task': 'TASK'}
 # Before a step's language: the M1's helper may take its jobs (agent::claims::SHARED).
 SHARED = '⇄'
+# How reproducible a curated input is today: its method written down, partly, not at all, or its maker gone.
+REPRO = {'doc': 'method written down', 'part': 'partly written down', 'none': 'undocumented', 'gone': 'maker gone, frozen'}
+
+
+def repro_mark(x, cy, level, r=4.2):
+    """The reproducibility marker: a full, half or empty disc, or a crossed one (maker gone)."""
+    if level == 'doc':
+        return f'<circle class="rp full" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
+    if level == 'part':
+        return (f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
+                f'<path class="rp-half" d="M{x:.1f},{cy - r:.1f} A{r},{r} 0 0 0 {x:.1f},{cy + r:.1f} Z"/>')
+    if level == 'gone':
+        q = r * 0.62
+        return (f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
+                f'<path class="rp-x" d="M{x - q:.1f},{cy - q:.1f} L{x + q:.1f},{cy + q:.1f} M{x + q:.1f},{cy - q:.1f} L{x - q:.1f},{cy + q:.1f}"/>')
+    return f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
 
 
 class Bx:
@@ -22,7 +38,8 @@ class Bx:
 
 
 def rpath(pts, r=7):
-    """Orthogonal polyline with rounded corners."""
+    """Orthogonal polyline with rounded corners (repeated points dropped)."""
+    pts = [p for i, p in enumerate(pts) if i == 0 or abs(p[0] - pts[i - 1][0]) + abs(p[1] - pts[i - 1][1]) > 0.01]
     d = f'M{pts[0][0]:.1f},{pts[0][1]:.1f}'
     for i in range(1, len(pts) - 1):
         (x0, y0), (x1, y1), (x2, y2) = pts[i - 1], pts[i], pts[i + 1]
@@ -117,6 +134,34 @@ class Diagram:
             yy += kh + 6
         h = max(yy - y, minh)
         self.boxes.append(f'<g class="c-{k}"><rect class="src" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="11"/>' + ''.join(el) + '</g>')
+        return Bx(x, y, w, h)
+
+    def cur(self, k, y, title, subs, who, repro, col='src', minh=0, later=False, w=None):
+        """A curated input: made by hand (by the owner, a Claude agent, a hand download or a hand-run step), not by a
+        job. A sheet with a folded corner; who: who or what makes it (in the class's colour); repro: how reproducible
+        it is today (REPRO's keys, or (key, words)), its marker and words at the foot."""
+        level, words = repro if isinstance(repro, tuple) else (repro, REPRO[repro])
+        x, ww = COLS[col]
+        w = w or ww
+        tx = self.tx
+        ty = y + 17
+        el = [tx('tt', x + 10, ty, title, w - 26)]
+        for i, s in enumerate(subs):
+            el.append(tx('sub', x + 10, ty + 13.5 * (i + 1), s, w - 20))
+        yy = ty + 13.5 * len(subs)
+        if who:
+            yy += 13.5
+            el.append(tx('who', x + 10, yy, who, w - 20))
+        yy += 15
+        el.append(repro_mark(x + 15, yy - 3.6, level))
+        el.append(tx('rpt', x + 25, yy, words, w - 35))
+        h = max(yy + 9 - y, minh)
+        f = 9
+        d = (f'M{x + 3},{y} H{x + w - f} L{x + w},{y + f} V{y + h - 3:.1f} Q{x + w},{y + h:.1f} {x + w - 3},{y + h:.1f} '
+             f'H{x + 3} Q{x},{y + h:.1f} {x},{y + h - 3:.1f} V{y + 3} Q{x},{y} {x + 3},{y} Z')
+        fold = f'M{x + w - f},{y} V{y + f} H{x + w}'
+        self.boxes.append(f'<g class="c-{k}"><path class="cur{" later" if later else ""}" d="{d}"/><path class="cur-fold" d="{fold}"/>'
+                          + ''.join(el) + '</g>')
         return Bx(x, y, w, h)
 
     def pill(self, k, cy, lines, note=None, later=False):
@@ -273,6 +318,14 @@ svg .a.dashed{stroke-dasharray:5 4}
 svg .halo{fill:none;stroke:var(--bg);stroke-width:7}
 svg .mk{fill:var(--k)}
 svg .lbl{font:600 10.5px var(--sans);fill:var(--k);paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}
+svg .cur{fill:color-mix(in srgb,var(--k) 4%,var(--surface));stroke:var(--k);stroke-width:1.2;stroke-linejoin:round}
+svg .cur.later{stroke-dasharray:5 3.5}
+svg .cur-fold{fill:color-mix(in srgb,var(--k) 30%,var(--surface));stroke:var(--k);stroke-width:1;stroke-linejoin:round}
+svg .who{font:600 10.5px var(--sans);fill:var(--k)}
+svg .rpt{font:400 10px var(--mono);fill:var(--muted)}
+svg .rp{fill:var(--surface);stroke:var(--fg);stroke-width:1.1}
+svg .rp.full,svg .rp-half{fill:var(--fg)}
+svg .rp-x{stroke:var(--fg);stroke-width:1.1;stroke-linecap:round}
 svg .st-box{fill:var(--surface);stroke:var(--edge);stroke-width:1.2}
 svg .st-box.nas{stroke:var(--fg);stroke-width:1.5}
 svg .st-box.later{stroke-dasharray:5 3.5}
