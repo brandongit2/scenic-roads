@@ -78,7 +78,7 @@ fn raise_limit() {
                     r.rlim_cur = want;
                 }
             }
-            LIMIT.store(r.rlim_cur as u64, Ordering::Relaxed);
+            LIMIT.store(r.rlim_cur, Ordering::Relaxed);
         }
     }
 }
