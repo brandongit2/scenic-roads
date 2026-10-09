@@ -3087,6 +3087,9 @@ impl Agent {
                 env.push((crate::out::UNITS_AS_OF_ENV.into(), format!("{}#{}", self.o.home.join(ROUND_FILE).display(), r.began)));
             }
         }
+        // This Mac's cache, where a job keeps what it reads again and again (the coverage:
+        // pipeline::coverage::Coverage::load).
+        env.push((crate::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
         // done (crate::control), afresh.
         let control = self.control_path(k);

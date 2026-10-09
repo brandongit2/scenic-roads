@@ -407,8 +407,12 @@ record changes back through the build Mac's coordinator, which journals them for
     registers' snapshot,
     extracted (`registers-<id>/`: the pass's copy is an APFS clone of it, so deleting it would free
     next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
-    (`unit-stages.json`); and what a unit kept that isn't on the NAS yet (`dem-units/`,
-    `scenic-units/`).
+    (`unit-stages.json`); what a unit kept that isn't on the NAS yet (`dem-units/`,
+    `scenic-units/`); and the regions' coverage as a job last read it (`coverage/<key>.cov`, ~18 MB:
+    its shapes' rings, kept by `pipeline::coverage::Coverage::load` in the folder the agent names
+    its jobs, `SCENIC_CACHE`), which the next job reads instead of the recipes and the pass's
+    outlines on the NAS while every recipe and outline file has the name, length and time it had
+    (one changed in the last few seconds is always read), and which goes when a changed one is kept.
 - **Its own map** is served from the NAS and what it has downloaded (§4, Mirror, per Mac); its
   downloads keep a 150 GB reserve so builds have room.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free). It copies the planet to

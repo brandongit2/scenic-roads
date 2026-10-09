@@ -3328,18 +3328,16 @@ fn roadunits(out: &mut Out) -> Result<()> {
 fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverage> {
     let _p = phase("the regions and their outlines read", Class::NasRead);
     let regions = opt(args, "--regions").map(PathBuf::from).unwrap_or_else(|| out.root().join("inputs/regions"));
-    let (recipes, bad) = pipeline::agent::recipes::load(&regions);
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root()));
+    let outlines = date.as_deref().and_then(|d| out.get(&format!("sources/osm/{d}/outlines")).map(|n| out.path(n)));
+    // (Kept in this Mac's cache, where the agent names one, while the recipes and outlines are as
+    // they were: pipeline::coverage::Coverage::load.)
+    let cache = std::env::var_os(pipeline::coverage::CACHE_ENV).map(PathBuf::from);
+    let (cov, bad) = pipeline::coverage::Coverage::load(&regions, outlines.as_deref(), &out.root().join("inputs/outlines"), cache.as_deref())?;
     for (f, e) in &bad {
         eprintln!("skipping region {f}: {e}");
     }
-    anyhow::ensure!(!recipes.is_empty(), "no regions in {}", regions.display());
-    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root()));
-    let outlines = date
-        .as_deref()
-        .and_then(|d| out.get(&format!("sources/osm/{d}/outlines")).map(|n| out.path(n)))
-        .map(|p| pipeline::outlines::Outlines::open(&p))
-        .transpose()?;
-    pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
+    Ok(cov)
 }
 
 /// The z6 tiles named (`6/x/y`), at least one.
