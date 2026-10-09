@@ -122,11 +122,25 @@ pub enum Source<'a> {
 ///
 /// On the NAS this blocks on the share: callers that must stay responsive run it in the I/O pool.
 pub fn write_atomic(root: &Path, logical: &str, ext: &str, src: Source<'_>) -> Result<String> {
+    write_atomic_as(root, logical, ext, src, None)
+}
+
+/// `write_atomic` of a local file whose `hash16` and length the caller has just worked out (an
+/// upload hashing it once for its name and its checksum together: pipeline's `Out::put_file`), so
+/// it isn't read for them again. The read-back is checked against them as against its own: a wrong
+/// hash, or a file changed since, fails as a corrupted write does, and leaves nothing.
+pub fn write_atomic_hashed(root: &Path, logical: &str, ext: &str, file: &Path, hash: &str, size: u64) -> Result<String> {
+    ensure!(is_hash16(hash), "bad hash {hash:?}");
+    write_atomic_as(root, logical, ext, Source::File(file), Some((hash.to_string(), size)))
+}
+
+fn write_atomic_as(root: &Path, logical: &str, ext: &str, src: Source<'_>, known: Option<(String, u64)>) -> Result<String> {
     ensure!(valid_logical(logical), "bad logical name {logical:?}");
     ensure!(valid_ext(ext), "bad extension {ext:?}");
-    let (hash, size) = match src {
-        Source::Bytes(b) => (hash16(b), b.len() as u64),
-        Source::File(p) => {
+    let (hash, size) = match (known, src) {
+        (Some(k), _) => k,
+        (None, Source::Bytes(b)) => (hash16(b), b.len() as u64),
+        (None, Source::File(p)) => {
             let size = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
             (hash16_file(p)?, size)
         }
@@ -372,6 +386,27 @@ mod tests {
         assert!(write_atomic(root, "a.b", "bin", Source::Bytes(b"x")).is_err());
         assert!(write_atomic(root, "../a", "bin", Source::Bytes(b"x")).is_err());
         assert!(write_atomic(root, "/abs", "bin", Source::Bytes(b"x")).is_err());
+    }
+
+    #[test]
+    fn a_hash_given_is_checked_as_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let src = dir.path().join("src.bin");
+        fs::write(&src, b"the bytes").unwrap();
+        // A wrong hash (or the file changed since it was hashed): the read-back doesn't match it,
+        // and nothing is left, under its name or a temporary one.
+        let e = write_atomic_hashed(&root, "h", "bin", &src, &hash16(b"other bytes"), 9).unwrap_err();
+        assert!(format!("{e:#}").contains("the write was corrupted"), "{e:#}");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        // A wrong length likewise.
+        assert!(write_atomic_hashed(&root, "h", "bin", &src, &hash16(b"the bytes"), 8).is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        // The right ones: the name write_atomic gives.
+        let name = write_atomic_hashed(&root, "h", "bin", &src, &hash16(b"the bytes"), 9).unwrap();
+        assert_eq!(name, write_atomic(&root, "h", "bin", Source::File(&src)).unwrap());
+        assert_eq!(fs::read(root.join(&name)).unwrap(), b"the bytes");
     }
 
     #[test]

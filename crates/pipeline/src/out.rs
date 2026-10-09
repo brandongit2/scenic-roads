@@ -95,20 +95,39 @@ pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &Path) -> Result
     }
 }
 
-fn sha256_file(p: &Path) -> Result<String> {
+/// A file's `hash16` (BLAKE3, its content name's) and SHA-256 (the NAS's check, `verify`), from one
+/// read of it: each chunk hashed both ways at once, on two threads.
+fn hashes_of(p: &Path) -> Result<(String, String)> {
     let mut f = std::fs::File::open(p)?;
-    let mut h = sha2::Sha256::new();
+    let mut b3 = blake3::Hasher::new();
+    let mut sha = sha2::Sha256::new();
     let mut buf = vec![0u8; 8 << 20];
     loop {
-        let n = f.read(&mut buf)?;
+        let mut n = 0;
+        while n < buf.len() {
+            match f.read(&mut buf[n..])? {
+                0 => break,
+                k => n += k,
+            }
+        }
         if n == 0 {
             break;
         }
-        h.update(&buf[..n]);
+        let chunk = &buf[..n];
+        // (In turn where there are no threads: the WebAssembly builds.)
+        let threaded = std::thread::scope(|s| {
+            let other = std::thread::Builder::new().spawn_scoped(s, || sha.update(chunk));
+            b3.update(chunk);
+            other.is_ok()
+        });
+        if !threaded {
+            sha.update(chunk);
+        }
         store::naming::count_moved(n);
     }
-    Ok(format!("{:x}", h.finalize()))
+    Ok((store::naming::hex16(&b3.finalize()), format!("{:x}", sha.finalize())))
 }
+
 
 impl Out {
     /// `root`: the NAS project folder (or a local folder standing in for it); `scratch`: local space.
@@ -159,12 +178,15 @@ impl Out {
         if logical.contains('.') {
             bail!("logical names have no dots: {logical}");
         }
-        let h = store::naming::hash16_file(local)?;
+        // (Its name's hash and its checksum from one read of it: `write_atomic_hashed` checks the
+        // read-back against the hash, as against its own.)
+        let size = std::fs::metadata(local)?.len();
+        let (h, sha) = hashes_of(local)?;
         let name = store::naming::content_name(logical, &h, ext);
         let dest = self.root.join(&name);
         let existed = dest.exists();
-        let sha = if existed { None } else { Some(sha256_file(local)?) };
-        let got = store::naming::write_atomic(&self.root, logical, ext, store::naming::Source::File(local))?;
+        let sha = (!existed).then_some(sha);
+        let got = store::naming::write_atomic_hashed(&self.root, logical, ext, local, &h, size)?;
         anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
         // (Its bytes, to the phase it's uploaded in: crate::timings.)
         crate::timings::count(if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) }, 1);
@@ -184,10 +206,10 @@ impl Out {
     }
 
     /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads the
-    /// file four times (its name's hash, twice; its checksum; the copy) and the copy once more on the
-    /// NAS, for a large file most of a step's time.
+    /// file twice (its name's hash and its checksum; the copy) and the copy once more on the NAS, for
+    /// a large file most of a step's time.
     pub fn put_file_with(&mut self, logical: &str, ext: &str, local: &Path, on: &(dyn Fn(u64, u64) + Sync)) -> Result<String> {
-        let total = 5 * std::fs::metadata(local)?.len();
+        let total = 3 * std::fs::metadata(local)?.len();
         let start = store::naming::moved();
         let stop = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|s| {
@@ -401,6 +423,21 @@ impl BuildLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One read gives the name's hash and the checksum, each as hashing the bytes alone gives it,
+    /// across chunks (a file larger than one, its last one short).
+    #[test]
+    fn a_files_two_hashes_from_one_read() {
+        let d = tempfile::tempdir().unwrap();
+        for len in [0usize, 5, (8 << 20) + 12345] {
+            let p = d.path().join(format!("f{len}"));
+            let bytes: Vec<u8> = (0..len).map(|i| (i * 31 % 251) as u8).collect();
+            std::fs::write(&p, &bytes).unwrap();
+            let (h, sha) = hashes_of(&p).unwrap();
+            assert_eq!(h, store::naming::hash16(&bytes));
+            assert_eq!(sha, format!("{:x}", sha2::Sha256::digest(&bytes)));
+        }
+    }
 
     #[test]
     fn a_root_and_its_spelling_with_a_slash_share_the_lock() {
