@@ -76,10 +76,11 @@ impl Index {
     }
 }
 
-/// Tile `t`'s buildings in `cache` (`buildings/<index's hash>/<x>-<y>.f32`: the files an index was
-/// made with), copied from the NAS whole when it isn't there and held for the job
-/// (store::cachefile): a unit's buildings step reads its tiles whole, and units side by side read
-/// the same ones. None when the tile has no buildings.
+/// Tile `t`'s buildings in `cache` (`blobs/buildings/<index's hash>/<x>-<y>.f32`: the files an index
+/// was made with; among the copies of the NAS's files, which room-making may take), copied from the
+/// NAS whole when it isn't there and held for the job (store::cachefile): a unit's buildings step
+/// reads its tiles whole, and units side by side read the same ones. None when the tile has no
+/// buildings.
 pub fn local_tile(root: &Path, index: &Index, t: Unit, cache: &Path) -> Result<Option<PathBuf>> {
     let Some((src, local, want)) = tile_copy(root, index, t, cache) else { return Ok(None) };
     fetch_tile(&src, &local, want)?;
@@ -89,7 +90,7 @@ pub fn local_tile(root: &Path, index: &Index, t: Unit, cache: &Path) -> Result<O
 /// Where tile `t` is on the NAS, where its copy in `cache` goes, and its length (`local_tile`).
 pub fn tile_copy(root: &Path, index: &Index, t: Unit, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
     let want = index.bytes(t)?;
-    Some((tile_path(root, t), cache.join("buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)), want))
+    Some((tile_path(root, t), cache.join("blobs/buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)), want))
 }
 
 /// The copy of `src` at `local`, `want` bytes, made when it isn't there whole, and held.
@@ -369,7 +370,7 @@ mod tests {
         let cache = d.path().join("cache");
         assert_eq!(stage(d.path(), &index, u, None, &staged, Some(&cache)).unwrap(), 2);
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
-        assert_eq!(link, cache.join(format!("buildings/0123456789abcdef/{}-{}.f32", near[7].x, near[7].y)));
+        assert_eq!(link, cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[7].x, near[7].y)));
         assert_eq!(std::fs::read(&link).unwrap(), std::fs::read(tile_path(d.path(), near[7])).unwrap());
         // A copy cut short (another length than the index's) is made again; a tile on the NAS
         // that isn't the index's length is an error, not a short copy.
@@ -377,7 +378,7 @@ mod tests {
         assert_eq!(local_tile(d.path(), &index, near[7], &cache).unwrap().unwrap(), link);
         assert_eq!(std::fs::metadata(&link).unwrap().len(), 16 * 9);
         std::fs::write(tile_path(d.path(), near[0]), b"cut").unwrap();
-        std::fs::remove_file(cache.join(format!("buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y))).unwrap();
+        std::fs::remove_file(cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y))).unwrap();
         assert!(local_tile(d.path(), &index, near[0], &cache).is_err());
         assert!(local_tile(d.path(), &index, near[1], &cache).unwrap().is_none());
     }
