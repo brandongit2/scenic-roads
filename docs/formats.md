@@ -337,6 +337,22 @@ degree around it (a shape left with none goes). The program `trees --blocks` wri
 order it made them) and `trees-tops.bin` (its zoom-8 values, `pyramid::Tops::to_bytes`), as `trees
 --block` writes one block's.
 
+**A terrain piece's subtrees' task** (`pipeline::terrain_task`, docs/plan.md §6 Terrain; a folder
+on the build Mac, its file sent to the worker as `u/…`, not in the manifest): `in.sect` (RDSECT v1),
+meta `{"fmt": 1, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
+"levels": [[z, [[x, y], …]], …] (the group's tiles, z12 → z9), "water", "north", "coarse" (whether
+the job's run has those sources), "cells": [[lat, lon, "sea" | "missing" | "cell", width, first
+row, rows, first column, columns], …]}` (GLO-30's 1° cells its tiles ask for, and the window of
+each that their samples read, two pixels' margin), and sections `r-<z>-<x>-<y>` (a raw tile as the
+job read it, a PNG; none: AWS hasn't it; its tiles' own and, with "coarse", AWS's z9 tile over each
+of z10–12), `w-<z>-<x>-<y>` (a tile's water polygons as the basemap gives them, none for none: a u32
+count, then each its kind u8 (1 sea, 2 lake), key u64, ring count u32, and each ring's point count
+u32 and points as f64 pairs, little-endian) and `c-<lat>-<lon>` (a cell's window, zstd: its heights
+f32 little-endian row by row, then a byte a pixel, filled from another DEM or not). The program
+`terrainsub` writes there `hi.sect` (RDSECT v1, meta `{"fmt": 1, "step": "terrainsub", "piece",
+"subtrees"}`, a section `t-<z>-<x>-<y>` a tile as the piece's hi pack holds it, by zoom, column,
+row) and `mid.sect` (the group's part of the piece's mid, as `work/terrain-mid/6-x-y`).
+
 ## Names (docs/plan.md §7)
 
 - **Translation lines** (`translations/**/*.jsonl`, not `todo/`): `{"n", "kind", "langs", "main",
@@ -542,7 +558,7 @@ phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` for a
-  task (`task tail`, `task bldtile`, `task treeblock`). `id`: the agent's id for the job
+  task (`task tail`, `task bldtile`, `task treeblock`, `task terrainsub`). `id`: the agent's id for the job
   (`SCENIC_JOB_ID`, "unit 6/32/24"; a page's task, "task <lease>"). `host`: the Mac (or page) that
   ran it, as the agent or the coordinator that kept it says. `start`: seconds since 1970.
 - `wall_s`, `cpu_s`: the run's (CPU: user and system, the process's and its finished children's;
@@ -785,7 +801,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"<kind> <unit>"` for a task: `"tail 6/x/y"` a unit's last
     steps, `"bldtile 8/x/y"` a 3D buildings' z8 area, `"treeblock 8/x/y"` a row of tree cover blocks,
-    by its first),
+    by its first, `"terrainsub 8/x/y"` a terrain piece's group of z8 subtrees, by its first),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when

@@ -159,12 +159,50 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   (1 GB of disk: it reads the squares where they lie). They pay off only for a worker measured
   faster than the build Mac at them: a page on the M1 took 20 s for a row the M1's own run made in
   about as long (its pace 1.07), and the build Mac makes a row on its threads in about 3 s.
+- **Terrain's z8 subtrees** (kind `terrainsub`, docs/plan.md §6 Terrain, `pipeline::terrain_task`):
+  a terrain piece's run (`scenic-build terrain` on z6 tiles; it inherits the agent's coordinator)
+  offers some of its z8 subtrees the same way. A piece is 16 subtrees, each a z8 tile's z9–12 tiles
+  near the coverage; a tile reads only its own raw tile, its children's changes and AWS's z9 tile
+  over it, all within its subtree, but a lake's level is one, from all its shore in the piece's
+  level: so subtrees go out in groups closed under the lakes their tiles' water shares (by key), and
+  a group made alone makes its tiles and its lakes' levels as the whole piece's run does, the run
+  the others the same. Groups of more than two subtrees aren't offered. Offered when the piece
+  begins, from its last groups, one per worker that takes them around, three at most, never every
+  group; the run makes the others, then settles each with the same patience (this Mac's own time:
+  the group's tiles at the pace of the run's; a worker's pace at `terrainsub` its own), a worker's
+  result taken or checked byte for byte (tiles and mid) against the run's own of the group. Its one
+  file (`u/in.sect`, docs/formats.md) holds all the group reads, cut by the job from what it reads
+  itself: the raw tiles (from this Mac's cache and the NAS's archives; AWS is fetched from here
+  only), the basemap's water polygons, and north of 59.5°N the windows of GLO-30's cells its samples
+  read (a subtree touches up to 16 cells, 15 MB each whole). Nothing is read through `/net`. Its
+  one run is `terrainsub --in {dir}/in.sect --out {dir}`, writing `hi.sect` (the group's tiles) and
+  `mid.sect` (its mid's part). Its memory: its file twice and 1.3 MB a tile of its largest level,
+  120 MB more, until a worker measures it (`terrainsub 8/x/y`, its first subtree). A helper takes
+  them too (1 GB of disk).
+  - **Measured** (2026-10-09, the M4, the NAS's data): a whole piece is no task (6/5/17, Fairbanks:
+    5,440 tiles, 29 s, 125 CPU-s, 5.9 GB at its peak); a subtree is 4.5 CPU-s (0.55 s on the M4's
+    14 threads), 330 MB at its peak natively on one thread, as WebAssembly 6.4 s and 323 MB (a
+    page: 724 MB at most for a group of two, its file 113 MB). Its file: 51–60 MB for a dense
+    subtree north of 60°, 4–36 MB elsewhere. The lakes leave little to offer in lake country: of
+    6/5/17's 16 subtrees 6 are in groups of one or two; 6/5/18 (Anchorage) is one group of 14 and
+    two small ones, 6/7/19 (Juneau) one of 7 and two small; 6/4/28 (Hawaii) is seven groups.
+  - **Checked** (2026-10-09, the M4): `terrainsub` gives the same bytes on 1 and 14 threads and as
+    WebAssembly (four real groups: 6/5/17's one and two subtrees, 6/5/18's in the 59.5–60° blend,
+    Hawaii's); pieces 6/5/17, 6/4/28 and 6/5/18 made again with a group of each made by a native
+    worker (as `scenic run-task` runs one), and again by a page (headless Chrome against a scratch
+    coordinator), each the hi pack and the mid the manifest has (`terrain_task` tests,
+    `live_pieces_with_a_worker`).
+  - **They pay off only for a worker measured faster than the build Mac at them,** and none is: the
+    build Mac makes a subtree in about half a second on its threads, a page in 6–16 s. So today a
+    worker is given one, measured, and then none (the coordinator gives no worker a kind it's
+    measured slower at). Offering a job's next piece's groups as a piece begins
+    (`terrain_task::OFFER_AHEAD`, off) would give a worker a whole piece's time; it pays only once
+    the waiting rule weighs that head start (planned with the placement work).
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
   sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
-  slope, terrain: a terrain or slope piece's z9 subtrees, its mid the seam, which no program runs
-  alone yet: docs/plan.md §6);
+  slope: a slope piece's subtrees, each with a ring of its neighbours' terrain tiles);
   the 3D buildings' areas cut smaller (z9, z10) for workers that spare less than a dense area needs.
 
 ## 4. Data: the coordinator's plane
@@ -188,7 +226,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 ## 5. Control: leases and trust (built)
 
 - **Asking:** a worker sends its name, kind, the work it does (the shared steps' jobs; the tasks'
-  kinds, `tail`, `bldtile` and `treeblock`: a page asks with those three, and may ask with no
+  kinds, `tail`, `bldtile`, `treeblock` and `terrainsub`: a page asks with those four, and may ask with no
   others, `coord::PAGE_TASKS`), the
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
   a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an

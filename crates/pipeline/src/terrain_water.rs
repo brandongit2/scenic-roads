@@ -131,14 +131,23 @@ pub fn polys_of_mvt(mvt: &[u8], z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
         }
         let id = match num(prop("id")) {
             Some(i) if i > 0 => i as u64,
-            // (No id: a key of this tile's own, never shared.)
-            _ => (1u64 << 63) | (u64::from(z) << 56) ^ (u64::from(x) << 30) ^ (u64::from(y) << 4) ^ k as u64,
+            // (No id: a key of this tile's own.)
+            _ => own_key(z, x, y, k),
         };
         let rings = decode_rings(&f.geometry).into_iter().map(|r| r.into_iter().map(|(px, py)| [px * s, py * s]).collect()).collect();
         out.push(Poly { kind, id, rings });
         let _ = (z, x, y);
     }
     Ok(out)
+}
+
+/// The key of a lake without an OSM id, feature `k` of tile z/x/y: meant to be its tile's own, but
+/// not always (docs/plan.md §10): from the tile's 16th feature on, `k`'s bits meet `y`'s, so two
+/// tiles of a column can give two lakes one key, and a piece's run would gather them as one lake
+/// (one level). The live basemap's lakes all have ids (none keyed so in the 398 pieces near the
+/// coverage, 9 Oct 2026); kept as it is until the terrain's version changes anyway.
+pub fn own_key(z: u8, x: u32, y: u32, k: usize) -> u64 {
+    (1u64 << 63) | (u64::from(z) << 56) ^ (u64::from(x) << 30) ^ (u64::from(y) << 4) ^ k as u64
 }
 
 /// An MVT geometry's rings (tile units).
@@ -685,4 +694,16 @@ pub mod tests {
         assert_eq!(wt.sea[5 * 256 + 5], 16);
         assert_eq!(wt.lake[105 * 256 + 105], 16);
     }
+    /// Pins the own keys as they are (docs/plan.md §10): one tile's are distinct, but feature 16 of
+    /// a tile and feature 0 of the tile below it in its column share one.
+    #[test]
+    fn own_keys_as_they_are() {
+        let keys: std::collections::HashSet<u64> = (0..64).map(|k| own_key(12, 5, 7, k)).collect();
+        assert_eq!(keys.len(), 64);
+        assert!(keys.iter().all(|k| k & OWN != 0));
+        assert_eq!(own_key(12, 5, 0, 16), own_key(12, 5, 1, 0), "the latent collision");
+        assert_ne!(own_key(12, 5, 0, 15), own_key(12, 6, 0, 15));
+        assert_ne!(own_key(11, 5, 0, 0), own_key(12, 5, 0, 0));
+    }
+
 }

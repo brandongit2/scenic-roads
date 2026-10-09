@@ -806,6 +806,10 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     tile's z8 → z3, z8 and coarser made again from their children where those exist (a piece's z9
     tiles' means, from its mid), since AWS's coarse levels come from coarser sources: its lo pack.
     Not a piece's z8–z6 alone: a lake's level at z8 is gathered from the whole area's z8 tiles.
+  - A piece's z8 subtrees, in groups closed under the lakes they share, are tasks (`terrainsub`,
+    docs/workers.md §3, `pipeline::terrain_task`): a piece's run offers some to pages and helpers,
+    each group's raw tiles, water and GLO-30's windows in one file, and takes their tiles and mid
+    into the piece, the same bytes.
 
   Together they make the same packs, byte for byte, as the area's whole run (`build_q_with`, which
   `scenic-build terrain 3/x/y` runs by hand, is the pieces and the assembly in memory): checked
@@ -2579,6 +2583,11 @@ At each phase's end an Opus agent reviews the work against this plan.
      iPad; B2, the agent running them for every tile as a fourth chain, the mirror's group, the
      iPad's budget and the credits, published 2026-10-08, the tiles building; B3's sharing with
      pages and the map's polish built, not yet published), then PLATEAU.
+   - Latent, to fix with the terrain's next version (TERRAIN_V): a lake without an OSM id is keyed
+     by its tile (`terrain_water::own_key`), but from a tile's 16th feature on the key's bits meet
+     the row's, so two tiles of a column can give two lakes one key, and a piece's run would level
+     them as one lake. None does now: the live basemap's lakes all have ids (none keyed so in the
+     398 pieces near the coverage, 1.03 million tiles, 9 October); a test pins the keys as they are.
    - Built (8 October): the terrain fix (§6, Terrain): GLO-30 north of 60°N, the water flattened
      from the basemap, the seam spikes' and walled patches' rules. Terrain now depends on AWS's
      tiles, GLO-30's and the pass's basemap's water (pinned in its key by the digest of what each
