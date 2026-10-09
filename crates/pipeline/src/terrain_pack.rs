@@ -113,15 +113,34 @@ impl SourceFiles {
     }
 }
 
+/// Where a run reads AWS's raw tiles: this Mac's (`RawTiles`: its cache, the NAS's archives, else
+/// AWS), or a task's own (crate::terrain_task: those its z8 subtrees read, cut by the job).
+pub trait RawSource: Sync {
+    /// The raw tile (None: AWS has none), and whether it came from AWS just now.
+    fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)>;
+    /// Makes the tiles of `tiles` (zoom `z`) ready to read, counting each into `done` as it is; the
+    /// number that came from AWS.
+    fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], threads: usize, done: &std::sync::atomic::AtomicU64) -> anyhow::Result<usize>;
+}
+
+impl RawSource for RawTiles {
+    fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+        RawTiles::get(self, z, x, y)
+    }
+    fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], threads: usize, done: &std::sync::atomic::AtomicU64) -> anyhow::Result<usize> {
+        RawTiles::prefetch_counted(self, z, tiles, threads, done)
+    }
+}
+
 /// AWS's z9 tiles, raw and decoded, the last few kept: the walled patches' rule compares a z10–12
 /// tile with the z9 one over it.
 pub struct Coarse<'a> {
-    pub raw: &'a RawTiles,
+    pub raw: &'a dyn RawSource,
     kept: Mutex<(u64, HashMap<(u32, u32), (u64, Option<std::sync::Arc<Vec<f32>>>)>)>,
 }
 
 impl<'a> Coarse<'a> {
-    pub fn new(raw: &'a RawTiles) -> Self {
+    pub fn new(raw: &'a dyn RawSource) -> Self {
         Coarse { raw, kept: Mutex::new((0, HashMap::new())) }
     }
 
@@ -897,14 +916,14 @@ pub fn read_mid(path: &std::path::Path) -> anyhow::Result<((u32, u32), Mid)> {
 }
 
 /// A tile as made: zoom, column, row, its bytes.
-type Made = (u8, u32, u32, Vec<u8>);
+pub type Made = (u8, u32, u32, Vec<u8>);
 /// A level as made: its tiles, the ones repaired (for the pixels above them), the 2×2 means.
 type Level = (Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>);
 
 /// What makes the terrain's levels: the raw tiles, the sources, and the counts of what it did (each
 /// tile counts once here and once shaded: `done`).
 struct Maker<'a> {
-    raw: &'a RawTiles,
+    raw: &'a dyn RawSource,
     src: &'a Sources<'a>,
     here: std::sync::atomic::AtomicU64,
     processed: std::sync::atomic::AtomicU64,
@@ -914,7 +933,7 @@ struct Maker<'a> {
 }
 
 impl<'a> Maker<'a> {
-    fn new(raw: &'a RawTiles, src: &'a Sources<'a>) -> Self {
+    fn new(raw: &'a dyn RawSource, src: &'a Sources<'a>) -> Self {
         Maker { raw, src, here: Default::default(), processed: Default::default(), fetched: Default::default(), missing: Default::default(), repaired: Default::default() }
     }
 
@@ -1037,6 +1056,13 @@ impl<'a> Maker<'a> {
     }
 }
 
+/// A piece's levels `levels` (z12 → z9, `piece_levels`, or a task's part of them:
+/// crate::terrain_task) made from `raw` and `src`, its lakes' levels from them alone: its hi tiles,
+/// sorted, and its mid.
+pub fn make_piece(raw: &dyn RawSource, src: &Sources, levels: Vec<(u8, Vec<(u32, u32)>)>) -> anyhow::Result<(Vec<Made>, Mid)> {
+    Maker::new(raw, src).piece(levels)
+}
+
 /// A piece's levels (z6 tile `t`'s), z12 → z9: the tiles near the coverage (20 km), as fine as the
 /// latitude allows.
 pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
@@ -1146,12 +1172,39 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
 /// and nothing uploaded. Says how far it is as `build_q_with` does.
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
+    build_piece_with(out, raw, t, cov, src, expect_same, progress, None)
+}
+
+/// `build_piece`, some of its z8 subtrees offered to other workers through `offload` while workers
+/// that take them are around (crate::terrain_task): the run makes the others, then takes theirs in
+/// (or makes them too), the same bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn build_piece_with(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress, offload: Option<&crate::offload::Offload>) -> anyhow::Result<PackReport> {
+    let offers = crate::terrain_task::Offers::offer(offload, t, &piece_levels(cov, t), raw, src);
+    build_piece_offered(out, raw, t, cov, src, expect_same, progress, offers)
+}
+
+/// `build_piece` with its subtrees out as `offers` says (made for this piece: `Offers::offer`,
+/// when it begins or, a job's next piece, ahead: crate::terrain_task::OFFER_AHEAD).
+#[allow(clippy::too_many_arguments)]
+pub fn build_piece_offered(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress, offers: crate::terrain_task::Offers) -> anyhow::Result<PackReport> {
+    anyhow::ensure!(offers.piece() == t, "offers for 6/{}/{}, not 6/{}/{}", offers.piece().0, offers.piece().1, t.0, t.1);
     let mut rep = PackReport::default();
     let levels = piece_levels(cov, t);
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
     let p = crate::timings::phase("the piece's tiles made (z12 → z9)", crate::timings::Class::Mixed);
-    let (hi, mid) = saying(&mk, total, progress, || mk.piece(levels))?;
+    let (hi, mid) = saying(&mk, total, progress, || {
+        let mine = offers.rest(&levels);
+        let n = mine.iter().map(|(_, t)| t.len()).sum();
+        let began = std::time::Instant::now();
+        let (mut hi, mut mid) = mk.piece(mine)?;
+        offers.made_here(began.elapsed().as_secs_f64(), n);
+        let _w = crate::timings::sub("the subtrees out taken in (or made here)", crate::timings::Class::Wait);
+        offers.settle(&|lv| mk.piece(lv), &mut hi, &mut mid)?;
+        hi.sort_by_key(|t| (t.0, t.1, t.2));
+        Ok((hi, mid))
+    })?;
     drop(p);
     mk.report(&mut rep);
     progress("packs", 0, 1);
@@ -1281,7 +1334,7 @@ pub fn build_root(out: &mut Out, raw: &RawTiles, src: &Sources) -> anyhow::Resul
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1787,7 +1840,7 @@ mod tests {
     /// Raw tiles for the area of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
     /// of q; smooth slopes, every third with a spike and a pit (repairs, which the level above takes
     /// in), every seventh missing (the open sea).
-    fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
+    pub(crate) fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
         let mut want: Vec<(u8, u32, u32)> = Vec::new();
         for z in 9..=12u8 {
             let s = 1u32 << (z - 6);

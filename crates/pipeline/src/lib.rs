@@ -53,6 +53,7 @@ pub mod timings;
 pub mod terr;
 pub mod terrain_north;
 pub mod terrain_pack;
+pub mod terrain_task;
 pub mod terrain_water;
 pub mod terrain_z8;
 pub mod trailends;

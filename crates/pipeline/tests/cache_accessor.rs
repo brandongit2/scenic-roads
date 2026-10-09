@@ -125,7 +125,7 @@ fn every_cache_read_goes_through_the_accessor() {
         let text = std::fs::read_to_string(&f).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         // (Tests aside: they make their own caches.)
-        let end = (1..lines.len()).find(|&k| lines[k].trim_start().starts_with("mod tests") && lines[k - 1].contains("cfg(test)")).unwrap_or(lines.len());
+        let end = (1..lines.len()).find(|&k| ["mod tests", "pub mod tests", "pub(crate) mod tests"].iter().any(|m| lines[k].trim_start().starts_with(m)) && lines[k - 1].contains("cfg(test)")).unwrap_or(lines.len());
         for i in 0..end {
             let l = lines[i];
             if l.trim_start().starts_with("//") || !MARKERS.iter().any(|m| l.contains(m)) {
@@ -206,7 +206,7 @@ fn every_internet_request_asks_first() {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         let text = std::fs::read_to_string(&f).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        let end = (1..lines.len()).find(|&k| lines[k].trim_start().starts_with("mod tests") && lines[k - 1].contains("cfg(test)")).unwrap_or(lines.len());
+        let end = (1..lines.len()).find(|&k| ["mod tests", "pub mod tests", "pub(crate) mod tests"].iter().any(|m| lines[k].trim_start().starts_with(m)) && lines[k - 1].contains("cfg(test)")).unwrap_or(lines.len());
         for i in 0..end {
             if !lines[i].contains(".call()") || lines[i].trim_start().starts_with("//") {
                 continue;

@@ -52,6 +52,27 @@ pub struct Cell {
     pub w: usize,
     pub e: Vec<f32>,
     pub filled: Vec<bool>,
+    /// The part of it held, `e` and `filled` row by row: its first row and column, and its columns
+    /// (a whole cell's: 0, 0, `w`; a task's, the window its tiles read: crate::terrain_task).
+    pub win: (usize, usize, usize),
+}
+
+impl Cell {
+    /// A cell held whole.
+    pub fn whole(w: usize, e: Vec<f32>, filled: Vec<bool>) -> Cell {
+        Cell { w, e, filled, win: (0, 0, w) }
+    }
+
+    /// Pixel (row `r`, column `c`)'s place in `e` and `filled`. One outside the part held would be
+    /// a task's window cut too small: it panics (the task fails, and the job makes it), never reads
+    /// another value.
+    #[inline]
+    pub fn at(&self, r: usize, c: usize) -> usize {
+        let (r0, c0, ww) = self.win;
+        let (i, j) = (r.wrapping_sub(r0), c.wrapping_sub(c0));
+        assert!(j < ww && i < self.e.len() / ww.max(1), "GLO-30 pixel ({r}, {c}) outside the part held ({r0}, {c0}, {ww} columns)");
+        i * ww + j
+    }
 }
 
 pub const ROWS: usize = 3600;
@@ -195,7 +216,7 @@ pub fn read_cell(dem: &Path, flm: &Path) -> Result<Cell> {
         }
         Err(_) => vec![false; w * h],
     };
-    Ok(Cell { w, e, filled })
+    Ok(Cell::whole(w, e, filled))
 }
 
 /// GLO-30 resampled onto a terrain tile (256 × 256), with GLO-30's share of each pixel.
@@ -237,11 +258,12 @@ impl Near {
                 Got::Sea => Some((0.0, 0.0)),
                 Got::Missing => None,
                 Got::Cell(cell) => {
-                    let v = cell.e[r * cell.w + c.min(cell.w - 1)];
+                    let i = cell.at(r, c.min(cell.w - 1));
+                    let v = cell.e[i];
                     if !(v > BAD) {
                         return None;
                     }
-                    Some((v, if cell.filled[r * cell.w + c.min(cell.w - 1)] { 1.0 } else { 0.0 }))
+                    Some((v, if cell.filled[i] { 1.0 } else { 0.0 }))
                 }
             }
         };
@@ -274,19 +296,37 @@ fn lat_of(v: f64) -> f64 {
     (std::f64::consts::PI * (1.0 - 2.0 * v)).dsinh().datan().to_degrees()
 }
 
-/// GLO-30 on tile z/x/y; None when the tile lies wholly south of SOUTH.
-pub fn north_tile(cells: &dyn Cells, z: u8, x: u32, y: u32) -> Option<North> {
+/// The cells tile z/x/y reads GLO-30 from (`north_tile`; its box in degrees, west, south, east,
+/// north): the cells it meets, and a row and column more for the samples between them (south of
+/// SOUTH − 1, none asked for: Missing), as (first latitude, last, first longitude unwrapped, how
+/// many longitudes). None when the tile lies wholly south of SOUTH.
+fn near_range(z: u8, x: u32, y: u32) -> Option<([f64; 4], i32, i32, i32, i32)> {
     let n = (1u64 << z) as f64;
     let (top, bottom) = (lat_of(y as f64 / n), lat_of((y + 1) as f64 / n));
     if top <= SOUTH {
         return None;
     }
     let (west, east) = (x as f64 / n * 360.0 - 180.0, (x + 1) as f64 / n * 360.0 - 180.0);
-    // (The cells it meets, and a row and column more for the samples between them.)
     let lat0 = (bottom.floor() as i32 - 1).max(-90);
     let lat1 = (top.floor() as i32 + 1).min(89);
     let lon0 = west.floor() as i32 - 1;
     let nlon = east.floor() as i32 + 2 - lon0;
+    Some(([west, bottom, east, top], lat0, lat1, lon0, nlon))
+}
+
+/// The cells `north_tile` asks `Cells` for, for tile z/x/y (south-west corners, longitudes in
+/// −180–179), and the box its samples lie in (west, south, east, north); None when it asks none.
+pub fn cells_of(z: u8, x: u32, y: u32) -> Option<(Vec<(i32, i32)>, [f64; 4])> {
+    let (b, lat0, lat1, lon0, nlon) = near_range(z, x, y)?;
+    let v = (lat0..=lat1).filter(|&la| la >= SOUTH as i32 - 1).flat_map(|la| (0..nlon).map(move |k| (la, (lon0 + k + 180).rem_euclid(360) - 180))).collect();
+    Some((v, b))
+}
+
+/// GLO-30 on tile z/x/y; None when the tile lies wholly south of SOUTH.
+pub fn north_tile(cells: &dyn Cells, z: u8, x: u32, y: u32) -> Option<North> {
+    let n = (1u64 << z) as f64;
+    // (The cells it meets, and a row and column more for the samples between them.)
+    let (_, lat0, lat1, lon0, nlon) = near_range(z, x, y)?;
     let mut got = Vec::new();
     for la in lat0..=lat1 {
         for k in 0..nlon {
@@ -409,7 +449,7 @@ pub mod tests {
                         filled[r * w + c] = (self.filled)(lat, lon);
                     }
                 }
-                Arc::new(Cell { w, e, filled })
+                Arc::new(Cell::whole(w, e, filled))
             });
             Got::Cell(c.clone())
         }

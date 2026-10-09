@@ -70,6 +70,10 @@
 //!                                has there) and the blocks' tiles as the manifest's packs and mid
 //!                                have them (out/packs/8-x-y/, as `trees --blocks` writes them), for
 //!                                the checks; nothing written to the NAS
+//!   terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]  a terrain piece's z8 subtrees
+//!                                in their groups, each group's task file as the piece's run cuts
+//!                                it (pipeline::terrain_task: out/<x>-<y>/u/in.sect), for the
+//!                                checks; nothing written to the NAS
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
 //!                                roads, rail and ferries, owned and all (units named: printed,
 //!                                nothing written)
@@ -509,6 +513,37 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             anyhow::ensure!(!row.is_empty(), "{}: no block of row {y} meets the coverage", t.slash());
             let dir = PathBuf::from(opt(&args, "--out").context("--out dir")?);
             treeblock_task(&out, &cov, &row, &dir)?;
+            return Ok(());
+        }
+        "terrainsub-task" => {
+            // terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]: piece 6/x/y's z8 subtrees
+            // in their groups (pipeline::terrain_task::groups), each group's task file as the
+            // piece's run cuts it (out/<x>-<y>/u/in.sect, by its first subtree; `--group`: that
+            // group's alone), a line each said (its subtrees, tiles, bytes, predicted memory). It
+            // only reads (AWS's raw tiles copied to this Mac's cache, as a terrain run does).
+            let cov = coverage_of(&out, &args)?;
+            let t = positional(&args).first().and_then(|t| Unit::parse(t)).filter(|u| u.z == 6).context("terrainsub-task <6/x/y> --out dir")?;
+            let dir = PathBuf::from(opt(&args, "--out").context("--out dir")?);
+            let only = opt(&args, "--group").map(|g| pipeline::terrain_task::parse_subtrees(&g)).transpose()?.and_then(|v| v.first().copied());
+            let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+            let raw = raw_tiles(&out, &raw_dir);
+            let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
+            let coarse = pipeline::terrain_pack::Coarse::new(&raw);
+            let src = opened.sources(Some(&coarse));
+            let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
+            let t0 = std::time::Instant::now();
+            let groups = pipeline::terrain_task::groups(&levels, src.water)?;
+            println!("{}", serde_json::json!({ "piece": t.slash(), "tiles": levels.iter().map(|(_, v)| v.len()).sum::<usize>(), "groups": groups.iter().map(|g| pipeline::terrain_task::subtrees_arg(g)).collect::<Vec<_>>(), "secs": t0.elapsed().as_secs_f64() }));
+            for g in &groups {
+                if only.is_some_and(|f| !g.contains(&f)) {
+                    continue;
+                }
+                let lv = pipeline::terrain_task::levels_of(&levels, &g.iter().copied().collect(), true);
+                let path = dir.join(format!("{}-{}", g[0].0, g[0].1)).join("u").join(pipeline::terrain_task::INPUT);
+                let t0 = std::time::Instant::now();
+                let c = pipeline::terrain_task::cut((t.x, t.y), g, &lv, &raw, &src, &path)?;
+                println!("{}", serde_json::json!({ "group": pipeline::terrain_task::subtrees_arg(g), "tiles": c.tiles, "made": c.made.len(), "raw": c.raw, "cells": c.cells, "bytes": c.bytes, "mem_mb": pipeline::terrain_task::mem_mb(c.bytes, &lv), "secs": t0.elapsed().as_secs_f64() }));
+            }
             return Ok(());
         }
         "prune" => prune_step(&mut out, &args)?,
@@ -3540,11 +3575,24 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
+    // Other workers, through the build Mac's coordinator: some of each piece's z8 subtrees
+    // (pipeline::terrain_task).
+    // (Each piece's offered as it begins; with OFFER_AHEAD, the next's then too.)
+    let offload = pipeline::offload::Offload::from_env(&out.scratch);
+    let offer = |t: &Unit| pipeline::terrain_task::Offers::offer(offload.as_ref(), (t.x, t.y), &pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)), &raw, &src);
+    let mut ahead: Option<pipeline::terrain_task::Offers> = None;
     for (k, t) in ts.iter().enumerate() {
         pipeline::control::safe_point("terrain");
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start();
-        let r = pipeline::terrain_pack::build_piece(out, &raw, (t.x, t.y), cov, &src, same.contains(&t.slash()), &say)?;
+        let offers = match ahead.take() {
+            Some(o) => o,
+            None => offer(t),
+        };
+        if pipeline::terrain_task::OFFER_AHEAD {
+            ahead = ts.get(k + 1).map(offer);
+        }
+        let r = pipeline::terrain_pack::build_piece_offered(out, &raw, (t.x, t.y), cov, &src, same.contains(&t.slash()), &say, offers)?;
         eprintln!("terrain {} ({} of {n}): {r:?} ({:.0?})", t.slash(), k + 1, c.elapsed());
         pipeline::control::done("terrain", &t.slash());
         note_cost("terrain", &t.slash(), c);
