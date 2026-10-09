@@ -55,6 +55,9 @@ pub struct Index {
     pub release: String,
     pub zoom: u8,
     pub tiles: BTreeMap<String, u64>,
+    /// The index's content hash (its name's), which names the tiles' local copies (`local_tile`).
+    #[serde(skip)]
+    pub tag: String,
 }
 
 impl Index {
@@ -62,8 +65,50 @@ impl Index {
     pub fn load(out: &Out) -> Result<Option<Index>> {
         let Some(c) = out.get(&index_logical()) else { return Ok(None) };
         let p = out.path(c);
-        Ok(Some(serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{}", p.display()))?).with_context(|| format!("{}", p.display()))?))
+        let mut ix: Index = serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{}", p.display()))?).with_context(|| format!("{}", p.display()))?;
+        ix.tag = c.rsplit('.').nth(1).unwrap_or("").to_string();
+        Ok(Some(ix))
     }
+
+    /// The bytes of tile `t`'s file (16 a building), when it has buildings.
+    pub fn bytes(&self, t: Unit) -> Option<u64> {
+        self.tiles.get(&t.slash()).map(|n| 16 * n)
+    }
+}
+
+/// Tile `t`'s buildings in `cache` (`buildings/<index's hash>/<x>-<y>.f32`: the files an index was
+/// made with), copied from the NAS whole when it isn't there and held for the job
+/// (store::cachefile): a unit's buildings step reads its tiles whole, and units side by side read
+/// the same ones. None when the tile has no buildings.
+pub fn local_tile(root: &Path, index: &Index, t: Unit, cache: &Path) -> Result<Option<PathBuf>> {
+    let Some((src, local, want)) = tile_copy(root, index, t, cache) else { return Ok(None) };
+    fetch_tile(&src, &local, want)?;
+    Ok(Some(local))
+}
+
+/// Where tile `t` is on the NAS, where its copy in `cache` goes, and its length (`local_tile`).
+pub fn tile_copy(root: &Path, index: &Index, t: Unit, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
+    let want = index.bytes(t)?;
+    Some((tile_path(root, t), cache.join("buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)), want))
+}
+
+/// The copy of `src` at `local`, `want` bytes, made when it isn't there whole, and held.
+pub fn fetch_tile(src: &Path, local: &Path, want: u64) -> Result<()> {
+    let copy = &mut |tmp: &Path| -> std::io::Result<()> {
+        let n = store::sys::copy_data(src, tmp)?;
+        crate::timings::count(n, 1);
+        if n != want {
+            return Err(std::io::Error::other(format!("{}: {n} bytes, not the index's {want}", src.display())));
+        }
+        Ok(())
+    };
+    let p = store::cachefile::hold(local, copy).with_context(|| format!("copy {}", src.display()))?;
+    // (Named by its index: one of another length was cut short.)
+    if std::fs::metadata(&p).map(|m| m.len()).ok() != Some(want) {
+        store::cachefile::discard(&p);
+        store::cachefile::hold(local, copy).with_context(|| format!("copy {}", src.display()))?;
+    }
+    Ok(())
 }
 
 /// The tiles unit `u` reads buildings from: those within `MARGIN_KM` of its tile grown by
@@ -176,7 +221,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     let total = by_tile.len() as u64;
     // (Each tile's parts read and sorted, then written to the NAS and read back: a phase each,
     // over the tiles.)
-    let mut index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: BTreeMap::new() };
+    let mut index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: BTreeMap::new(), tag: String::new() };
     let t1 = std::time::Instant::now();
     for (k, (t, files)) in by_tile.iter().enumerate() {
         let p = phase("each tile's parts read and sorted", Class::Disk);
@@ -230,7 +275,8 @@ fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
 /// A folder of the buildings unit `u` reads (`scenic-metrics buildings` reads every `.f32` in
 /// it): links to its tiles' files (`tiles_for` with its reach), those without buildings left out.
 /// The number of tiles linked.
-pub fn stage(root: &Path, index: &Index, u: Unit, reach: Option<&Reach>, dir: &Path) -> Result<usize> {
+/// With `cache`, the links are to the tiles' copies there (`local_tile`), else to the NAS's files.
+pub fn stage(root: &Path, index: &Index, u: Unit, reach: Option<&Reach>, dir: &Path, cache: Option<&Path>) -> Result<usize> {
     if dir.exists() {
         std::fs::remove_dir_all(dir)?;
     }
@@ -240,7 +286,11 @@ pub fn stage(root: &Path, index: &Index, u: Unit, reach: Option<&Reach>, dir: &P
         if !index.tiles.contains_key(&t.slash()) {
             continue;
         }
-        crate::sys::symlink(&tile_path(root, t), &dir.join(format!("{}.f32", t.dash())))?;
+        let at = match cache {
+            Some(c) => local_tile(root, index, t, c)?.context("a tile the index lists")?,
+            None => tile_path(root, t),
+        };
+        crate::sys::symlink(&at, &dir.join(format!("{}.f32", t.dash())))?;
         n += 1;
     }
     Ok(n)
@@ -303,10 +353,32 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let u = Unit { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
-        let index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into() };
+        let index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into(), tag: String::new() };
         let staged = d.path().join("staged");
-        assert_eq!(stage(d.path(), &index, u, None, &staged).unwrap(), 2);
+        assert_eq!(stage(d.path(), &index, u, None, &staged, None).unwrap(), 2);
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
         assert_eq!(link, tile_path(d.path(), near[7]));
+        // With a cache: links to its copies, named by the index's hash, the same bytes.
+        let mut index = index;
+        index.tag = "0123456789abcdef".into();
+        for (t, n) in [(near[0], 5usize), (near[7], 9)] {
+            let p = tile_path(d.path(), t);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, vec![t.x as u8; 16 * n]).unwrap();
+        }
+        let cache = d.path().join("cache");
+        assert_eq!(stage(d.path(), &index, u, None, &staged, Some(&cache)).unwrap(), 2);
+        let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
+        assert_eq!(link, cache.join(format!("buildings/0123456789abcdef/{}-{}.f32", near[7].x, near[7].y)));
+        assert_eq!(std::fs::read(&link).unwrap(), std::fs::read(tile_path(d.path(), near[7])).unwrap());
+        // A copy cut short (another length than the index's) is made again; a tile on the NAS
+        // that isn't the index's length is an error, not a short copy.
+        std::fs::write(&link, b"short").unwrap();
+        assert_eq!(local_tile(d.path(), &index, near[7], &cache).unwrap().unwrap(), link);
+        assert_eq!(std::fs::metadata(&link).unwrap().len(), 16 * 9);
+        std::fs::write(tile_path(d.path(), near[0]), b"cut").unwrap();
+        std::fs::remove_file(cache.join(format!("buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y))).unwrap();
+        assert!(local_tile(d.path(), &index, near[0], &cache).is_err());
+        assert!(local_tile(d.path(), &index, near[1], &cache).unwrap().is_none());
     }
 }

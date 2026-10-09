@@ -2674,7 +2674,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         Ok(pipeline::scache::Carry { dir: to })
     }).transpose()?;
     let bdir = dir.join(format!("{}-buildings", u.dash()));
-    let n = pipeline::buildtiles::stage(out.root(), &index, u, reach.get(u), &bdir)?;
+    let n = pipeline::buildtiles::stage(out.root(), &index, u, reach.get(u), &bdir, None)?;
     eprintln!("unit-snap {}: buildings from {n} tiles", u.slash());
     let tools = Tools {
         bin: std::env::current_exe()?.parent().context("bin")?.to_path_buf(),
@@ -2844,6 +2844,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 Some(s) => canopy_files(b).into_iter().map(|n| (s.join("canopy").join(&n), tools.cache.join("chm10").join(&n))).collect(),
                 None => Vec::new(),
             };
+            // Its roadside buildings' tiles, into this Mac's copies of them.
+            let tiles: Vec<(PathBuf, PathBuf, u64)> = match &buildings {
+                Some(index) => pipeline::buildtiles::tiles_for(next, reach.as_ref().and_then(|r| r.get(next))).into_iter().filter_map(|t| pipeline::buildtiles::tile_copy(o.root(), index, t, &tools.cache)).collect(),
+                None => Vec::new(),
+            };
             let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
                 // (A phase beside the main thread's: crate::timings.)
@@ -2864,6 +2869,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 };
                 if let Some((src, dst)) = &piece {
                     copy(src, dst);
+                }
+                for (src, local, want) in &tiles {
+                    if let Err(e) = pipeline::buildtiles::fetch_tile(src, local, *want) {
+                        eprintln!("unit: {} not copied ahead ({e:#})", local.display());
+                    }
                 }
                 for c in packs {
                     if let Err(e) = blobs.get(&root, &c) {
@@ -2921,7 +2931,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             let mut tools = tools.clone();
             if let Some(index) = &buildings {
                 let s = unit_stage("buildings staged", Class::NasRead);
-                let n = pipeline::buildtiles::stage(o.root(), index, u, reach.as_ref().and_then(|r| r.get(u)), &bdir)?;
+                // (From this Mac's copies of the tiles: copied ahead, or now.)
+                let n = pipeline::buildtiles::stage(o.root(), index, u, reach.as_ref().and_then(|r| r.get(u)), &bdir, Some(&tools.cache))?;
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
                 s.end();
                 tools.buildings = Some(bdir.clone());
