@@ -3227,6 +3227,7 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// the agent's keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`), or with
 /// none named every z6 tile near the coverage. (Z6 tiles named are pieces: `pieces_named`.)
 fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<BTreeMap<(u32, u32), Vec<(u32, u32)>>> {
+    let _p = phase("the areas' pieces near the coverage worked out", Class::Compute);
     let near = pipeline::agent::build::coverage_tiles(cov);
     let named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
     if named.is_empty() {
@@ -3253,6 +3254,7 @@ fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Resul
 /// none is (an area's whole run, of z3 tiles or of all); an error when z6 tiles are named with
 /// others, or one isn't near the coverage. `--expect-same`'s, those of them made again as they are.
 fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<Option<(Vec<Unit>, BTreeSet<String>)>> {
+    let _p = phase("the pieces near the coverage worked out", Class::Compute);
     let mut named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
     // (`--pieces-of Q,…`: every piece of those z3 tiles, by hand.)
     if let Some(qs) = opt(args, "--pieces-of") {
@@ -3281,6 +3283,7 @@ fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<O
 /// The z3 tiles named (assemblies: `terrain-lo`, `slope-lo`), each with its pieces (its z6 tiles
 /// near the coverage, in column then row order).
 fn areas_named(cov: &pipeline::coverage::Coverage, args: &[String], step: &str) -> Result<Vec<(Unit, Vec<(u32, u32)>)>> {
+    let _p = phase("the areas' pieces near the coverage worked out", Class::Compute);
     let near = pipeline::agent::build::coverage_tiles(cov);
     let qs: Vec<Unit> = positional(args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
     anyhow::ensure!(!qs.is_empty(), "{step} <3/x/y …>");

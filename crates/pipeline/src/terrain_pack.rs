@@ -89,6 +89,7 @@ impl SourceFiles {
     /// it lacks one the coverage wants (`fetch`).
     pub fn open(out: &Out, fetch: bool) -> anyhow::Result<SourceFiles> {
         use anyhow::Context;
+        let _p = crate::timings::phase("GLO-30's store and the basemap's water opened", crate::timings::Class::NasRead);
         let north = crate::terrain_north::GloStore::open(&out.root().join("sources/copernicus-dem"), fetch)?;
         let (_, c) = water_pin(&out.manifest).context("no basemap (layers/basemap/world-<date>): the terrain's water is the latest pass's basemap's")?;
         let water = crate::terrain_water::BasemapWater::open(&out.path(c), c)?;
@@ -925,7 +926,12 @@ impl<'a> Maker<'a> {
     /// but their water (`prepare`), then each lake's level from all its shore in the level (those
     /// known from finer levels kept: `levels`), then their water (`finish`).
     fn level(&self, z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>, levels: &mut HashMap<u64, f32>) -> anyhow::Result<Level> {
+        use crate::timings::{sub, Class};
+        // (A level's stages, each a sub-phase of the run's tiles made, added up over its levels.)
+        let p = sub("raw tiles fetched (the cache, the NAS's archives, else AWS)", Class::NasRead);
         self.fetched.fetch_add(self.raw.prefetch_counted(z, &tiles, FETCH_THREADS, &self.here)?, std::sync::atomic::Ordering::Relaxed);
+        drop(p);
+        let p = sub("tiles prepared (repaired; GLO-30 and the water read)", Class::Compute);
         let src = self.src;
         let prepared: Vec<anyhow::Result<Option<(u32, u32, Prepared)>>> = tiles
             .par_iter()
@@ -940,6 +946,8 @@ impl<'a> Maker<'a> {
             })
             .collect();
         let mut prepared: Vec<(u32, u32, Prepared)> = prepared.into_iter().filter_map(|r| r.transpose()).collect::<anyhow::Result<_>>()?;
+        drop(p);
+        let _p = sub("tiles' lakes levelled, shaded and encoded", Class::Compute);
         let mut lakes = HashMap::new();
         for (_, _, p) in &prepared {
             crate::terrain_water::gather(&mut lakes, p.lake_samples());
@@ -1085,6 +1093,7 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
     let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&t| piece_levels(cov, t)).collect();
     let total: u64 = mine.iter().flatten().map(|(_, t)| t.len() as u64).sum::<u64>() + 1365;
     let mk = Maker::new(raw, src);
+    let made = crate::timings::phase("the area's tiles made and its hi packs uploaded", crate::timings::Class::Mixed);
     let lo = saying(&mk, total, progress, || {
         let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
         for (&t, levels) in ts.iter().zip(mine) {
@@ -1094,6 +1103,7 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
                 let n = b.len() as u32;
                 (z, x, y, b, n)
             });
+            let _p = crate::timings::sub("hi packs uploaded", crate::timings::Class::NasWrite);
             crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?;
             mids.push((t, mid));
         }
@@ -1101,7 +1111,9 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
         mk.lo(q, &refs)
     })?;
     mk.report(&mut rep);
+    drop(made);
     // Then q's lo pack.
+    let up = crate::timings::phase("the lo pack uploaded", crate::timings::Class::NasWrite);
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
@@ -1109,6 +1121,7 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
         (z, x, y, b, n)
     });
     crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    drop(up);
     out.save()?;
     progress("packs", 1, 1);
     Ok(rep)
@@ -1125,9 +1138,12 @@ pub fn build_piece(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage,
     let levels = piece_levels(cov, t);
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
+    let p = crate::timings::phase("the piece's tiles made (z12 → z9)", crate::timings::Class::Mixed);
     let (hi, mid) = saying(&mk, total, progress, || mk.piece(levels))?;
+    drop(p);
     mk.report(&mut rep);
     progress("packs", 0, 1);
+    let p = crate::timings::phase("its hi pack and mid written", crate::timings::Class::Disk);
     rep.hi_tiles = hi.len();
     let mut it = hi.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
@@ -1147,10 +1163,13 @@ pub fn build_piece(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage,
             }
         }
     }
+    drop(p);
+    let up = crate::timings::phase("uploaded", crate::timings::Class::NasWrite);
     if let Some(p) = pack {
         out.put_file(&p.logical, "pack", &p.local)?;
     }
     out.put_file(&ml, "sect", &mid_path)?;
+    drop(up);
     out.save()?;
     progress("packs", 1, 1);
     Ok(rep)
@@ -1163,17 +1182,23 @@ pub fn build_lo(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)],
     use anyhow::Context;
     let mut rep = PackReport::default();
     let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
+    let p = crate::timings::phase("the pieces' mids read", crate::timings::Class::NasRead);
     for &t in ts {
         anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
+        p.count(0, 1);
         let c = out.get(&mid_logical(t.0, t.1)).with_context(|| format!("6/{}/{} has no mid yet: its area can't be assembled", t.0, t.1))?;
         let (of, mid) = read_mid(&out.path(c))?;
         anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
         mids.push((t, mid));
     }
+    drop(p);
     let mk = Maker::new(raw, src);
     let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
+    let p = crate::timings::phase("the area's tiles made (z8 → z3)", crate::timings::Class::Mixed);
     let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
+    drop(p);
     mk.report(&mut rep);
+    let up = crate::timings::phase("the lo pack uploaded", crate::timings::Class::NasWrite);
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
@@ -1181,6 +1206,7 @@ pub fn build_lo(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)],
         (z, x, y, b, n)
     });
     crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    drop(up);
     out.save()?;
     progress("packs", 1, 1);
     Ok(rep)
@@ -1189,6 +1215,7 @@ pub fn build_lo(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)],
 /// The root pack (z0–2) remade from the 64 z3 tiles as stored in the lo packs (their 2×2 means),
 /// over AWS's raw z0–2 tiles; deterministic given the lo packs.
 pub fn build_root(out: &mut Out, raw: &RawTiles, src: &Sources) -> anyhow::Result<usize> {
+    let p = crate::timings::phase("the z3 tiles read from the lo packs", crate::timings::Class::NasRead);
     let have = ManifestTiles::new(out, "terrain");
     let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
     for x in 0..8u32 {
@@ -1209,6 +1236,8 @@ pub fn build_root(out: &mut Out, raw: &RawTiles, src: &Sources) -> anyhow::Resul
             quads.insert((x, y), q);
         }
     }
+    drop(p);
+    let p = crate::timings::phase("the root's tiles made (AWS's z0–2 read)", crate::timings::Class::Compute);
     let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
     let below: HashMap<(u32, u32), Repaired> = HashMap::new();
     for z in (0..=2u8).rev() {
@@ -1229,9 +1258,12 @@ pub fn build_root(out: &mut Out, raw: &RawTiles, src: &Sources) -> anyhow::Resul
     }
     drop(have);
     tiles.sort_by_key(|t| (t.0, t.1, t.2));
+    drop(p);
+    let up = crate::timings::phase("the root pack uploaded", crate::timings::Class::NasWrite);
     let n = tiles.len();
     let mut it = tiles.into_iter();
     crate::layers::write_pack(out, "terrain", "terrarium-png", false, "root", (0, 0, 0), &mut it)?;
+    drop(up);
     out.save()?;
     Ok(n)
 }

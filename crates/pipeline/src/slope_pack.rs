@@ -462,7 +462,9 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
 /// `build_q`, saying how far it is to `on` as (what, done, total): the slope tiles worked out (each z6
 /// tile's hi pack written with them), then the lo pack written.
 pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    use crate::timings::{phase, sub, Class};
     let mut rep = Report::default();
+    let p = phase("the terrain packs' indexes read", Class::NasRead);
     let terr = ManifestTiles::new(out, "terrain");
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
@@ -470,22 +472,33 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
     // pack written: its upload to the NAS takes seconds.)
     let total = ts.iter().map(|&t| piece_set(&has, t).len() as u64 + 1).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
     let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    drop(p);
     on("slope tiles worked out", 0, total);
     let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
+    let made = phase("the area's slope worked out and its hi packs uploaded", Class::Mixed);
     for &t in ts {
+        let p = sub("slope tiles worked out (the terrain read as needed)", Class::Compute);
         let (hi, lo) = piece(&terrain, &has, t, &count);
+        drop(p);
         rep.hi_tiles += hi.len();
         let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+        let p = sub("hi packs uploaded", Class::NasWrite);
         crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, t.0, t.1), &mut it)?;
+        drop(p);
         count.one();
         mids.insert(t, lo);
     }
+    let p = sub("the area's slope assembled", Class::Compute);
     let lo = assemble(out, &terrain, q, ts, &mids, &count)?;
     drop(terrain);
+    drop(p);
+    drop(made);
+    let up = phase("the lo pack uploaded", Class::NasWrite);
     on("packs written", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
     crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    drop(up);
     out.save()?;
     on("packs written", 1, 1);
     Ok(rep)
@@ -497,15 +510,21 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
 /// again as it is (its mid made), whose hi pack must come out as the manifest has it, else an error
 /// and nothing uploaded.
 pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    use crate::timings::{phase, Class};
     let mut rep = Report::default();
+    let p = phase("the terrain packs' indexes read", Class::NasRead);
     let terr = ManifestTiles::new(out, "terrain");
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
     let total = piece_set(&has, t).len() as u64 + 1;
     let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    drop(p);
     on("slope tiles worked out", 0, total);
+    let p = phase("slope tiles worked out (the terrain read as needed)", Class::Compute);
     let (hi, lo) = piece(&terrain, &has, t, &count);
     drop(terrain);
+    drop(p);
+    let p = phase("its hi pack and mid written", Class::Disk);
     rep.hi_tiles = hi.len();
     rep.lo_tiles = lo.len();
     let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
@@ -523,10 +542,13 @@ pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn
             }
         }
     }
+    drop(p);
+    let up = phase("uploaded", Class::NasWrite);
     if let Some(p) = pack {
         out.put_file(&p.logical, "pack", &p.local)?;
     }
     out.put_file(&ml, "sect", &mid)?;
+    drop(up);
     out.save()?;
     count.one();
     Ok(rep)
@@ -536,11 +558,14 @@ pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn
 /// its z6 tiles near the coverage; one current without a mid has its z6–8 tiles in the lo pack as it
 /// is) and the lo pack as it is, and uploads it.
 pub fn build_lo(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    use crate::timings::{phase, Class};
     let mut rep = Report::default();
     let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
+    let p = phase("the pieces' mids and the terrain packs' indexes read", Class::NasRead);
     for &t in ts {
         anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
         if let Some(c) = out.get(&mid_logical(t.0, t.1)) {
+            p.count(0, 1);
             let (of, tiles) = read_mid(&out.path(c))?;
             anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
             mids.insert(t, tiles);
@@ -550,12 +575,17 @@ pub fn build_lo(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&s
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
     let count = Count { done: Default::default(), total: 64 + 16 + 4 + 1, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    drop(p);
+    let p = phase("the area's slope assembled", Class::Compute);
     let lo = assemble(out, &terrain, q, ts, &mids, &count)?;
     drop(terrain);
+    drop(p);
+    let up = phase("the lo pack uploaded", Class::NasWrite);
     on("packs written", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
     crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    drop(up);
     out.save()?;
     on("packs written", 1, 1);
     Ok(rep)
@@ -569,6 +599,8 @@ pub fn decodes(b: &[u8]) -> bool {
 /// The root pack (z0–2) made from the 64 z3 slope tiles as stored (their quadrants), where a z3
 /// tile is missing from its own terrain's slope.
 pub fn build_root(out: &mut Out) -> Result<usize> {
+    use crate::timings::{phase, Class};
+    let p = phase("the z3 slope tiles and the terrain packs' indexes read", Class::NasRead);
     let terr = ManifestTiles::new(out, "terrain");
     let have = ManifestTiles::new(out, "slope");
     let get = |z: u8, x: u32, y: u32| -> Option<Vec<u8>> { terr.get(z, x, y).ok().flatten() };
@@ -582,6 +614,8 @@ pub fn build_root(out: &mut Out) -> Result<usize> {
             }
         }
     }
+    drop(p);
+    let p = phase("the root's slope worked out", Class::Compute);
     let mut made: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
     for z in (0..=2u8).rev() {
         let n = 1u32 << z;
@@ -606,9 +640,12 @@ pub fn build_root(out: &mut Out) -> Result<usize> {
     drop(terrain);
     drop((terr, have));
     made.sort_by_key(|t| (t.0, t.1, t.2));
+    drop(p);
+    let up = phase("the root pack uploaded", Class::NasWrite);
     let n = made.len();
     let mut it = made.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
     crate::layers::write_pack(out, "slope", "slope4-png", false, "root", (0, 0, 0), &mut it)?;
+    drop(up);
     out.save()?;
     Ok(n)
 }
