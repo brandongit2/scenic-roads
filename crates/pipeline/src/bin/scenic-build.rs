@@ -1025,12 +1025,27 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     let p = phase("every file checked on the NAS", Class::NasRead);
     let mut files: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     let listed: Vec<(&String, &String)> = out.manifest.iter().filter(|(l, _)| served(l)).collect();
-    let (total, step) = (listed.len() as u64, (listed.len() / 100).max(1));
-    for (k, (l, n)) in listed.into_iter().enumerate() {
-        if k % step == 0 {
-            pipeline::agent::jobs::report(k as u64, total, "files checked on the NAS");
+    // (Many at once: over SMB each look waits a round trip, 5 to 17 ms, and the share answers
+    // thirty-odd together about as fast as one; the first missing, in the manifest's order, stops it.)
+    let total = listed.len() as u64;
+    let done = std::sync::atomic::AtomicU64::new(0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let sizes: Vec<std::sync::OnceLock<std::io::Result<u64>>> = (0..listed.len()).map(|_| std::sync::OnceLock::new()).collect();
+    std::thread::scope(|s| {
+        for _ in 0..32 {
+            s.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((_, n)) = listed.get(k) else { break };
+                sizes[k].set(std::fs::metadata(out.path(n)).map(|m| m.len())).ok();
+                let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if d % (total / 100).max(1) == 0 {
+                    pipeline::agent::jobs::report(d, total, "files checked on the NAS");
+                }
+            });
         }
-        let size = std::fs::metadata(out.path(n)).with_context(|| format!("{l}: {n} is missing on the NAS"))?.len();
+    });
+    for ((l, n), size) in listed.into_iter().zip(sizes) {
+        let size = size.into_inner().context("not checked")?.with_context(|| format!("{l}: {n} is missing on the NAS"))?;
         files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
         p.count(0, 1);
     }
