@@ -282,13 +282,17 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
 }
 
 /// Puts today's DEM cache (the seed) in `cache` when it isn't there whole, from the NAS's copy
-/// (`sources/dem-cache/`): once per Mac. Without one the units sample every vertex anew.
+/// (`sources/dem-cache/`), and holds it (store::cachefile: room-making may delete it while no job
+/// holds it, the NAS having it whole; it's copied again then). Without one the units sample every
+/// vertex anew.
 pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     let names = ["keys.u64", "elev.f32", "src.u8"];
     let len = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).ok();
-    let here: Vec<Option<u64>> = names.iter().map(|n| len(cache.join(format!("dem-cache.{n}")))).collect();
     let whole = |l: &[Option<u64>]| matches!(l, [Some(k), Some(e), Some(s)] if *k == 8 * *s && *e == 4 * *s);
-    if whole(&here) {
+    let local = |n: &str| cache.join(format!("dem-cache.{n}"));
+    // (This Mac's, whole: held as it is.)
+    let held: Vec<Option<PathBuf>> = names.iter().map(|n| store::cachefile::hold_existing(&local(n)).ok().flatten()).collect();
+    if whole(&names.map(|n| len(local(n)))) && held.iter().all(Option::is_some) {
         return Ok(());
     }
     let src = root.join("sources/dem-cache");
@@ -297,23 +301,35 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
         eprintln!("unit: no DEM cache to start from on the NAS ({}); sampling every vertex anew", src.display());
         return Ok(());
     }
-    std::fs::create_dir_all(cache)?;
     let t = std::time::Instant::now();
     // (Some 9 GB: its progress said, MB by MB.)
     let total: u64 = there.iter().flatten().sum();
     let mut before = 0u64;
-    // Each file whole before the next (a half-copied one is copied again: its length is wrong).
-    for n in names {
-        let (from, to) = (src.join(format!("dem-cache.{n}")), cache.join(format!("dem-cache.{n}")));
-        // (This process's own temporary name: two unit jobs on a Mac without the seed copy it at
-        // once, each whole.)
-        let tmp = crate::whole::tmp_name(&to);
-        std::fs::remove_file(&tmp).ok();
-        crate::osmpass::copy_resume_with(&from, &tmp, &mut |d, _| crate::agent::jobs::report((before + d) >> 20, total >> 20, "MB of the DEM cache copied here (once a Mac)")).with_context(|| format!("copy {}", from.display()))?;
-        before += std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
-        std::fs::rename(&tmp, &to)?;
+    let mut copied = false;
+    // Each file whole before the next (one here of another length, from an older seed, goes first:
+    // its fellows are copied again too). Made under this process's own temporary name: two unit
+    // jobs on a Mac without the seed copy it at once, the first named wins.
+    for attempt in 0..2 {
+        for (n, want) in names.iter().zip(&there) {
+            let (from, to) = (src.join(format!("dem-cache.{n}")), local(n));
+            store::cachefile::hold(&to, &mut |tmp| {
+                copied = true;
+                crate::osmpass::copy_resume_with(&from, tmp, &mut |d, _| crate::agent::jobs::report((before + d) >> 20, total >> 20, "MB of the DEM cache copied here (once a Mac)")).map_err(std::io::Error::other)
+            })
+            .with_context(|| format!("copy {}", from.display()))?;
+            before += want.unwrap_or(0);
+        }
+        if names.iter().map(|n| len(local(n))).collect::<Vec<_>>() == there {
+            break;
+        }
+        anyhow::ensure!(attempt == 0, "the DEM cache here isn't the NAS's after it was copied again");
+        for n in names {
+            store::cachefile::discard(&local(n));
+        }
     }
-    eprintln!("unit: DEM cache copied from the NAS ({:.0?})", t.elapsed());
+    if copied {
+        eprintln!("unit: DEM cache copied from the NAS ({:.0?})", t.elapsed());
+    }
     Ok(())
 }
 
@@ -751,6 +767,10 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
         let w = roadcore::Ways::open(dir)?;
         w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
     };
+    // (The seed held for this unit, copied again if room-making took it: store::cachefile.)
+    if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
+        dem_seed(root, &tools.cache)?;
+    }
     rep.dem_cache = dem_cache_slice(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"))?;
     laps.lap("DEM cache slice");
     // 4. The global-source layers the steps read, from the packs.
@@ -1102,6 +1122,57 @@ mod tests {
         assert!(names().contains(&format!("6-9-9.{}.dem", box_tag([5, 5, 6, 6]))));
         assert!(d.path().join("shared/scenic-units/6-9-9/basis.json").exists());
         assert!(!local.join(DEM_UNITS).join("6-9-9.dem").exists() && !local.join("scenic-units/6-9-9").exists());
+    }
+
+    /// Room-making mid-job (docs/plan.md §8, store::cachefile): the DEM seed, deleted as fast as it
+    /// can be while a unit job slices it, is copied again from the NAS and held for each unit: every
+    /// slice is what it is left alone.
+    #[test]
+    fn a_seed_deleted_mid_job_is_copied_again_and_every_slice_is_alike() {
+        // (No network.)
+        crate::fetch::go_offline();
+        let d = tempfile::tempdir().unwrap();
+        let (root, cache) = (d.path().join("nas"), d.path().join("cache"));
+        let src = root.join("sources/dem-cache");
+        std::fs::create_dir_all(&src).unwrap();
+        let k = |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
+        let mut keys: Vec<u64> = (-40..40).flat_map(|a| (-40..40).map(move |b| k(a * 3, b * 3))).collect();
+        keys.sort_unstable();
+        let elev: Vec<f32> = (0..keys.len()).map(|i| i as f32 * 0.5).collect();
+        std::fs::write(src.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
+        std::fs::write(src.join("dem-cache.elev.f32"), bytemuck::cast_slice(&elev)).unwrap();
+        std::fs::write(src.join("dem-cache.src.u8"), vec![4u8; keys.len()]).unwrap();
+        let seed: Vec<PathBuf> = ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
+        let boxes: Vec<[i32; 4]> = (0..60).map(|i| [-100 + i, -90 + i, 10 + i, 20 + i]).collect();
+        let job = |name: &str| -> Vec<Vec<u8>> {
+            let mut v = Vec::new();
+            for (i, b) in boxes.iter().enumerate() {
+                dem_seed(&root, &cache).unwrap();
+                let dst = d.path().join(format!("{name}/{i}"));
+                dem_cache_slice(&cache, &d.path().join(DEM_UNITS), *b, &dst).unwrap();
+                v.push(["keys.u64", "elev.f32", "src.u8"].iter().flat_map(|n| std::fs::read(dst.join(format!("dem-cache.{n}"))).unwrap()).collect());
+                // (The unit done: its hold let go, as the job's loop does.)
+                seed.iter().for_each(|p| store::cachefile::release(p));
+            }
+            v
+        };
+        let calm = job("calm");
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (busy, freed) = std::thread::scope(|s| {
+            let deleter = s.spawn(|| {
+                let mut n = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n += store::cachefile::try_remove_all(&seed).unwrap_or(0) + store::cachefile::remove_tree(&cache).freed;
+                }
+                n
+            });
+            // (A failure lets the deleter go too: the scope waits for it.)
+            let busy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job("busy")));
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            (busy.unwrap_or_else(|e| std::panic::resume_unwind(e)), deleter.join().unwrap())
+        });
+        assert!(freed > 0, "the deleter took nothing");
+        assert_eq!(busy, calm);
     }
 
     #[test]

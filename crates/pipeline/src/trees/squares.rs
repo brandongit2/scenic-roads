@@ -33,18 +33,34 @@ pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64))
     for (j, kind) in ["cover5m", "p95"].into_iter().enumerate() {
         let name = chm_name(top, left, kind);
         let p = chm.join(&name);
-        if !kept_whole(&p) {
+        // Held for the rest of the job (store::cachefile: the blocks read it by name, and a square
+        // room-making deleted would read as none there), and marked used; taken again when it isn't
+        // here whole.
+        let mut held = false;
+        for _ in 0..3 {
+            if store::cachefile::hold_existing(&p)?.is_some() {
+                if std::fs::metadata(&p).is_ok_and(|m| m.len() == 0) || crate::whole::tiff_file_whole(&p) {
+                    held = true;
+                    break;
+                }
+                eprintln!("canopy: {} isn't whole: taken again", p.display());
+                store::cachefile::discard(&p);
+            }
             let kept = store.join(&name);
             fetch_once(store, &kept, &|f| said((j as f64 + f) / 2.0))?;
-            crate::whole::copy(&kept, &p)?;
+            store::cachefile::create(&p, &mut |t| {
+                let (n, want) = (store::sys::copy_data(&kept, t)?, std::fs::metadata(&kept)?.len());
+                if n != want {
+                    return Err(std::io::Error::other(format!("{}: {n} of {want} bytes copied", kept.display())));
+                }
+                Ok(())
+            })
+            .with_context(|| p.display().to_string())?;
             said((j + 1) as f64 / 2.0);
         }
+        anyhow::ensure!(held, "{}: not here whole after three copies", p.display());
         if std::fs::metadata(&p).with_context(|| p.display().to_string())?.len() == 0 {
             there = false;
-        } else {
-            // Used now: the agent's room-making deletes the least recently used first.
-            let now = std::time::SystemTime::now();
-            std::fs::File::options().append(true).open(&p).and_then(|f| f.set_times(std::fs::FileTimes::new().set_accessed(now).set_modified(now))).ok();
         }
     }
     Ok(there)
@@ -119,6 +135,7 @@ fn download(urls: &[String], path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
             // (The first spelling Meta has; none there only when each says so.)
             let mut found = None;
             for url in urls {
+                crate::fetch::online(url)?;
                 match agent.get(url).call() {
                     Ok(r) if matches!(r.status().as_u16(), 403 | 404) => {}
                     Ok(r) => {

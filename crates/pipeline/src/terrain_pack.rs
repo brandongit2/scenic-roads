@@ -32,6 +32,7 @@ pub fn agent() -> ureq::Agent {
 /// One of AWS's tiles; None when it has none (the open sea at fine zooms) or it can't be fetched.
 pub fn fetch(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
     let url = format!("{URL}/{z}/{x}/{y}.png");
+    crate::fetch::online(&url).ok()?;
     for attempt in 0..5 {
         match agent.get(&url).call() {
             Ok(mut r) => {
@@ -445,17 +446,17 @@ const RANGED: usize = 16;
 /// range, else its archives copied here whole); and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
 /// `.none` for a tile AWS doesn't have), while they're there. Packs are always made from the same
 /// immutable source: processing a tile twice isn't idempotent, so stored (processed) tiles are never
-/// an input. Each loose copy is written straight to its name (crate::whole::write_in_place); every
+/// an input. Each loose copy is made whole under a name of its own, then named (store::cachefile); every
 /// tile is checked whole when read, a loose one or an archive's: one that isn't (cut short) is
 /// passed over (a loose one deleted) and taken from the next source, the NAS's copy, else AWS.
 pub struct RawTiles {
     dir: std::path::PathBuf,
     store: Option<std::path::PathBuf>,
     agent: ureq::Agent,
-    /// The store's columns (`<z>/<x>/`) as listed once, and the folders made, here and there: over
-    /// SMB each look or mkdir is a round trip, and those, a tile's few, set a terrain job's pace.
+    /// The store's columns (`<z>/<x>/`) as listed once: over SMB each look is a round trip, and
+    /// those, a tile's few, set a terrain job's pace. (The folders here are made as tiles are put:
+    /// store::cachefile.)
     listed: Mutex<HashMap<(u8, u32), std::sync::Arc<std::collections::HashSet<String>>>>,
-    made: Mutex<std::collections::HashSet<std::path::PathBuf>>,
     /// The store's archives' index: read when first wanted (tried again a minute after it can't
     /// be), and again when an archive it names is gone from the NAS (a job that outlived it).
     index: Mutex<(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)>,
@@ -467,12 +468,12 @@ pub struct RawTiles {
 impl RawTiles {
     /// A local cache alone (no NAS store).
     pub fn new(dir: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), made: Default::default(), index: Default::default(), archives: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), index: Default::default(), archives: Default::default() }
     }
 
     /// The local cache `dir`, filled from the NAS's `store` where it has a tile.
     pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), made: Default::default(), index: Default::default(), archives: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), index: Default::default(), archives: Default::default() }
     }
 
     /// The names in the store's column `z/x`, listed once (none when it isn't there); None when it
@@ -530,12 +531,11 @@ impl RawTiles {
             }
             let mut v = Vec::new();
             for p in packs.iter().rev() {
+                // (This Mac's copy held as it's read: store::cachefile.)
                 let local = self.dir.join("packs").join(&p.name);
-                let at = if local.exists() {
-                    touch(&local);
-                    local
-                } else {
-                    st.join("packs").join(&p.name)
+                let at = match store::cachefile::hold_existing(&local) {
+                    Ok(Some(l)) => l,
+                    _ => st.join("packs").join(&p.name),
                 };
                 match crate::rawpack::entries_of(&at) {
                     Ok(e) => v.push(e),
@@ -560,10 +560,8 @@ impl RawTiles {
     fn copy_area(&self, st: &std::path::Path, packs: &[crate::rawpack::Pack]) -> Option<std::sync::Arc<[roadcore::archive::Archive]>> {
         let mut v = Vec::new();
         for p in packs.iter().rev() {
-            let opened = crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| {
-                touch(&l);
-                roadcore::archive::Archive::open(&l)
-            });
+            // (Held, and marked used: rawpack::local_copy, store::cachefile.)
+            let opened = crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| roadcore::archive::Archive::open(&l));
             match opened {
                 Ok(a) => v.push(a),
                 Err(e) => {
@@ -650,16 +648,6 @@ impl RawTiles {
         }
     }
 
-    /// Makes folder `d` (once).
-    fn make(&self, d: &std::path::Path) -> std::io::Result<()> {
-        if self.made.lock().unwrap().contains(d) {
-            return Ok(());
-        }
-        std::fs::create_dir_all(d)?;
-        self.made.lock().unwrap().insert(d.to_path_buf());
-        Ok(())
-    }
-
     /// The raw tile, and whether it came from AWS just now.
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
         let d = self.dir.join(format!("{z}/{x}"));
@@ -675,20 +663,20 @@ impl RawTiles {
         if let Some(b) = self.archived(z, x, y) {
             return Ok((b, false));
         }
-        self.make(&d)?;
-        // On the NAS (its column listed once): copied here.
+        // On the NAS (its column listed once): copied here (its folder here made as it's put:
+        // store::cachefile, which makes it again if room-making took it).
         if let Some(st) = &self.store {
             let sd = st.join(format!("{z}/{x}"));
             let col = self.column(st, z, x);
             let has = |n: String| col.as_ref().map_or_else(|| sd.join(&n).exists(), |c| c.contains(&n));
             if has(format!("{y}.png")) {
-                if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
-                    crate::whole::write_in_place(&p, &b)?;
+                if let Some(b) = nas_whole(&sd.join(format!("{y}.png"))) {
+                    store::cachefile::put(&p, &b)?;
                     return Ok((Some(b), false));
                 }
             }
             if has(format!("{y}.none")) {
-                std::fs::write(&none, b"")?;
+                store::cachefile::put(&none, b"")?;
                 return Ok((None, false));
             }
         }
@@ -734,8 +722,7 @@ impl RawTiles {
     /// The raw tile fetched again (a cached one that doesn't decode), replacing the cached one.
     pub fn refetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let d = self.dir.join(format!("{z}/{x}"));
-        std::fs::remove_file(d.join(format!("{y}.png"))).ok();
-        std::fs::create_dir_all(&d)?;
+        store::cachefile::discard(&d.join(format!("{y}.png")));
         self.fetch(z, x, y)
     }
 
@@ -744,25 +731,34 @@ impl RawTiles {
     fn fetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let d = self.dir.join(format!("{z}/{x}"));
         match fetch_checked(&self.agent, z, x, y)? {
+            // (Made whole under a name of its own, then named: store::cachefile.)
             Some(b) => {
-                crate::whole::write_in_place(&d.join(format!("{y}.png")), &b)?;
+                store::cachefile::put(&d.join(format!("{y}.png")), &b)?;
                 Ok(Some(b))
             }
             None => {
-                std::fs::write(d.join(format!("{y}.none")), b"")?;
+                store::cachefile::put(&d.join(format!("{y}.none")), b"")?;
                 Ok(None)
             }
         }
     }
 }
 
-/// Marks a copy of an archive used (room-making deletes the least recently used first).
-fn touch(p: &std::path::Path) {
-    std::fs::File::options().append(true).open(p).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
+/// A kept tile's bytes when it's there and whole, read under a shared lock (store::cachefile);
+/// one that isn't whole is deleted.
+fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
+    let b = store::cachefile::read(p).ok()??;
+    if crate::whole::png_whole(&b) {
+        return Some(b);
+    }
+    eprintln!("terrain: {} isn't whole ({} bytes): fetched again", p.display(), b.len());
+    store::cachefile::discard(p);
+    None
 }
 
-/// A kept tile's bytes when it's there and whole; one that isn't whole is deleted.
-fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
+/// A tile of the NAS's loose store when it's there and whole (not this Mac's cache: nothing
+/// locked); one that isn't whole is deleted.
+fn nas_whole(p: &std::path::Path) -> Option<Vec<u8>> {
     let b = std::fs::read(p).ok()?;
     if crate::whole::png_whole(&b) {
         return Some(b);
@@ -777,6 +773,7 @@ fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
 /// remembered as "no tile").
 pub fn fetch_checked(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let url = format!("{URL}/{z}/{x}/{y}.png");
+    crate::fetch::online(&url)?;
     let mut last = None;
     let mut missing = 0;
     for attempt in 0..5 {
@@ -1116,13 +1113,12 @@ mod tests {
         out.save().unwrap();
     }
 
-    #[test]
-    fn a_z6_tile_at_a_time_makes_what_the_whole_area_did() {
-        let d = tempfile::tempdir().unwrap();
-        let local = d.path().join("local");
+    /// A small coverage in the far north and its area's raw tiles, written under `local` as a
+    /// cache keeps them: the area, its z6 tiles near the coverage, and the coverage.
+    fn north_tiles(d: &std::path::Path, local: &std::path::Path) -> ((u32, u32), Vec<(u32, u32)>, Coverage) {
         // A small coverage in the far north (z11 the finest there: fewer tiles) on two z6 tiles'
         // edge, and its area's z6 tiles near it.
-        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
+        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d).unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.len() >= 2, "{ts:?}");
@@ -1165,6 +1161,15 @@ mod tests {
             }
             std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
         }
+        (q, ts.clone(), cov)
+    }
+
+    #[test]
+    fn a_z6_tile_at_a_time_makes_what_the_whole_area_did() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local");
+        let (q, ts, cov) = north_tiles(d.path(), &local);
+        let ts = &ts;
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let made = |root: &str, way: &dyn Fn(&mut Out)| {
             let mut out = Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
@@ -1178,6 +1183,133 @@ mod tests {
         let before = made("before", &|out| whole_area(out, &raw, q, ts, &cov));
         assert_eq!(now.len(), ts.len() + 1);
         assert_eq!(now, before, "the same packs, byte for byte (their content names)");
+    }
+
+    /// Room-making mid-job (docs/plan.md §8, store::cachefile): a terrain run whose raw tiles come
+    /// from the NAS (half loose there, half in their area's archives), while every file of its
+    /// cache no job holds is deleted as fast as it can be, makes the same packs, byte for byte, as
+    /// a run left alone.
+    #[test]
+    fn a_run_whose_cache_is_deleted_under_it_makes_the_same_packs() {
+        // (No network: what isn't on the scratch NAS fails, never downloads.)
+        crate::fetch::go_offline();
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        let store = root.join("sources/aws-terrarium");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let staged = d.path().join("staged");
+        let (q, ts, cov) = north_tiles(d.path(), &staged);
+        // Half the tiles loose on the NAS, the rest packed into their area's archives there.
+        let mut files = Vec::new();
+        crate::agent::room::walk_for_test(&staged, &mut files);
+        let old = std::time::SystemTime::now() - Duration::from_secs(120);
+        for (i, f) in files.iter().enumerate() {
+            if i % 2 == 0 {
+                let to = store.join(f.strip_prefix(&staged).unwrap());
+                std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+                std::fs::rename(f, &to).unwrap();
+            } else {
+                std::fs::File::options().append(true).open(f).unwrap().set_modified(old).unwrap();
+            }
+        }
+        assert!(crate::rawpack::pack_local(&staged, &store, &root, false).unwrap() > 0);
+        let made = |name: &str, cache: &std::path::Path| {
+            let raw = RawTiles::with_store(cache, &store);
+            let mut out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            build_q(&mut out, &raw, q, &ts, &cov, &Sources::default()).unwrap();
+            let out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
+        };
+        let calm = made("calm", &d.path().join("calm-cache"));
+        // The other run's cache deleted under it, file by file, as fast as it goes.
+        let busy_cache = d.path().join("busy-cache");
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (busy, freed) = std::thread::scope(|s| {
+            let deleter = s.spawn(|| {
+                let mut freed = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    freed += store::cachefile::remove_tree(&busy_cache).freed;
+                }
+                freed
+            });
+            // (A failure lets the deleter go too: the scope waits for it.)
+            let busy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| made("busy", &busy_cache)));
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            (busy.unwrap_or_else(|e| std::panic::resume_unwind(e)), deleter.join().unwrap())
+        });
+        assert!(freed > 0, "the deleter took nothing");
+        assert_eq!(calm.len(), ts.len() + 1);
+        assert_eq!(busy, calm, "the same packs, byte for byte (their content names)");
+    }
+
+    /// The timed demonstration (docs/plan.md §8, Room on the disk; run by hand: `cargo test
+    /// --release -p pipeline demo_room_making_mid_job -- --ignored --nocapture`, scratch dir in
+    /// SCENIC_DEMO_DIR, else a temporary one): a scratch agent cache holding copies of a scratch
+    /// NAS's files (SCENIC_DEMO_MB of them, 1024 by default) and a terrain run reading its raw tiles
+    /// through it; the room target set past the free space, so the agent's freeing toward it
+    /// (room::toward, as its loop runs it) deletes while the run goes on. The free space before and
+    /// after, what went, and the run's packs against a run left alone.
+    #[test]
+    #[ignore]
+    fn demo_room_making_mid_job() {
+        crate::fetch::go_offline();
+        let keep = std::env::var_os("SCENIC_DEMO_DIR").map(std::path::PathBuf::from);
+        let tmp = tempfile::tempdir_in(keep.as_deref().unwrap_or(&std::env::temp_dir())).unwrap();
+        let d = tmp.path();
+        let mb: u64 = std::env::var("SCENIC_DEMO_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
+        let root = d.join("nas");
+        let (sources, store) = (root.join("sources"), root.join("sources/aws-terrarium"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        // The raw tiles, loose on the NAS.
+        let staged = d.join("staged");
+        let (q, ts, cov) = north_tiles(d, &staged);
+        std::fs::rename(&staged, &store).unwrap();
+        // The NAS's records' files, and this Mac's copies of them (blobs/): what the target frees.
+        let cache = d.join("cache");
+        let n = mb / 32;
+        for i in 0..n {
+            let name = format!("layers/demo/6-{i}-0.{i:016x}.pack");
+            let b: Vec<u8> = (0..32u64 << 20).map(|k| (k * 31 + i) as u8).collect();
+            for at in [root.join(&name), cache.join("blobs").join(&name)] {
+                std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                std::fs::write(&at, &b).unwrap();
+            }
+        }
+        let made = |name: &str, cache: &std::path::Path| {
+            let raw = RawTiles::with_store(&cache.join("aws-terrarium"), &store);
+            let mut out = Out::open(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+            build_q(&mut out, &raw, q, &ts, &cov, &Sources::default()).unwrap();
+            let out = Out::open(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+            out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
+        };
+        let t = std::time::Instant::now();
+        let calm = made("calm", &d.join("calm-cache"));
+        let calm_s = t.elapsed().as_secs_f64();
+        // The run, and the agent's freeing toward a target past the free space, at once.
+        let free_before = crate::agent::room::disk_free(d).unwrap();
+        let target = free_before + (mb << 20) * 3 / 4;
+        let goal = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(target));
+        let t = std::time::Instant::now();
+        let (busy, freed, freeing_s) = std::thread::scope(|s| {
+            let job = s.spawn(|| made("busy", &cache));
+            // (Once the run is under way: its first tiles copied here.)
+            while !cache.join("aws-terrarium").exists() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let t0 = std::time::Instant::now();
+            let freed = crate::agent::room::toward(&cache, &sources, goal.clone(), &Default::default()).unwrap();
+            let freeing_s = t0.elapsed().as_secs_f64();
+            (job.join().unwrap(), freed, freeing_s)
+        });
+        let busy_s = t.elapsed().as_secs_f64();
+        let free_after = crate::agent::room::disk_free(d).unwrap();
+        let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+        println!("demo: scratch {} ({} MB of copies of the NAS's files in the cache, a terrain run of {} z6 tiles)", d.display(), n * 32, ts.len());
+        println!("demo: free before {:.2} GB, target {:.2} GB; after {:.2} GB ({:+.2} GB)", gb(free_before), gb(target), gb(free_after), gb(free_after) - gb(free_before));
+        println!("demo: freed toward the target in {freeing_s:.1} s while the run went on: {}", freed.say());
+        println!("demo: the run alone {calm_s:.1} s, with the freeing {busy_s:.1} s; packs alike: {}", busy == calm);
+        assert!(freed.bytes() > 0 && free_after > free_before);
+        assert_eq!(busy, calm, "the same packs, byte for byte");
     }
 
     #[test]

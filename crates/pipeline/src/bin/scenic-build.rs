@@ -685,14 +685,15 @@ fn open_units(out: &Out, cache: &Path, mirror: Option<&Path>) -> Result<Vec<Base
                 local.push(m);
                 continue;
             }
-            let p = cache.join(name);
-            if !p.exists() {
-                std::fs::create_dir_all(p.parent().unwrap())?;
-                let tmp = p.with_extension("tmp");
-                store::sys::copy_data(out.path(name), &tmp).with_context(|| format!("copy {name} from the NAS"))?;
-                anyhow::ensure!(store::naming::hash16_file(&tmp)? == name.rsplit('.').nth(1).unwrap_or(""), "{name}: hash mismatch after copy");
-                std::fs::rename(&tmp, &p)?;
-            }
+            // (Held for the job, copied from the NAS first when it isn't here: store::cachefile.)
+            let p = store::cachefile::hold(&cache.join(name), &mut |tmp| {
+                store::sys::copy_data(out.path(name), tmp)?;
+                if store::naming::hash16_file(tmp).map_err(std::io::Error::other)? != name.rsplit('.').nth(1).unwrap_or("") {
+                    return Err(std::io::Error::other("hash mismatch after copy"));
+                }
+                Ok(())
+            })
+            .with_context(|| format!("copy {name} from the NAS"))?;
             local.push(p);
         }
         packs.push(BasePack::open(&local[0], &local[1]).with_context(|| format!("unit {u}"))?);
@@ -714,9 +715,11 @@ fn prune_cache(cache: &Path, keep: &BTreeSet<&str>) -> Result<()> {
                 continue;
             }
             let rel = p.strip_prefix(cache).unwrap_or(&p).to_string_lossy().into_owned();
+            // (Not one another job uses: store::cachefile.)
             if !keep.contains(rel.as_str()) {
-                freed += e.metadata().map(|m| m.len()).unwrap_or(0);
-                std::fs::remove_file(&p).ok();
+                if let store::cachefile::Removed::Freed(n) = store::cachefile::try_remove(&p) {
+                    freed += n;
+                }
             }
         }
     }
@@ -1530,16 +1533,24 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
     let dir = cache.join(logical.replace('/', "-"));
     let local = dir.join(&name);
     let size = std::fs::metadata(&src)?.len();
-    if std::fs::metadata(&local).is_ok_and(|m| m.len() == size) {
-        return Ok(local);
+    // (Held for the job, copied first when it isn't here whole: store::cachefile. Content-named:
+    // one here of another length was cut short.)
+    let copy = &mut |tmp: &Path| {
+        let n = store::sys::copy_data(&src, tmp)?;
+        if n != size {
+            return Err(std::io::Error::other(format!("{n} of {size} bytes copied")));
+        }
+        Ok(())
+    };
+    store::cachefile::hold(&local, copy).with_context(|| format!("copy {}", src.display()))?;
+    if std::fs::metadata(&local).map(|m| m.len()).ok() != Some(size) {
+        store::cachefile::discard(&local);
+        store::cachefile::hold(&local, copy).with_context(|| format!("copy {}", src.display()))?;
     }
-    std::fs::create_dir_all(&dir)?;
-    let tmp = dir.join(format!("{name}.tmp"));
-    store::sys::copy_data(&src, &tmp).with_context(|| format!("copy {}", src.display()))?;
-    std::fs::rename(&tmp, &local)?;
+    // (Other copies go, unless a job uses them.)
     for e in std::fs::read_dir(&dir)?.flatten() {
         if e.file_name().to_string_lossy() != name {
-            std::fs::remove_file(e.path()).ok();
+            store::cachefile::try_remove(&e.path());
         }
     }
     // Older passes' copies of the same file go too.
@@ -1549,7 +1560,7 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
         for e in std::fs::read_dir(cache)?.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             if n != me && n.len() == me.len() && n.starts_with(pre) && n.ends_with(post) && pipeline::osmpass::is_date(&n[pre.len()..pre.len() + 10]) {
-                std::fs::remove_dir_all(e.path()).ok();
+                store::cachefile::remove_tree(&e.path());
             }
         }
     }
@@ -1871,9 +1882,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let pv = cache.join("items");
     std::fs::create_dir_all(pv.join("months"))?;
     for e in std::fs::read_dir(seeds.join("pageviews/months"))?.flatten() {
+        // (Made whole under a name of its own, never over one here: store::cachefile.)
         let dest = pv.join("months").join(e.file_name());
         if !dest.exists() {
-            store::sys::copy_data(e.path(), &dest)?;
+            store::cachefile::create(&dest, &mut |t| store::sys::copy_data(e.path(), t).map(|_| ()))?;
+            store::cachefile::release(&dest);
         }
     }
     pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
@@ -1967,17 +1980,31 @@ fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result
     let id = store::naming::hash16(&std::fs::read(poly)?)[..12].to_string();
     let name = format!("heritage-merged-{date}-{id}.osm.pbf");
     let dest = cache.join(&name);
-    if dest.exists() {
-        return Ok(dest);
+    // Held for the job (store::cachefile: osmium and the scripts read it by name); clipped first
+    // when it isn't here, osmium writing into the held temporary file in place (--overwrite: the
+    // same file, truncated), with a name osmium reads as a PBF.
+    let src = out.get(&format!("sources/osm/{date}/filtered")).map(|c| out.path(c));
+    if store::cachefile::hold_existing(&dest)?.is_none() {
+        let src = src.context("the pass's filtered planet")?;
+        let (tmp, held) = store::cachefile::scratch(&cache.join(format!("{name}.tmp.osm.pbf")))?;
+        let pbf = tmp.with_extension("osm.pbf");
+        std::fs::hard_link(&tmp, &pbf)?;
+        let clipped = osmium_clip(&src, poly, &pbf);
+        // (osmium writes in place, but one that made a file of its own there is followed:
+        // store::cachefile::publish. The same file under both names: the rename does nothing.)
+        std::fs::rename(&pbf, &tmp).ok();
+        std::fs::remove_file(&pbf).ok();
+        if let Err(e) = clipped {
+            std::fs::remove_file(&tmp).ok();
+            return Err(e);
+        }
+        store::cachefile::publish(held, &tmp, &dest)?;
     }
-    let src = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
-    let tmp = cache.join(format!("{name}.tmp.osm.pbf"));
-    osmium_clip(&src, poly, &tmp)?;
-    std::fs::rename(&tmp, &dest)?;
+    // (Other passes' and covers' clips go, unless a job uses them.)
     for e in std::fs::read_dir(cache)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with("heritage-merged-") && n != name {
-            std::fs::remove_file(e.path()).ok();
+        if n.starts_with("heritage-merged-") && n != name && !n.contains(".tmp") {
+            store::cachefile::try_remove(&e.path());
         }
     }
     Ok(dest)
@@ -2384,7 +2411,14 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let offload = pipeline::offload::Offload::from_env(scratch);
     let mut out_now: std::collections::VecDeque<(Built, pipeline::offload::Offered)> = Default::default();
     let mut paused = false;
+    // The cache files held for the units (store::cachefile): each unit's let go once the unit after
+    // it is under way (what this unit and the next's copying ahead hold stays), so room-making may
+    // take them meanwhile, and a job of hundreds of units doesn't hold them all.
+    let mut held_since: Option<u64> = None;
     for (k, &u) in units.iter().enumerate() {
+        if let Some(m) = held_since.replace(store::cachefile::mark()) {
+            store::cachefile::release_before(m);
+        }
         // A safe point before each area: with the build pausing, the areas whose last steps are out
         // are settled (below), and the job ends.
         if pipeline::control::draining() {
@@ -2434,8 +2468,22 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                         eprintln!("unit: {c} not copied ahead ({e})");
                     }
                 }
+                // (The squares held, as they're copied: store::cachefile, the canopy step's own
+                // hold reading them again.)
                 for (src, dst) in &squares {
-                    copy(src, dst);
+                    if !dst.exists() && !src.exists() {
+                        continue;
+                    }
+                    let got = store::cachefile::hold(dst, &mut |tmp| {
+                        let (n, want) = (store::sys::copy_data(src, tmp)?, std::fs::metadata(src)?.len());
+                        if n != want {
+                            return Err(std::io::Error::other(format!("{n} of {want} bytes copied")));
+                        }
+                        Ok(())
+                    });
+                    if let Err(e) = got {
+                        eprintln!("unit: {} not copied ahead ({e})", dst.display());
+                    }
                 }
             }));
         }
@@ -3357,6 +3405,26 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A pack or lo job's base packs another such job uses (it holds them: store::cachefile) aren't
+    /// pruned from under it: once, prune_cache deleted what the other read next.
+    #[test]
+    fn a_base_pack_another_job_uses_is_never_pruned() {
+        let d = tempfile::tempdir().unwrap();
+        let cache = d.path().join("base");
+        let (used, idle) = (cache.join("base/6-1-1.0000000000000001.base"), cache.join("base/6-1-2.0000000000000002.base"));
+        for p in [&used, &idle] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"pack").unwrap();
+        }
+        // The other job's hold (another open file: as another process's, to flock).
+        store::cachefile::hold_existing(&used).unwrap();
+        super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
+        assert!(used.exists(), "pruned from under the job using it");
+        assert!(!idle.exists());
+        store::cachefile::release(&used);
+        super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
+        assert!(!used.exists());
+    }
     #[test]
     fn catalog_times_both_ways() {
         for t in ["2026-10-05T03:55:11Z", "2024-02-29T23:59:59Z", "1970-01-01T00:00:00Z", "2000-03-01T12:00:00Z"] {

@@ -551,3 +551,57 @@ fn canopy_squares_from_the_store() {
     assert!(squares::canopy(&chm, &store, 50, 0, &|_| {}).unwrap());
     assert_eq!(std::fs::read(chm.join(chm_name(50, 0, "cover5m"))).unwrap(), t);
 }
+
+/// Room-making while tree cover runs (docs/plan.md §8, store::cachefile): the canopy squares a z3
+/// run copies into the agent's cache are read by its blocks by name, and a square room-making
+/// deleted in between read as Meta's "none there" (no trees: a wrong output, said by nothing).
+/// Held as they're copied now: with room-making trimming the cache as fast as it can the whole
+/// time, the run makes what it makes left alone.
+#[test]
+fn room_making_mid_run_never_reads_a_square_as_none_there() {
+    // (No network: what isn't on the scratch NAS fails, never downloads.)
+    crate::fetch::go_offline();
+    let d = squares_dir();
+    let o = tempfile::tempdir().unwrap();
+    const COV: &str = r#"{"shapes": [[[[5.66, 48.2], [7.2, 48.2], [7.2, 48.91], [5.66, 48.91]]]]}"#;
+    std::fs::write(o.path().join("cov.json"), COV).unwrap();
+    // The NAS's store has the squares; the agent's cache (`chm10/`) fills from it.
+    let (cache, sources) = (o.path().join("cache"), o.path().join("nas/sources"));
+    let (chm, store) = (cache.join("chm10"), sources.join("canopy"));
+    std::fs::create_dir_all(&store).unwrap();
+    for k in ["cover5m", "p95"] {
+        std::fs::copy(d.path().join(chm_name(50, 0, k)), store.join(chm_name(50, 0, k))).unwrap();
+    }
+    let run = |out: &str| {
+        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: chm.clone(), chm_store: store.clone(), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+        let n = z3(&a).unwrap();
+        // (This process's holds let go, as the job's end would.)
+        for k in ["cover5m", "p95"] {
+            store::cachefile::release(&chm.join(chm_name(50, 0, k)));
+        }
+        n
+    };
+    let calm = run("calm");
+    assert!(calm.iter().sum::<usize>() > 0);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let (busy, trims) = std::thread::scope(|s| {
+        let room = s.spawn(|| {
+            let mut n = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::agent::room::trim(&cache, &sources, &|_| false).unwrap();
+                n += 1;
+            }
+            n
+        });
+        // (A failure lets room-making go too: the scope waits for it.)
+        let busy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run("busy")));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        (busy.unwrap_or_else(|e| std::panic::resume_unwind(e)), room.join().unwrap())
+    });
+    assert!(trims > 0);
+    assert_eq!(busy, calm);
+    for l in LAYERS {
+        let f = format!("trees-{l}.tiles");
+        assert_eq!(std::fs::read(o.path().join("busy").join(&f)).unwrap(), std::fs::read(o.path().join("calm").join(&f)).unwrap(), "{l}: the same with room-making under way");
+    }
+}

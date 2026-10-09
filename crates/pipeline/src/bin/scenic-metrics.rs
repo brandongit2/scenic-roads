@@ -301,7 +301,9 @@ fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&
         ensure!(pipeline::whole::tiff_whole(&f), "{} isn't whole", path.display());
         return Ok(Some(f));
     }
-    // A kept copy: Some(None) for Meta's "none there", None when it's missing or not whole.
+    // A kept copy: Some(None) for Meta's "none there", None when it's missing or not whole (then
+    // deleted, to be taken again). This Mac's copy is held as it's opened (store::cachefile:
+    // room-making leaves it while this job runs; one it deleted is taken again here).
     let kept = |p: &Path| -> Option<Option<File>> {
         let f = File::open(p).ok()?;
         let len = f.metadata().ok()?.len();
@@ -312,14 +314,15 @@ fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&
             return Some(Some(f));
         }
         eprintln!("canopy: {} isn't whole ({len} bytes): taken again", p.display());
-        std::fs::remove_file(p).ok();
+        if p == path {
+            store::cachefile::discard(p);
+        } else {
+            std::fs::remove_file(p).ok();
+        }
         None
     };
-    if let Some(f) = kept(path) {
-        // Used now: the build agent's room-making deletes the least recently used squares first.
-        if let Ok(f) = File::options().append(true).open(path) {
-            f.set_modified(std::time::SystemTime::now()).ok();
-        }
+    let here = || -> Option<Option<File>> { store::cachefile::hold_existing(path).ok().flatten().and_then(|p| kept(&p)) };
+    if let Some(f) = here() {
         return Ok(f);
     }
     // The NAS's copy; else the right to download it there (`<file>.lock`, made with create-new: a
@@ -334,12 +337,12 @@ fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&
         loop {
             match kept(st) {
                 Some(None) => {
-                    pipeline::whole::write(path, b"")?;
+                    store::cachefile::create_bytes(path, b"")?;
                     return Ok(None);
                 }
                 Some(Some(_)) => {
-                    pipeline::whole::copy(st, path)?;
-                    return kept(path).with_context(|| format!("{} isn't whole as copied", path.display()));
+                    store::cachefile::create(path, &mut |tmp| copy_whole(st, tmp))?;
+                    return here().with_context(|| format!("{} isn't whole as copied", path.display()));
                 }
                 None => {}
             }
@@ -364,15 +367,16 @@ fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&
         }
     }
     let mut missing = 0;
+    pipeline::fetch::online(&urls.join(" or "))?;
     for attempt in 0..6 {
         match meta_get(agent, urls) {
             Ok(mut r) => {
                 let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
                 // Into a temporary file beside `path`, not memory (up to 1.2 GB), flushed. (A body cut
                 // short, or not a whole TIFF, is tried again, never kept.)
-                let tmp = pipeline::whole::tmp_name(path);
+                // (Held as it's written, store::cachefile's scratch file: room-making leaves it.)
+                let (tmp, mut f) = store::cachefile::scratch(path)?;
                 let got = (|| -> Result<Option<File>> {
-                    let mut f = File::options().read(true).write(true).create(true).truncate(true).open(&tmp)?;
                     let Some(n) = copy_body(&mut r.body_mut().with_config().limit(3_000_000_000).reader(), &mut f)? else { return Ok(None) };
                     f.sync_all()?;
                     if want.is_some_and(|w| w != n) || !pipeline::whole::tiff_whole(&f) {
@@ -381,8 +385,8 @@ fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&
                     if let Some(st) = store {
                         pipeline::whole::copy(&tmp, st)?;
                     }
-                    std::fs::rename(&tmp, path)?;
-                    Ok(Some(f))
+                    store::cachefile::publish(f.try_clone()?, &tmp, path)?;
+                    Ok(here().flatten())
                 })();
                 if !matches!(got, Ok(Some(_))) {
                     std::fs::remove_file(&tmp).ok();
@@ -399,7 +403,7 @@ fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&
                     if let Some(st) = store {
                         pipeline::whole::write(st, b"")?;
                     }
-                    pipeline::whole::write(path, b"")?;
+                    store::cachefile::create_bytes(path, b"")?;
                     return Ok(None);
                 }
             }
@@ -430,6 +434,15 @@ impl Drop for DownloadLock {
     fn drop(&mut self) {
         std::fs::remove_file(&self.0).ok();
     }
+}
+
+/// Copies file `src` into `dst` in place (store::cachefile's temporary file), whole.
+fn copy_whole(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let (n, want) = (store::sys::copy_data(src, dst)?, std::fs::metadata(src)?.len());
+    if n != want {
+        return Err(std::io::Error::other(format!("{}: {n} of {want} bytes copied", src.display())));
+    }
+    Ok(())
 }
 
 /// Copies `r` to `w`: the bytes copied once `r` ends, None when reading fails (a body cut short);
@@ -643,7 +656,7 @@ fn damaged(path: &Path, store: Option<&Path>, read_only: bool, taken: &mut usize
         return Err(e.context(format!("{} (taken again twice)", path.display())));
     }
     eprintln!("canopy: {}: {e:#}; taken again", path.display());
-    std::fs::remove_file(path).ok();
+    store::cachefile::discard(path);
     if *taken == 1 {
         if let Some(st) = store {
             std::fs::remove_file(st).ok();
@@ -752,7 +765,7 @@ fn canopy(dir: &Path) -> Result<()> {
         (None, Some(c)) => PathBuf::from(c).join("chm10"),
         (None, None) => dir.parent().unwrap().join("cache/chm10"),
     };
-    std::fs::create_dir_all(&cache)?;
+    store::cachefile::make_dir(&cache)?;
     // The NAS's store of them (`sources/canopy/`), where each is downloaded once. Read where they
     // lie (SCENIC_CHM: a task's worker), or told the stores are only read: nothing written there.
     let read_only = std::env::var_os("SCENIC_CHM").is_some() || std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");

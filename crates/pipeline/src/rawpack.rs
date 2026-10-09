@@ -154,26 +154,31 @@ impl Drop for Turn {
 /// (`COPIES` at once) and checked against its name: a copy cut short or changed on the way is never
 /// used.
 pub fn local_copy(dir: &Path, store: &Path, name: &str) -> Result<PathBuf> {
+    // (Held by this process: store::cachefile.)
     let local = dir.join("packs").join(name);
-    if local.exists() {
-        return Ok(local);
+    if let Some(p) = store::cachefile::hold_existing(&local)? {
+        return Ok(p);
     }
     let _turn = Turn::take();
-    if local.exists() {
-        return Ok(local);
-    }
-    std::fs::create_dir_all(local.parent().unwrap())?;
-    let part = dir.join("packs").join(own(name, "part"));
-    let r = crate::whole::copy(&store.join("packs").join(name), &part).with_context(|| format!("copy {name} from the NAS")).and_then(|_| {
-        ensure!(named_right(&part, name)?, "{name} on the NAS isn't what its name says");
+    let src = store.join("packs").join(name);
+    store::cachefile::hold(&local, &mut |tmp| {
+        let (n, want) = (store::sys::copy_data(&src, tmp)?, std::fs::metadata(&src)?.len());
+        if n != want {
+            return Err(std::io::Error::other(format!("copy {name} from the NAS: {n} of {want} bytes")));
+        }
+        if !named_right(tmp, name).map_err(std::io::Error::other)? {
+            return Err(std::io::Error::other(format!("{name} on the NAS isn't what its name says")));
+        }
         Ok(())
-    });
-    if let Err(e) = r {
-        std::fs::remove_file(&part).ok();
-        return Err(e);
-    }
-    std::fs::rename(&part, &local)?;
-    Ok(local)
+    })
+    .with_context(|| format!("copy {name} from the NAS"))
+}
+
+/// Deletes this process's copy here of an archive (`dir/packs/<name>`), unless another job holds
+/// it (store::cachefile: then room-making takes it later).
+fn drop_copy(p: &Path) {
+    store::cachefile::release(p);
+    store::cachefile::try_remove(p);
 }
 
 /// Whether the file at `p` holds what archive `name` names (its hash).
@@ -286,6 +291,8 @@ impl Packer {
         std::fs::create_dir_all(dir.join("packs"))?;
         let spool_path = dir.join("packs").join(own("packing", "spool"));
         let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&spool_path).with_context(|| format!("open {}", spool_path.display()))?;
+        // (Held while it's written: room-making leaves it.)
+        store::cachefile::lock_shared(&f)?;
         Ok(Packer { dir: dir.to_path_buf(), store: store.to_path_buf(), root: root.to_path_buf(), index, spool: BufWriter::with_capacity(1 << 20, f), spool_path, pos: 0, areas: BTreeMap::new(), last: None, touched: Default::default(), missing: Vec::new(), added: 0, keep: true, handoff, handed: Vec::new() })
     }
 
@@ -333,8 +340,13 @@ impl Packer {
     fn keys(&mut self, area: &str, pass: bool) -> Result<HashSet<u64>> {
         let mut have = HashSet::new();
         for p in self.index.of(area).to_vec() {
+            // (This Mac's copy held as it's read, store::cachefile: one room-making took between a
+            // look and the read would pass for the NAS's own missing.)
             let local = self.dir.join("packs").join(&p.name);
-            let at = if local.exists() { local } else { self.store.join("packs").join(&p.name) };
+            let at = match store::cachefile::hold_existing(&local) {
+                Ok(Some(l)) => l,
+                _ => self.store.join("packs").join(&p.name),
+            };
             match entries_of(&at) {
                 Ok((_, e)) => have.extend(e.iter().map(|e| e.key)),
                 Err(e) if pass && not_found(&e) => {
@@ -428,7 +440,12 @@ impl Packer {
                 let p = e.path();
                 let ours = p.extension().and_then(|x| x.to_str()).is_some_and(|x| exts.contains(&x));
                 if ours && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
-                    std::fs::remove_file(&p).ok();
+                    // (Here, not one a live job writes: store::cachefile.)
+                    if d == self.dir.join("packs") {
+                        store::cachefile::try_remove(&p);
+                    } else {
+                        std::fs::remove_file(&p).ok();
+                    }
                 }
             }
         }
@@ -437,7 +454,8 @@ impl Packer {
     /// An archive of `n` tiles written here, named by its content: `tile(i, b)` puts the i-th's
     /// bytes (in key order) in `b` and gives its key.
     fn write(&self, area: &str, n: usize, mut tile: impl FnMut(usize, &mut Vec<u8>) -> Result<u64>) -> Result<Pack> {
-        let part = self.dir.join("packs").join(own(area, "part"));
+        // (Written held, store::cachefile's scratch file beside its folder: room-making leaves it.)
+        let (part, held) = store::cachefile::scratch(&self.dir.join("packs").join(own(area, "part")))?;
         let r = (|| -> Result<()> {
             let mut w = ArchiveWriter::create(&part, META)?;
             let mut b = Vec::new();
@@ -454,7 +472,8 @@ impl Packer {
         }
         let name = format!("{area}.{}.tiles", store::naming::hash16_file(&part)?);
         let bytes = std::fs::metadata(&part)?.len();
-        std::fs::rename(&part, self.dir.join("packs").join(&name))?;
+        // (Named only if it isn't there: one of the same name has the same tiles.)
+        store::cachefile::publish(held, &part, &self.dir.join("packs").join(&name))?;
         Ok(Pack { name, bytes })
     }
 
@@ -480,7 +499,7 @@ impl Packer {
             for (area, p) in group {
                 self.put(&p)?;
                 if !self.keep {
-                    std::fs::remove_file(self.dir.join("packs").join(&p.name)).ok();
+                    drop_copy(&self.dir.join("packs").join(&p.name));
                 }
                 self.handed.push((area, p));
             }
@@ -515,7 +534,7 @@ impl Packer {
         ensure!(absent.is_empty(), "not on the NAS whole when named: {}", absent.join(", "));
         if !self.keep {
             for (_, p) in &group {
-                std::fs::remove_file(self.dir.join("packs").join(&p.name)).ok();
+                drop_copy(&self.dir.join("packs").join(&p.name));
             }
         }
         Ok(())
@@ -554,11 +573,11 @@ impl Packer {
             if named {
                 // (One of them may be the merged archive itself: one that held all the others' tiles.)
                 for p in run.iter().filter(|p| p.name != merged.name) {
-                    std::fs::remove_file(self.dir.join("packs").join(&p.name)).ok();
+                    drop_copy(&self.dir.join("packs").join(&p.name));
                 }
             }
             if !named || !self.keep {
-                std::fs::remove_file(self.dir.join("packs").join(&merged.name)).ok();
+                drop_copy(&self.dir.join("packs").join(&merged.name));
             }
             ensure!(!absent, "{} wasn't on the NAS whole when named", merged.name);
             if !named {
@@ -623,7 +642,7 @@ impl Packer {
                     continue;
                 }
             }
-            std::fs::remove_file(self.dir.join("packs").join(&name)).ok();
+            drop_copy(&self.dir.join("packs").join(&name));
         }
         // An archive on the NAS the index neither names nor lists to go, a day old: a helper's whose
         // hand-off never came. Listed to go (GRACE later), as a replaced one. (Never from an index
@@ -802,10 +821,11 @@ fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Opt
             said = std::time::Instant::now();
         }
         let png = if has {
-            let b = std::fs::read(&path)?;
+            // (Gone meanwhile: room-making's, or another packer's.)
+            let Some(b) = store::cachefile::read(&path)? else { continue };
             if !crate::whole::png_whole(&b) {
                 eprintln!("rawpack: {} isn't whole: deleted, not packed", path.display());
-                std::fs::remove_file(&path).ok();
+                store::cachefile::discard(&path);
                 continue;
             }
             Some(b)
@@ -820,8 +840,9 @@ fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Opt
     progress("raw tiles", n, n);
     let added = p.added;
     let areas = p.finish_with(progress)?;
+    // (Not one a job reads now: store::cachefile; packed again next time, the same bytes.)
     for path in &packed {
-        std::fs::remove_file(path).ok();
+        store::cachefile::try_remove(path);
     }
     if !areas.is_empty() {
         eprintln!("rawpack: {added} tiles packed onto the NAS ({} area{})", areas.len(), if areas.len() == 1 { "" } else { "s" });

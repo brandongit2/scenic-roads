@@ -1,9 +1,8 @@
 //! Files kept whole (docs/plan.md §3, Downloads). What's written to the NAS's stores, or copied from
 //! them to a Mac's cache, goes by a temporary name (this Mac's name and the process's, so two Macs
 //! never share one), is flushed to the disk and has its length checked before the rename: a write
-//! cut short never takes the file's name. (AWS's raw terrain tiles, written by the hundred thousand,
-//! go straight to their names: `write_in_place`.) And a kept
-//! file can be checked whole (a PNG to its last chunk, a TIFF's strips or tiles inside the file), so
+//! cut short never takes the file's name. (The build agent's caches are made through
+//! store::cachefile, the same way, and held.) And a kept file can be checked whole (a PNG to its last chunk, a TIFF's strips or tiles inside the file), so
 //! a copy cut short is fetched again rather than read for good.
 
 use anyhow::{ensure, Context, Result};
@@ -55,15 +54,6 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
         std::fs::remove_file(&tmp).ok();
     }
     r.with_context(|| format!("write {}", path.display()))
-}
-
-/// Writes `b` straight to `path`: no temporary name, flush or check. For small files written by the
-/// hundred thousand over SMB (AWS's raw terrain tiles), where each of those round trips cuts the
-/// rate (55 files a second written in place, 19 by a temporary name), and which are checked whole
-/// when read (`png_whole`) and taken again when they aren't: one cut short costs only a fetch.
-pub fn write_in_place(path: &Path, b: &[u8]) -> Result<()> {
-    let mut f = std::fs::File::create(path).with_context(|| format!("write {}", path.display()))?;
-    f.write_all(b).with_context(|| format!("write {}", path.display()))
 }
 
 /// Copies `src` to `dst`, whole; the bytes copied.
