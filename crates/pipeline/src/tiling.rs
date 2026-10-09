@@ -489,16 +489,3 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)], progress: Option
     encoded
 }
 
-/// "z12 roads: 1234 tiles, … " — one line of build output, and the zoom's stats JSON.
-pub fn zoom_stats(z: u8, what: &str, enc: &[Encoded], t0: std::time::Instant) -> String {
-    let (bytes, nv, maxb) = enc.iter().fold((0usize, 0usize, 0usize), |a, e| (a.0 + e.gz.len(), a.1 + e.nverts, a.2.max(e.gz.len())));
-    eprintln!(
-        "z{z:>2} {what}: {:>7} tiles, {:>11} verts, {:>8.1} MB (max tile {:>6.0} KB)  ({:.0?})",
-        enc.len(),
-        nv,
-        bytes as f64 / 1e6,
-        maxb as f64 / 1e3,
-        t0.elapsed()
-    );
-    format!("\"{z}\":{{\"tiles\":{},\"vertices\":{},\"bytes\":{},\"max_tile\":{}}}", enc.len(), nv, bytes, maxb)
-}

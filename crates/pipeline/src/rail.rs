@@ -23,8 +23,8 @@
 //! service is never fetched again. Only one already out of date when fetched is: the next time
 //! rail-feeds runs (when its key changes: a new pass's outlines, the coverage, the catalogue or the
 //! keys) at least a week after its day, and the same file then counts from that run's day
-//! (railfeeds.py). The sources start from the legacy build's (`rail-seed`), whose zips count from
-//! the day today's figures were counted.
+//! (railfeeds.py). The catalogue and the MTR's files are put there by hand (docs/plan.md, Hand-made
+//! inputs); the rail chain waits for the catalogue.
 
 use crate::coverage::{Coverage, Shape};
 use crate::out::Out;
@@ -264,109 +264,8 @@ pub fn cache_index(out: &Out, fetched: &Fetched) -> Value {
     Value::Object(idx)
 }
 
-/// The rail sources from the legacy build's rail folders (`from`, the first one's files first:
-/// `feeds_v2.csv`, `feeds-checked.json`, `gtfs/<id>.zip`, `pairs-mtr.bin`, `mtr.json`), adding only
-/// what the sources lack and replacing nothing, so it can run again. A zip's day is the day the
-/// folder's figures were counted (its `feeds-used.json`), else the day it was downloaded.
-/// The catalogue comes last, once everything else is saved: the agent's rail chain waits for it
-/// (agent::build::rail_chain), so it never starts on sources a run cut short left half seeded, and
-/// the next run adds what's missing. Days and checks go into the copies the manifest names when
-/// they're written, so a rail-feeds run meanwhile keeps its own.
-pub fn seed(out: &mut Out, from: &[PathBuf]) -> Result<SeedReport> {
-    let mut rep = SeedReport::default();
-    let first = |name: &str| from.iter().map(|d| d.join(name)).find(|p| p.is_file());
-    for (logical, ext, name) in [(MTR_PAIRS, "bin", "pairs-mtr.bin"), (MTR, "json", "mtr.json")] {
-        if out.get(logical).is_none() {
-            if let Some(p) = first(name) {
-                out.put_file(logical, ext, &copy_local(out, &p)?)?;
-                rep.files.push(logical.to_string());
-            }
-        }
-    }
-    // Every catalogue feed the legacy folders checked, by id (the first one's answer first). Today's
-    // check could take an answer cut short for "no rail routes" (or "no routes.txt"), so those are
-    // seeded as unanswered: railfeeds.py asks again, once.
-    let mut legacy: BTreeMap<String, Value> = BTreeMap::new();
-    for d in from {
-        let Ok(b) = std::fs::read(d.join("feeds-checked.json")) else { continue };
-        for mut v in serde_json::from_slice::<Vec<Value>>(&b).with_context(|| format!("{}", d.join("feeds-checked.json").display()))? {
-            let none = v["rail_routes"].as_u64().unwrap_or(0) == 0;
-            if none && v.get("status").and_then(Value::as_str).is_none_or(|s| s == "ok" || s.starts_with("no routes.txt")) {
-                v["status"] = Value::from("no answer (today's check, asked again)");
-            }
-            if let Some(id) = v["id"].as_str() {
-                legacy.entry(id.to_string()).or_insert(v);
-            }
-        }
-    }
-    // The zips the sources lack, the newest copy of each; and the day of one seeded by a run cut
-    // short before it recorded it.
-    let fetched = read_fetched(out)?;
-    let mut days = Fetched::new();
-    let mut zips: BTreeMap<String, (std::time::SystemTime, PathBuf, String)> = BTreeMap::new();
-    for d in from {
-        let counted = std::fs::metadata(d.join("feeds-used.json")).and_then(|m| m.modified()).ok().map(day_of);
-        let Ok(rd) = std::fs::read_dir(d.join("gtfs")) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
-            let Some(id) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".zip")).map(str::to_string) else { continue };
-            let t = e.metadata()?.modified()?;
-            let day = counted.clone().unwrap_or_else(|| day_of(t));
-            if let Some(c) = out.get(&zip_logical(&id)).map(str::to_string) {
-                if !fetched.contains_key(&c) && !days.contains_key(&c) && store::naming::parse_content_name(&c).is_some_and(|n| store::naming::hash16_file(&p).is_ok_and(|h| h == n.hash16)) {
-                    days.insert(c, day);
-                }
-                continue;
-            }
-            if zips.get(&id).is_none_or(|z| t > z.0) {
-                zips.insert(id, (t, p, day));
-            }
-        }
-    }
-    let n = zips.len() as u64;
-    let copied = (|| -> Result<()> {
-        for (k, (id, (_, p, day))) in zips.into_iter().enumerate() {
-            crate::agent::jobs::report(k as u64, n, "zips copied");
-            let name = out.put_file(&zip_logical(&id), "zip", &copy_local(out, &p)?)?;
-            days.insert(name, day);
-            rep.zips += 1;
-            if k % 20 == 19 {
-                record_days(out, &days)?;
-            }
-        }
-        Ok(())
-    })();
-    // (The days of the zips copied are recorded even when a copy failed.)
-    let recorded = record_days(out, &days);
-    copied?;
-    recorded?;
-    rep.checked = add_checked(out, legacy)?;
-    if out.get(CATALOGUE).is_none() {
-        if let Some(p) = first("feeds_v2.csv") {
-            out.put_file(CATALOGUE, "csv", &copy_local(out, &p)?)?;
-            rep.files.push(CATALOGUE.to_string());
-        }
-    }
-    out.save()?;
-    Ok(rep)
-}
-
-#[derive(Debug, Default)]
-pub struct SeedReport {
-    pub files: Vec<String>,
-    pub checked: usize,
-    pub zips: usize,
-}
-
-/// A copy of `p` in scratch (`put_file` consumes its input).
-fn copy_local(out: &Out, p: &Path) -> Result<PathBuf> {
-    let dest = out.scratch_file(&format!("rail-{}", p.file_name().context("file name")?.to_string_lossy()));
-    store::sys::copy_data(p, &dest).with_context(|| format!("copy {}", p.display()))?;
-    Ok(dest)
-}
-
 /// Saves this run's changes, then adds zips' days (`days`) to `sources/rail/fetched` as the manifest
-/// on disk names it now (rail-seed and rail-feeds may both be adding some), and saves again.
+/// on disk names it now (another run may be adding some), and saves again.
 fn record_days(out: &mut Out, days: &Fetched) -> Result<()> {
     out.save()?;
     if days.is_empty() {
@@ -382,27 +281,6 @@ fn record_days(out: &mut Out, days: &Fetched) -> Result<()> {
         out.save()?;
     }
     Ok(())
-}
-
-/// Adds the checks `sources/rail/checked` lacks (`more`, by id) to it as the manifest on disk names
-/// it now; returns how many.
-fn add_checked(out: &mut Out, more: BTreeMap<String, Value>) -> Result<usize> {
-    out.save()?;
-    let mut checked: BTreeMap<String, Value> = BTreeMap::new();
-    if let Some(c) = out.get(CHECKED) {
-        for v in serde_json::from_slice::<Vec<Value>>(&std::fs::read(out.path(c)).with_context(|| format!("read {c}"))?)? {
-            checked.insert(v["id"].as_str().unwrap_or_default().to_string(), v);
-        }
-    }
-    let had = checked.len();
-    for (id, v) in more {
-        checked.entry(id).or_insert(v);
-    }
-    if checked.len() > had {
-        out.put_bytes(CHECKED, "json", &serde_json::to_vec_pretty(&checked.values().collect::<Vec<_>>())?)?;
-        out.save()?;
-    }
-    Ok(checked.len() - had)
 }
 
 /// railfeeds.py's result as `sources/rail/feeds`: each feed with a zip given its zip's content name
@@ -622,92 +500,6 @@ mod tests {
         assert!(countries(&cov(vec![poly("sea.poly", 30.0, 30.0, 31.0, 31.0)]), &o).unwrap().is_empty());
         // An outline of E alone: E's, and B's, whose code E's has (its feeds may be filed under it).
         assert_eq!(countries(&cov(vec![poly("e.poly", 15.1, 1.1, 15.9, 1.9)]), &o).unwrap(), vec!["BB", "EE"]);
-    }
-
-    #[test]
-    fn seeding_adds_what_the_sources_lack() {
-        let d = tempfile::tempdir().unwrap();
-        let (root, scratch) = (d.path().join("root"), d.path().join("scratch"));
-        let legacy = |name: &str, zips: &[(&str, &[u8])], checked: &str| {
-            let l = d.path().join(name);
-            std::fs::create_dir_all(l.join("gtfs")).unwrap();
-            for (id, b) in zips {
-                std::fs::write(l.join("gtfs").join(format!("{id}.zip")), b).unwrap();
-            }
-            std::fs::write(l.join("feeds-checked.json"), checked).unwrap();
-            std::fs::write(l.join("feeds_v2.csv"), "id,data_type\n").unwrap();
-            std::fs::write(l.join("pairs-mtr.bin"), [0u8; PAIR]).unwrap();
-            l
-        };
-        // m4 holds more than m1, and m1 one zip of its own.
-        let m4 = legacy("m4", &[("mdb-1", b"one"), ("jbda-x", b"jp")], r#"[{"id": "mdb-1", "rail_routes": 2}, {"id": "jbda-x", "rail_routes": 1}]"#);
-        let m1 = legacy("m1", &[("mdb-1", b"one"), ("tld-9", b"nine")], r#"[{"id": "mdb-1", "rail_routes": 2}, {"id": "mdb-5", "rail_routes": 0}]"#);
-        std::fs::write(m4.join("feeds-used.json"), "[]").unwrap();
-        let mut out = Out::open(&root, &scratch).unwrap();
-        let rep = seed(&mut out, &[m4.clone(), m1.clone()]).unwrap();
-        assert_eq!((rep.zips, rep.checked), (3, 3));
-        assert_eq!(rep.files, vec![MTR_PAIRS.to_string(), CATALOGUE.to_string()], "no mtr.json there; the catalogue last");
-        for id in ["mdb-1", "jbda-x", "tld-9"] {
-            assert!(out.get(&zip_logical(id)).is_some(), "{id}");
-        }
-        let fetched = read_fetched(&out).unwrap();
-        assert_eq!(fetched.len(), 3);
-        // A run cut short before it recorded a zip's day: the next one records it.
-        let jp = out.get(&zip_logical("jbda-x")).unwrap().to_string();
-        let mut short = fetched.clone();
-        short.remove(&jp);
-        out.put_bytes(FETCHED, "json", &serde_json::to_vec(&short).unwrap()).unwrap();
-        assert_eq!(seed(&mut out, &[m4.clone(), m1.clone()]).unwrap().zips, 0);
-        assert_eq!(read_fetched(&out).unwrap(), fetched);
-        // A zip refetched since stays as it is, and a second run adds nothing.
-        let newer = d.path().join("newer.zip");
-        std::fs::write(&newer, b"one, newer").unwrap();
-        let name = out.put_file(&zip_logical("mdb-1"), "zip", &newer).unwrap();
-        let rep = seed(&mut out, &[m4, m1]).unwrap();
-        assert_eq!((rep.zips, rep.checked, rep.files.len()), (0, 0, 0));
-        assert_eq!(out.get(&zip_logical("mdb-1")), Some(name.as_str()));
-        // Its index for railfeeds.py: every zip with its day.
-        let idx = cache_index(&out, &read_fetched(&out).unwrap());
-        assert_eq!(idx.as_object().unwrap().keys().collect::<Vec<_>>(), vec!["jbda-x", "mdb-1", "tld-9"]);
-        assert!(idx["tld-9"]["fetched"].as_str().is_some_and(|s| s.len() == 10));
-    }
-
-    #[test]
-    fn seeding_cut_short_opens_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        let (root, scratch) = (d.path().join("root"), d.path().join("scratch"));
-        let l = d.path().join("m4");
-        std::fs::create_dir_all(l.join("gtfs/zz.zip")).unwrap();
-        for k in 0..25 {
-            std::fs::write(l.join("gtfs").join(format!("mdb-{k:02}.zip")), format!("zip {k}")).unwrap();
-        }
-        std::fs::write(l.join("feeds-checked.json"), r#"[{"id": "mdb-01", "rail_routes": 2, "status": "ok"}, {"id": "mdb-02", "rail_routes": 0, "status": "ok"}]"#).unwrap();
-        std::fs::write(l.join("feeds_v2.csv"), "id,data_type\n").unwrap();
-        std::fs::write(l.join("feeds-used.json"), "[]").unwrap();
-        // A copy fails (a folder where a zip should be), after a save of the first 20: the zips
-        // copied are saved, with their days, and the catalogue, which opens the agent's rail chain,
-        // isn't there.
-        let mut out = Out::open(&root, &scratch).unwrap();
-        assert!(seed(&mut out, &[l.clone()]).is_err());
-        let out = Out::open(&root, &scratch).unwrap();
-        assert!(out.get(CATALOGUE).is_none());
-        assert!((0..25).all(|k| out.get(&zip_logical(&format!("mdb-{k:02}"))).is_some()));
-        assert_eq!(read_fetched(&out).unwrap().len(), 25);
-        // Run again once it can: the rest, then the catalogue; and again: nothing.
-        std::fs::remove_dir(l.join("gtfs/zz.zip")).unwrap();
-        std::fs::write(l.join("gtfs/zz.zip"), b"zz").unwrap();
-        let mut out = Out::open(&root, &scratch).unwrap();
-        let rep = seed(&mut out, &[l.clone()]).unwrap();
-        assert_eq!((rep.zips, rep.checked, rep.files.clone()), (1, 2, vec![CATALOGUE.to_string()]));
-        // Today's "no rail routes" is asked again (its check could take an answer cut short); its
-        // rail feed's answer stands.
-        let checks: Vec<Value> = serde_json::from_slice(&std::fs::read(out.path(out.get(CHECKED).unwrap())).unwrap()).unwrap();
-        assert_eq!(checks.iter().map(|v| v["status"].as_str().unwrap()).collect::<Vec<_>>(), vec!["ok", "no answer (today's check, asked again)"]);
-        let manifest = out.manifest.clone();
-        let rep = seed(&mut out, &[l]).unwrap();
-        assert_eq!((rep.zips, rep.checked, rep.files.len()), (0, 0, 0));
-        assert_eq!(out.manifest, manifest);
-        assert_eq!(read_fetched(&out).unwrap().len(), 26);
     }
 
     #[test]

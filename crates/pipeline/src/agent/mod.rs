@@ -3324,7 +3324,7 @@ impl Agent {
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(crate::rail::CATALOGUE) {
-            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
+            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the rail sources' catalogue isn't on the NAS yet (put by hand: docs/plan.md, Hand-made inputs)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
         }

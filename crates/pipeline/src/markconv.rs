@@ -1,9 +1,7 @@
-//! `convert-legacy-marks` (docs/phase5.md "Today's regions", steps 1–2): today's stops and sights
-//! (`global/legacy/layer-pois-<kind>`, with `details-poi`, `peaks` and `layer-summits`) and heritage
-//! sites (`layer-heritage`, with `details-heritage` and `props-heritage`) as markdata per z6 tile and
-//! thinned tiles per kind, so the server answers the In view statistics and the app loads points by
-//! view. Fame, isolation and `mz` are kept as they are; a kind's file order is its rank (the app's
-//! tie-break).
+//! The marks job's writing (docs/phase5.md): the heritage sites as points, from the heritage job's
+//! files (`layer-heritage`, with `details-heritage` and `props-heritage`), and every point as
+//! markdata per z6 tile and thinned tiles per kind, so the server answers the In view statistics
+//! and the app loads points by view. A kind's order is its rank (the app's tie-break).
 
 use crate::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
 use crate::out::Out;
@@ -19,12 +17,8 @@ pub const HERITAGE_DOTS: &str = "work/marks/heritage-dots";
 /// The stops & sights kinds (each its own file; heritage is one more).
 pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
 
-/// A legacy file's bytes: this Mac's mirror copy when there is one, else the NAS's.
-pub(crate) fn legacy_bytes(out: &Out, stem: &str) -> Result<Vec<u8>> {
-    src_bytes(out, LEGACY, stem)
-}
-
-/// Today's heritage files' folder (`global/legacy`), the converted build's.
+/// The converted build's heritage files' folder (`global/legacy`), what heritage_source falls back to
+/// (agent::build::heritage_src the same).
 pub const LEGACY: &str = "global/legacy";
 
 /// Where a pass's heritage comes from: the heritage job's outputs (`work/heritage/<date>`) when
@@ -39,7 +33,7 @@ pub fn heritage_source(out: &Out, date: &str) -> String {
     }
 }
 
-/// A heritage or legacy file's bytes (`<src>/<stem>`): this Mac's mirror copy when there is one,
+/// A heritage file's bytes (`<src>/<stem>`): this Mac's mirror copy when there is one,
 /// else the NAS's.
 pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
     let logical = format!("{src}/{stem}");
@@ -65,35 +59,6 @@ pub struct Point {
 }
 
 type Pt = Point;
-
-/// The POI details as the server merges them (details-poi, with peaks.json's record as `peak`), by
-/// the layers' `i`.
-fn poi_details(out: &Out) -> Result<HashMap<u64, (Option<String>, String)>> {
-    let mut peaks: HashMap<u64, Value> = HashMap::new();
-    if let Value::Array(a) = serde_json::from_slice(&legacy_bytes(out, "peaks")?)? {
-        for mut p in a {
-            if let Some(i) = p.get("i").and_then(Value::as_u64) {
-                p.as_object_mut().map(|o| o.remove("i"));
-                peaks.insert(i, p);
-            }
-        }
-    }
-    let mut by: HashMap<u64, (Option<String>, String)> = HashMap::new();
-    let text = legacy_bytes(out, "details-poi")?;
-    for line in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-        let Ok(mut v) = serde_json::from_slice::<Value>(line) else { continue };
-        let Some(i) = v.get("i").and_then(Value::as_u64) else { continue };
-        let osm = v.get("osm").and_then(Value::as_str).map(str::to_string);
-        if let Some(p) = peaks.remove(&i) {
-            v["peak"] = p;
-        }
-        by.insert(i, (osm, v.to_string()));
-    }
-    for (i, p) in peaks {
-        by.entry(i).or_insert_with(|| (None, serde_json::json!({ "i": i, "peak": p }).to_string()));
-    }
-    Ok(by)
-}
 
 /// The heritage records as the server merges them (details-heritage, with props-heritage's record as
 /// `props`), by the layer's `i`.
@@ -179,51 +144,7 @@ fn heritage_points(out: &Out, src: &str, pts: &mut Vec<Pt>) -> Result<()> {
     Ok(())
 }
 
-/// Every point of today's files.
-fn load_points(out: &Out) -> Result<Vec<Pt>> {
-    let details = poi_details(out)?;
-    let mut pts: Vec<Pt> = Vec::new();
-    for kind in POI_KINDS {
-        let k = marks::kind_index(kind).unwrap();
-        let fc: Value = serde_json::from_slice(&legacy_bytes(out, &format!("layer-pois-{kind}"))?)?;
-        let feats = fc["features"].as_array().with_context(|| format!("layer-pois-{kind}: no features"))?;
-        let fields = marks::fields(kind);
-        for (rank, f) in feats.iter().enumerate() {
-            let c = &f["geometry"]["coordinates"];
-            let (Some(lon), Some(lat)) = (c[0].as_f64(), c[1].as_f64()) else { continue };
-            let mut props = f["properties"].as_object().cloned().unwrap_or_default();
-            let i = props.remove("i").and_then(|v| v.as_u64());
-            let (osm, info) = match i.and_then(|i| details.get(&i)) {
-                Some((osm, info)) => (osm.as_deref().and_then(marks::osm_id), Some(info.clone())),
-                None => (None, None),
-            };
-            let named = props.get("name").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
-            let picnic = props.get("kind").and_then(Value::as_str) == Some("picnic_site");
-            let fnum = |key: &str| props.get(key).and_then(Value::as_f64);
-            let pt = MarkPt {
-                lon: marks::e7(lon),
-                lat: marks::e7(lat),
-                fa: fnum("fa").unwrap_or(0.0) as f32,
-                ia: fnum("ia").map_or(marks::IA_UNKNOWN, |v| v as f32),
-                mz: fnum("mz").map_or(f32::NAN, |v| v as f32),
-                rank: rank as u32,
-                kz: marks::KZ_NONE,
-                class: 0,
-                tier: 0,
-                flags: if named { flag::NAMED } else { 0 } | if picnic { flag::PICNIC } else { 0 },
-            };
-            let fvals = fields.iter().map(|p| marks::num(&props, p)).collect();
-            let name = props.get("name").and_then(Value::as_str).unwrap_or("");
-            let sub = props.get("kind").and_then(Value::as_str).unwrap_or(kind);
-            let reference = format!("legacy:poi|{sub}|{},{}|{name}", pt.lon, pt.lat);
-            pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info, osm, reference });
-        }
-    }
-    heritage_points(out, LEGACY, &mut pts)?;
-    Ok(pts)
-}
-
-/// Today's heritage sites as points (the `marks` job's until the `heritage` job makes them).
+/// The heritage sites of `src` as points.
 pub fn heritage_marks(out: &Out, src: &str) -> Result<Vec<Point>> {
     let mut pts = Vec::new();
     heritage_points(out, src, &mut pts)?;
@@ -236,23 +157,8 @@ pub struct Converted {
     pub thinned: usize,
 }
 
-/// Today's points with the ids `write` gives them (the same inputs, the same assignment): for the
-/// overlays' World Heritage outlines, which carry their site dot's id.
-pub fn points_with_ids(out: &Out) -> Result<(Vec<Point>, Vec<u64>)> {
-    let pts = load_points(out)?;
-    let ids = marks::assign_ids(&id_sources(&pts))?;
-    Ok((pts, ids))
-}
-
 fn id_sources(pts: &[Point]) -> Vec<IdSource> {
     pts.iter().map(|p| IdSource { osm: p.osm, reference: p.reference.clone(), canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) }).collect()
-}
-
-/// Converts today's points: see [`write`].
-pub fn convert(out: &mut Out) -> Result<Converted> {
-    let pts = load_points(out)?;
-    let summits = summits(out)?;
-    write(out, pts, summits)
 }
 
 /// Writes points as the map reads them: ids (unique over every point: an OSM id only when no other
@@ -402,20 +308,6 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
     }
     out.save()?;
     Ok(Converted { points: all.len(), tiles: written.len(), thinned })
-}
-
-/// The named peaks with a height, in the summits list's order ([lon, lat, ele, name]).
-fn summits(out: &Out) -> Result<Vec<(SummitRec, String)>> {
-    let v: Value = serde_json::from_slice(&legacy_bytes(out, "layer-summits")?)?;
-    let list = v["p"].as_array().context("layer-summits: no p")?;
-    Ok(list
-        .iter()
-        .enumerate()
-        .filter_map(|(rank, e)| {
-            let (lon, lat, ele, name) = (e[0].as_f64()?, e[1].as_f64()?, e[2].as_f64()?, e[3].as_str()?);
-            Some((SummitRec { rank: rank as u32, lon: marks::e7(lon), lat: marks::e7(lat), pad: 0, ele }, name.to_string()))
-        })
-        .collect())
 }
 
 fn gzip(b: &[u8]) -> Result<Vec<u8>> {

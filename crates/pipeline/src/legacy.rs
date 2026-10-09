@@ -1,17 +1,15 @@
-//! Today's build directory (`data/build`, one global set of arrays) split into base packs, one per
-//! unit (docs/formats.md "Base pack"), with road values from the one chaining (`chain`). Phase 1 of
-//! the migration: the new formats, holding today's data.
+//! A unit folder's arrays (ways.bin, verts.bin and the per-vertex and per-sample arrays the unit's
+//! steps write) as its base pack (docs/formats.md "Base pack"); and the units' tile (`Unit`).
 
-use crate::chain::{self, Interner, Link};
 use anyhow::{ensure, Result};
 use rayon::prelude::*;
 use roadcore::elev::{self, Elevs};
 use roadcore::scenic::{ch, Sample};
-use roadcore::{class, flag, merc, Array, Ways, WayRec};
+use roadcore::{class, merc, Array, Ways, WayRec};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// A unit's tile (z6 in phase 1).
+/// A unit's tile (z6), or any z/x/y tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unit {
     pub z: u8,
@@ -44,7 +42,7 @@ impl Unit {
     }
 }
 
-/// The legacy build's arrays, memory-mapped.
+/// A unit folder's arrays, memory-mapped.
 pub struct Legacy {
     pub ways: Ways,
     pub strings: Vec<String>,
@@ -95,7 +93,7 @@ impl Legacy {
     }
 
     /// Every way's unit (z6 tile of its first vertex), and the ways of each unit in base-pack order:
-    /// by the z9 tile of the first vertex, then the legacy (Morton) order.
+    /// by the z9 tile of the first vertex, then the folder's (Morton) order.
     pub fn units(&self) -> BTreeMap<Unit, Vec<u32>> {
         let ways = self.ways.ways();
         let keyed: Vec<(Unit, u64, u32)> = ways
@@ -119,52 +117,6 @@ impl Legacy {
             })
             .collect()
     }
-
-    /// Road values of every legacy way by the one chaining.
-    pub fn road_values(&self) -> Vec<chain::RoadVal> {
-        let ways = self.ways.ways();
-        let verts = self.ways.verts();
-        let mut names = Interner::default();
-        let mut refs = Interner::default();
-        let mut pool: Vec<u32> = Vec::new();
-        // Rail lines are chained by their identity: the way's name without a route's direction, else
-        // the first service using the track (as the server's rail index does).
-        let rail_ident = |w: &WayRec| -> String {
-            let raw = if w.name != 0 { self.strings[w.name as usize].as_str() } else { self.strings[w.route as usize].split(" · ").next().unwrap_or("") };
-            raw.split(':').next().unwrap_or("").trim().to_string()
-        };
-        let mut links: Vec<Link> = Vec::with_capacity(ways.len());
-        for w in ways {
-            let r = Self::range(w);
-            let (ends, heading, len) = chain::shape(&verts[r]);
-            let kind = if w.vcount < 2 || w.class == class::FERRY {
-                chain::KIND_NONE
-            } else if class::is_rail(w.class) {
-                chain::KIND_RAIL
-            } else {
-                chain::KIND_ROAD
-            };
-            let (name, (refs_at, refs_len)) = if kind == chain::KIND_RAIL {
-                (names.id(&rail_ident(w)), (pool.len() as u32, 0))
-            } else {
-                (names.id(&self.strings[w.name as usize]), chain::intern_refs(&self.strings[w.ref_ as usize], &mut refs, &mut pool))
-            };
-            links.push(Link {
-                id: w.id as u64,
-                kind,
-                class: w.class,
-                oneway: w.flags & flag::ONEWAY != 0,
-                name,
-                refs_at,
-                refs_len,
-                ends,
-                heading,
-                len,
-            });
-        }
-        let partner = chain::pair(&links, &pool, &|_| true);
-        chain::walk(&links, &partner)
-    }
 }
 
 /// Little-endian bytes of a slice of plain records.
@@ -174,13 +126,13 @@ pub fn bytes<T: bytemuck::Pod>(v: &[T]) -> &[u8] {
 
 pub use roadcore::packs::{RailRel, RoadRec, Sub9};
 
-/// The sections of one unit's base pack, as bytes, from the legacy arrays.
+/// The sections of one unit's base pack, as bytes, from the folder's arrays.
 pub struct BaseSections {
     pub meta: serde_json::Value,
     pub sections: Vec<(&'static str, Vec<u8>)>,
 }
 
-/// Build a unit's base pack from the legacy ways `idx` (in base-pack order).
+/// Build a unit's base pack from the folder's ways `idx` (in base-pack order).
 pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseSections {
     let all = lg.ways.ways();
     let verts = lg.ways.verts();
@@ -203,7 +155,7 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
     let mut ext = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     let mut sub9: Vec<Sub9> = Vec::new();
     let mut rail: Vec<RailRel> = Vec::new();
-    // Samples: legacy samples are grouped by way in legacy way order.
+    // Samples: grouped by way in the folder's way order.
     let samples = lg.samples.get();
     let schan = lg.samplech.get();
     let mut srange: std::collections::HashMap<u32, (usize, usize)> = std::collections::HashMap::with_capacity(idx.len());
@@ -298,14 +250,4 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
         sections.push(("drape", bytes(&dr).to_vec()));
     }
     BaseSections { meta, sections }
-}
-
-/// A unit's road values, in its base pack's order.
-pub fn road_records(vals: &[chain::RoadVal], idx: &[u32]) -> Vec<RoadRec> {
-    idx.iter()
-        .map(|&i| {
-            let v = vals[i as usize];
-            RoadRec { road: v.road, len: v.len, offset: v.offset, dir: v.dir, _pad: [0; 7] }
-        })
-        .collect()
 }

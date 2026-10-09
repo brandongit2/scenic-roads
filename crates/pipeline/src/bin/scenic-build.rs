@@ -2,10 +2,6 @@
 //!
 //! usage: scenic-build <step> --root <nas project folder> --scratch <local dir> [options]
 //!
-//!   convert-legacy <build_dir> [--only 6/x/y,…] [--skip-layers]
-//!                                today's data/build → base packs per unit (z6), road values by the
-//!                                one chaining, the road → units index, today's tile archives as
-//!                                packs, the legacy global files, the legacy basemap
 //!   pack [--cache dir] [T …]     pack(T) for z6 tiles T (default: every tile with ways): road and
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
@@ -75,17 +71,10 @@
 //!                                z0–9, drawn from the pass's basemap's z14 water, as the water
 //!                                layer's packs (`--basemap`: a local archive; `--only`: those z5
 //!                                tiles; `--archive`: into that local file, the NAS untouched)
-//!   convert-legacy-marks         today's stops & sights (global/legacy) as markdata per z6 tile
-//!                                and thinned tiles per kind (docs/phase5.md)
-//!   convert-legacy-overlays      today's area overlays as vector tiles (ov-*), their details and
-//!                                the parks' as ovdata per z3 tile (docs/phase5.md)
 //!   stations --pass d [--geojson f]  the rail stops of the pass's rail set within the coverage,
 //!                                as the stations' tiles
 //!   ferries --pass d [--dem dir]  the pass's ferries set through ferries.py (with
 //!                                inputs/ferries/freq), as the ferries' blocks
-//!   rail-seed [--from dir …]     the rail sources (pipeline::rail) from the legacy build's rail
-//!                                folders (default sources/legacy/m4/rail, then m1's): only what
-//!                                they lack, so it can run again
 //!   rail-feeds [--pass d] [--dem dir]  the rail feeds for the coverage (dem/railfeeds.py), each
 //!                                fetched once into the rail sources
 //!   rail [--pass d] [--dem dir] [--cache dir]  trains a day on the coverage's rail ways
@@ -188,10 +177,6 @@ fn main() -> Result<()> {
     let mut out = Out::open(&root, &scratch)?;
     let t0 = std::time::Instant::now();
     match step.as_str() {
-        "convert-legacy" => {
-            let only: Vec<Unit> = opt(&args, "--only").map(|s| s.split(',').filter_map(Unit::parse).collect()).unwrap_or_default();
-            convert_legacy(&mut out, Path::new(positional(&args).first().context("build dir")?), args.iter().any(|a| a == "--skip-layers"), &only)?
-        }
         "pack" => {
             let cache = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| "/tmp/scenic-cache".into()));
             let mirror = opt(&args, "--mirror").map(PathBuf::from);
@@ -470,10 +455,6 @@ fn main() -> Result<()> {
             return Ok(());
         }
         "prune" => prune_step(&mut out, &args)?,
-        "convert-legacy-marks" => {
-            let c = pipeline::markconv::convert(&mut out)?;
-            eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
-        }
         "stations" => {
             // stations --pass <date> [--geojson file]: the pass's rail set's stops as the stations' tiles.
             let date = opt(&args, "--pass").context("--pass <date>")?;
@@ -490,23 +471,8 @@ fn main() -> Result<()> {
             let n = pipeline::ovconv::ferries_job(&mut out, &date, &dem)?;
             eprintln!("ferries: {n} blocks");
         }
-        "rail-seed" => {
-            let mut from: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--from").map(|w| PathBuf::from(&w[1])).collect();
-            if from.is_empty() {
-                // The build Macs' legacy rail folders: the M4's holds the feeds today's figures were
-                // counted from, the M1's an earlier subset of them.
-                from = ["m4", "m1"].iter().map(|m| out.root().join("sources/legacy").join(m).join("rail")).filter(|p| p.is_dir()).collect();
-            }
-            anyhow::ensure!(!from.is_empty(), "no legacy rail folders (--from <dir>)");
-            let rep = pipeline::rail::seed(&mut out, &from)?;
-            eprintln!("rail-seed: {} zips, {} feeds' checks, {} added", rep.zips, rep.checked, if rep.files.is_empty() { "no other files".to_string() } else { rep.files.join(", ") });
-        }
         "rail-feeds" => rail_feeds_step(&mut out, &args, &scratch)?,
         "rail" => rail_step(&mut out, &args, &scratch)?,
-        "convert-legacy-overlays" => {
-            let c = pipeline::ovconv::convert(&mut out)?;
-            eprintln!("overlays: {} areas, {} stations and {} ferry blocks in {} tiles, {} ovdata, {} parks", c.areas, c.stations, c.ferries, c.tiles, c.ovdata, c.parks);
-        }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
             let raw = raw_tiles(&out, &raw_dir);
@@ -529,14 +495,14 @@ fn main() -> Result<()> {
             let name = out.put_file(l, ext, &tmp)?;
             eprintln!("{l} -> {name}");
         }
-        s => bail!("unknown step {s:?} (convert-legacy, pack, lo, osm-pass, verify, catalog)"),
+        s => bail!("unknown step {s:?} (see the usage at the top of scenic-build.rs)"),
     }
     out.save()?;
     eprintln!("{step}: done in {:.0?}", t0.elapsed());
     Ok(())
 }
 
-// ---- convert-legacy ------------------------------------------------------------------------
+// ---- road values ---------------------------------------------------------------------------
 
 /// A unit's road values file: the values per way, and the ways by road (sorted (road, way index)
 /// pairs, for the server's whole-road lookups).
@@ -554,102 +520,6 @@ fn put_sect(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(
     }
     w.finish()?;
     out.put_file(logical, "sect", &local)
-}
-
-fn convert_legacy(out: &mut Out, dir: &Path, skip_layers: bool, only: &[Unit]) -> Result<()> {
-    let lg = Legacy::open(dir)?;
-    let built = format!("legacy:{}", std::fs::metadata(dir.join("ways.bin"))?.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs());
-    eprintln!("{} ways, {} vertices, {} samples", lg.ways.ways().len(), lg.ways.verts().len(), lg.samples.get().len());
-    let t = std::time::Instant::now();
-    let vals = lg.road_values();
-    let nroads = vals.iter().map(|v| v.road).collect::<BTreeSet<_>>().len();
-    eprintln!("road values: {nroads} roads ({:.0?})", t.elapsed());
-    let mut units = lg.units();
-    if !only.is_empty() {
-        units.retain(|u, _| only.contains(u));
-    }
-    eprintln!("{} units", units.len());
-    // Base packs and road values per unit; the road → units index.
-    let mut road_units: Vec<(u64, u64)> = Vec::new();
-    for (k, (u, idx)) in units.iter().enumerate() {
-        let bs = legacy::base_sections(&lg, *u, idx, &built);
-        let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-        put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
-        let recs = legacy::road_records(&vals, idx);
-        road_units.extend(recs.iter().map(|r| (r.road, u.key())));
-        put_roads(out, *u, &recs)?;
-        if k % 10 == 0 {
-            out.save()?;
-            eprintln!("base packs: {}/{} ({:.0?})", k + 1, units.len(), t.elapsed());
-        }
-    }
-    road_units.sort_unstable();
-    road_units.dedup();
-    let flat: Vec<u64> = road_units.iter().flat_map(|&(r, u)| [r, u]).collect();
-    put_sect(out, "global/roadunits", serde_json::json!({"fmt": 1, "pairs": road_units.len()}), &[("pairs", b(&flat))])?;
-    out.save()?;
-    // Rail service keyed by OSM way id: (u32 way id, f32 trains a day), sorted.
-    if let Ok(bytes) = std::fs::read(dir.join("rail-freq.bin")) {
-        out.put_bytes(pipeline::rail::RAILFREQ, "bin", &pipeline::rail::by_way_id(lg.ways.ways(), &bytes))?;
-    }
-    // Today's small files, as they are.
-    for e in std::fs::read_dir(dir)? {
-        let e = e?;
-        let n = e.file_name().to_string_lossy().into_owned();
-        let keep = (n.ends_with(".json") || n.ends_with(".jsonl")) && !n.starts_with('.') && n != "names-en.json";
-        if keep {
-            let (stem, ext) = n.rsplit_once('.').unwrap();
-            out.put_file(&format!("global/legacy/{}", stem.replace('.', "_")), ext, &copy_to_scratch(out, &e.path())?)?;
-        }
-    }
-    out.save()?;
-    if skip_layers {
-        return Ok(());
-    }
-    // Tile layers.
-    let mut all: BTreeMap<String, LayerOut> = BTreeMap::new();
-    for (file, layer, enc, gzip, maxz) in [
-        ("terrain.tiles", "terrain", "terrarium-png", false, 12u8),
-        ("slope.tiles", "slope", "slope4-png", false, 11),
-        ("trees-cover.tiles", "trees-cover", "terrarium-webp", false, 14),
-        ("trees-height.tiles", "trees-height", "terrarium-webp", false, 14),
-        ("trees-leaf.tiles", "trees-leaf", "terrarium-webp", false, 14),
-        ("labels.tiles", "labels", "mvt", true, 14),
-    ] {
-        let p = dir.join(file);
-        if !p.exists() {
-            continue;
-        }
-        let arc = roadcore::archive::Archive::open(&p)?;
-        let lo = layers::split_archive(out, &arc, layer, enc, gzip, maxz)?;
-        eprintln!("{layer}: root {:?}, {} lo, {} hi packs ({:.0?})", lo.root.is_some(), lo.lo.len(), lo.hi.len(), t.elapsed());
-        all.insert(layer.to_string(), lo);
-    }
-    for var in ["canopy", "class", "cover", "areas"] {
-        if dir.join(format!("grid.{var}.u8")).exists() {
-            all.insert(format!("grid-{var}"), layers::split_grid(out, dir, var)?);
-        }
-    }
-    out.put_bytes("global/legacy/layers", "json", &serde_json::to_vec_pretty(&all)?)?;
-    // The basemap and its parts, as they are (PMTiles).
-    out.put_file("layers/basemap/legacy-base", "pmtiles", &copy_to_scratch(out, &dir.join("base.pmtiles"))?)?;
-    if let Ok(rd) = std::fs::read_dir(dir.join("base-parts")) {
-        let mut parts: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "pmtiles")).collect();
-        parts.sort();
-        for p in parts {
-            let stem = p.file_stem().unwrap().to_string_lossy().into_owned();
-            out.put_file(&format!("layers/basemap/legacy-{stem}"), "pmtiles", &copy_to_scratch(out, &p)?)?;
-        }
-    }
-    out.save()?;
-    Ok(())
-}
-
-/// Copy a file into scratch (`put_file` consumes its input).
-fn copy_to_scratch(out: &Out, p: &Path) -> Result<PathBuf> {
-    let dest = out.scratch_file(&format!("copy-{}", p.file_name().unwrap().to_string_lossy()));
-    store::sys::copy_data(p, &dest).with_context(|| format!("copy {}", p.display()))?;
-    Ok(dest)
 }
 
 // ---- base packs, locally ------------------------------------------------------------------
@@ -954,14 +824,13 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
     let mut markdata = BTreeMap::new();
     let mut ovdata = BTreeMap::new();
-    // The basemap: the newest pass's worldwide archive when there is one, else today's (legacy)
-    // basemap and its parts; never both (the server merges every archive listed).
+    // The basemap: the newest pass's worldwide archive.
     let world = out.manifest.keys().filter(|k| k.starts_with("layers/basemap/world-")).max().cloned();
     for logical in out.manifest.keys() {
         let parts: Vec<&str> = logical.split('/').collect();
         match parts.as_slice() {
-            ["layers", "basemap", name] => {
-                if world.as_deref() == Some(logical.as_str()) || (world.is_none() && name.starts_with("legacy-")) {
+            ["layers", "basemap", _] => {
+                if world.as_deref() == Some(logical.as_str()) {
                     basemap.push(logical.clone());
                 }
             }
@@ -1656,23 +1525,27 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 /// marks [--pass <date>] [--facts file] [--views file]: the landmark points from the current units'
 /// candidates and peaks (pipeline::marksjob), with today's heritage sites, as markdata and the
-/// marks packs. Facts (Wikidata, by QID) and monthly pageviews: the items job's when given, else
-/// today's (sources/legacy/m1/poi/wikidata.json, sources/legacy/m1/pageviews/items.json).
+/// marks packs. Facts (Wikidata, by QID) and monthly pageviews: the files given, else the items
+/// job's for the pass.
 fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     use serde_json::Value;
     use std::collections::HashMap;
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let read_json = |p: PathBuf| -> Result<Value> { Ok(serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)?) };
-    // The items job's for this pass, else today's.
-    let items = |name: &str, legacy: &str| -> PathBuf {
-        match out.get(&format!("sources/items/{date}/{name}")) {
-            Some(c) => out.path(c),
-            None => out.root().join(legacy),
-        }
+    // The items job's for this pass.
+    let items = |name: &str| -> Result<PathBuf> {
+        let l = format!("sources/items/{date}/{name}");
+        Ok(out.path(out.get(&l).with_context(|| format!("no {l} (the items step)"))?))
     };
-    let facts_file = opt(args, "--facts").map(PathBuf::from).unwrap_or_else(|| items("facts", "sources/legacy/m1/poi/wikidata.json"));
-    let views_file = opt(args, "--views").map(PathBuf::from).unwrap_or_else(|| items("views", "sources/legacy/m1/pageviews/items.json"));
+    let facts_file = match opt(args, "--facts") {
+        Some(f) => PathBuf::from(f),
+        None => items("facts")?,
+    };
+    let views_file = match opt(args, "--views") {
+        Some(f) => PathBuf::from(f),
+        None => items("views")?,
+    };
     let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
     let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
@@ -3118,7 +2991,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
-    let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail sources (scenic-build rail-seed)")?);
+    let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail catalogue (put by hand: docs/plan.md, Hand-made inputs)")?);
     let parts = Parts(&["Finding the countries the coverage is in", "Finding and fetching the feeds (railfeeds.py)", "Uploading"]);
     parts.start(0);
     let outlines = pipeline::outlines::Outlines::open(&out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?))?;

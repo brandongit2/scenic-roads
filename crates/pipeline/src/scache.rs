@@ -13,8 +13,8 @@
 //! where the analysis grid gains tiles (a new region or new roads), so a previous result is not
 //! used when a grid tile within reach is new (`GridChange::near`).
 //!
-//! Files live in data/cache/scenic (outside the build). A unit's build folder starts empty each
-//! run, so its results are kept between runs by `Carry`.
+//! Files live in the unit folder's `scache/` (`SCENIC_SCACHE`). A unit's build folder starts empty
+//! each run, so its results are kept between runs by `Carry`.
 
 use anyhow::{Context, Result};
 use roadcore::scenic::Sample;
@@ -25,12 +25,12 @@ use std::path::{Path, PathBuf};
 /// not reused (`Carry`).
 pub const SCENIC_V: u32 = 1;
 
-/// The cache directory (data/cache/scenic, next to the build directory; `SCENIC_SCACHE` when set,
-/// as a unit's build folder sets it to its own).
+/// The cache directory: `SCENIC_SCACHE` when set (the unit's steps set it), else the folder's own
+/// (`unit_dir`).
 pub fn dir(build: &Path) -> PathBuf {
     let d = match std::env::var_os("SCENIC_SCACHE") {
         Some(d) => PathBuf::from(d),
-        None => build.parent().unwrap_or(Path::new(".")).join("cache/scenic"),
+        None => unit_dir(build),
     };
     let _ = std::fs::create_dir_all(&d);
     d

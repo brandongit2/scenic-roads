@@ -221,22 +221,6 @@ pub fn commit(dir: &Path, names: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Like `commit`, but an output identical to the one in place is dropped, keeping the old file
-/// and its time (so make doesn't take a rewrite of the same content for a change).
-pub fn commit_if_changed(dir: &Path, names: &[&str]) -> Result<()> {
-    for n in names {
-        let (t, d) = (tmp(dir, n), dir.join(n));
-        let same = std::fs::metadata(&d).ok().zip(std::fs::metadata(&t).ok()).is_some_and(|(a, b)| a.len() == b.len())
-            && std::fs::read(&d)? == std::fs::read(&t)?;
-        if same {
-            std::fs::remove_file(&t)?;
-        } else {
-            std::fs::rename(&t, &d).with_context(|| format!("commit {n}"))?;
-        }
-    }
-    Ok(())
-}
-
 pub fn mmap(path: &Path) -> Result<Mmap> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     #[cfg(target_os = "wasi")]

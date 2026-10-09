@@ -1,6 +1,6 @@
-//! Scenic analysis of the road network.
+//! Scenic analysis of a unit's roads: the unit's steps (pipeline::unit).
 //!
-//! usage: scenic-metrics <build_dir> prep|canopy|view|buildings [dir]|flags|all  (flags: cheap rerun after POI/heritage/area changes)
+//! usage: scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags
 //!
 //! prep    road sample points (~100 m apart) with observer eye heights; per-vertex drape
 //!         heights on the Terrarium surface (what MapLibre renders in 3D)
@@ -11,9 +11,8 @@
 //!         Cached (pipeline::scache): grid tiles and samples done before are copied, and only
 //!         10° canopy tiles with something new are read.
 //! view    far-field viewshed and landscape metrics → per-sample and per-vertex channels
-//! buildings  roadside buildings per sample from Overture footprints (data/buildings, `dem/buildings.py`)
-//! seed-cache  fill the canopy and view caches (data/cache/scenic) from this build's outputs, so
-//!         the next run reuses them (for builds made before the caches existed)
+//! buildings  roadside buildings per sample from Overture footprints (the folder given)
+//! flags   the flag channels again (heritage, areas, buildings) on the view's metrics
 
 use det::Det;
 use anyhow::{bail, ensure, Context, Result};
@@ -35,54 +34,19 @@ use std::sync::LazyLock;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let dir = PathBuf::from(args.get(1).map(String::as_str).unwrap_or("data/build"));
-    let step = args.get(2).map(String::as_str).unwrap_or("all");
+    ensure!(args.len() >= 3, "usage: scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags");
+    let dir = PathBuf::from(&args[1]);
+    let step = args[2].as_str();
     let t0 = std::time::Instant::now();
     match step {
         "prep" => prep(&dir)?,
         "canopy" => canopy(&dir)?,
         "view" => pipeline::view::run(&dir)?,
         "flags" => pipeline::view::flags(&dir)?,
-        "buildings" => pipeline::buildings::run(&dir, &PathBuf::from(args.get(3).map(String::as_str).unwrap_or("data/buildings")))?,
-        "seed-cache" => seed_cache(&dir)?,
-        "all" => {
-            prep(&dir)?;
-            canopy(&dir)?;
-            pipeline::view::run(&dir)?;
-        }
+        "buildings" => pipeline::buildings::run(&dir, &PathBuf::from(args.get(3).context("buildings <dir>")?))?,
         s => bail!("unknown step {s}"),
     }
     eprintln!("scenic {step}: done in {:.0?}", t0.elapsed());
-    Ok(())
-}
-
-// ---- caches ------------------------------------------------------------------------------
-
-fn seed_cache(dir: &Path) -> Result<()> {
-    use roadcore::scenic::ch;
-    let grid = GridIndex::load(dir)?;
-    let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
-    let samples = samples_a.get();
-    let near_a = Array::<i8>::open(&dir.join("near.i8"))?;
-    let near = near_a.get();
-    let road_a = Array::<u8>::open(&dir.join("roadside.u8"))?;
-    let roadside = road_a.get();
-    let met_a = Array::<u8>::open(&dir.join("samples.metrics.u8"))?;
-    let met = met_a.get();
-    anyhow::ensure!(near.len() == samples.len() * NEAR_AZ && roadside.len() == samples.len() * 2 && met.len() == samples.len() * ch::NBASE, "build outputs out of step");
-    let cdir = scache::dir(dir);
-    let keys: Vec<u64> = samples.par_iter().map(scache::sample_key).collect();
-    scache::Prev::save(&cdir, "canopy", &keys)?;
-    GridChange::save(&cdir, "canopy", &grid.tiles)?;
-    anyhow::ensure!(std::fs::metadata(dir.join("grid.canopy.u8"))?.len() as usize == grid.tiles.len() * CELLS, "grid layers out of step");
-    let vkeys: Vec<u64> = samples
-        .par_iter()
-        .enumerate()
-        .map(|(i, s)| scache::mix(scache::mix(scache::sample_key(s), bytemuck::cast_slice(&near[i * NEAR_AZ..(i + 1) * NEAR_AZ])), &roadside[i * 2..i * 2 + 2]))
-        .collect();
-    scache::Prev::save(&cdir, "view", &vkeys)?;
-    GridChange::save(&cdir, "view", &grid.tiles)?;
-    eprintln!("seed-cache: {} samples, {} grid tiles", samples.len(), grid.tiles.len());
     Ok(())
 }
 
@@ -758,12 +722,12 @@ fn canopy(dir: &Path) -> Result<()> {
     let terr = terr_l.data();
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
     let samples = samples_a.get();
-    // The canopy files: data/cache/chm10 next to the build, or under SCENIC_CACHE (shared by units);
-    // or SCENIC_CHM, the squares read where they lie (the NAS's, for a task's worker with no copies).
+    // The canopy files: under SCENIC_CACHE (shared by units); or SCENIC_CHM, the squares read where
+    // they lie (the NAS's, for a task's worker with no copies).
     let cache = match (std::env::var_os("SCENIC_CHM"), std::env::var_os("SCENIC_CACHE")) {
         (Some(c), _) => PathBuf::from(c),
         (None, Some(c)) => PathBuf::from(c).join("chm10"),
-        (None, None) => dir.parent().unwrap().join("cache/chm10"),
+        (None, None) => bail!("SCENIC_CHM or SCENIC_CACHE: where the canopy files are"),
     };
     store::cachefile::make_dir(&cache)?;
     // The NAS's store of them (`sources/canopy/`), where each is downloaded once. Read where they

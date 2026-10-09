@@ -1,5 +1,5 @@
-//! Today's area overlays, parks, stations and ferries as tiles and data by view (docs/phase5.md
-//! "Areas", "Stations", "Ferries"): the `convert-legacy-overlays` step.
+//! The area overlays, parks, stations and ferries as tiles and data by view (docs/phase5.md
+//! "Areas", "Stations", "Ferries"): the `overlays`, `stations` and `ferries` jobs.
 //!
 //! - **Areas** (`layers/ov-{heritage-areas,indigenous,special,whs}`): vector tiles (layer `a`), the
 //!   lean files' properties with each feature's id (docs/phase5.md "Ids") and `own`, the z3 tile
@@ -19,7 +19,7 @@ use det::Det;
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
 use crate::legacy::Unit;
-use crate::markconv::{self, legacy_bytes, src_bytes};
+use crate::markconv::{self, src_bytes};
 use crate::marks::{self, IdSource};
 use crate::out::Out;
 use crate::vtgen::{self, Feature, Geom};
@@ -34,7 +34,7 @@ pub const MAXZ: u8 = 12;
 /// Hi tiles (z9–12) only where the coverage is, and this far around it.
 const HALO_KM: f64 = 20.0;
 
-/// An area overlay: its catalog layer, today's lean file, its details (file, and the key its
+/// An area overlay: its catalog layer, its lean file (the heritage job's), its details (file, and the key its
 /// records go under in ovdata and the detail route).
 struct Area {
     layer: &'static str,
@@ -48,15 +48,6 @@ const AREAS: [Area; 4] = [
     Area { layer: "ov-special", file: "layer-special", details: Some(("details-special", "special")) },
     Area { layer: "ov-whs", file: "layer-whs-shapes", details: None },
 ];
-
-pub struct Converted {
-    pub areas: usize,
-    pub tiles: usize,
-    pub ovdata: usize,
-    pub parks: usize,
-    pub stations: usize,
-    pub ferries: usize,
-}
 
 /// The stations' vector-tile layer.
 pub const STATION_LAYER: &str = "s";
@@ -122,21 +113,6 @@ fn hi_cover(out: &Out) -> HashSet<(u32, u32)> {
     s
 }
 
-/// Each heritage record's (`i`) dot: its id and place, as `convert-legacy-marks` made them.
-fn heritage_dots(out: &Out) -> Result<HashMap<u64, (u64, f64, f64)>> {
-    let (pts, ids) = markconv::points_with_ids(out)?;
-    let k = marks::kind_index("heritage").unwrap();
-    let mut m = HashMap::new();
-    for (p, id) in pts.iter().zip(ids) {
-        if p.kind != k || p.pt.flags & marks::flag::COMPONENT != 0 {
-            continue;
-        }
-        let Some(i) = p.info.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()).and_then(|v| v["i"].as_u64()) else { continue };
-        m.insert(i, (id, p.lon, p.lat));
-    }
-    Ok(m)
-}
-
 /// The heritage dots the last marks job wrote (markconv::HERITAGE_DOTS).
 pub fn marks_dots(out: &Out) -> Result<HashMap<u64, (u64, f64, f64)>> {
     let c = out.get(markconv::HERITAGE_DOTS).context("no heritage dots (the marks step writes them)")?;
@@ -175,20 +151,6 @@ impl Recs {
         }
         (ids, offs, bytes)
     }
-}
-
-pub fn convert(out: &mut Out) -> Result<Converted> {
-    let t0 = std::time::Instant::now();
-    let cover = hi_cover(out);
-    let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
-    let dots = heritage_dots(out)?;
-    eprintln!("overlays: {} heritage dots, {} z6 tiles for hi tiles ({:.1?})", dots.len(), cover.len(), t0.elapsed());
-    let mut ntiles = 0;
-    let (areas, n_ov, parks, _) = areas_and_parks(out, markconv::LEGACY, &dots, &want, &mut ntiles)?;
-    let stations = stations(out, &want, &mut ntiles)?;
-    let ferries = ferries(out, &mut ntiles)?;
-    eprintln!("overlays: {areas} areas, {stations} stations, {ferries} ferry blocks, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
-    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks, stations, ferries })
 }
 
 /// The overlays job (docs/phase5.md "Heritage and area flags"): the area overlays and the parks
@@ -387,15 +349,8 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
     c.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
 }
 
-/// Today's ferries as blocks (see the module's docs).
-fn ferries(out: &mut Out, ntiles: &mut usize) -> Result<usize> {
-    let fc: Value = serde_json::from_slice(&legacy_bytes(out, "ferries")?)?;
-    let lines: serde_json::Map<String, Value> = serde_json::from_slice(&legacy_bytes(out, "ferry-lines")?)?;
-    ferry_blocks(out, &fc, &lines, ntiles)
-}
-
 /// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as ferries.py
-/// reads it (the Makefile's osmium steps), ferries.py with the timetables (`inputs/ferries/freq`:
+/// reads it, ferries.py with the timetables (`inputs/ferries/freq`:
 /// GTFS-derived sailings and the ones looked up by hand), and the blocks from what it writes.
 pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<usize> {
     use std::process::Command;
@@ -568,29 +523,6 @@ fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], w
         crate::agent::jobs::within((k + 1) as f64 / n);
     }
     Ok(wrote)
-}
-
-/// Today's rail stops (stations.json) as vector tiles: each stop in the tiles of the zooms it shows
-/// at, every stop at zoom 12. Ids: today's stops don't keep their OSM members, so references
-/// (`legacy:station|name|place`).
-fn stations(out: &mut Out, want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<usize> {
-    let fc: Value = serde_json::from_slice(&legacy_bytes(out, "stations")?)?;
-    let feats = fc["features"].as_array().context("stations: no features")?;
-    let mut src = Vec::with_capacity(feats.len());
-    let mut made = Vec::with_capacity(feats.len());
-    for (n, f) in feats.iter().enumerate() {
-        let c = &f["geometry"]["coordinates"];
-        let (Some(lon), Some(lat)) = (c[0].as_f64(), c[1].as_f64()) else { bail!("stations #{n}: not a point") };
-        let props = f["properties"].as_object().cloned().unwrap_or_default();
-        let name = props.get("n").and_then(Value::as_str).unwrap_or("");
-        src.push(IdSource { osm: None, reference: format!("legacy:station|{name}|{},{}", marks::e7(lon), marks::e7(lat)), canon: Value::Object(props.clone()).to_string() });
-        made.push(station_feature(lon, lat, &props));
-    }
-    for (f, id) in made.iter_mut().zip(marks::assign_ids(&src)?) {
-        f.id = id;
-    }
-    write_tiles(out, "stations", STATION_LAYER, &made, want, ntiles)?;
-    Ok(made.len())
 }
 
 /// A stop's tile feature: its properties, shown from the first zoom whose tiles serve a view where

@@ -2,8 +2,7 @@
 //! (→ samples.bld.u8, merged into `ch::BLDG` by `view::flags`).
 //!
 //! Buildings are Overture footprints' bounding boxes: every `.f32` in the folder given (a unit's:
-//! the release's tiles near its roads, `buildtiles::stage`; today's build: data/buildings, from
-//! `dem/buildings.py`), f32 [xmin, ymin, xmax, ymax] per building; heights are not used. For each sample, points every
+//! the release's tiles near its roads, `buildtiles::stage`), f32 [xmin, ymin, xmax, ymax] per building; heights are not used. For each sample, points every
 //! 5 m along the road within ±50 m are checked on each side: a building whose extent along the
 //! road covers the point counts fully if its near edge is within 30 m of the centreline, fading
 //! to nothing at 80 m. The sample's value is the mean over points and both sides, so a village
