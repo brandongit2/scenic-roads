@@ -7,7 +7,7 @@ import './style.css';
 import { fitByPct, fitByWidths, screenWidthKm, spread } from './autofit';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setWaterColours, labelTilesOn, ovTilesOn, waterTilesOn, stationTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -121,7 +121,7 @@ async function main() {
   setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, !!meta.water),
+    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water),
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -710,7 +710,6 @@ async function main() {
   };
   profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: cur, weights: store.s.weights, cdf: store.s.equalize ? cdf : null });
   const ferries = new Ferries(map);
-  ferries.byBlocks = !!meta.ferryBlocks;
   const stations = new Stations(map);
   const updateFerries = () => {
     if (!ferries.loaded || !store.s.ferry.on) {
@@ -2082,7 +2081,7 @@ async function main() {
       applyBuildingsNow(store.s);
       heritageChanged(map, store.s.overlays.heritage);
     }
-    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || !!m.water !== waterTilesOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
+    if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     markDirty();
   };
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });
@@ -2155,7 +2154,7 @@ async function main() {
     w.on(() => regions.setCatalog(w.status?.n));
     // The credits of the sources the catalog's data comes from.
     w.on(() => strip.setCredits(w.status?.credits));
-    // Landmarks by view when the catalog has them (else the whole files).
+    // Landmarks by view, when the catalog has them.
     w.on(() => {
       if (w.status) overlays.setMarks(w.status.marks ?? null);
       else if (w.unreachable) overlays.setMarks(null);

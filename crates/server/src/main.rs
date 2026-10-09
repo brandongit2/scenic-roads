@@ -56,8 +56,6 @@ pub struct AppState {
     pub basemap: tiles::Basemap,
     /// Overlay and layer files gzipped once (cache.rs), by content name.
     pub packs: Arc<cache::Packs>,
-    /// Details for hover and popups, loaded on first use per catalog.
-    details: Mutex<Option<(u64, Arc<details::Details>)>>,
     /// Roads' English names from OSM (name:en), by OSM way id, per catalog.
     road_en: Mutex<Option<(u64, Arc<HashMap<u64, String>>)>>,
     /// Trains a day per rail way (OSM id), sorted, per catalog.
@@ -102,9 +100,7 @@ impl AppState {
         }
     }
 
-    /// A road's own English (OSM's `name:en`), or "": each built unit's `global/roaden/<u>`. (Not
-    /// the legacy build's `global/legacy/road-en`: it filed one road's English for every road of
-    /// its name, and its ways the units don't hold any longer but five.)
+    /// A road's own English (OSM's `name:en`), or "": each built unit's `global/roaden/<u>`.
     pub fn road_en(&self, id: u64) -> String {
         let g = self.generation();
         let mut cur = self.road_en.lock().unwrap();
@@ -146,25 +142,6 @@ impl AppState {
             *cur = Some((g, Arc::new(v)));
         }
         cur.as_ref().unwrap().1.clone()
-    }
-
-    /// The details behind popups, kept per catalog once read in full; None when a file couldn't
-    /// be read (the NAS away).
-    pub fn details(&self) -> Option<Arc<details::Details>> {
-        let g = self.generation();
-        let mut cur = self.details.lock().unwrap();
-        if let Some((gg, d)) = cur.as_ref() {
-            if *gg == g {
-                return Some(d.clone());
-            }
-        }
-        let failed = std::cell::Cell::new(false);
-        let d = Arc::new(details::Details::load(&|name: &str| self.global_or_note(&format!("global/legacy/{name}"), &failed)));
-        if failed.get() {
-            return None;
-        }
-        *cur = Some((g, d.clone()));
-        Some(d)
     }
 
     /// The version tokens meta gives out now (what the app puts in `?v=`).
@@ -295,12 +272,10 @@ impl AppState {
         self.areas.forget(names);
     }
 
-    /// Whether the details, rail frequencies and roads' English names of this catalog are loaded.
+    /// Whether the rail frequencies and roads' English names of this catalog are loaded.
     fn loaded(&self) -> bool {
         let g = self.generation();
-        let is = |x: bool| x;
-        is(self.details.lock().unwrap().as_ref().is_some_and(|(gg, _)| *gg == g))
-            && self.rail_freq.lock().unwrap().as_ref().is_some_and(|(gg, _)| *gg == g)
+        self.rail_freq.lock().unwrap().as_ref().is_some_and(|(gg, _)| *gg == g)
             && self.road_en.lock().unwrap().as_ref().is_some_and(|(gg, _)| *gg == g)
     }
 }
@@ -329,7 +304,6 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         names: names_live::NamesState::new(home),
         basemap: tiles::Basemap::default(),
         packs: Arc::new(cache::Packs::default()),
-        details: Mutex::new(None),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
@@ -453,7 +427,6 @@ async fn main() -> Result<()> {
         names,
         basemap: tiles::Basemap::default(),
         packs: Arc::new(cache::Packs::default()),
-        details: Mutex::new(None),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
@@ -508,7 +481,6 @@ async fn main() -> Result<()> {
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
         .route("/api/railfreq", get(rail_freq_h))
-        .route("/api/detail/{layer}/{i}", get(details::detail))
         .route("/api/park", get(details::park))
         .route("/api/marks/view", axum::routing::post(marks::view))
         .route("/api/marks/tile/{kind}/{z}/{x}/{y}", get(marks::tile))
@@ -598,8 +570,8 @@ async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
     }
 }
 
-/// The layer files the app loads whole (pipeline outputs: overlays, stops, stations, ferries …),
-/// with display names attached to their features.
+/// The layer files the app loads whole (the overlays job's summary), with display names attached to
+/// their features.
 async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     let Some(logical) = layer_logical(&s.data.catalog(), &name) else { return StatusCode::NOT_FOUND.into_response() };
     match cache::respond_layer(&s, &logical, &headers, cache::versioned(q.as_deref())).await {
@@ -610,28 +582,17 @@ async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQ
     }
 }
 
-/// The file a layer name is served from: the lean one the map draws (dem/layers.py) when built.
+/// The file a layer name is served from: the overlays job's (`global/heritage/`).
 fn layer_logical(cat: &store::catalog::Catalog, name: &str) -> Option<String> {
-    let file = match name {
-        "pois" | "heritage" | "special" | "indigenous" | "heritage-areas" | "ferries" | "ferry-lines" | "stations" | "whs-shapes" | "summits" => name.to_string(),
-        "sources" => "heritage-sources".to_string(),
-        "summary" => "layer-summary".to_string(),
-        n if n.starts_with("pois-") && n[5..].chars().all(|c| c.is_ascii_lowercase() || c == '_') => n.to_string(),
+    let l = match name {
+        "summary" => "global/heritage/layer-summary",
         _ => return None,
     };
-    // The overlays job's copies (global/heritage: the summary, the sources), else today's.
-    for dir in ["global/heritage", "global/legacy"] {
-        for l in [format!("{dir}/layer-{file}"), format!("{dir}/{file}")] {
-            if cat.files.contains_key(&l) {
-                return Some(l);
-            }
-        }
-    }
-    Some(format!("global/legacy/{file}"))
+    cat.files.contains_key(l).then(|| l.to_string())
 }
 
-/// Loads what a first click or page load would otherwise wait for: the details behind popups, the
-/// rail frequencies, roads' English names and every layer file (with names attached, gzipped).
+/// Loads what a first click or page load would otherwise wait for: the rail frequencies, roads'
+/// English names and the layer files (with names attached, gzipped).
 /// Again whenever the catalog or the translations change.
 async fn warm(s: S) {
     // Nothing until the map is first used: an idle server loads nothing (plan §1).
@@ -645,7 +606,6 @@ async fn warm(s: S) {
             let t0 = std::time::Instant::now();
             let s2 = s.clone();
             let mut ok = tokio::task::spawn_blocking(move || {
-                s2.details();
                 s2.rail_freq(0);
                 s2.road_en(0);
                 s2.loaded()
@@ -655,24 +615,12 @@ async fn warm(s: S) {
             let cat = s.data.catalog();
             // Prepared layer files of earlier catalogs go.
             s.packs.retain_contents(&cat.files.values().map(|f| f.file.clone()).collect());
-            let mut layers: Vec<String> = cat
-                .files
-                .keys()
-                .filter_map(|k| k.strip_prefix("global/legacy/"))
-                .map(|stem| match stem {
-                    "heritage-sources" => "sources",
-                    _ => stem.strip_prefix("layer-").unwrap_or(stem),
-                })
-                .filter_map(|name| layer_logical(&cat, name))
-                .filter(|l| cat.files.contains_key(l))
-                .collect();
-            layers.sort();
-            layers.dedup();
+            let layers: Vec<String> = ["summary"].iter().filter_map(|name| layer_logical(&cat, name)).collect();
             for l in &layers {
                 ok &= cache::warm(&s, l).await;
             }
             if ok {
-                eprintln!("warmed details and {} layer files in {:.1?}", layers.len(), t0.elapsed());
+                eprintln!("warmed {} layer files in {:.1?}", layers.len(), t0.elapsed());
                 done = Some(now);
             }
         }
@@ -734,11 +682,11 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     for l in cat.layers.keys() {
         versions.insert(l.clone(), serde_json::Value::from(s.data.layer_version(l)));
     }
-    // The layer files' versions: their content names' hashes, under their old file names
-    // ("layer-pois.json", "details-poi.jsonl"), which the app's URLs use.
+    // The layer files' versions: their content names' hashes, under their file names
+    // ("layer-summary.json"), which the app's URLs use.
     for (k, f) in &cat.files {
         let Some(c) = store::naming::parse_content_name(&f.file) else { continue };
-        if let Some(stem) = k.strip_prefix("global/legacy/") {
+        if let Some(stem) = k.strip_prefix("global/heritage/") {
             let v = if c.ext == "json" { named(c.hash16.to_string()) } else { serde_json::Value::from(c.hash16.to_string()) };
             versions.insert(format!("{stem}.{}", c.ext), v);
         } else if k == "global/railfreq" {
@@ -786,12 +734,6 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));
         // The water as exact coverage (pipeline::water; water.rs), where the catalog has it.
         m.insert("water".into(), serde_json::json!(cat.layers.contains_key("water")));
-        // The area overlays as vector tiles by view (all of them, or today's files).
-        m.insert("stationTiles".into(), serde_json::json!(cat.layers.contains_key("stations")));
-        m.insert("ferryBlocks".into(), serde_json::json!(cat.layers.contains_key("ferries")));
-        m.insert("ovTiles".into(), serde_json::json!(OV_LAYERS.iter().all(|l| cat.layers.contains_key(&format!("ov-{l}"))) && !cat.ovdata.is_empty()));
-        m.insert("labels".into(), serde_json::json!(false));
-        m.insert("baseParts".into(), serde_json::json!([]));
     }
     meta
 }

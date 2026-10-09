@@ -126,15 +126,13 @@ export class Ferries {
   /** Per line (id), its name's main and sub (names.ts): the line records carry none, but a way of
    * the line carries its first named line's name (`n`) with them. */
   private lineNames = new Map<string, { main?: string; sub?: string }>();
-  private loading: Promise<void> | null = null;
   private popup: maplibregl.Popup | null = null;
   private style: FerryState | null = null;
   /** The metric colouring's range in use (auto-fitted or fixed) and equalisation lookup. */
   private range: [number, number] = [0, 1];
   private cdf: Uint8Array | null = null;
   onLoaded: () => void = () => {};
-  /** By view: blocks for the view, merged by id (the catalog has them), else the whole files. */
-  byBlocks = false;
+  /** Blocks for the view, merged by id. */
   private blocks = new Map<string, { b: Block | null | 'loading'; used: number }>();
   private tick = 0;
   /** The blocks the data shown was merged from. */
@@ -145,29 +143,22 @@ export class Ferries {
   release() {
     if (!this.held) return;
     this.held = false;
-    if (this.byBlocks && this.style?.on) this.view();
+    if (this.style?.on) this.view();
   }
 
   constructor(private map: MLMap) {
-    // New ferry files (a new catalog): fetched again if they were.
-    onVersions(['ferries.json', 'ferry-lines.json', 'ferries.tiles'], (files) => {
-      if (this.byBlocks) {
-        if (!files.includes('ferries.tiles')) return;
-        this.blocks.clear();
-        this.merged = '';
-        if (this.style?.on) this.view();
-        return;
-      }
-      if (!this.loading) return;
-      this.loading = null;
-      if (this.style?.on) this.ensure();
+    // New ferry blocks (a new catalog): asked for again.
+    onVersions(['ferries.tiles'], () => {
+      this.blocks.clear();
+      this.merged = '';
+      if (this.style?.on && !this.held) this.view();
     });
     map.on('moveend', () => {
-      if (this.byBlocks && this.style?.on && !this.held) this.view();
+      if (this.style?.on && !this.held) this.view();
     });
   }
 
-  /** By view: the blocks the view needs, asked for; once they're in, merged (ways and terminals
+  /** The blocks the view needs, asked for; once they're in, merged (ways and terminals
    * once each, by id) and shown. */
   private view() {
     const b = this.map.getBounds();
@@ -223,9 +214,8 @@ export class Ferries {
     return this.fc !== null;
   }
 
-  /** New data (the whole files, or the view's blocks merged): drawn, with the ways' colours and
-   * lengths (a block's ways carry their whole length; the files' are measured), and the
-   * terminals' colours and feature states anew. */
+  /** New data (the view's blocks merged): drawn, with the ways' colours (a block's ways carry their
+   * whole length), and the terminals' colours and feature states anew. */
   private adopt(fc: GeoJSON.FeatureCollection<GeoJSON.Geometry, Record<string, any>>, lines: Record<string, FerryLine>) {
     this.lines = lines;
     this.lineNames.clear();
@@ -234,7 +224,6 @@ export class Ferries {
       if (f.geometry.type !== 'LineString') continue;
       p.oc = legibleCss(p.col) ?? operatorColour(p.op);
       p.gs = String(p.gs ?? '') || digits(p.gb);
-      p.km ??= lengthKm((f.geometry as GeoJSON.LineString).coordinates);
       if (!p.n) continue;
       for (const id of String(p.lines ?? '').split(',')) {
         if (!this.lineNames.has(id) && this.lines[id]?.name === p.n) this.lineNames.set(id, { main: p.main, sub: p.sub });
@@ -249,36 +238,11 @@ export class Ferries {
     this.onLoaded();
   }
 
-  private ensure() {
-    if (this.loading) return;
-    tasks.begin('ferries', 'Ferries', 'downloading the lines and timetables');
-    // (A server error or a failed request isn't kept: the next time the ferries show, they're
-    // asked for again.)
-    const get = (url: string) => fetch(url).then(keepable).then((r) => (r.ok ? r.json() : null));
-    const req: Promise<void> = Promise.all([
-      get(`${hostFor('layers')}/api/layer/ferries${ver('ferries.json')}`),
-      get(`${hostFor('layers')}/api/layer/ferry-lines${ver('ferry-lines.json')}`),
-    ])
-      .then(([fc, lines]) => {
-        tasks.end('ferries');
-        if (!fc || this.loading !== req) return;
-        this.adopt(fc, lines ?? {});
-      })
-      .catch(() => {
-        tasks.end('ferries');
-        if (this.loading === req) this.loading = null;
-      });
-    this.loading = req;
-  }
-
   apply(s: AppState) {
     const map = this.map;
     const f = s.ferry;
     this.style = f;
-    if (f.on) {
-      if (!this.byBlocks) this.ensure();
-      else if (!this.held) this.view();
-    }
+    if (f.on && !this.held) this.view();
     if (!map.getLayer(LINE)) return;
     const vis = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
     vis(LINE, f.on);
@@ -615,14 +579,4 @@ function digits(gb: number): string {
   let s = '';
   for (let i = 0; i < NFERRY; i++) if (gb & (1 << i)) s += String(i);
   return s;
-}
-
-function lengthKm(c: GeoJSON.Position[]): number {
-  let d = 0;
-  for (let i = 1; i < c.length; i++) {
-    const [x0, y0] = c[i - 1], [x1, y1] = c[i];
-    const k = Math.cos((((y0 + y1) / 2) * Math.PI) / 180);
-    d += Math.hypot((x1 - x0) * k, y1 - y0) * 111.195;
-  }
-  return d;
 }

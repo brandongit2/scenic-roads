@@ -92,9 +92,7 @@ pub(crate) fn put_names(s: &AppState, o: &mut serde_json::Map<String, serde_json
 /// name) and `sub` (when there is one). The files:
 /// - GeoJSON: on each feature's properties, for `name` (or `n`), and `cmain`/`csub` for a World
 ///   Heritage component's own name (`cn`);
-/// - the summits (`{"p": [[lon, lat, ele, name], …]}`): main and sub appended to each ("" for none);
-/// - the ferry lines (`{id: {name, ends: [[lon, lat], …], …}}`): on each line; a ferry block's
-///   features and its lines (`lines`), both.
+/// - a ferry block's lines (`lines`: `{id: {name, ends: [[lon, lat], …], …}}`): on each line.
 ///
 /// A file with nothing to name is served as it is (re-encoding would sort its keys).
 pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
@@ -116,23 +114,6 @@ pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
                 let Some(at) = o.get("ends").and_then(|e| e.get(0)).and_then(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?])) else { continue };
                 changed |= put_names(s, o, "name", None, at, "");
             }
-        }
-    } else if let Some(peaks) = v.get_mut("p").and_then(|p| p.as_array_mut()) {
-        for e in peaks {
-            let Some(a) = e.as_array_mut() else { continue };
-            let (Some(lon), Some(lat), Some(name)) = (a.first().and_then(|x| x.as_f64()), a.get(1).and_then(|x| x.as_f64()), a.get(3).and_then(|x| x.as_str())) else { continue };
-            let d = s.names.display(names::Kind::Other, name, None, &[], lon, lat);
-            let main = if d.main != name { d.main } else { String::new() };
-            a.truncate(4);
-            a.push(main.into());
-            a.push(d.sub.unwrap_or_default().into());
-            changed = true;
-        }
-    } else if let Some(lines) = v.as_object_mut() {
-        for l in lines.values_mut() {
-            let Some(o) = l.as_object_mut() else { continue };
-            let Some(at) = o.get("ends").and_then(|e| e.get(0)).and_then(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?])) else { continue };
-            changed |= put_names(s, o, "name", None, at, "");
         }
     }
     if !changed {

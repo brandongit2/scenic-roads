@@ -1,15 +1,12 @@
-// The landmarks "in view", off the main thread: the stops & sights and heritage sites (the lean
-// layers of dem/layers.py, fetched and indexed here, not on the page), and per query the prominence
-// scores in view (the histogram), counts and best-known per kind, the most prominent (Sights), and
-// the highest named peak. See overlays.ts. Also the map's tiles of these points (tile), for its
-// names and hit-testing: MapLibre's own GeoJSON tiler held another copy of every file, some 4.7 KB
-// a point (2.4 GB for the half-million), and the page's workers together neared the browser's
-// memory limit for a page.
-import { HERITAGE_GROUPS, POINT_TILE_LAYER, heritageTierOf, landmarkScoreOf, nameOpacity, type NameScale } from './basemap';
-import { layoutDots, morton, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
+// The landmarks "in view", off the main thread: the stops & sights and heritage sites by view
+// (docs/phase5.md: marksview.ts holds the points of the tiles in view), and per query, from the
+// server, the prominence scores in view (the histogram), counts and best-known per kind, the most
+// prominent (Sights), and the highest named peak. See overlays.ts. Also the map's tiles of these
+// points (tile), for its names and hit-testing.
+import { POINT_TILE_LAYER, landmarkScoreOf, nameOpacity, type NameScale } from './basemap';
+import type { DotData } from './dotlayout';
 import { encodePoints, type TilePoint } from './mvt';
-import { filterHists, stopFilterPass, type StopFilter } from './stopfilters';
-import { displayName } from './names';
+import type { StopFilter } from './stopfilters';
 import type { OverlayKey } from './state';
 import { F_NAMED, MarksView, type MarksCfg } from './marksview';
 import type { MarkTile } from './marktile';
@@ -37,13 +34,11 @@ export interface KindQuery {
 }
 
 export type LandmarkRequest =
-  /** Points by view (docs/phase5.md) from the server at `base` (null: whole files, as before). */
+  /** Points by view (docs/phase5.md) from the server at `base` (null: the catalog has none). */
   | { type: 'marks'; cfg: MarksCfg | null; base: string }
   /** By view: the map's zoom, the ground in view (lon/lat box), in a tilted view the visible area
    * beyond it, and the point sources shown. */
   | { type: 'view'; zoom: number; dpr: number; box: [number, number, number, number]; far: [number, number, number, number] | null; srcs: string[] }
-  | { type: 'load'; src: string; url: string }
-  | { type: 'summits'; url: string }
   | { type: 'query'; id: number; outline: [number, number][]; bounds: [number, number, number, number]; balance: number; kinds: KindQuery[]; top: number;
       /** Ranks whose scores to send (the auto-fitted range's ends). */
       ranks: [number, number];
@@ -57,8 +52,6 @@ export type LandmarkRequest =
   | { type: 'tile'; id: number; src: string; z: number; x: number; y: number; scale: NameScale | null };
 
 export type LandmarkResponse =
-  /** dots: the points laid out for drawing (dots.ts, dotlayout.ts). */
-  | { type: 'loaded'; src: string; ok: boolean; counts: Record<string, number>; dots?: DotData }
   /** By view: a source's points as drawn now (again whenever the tiles in view change), with
    * their filter flags when its filters are known. */
   | { type: 'dots'; src: string; dots: DotData; vis: Uint32Array | null }
@@ -101,47 +94,26 @@ export interface TileNames {
   scaled: boolean;
 }
 
-interface Index {
-  features: GeoJSON.Feature[];
-  lon: Float64Array;
-  lat: Float64Array;
-  fa: Float32Array;
-  ia: Float32Array;
-  /** Stops & sights: kind of each feature; heritage: kind (tier). */
-  kind: string[];
-}
+const post = (m: LandmarkResponse, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
-const sources = new Map<string, Index>();
-/** Named peaks by height ([lon, lat, ele, name, main, sub], layer-summits.json with the server's
- * display names: "" for none), for the highest in view. */
-let summits: [number, number, number, string, string?, string?][] | null = null;
-const kept = new Map<string, { key: string; ids: Uint32Array }>();
-/** Per source, what the dots' filter flags are made from (dotlayout.ts). */
-const dotAux = new Map<string, DotAux>();
-
-/** Bins of the in-view score histogram (as distFromSamples makes them). */
-const HIST_BINS = 512;
 /** Below this zoom a tile holds at most TILE_MAX points, the most prominent (at any balance of
  * fame and rarity): the dots draw the rest, too small there to point at, and names show only for
  * the most isolated. From it, every point (zoom 12, the deepest, is overzoomed beyond). */
 const TILE_CAP_Z = 11;
 const TILE_MAX = 5000;
-/** Per source, every feature of its file (heritage: the parts of World Heritage Sites too) in
- * Morton order at zoom 16, for the tiles: codes, feature indices, rank for the cap. */
-const tileIdx = new Map<string, { features: GeoJSON.Feature[]; codes: Uint32Array; ids: Uint32Array; rank: Float32Array }>();
-/** Tile requests waiting for their source (loading, or not asked for yet). */
-const tileWaits = new Map<string, Extract<LandmarkRequest, { type: 'tile' }>[]>();
+/** Bins of the in-view score histogram (as distFromSamples makes them). */
+const HIST_BINS = 512;
 
-const post = (m: LandmarkResponse, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
-
-/** Points by view, when the catalog has them. */
-let mv: MarksView | null = null;
+/** Points by view, when the catalog has them (undefined: not known yet). */
+let mv: MarksView | null | undefined = undefined;
+/** Tile requests that came before the catalog's points were known. */
+const tileWaits: Extract<LandmarkRequest, { type: 'tile' }>[] = [];
 let mvBase = '';
 /** The newest view query sent: an older answer's extras are left (the newer one knows better). */
 let lastViewQuery = 0;
 const kindOf = (src: string) => (src === 'heritage' ? 'heritage' : src.slice(5));
 const srcOf = (kind: string) => (kind === 'heritage' ? 'heritage' : `pois-${kind}`);
-/** Ids by view are mark ids (to 2^52); else the whole file's index. */
+/** Ids by view are mark ids (to 2^52). */
 const idsOf = (xs: number[]) => Float64Array.from(xs);
 
 self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
@@ -158,73 +130,20 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
           () => post({ type: 'stale' }),
         )
       : null;
-    // By view, the name tiles asked for meanwhile are answered now; else they wait for their
-    // source's file (load), as before.
-    if (mv) for (const w of tileWaits.values()) for (const t of w.splice(0)) tile(t);
+    // The name tiles asked for meanwhile are answered now.
+    for (const t of tileWaits.splice(0)) tile(t);
     return;
   }
   if (m.type === 'view') {
     mv?.view(m.zoom, m.dpr, m.box, m.far, m.srcs.map(kindOf));
     return;
   }
-  if (mv && m.type !== 'load' && m.type !== 'summits') return byView(mv, m);
-  if (m.type === 'load') {
-    // (Again for new data: it replaces the source's index, and a failed request or a server error
-    // keeps the old one. No such file: no points.)
-    try {
-      const r = await fetch(m.url);
-      if (r.status >= 500) throw new Error(`HTTP ${r.status}`);
-      const fc: GeoJSON.FeatureCollection = r.ok ? await r.json() : { type: 'FeatureCollection', features: [] };
-      const ix = index(fc, m.src === 'heritage');
-      sources.set(m.src, ix);
-      kept.clear();
-      const counts: Record<string, number> = {};
-      for (const k of ix.kind) counts[k] = (counts[k] ?? 0) + 1;
-      const { data: dots, aux } = dotData(ix, m.src === 'heritage');
-      dotAux.set(m.src, aux);
-      tileIdx.set(m.src, tileIndex(fc.features));
-      post({ type: 'loaded', src: m.src, ok: true, counts, dots }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer]);
-    } catch {
-      if (!tileIdx.has(m.src)) tileIdx.set(m.src, { features: [], codes: new Uint32Array(), ids: new Uint32Array(), rank: new Float32Array() });
-      post({ type: 'loaded', src: m.src, ok: false, counts: {} });
-    }
-    for (const t of tileWaits.get(m.src) ?? []) tile(t);
-    tileWaits.delete(m.src);
-  } else if (m.type === 'summits') {
-    try {
-      const r = await fetch(m.url);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      summits = ((await r.json()) as { p: [number, number, number, string][] }).p;
-    } catch {
-      summits ??= [];
-    }
-  } else if (m.type === 'count') {
-    const ix = sources.get(m.kind.src);
-    const all = ix ? keptIds(m.kind, ix, true) : new Uint32Array();
-    const ids = ix ? keptIds(m.kind, ix, false) : all;
-    post({ type: 'count', id: m.id, n: ids.length, of: all.length });
-  } else if (m.type === 'tile') {
-    if (tileIdx.has(m.src) || mv) tile(m);
-    else {
-      let w = tileWaits.get(m.src);
-      if (!w) tileWaits.set(m.src, (w = []));
-      w.push(m);
-    }
-  } else if (m.type === 'query') {
-    query(m);
-  } else if (m.type === 'mask') {
-    for (const q of m.kinds) {
-      const ix = sources.get(q.src);
-      if (!ix) continue;
-      const aux = dotAux.get(q.src);
-      if (!aux) continue;
-      const pass = new Uint8Array(ix.features.length);
-      for (const i of keptIds(q, ix, false)) pass[i] = 1;
-      const mask = new Uint8Array(aux.order.length);
-      for (let j = 0; j < mask.length; j++) mask[j] = pass[aux.order[j]];
-      const vis = visWords(mask, aux);
-      post({ type: 'mask', id: m.id, src: q.src, vis }, [vis.buffer]);
-    }
+  if (m.type === 'tile') return tile(m);
+  if (mv) return byView(mv, m);
+  // No points in the catalog: an empty view (none in view, nothing to count or mask).
+  if (m.type === 'query') {
+    const none = new Float64Array(HIST_BINS);
+    post({ type: 'result', id: m.id, hist: none, n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null }, [none.buffer]);
   }
 };
 
@@ -274,19 +193,16 @@ async function byView(v: MarksView, m: LandmarkRequest) {
     } catch {
       /* (the count stays as it was) */
     }
-  } else if (m.type === 'tile') {
-    viewTile(v, m);
   }
 }
 
 /** A map tile of a source's points by view (names and hit-testing): the points of the server's
- * tile covering it, capped as the whole-file tiles were. */
+ * tile covering it, the most prominent TILE_MAX of them below TILE_CAP_Z. */
 async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile' }>) {
   let pts = await v.pointsIn(kindOf(m.src), m.z, m.x, m.y);
   if (!pts) return post({ type: 'tileFailed', id: m.id });
   if (m.z < TILE_CAP_Z && pts.length > TILE_MAX) {
-    // (Ranked as the whole-file index did: a Float32Array of the higher score at fame or isolation
-    // alone, ties in Morton order.)
+    // (Ranked by the higher score at fame or isolation alone, in f32.)
     const rank = (p: { t: MarkTile; i: number }) => { const fa = p.t.fa[p.i], ia = p.t.ia[p.i]; return Math.fround(Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1))); };
     pts = pts.map((p) => [rank(p), p] as const).sort((a, b) => b[0] - a[0]).slice(0, TILE_MAX).map((x) => x[1]);
   }
@@ -309,197 +225,12 @@ async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile'
   post({ type: 'tile', id: m.id, data, names }, [data, names.ids.buffer, names.fa.buffer, names.ia.buffer, names.mz.buffer]);
 }
 
-/** A source's points laid out for drawing, and their draw order. Heritage class: level class
- * (World Heritage, national top grade, the rest, as the dots' sizes) + 3 × group (colour). */
-function dotData(ix: Index, heritage: boolean): { data: DotData; aux: DotAux } {
-  const n = ix.features.length;
-  const cls = new Uint8Array(n);
-  if (heritage) {
-    for (let i = 0; i < n; i++) {
-      const level = Number(ix.features[i].properties?.level) || 5;
-      const g = HERITAGE_GROUPS.findIndex((x) => x.key === ix.kind[i][0]);
-      cls[i] = (level === 1 ? 0 : level === 2 ? 1 : 2) + 3 * (g < 0 ? 3 : g);
-    }
-  }
-  return layoutDots(ix.lon, ix.lat, ix.fa, ix.ia, cls);
-}
-
-/** Every feature of a file in Morton order at zoom 16 (see tileIdx). */
-function tileIndex(features: GeoJSON.Feature[]) {
-  const n = features.length;
-  const code = new Uint32Array(n);
-  for (let i = 0; i < n; i++) {
-    const [lon, lat] = (features[i].geometry as GeoJSON.Point).coordinates;
-    const s = Math.sin((lat * Math.PI) / 180);
-    const x = Math.min(1 - 1e-9, Math.max(0, (lon + 180) / 360));
-    const y = Math.min(1 - 1e-9, Math.max(0, 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)));
-    code[i] = morton(Math.floor(x * 65536), Math.floor(y * 65536));
-  }
-  const ids = Uint32Array.from({ length: n }, (_, i) => i).sort((a, b) => code[a] - code[b]);
-  const codes = new Uint32Array(n), rank = new Float32Array(n);
-  for (let k = 0; k < n; k++) {
-    const p = features[ids[k]].properties ?? {};
-    const fa = Number(p.fa) || 0, ia = p.ia == null ? 20000 : Number(p.ia);
-    codes[k] = code[ids[k]];
-    rank[k] = Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1));
-  }
-  return { features, codes, ids, rank };
-}
-
-/** A map tile of a source's points, sent back as a vector tile. */
+/** A map tile of a source's points, sent back as a vector tile (empty without points; waiting
+ * until the catalog's points are known). */
 function tile(m: Extract<LandmarkRequest, { type: 'tile' }>) {
   if (mv) return void viewTile(mv, m);
-  const t = tileIdx.get(m.src)!;
-  const [k0, k1] = tileRun(t.codes, m.z, m.x, m.y);
-  let ks = Array.from({ length: k1 - k0 }, (_, i) => k0 + i);
-  if (m.z < TILE_CAP_Z && ks.length > TILE_MAX) ks = ks.sort((a, b) => t.rank[b] - t.rank[a]).slice(0, TILE_MAX);
-  const n = 2 ** m.z;
-  // Each name's opacity on the scale as it stands (o), so a tile's names show as their dots do from
-  // the start, and the named points for the names' easing (namefade.ts).
-  const ids: number[] = [], fas: number[] = [], ias: number[] = [], mzs: number[] = [];
-  const pts: TilePoint[] = ks.map((k) => {
-    const f = t.features[t.ids[k]];
-    const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
-    const s = Math.sin((lat * Math.PI) / 180);
-    const x = (lon + 180) / 360, y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
-    let props = f.properties ?? {};
-    if (props.name && !props.pt) {
-      const fa = Number(props.fa) || 0, ia = props.ia == null ? 20000 : Number(props.ia);
-      ids.push(t.ids[k]), fas.push(fa), ias.push(ia), mzs.push(props.mz == null ? -99 : Number(props.mz));
-      if (m.scale) props = { ...props, o: Math.round(nameOpacity(fa, ia, m.scale) * 250) / 250 };
-    }
-    return { x: (x * n - m.x) * 4096, y: (y * n - m.y) * 4096, id: t.ids[k], props };
-  });
-  const data = encodePoints(POINT_TILE_LAYER, pts).buffer as ArrayBuffer;
-  const names: TileNames = { ids: idsOf(ids), fa: Float32Array.from(fas), ia: Float32Array.from(ias), mz: Float32Array.from(mzs), scaled: !!m.scale };
-  post({ type: 'tile', id: m.id, data, names }, [data, names.ids.buffer, names.fa.buffer, names.ia.buffer, names.mz.buffer]);
-}
-
-function index(fc: GeoJSON.FeatureCollection, heritage: boolean): Index {
-  // (not the components of a World Heritage Site shown as one dot: drawn small close in, but the
-  // site counts once, at its dot)
-  const fs = heritage ? fc.features.filter((f) => !f.properties?.pt) : fc.features;
-  const n = fs.length;
-  const ix: Index = { features: fs, lon: new Float64Array(n), lat: new Float64Array(n), fa: new Float32Array(n), ia: new Float32Array(n), kind: new Array(n) };
-  for (let i = 0; i < n; i++) {
-    const f = fs[i];
-    const [x, y] = (f.geometry as GeoJSON.Point).coordinates;
-    const p = f.properties ?? {};
-    ix.lon[i] = x;
-    ix.lat[i] = y;
-    ix.fa[i] = Number(p.fa) || 0;
-    ix.ia[i] = p.ia == null ? 20000 : Number(p.ia);
-    ix.kind[i] = heritage ? heritageTierOf(p) : p.kind;
-  }
-  return ix;
-}
-
-/** A kind's features after its filters (all of the kind with `unfiltered`), by filter settings. */
-function keptIds(q: KindQuery, ix: Index, unfiltered: boolean): Uint32Array {
-  const key = unfiltered ? `${q.k}|all` : `${q.k}|${JSON.stringify([q.off ?? [], q.filters, q.keepUnknown])}`;
-  const hit = kept.get(q.k + (unfiltered ? '|all' : ''));
-  if (hit && hit.key === key) return hit.ids;
-  const kinds = q.k === 'rest' ? ['rest_area', 'picnic_site'] : [q.k];
-  const pass = unfiltered ? null : stopFilterPass(q.k, q.filters, q.keepUnknown);
-  const off = !unfiltered && q.src === 'heritage' && q.off?.length ? new Set(q.off) : null;
-  const ids: number[] = [];
-  for (let i = 0; i < ix.features.length; i++) {
-    if (q.src !== 'heritage' && !kinds.includes(ix.kind[i])) continue;
-    if (off?.has(ix.kind[i])) continue;
-    if (pass && !pass(ix.features[i].properties ?? {})) continue;
-    ids.push(i);
-  }
-  const out = Uint32Array.from(ids);
-  kept.set(q.k + (unfiltered ? '|all' : ''), { key, ids: out });
-  return out;
-}
-
-function query(m: Extract<LandmarkRequest, { type: 'query' }>) {
-  const test = inOutline(m.outline, m.bounds);
-  const scores: number[] = [];
-  const byKind: Extract<LandmarkResponse, { type: 'result' }>['byKind'] = [];
-  const fhist: Extract<LandmarkResponse, { type: 'result' }>['fhist'] = {};
-  // The most prominent: a running top list overall and per kind (the scores are the Sights order).
-  const top: { k: OverlayKey; layer: string; src: string; i: number; score: number }[] = [];
-  const perKind: Record<string, typeof top> = {};
-  const keep = (list: typeof top, x: (typeof top)[number]) => {
-    if (list.length >= m.top && x.score <= list[list.length - 1].score) return;
-    let j = list.length;
-    while (j > 0 && list[j - 1].score < x.score) j--;
-    list.splice(j, 0, x);
-    if (list.length > m.top) list.pop();
-  };
-  for (const q of m.kinds) {
-    const ix = sources.get(q.src);
-    if (!ix) continue;
-    const row = { key: q.k, n: 0, best: null as { name: string; lngLat: [number, number]; layer: string; props: Record<string, any> } | null };
-    let bestFa = -1;
-    const mine: typeof top = (perKind[q.k] = []);
-    for (const i of keptIds(q, ix, false)) {
-      if (!test(ix.lon[i], ix.lat[i])) continue;
-      const sc = landmarkScoreOf(ix.fa[i], ix.ia[i], m.balance);
-      scores.push(sc);
-      row.n++;
-      const x = { k: q.k, layer: q.layer, src: q.src, i, score: sc };
-      keep(top, x);
-      keep(mine, x);
-      if (ix.fa[i] > bestFa && ix.features[i].properties?.name) {
-        bestFa = ix.fa[i];
-        row.best = { name: String(ix.features[i].properties!.name), lngLat: [ix.lon[i], ix.lat[i]], layer: q.layer, props: ix.features[i].properties! };
-      }
-    }
-    byKind.push(row);
-    if (q.hists) {
-      // Every one of the kind in view (of the heritage kinds shown), whatever its own filters.
-      const fh = filterHists(q.k, q.filters, q.keepUnknown);
-      const off = q.src === 'heritage' && q.off?.length ? new Set(q.off) : null;
-      for (const i of keptIds(q, ix, true)) {
-        if (off?.has(ix.kind[i]) || !test(ix.lon[i], ix.lat[i])) continue;
-        fh.add(ix.features[i].properties ?? {});
-      }
-      Object.assign(fhist, fh.done());
-    }
-  }
-  // The highest named peak in view: the first in view of the named peaks by height (summits).
-  let summit: Extract<LandmarkResponse, { type: 'result' }>['summit'] = null;
-  for (const [x, y, ele, name, main, sub] of summits ?? []) {
-    if (!test(x, y)) continue;
-    summit = { name: displayName(main, name, sub), ele, lngLat: [x, y] };
-    break;
-  }
-  const item = (x: (typeof top)[number]): LandmarkItem => {
-    const ix = sources.get(x.src)!;
-    return { k: x.k, layer: x.layer, score: x.score, props: ix.features[x.i].properties ?? {}, lngLat: [ix.lon[x.i], ix.lat[x.i]] };
-  };
-  // The histogram and the rank scores here, not on the page: half a million scores in view (the
-  // globe) took a long task to sort there.
-  const hist = new Float64Array(HIST_BINS);
-  for (const v of scores) hist[Math.max(0, Math.min(HIST_BINS - 1, Math.floor(v * HIST_BINS)))]++;
-  const sorted = Float32Array.from(scores).sort();
-  const at = (rank: number) => sorted[Math.max(0, sorted.length - Math.min(rank, sorted.length))];
-  post({
-    type: 'result', id: m.id, hist, n: scores.length, atRanks: scores.length ? [at(m.ranks[0]), at(m.ranks[1])] : null, byKind, summit,
-    top: top.map(item),
-    topByKind: Object.fromEntries(Object.entries(perKind).map(([k, l]) => [k, l.map(item)])),
-    fhist,
-  }, [hist.buffer, ...Object.values(fhist).map((x) => x.bins.buffer)]);
-}
-
-/** Point-in-polygon test (lng, lat ring) with a bounding-box pre-check; without a usable outline,
- * the bounds (west, south, east, north; across the antimeridian when west > east). */
-function inOutline(poly: [number, number][], [w0, s0, e0, n0]: [number, number, number, number]): (x: number, y: number) => boolean {
-  if (poly.length < 3) return (x, y) => y >= s0 && y <= n0 && (w0 <= e0 ? x >= w0 && x <= e0 : x >= w0 || x <= e0);
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  for (const [x, y] of poly) {
-    w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y);
-  }
-  return (x, y) => {
-    if (x < w || x > e || y < s || y > n) return false;
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const [xi, yi] = poly[i], [xj, yj] = poly[j];
-      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-    }
-    return inside;
-  };
+  if (mv === undefined) return void tileWaits.push(m);
+  const data = encodePoints(POINT_TILE_LAYER, []).buffer as ArrayBuffer;
+  const names: TileNames = { ids: new Float64Array(), fa: new Float32Array(), ia: new Float32Array(), mz: new Float32Array(), scaled: !!m.scale };
+  post({ type: 'tile', id: m.id, data, names }, [data]);
 }

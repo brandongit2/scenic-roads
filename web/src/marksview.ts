@@ -2,7 +2,7 @@
 // tiles the view needs (z6 blocks from zoom 6, thinned tiles at the zoom below with their speck
 // cells as pseudo-points, and in a tilted view coarser tiles for the far ground) and the view's
 // extras, laid out for the dots with their filter flags; the In view statistics and counts from
-// the server. Replaces the whole files the worker indexed before.
+// the server.
 
 import { LOD_LEVELS, LOD_Z0, layoutDots, lodZoom, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
 import { CELL_DZ, F_COMPONENT, F_NAMED, cellCentre, decodeMarkTile, extraTile, type MarkTile } from './marktile';
@@ -536,8 +536,8 @@ export class MarksView {
     return visWords(drawn, s.aux);
   }
 
-  /** The points of a kind in map tile z/x/y for its names and hit-testing (as the whole-file index
-   * made them): once the tile's data is in. */
+  /** The points of a kind in map tile z/x/y for its names and hit-testing: once the tile's data is
+   * in. */
   async pointsIn(kind: string, z: number, x: number, y: number): Promise<{ t: MarkTile; i: number }[] | null> {
     // The data covering the tile: its z6 block, or the thinned tile of its zoom (with the extras);
     // null when it couldn't be had (the map asks again: TileRetry).
@@ -570,7 +570,7 @@ function indexOf(t: MarkTile) {
       const [mx, my] = merc(t.lon[i] / 1e7, t.lat[i] / 1e7);
       code[i] = mortonOf(Math.floor(mx * 65536), Math.floor(my * 65536));
     }
-    // (Stable: equal codes stay in rank order, as the whole-file index had them.)
+    // (Stable: equal codes stay in rank order.)
     const rows = Uint32Array.from({ length: t.n }, (_, i) => i).sort((a, b) => code[a] - code[b] || t.rank[a] - t.rank[b]);
     ix = { codes: Uint32Array.from(rows, (i) => code[i]), rows };
     mortonIndex.set(t, ix);

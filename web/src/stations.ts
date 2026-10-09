@@ -9,10 +9,9 @@
 // rail card's. Stops are coloured once the view settles, from the source's tiles and
 // the rail line at their place: querying the rendered dots on the 3D globe ray-marched the
 // terrain for the view's corners in every tile, up to a second and more after a gesture.
-import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
-import { onVersions, ver } from './api';
-import { STATION_LAYER, stationTilesOn } from './basemap';
-import { hostFor } from './hosts';
+import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
+import { onVersions } from './api';
+import { STATION_LAYER } from './basemap';
 import { RAIL_GROUP_COLOURS } from './rail';
 import { STOP_R, STOP_REF_M, stopBounds, stopSlope } from './raildraw';
 import { kindSpacing, labelShown, lineWeight, type AppState } from './state';
@@ -30,14 +29,10 @@ const LABELS = 'rail-stop-label';
 const STOP_PX = 12;
 const LABEL_PX = 70;
 
-/** The stops' layer file. */
-const stopsUrl = () => `${hostFor('layers')}/api/layer/stations${ver('stations.json')}`;
-
 /** From the zoom where the spacing spans `px` pixels (mz: where it spans one). */
 const spaced = (px: number): ExpressionSpecification => ['>=', ['zoom'], ['+', ['get', 'mz'], Math.log2(px)]];
 
 export class Stations {
-  private requested = false;
   private railMask = 0;
   /** Stops coloured for the colouring of the moment (feature id → colour; null: their group's). */
   private coloured = new Map<number, Look | null>();
@@ -52,20 +47,11 @@ export class Stations {
   }
 
   constructor(private map: MLMap) {
-    // New stops (a new catalog): fetched again if they were, and coloured anew (their feature ids
-    // are their places in the file). By view, the new tiles come with the others' (main.ts), and
-    // the colours go with them.
-    onVersions(['stations.json', 'stations.tiles'], (files) => {
-      if (stationTilesOn()) {
-        if (!files.includes('stations.tiles')) return;
-        this.coloured.clear();
-        map.removeFeatureState({ source: 'stations', sourceLayer: STATION_LAYER });
-        return;
-      }
-      if (!this.requested || !files.includes('stations.json')) return;
+    // New stops (a new catalog): the new tiles come with the others' (main.ts), and the colours go
+    // with them.
+    onVersions(['stations.tiles'], () => {
       this.coloured.clear();
-      map.removeFeatureState({ source: 'stations' });
-      map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
+      map.removeFeatureState({ source: 'stations', sourceLayer: STATION_LAYER });
     });
   }
 
@@ -74,12 +60,8 @@ export class Stations {
     const r = s.rail;
     this.state = s;
     if (!map.getLayer(DOTS)) return;
-    if (r.on && !this.requested) {
-      this.requested = true;
-      if (!stationTilesOn()) map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
-    }
     this.railMask = r.groups.reduce((m, on, i) => (on ? m | (1 << i) : m), 0);
-    const on = r.on && !(this.held && stationTilesOn());
+    const on = r.on && !this.held;
     map.setLayoutProperty(DOTS, 'visibility', on ? 'visible' : 'none');
     map.setLayoutProperty(LABELS, 'visibility', on && labelShown(s, 'stations') ? 'visible' : 'none');
     // Any of the groups calling there shown (m: a bit per group).
@@ -110,7 +92,7 @@ export class Stations {
     if (all) this.coloured.clear();
     // Shown at this zoom (the dots' filter, spaced(STOP_PX)).
     const minZ = map.getZoom() - Math.log2(STOP_PX);
-    const layer = stationTilesOn() ? { sourceLayer: STATION_LAYER } : {};
+    const layer = { sourceLayer: STATION_LAYER };
     const fs = map.querySourceFeatures('stations', layer);
     yield;
     for (let i = 0; i < fs.length; i++) {

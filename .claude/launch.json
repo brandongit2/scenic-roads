@@ -4,7 +4,7 @@
     {
       "name": "backend",
       "runtimeExecutable": "./target/release/server",
-      "runtimeArgs": ["--data", "data/build", "--web", "web/dist", "--fonts", "data/fonts", "--port", "8080"],
+      "runtimeArgs": ["--web", "web/dist", "--fonts", "data/fonts", "--port", "8080"],
       "port": 8080
     },
     {

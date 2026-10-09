@@ -51,8 +51,8 @@ export const POINT_TILES = 'lmk';
 /** A point source's tiles (the landmarks worker makes them: overlays.ts). */
 export const pointTiles = (src: string) => `${POINT_TILES}://${src}/{z}/{x}/{y}`;
 export const POINT_TILE_LAYER = 'p';
-/** Overlay key → the source it needs: a GeoJSON source fetched from /api/layer/<name> on first use;
- * heritage and stops (points), tiles made from that file by the landmarks worker. */
+/** Overlay key → the source it needs: the areas' vector tiles by view; heritage and stops (points),
+ * tiles the landmarks worker makes from the points by view. */
 export const OVERLAY_SOURCE: Record<string, string | null> = {
   parks: null,
   heritage: 'heritage',
@@ -169,15 +169,10 @@ export const labelTileFilter = (id: string, px: number): ExpressionSpecification
 /** Whether the labels come from our label tiles (baseStyle). */
 let LABEL_TILES = false;
 export const labelTilesOn = () => LABEL_TILES;
-/** The area overlays' sources as vector tiles (`/tiles/ov/…`, layer `a`) rather than whole files. */
-let OV_TILES = false;
-export const ovTilesOn = () => OV_TILES;
 /** The area overlays' sources and their tile layers' names (`/tiles/ov/{name}`). */
 export const OV_SOURCES: Record<string, string> = { 'heritage-areas': 'heritage-areas', indigenous: 'indigenous', special: 'special', whs: 'whs' };
 export const OV_LAYER = 'a';
-/** The rail stops as vector tiles (`/tiles/stations`, layer `s`) rather than the whole file. */
-let STATION_TILES = false;
-export const stationTilesOn = () => STATION_TILES;
+/** The rail stops' tiles' layer (`/tiles/stations`). */
 export const STATION_LAYER = 's';
 /** The water as exact coverage (`/tiles/water`: pipeline::water, crates/server/src/water.rs),
  * where the catalog has it: each pixel's share of sea and of inland water at every zoom, from the
@@ -246,9 +241,8 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     { source: 'dem-hs', file: 'terrain.tiles', url: terrainTiles() },
     { source: 'slope', file: 'slope.tiles', url: `${hostFor('terrain')}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}` },
     trees('cover'), trees('height'), trees('leaf'),
-    // (The area overlays only when they're vector tiles: a whole file's source has no tiles.)
-    ...(OV_TILES ? Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })) : []),
-    ...(STATION_TILES ? [{ source: 'stations', file: 'stations.tiles', url: `${hostFor('layers')}/tiles/stations/{z}/{x}/{y}${ver('stations.tiles')}` }] : []),
+    ...Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })),
+    { source: 'stations', file: 'stations.tiles', url: `${hostFor('layers')}/tiles/stations/{z}/{x}/{y}${ver('stations.tiles')}` },
     ...(WATER_TILES ? [{ source: 'water', file: 'water', url: waterTiles() }] : []),
   ];
 }
@@ -375,9 +369,7 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
  * landmark names alone (set with their dots). */
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, ovTiles = false, stationTiles = false, waterTiles = false): StyleSpecification {
-  OV_TILES = ovTiles;
-  STATION_TILES = stationTiles;
+export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, waterTiles = false): StyleSpecification {
   WATER_TILES = waterTiles;
   const base = hostFor('base');
   const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));
@@ -485,14 +477,14 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       marks: empty,
       ...Object.fromEntries(Object.keys(POI_STYLE).map((k) => [`pois-${k}`, points(`pois-${k}`)])),
       heritage: points('heritage'),
-      // The area overlays: vector tiles by view, else whole files (overlays.ts sets their data).
-      ...Object.fromEntries(['heritage-areas', 'special', 'indigenous'].map((src) => [src, ovTiles ? { type: 'vector' as const, tiles: [tiles[src]], maxzoom: 12, attribution: '' } : empty])),
-      // Ids for feature state (terminal and stop colours, see ferries.ts and stations.ts).
+      // The area overlays: vector tiles by view.
+      ...Object.fromEntries(['heritage-areas', 'special', 'indigenous'].map((src) => [src, { type: 'vector' as const, tiles: [tiles[src]], maxzoom: 12, attribution: '' }])),
+      // Ids for feature state (terminal colours, see ferries.ts).
       ferries: { ...empty, generateId: true },
-      stations: stationTiles ? { type: 'vector' as const, tiles: [tiles.stations], maxzoom: 12, attribution: '' } : { ...empty, generateId: true },
+      stations: { type: 'vector' as const, tiles: [tiles.stations], maxzoom: 12, attribution: '' },
       // The water's coverage (raster tiles; their colours in the URL).
       ...(waterTiles ? { water: { type: 'raster' as const, tiles: [tiles.water], tileSize: WATER_TILE_SIZE, maxzoom: WATER_MAXZOOM, attribution: '' } } : {}),
-      whs: ovTiles ? { type: 'vector' as const, tiles: [tiles.whs], maxzoom: 12, attribution: '' } : empty,
+      whs: { type: 'vector' as const, tiles: [tiles.whs], maxzoom: 12, attribution: '' },
     },
     layers: [
       { id: 'bg', type: 'background', paint: { 'background-color': LAND_COLOUR } },
@@ -1110,8 +1102,8 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
   // The area overlays' and rail stops' layers read their tiles' layers.
   for (const l of style.layers) {
     if (!('source' in l) || typeof l.source !== 'string') continue;
-    if (ovTiles && l.source in OV_SOURCES) (l as { 'source-layer'?: string })['source-layer'] = OV_LAYER;
-    if (stationTiles && l.source === 'stations') (l as { 'source-layer'?: string })['source-layer'] = STATION_LAYER;
+    if (l.source in OV_SOURCES) (l as { 'source-layer'?: string })['source-layer'] = OV_LAYER;
+    if (l.source === 'stations') (l as { 'source-layer'?: string })['source-layer'] = STATION_LAYER;
   }
   return style;
 }

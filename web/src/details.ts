@@ -1,11 +1,10 @@
-// Details of stops & sights, heritage sites and areas, from the server (/api/detail, /api/park):
+// Details of stops & sights, heritage sites and areas, from the server (marks, overlays, parks):
 // fetched on first hover, cached, and turned into bottom-bar facts, a description line and the
 // full list for click popups.
 import { keepable, onVersions, version } from './api';
 import { fmt } from './ui/dom';
 
 export type DetailRef =
-  | { layer: 'poi' | 'heritage' | 'harea' | 'special' | 'indigenous'; i: number }
   | { park: { name: string; lon: number; lat: number } }
   /** A point by view (docs/phase5.md): its kind, id and place. */
   | { mark: { kind: string; id: number; at: [number, number] } }
@@ -18,7 +17,7 @@ const cache = new Map<string, Promise<Detail | null>>();
 const AREA_TILES = { harea: 'heritage-areas', special: 'special', indigenous: 'indigenous' } as const;
 
 export const refKey = (r: DetailRef) =>
-  'park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : 'mark' in r ? `mark:${r.mark.kind}:${r.mark.id}` : 'area' in r ? `area:${r.area.layer}:${r.area.id}` : `${r.layer}:${r.i}`;
+  'park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : 'mark' in r ? `mark:${r.mark.kind}:${r.mark.id}` : `area:${r.area.layer}:${r.area.id}`;
 
 /** The version of the points by view (their details' URLs carry it). */
 let marksV: string | null = null;
@@ -35,7 +34,7 @@ export function getDetail(r: DetailRef): Promise<Detail | null> {
   const k = refKey(r);
   let p = cache.get(k);
   if (!p) {
-    // Versioned by the details files' versions, when known (a versioned response is cached for
+    // Versioned by what the details come from, when known (a versioned response is cached for
     // good, so never under an incomplete one).
     let url: string;
     if ('mark' in r) {
@@ -45,12 +44,9 @@ export function getDetail(r: DetailRef): Promise<Detail | null> {
       const v = version(`ov-${AREA_TILES[r.area.layer]}`);
       url = `/api/overlays/detail/${r.area.layer}/${r.area.id}?${new URLSearchParams({ own: r.area.own, ...(v ? { v } : {}) })}`;
     } else {
-      const files = 'park' in r ? ['details-park.jsonl'] : [`details-${r.layer}.jsonl`, ...(r.layer === 'poi' ? ['peaks.json'] : r.layer === 'heritage' ? ['props-heritage.jsonl'] : [])];
-      const vs = files.map(version);
-      const v = vs.every(Boolean) ? vs.join('.') : '';
-      url = 'park' in r
-        ? `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), ...(v ? { v } : {}) })}`
-        : `/api/detail/${r.layer}/${r.i}${v ? `?v=${v}` : ''}`;
+      // (Parks' records are the overlays' ovdata: versioned by the area overlays' tiles.)
+      const v = version('ov-heritage-areas');
+      url = `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), ...(v ? { v } : {}) })}`;
     }
     // (409: the server has newer points than the ref came from; not kept, asked again later.)
     const q: Promise<Detail | null> = fetch(url).then(keepable).then((res) => {
@@ -79,10 +75,10 @@ export async function loadDetail(r: DetailRef): Promise<Detail | null> {
   return d;
 }
 
-// New details (a new catalog): asked for again.
-onVersions((f) => f.startsWith('details-') || f === 'peaks.json' || f === 'props-heritage.jsonl', () => {
-  cache.clear();
-  loaded.clear();
+// New area overlays (a new catalog): their details and the parks' asked for again. (The points'
+// go with the marks version: setMarksVersion.)
+onVersions((f) => f.startsWith('ov-'), () => {
+  for (const m of [cache, loaded]) for (const k of [...m.keys()]) if (!k.startsWith('mark:')) m.delete(k);
 });
 
 /** What a detail adds: facts for the bar, a description line, and rows and links for popups. */

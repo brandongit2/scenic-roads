@@ -102,7 +102,7 @@ export interface CatalogStatus {
   agent: Agent | null;
   /** A fingerprint of every version the URLs use: changes with the catalog and the translations. */
   v?: string;
-  /** Landmark points by view (docs/phase5.md); null or absent: the whole files. */
+  /** Landmark points by view (docs/phase5.md); null or absent: none. */
   marks?: import('./marksview').MarksCfg | null;
 }
 

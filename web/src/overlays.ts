@@ -1,14 +1,13 @@
-// Designation and stop overlays: GeoJSON fetched on first use, visibility, the heritage level
+// Designation and stop overlays: the points and areas by view, visibility, the heritage level
 // filter, and click popups.
 import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
-import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, ovTilesOn, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
+import type { ExpressionSpecification, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
-import { tasks } from './tasks';
 import { displayName } from './names';
 import { enrichArea, enrichHeritage, enrichPoi, loadDetail, setMarksVersion, type Detail, type DetailRef, type Enriched } from './details';
 import type { MarksCfg } from './marksview';
@@ -36,7 +35,7 @@ export interface FeatureSummary {
   /** Second-row description (replaces the source line), truncated to fit. */
   desc?: string;
   area: boolean;
-  /** Where its details come from (/api/detail, /api/park), and what kind of thing it is. */
+  /** Where its details come from (marks, overlays, /api/park), and what kind of thing it is. */
   ref?: DetailRef;
   what?: string;
   /** Other places at the same spot. */
@@ -59,9 +58,7 @@ function enrichOf(f: FeatureSummary, d: Detail): Enriched | null {
   if (!f.ref) return null;
   if ('park' in f.ref) return enrichArea(d);
   if ('mark' in f.ref) return f.ref.mark.kind === 'heritage' ? enrichHeritage(d) : enrichPoi(f.what ?? '', {}, d);
-  switch ('area' in f.ref ? f.ref.area.layer : f.ref.layer) {
-    case 'poi': return enrichPoi(f.what ?? '', {}, d);
-    case 'heritage': return enrichHeritage(d);
+  switch (f.ref.area.layer) {
     // The register's area and year (in the summary) rather than the mapped outline's and
     // Wikidata's, which can disagree with them.
     case 'special': return enrichArea(d, { area: f.facts.some((x) => / (km²|ha)$/.test(x)), since: f.facts.some((x) => x.startsWith('since ')) });
@@ -85,25 +82,22 @@ const significance = (a: MapGeoJSONFeature, b: MapGeoJSONFeature) =>
 export const POINT_LAYERS = ['heritage-pt', 'heritage-part', ...Object.keys(OVERLAY_LAYERS).filter((k) => OVERLAY_SOURCE[k]?.startsWith('pois-')).map((k) => `poi-${k}`)];
 /** Area layers (parks: the basemap's). */
 export const AREA_LAYERS = ['whs-fill', 'whs-line', 'heritage-area-fill', 'special-fill', 'indigenous-fill', 'park-fill'];
-/** World Heritage outlines (layer-whs-shapes.json: n name with its main and sub, c category, i the
- * site's record) as the site's properties, so they show like its dot. */
+/** World Heritage outlines (ov-whs: n name with its main and sub, c category) as the site's
+ * properties, so they show like its dot. */
 const whsAsSite = (p: Record<string, any>): Record<string, any> =>
-  ({ name: p.n, main: p.main, sub: p.sub, designation: 'UNESCO World Heritage Site', level: 1, t: p.c === 'Cultural' ? 'w.c' : 'w.n', category: p.c, i: p.i });
+  ({ name: p.n, main: p.main, sub: p.sub, designation: 'UNESCO World Heritage Site', level: 1, t: p.c === 'Cultural' ? 'w.c' : 'w.n', category: p.c });
 const isWhs = (id: string) => id === 'whs-fill' || id === 'whs-line';
 
-/** An overlay's layer file, as the map draws it (dem/layers.py), versioned for the browser cache. */
-const layerUrl = (src: string) => `${hostFor('layers')}/api/layer/${src}${ver(`layer-${src}.json`) || ver(`${src}.json`)}`;
+/** The area overlays' counts (the overlays job's layer-summary.json), versioned for the browser cache. */
+const summaryUrl = () => `${hostFor('layers')}/api/layer/summary${ver('layer-summary.json')}`;
 /** The point kinds the catalog must have by view (docs/phase5.md). */
 const MARK_KINDS = ['viewpoint', 'peak', 'waterfall', 'lighthouse', 'covered_bridge', 'rest', 'trailhead', 'heritage'];
 /** Point sources: heritage, and the stops & sights per kind (pois-<kind>). */
 type PointSource = string;
 const isPoints = (src: string): src is PointSource => src === 'heritage' || src.startsWith('pois-');
-/** A point source's index, for the status line. */
-const indexLabel = (src: PointSource) => `${src === 'heritage' ? 'Heritage sites' : OVERLAYS.find(([k]) => OVERLAY_SOURCE[k] === src)?.[1] ?? 'Stops'} list`;
 
 /** The point sources' map tiles (basemap.ts POINT_TILES, `lmk://<source>/{z}/{x}/{y}`): made by the
- * landmarks worker from its index (landmarks.worker.ts tile), so no other copy of the files is
- * held. Registered before any map asks; the requests wait for the Overlays' worker. */
+ * landmarks worker from the points by view (landmarks.worker.ts tile). Registered before any map asks; the requests wait for the Overlays' worker. */
 let tileWorker: Worker | null = null;
 let tileSeq = 0;
 const tileReplies = new Map<number, (m: Extract<LandmarkResponse, { type: 'tile' | 'tileFailed' }>) => void>();
@@ -127,21 +121,16 @@ maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve, reject) =>
 }));
 
 /**
- * The overlays' data lives off the main thread: MapLibre's worker fetches and tiles each layer file
- * (the sources get its URL), and the landmarks worker (landmarks.worker.ts) indexes the stops &
- * sights and heritage sites for everything "in view" (prominence, counts, Sights, summit). The page
- * never parses or holds the features.
+ * The overlays' data lives off the main thread: the areas are vector tiles by view (`/tiles/ov/…`),
+ * and the landmarks worker (landmarks.worker.ts) holds the stops & sights and heritage sites by
+ * view and asks the server about everything "in view" (prominence, counts, Sights, summit). The
+ * page never parses or holds the features.
  */
 export class Overlays {
-  /** Sources whose map data is set. */
+  /** Area sources shown. */
   private sourced = new Set<string>();
-  /** Point sources in the landmarks worker. */
-  private whsRequested = false;
+  /** Point sources in the landmarks worker: asked for, then with their points in view. */
   private indexed = new Map<PointSource, 'loading' | 'ready'>();
-  /** Point sources indexed again for new data (their map tiles follow once they are), and those
-   * whose data changed while they were being indexed (indexed again after). */
-  private reindexing = new Set<PointSource>();
-  private stale = new Set<PointSource>();
   private worker = new Worker(new URL('./landmarks.worker.ts', import.meta.url), { type: 'module' });
   private queryId = 0;
   /** The in-view query whose answer is awaited (the ids are shared with the mask requests). */
@@ -163,7 +152,7 @@ export class Overlays {
    * re-evaluates every loaded feature). */
   private painted = new Map<string, string>();
   private summit: { name: string; ele: number; lngLat: [number, number] } | null = null;
-  /** Points by view (docs/phase5.md): the catalog's; null: whole files; undefined: not known yet. */
+  /** Points by view (docs/phase5.md): the catalog's; null: none; undefined: not known yet. */
   private marks: MarksCfg | null | undefined = undefined;
   private top: LandmarkItem[] = [];
   private topByKind: Record<string, LandmarkItem[]> = {};
@@ -242,33 +231,14 @@ export class Overlays {
     this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), dpr: window.devicePixelRatio || 1, box, far, srcs } satisfies LandmarkRequest);
   }
 
-  /** Layer files with new versions (a new catalog): the sources that have them get them again, the
-   * points are indexed again (the old ones shown meanwhile), the polygon counts and the summits
-   * asked for again. */
+  /** Layer files with new versions (a new catalog): the polygon counts asked for again. (Tiles by
+   * view get their new versions with the other tiles: main.ts onVersions.) */
   private reload(files: string[]) {
-    const changed = (src: string) => files.includes(`layer-${src}.json`) || files.includes(`${src}.json`);
-    // (Vector tiles by view get their new versions with the other tiles: main.ts onVersions.)
-    if (!ovTilesOn()) {
-      for (const src of this.sourced) if (changed(src)) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
-      if (this.whsRequested && changed('whs-shapes')) this.map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
-    }
-    for (const [src, st] of this.indexed) {
-      if (!changed(src) || this.byView(src)) continue;
-      if (st === 'ready') this.reindex(src);
-      else this.stale.add(src);
-    }
-    if (changed('summary') && (this.summary || this.summaryLoading)) {
+    if (files.includes('layer-summary.json') && (this.summary || this.summaryLoading)) {
       this.summary = null;
       this.summaryLoading = false;
       this.ensureSummary();
     }
-    if (this.summitsRequested && changed('summits')) this.worker.postMessage({ type: 'summits', url: layerUrl('summits') } satisfies LandmarkRequest);
-  }
-
-  private reindex(src: PointSource) {
-    this.reindexing.add(src);
-    tasks.begin(`index:${src}`, indexLabel(src), 'downloading and indexing the new data');
-    this.worker.postMessage({ type: 'load', src, url: layerUrl(src) } satisfies LandmarkRequest);
   }
 
   /** The latest mask request per source (the dots' filters), and the filters it was for. */
@@ -312,31 +282,6 @@ export class Overlays {
         for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.refreshStatus(key, src);
         this.prominence();
       }
-    } else if (m.type === 'loaded') {
-      const src = m.src as PointSource;
-      tasks.end(`index:${src}`);
-      if (!m.ok) {
-        // Not kept: a first load is tried again the next time its kind shows (its map tiles, made
-        // empty meanwhile, then again); new data that failed leaves the old.
-        if (this.indexed.get(src) !== 'ready') {
-          this.indexed.delete(src);
-          this.reindexing.add(src);
-          for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src) this.layers.setOverlayStatus(key, '');
-        } else this.reindexing.delete(src);
-      } else {
-        this.indexed.set(src, 'ready');
-        // New data: the map's tiles of the points again, from the new index.
-        if (this.reindexing.delete(src)) this.map.getSource<maplibregl.VectorTileSource>(src)?.setTiles([pointTiles(src)]);
-        if (m.dots) {
-          this.dots.setSource(src, m.dots);
-          this.requestMasks([src]);
-        }
-        if (src === 'heritage') this.layers.setHeritageCounts(m.counts);
-        for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.refreshStatus(key, src);
-        this.prominence();
-      }
-      // The data changed while it loaded: again.
-      if (this.stale.delete(src)) this.reindex(src);
     } else if (m.type === 'count') {
       const k = this.countFor.get(m.id);
       this.countFor.delete(m.id);
@@ -373,9 +318,9 @@ export class Overlays {
       // Labels follow "Place labels" and their kind's toggle under it.
       for (const id of OVERLAY_LAYERS[k] ?? []) {
         const lk = labelKindOf(id) as LabelKind | undefined;
-        // (By view, the areas' tiles wait for the roads in view as their files do: release().)
+        // (The areas' tiles wait for the roads in view: release().)
         const src = map.getLayer(id)?.source;
-        const held = this.held && ovTilesOn() && !!src && src in OV_SOURCES;
+        const held = this.held && !!src && src in OV_SOURCES;
         const show = on && (!lk || labelShown(s, lk)) && !held;
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
       }
@@ -397,12 +342,8 @@ export class Overlays {
       else if (src) this.refreshStatus(k, src);
     }
     const shown = HERITAGE_TIERS.map((t) => t.key).filter((k) => !s.heritageOff.includes(k));
-    // World Heritage outlines: loaded with the sites, shown with their kind (cultural, natural).
+    // World Heritage outlines: shown with their kind (cultural, natural).
     if (map.getLayer('whs-line')) {
-      if (s.overlays.heritage && !this.whsRequested) {
-        this.whsRequested = true;
-        if (!ovTilesOn()) map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
-      }
       const byKind: ExpressionSpecification = ['case', ['in', ['get', 'c'], ['literal', ['Natural', 'Mixed']]], shown.includes('w.n'), shown.includes('w.c')];
       map.setFilter('whs-line', byKind);
       map.setFilter('whs-fill', ['all', ['==', ['get', 'a'], 1], byKind]);
@@ -459,17 +400,10 @@ export class Overlays {
     return (kind ? this.topByKind[kind] ?? [] : this.top).slice(0, limit);
   }
 
-  /** The highest named peak in view, as of the last prominence pass (indexes the stops & sights if
-   * not yet). */
+  /** The highest named peak in view, as of the last prominence pass (the In view query's). */
   summitInView(): { name: string; ele: number; lngLat: [number, number] } | null {
-    // (By view, the In view query answers it.)
-    if (!this.summitsRequested && !this.held && this.marks === null) {
-      this.summitsRequested = true;
-      this.worker.postMessage({ type: 'summits', url: layerUrl('summits') } satisfies LandmarkRequest);
-    }
     return this.summit;
   }
-  private summitsRequested = false;
   private held = true;
 
   /** Start loading the overlays shown (see ensure). */
@@ -573,14 +507,12 @@ export class Overlays {
       const src = OVERLAY_SOURCE[k];
       if (!src || !this.sourced.has(src) || !this.layers.filtersOpen(k)) continue;
       const fh = filterHists(k, s.stopFilters, s.stopUnknown[k] !== false);
-      // (Each feature once: by its id in vector tiles, which repeat it in every tile it crosses.)
+      // (Each feature once: by its id, as the tiles repeat it in every tile it crosses.)
       const seen = new Set<unknown>();
-      for (const f of this.map.querySourceFeatures(src, ovTilesOn() ? { sourceLayer: OV_LAYER } : undefined)) {
-        const p = f.properties ?? {};
-        const k = ovTilesOn() ? f.id : p.i;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        fh.add(p);
+      for (const f of this.map.querySourceFeatures(src, { sourceLayer: OV_LAYER })) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        fh.add(f.properties ?? {});
       }
       this.layers.updateStopFilters(fh.done());
     }
@@ -599,7 +531,7 @@ export class Overlays {
     const s = this.state;
     if (!s) return;
     if (isPoints(src)) {
-      if (this.indexed.get(src) !== 'ready') return; // shown as loading until indexed
+      if (this.indexed.get(src) !== 'ready') return; // shown as loading until its points come
       const id = ++this.countId;
       this.countFor.set(id, k);
       this.countLatest.set(k, id);
@@ -612,41 +544,28 @@ export class Overlays {
     this.layers.setOverlayStatus(k, pass ? `${fmt.n(sm.a.filter((a) => pass({ a })).length)} of ${fmt.n(sm.n)}` : fmt.n(sm.n));
   }
 
-  /** An overlay's source gets its layer file (MapLibre's worker fetches and tiles it); points are
-   * indexed in the landmarks worker instead, which makes their tiles. */
+  /** An overlay shown: its points by view in the landmarks worker, which makes their tiles; an
+   * area's tiles load themselves, and its count comes from the summary. */
   private ensure(src: string, k: OverlayKey) {
-    // At start-up, the overlay files wait for the roads in view (release()): parsing them competes
-    // with the road tiles for the CPU, and the roads are what the map is for.
+    // At start-up, the overlays wait for the roads in view (release()): they compete with the road
+    // tiles, and the roads are what the map is for.
     if (this.held) return;
     if (isPoints(src)) {
-      // Whole files or by view: known once the catalog's status is in (setMarks applies again).
-      if (this.marks === undefined) return;
-      if (this.byView(src)) {
-        if (!this.indexed.has(src)) this.indexed.set(src, 'loading');
-        return this.sendView();
-      }
-      return this.ensureIndex(src);
+      // Known once the catalog's status is in (setMarks applies again); none without points.
+      if (!this.byView(src)) return;
+      if (!this.indexed.has(src)) this.indexed.set(src, 'loading');
+      return this.sendView();
     }
     if (this.sourced.has(src)) return;
     this.sourced.add(src);
-    // (Vector tiles by view load themselves.)
-    if (!ovTilesOn()) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
     this.refreshStatus(k, src);
-  }
-
-  private ensureIndex(src: PointSource) {
-    if (this.indexed.has(src)) return;
-    this.indexed.set(src, 'loading');
-    for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.layers.setOverlayStatus(key, '', true);
-    tasks.begin(`index:${src}`, indexLabel(src), 'downloading and indexing for the in-view lists and counts');
-    this.worker.postMessage({ type: 'load', src, url: layerUrl(src) } satisfies LandmarkRequest);
   }
 
   private ensureSummary() {
     if (this.summary || this.summaryLoading) return;
     this.summaryLoading = true;
     const tok = ++this.summaryTok;
-    fetch(layerUrl('summary'))
+    fetch(summaryUrl())
       .then(keepable)
       .then((r) => (r.ok ? r.json() : null))
       .then(
@@ -679,7 +598,7 @@ export class Overlays {
     fs = ids.every((id) => POINT_LAYERS.includes(id)) ? this.rank(fs, p) : fs.sort(significance);
     const seen = new Set<string>();
     const uniq = fs.filter((f) => {
-      const k = isWhs(f.layer.id) ? `whs|${f.properties?.id}` : `${f.layer.id}|${f.properties?.mid ?? f.properties?.i ?? ''}|${f.properties?.name ?? ''}`;
+      const k = isWhs(f.layer.id) ? `whs|${f.properties?.id}` : `${f.layer.id}|${f.properties?.mid ?? ''}|${f.properties?.name ?? ''}`;
       return !seen.has(k) && !!seen.add(k);
     });
     this.show(uniq.slice(0, 6), map.unproject(point), uniq.length);
@@ -821,8 +740,8 @@ export class Overlays {
         notice.textContent = q.notice ?? '';
       };
       fill(p);
-      // The site's record: by its index (whole files), or by kind, id and place (by view).
-      const ref = p.mid !== undefined ? summarise(f, at)?.ref : Number.isFinite(Number(p.i)) ? ({ layer: 'heritage', i: Number(p.i) } as const) : undefined;
+      // The site's record: by kind, id and place.
+      const ref = p.mid !== undefined ? summarise(f, at)?.ref : undefined;
       if (ref) loadDetail(ref).then((d) => d?.props && fill({ ...p, ...d.props }));
     } else if (lid.startsWith('poi-')) {
       put(
@@ -896,13 +815,10 @@ function heritageKindLabel(p: Record<string, unknown>): string {
   return `${heritageGroupOf(t).label}${tier ? ` · ${tier.label.toLowerCase()}` : ''}`;
 }
 
-/** A landmark's details record (its OSM object among them), from its layer and properties (and,
- * for a point by view, where it is). */
+/** A landmark's details record (its OSM object among them), from its layer and properties, and
+ * where it is. */
 export function landmarkRef(layer: string, p: Record<string, any>, at?: [number, number]): DetailRef | null {
-  if (p.mid !== undefined && at) return markRef(layer, p, at);
-  const i = Number(p.i);
-  if (p.i === undefined || !Number.isFinite(i)) return null;
-  return layer === 'heritage-pt' || layer === 'heritage-part' ? { layer: 'heritage', i } : layer.startsWith('poi-') ? { layer: 'poi', i } : null;
+  return p.mid !== undefined && at ? markRef(layer, p, at) : null;
 }
 
 /** A feature's name as the app shows it, "main (sub)" (names.ts), capitalised; '' for none. `p`:
@@ -923,12 +839,11 @@ function markRef(layer: string, p: Record<string, any>, at: [number, number]): D
 
 function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary | null {
   const p = f.properties ?? {};
-  const idx = Number.isFinite(Number(p.i)) && p.i !== undefined ? Number(p.i) : null;
-  // By view: an area's details by its id and their z3 tile; a World Heritage outline opens its
-  // site dot's (id, place).
-  const ovId = typeof f.id === 'number' && p.i === undefined ? f.id : null;
+  // An area's details by its id and their z3 tile; a World Heritage outline opens its site dot's
+  // (id, place).
+  const ovId = typeof f.id === 'number' ? f.id : null;
   const areaRef = (layer: 'harea' | 'special' | 'indigenous'): DetailRef | undefined =>
-    ovId !== null && p.own ? { area: { layer, id: ovId, own: String(p.own) } } : idx !== null ? { layer, i: idx } : undefined;
+    ovId !== null && p.own ? { area: { layer, id: ovId, own: String(p.own) } } : undefined;
   const lid = f.layer.id;
   // A point by view: its details by id, at the point (else where the pointer is).
   const g = f.geometry as { type?: string; coordinates?: [number, number] } | undefined;
@@ -943,14 +858,14 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
       colour: heritageGroupOf(heritageTierOf(p)).colour, area: false,
       facts: facts(p.category ?? p.type, p.in_danger && 'in danger'),
       source: p.source ?? '',
-      ref: mref ?? (idx !== null ? { layer: 'heritage', i: idx } : undefined),
+      ref: mref ?? undefined,
     };
   }
   if (lid.startsWith('poi-')) {
     return {
       title: named(p.name, p) || POI_LABEL[p.kind] || 'Point of interest', kind: POI_LABEL[p.kind] ?? p.kind, colour: '#e79a6b', area: false,
       facts: facts(p.ele && fmt.m(Number(p.ele))), source: 'OpenStreetMap',
-      ref: mref ?? (idx !== null ? { layer: 'poi', i: idx } : undefined), what: p.kind,
+      ref: mref ?? undefined, what: p.kind,
     };
   }
   if (lid === 'special-fill') {
@@ -966,7 +881,7 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
     return {
       title: named(p.n, p), kind: 'UNESCO World Heritage Site', colour: HERITAGE_GROUPS[0].colour, area: true,
       facts: facts(p.c), source: 'Outline: OpenStreetMap; site: UNESCO World Heritage Centre',
-      ref: ovId !== null && p.px !== undefined ? { mark: { kind: 'heritage', id: ovId, at: [Number(p.px), Number(p.py)] } } : idx !== null ? { layer: 'heritage', i: idx } : undefined,
+      ref: ovId !== null && p.px !== undefined ? { mark: { kind: 'heritage', id: ovId, at: [Number(p.px), Number(p.py)] } } : undefined,
     };
   }
   if (lid === 'heritage-area-fill') {

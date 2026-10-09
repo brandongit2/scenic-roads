@@ -70,12 +70,6 @@ export interface Meta {
   labelTiles?: boolean;
   /** Whether the water is served as exact coverage (/tiles/water: pipeline::water). */
   water?: boolean;
-  /** The area overlays come as vector tiles by view (docs/phase5.md "Areas"). */
-  ovTiles?: boolean;
-  /** The rail stops come as vector tiles by view. */
-  stationTiles?: boolean;
-  /** The ferries come as blocks by view. */
-  ferryBlocks?: boolean;
   /** The catalog's number (catalog.ts follows it). */
   catalog?: number;
   /** The catalog's tile layers and their zooms (the 3D buildings: `buildings`). */
@@ -134,11 +128,9 @@ const wayUrl = (api: 'way' | 'road' | 'profile', id: number, at: [number, number
 const ways = new Map<number, Promise<WayInfo | null>>();
 /** The ways answered (null: no such way), to show at once. */
 const waysKnown = new Map<number, WayInfo | null>();
-/** A way's info changes with the ways and with the roads' English names. */
-const wayVer = () => {
-  const a = version('ways.bin'), b = version('road-en.json');
-  return a && b ? `${a}-${b}` : a || b;
-};
+/** A way's info changes with the ways and with the roads' English names, both in ways.bin's
+ * version (the catalog's number and the translations'). */
+const wayVer = () => version('ways.bin');
 /** Bumped when the way caches are dropped (new data): answers to older requests aren't kept. */
 let wayGen = 0;
 
@@ -203,7 +195,7 @@ export function getRoadWays(id: number, at: [number, number]): Promise<Set<numbe
 }
 
 // New ways or road names (a new catalog): the ways and whole roads are asked for again.
-onVersions(['ways.bin', 'road-en.json'], () => {
+onVersions(['ways.bin'], () => {
   wayGen++;
   ways.clear();
   waysKnown.clear();
