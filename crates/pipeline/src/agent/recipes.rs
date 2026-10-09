@@ -82,12 +82,22 @@ pub fn load(dir: &Path) -> (Vec<Recipe>, Vec<(String, String)>) {
     let mut ok = Vec::new();
     let mut bad = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else { return (ok, bad) };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".toml") {
-            continue;
+    let names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".toml")).collect();
+    // (Read 16 at a time: on the NAS each waits a round trip or two, and the share answers many at
+    // once about as fast as one. Sorted after, so in no order that matters.)
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let read: Vec<std::sync::OnceLock<Result<Recipe>>> = names.iter().map(|_| std::sync::OnceLock::new()).collect();
+    std::thread::scope(|s| {
+        for _ in 0..names.len().min(16) {
+            s.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(name) = names.get(k) else { break };
+                read[k].set(crate::smallfiles::read_to_string(&dir.join(name)).map_err(anyhow::Error::from).and_then(|s| parse(name, &s))).ok();
+            });
         }
-        let r = crate::smallfiles::read_to_string(&e.path()).map_err(anyhow::Error::from).and_then(|s| parse(&name, &s));
+    });
+    for (name, r) in names.into_iter().zip(read) {
+        let r = r.into_inner().unwrap_or_else(|| Err(anyhow::anyhow!("not read")));
         match r {
             Ok(r) => ok.push(r),
             Err(e) => bad.push((name, format!("{e:#}"))),
