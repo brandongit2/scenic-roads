@@ -33,6 +33,9 @@ mkdir -p ~/Library/Logs/scenic
 tests_log=~/Library/Logs/scenic/publish-tests-$(date +%Y%m%d-%H%M%S).log
 tests_ok=0
 cargo test -q -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
+# (And the pipeline's whole-crate checks: every cache read through the accessor, the Python
+# steps' timer.)
+cargo test -q -p pipeline --test cache_accessor --test timings_python >> $tests_log 2>&1 || tests_ok=$?
 grep -E '^test result' $tests_log
 if (( tests_ok != 0 )); then
   sed -n '/^---- /,/^failures:$/p' $tests_log | grep -v '^progress: '
