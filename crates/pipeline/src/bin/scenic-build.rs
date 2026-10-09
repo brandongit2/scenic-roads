@@ -563,20 +563,49 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
 
 /// A unit's road values file: the values per way, and the ways by road (sorted (road, way index)
 /// pairs, for the server's whole-road lookups).
-fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
+fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec], keep: Option<&Path>) -> Result<String> {
     let mut byroad: Vec<[u64; 2]> = recs.iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
     byroad.sort_unstable();
-    put_sect(out, &format!("global/roads/{}", u.dash()), serde_json::json!({"fmt": 1, "unit": u.slash()}), &[("roads", b(recs)), ("byroad", b(&byroad))])
+    put_sect_kept(out, &format!("global/roads/{}", u.dash()), serde_json::json!({"fmt": 1, "unit": u.slash()}), &[("roads", b(recs)), ("byroad", b(&byroad))], keep)
 }
 
 fn put_sect(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<String> {
+    put_sect_kept(out, logical, meta, sections, None)
+}
+
+/// `put_sect`, a copy kept in cache `keep` too (by its content name, as `open_units` looks for it)
+/// when there's one.
+fn put_sect_kept(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])], keep: Option<&Path>) -> Result<String> {
     let local = out.scratch_file(&format!("{logical}.sect"));
     let mut w = store::sect::SectWriter::create(&local, meta)?;
     for (n, bytes) in sections {
         w.add(n, bytes)?;
     }
     w.finish()?;
+    if let Some(cache) = keep {
+        keep_for_packs(cache, logical, &local);
+    }
     out.put_file(logical, "sect", &local)
+}
+
+/// The base packs' cache of this Mac's map tiles' jobs (`open_units`: `<cache>/<content name>`),
+/// given unit file `local` (logical `logical`) as it's uploaded, so the next pack job here needn't
+/// copy back from the NAS what this Mac just wrote. Only where that cache is (a Mac that makes the
+/// map tiles), not held after (room-making may take it), and only a cache: failing costs that copy.
+fn keep_for_packs(cache: &Path, logical: &str, local: &Path) {
+    if !cache.is_dir() {
+        return;
+    }
+    let kept = (|| -> Result<()> {
+        let name = store::naming::content_name(logical, &store::naming::hash16_file(local)?, "sect");
+        let at = cache.join(&name);
+        store::cachefile::create(&at, &mut |tmp| std::fs::copy(local, tmp).map(|_| ()))?;
+        store::cachefile::release(&at);
+        Ok(())
+    })();
+    if let Err(e) = kept {
+        eprintln!("{logical}: no copy kept for the map tiles ({e:#})");
+    }
 }
 
 // ---- base packs, locally ------------------------------------------------------------------
@@ -3057,7 +3086,9 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     s.end();
     let s = unit_stage("base pack written to the NAS", Class::NasWrite);
     let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-    put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
+    // (A copy kept for this Mac's map tiles, where it makes them: `keep_for_packs`.)
+    let packs_cache = tools.cache.join("base");
+    put_sect_kept(out, &format!("base/{}", u.dash()), bs.meta, &secs, Some(&packs_cache))?;
     s.end();
     // (The pass's road values read from the NAS; the unit's written back.)
     let s = unit_stage("road values made and written", Class::Mixed);
@@ -3084,7 +3115,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         .collect();
     {
         let _p = pipeline::timings::sub("the unit's written", Class::NasWrite);
-        put_roads(out, u, &recs)?;
+        put_roads(out, u, &recs, Some(&packs_cache))?;
     }
     // The roads' own English (OSM's name:en where it isn't the name), for the server to show
     // with them.
@@ -4011,6 +4042,30 @@ mod tests {
         super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
         assert!(!used.exists());
     }
+    /// A unit's files kept where this Mac's map tiles read them (`open_units`: the cache by content
+    /// name), only on a Mac that has that cache.
+    #[test]
+    fn a_units_files_are_kept_for_the_packs_where_they_are_made() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local.sect");
+        std::fs::write(&local, b"a base pack").unwrap();
+        let name = store::naming::content_name("base/6-1-2", &store::naming::hash16_file(&local).unwrap(), "sect");
+        // No packs' cache here (a Mac that doesn't make map tiles): nothing.
+        let none = d.path().join("none");
+        super::keep_for_packs(&none, "base/6-1-2", &local);
+        assert!(!none.exists());
+        let cache = d.path().join("base");
+        std::fs::create_dir_all(&cache).unwrap();
+        super::keep_for_packs(&cache, "base/6-1-2", &local);
+        assert_eq!(std::fs::read(cache.join(&name)).unwrap(), b"a base pack");
+        // Kept again (a unit made again the same): as it was.
+        super::keep_for_packs(&cache, "base/6-1-2", &local);
+        assert_eq!(std::fs::read(cache.join(&name)).unwrap(), b"a base pack");
+        // Not held: the packs' prune takes it once the manifest no longer names it.
+        super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
+        assert!(!cache.join(&name).exists());
+    }
+
     #[test]
     fn catalog_times_both_ways() {
         for t in ["2026-10-05T03:55:11Z", "2024-02-29T23:59:59Z", "1970-01-01T00:00:00Z", "2000-03-01T12:00:00Z"] {

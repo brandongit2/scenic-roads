@@ -376,7 +376,9 @@ record changes back through the build Mac's coordinator, which journals them for
   - **Cleared too** (by the owner's ask alone):
     - the pack cache (`base/`): base packs for pack(T) and lo not in its mirror, pruned every run
       and cleared when an OSM pass starts; the next round copies them again (66 GB on the build Mac,
-      2026-10-06), from the mirror where it has them, else the NAS;
+      2026-10-06), from the mirror where it has them, else the NAS. A unit job on a Mac that has
+      this cache puts its own base pack and road values there as it uploads them, so that Mac's
+      pack jobs don't copy back what it just wrote;
     - the per-vertex DEM cache's seed: today's cache, copied once from `sources/dem-cache/` (9 GB),
       cleared only while the NAS has it whole, and copied again by the next unit job. Each unit's
       samples from its last run are on the NAS (`cache/dem-units/`, which both Macs' units read,
