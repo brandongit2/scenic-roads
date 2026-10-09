@@ -227,6 +227,7 @@ async function main() {
     tollMask: tollMask(s0),
     unnamedHide: unnamedHideClasses(s0),
     weight: ROAD_WEIGHT * lineWeight(s0, 'roads'),
+    ties: 0,
     threshold: { ...s0.threshold },
     visible: s0.layers.roads,
     weights: [...s0.weights],
@@ -307,6 +308,7 @@ async function main() {
     st.railWeights = [...r.weights];
     st.freqFilter = { on: r.freqOn, min: r.freqMin, max: r.freqMax, unknown: r.freqUnknown };
     st.weight = lineWeight(s, 'rail');
+    st.ties = r.ties;
     st.opacity = r.opacity;
     const metric = r.colour === 'metric';
     st.lowFade = metric ? r.lowFade : 0;

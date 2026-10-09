@@ -1,10 +1,12 @@
 // Rail stops on the map (dem/stations.py): a dot per stop of a passenger line, shown once its
 // lines' stop spacing spans STOP_PX on screen and sized by it, so intercity stations show from far
-// out and large, metro and tram stops only close in and small; shown with the rail layer and its
-// group toggles, at its opacity. Each dot takes the colour and opacity of the rail line as drawn at it (recolour:
+// out and large, metro and tram stops only close in and small (raildraw.ts stopFactor; the rail
+// card's stop size and size contrast scale it); shown with the rail layer and its group toggles,
+// at its opacity. Each dot takes the colour and opacity of the rail line as drawn at it (recolour:
 // the lines are coloured on the GPU, per vertex; its tunnels' and low end's fades included) and
 // shows only once it has them (feature state k), so it never appears in another colour first;
-// where no line is drawn at it, its service group's. Stops are coloured once the view settles, from the source's tiles and
+// where no line is drawn at it, its service group's. Its outline's colour and opacity are the
+// rail card's. Stops are coloured once the view settles, from the source's tiles and
 // the rail line at their place: querying the rendered dots on the 3D globe ray-marched the
 // terrain for the view's corners in every tile, up to a second and more after a gesture.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
@@ -12,6 +14,7 @@ import { onVersions, ver } from './api';
 import { STATION_LAYER, stationTilesOn } from './basemap';
 import { hostFor } from './hosts';
 import { RAIL_GROUP_COLOURS } from './rail';
+import { STOP_R, STOP_REF_M, stopBounds, stopSlope } from './raildraw';
 import { kindSpacing, labelShown, lineWeight, type AppState } from './state';
 
 /** A rail line's colour and opacity as drawn at a point. */
@@ -83,15 +86,17 @@ export class Stations {
     const groups: ExpressionSpecification = ['any', ...r.groups.flatMap((on, i) => (on ? [['==', ['%', ['floor', ['/', ['get', 'm'], 2 ** i]], 2], 1] as ExpressionSpecification] : [])), false];
     map.setFilter(DOTS, ['all', groups, spaced(STOP_PX)]);
     map.setFilter(LABELS, ['all', groups, spaced(kindSpacing(s.labelDensity, 'stations', LABEL_PX)), ['!=', ['get', 'n'], '']]);
-    // Size by spacing: ×1 at 4 km (a commuter line; about a ferry terminal's dot), smaller for
-    // closer stops, larger for wider ones; the rail line weight scales it too.
-    const k: ExpressionSpecification = ['*', lineWeight(s, 'rail'), ['min', 1.4, ['max', 0.5, ['+', 1, ['*', 0.15, ['log2', ['/', ['get', 'sp'], 4000]]]]]]];
-    map.setPaintProperty(DOTS, 'circle-radius', ['interpolate', ['linear'], ['zoom'], 4, ['*', 0.5, k], 9, ['*', 0.9, k], 14, ['*', 1.75, k], 18, ['*', 2.5, k]]);
+    // Size by spacing (raildraw.ts stopFactor), × the stop size and the rail line weight.
+    const [lo, hi] = stopBounds(r.stopContrast);
+    const k: ExpressionSpecification = ['*', lineWeight(s, 'rail') * r.stopSize,
+      ['min', hi, ['max', lo, ['+', 1, ['*', stopSlope(r.stopContrast), ['log2', ['/', ['get', 'sp'], STOP_REF_M]]]]]]];
+    map.setPaintProperty(DOTS, 'circle-radius', ['interpolate', ['linear'], ['zoom'], ...STOP_R.flatMap(([z, f]) => [z, ['*', f, k]])] as ExpressionSpecification);
     map.setPaintProperty(DOTS, 'circle-color', ['to-color', ['coalesce', ['feature-state', 'c'], ['match', ['get', 'g'], ...RAIL_GROUP_COLOURS.flatMap((c, i) => [i, c]), '#cfd6e0']]] as unknown as ExpressionSpecification);
     // Shown once coloured, at the line's opacity there (a) × the layer's.
     const shown = (o: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'k'], false], ['*', o, ['number', ['feature-state', 'a'], 1]], 0];
     map.setPaintProperty(DOTS, 'circle-opacity', shown(r.opacity));
-    map.setPaintProperty(DOTS, 'circle-stroke-opacity', shown(r.opacity));
+    map.setPaintProperty(DOTS, 'circle-stroke-opacity', shown(r.opacity * r.stopOutlineOpacity));
+    map.setPaintProperty(DOTS, 'circle-stroke-color', r.stopOutline);
   }
 
   /** The stops shown and not yet coloured (with `all`, the colouring changed: every stop again)

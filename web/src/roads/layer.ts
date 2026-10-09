@@ -28,6 +28,7 @@ import {
 import { LUT_ROWS, LUT_W, buildLut, paletteRow } from '../palettes';
 import { metricOf, modeDef, NCOMP, type Mode } from '../scenic';
 import { RNCOMP, freqCode } from '../rail';
+import { CORE_K, CORE_MIN_CSS, TIE_MIN_Z } from '../raildraw';
 import { PickGrid, type PickHit } from './pick';
 import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
@@ -224,6 +225,7 @@ uniform int u_passVis;      // 1: the pass for roads in front of the terrain · 
 uniform int u_tunnelsOnly;  // 1: only tunnels (the pass behind the terrain, seen from above)
 uniform int u_rail;         // 1: rail layer (line flags carry the service groups)
 uniform int u_railMask;     // rail groups shown (bits)
+uniform float u_ties;       // rail: the cross-ties' length × the core line's thickness (0: none; raildraw.ts)
 uniform float u_rw[${RNCOMP}];  // rail scenic weights
 uniform float u_rwsum;
 uniform int u_fqOn;          // rail service-frequency filter: on, range (per-line codes), keep unknown
@@ -481,13 +483,17 @@ void main() {
   float cw = casingAt(ze), gw = route ? glowAt(ze) : 0.0;
   float extra = casing ? (route ? max(gw, cased ? cw : 0.0) : cw) : 0.0;
   float halfw = w * 0.5 + extra;
-  float ext = halfw + 0.6;
+  // A railway's cross-ties (raildraw.ts railGeom) may reach past the line's width.
+  float tieH = u_rail == 1 && !casing && !thin && !dot && u_ties > 0.0 && ze >= ${TIE_MIN_Z.toFixed(1)}
+    ? max(halfw * ${CORE_K.toFixed(3)}, ${CORE_MIN_CSS.toFixed(3)} * u_dpr) * u_ties : 0.0;
+  float reach = max(halfw, tieH);
+  float ext = reach + 0.6;
 #ifdef SPRITE
   // One square sprite around the whole piece, caps included (coverage ends half a pixel beyond
   // halfw, see the fragment shader); depth at its middle. A point whose centre is off screen is
   // dropped whole, so the centre is kept on screen and the sprite grown to still cover the piece.
   vec2 mid = 0.5 * (s0 + s1), c = clamp(mid, vec2(0.5), u_viewport - 0.5);
-  float size = dot ? 2.0 * cellH + 2.0 : max(abs(d.x), abs(d.y)) + 2.0 * halfw + 1.0, shift = max(abs(c.x - mid.x), abs(c.y - mid.y));
+  float size = dot ? 2.0 * cellH + 2.0 : max(abs(d.x), abs(d.y)) + 2.0 * reach + 1.0, shift = max(abs(c.x - mid.x), abs(c.y - mid.y));
   if (shift > 0.5 * size) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // wholly off screen
     return;
@@ -537,7 +543,7 @@ void main() {
   float phase = dot ? 0.0 : a_d0 * u_tile.x * k;
 #ifdef SPRITE
   float pattern = casing ? 0.0 : u_pattern == 1 ? 3.0 : cls == 9 ? 2.0 : (style & 16u) != 0u ? 1.0 : 0.0;
-  v_geom = vec4(halfw, dot ? cellH : len, phase, pattern + (thin ? 4.0 : 0.0) + (dot ? 8.0 : 0.0));
+  v_geom = vec4(halfw, dot ? cellH : len, phase, pattern + (thin ? 4.0 : 0.0) + (dot ? 8.0 : 0.0) + (pattern > 2.5 && tieH == 0.0 ? 16.0 : 0.0));
   v_lin = dot ? area / max(4.0 * cellH * cellH, 1e-6) : lin;
   // (Coverage is the fragment shader's, from v_lin.)
   v_col = uvec2(endColour(m.x, rgb, cas, fade, casing, route, hov, 1.0), endColour(m.y, rgb, cas, fade, casing, route, hov, 1.0));
@@ -552,7 +558,7 @@ void main() {
 #else
   v_cov = dot ? clamp(area / (w * w), 0.0, 1.0) : cov;
 #endif
-  v_style = style;
+  v_style = style | (u_rail == 1 && tieH == 0.0 ? 256u : 0u); // 256: a railway without ties
   v_hover = hov ? 1.0 : 0.0;
   v_route = route ? 1.0 : 0.0;
 #endif
@@ -565,12 +571,13 @@ precision highp float;
 precision highp int;
 flat in vec2 v_s0;
 flat in vec2 v_dir;
-flat in vec4 v_geom;         // half width, length (a dot: half its cell's side px), dash phase, pattern (0 none · 1 unpaved dashes · 2 ferry dashes · 3 railway ties) + 4 thin + 8 dot
+flat in vec4 v_geom;         // half width, length (a dot: half its cell's side px), dash phase, pattern (0 none · 1 unpaved dashes · 2 ferry dashes · 3 railway) + 4 thin + 8 dot + 16 no ties
 flat in uvec2 v_col;         // colour and opacity at both ends (RGBA8)
 flat in float v_lin;         // coverage as a share of area (see the vertex shader)
 uniform int u_part;          // as in FS_BODY
 uniform float u_dpr;
 uniform float u_opacity;     // the layer's opacity
+uniform float u_ties;
 #ifdef ACCUM
 // Zoomed out, the roads add up instead of being painted over each other (RoadLayer.drawFrame, fill):
 // colour × opacity × coverage and opacity × coverage, summed per pixel.
@@ -585,8 +592,9 @@ void main() {
   vec2 rel = gl_FragCoord.xy - v_s0;
   float along = dot(rel, v_dir), across = dot(rel, vec2(-v_dir.y, v_dir.x));
   float halfw = v_geom.x, len = v_geom.y;
-  bool isDot = v_geom.w > 7.5, thin = !isDot && v_geom.w > 3.5;
-  float pattern = mod(v_geom.w, 4.0);
+  float gw = mod(v_geom.w, 16.0);
+  bool isDot = gw > 7.5, thin = !isDot && gw > 3.5, noTies = v_geom.w > 15.5;
+  float pattern = mod(gw, 4.0);
   float dist = along < 0.0 ? length(vec2(along, across)) : (along > len ? length(vec2(along - len, across)) : abs(across));
   // g: the share of the pixel covered (it can exceed 1: several roads), a: as painted (at most 1).
   float g, a;
@@ -606,7 +614,16 @@ void main() {
     g = sh * v_lin;
     a = sh * (1.0 - exp(-v_lin));
   } else {
-    a = clamp(halfw + 0.5 - dist, 0.0, 1.0);
+    float r = halfw;
+    if (pattern > 2.5 && len > 0.5) {
+      // Railway: a thin core line with cross-ties (raildraw.ts railGeom).
+      float period = max(7.0 * u_dpr, halfw * 5.0);
+      float ph = mod(v_geom.z + clamp(along, 0.0, len), period);
+      float core = max(halfw * ${CORE_K.toFixed(3)}, ${CORE_MIN_CSS.toFixed(3)} * u_dpr);
+      // (Ties only along the piece, square: round ends would put a disc at every joint.)
+      r = !noTies && along >= 0.0 && along <= len && ph < max(1.2 * u_dpr, period * 0.16) ? core * u_ties : core;
+    }
+    a = clamp(r + 0.5 - dist, 0.0, 1.0);
     g = a * v_lin;
   }
   if (a <= 0.0) discard;
@@ -619,22 +636,7 @@ void main() {
     float kd = pattern > 1.5 ? 0.55 + 0.45 * 0.15 : 0.6 + 0.4 * 0.3;
     a *= kd;
     g *= kd;
-  } else if (pattern > 2.5 && len > 0.5 && !thin) {
-    // Railway: a thin line with cross-ties.
-    float period = max(7.0 * u_dpr, halfw * 5.0);
-    float ph = mod(v_geom.z + clamp(along, 0.0, len), period);
-    bool tie = ph < max(1.2 * u_dpr, period * 0.16);
-    float core = clamp(max(halfw * 0.42, 0.6 * u_dpr) + 0.5 - dist, 0.0, 1.0);
-    if (!tie) {
-      g = core * v_lin;
-      a = core;
-    }
-    if (a <= 0.0) discard;
-#ifndef ACCUM
-    if (u_part == 1 && a < 0.999) discard;
-    if (u_part == 2 && a >= 0.999) discard;
-#endif
-  } else if (pattern > 0.5 && len > 0.5) {
+  } else if (pattern > 0.5 && pattern < 2.5 && len > 0.5) {
     // Dashes: unpaved roads, ferries.
     bool ferry = pattern > 1.5;
     float w = max(halfw * 2.0, u_dpr);
@@ -706,6 +708,7 @@ uniform float u_lowSpan;     // fraction of the scale the fade covers
 uniform int u_part;          // 0 whole road · 1 core only (stencil-written) · 2 anti-aliased fringe only
 uniform float u_occluded;    // > 0: drawing roads hidden behind terrain, at this opacity
 uniform int u_pattern;       // 1: railway (thin line with cross-ties)
+uniform float u_ties;        // the ties' length × the core's thickness (v_style 256: none here)
 uniform float u_opacity;     // the layer's opacity
 #ifdef ACCUM
 // A quad tile's pieces thinner than a pixel, summed with the sprites' (RoadLayer.drawFrame, fill): as
@@ -726,7 +729,15 @@ void main() {
 #ifdef ACCUM
   float a = clamp(halfw + 0.5 - abs(across), 0.0, 1.0) * max(0.0, min(along + 0.5, len) - max(along - 0.5, 0.0));
 #else
-  float a = clamp(halfw + 0.5 - dist, 0.0, 1.0);
+  float r = halfw;
+  if (u_pattern == 1 && u_casingPass == 0 && len > 0.5) {
+    // Railway: a thin core line with cross-ties (raildraw.ts railGeom).
+    float period = max(7.0 * u_dpr, halfw * 5.0);
+    float ph = mod(v_geom.z + clamp(along, 0.0, len), period);
+    float core = max(halfw * ${CORE_K.toFixed(3)}, ${CORE_MIN_CSS.toFixed(3)} * u_dpr);
+    r = (v_style & 256u) == 0u && along >= 0.0 && along <= len && ph < max(1.2 * u_dpr, period * 0.16) ? core * u_ties : core;
+  }
+  float a = clamp(r + 0.5 - dist, 0.0, 1.0);
 #endif
   if (a <= 0.0) discard;
 #ifndef ACCUM
@@ -753,17 +764,6 @@ void main() {
       fragColor = vec4((v_cas.x >= 0.0 ? v_cas : u_bg) * ca, ca);
     }
     return;
-  }
-  // Railway: a thin line with cross-ties.
-  if (u_pattern == 1 && len > 0.5) {
-    float period = max(7.0 * u_dpr, halfw * 5.0);
-    float ph = mod(v_geom.z + clamp(along, 0.0, len), period);
-    bool tie = ph < max(1.2 * u_dpr, period * 0.16);
-    float core = clamp(max(halfw * 0.42, 0.6 * u_dpr) + 0.5 - dist, 0.0, 1.0);
-    if (!tie) a = core;
-    if (a <= 0.0) discard;
-    if (u_part == 1 && a < 0.999) discard;
-    if (u_part == 2 && a >= 0.999) discard;
   }
 #endif
   vec3 col = direct ? v_rgb.rgb : texture(u_lut, vec2((u * 255.0 + 0.5) / 256.0, u_palRow)).rgb;
@@ -883,6 +883,8 @@ export interface RoadStyle {
   unnamedHide: number;
   /** Line weight multiplier. */
   weight: number;
+  /** Rail: the cross-ties' length × the core line's thickness (0: none; raildraw.ts). */
+  ties: number;
   threshold: { on: boolean; dir: 'above' | 'below' | 'low'; value: number };
   visible: boolean;
   weights: number[];
@@ -1086,7 +1088,7 @@ export class RoadLayer implements CustomLayerInterface {
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
-        'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern',
+        'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern', 'u_ties',
           'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over', 'u_clipN', 'u_clip',
         ]) u[n] = gl.getUniformLocation(prog, n);
         return { prog, u };
@@ -2057,6 +2059,7 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1f(u.u_fqHi, fq.max > 0 ? freqCode(fq.max) + 0.5 : 256);
       gl.uniform1i(u.u_fqUnk, fq.unknown ? 1 : 0);
       gl.uniform1i(u.u_pattern, this.rail ? 1 : 0); // rail: always as railways
+      gl.uniform1f(u.u_ties, this.rail ? s.ties : 0);
       gl.uniform1i(u.u_direct, direct);
       if (direct && s.scheme) {
         gl.uniform1i(u.u_mapKind, s.scheme.kind);

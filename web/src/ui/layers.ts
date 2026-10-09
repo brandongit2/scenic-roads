@@ -4,7 +4,7 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type ContourLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
@@ -61,6 +61,7 @@ export class LayersCard {
   private buildingsSection: HTMLElement;
   private railSection: Node[];
   private rail!: HTMLInputElement;
+  private stopOutline!: HTMLInputElement;
   private railBoxes: HTMLInputElement[] = [];
   private railKm: HTMLSpanElement[] = [];
   private ferrySection: Node[];
@@ -209,6 +210,30 @@ export class LayersCard {
     const railOpRow = sl({
       label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.rail.opacity, title: 'Opacity of the rail lines and their stop dots',
       get: () => S().rail.opacity, set: (opacity) => this.store.set({ rail: { ...S().rail, opacity } }), fmt: pct, disabled: () => !S().rail.on,
+    });
+    const R = (p: Partial<RailState>) => this.store.set({ rail: { ...S().rail, ...p } });
+    const railOff = () => !S().rail.on;
+    const tiesRow = sl({
+      label: 'Cross-ties', min: TIES_RANGE[0], max: TIES_RANGE[1], step: 0.1, reset: defaults.rail.ties,
+      title: 'Length of the ties across the rail lines, × the line\u2019s thickness: the same on screen at any zoom while the line keeps its thinnest; none zoomed out past zoom 9, nor on lines thinner than a pixel. ×1: none to see',
+      get: () => S().rail.ties, set: (ties) => R({ ties }), fmt: (v) => `${v.toFixed(1)}×`, disabled: railOff,
+    });
+    const stopSizeRow = sl({
+      label: 'Size', min: Math.log2(STOP_SIZE_RANGE[0]), max: Math.log2(STOP_SIZE_RANGE[1]), step: 0.05, reset: defaults.rail.stopSize,
+      title: 'Size of the stop dots (they also grow with the zoom and the line weight)', scale: { to: Math.log2, from: (p) => +(2 ** p).toFixed(2) },
+      get: () => S().rail.stopSize, set: (stopSize) => R({ stopSize }), fmt: (v) => `${v.toFixed(2)}×`, disabled: railOff,
+    });
+    const stopContrastRow = sl({
+      label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: defaults.rail.stopContrast,
+      title: 'How much a stop\u2019s size follows its line\u2019s stop spacing: intercity stations large, tram stops small. 0: all stops the same size',
+      get: () => S().rail.stopContrast, set: (stopContrast) => R({ stopContrast }), fmt: pct, disabled: railOff,
+    });
+    this.stopOutline = h('input', { type: 'color', class: 'stop-outline', title: 'Colour of the stop dots\u2019 outline' });
+    this.stopOutline.addEventListener('input', () => R({ stopOutline: this.stopOutline.value }));
+    const stopOutlineRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Outline'), this.stopOutline);
+    const stopOutlineOpRow = sl({
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.rail.stopOutlineOpacity, cls: 'sub', title: 'Opacity of the stop dots\u2019 outline (× the rail opacity)',
+      get: () => S().rail.stopOutlineOpacity, set: (stopOutlineOpacity) => R({ stopOutlineOpacity }), fmt: pct, disabled: railOff,
     });
     // Passenger ferries: the layer and its service groups (styling: top-left panel).
     this.ferry = cb((v) => this.store.set({ ferry: { ...this.store.s.ferry, on: v } }));
@@ -624,7 +649,8 @@ export class LayersCard {
       this.section('rail', 'Passenger rail', this.rail,
         sub('Colour'), cards.rail,
         sub('Show'), ...this.railSection,
-        sub('Style'), railOpRow, lwOf.rail,
+        sub('Style'), railOpRow, lwOf.rail, tiesRow,
+        sub('Stop dots'), stopSizeRow, stopContrastRow, stopOutlineRow, stopOutlineOpRow,
       ),
       this.section('ferry', 'Ferries', this.ferry,
         sub('Colour'), cards.ferry,
@@ -837,6 +863,8 @@ export class LayersCard {
     this.glow.checked = s.routeGlow;
     this.occlude.checked = s.occlude;
     this.rail.checked = s.rail.on;
+    this.stopOutline.value = s.rail.stopOutline;
+    this.stopOutline.disabled = !s.rail.on;
     this.railBoxes.forEach((c, i) => {
       c.checked = s.rail.groups[i];
       c.disabled = !s.rail.on;

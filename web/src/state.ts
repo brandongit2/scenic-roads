@@ -9,6 +9,7 @@ import type { BuildingColour, BuildingState } from './buildings';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 import type { FitUnit } from './autofit';
+import { STOP_CONTRAST } from './raildraw';
 
 export type { Mode };
 
@@ -326,8 +327,26 @@ export interface RailState extends ScaleFields {
   fitLen: [number, number];
   /** What those metrics auto-fit in: screen widths (fitLen) or percentiles (fit), as the roads' fitUnit. */
   fitUnit: FitUnit;
+  /** The cross-ties' length, × the core line's thickness (raildraw.ts; none below zoom 9). */
+  ties: number;
+  /** Stop dots: base size (× the size by stop spacing, the zoom's and the line weight), size
+   * contrast (0..1: how much stop spacing sizes them; 0 all alike), outline colour and opacity. */
+  stopSize: number;
+  stopContrast: number;
+  stopOutline: string;
+  stopOutlineOpacity: number;
 }
 const RAIL_COLOURS: RailColour[] = ['line', 'group', 'metric', 'single'];
+/** The ties' and stop dots' settings' ranges (the rail card's sliders). */
+export const TIES_RANGE: [number, number] = [1, 5];
+export const STOP_SIZE_RANGE: [number, number] = [0.25, 4];
+const clampTo = (v: number, [lo, hi]: [number, number]) => Math.min(hi, Math.max(lo, v));
+function clampRailLook(r: RailState): RailState {
+  return {
+    ...r, ties: clampTo(r.ties, TIES_RANGE), stopSize: clampTo(r.stopSize, STOP_SIZE_RANGE), stopContrast: clampTo(r.stopContrast, [0, 1]),
+    stopOutline: /^#[0-9a-f]{6}$/i.test(r.stopOutline) ? r.stopOutline.toLowerCase() : defaults.rail.stopOutline, stopOutlineOpacity: clampTo(r.stopOutlineOpacity, [0, 1]),
+  };
+}
 /** Passenger ferries and their colouring (top-left panel, "Ferries" section). */
 export interface FerryState extends ScaleFields {
   on: boolean;
@@ -517,6 +536,7 @@ export const defaults: AppState = {
     ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
     weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
     freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnit: 'widths',
+    ties: 2.5, stopSize: 1, stopContrast: STOP_CONTRAST, stopOutline: '#0b0e13', stopOutlineOpacity: 1,
   },
   trees: {
     on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
@@ -748,6 +768,9 @@ export function toHash(s: AppState, buildings: boolean): string {
     dr.opacity, dr.fitLen[0], dr.fitLen[1], ...fitUnitField(dr.fitUnit),
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
+  // Ties, then the stop dots' size, contrast, outline colour and opacity.
+  const rk = (x: RailState) => [+x.ties.toFixed(2), +x.stopSize.toFixed(2), +x.stopContrast.toFixed(2), x.stopOutline.replace('#', ''), +x.stopOutlineOpacity.toFixed(2)].join(',');
+  if (rk(r) !== rk(dr)) p.set('rk', rk(r));
   if (r.weights.some((w, i) => w !== dr.weights[i])) p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
   if (r.preset !== dr.preset) p.set('rp', r.preset || 'custom');
   // (Field 4, empty: line weight in older links.)
@@ -891,6 +914,16 @@ export function fromHash(hash: string, buildings = true): AppState {
     };
     // Older links: the rail card's line weight.
     if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
+  }
+  // Ties and stop dots (older links: the defaults).
+  const rk = p.get('rk')?.split(',');
+  if (rk) {
+    const n = (v: string | undefined, d: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
+    const r = s.rail;
+    s.rail = clampRailLook({
+      ...r, ties: n(rk[0], r.ties), stopSize: n(rk[1], r.stopSize), stopContrast: n(rk[2], r.stopContrast),
+      stopOutline: /^[0-9a-f]{6}$/i.test(rk[3] ?? '') ? `#${rk[3].toLowerCase()}` : r.stopOutline, stopOutlineOpacity: n(rk[4], r.stopOutlineOpacity),
+    });
   }
   const fy = p.get('fy')?.split(',');
   if (fy && fy.length >= 7) {
@@ -1162,6 +1195,7 @@ export function fromSaved(o: unknown): AppState {
   const lt = s.landmarks.top as unknown;
   s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : defaults.landmarks.top;
   if (!RAIL_COLOURS.includes(s.rail.colour)) s.rail.colour = defaults.rail.colour;
+  s.rail = clampRailLook(s.rail);
   if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = defaults.rail.metric;
   if (!FERRY_COLOURS.includes(s.ferry.colour)) s.ferry.colour = defaults.ferry.colour;
   if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = defaults.buildings.colour;
