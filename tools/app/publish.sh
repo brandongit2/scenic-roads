@@ -24,11 +24,21 @@ export PATH=/opt/homebrew/opt/rustup/bin:$PATH
 # The commit it's built from, read now: one made while it runs would name a version it isn't.
 head=$(git rev-parse --short HEAD)
 cargo build --release -p server -p pipeline 2>&1 | tail -2
-# (The summaries, and the names of any tests that failed: cargo lists them, indented, before its
-# summary.) Room for the files the tests open at once: a session over SSH starts with 256, which
-# the tests run in parallel go past (8 Oct: 15 failed so on the build Mac, all passing at 8192).
+# Room for the files the tests open at once: a session over SSH starts with 256, which the tests
+# run in parallel go past (8 Oct: 15 failed so on the build Mac, all passing at 8192). Their whole
+# output is kept (~/Library/Logs/scenic/publish-tests-<time>.log); shown: the summaries, and each
+# failed test's own output.
 ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
-cargo test -q -p store -p names -p pipeline --lib 2>&1 | grep -E '^test result|^    [a-z_][a-z0-9_]*(::[a-z0-9_]+)+$'
+mkdir -p ~/Library/Logs/scenic
+tests_log=~/Library/Logs/scenic/publish-tests-$(date +%Y%m%d-%H%M%S).log
+tests_ok=0
+cargo test -q -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
+grep -E '^test result' $tests_log
+if (( tests_ok != 0 )); then
+  sed -n '/^---- /,/^failures:$/p' $tests_log | grep -v '^progress: '
+  echo "tests failed; their whole output: $tests_log"
+  exit $tests_ok
+fi
 # The programs' WebAssembly builds, which the coordinator serves to web workers (docs/workers.md).
 zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # Built into its own folder: web/dist may be what a development server is serving.
