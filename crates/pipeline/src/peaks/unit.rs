@@ -27,6 +27,38 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// A quick hasher for the searches' pixel sets and the overlays' lookups (FxHash's multiply and
+/// rotate): they're only looked in, never walked in their order, so it changes nothing but the
+/// time, where SipHash was a third of the coarse floods'.
+#[derive(Clone, Copy, Default)]
+pub struct Fx(u64);
+
+impl std::hash::Hasher for Fx {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for c in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..c.len()].copy_from_slice(c);
+            self.write_u64(u64::from_le_bytes(b));
+        }
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_i64(&mut self, v: i64) {
+        self.write_u64(v as u64);
+    }
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(v as u64);
+    }
+}
+
+type FxBuild = std::hash::BuildHasherDefault<Fx>;
+type FxSet<K> = HashSet<K, FxBuild>;
+type FxMap<K, V> = HashMap<K, V, FxBuild>;
+
 const Z12: u8 = 12;
 const Z8_: u8 = 8;
 /// The fine stage's reach from the summit, km.
@@ -196,19 +228,19 @@ impl Ov for Overlay {
 
 /// Every summit's tagged z8 height, by z8 pixel (summit index, height), and the pixels by tile.
 pub struct Z8Base {
-    px: HashMap<(i64, i64), Vec<(u32, f32)>>,
-    tiles: HashMap<(i64, i64), Vec<(i64, i64)>>,
+    px: FxMap<(i64, i64), Vec<(u32, f32)>>,
+    tiles: FxMap<(i64, i64), Vec<(i64, i64)>>,
 }
 
 impl Z8Base {
     pub fn new(summits: &[Summit]) -> Z8Base {
-        let mut px: HashMap<(i64, i64), Vec<(u32, f32)>> = HashMap::new();
+        let mut px: FxMap<(i64, i64), Vec<(u32, f32)>> = FxMap::default();
         for (i, s) in summits.iter().enumerate() {
             if let Some(h) = s.z8 {
                 px.entry(crate::summits::z8_pixel(s.lon, s.lat)).or_default().push((i as u32, h));
             }
         }
-        let mut tiles: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
+        let mut tiles: FxMap<(i64, i64), Vec<(i64, i64)>> = FxMap::default();
         for &(x, y) in px.keys() {
             tiles.entry((x.div_euclid(TS), y.div_euclid(TS))).or_default().push((x, y));
         }
@@ -222,8 +254,8 @@ impl Z8Base {
 /// A peak's z8 overlay: the base without the summits near it, which count at their z12 heights.
 struct Ov8<'a> {
     base: &'a Z8Base,
-    near: &'a HashSet<u32>,
-    over: HashMap<(i64, i64), f32>,
+    near: &'a FxSet<u32>,
+    over: FxMap<(i64, i64), f32>,
 }
 
 impl Ov for Ov8<'_> {
@@ -331,7 +363,7 @@ enum Flood {
 fn flood(d: &mut UDem, ov: Option<&dyn Ov>, sx: i64, sy: i64, e: f32, budget: usize, reach: Option<i64>) -> Flood {
     let key = |v: f32| (v * 100.0).round() as i32;
     let mut heap: BinaryHeap<(i32, i64, i64, Reverse<i32>, i64, i64)> = BinaryHeap::new();
-    let mut seen: HashSet<(i64, i64)> = HashSet::new();
+    let mut seen: FxSet<(i64, i64)> = FxSet::default();
     heap.push((key(e), sx, sy, Reverse(key(e)), sx, sy));
     seen.insert((sx, sy));
     let mut low = (key(e), (sx, sy));
@@ -382,7 +414,7 @@ fn nearest_higher(d: &mut UDem, ov: Option<&dyn Ov>, sx: i64, sy: i64, e: f32, m
     let n = 1i64 << d.z;
     let start = (sx.div_euclid(TS), sy.div_euclid(TS));
     let mut heap: BinaryHeap<Reverse<(u64, i64, i64)>> = BinaryHeap::new();
-    let mut queued: HashSet<(i64, i64)> = HashSet::new();
+    let mut queued: FxSet<(i64, i64)> = FxSet::default();
     heap.push(Reverse((0, start.0, start.1)));
     queued.insert(start);
     let mut best: Option<(f64, (i64, i64))> = None;
@@ -655,8 +687,8 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
                 }
                 let mut out = f.out;
                 let p = &peaks[f.i];
-                let near: HashSet<u32> = f.near.iter().copied().chain(std::iter::once(peak_summit(p))).collect();
-                let mut over: HashMap<(i64, i64), f32> = HashMap::new();
+                let near: FxSet<u32> = f.near.iter().copied().chain(std::iter::once(peak_summit(p))).collect();
+                let mut over: FxMap<(i64, i64), f32> = FxMap::default();
                 for k in &near {
                     if let Some(s) = info.get(k) {
                         if s.e > f32::MIN {
