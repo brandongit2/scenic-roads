@@ -166,7 +166,9 @@ fn id_sources(pts: &[Point]) -> Vec<IdSource> {
 /// `layers/marks-<kind>/{root,lo}`), and `global/marks/summary`; with the named peaks for the
 /// highest in view.
 pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
+    use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
+    let p = phase("their ids and zooms worked out", Class::Compute);
     let ids = marks::assign_ids(&id_sources(&pts))?;
     let mut all: Vec<(u64, Pt)> = ids.into_iter().zip(pts).collect();
     eprintln!("marks: {} points with ids in {:.1?}", all.len(), t0.elapsed());
@@ -178,7 +180,10 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         .filter(|(_, p)| p.kind == kh && p.pt.flags & flag::COMPONENT == 0)
         .filter_map(|(id, p)| Some((p.info.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok())?["i"].as_u64()?, (*id, p.lon, p.lat))))
         .collect();
-    out.put_bytes(HERITAGE_DOTS, "json", &serde_json::to_vec(&dots)?)?;
+    {
+        let _p = phase("markdata tiles uploaded", Class::NasWrite);
+        out.put_bytes(HERITAGE_DOTS, "json", &serde_json::to_vec(&dots)?)?;
+    }
 
     // The keep rule, per kind.
     let mut by_kind: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -199,7 +204,9 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         eprintln!("marks: {:<15} {:>7} points; kept at z0–5: {kept:?}", KINDS[k], idx.len());
     }
 
+    drop(p);
     // Markdata per z6 tile.
+    let p = phase("markdata tiles made", Class::Compute);
     let mut tiles: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
     for (j, (_, p)) in all.iter().enumerate() {
         tiles.entry(marks::tile_at(p.lon, p.lat, 6)).or_default().push(j);
@@ -233,6 +240,8 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
     // (How far the writing is, as the stage's under way: the markdata tiles about half, then each
     // kind's thinned tiles.)
     let kinds = by_kind.len().max(1) as f64;
+    drop(p);
+    let p = phase("markdata tiles uploaded", Class::NasWrite);
     for (k, (t, local)) in written.iter().enumerate() {
         let l = format!("markdata/6-{}-{}", t.0, t.1);
         out.put_file(&l, "sect", local)?;
@@ -240,12 +249,14 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         crate::agent::jobs::within(0.5 * (k + 1) as f64 / written.len() as f64);
     }
     eprintln!("marks: {} markdata tiles in {:.1?}", written.len(), t0.elapsed());
+    drop(p);
 
     // Thinned tiles per kind, z0–5: root (z0–2) and lo per z3 (z3–5).
     let mut thinned = 0;
     for (n, (&k, idx)) in by_kind.iter().enumerate() {
         crate::agent::jobs::within(0.5 + 0.5 * n as f64 / kinds);
         let kind = KINDS[k];
+        let made_p = phase("thinned tiles made", Class::Compute);
         let kp: Vec<KeepPt> = idx.iter().map(|&j| { let p = &all[j].1; KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: Vec::new() } }).collect();
         let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
         for z in 0..=marks::THIN_MAX_Z {
@@ -278,6 +289,8 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
                 thinned += 1;
             }
         }
+        drop(made_p);
+        let _p = phase("thinned packs uploaded", Class::NasWrite);
         for ((scope, rz, rx, ry), mut tiles) in packs {
             tiles.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
             if let Some((l, _)) = crate::layers::write_pack(out, &format!("marks-{kind}"), "rdmt", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {

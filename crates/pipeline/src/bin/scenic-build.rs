@@ -308,7 +308,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
             let src = pipeline::markconv::heritage_source(&out, &date);
             stage(0, 1, "making the area overlays' tiles");
+            let p = phase("the marks' heritage dots read", Class::NasRead);
             let dots = pipeline::ovconv::marks_dots(&out)?;
+            drop(p);
             pipeline::ovconv::overlays(&mut out, &src, &dots)?;
             out.save()?;
         }
@@ -320,11 +322,18 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // outlines, as global/spoken, which the servers read.
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
             let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
-            let s = pipeline::outlines::Outlines::open(&outlines)?.spoken()?;
+            let p = phase("the outlines read", Class::NasRead);
+            let o = pipeline::outlines::Outlines::open(&outlines)?;
+            drop(p);
+            let p = phase("the languages spoken where worked out", Class::Compute);
+            let s = o.spoken()?;
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("spoken.bin");
             std::fs::write(&local, s.to_bytes())?;
+            drop(p);
+            let p = phase("uploaded", Class::NasWrite);
             let name = out.put_file("global/spoken", "bin", &local)?;
+            drop(p);
             std::fs::remove_file(&local).ok();
             out.save()?;
             eprintln!("spoken: {} regions, {name}", s.regions().count());
@@ -343,13 +352,17 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // (Room for the copy, the sets made from it, and the agent's reserve left free.)
             let room = pipeline::agent::cond::free_bytes(&scratch).unwrap_or(0) + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) > size + (20 << 30) + pipeline::agent::room::RESERVE;
             let src = if room && !pipeline::osmpass::missing_sets(&out, &date).is_empty() {
+                let _p = phase("the filtered planet copied here", Class::NasRead);
                 pipeline::osmpass::copy_resume_with(&nas, &local, &mut |d, t| pipeline::agent::jobs::report(d >> 20, t >> 20, "MB of the filtered planet copied here (then the sets)"))?;
+                pipeline::timings::count(std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0), 1);
                 local.clone()
             } else {
                 nas
             };
             let n = pipeline::osmpass::make_missing_sets(&mut out, &date, &src, &scratch)?;
+            let p = phase("the copy removed", Class::Disk);
             std::fs::remove_file(&local).ok();
+            drop(p);
             eprintln!("pass-sets: {n} made");
         }
         "trailends" => {
@@ -360,13 +373,21 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let local = scratch.join("set-hikes.osm.pbf");
             let parts = Parts(&["Copying the hiking routes", "Finding their ends", "Uploading"]);
             parts.start(0);
-            store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+            let p = phase("the hikes set copied here", Class::NasRead);
+            p.count(store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?, 1);
+            drop(p);
             parts.start(1);
+            let p = phase("their ends found", Class::Compute);
             let ends = pipeline::trailends::ends(&local)?;
+            drop(p);
             parts.start(2);
             let file = scratch.join("trailends.jsonl.zst");
+            let p = phase("written", Class::Disk);
             pipeline::trailends::write(&file, &ends)?;
+            drop(p);
+            let p = phase("uploaded", Class::NasWrite);
             out.put_file(&format!("work/trailends/{date}"), "jsonl.zst", &file)?;
+            drop(p);
             out.save()?;
             std::fs::remove_file(&local).ok();
             eprintln!("trailends: {} ends", ends.len());
@@ -1627,11 +1648,14 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
         Some(f) => PathBuf::from(f),
         None => items("views")?,
     };
+    let p = phase("the items' facts and pageviews read", Class::NasRead);
     let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
+    drop(p);
     let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
     let parts = Parts(&["Reading every area's candidates and peaks", "Ranking the landmarks", "Writing their tiles"]);
     parts.start(0);
+    let p = phase("every area's candidates and peaks read", Class::NasRead);
     let mut cands: Vec<(String, pipeline::marksjob::Candidate)> = Vec::new();
     let (mut with_peaks, mut missing_peaks) = (0, 0);
     for (u, _) in &units {
@@ -1653,19 +1677,24 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
             cands.push((c.key.clone(), pipeline::marksjob::from_unit(&c, pk, &facts)));
         }
     }
+    drop(p);
     anyhow::ensure!(missing_peaks == 0, "marks: {missing_peaks} peaks have no prominence yet (the peaks step)");
     // One order for every candidate, whichever unit it came from.
     cands.sort_by(|a, b| a.0.cmp(&b.0));
     let cands: Vec<pipeline::marksjob::Candidate> = cands.into_iter().map(|c| c.1).collect();
     eprintln!("marks: {} candidates from {} units ({with_peaks} peaks)", cands.len(), units.len());
     parts.start(1);
+    let p = phase("the landmarks ranked", Class::Compute);
     let pts = pipeline::marksjob::poi_points(&cands, &views);
     let summits = pipeline::marksjob::summits_list(&pts);
     let mut all = pts;
+    drop(p);
     // The pass's heritage (the heritage job's outputs), else the converted build's (plan §10).
+    let p = phase("the heritage sites read", Class::NasRead);
     let src = pipeline::markconv::heritage_source(out, &date);
     eprintln!("marks: heritage from {src}");
     all.extend(pipeline::markconv::heritage_marks(out, &src)?);
+    drop(p);
     parts.start(2);
     let c = pipeline::markconv::write(out, all, summits)?;
     eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
@@ -1689,6 +1718,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     const PARTS: &[&str] = &["Gathering the landmark candidates' Wikidata items", "Fetching their facts from Wikidata", "Looking up their Wikipedia articles", "Counting their pageviews in four months of Wikipedia's dumps", "Uploading"];
     let parts = Parts(PARTS);
     parts.start(0);
+    let p = phase("the candidates' items gathered", Class::NasRead);
     for (u, _) in pipeline::agent::build::pois_keys(&cov, &date, &out.manifest) {
         let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
         for c in pipeline::candidates::read(&pc)? {
@@ -1705,22 +1735,32 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::create_dir_all(scratch)?;
     let qfile = scratch.join("qids.json");
     std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
+    drop(p);
     // The pass's answers: this Mac's and the NAS's made one.
+    let p = phase("the pass's answers made one with the NAS's", Class::NasRead);
     let kept = pipeline::answers::items(out.root(), &cache, &date);
     let answers = || pipeline::answers::items_files(&cache, &date);
     eprintln!("items: the pass's answers {}", kept.sync(&answers(), &scratch.join("answers"))?.words());
+    drop(p);
     let dir = scratch.join("items-out");
     let mut c = std::process::Command::new("uv");
     c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
+    let p = phase("items.py", Class::Mixed);
+    pipeline::timings::child(&mut c);
     let st = c.status().context("run items.py")?;
+    drop(p);
     // What it fetched, on the NAS whether or not it finished (stopped, at the next start).
-    match kept.keep(&answers(), &scratch.join("answers")) {
+    let p = phase("the pass's answers sent to the NAS", Class::NasWrite);
+    let sent = kept.keep(&answers(), &scratch.join("answers"));
+    drop(p);
+    match sent {
         Ok(true) => eprintln!("items: the pass's answers sent to the NAS"),
         Ok(false) => {}
         Err(e) => eprintln!("items: the pass's answers not sent to the NAS now ({e:#}); the next start sends them"),
     }
     anyhow::ensure!(st.success(), "items.py failed: {st}");
     parts.start(4);
+    let _p = phase("uploaded", Class::NasWrite);
     for name in ["facts", "views", "meta"] {
         out.put_file(&format!("sources/items/{date}/{name}"), "json", &dir.join(format!("{name}.json")))?;
     }
@@ -1777,13 +1817,15 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         epoch.keep(scratch);
     });
     let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
+    let p = phase("the heritage sites copied here", Class::NasRead);
     let root = heritage_root(scratch, &dem, &epoch.dir)?;
     let b = root.join("data/build");
     // The heritage-sites job's outputs, as heritage.py left them.
     for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
         let c = out.get(&base_logical(&date, stem)).with_context(|| format!("no {stem} for the pass of {date} (the heritage-sites step)"))?;
-        store::sys::copy_data(out.path(c), b.join(format!("{stem}.json")))?;
+        p.count(store::sys::copy_data(out.path(c), b.join(format!("{stem}.json")))?, 1);
     }
+    drop(p);
     // No stops & sights.
     std::fs::write(b.join("pois.json"), br#"{"type":"FeatureCollection","features":[]}"#)?;
     std::fs::write(b.join("details-poi.jsonl"), b"")?;
@@ -1796,7 +1838,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     stage(1, 5, "clipping the protected areas to the coverage (osmium)");
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     stage(2, 5, "clipping the pass's named places to the coverage (osmium)");
+    let p = phase("the named places clipped to the cover (osmium)", Class::NasRead);
     let named = osmium_clip(&out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?), &poly, &scratch.join("named-cover.osm.pbf"))?;
+    drop(p);
     // The chain's filter of named objects (the set also keeps the World Heritage tags).
     let named_today = scratch.join("named.osm.pbf");
     let mut c = pipeline::osmpass::osmium();
@@ -1815,6 +1859,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     ]);
     c.arg(&named_today).arg("--overwrite");
     stage(3, 5, "filtering them as the chain reads them (osmium)");
+    let p = phase("the named places filtered and exported (osmium)", Class::Compute);
     osmium_run(c, "osmium tags-filter (named)")?;
     std::fs::create_dir_all(epoch.dir.join("osm"))?;
     let mut c = pipeline::osmpass::osmium();
@@ -1822,9 +1867,13 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     osmium_quiet(c, "osmium export (named)")?;
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
+    drop(p);
     // The kept filtered planet within the cover, once per pass and cover (whsshapes.py's merged.osm.pbf).
     stage(4, 5, "clipping the pass's filtered planet to the coverage (osmium, once a pass)");
+    let p = phase("the filtered planet clipped to the cover (osmium, once a pass)", Class::NasRead);
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
+    drop(p);
+    let p = phase("the caches seeded and linked", Class::Disk);
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
     // The seeds' park facts, seeding this pass's cache of them.
     let facts = epoch.dir.join("areas-wikidata.json");
@@ -1847,6 +1896,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // The seeds' names table, for the layers' English names.
     std::fs::create_dir_all(root.join("data/names"))?;
     pipeline::sys::symlink(&seeds.join("names/english.json"), &root.join("data/names/english.json"))?;
+    drop(p);
     for (k, (part, script, sargs)) in chain.iter().enumerate() {
         if k == 0 || chain[k - 1].0 != *part {
             parts.start(*part);
@@ -1856,6 +1906,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         heritage_script(&root, &dem, out.root(), script, sargs)?;
     }
     stage(1, 2, "uploading");
+    let p = phase("uploaded", Class::NasWrite);
     // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
     // earlier ones this run didn't make dropped.
     let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1884,6 +1935,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     for l in stale {
         out.remove(&l);
     }
+    drop(p);
     out.save()?;
     eprintln!("heritage: {} files ({:.0?})", wrote.len(), t0.elapsed());
     Ok(())
@@ -1918,7 +1970,10 @@ fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
 /// The pass's protected areas and Indigenous lands within the cover, as heritage.py's areas.geojsonseq.
 fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &Path) -> Result<()> {
     let set = out.path(out.get(&pipeline::osmpass::set_name(date, "areas")).context("the pass's areas set")?);
+    let p = phase("the protected areas clipped to the cover (osmium)", Class::NasRead);
     let clip = osmium_clip(&set, poly, &scratch.join("areas-cover.osm.pbf"))?;
+    drop(p);
+    let _p = phase("the protected areas exported (osmium)", Class::Compute);
     let mut c = pipeline::osmpass::osmium();
     c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite", "-o"]).arg(dest).arg(&clip);
     osmium_quiet(c, "osmium export (areas)")?;
@@ -2004,6 +2059,7 @@ impl Epoch {
     /// What the chain fetched sent to the NAS (as a step ends, finished or not; a step stopped by a
     /// signal doesn't run this, and the next start sends it).
     fn keep(&self, scratch: &Path) {
+        let _p = phase("the pass's answers sent to the NAS", Class::NasWrite);
         match self.kept.keep(&pipeline::answers::heritage_files(&self.dir, &self.snap), &scratch.join("answers")) {
             Ok(true) => eprintln!("heritage: the pass's answers sent to the NAS"),
             Ok(false) => {}
@@ -2032,6 +2088,7 @@ impl<F: FnMut()> Drop for OnEnd<F> {
 fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result<Epoch> {
     let snap = registers_extract(out, "sources/registers/legacy", cache)?;
     let id = snap.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("registers-")).context("registers folder")?.to_string();
+    let p = phase("the pass's copy of the snapshot made", Class::Disk);
     let epoch = cache.join(format!("heritage-{date}-{id}"));
     if !epoch.join(".done").exists() {
         std::fs::remove_dir_all(&epoch).ok();
@@ -2052,6 +2109,8 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
             std::fs::remove_dir_all(e.path()).ok();
         }
     }
+    drop(p);
+    let _p = phase("the pass's answers made one with the NAS's", Class::NasRead);
     let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, &snap, date, &id), dir: epoch, snap };
     eprintln!("heritage: the pass's answers {}", e.kept.sync(&pipeline::answers::heritage_files(&e.dir, &e.snap), &scratch.join("answers"))?.words());
     Ok(e)
@@ -2062,6 +2121,8 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
 fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
     let content = out.get(logical).with_context(|| format!("no {logical} in the manifest (scenic-build registers-import)"))?.to_string();
     let id = store::naming::hash16(content.as_bytes())[..12].to_string();
+    // (Once per archive: copied from the NAS and extracted.)
+    let _p = phase("the registers' archives extracted (once each)", Class::NasRead);
     std::fs::create_dir_all(cache)?;
     let dir = cache.join(format!("registers-{id}"));
     if !dir.join(".done").exists() {
@@ -2093,6 +2154,7 @@ fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> 
 /// A stand-in root laid out as the repository for the heritage scripts: `dem/` the app's
 /// scripts and their Python project, `data/heritage` this pass's copy of the registers' snapshot.
 fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
+    let _p = phase("the scripts' stand-in root made", Class::Disk);
     let root = scratch.join("heritage-root");
     std::fs::remove_dir_all(&root).ok();
     for d in ["dem", "data/build", "data/areas", "data/osm"] {
@@ -2116,6 +2178,9 @@ fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&s
     let mut c = std::process::Command::new("uv");
     // (The pageview months' indexes the items job keeps, on the NAS: pageviews.py.)
     c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", dem.join(".venv")).env("SCENIC_PAGEVIEWS_STORE", nas.join("sources/pageviews")).args(["run", "--frozen", "python", script]).args(args);
+    // (Its phase, its own phases under it: dem/timings.py.)
+    let _p = phase(script, Class::Mixed);
+    pipeline::timings::child(&mut c);
     let st = c.status().with_context(|| format!("run {script}"))?;
     anyhow::ensure!(st.success(), "{script} failed: {st}");
     eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
@@ -2144,11 +2209,13 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     let root = heritage_root(scratch, &dem, &epoch.dir)?;
     let b = root.join("data/build");
     // The cover: its tiles for heritage.py, as rectangles for osmium.
+    let p = phase("the cover worked out", Class::Compute);
     let tiles = cover_tiles(&cov);
     std::fs::write(b.join("cover.idx"), tiles_bytes(&tiles))?;
     let poly = scratch.join("cover.geojson");
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
     eprintln!("heritage-sites: {} z{COVER_Z} tiles within 20 km of the coverage ({:.0?})", tiles.len(), t0.elapsed());
+    drop(p);
     // The pass's protected areas and Indigenous lands within them (whole relations: smart).
     parts.start(1);
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
@@ -2156,10 +2223,15 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     heritage_script(&root, &dem, out.root(), "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
     parts.start(3);
     // The units' slices, then the whole files.
+    let p = phase("the sites and areas sliced per area", Class::Compute);
     let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;
     let areas = slice_areas(&std::fs::read_to_string(b.join("area-shapes.geojsonseq"))?)?;
+    drop(p);
+    let p = phase("the slices uploaded", Class::NasWrite);
     let (ns, na) = put_slices(out, &date, &sites, &areas)?;
+    drop(p);
     parts.start(4);
+    let _p = phase("uploaded", Class::NasWrite);
     for (stem, ext) in [("heritage", "json"), ("heritage-areas", "json"), ("special", "json"), ("indigenous", "json"), ("heritage-sources", "json"), ("area-shapes", "geojsonseq")] {
         out.put_file(&base_logical(&date, stem), ext, &b.join(format!("{stem}.{ext}")))?;
     }
@@ -2734,6 +2806,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
 /// Drops the prune targets' entries from the manifest (agent::build's prune works): the next
 /// catalog leaves them out, and GC frees their files once no catalog of the last 14 days lists them.
 fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let p = phase("the targets' entries dropped", Class::Compute);
     let mut gone = 0;
     for t in positional(args) {
         let (kind, at) = t.split_once(' ').with_context(|| format!("{t:?}: a prune target is \"<kind> <z/x/y>\""))?;
@@ -2754,6 +2827,7 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
             }
         }
     }
+    drop(p);
     out.save()?;
     eprintln!("prune: {gone} entries dropped from the manifest");
     Ok(())
@@ -2765,7 +2839,9 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::reach::{logical, of_piece, Reaches};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let list = out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?.to_string();
+    let p = phase("the pass's pieces list read", Class::NasRead);
     let pieces: pipeline::osmpass::Pieces = serde_json::from_slice(&std::fs::read(out.path(&list))?)?;
+    drop(p);
     std::fs::create_dir_all(scratch)?;
     let local = scratch.join("reach-piece.osm.pbf");
     let mut all = Reaches { fmt: 1, date: date.clone(), ..Default::default() };
@@ -2777,9 +2853,14 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::agent::jobs::report(k as u64, n, "areas");
         let unit = Unit::parse(u).with_context(|| format!("unit {u}"))?;
         let src = out.path(out.get(l).with_context(|| format!("{l} isn't in the manifest"))?);
-        store::sys::copy_data(&src, &local).with_context(|| format!("copy {}", src.display()))?;
+        let p = phase("pieces copied from the NAS", Class::NasRead);
+        p.count(store::sys::copy_data(&src, &local).with_context(|| format!("copy {}", src.display()))?, 1);
+        drop(p);
         let t = std::time::Instant::now();
-        if let Some(r) = of_piece(&local, unit).with_context(|| format!("piece {u}"))? {
+        let p = phase("their roads' reach worked out", Class::Compute);
+        let r = of_piece(&local, unit).with_context(|| format!("piece {u}"))?;
+        drop(p);
+        if let Some(r) = r {
             if !only.is_empty() {
                 let (owned, verts) = (r.long.iter().filter(|w| w.owned).count(), r.long.iter().map(|w| w.verts.len()).sum::<usize>());
                 eprintln!("reach {u}: owned box {:?}, {} long ways ({owned} owned, {verts} vertices), extent {:?} ({:.1?}, {} MB)", r.owned, r.long.len(), r.extent(unit), t.elapsed(), std::fs::metadata(&local).map(|m| m.len() >> 20).unwrap_or(0));
@@ -2791,7 +2872,9 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     if !only.is_empty() {
         return Ok(());
     }
+    let p = phase("uploaded", Class::NasWrite);
     out.put_bytes(&logical(&date), "json.zst", &all.encode()?)?;
+    drop(p);
     out.save()?;
     eprintln!("reach: {} units with roads of {} pieces ({:.0?})", all.units.len(), n, t0.elapsed());
     Ok(())
@@ -2801,15 +2884,21 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 fn roadunits(out: &mut Out) -> Result<()> {
     let mut pairs: Vec<(u64, u64)> = Vec::new();
     let units: Vec<(Unit, String)> = out.manifest.iter().filter_map(|(k, v)| k.strip_prefix("global/roads/").and_then(Unit::parse).map(|u| (u, v.clone()))).collect();
+    let p = phase("the areas' road values read", Class::NasRead);
     for (k, (u, content)) in units.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas' road values read");
         let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(content))?)?;
         let recs: Vec<pipeline::legacy::RoadRec> = r.read_pod("roads")?;
         pairs.extend(recs.iter().map(|x| (x.road, u.key())));
+        p.count(0, 1);
     }
+    drop(p);
+    let p = phase("the index sorted", Class::Compute);
     pairs.sort_unstable();
     pairs.dedup();
     let flat: Vec<u64> = pairs.iter().flat_map(|&(r, u)| [r, u]).collect();
+    drop(p);
+    let _p = phase("uploaded", Class::NasWrite);
     put_sect(out, "global/roadunits", serde_json::json!({"fmt": 1, "pairs": pairs.len()}), &[("pairs", b(&flat))])?;
     eprintln!("roadunits: {} roads×units over {} units", pairs.len(), units.len());
     Ok(())
@@ -2818,6 +2907,7 @@ fn roadunits(out: &mut Out) -> Result<()> {
 /// The coverage of the regions (recipes in --regions, else inputs/regions; outlines from --pass,
 /// else the latest complete pass).
 fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverage> {
+    let _p = phase("the regions and their outlines read", Class::NasRead);
     let regions = opt(args, "--regions").map(PathBuf::from).unwrap_or_else(|| out.root().join("inputs/regions"));
     let (recipes, bad) = pipeline::agent::recipes::load(&regions);
     for (f, e) in &bad {
@@ -2852,14 +2942,11 @@ fn bld_fetch_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> 
     std::fs::create_dir_all(scratch)?;
     let cover = scratch.join("bld-coverage.geojson");
     std::fs::write(&cover, serde_json::to_vec(&pipeline::rail::coverage_geojson(&cov))?)?;
-    let st = std::process::Command::new("uv")
-        .current_dir(&dem)
-        .args(["run", "python", "bldfetch.py", "--root"])
-        .arg(out.root())
-        .args(["--release", pipeline::buildtiles::RELEASE, "--coverage"])
-        .arg(&cover)
-        .status()
-        .context("run bldfetch.py")?;
+    let _p = phase("bldfetch.py", Class::Mixed);
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(&dem).args(["run", "python", "bldfetch.py", "--root"]).arg(out.root()).args(["--release", pipeline::buildtiles::RELEASE, "--coverage"]).arg(&cover);
+    pipeline::timings::child(&mut c);
+    let st = c.status().context("run bldfetch.py")?;
     anyhow::ensure!(st.success(), "bldfetch.py: {st}");
     Ok(())
 }
@@ -3108,8 +3195,11 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail catalogue (put by hand: docs/plan.md, Hand-made inputs)")?);
     let parts = Parts(&["Finding the countries the coverage is in", "Finding and fetching the feeds (railfeeds.py)", "Uploading"]);
     parts.start(0);
+    let p = phase("the countries the coverage is in found", Class::NasRead);
     let outlines = pipeline::outlines::Outlines::open(&out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?))?;
     let countries = rail::countries(&cov, &outlines)?;
+    drop(p);
+    let p = phase("the feeds checked and fetched before read", Class::NasRead);
     eprintln!("rail-feeds: the coverage is in {}", countries.join(", "));
     std::fs::create_dir_all(scratch)?;
     let (cover, checked, cache) = (scratch.join("coverage.geojson"), scratch.join("checked-in.json"), scratch.join("cache.json"));
@@ -3122,9 +3212,11 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     // (Its downloads stay in `found` until they're on the NAS: a run cut short keeps them. So does
     // railfeeds.py's record of the servers that haven't answered, until the job completes.)
     let found = scratch.join("found");
+    drop(p);
     parts.start(1);
-    let st = std::process::Command::new("uv")
-        .current_dir(&dem)
+    let p = phase("railfeeds.py", Class::Mixed);
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(&dem)
         .args(["run", "python", "railfeeds.py", "--catalogue"])
         .arg(&catalogue)
         .arg("--coverage")
@@ -3138,10 +3230,12 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         .arg("--keys")
         .arg(out.root().join("inputs/keys.env"))
         .arg("--out")
-        .arg(&found)
-        .status()
-        .context("run railfeeds.py")?;
+        .arg(&found);
+    pipeline::timings::child(&mut c);
+    let st = c.status().context("run railfeeds.py")?;
+    drop(p);
     parts.start(2);
+    let p = phase("the feeds uploaded", Class::NasWrite);
     if found.join("checked.json").exists() {
         out.put_file(rail::CHECKED, "json", &found.join("checked.json"))?;
         out.save()?;
@@ -3152,6 +3246,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         bail!("railfeeds.py failed ({st}); the {n} zips it fetched are kept");
     }
     let new = rail::put_feeds(out, &found.join("feeds.json"), &found.join("gtfs"))?;
+    drop(p);
     out.save()?;
     std::fs::remove_dir_all(&found).ok();
     for f in [cover, checked, cache] {
@@ -3185,18 +3280,17 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let raw = cache.join(format!("pairs-{}.bin", store::naming::hash16(format!("{} {feeds}", pipeline::agent::build::RAIL_V).as_bytes())));
     if !raw.exists() {
         let (list, pairs, used) = (scratch.join("feeds.json"), scratch.join("pairs-raw.bin"), scratch.join("used.json"));
+        let p = phase("the feeds listed", Class::NasRead);
         std::fs::write(&list, serde_json::to_vec(&rail::feeds_for_counting(out)?)?)?;
-        let st = std::process::Command::new("uv")
-            .current_dir(&dem)
-            .args(["run", "python", "railgtfs.py", "--feeds"])
-            .arg(&list)
-            .arg("--out")
-            .arg(&pairs)
-            .arg("--used")
-            .arg(&used)
-            .status()
-            .context("run railgtfs.py")?;
+        drop(p);
+        let p = phase("railgtfs.py", Class::Mixed);
+        let mut c = std::process::Command::new("uv");
+        c.current_dir(&dem).args(["run", "python", "railgtfs.py", "--feeds"]).arg(&list).arg("--out").arg(&pairs).arg("--used").arg(&used);
+        pipeline::timings::child(&mut c);
+        let st = c.status().context("run railgtfs.py")?;
         anyhow::ensure!(st.success(), "railgtfs.py failed: {st}");
+        drop(p);
+        let p = phase("the pairs kept and the feeds' use uploaded", Class::NasWrite);
         // Only the current list's pairs are kept.
         std::fs::create_dir_all(&cache)?;
         for e in std::fs::read_dir(&cache)?.flatten() {
@@ -3213,10 +3307,12 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             std::fs::remove_file(&pairs).ok();
         }
         out.put_file("work/rail/used", "json", &used)?;
+        drop(p);
         out.save()?;
     }
     // 2. Stops beyond the coverage.
     parts.start(1);
+    let p = phase("the stops beyond the coverage marked", Class::Compute);
     let (pairs, beyond) = rail::mark_beyond(&std::fs::read(&raw)?, &cov);
     let pairs_file = scratch.join("pairs.bin");
     std::fs::write(&pairs_file, &pairs)?;
@@ -3228,10 +3324,14 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         inputs.push(f);
     }
     eprintln!("rail: {} stop pairs from the feeds, {beyond} with a stop beyond the coverage ({:.0?})", pairs.len() / rail::PAIR, t0.elapsed());
+    drop(p);
     // 3. The rail ways touching the coverage.
     parts.start(2);
     let local = scratch.join("rail-set.osm.pbf");
-    store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+    let p = phase("the rail set copied here", Class::NasRead);
+    p.count(store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?, 1);
+    drop(p);
+    let p = phase("the rail set clipped to the cover (osmium)", Class::Compute);
     let poly = scratch.join("cover.geojson");
     std::fs::write(&poly, serde_json::to_vec(&pipeline::heritage::tiles_geojson(pipeline::heritage::COVER_Z, &pipeline::heritage::cover_tiles(&cov)))?)?;
     let clip = scratch.join("rail-cover.osm.pbf");
@@ -3239,7 +3339,9 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     c.args(["extract", "--strategy", "complete_ways", "--overwrite", "-p"]).arg(&poly).arg(&local).arg("-o").arg(&clip);
     osmium_run(c, "osmium extract (the rail set over the coverage)")?;
     std::fs::remove_file(&local).ok();
+    drop(p);
     parts.start(3);
+    let p = phase("its ways extracted and those in the coverage kept (extract)", Class::Compute);
     let dir = scratch.join("ways");
     std::fs::remove_dir_all(&dir).ok();
     let st = std::process::Command::new(bin.join("extract")).arg(&dir).arg("8").arg(&clip).status().context("run extract")?;
@@ -3247,13 +3349,18 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&clip).ok();
     let (kept, _) = pipeline::unit::subset(&dir, |_, vs| cov.touches(vs))?;
     eprintln!("rail: {kept} ways touch the coverage ({:.0?})", t0.elapsed());
+    drop(p);
     // 4. The trains on them.
     parts.start(4);
+    let p = phase("the trains matched onto the tracks (railfreq)", Class::Compute);
     let st = std::process::Command::new(bin.join("railfreq")).arg(&dir).args(&inputs).status().context("run railfreq")?;
     anyhow::ensure!(st.success(), "railfreq failed: {st}");
     let ways = roadcore::Ways::open(&dir)?;
     let freq = rail::by_way_id(ways.ways(), &std::fs::read(dir.join("rail-freq.bin"))?);
+    drop(p);
+    let p = phase("uploaded", Class::NasWrite);
     out.put_bytes(rail::RAILFREQ, "bin", &freq)?;
+    drop(p);
     out.save()?;
     drop(ways);
     std::fs::remove_dir_all(&dir).ok();
@@ -3277,24 +3384,24 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let local = work.join("labels-set.osm.pbf");
     let parts = Parts(&["Copying the labels set", "Ranking the labels (labels.py)", "Cutting them into packs"]);
     parts.start(0);
-    store::sys::copy_data(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
+    let p = phase("the labels set copied here", Class::NasRead);
+    p.count(store::sys::copy_data(out.path(&set), &local).with_context(|| format!("copy {set}"))?, 1);
+    drop(p);
     parts.start(1);
     let tiles = work.join("labels.tiles");
     let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
-    let st = std::process::Command::new("uv")
-        .current_dir(&dem)
-        .args(["run", "python", "labels.py", "--src"])
-        .arg(&local)
-        .arg("--out")
-        .arg(&tiles)
-        .arg("--work")
-        .arg(&work)
-        .status()
-        .context("run labels.py")?;
+    let p = phase("labels.py", Class::Mixed);
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(&dem).args(["run", "python", "labels.py", "--src"]).arg(&local).arg("--out").arg(&tiles).arg("--work").arg(&work);
+    pipeline::timings::child(&mut c);
+    let st = c.status().context("run labels.py")?;
     anyhow::ensure!(st.success(), "labels.py failed: {st}");
+    drop(p);
     parts.start(2);
+    let p = phase("cut into packs and uploaded", Class::NasWrite);
     let arc = roadcore::archive::Archive::open(&tiles)?;
     let lo = layers::split_archive(out, &arc, "labels", "mvt", true, 14)?;
+    drop(p);
     eprintln!("labels: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
     // Packs of an earlier labels layer that this one doesn't have go from the manifest.
     let keep: std::collections::BTreeSet<String> = lo.root.iter().chain(lo.lo.values()).chain(lo.hi.values()).cloned().collect();
@@ -3351,12 +3458,17 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     anyhow::ensure!(only.is_none() || opt(args, "--archive").is_some(), "water: --only makes part of the layer: give --archive too (nothing written to the NAS)");
     let parts = Parts(&["Reading the basemap's z14 directory", "Drawing the water", "Cutting it into packs"]);
     parts.start(0);
+    let p = phase("the basemap's z14 directory read", Class::NasRead);
     let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap).with_context(|| format!("open {}", basemap.display()))?))?;
     let z14 = wt::Z14::read(&pm)?;
     eprintln!("water: the z14 directory read in {:.0} s", t.elapsed().as_secs_f64());
+    drop(p);
     parts.start(1);
+    // (Its z14 tiles read from the basemap on the NAS as it draws, in parallel: one phase.)
+    let p = phase("the water drawn from the basemap's z14 tiles", Class::NasRead);
     let (tiles, made) = wt::build(&pm, &z14, only.as_deref(), &|d, n| pipeline::agent::jobs::report(d, n, "z5 tiles drawn"))?;
     drop(z14);
+    drop(p);
     eprintln!("water: {} in {:.0} s", serde_json::to_string(&made)?, t.elapsed().as_secs_f64());
     // (The archive in a folder of its own, removed however the step ends.)
     let work = WorkDir::new(scratch.join("water"))?;
@@ -3364,18 +3476,22 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Some(f) => PathBuf::from(f),
         None => work.0.join("water.tiles"),
     };
+    let p = phase("the tiles' archive written", Class::Disk);
     let mut w = roadcore::archive::ArchiveWriter::create(&local, "{}")?;
     for (z, x, y, png) in &tiles {
         w.add(*z, *x, *y, png, png.len())?;
     }
     w.finish()?;
     drop(tiles);
+    drop(p);
     if opt(args, "--archive").is_some() {
         return Ok(());
     }
     parts.start(2);
+    let p = phase("cut into packs and uploaded", Class::NasWrite);
     let arc = roadcore::archive::Archive::open(&local)?;
     let lo = layers::split_archive(out, &arc, wt::LAYER, "water-png", false, wt::STORED_MAXZ)?;
+    drop(p);
     eprintln!("water: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
     // Packs of an earlier water layer that this one doesn't have go from the manifest, and the small
     // islands and lakes' layer it replaces (`layers/smallwater/`, the dots of before).
