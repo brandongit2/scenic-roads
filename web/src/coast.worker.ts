@@ -52,6 +52,7 @@ self.onmessage = (ev: MessageEvent<CoastMessage>) => {
     inputs.set(m.key, { tiles: m.tiles, maxzoom: m.maxzoom, cov: m.cov ?? '', margin: Math.min(SIZE, m.margin ?? MARGIN), far: m.far ?? 0 });
     waterCache.clear();
     covCache.clear();
+    coarseCache.clear();
   } else if (m.type === 'cancel') {
     cancelled.add(m.id);
   } else {
@@ -202,11 +203,32 @@ async function coastTile(input: Input, z: number, x: number, y: number, lakes: b
   // that level fail to load, the water beyond is far: the tile itself is still good.
   const k = Math.min(z, Math.max(input.far, farLevels(z, y)));
   if (k > 0 && sd.some((d) => d >= 0.75 * M)) {
-    const coarse = await distances(input, z - k, x >> k, y >> k, lakes).catch(() => null);
+    const coarse = await coarseDistances(input, z - k, x >> k, y >> k, lakes).catch(() => null);
     const part = SIZE / 2 ** k;
     if (coarse) withFarField(sd, SIZE, M, coarse, k, (x % 2 ** k) * part, (y % 2 ** k) * part);
   }
   return encode(sd, z, y);
+}
+
+/** Coarse levels' distances, the most recent kept: a coarse tile serves all 4^k of its
+ * descendants in its level's band of latitude, and the tiles in view are mostly siblings. 1 MB
+ * each. */
+const coarseCache = new Map<string, Promise<Float32Array>>();
+const COARSE_KEPT = 12;
+
+function coarseDistances(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<Float32Array> {
+  const key = `${input.cov}|${input.tiles}|${input.margin}|${z}/${x}/${y}/${lakes ? 1 : 0}`;
+  const hit = coarseCache.get(key);
+  if (hit) {
+    coarseCache.delete(key);
+    coarseCache.set(key, hit);
+    return hit;
+  }
+  const p = distances(input, z, x, y, lakes);
+  coarseCache.set(key, p);
+  p.catch(() => coarseCache.get(key) === p && coarseCache.delete(key));
+  if (coarseCache.size > COARSE_KEPT) coarseCache.delete(coarseCache.keys().next().value!);
+  return p;
 }
 
 /** The tile's signed distance in pixels (coastdist.ts signedDistance: ±Infinity beyond the
