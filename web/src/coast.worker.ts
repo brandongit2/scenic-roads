@@ -134,9 +134,11 @@ function shares(url: string): Promise<Uint8ClampedArray | null> {
 }
 
 /** The 3 × 3 share tiles around z/x/y: each pixel's land share (for the sea's shore alone, all but
- * the sea), n × n with the margin. A neighbour that can't be had (past the poles, or failed) counts
- * as water with no land: its shore, just past the tile's edge, is missed rather than the whole tile
- * failing. */
+ * the sea), n × n with the margin. Past the poles (no tile north of the top row, south of the
+ * bottom one) the edge row goes on unchanged: Mercator stops at 85.05°, and taken as water it put a
+ * shore along that whole circle, a glow ringing each pole that matched no coast (the owner saw it
+ * around Antarctica, 9 Oct). A neighbour that failed counts as water with no land: its shore, just
+ * past the tile's edge, is missed rather than the whole tile failing. */
 async function landShares(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<Float32Array> {
   const M = input.margin, n = SIZE + 2 * M;
   const frac = new Float32Array(n * n);
@@ -168,7 +170,16 @@ async function landShares(input: Input, z: number, x: number, y: number, lakes: 
   }
   const failed = (await Promise.allSettled(jobs)).find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed) throw failed.reason;
+  pastThePoles(frac, n, M, y === 0, y === tiles - 1);
   return frac;
+}
+
+/** Rows of an n × n grid (margin M) past the poles: the tile's own edge row, repeated (`top`: the
+ * tile is the top row of tiles; `bottom`: the bottom). */
+export function pastThePoles<T extends Float32Array | Uint8ClampedArray>(g: T, n: number, M: number, top: boolean, bottom: boolean, stride = 1) {
+  const row = n * stride;
+  if (top) for (let r = 0; r < M; r++) g.copyWithin(r * row, M * row, (M + 1) * row);
+  if (bottom) for (let r = n - M; r < n; r++) g.copyWithin(r * row, (n - M - 1) * row, (n - M) * row);
 }
 
 // ---- the tile --------------------------------------------------------------------------------
@@ -222,6 +233,13 @@ async function coastTile(input: Input, z: number, x: number, y: number, lakes: b
   // tile (its coast would be drawn where its water is missing).
   const failed = (await Promise.allSettled(jobs)).find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed) throw failed.reason;
+  // (Past the poles, the edge row goes on, as with the shares: nothing painted there read as land.)
+  const top = y === 0, bottom = y === 2 ** z - 1;
+  if (top || bottom) {
+    const img = ctx.getImageData(0, 0, n, n);
+    pastThePoles(img.data, n, M, top, bottom, 4);
+    ctx.putImageData(img, 0, 0);
+  }
   return encode(thresholded(ctx, M), z, y);
 }
 
