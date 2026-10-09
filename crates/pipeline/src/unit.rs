@@ -584,6 +584,12 @@ impl Tools {
         self.shared.as_ref().map(|_| self.cache.join("blobs").join(DEM_UNITS))
     }
 
+    /// The base packs' cache of this Mac's map tiles (`open_units`), where a unit's job keeps a copy
+    /// of the base pack it uploads (`keep_for_packs`, through store::cachefile).
+    pub fn base_packs(&self) -> PathBuf {
+        self.cache.join("base")
+    }
+
     /// Where unit `u`'s scenic results are kept between its runs (crate::scache::Carry).
     pub fn scenic_kept(&self, u: Unit) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join("scenic-units").join(u.dash())

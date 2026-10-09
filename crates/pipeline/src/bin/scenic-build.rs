@@ -3122,8 +3122,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let s = unit_stage("base pack written to the NAS", Class::NasWrite);
     let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
     // (A copy kept for this Mac's map tiles, where it makes them: `keep_for_packs`.)
-    let packs_cache = tools.cache.join("base");
-    put_sect_kept(out, &format!("base/{}", u.dash()), bs.meta, &secs, Some(&packs_cache))?;
+    put_sect_kept(out, &format!("base/{}", u.dash()), bs.meta, &secs, Some(&tools.base_packs()))?;
     s.end();
     // (The pass's road values read from the NAS; the unit's written back.)
     let s = unit_stage("road values made and written", Class::Mixed);
@@ -3150,7 +3149,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         .collect();
     {
         let _p = pipeline::timings::sub("the unit's written", Class::NasWrite);
-        put_roads(out, u, &recs, Some(&packs_cache))?;
+        put_roads(out, u, &recs, Some(&tools.base_packs()))?;
     }
     // The roads' own English (OSM's name:en where it isn't the name), for the server to show
     // with them.
