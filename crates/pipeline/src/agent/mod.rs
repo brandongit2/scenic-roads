@@ -1132,6 +1132,7 @@ impl Agent {
             "bld-fetch" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
             "bldprep" => vec!["--dem".into(), dem()],
             "bldtiles" => vec!["--pass".into(), date.to_string()],
+            "terrain-water" => vec!["--pass".into(), date.to_string()],
             "items" | "heritage-sites" | "heritage" | "rail" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)],
             "peaks" => vec!["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()],
             "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
@@ -3585,7 +3586,7 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") && !t.ends_with("-root")).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") && !t.ends_with("-root")).collect();
             extra.extend(self.step_args(&w.step, date));
             // (Tree cover pieces made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
@@ -4657,6 +4658,8 @@ fn first_secs(step: &str) -> f64 {
         "labels" => 2200.0,
         "water" => 3600.0,
         "heritage-sites" => 240.0,
+        // (Reading the latest basemap's water under every piece near the coverage.)
+        "terrain-water" => 900.0,
         "heritage" => 5400.0,
         // (Terrain's and slope's pieces a z6 tile, their assemblies a z3 tile's zoomed-out levels:
         // the areas' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)

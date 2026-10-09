@@ -49,6 +49,9 @@ pub struct TerrainTiles {
     /// Values worked out from the tiles, each kept with what it was worked out from (`memo`): a
     /// unit's terrain digest (build::unit_terrain), by unit.
     memo: RefCell<HashMap<String, (String, String)>>,
+    /// The terrain's water digests the manifest names (crate::terrain_water::WaterIdx), by content
+    /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
+    water: HashMap<String, crate::terrain_water::WaterIdx>,
 }
 
 impl TerrainTiles {
@@ -67,6 +70,7 @@ impl TerrainTiles {
     /// read now is tried again with the next load (`unread`).
     pub fn load(&mut self, root: &Path, m: &BTreeMap<String, String>) -> usize {
         use rayon::prelude::*;
+        self.load_water(root, m);
         let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         self.held.retain(|c, _| want.contains(c.as_str()));
         self.unread.retain(|c, _| want.contains(c.as_str()));
@@ -94,6 +98,60 @@ impl TerrainTiles {
             self.tidy(&want);
         }
         n
+    }
+
+    /// Holds the water digests `m` names, and only those (one that can't be read now: tried again
+    /// with the next load, its targets' keys unknown meanwhile).
+    fn load_water(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+        let want: BTreeSet<&str> = m.range(crate::terrain_water::IDX_PREFIX.to_string()..).take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX)).map(|(_, c)| c.as_str()).collect();
+        self.water.retain(|c, _| want.contains(c.as_str()));
+        for c in want {
+            if self.water.contains_key(c) {
+                continue;
+            }
+            let kept = store::naming::parse_content_name(c).and_then(|n| Some(self.dir.as_deref()?.join(format!("{}.water", n.hash16))));
+            let local = kept.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| crate::terrain_water::WaterIdx::from_bytes(&b).ok());
+            let got = match local {
+                Some(w) => Ok(w),
+                None => std::fs::read(root.join(c)).map_err(anyhow::Error::from).and_then(|b| {
+                    let w = crate::terrain_water::WaterIdx::from_bytes(&b)?;
+                    if let Some(p) = &kept {
+                        if let Err(e) = std::fs::create_dir_all(p.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| crate::whole::write(p, &b)) {
+                            eprintln!("tiles: {c} not kept: {e:#}");
+                        }
+                    }
+                    Ok(w)
+                }),
+            };
+            match got {
+                Ok(w) => {
+                    self.unread.remove(c);
+                    self.water.insert(c.to_string(), w);
+                }
+                Err(e) => {
+                    self.unread.insert(c.to_string(), format!("{e:#}"));
+                }
+            }
+        }
+    }
+
+    /// The water digests `m` names for the water source pinned `pin` (None: none, or not read now).
+    pub fn water_idx(&self, m: &BTreeMap<String, String>, pin: &str) -> Option<&crate::terrain_water::WaterIdx> {
+        self.water.get(m.get(&crate::terrain_water::idx_logical(pin))?).filter(|w| w.pin == pin)
+    }
+
+    /// The pins of the water sources whose digests `m` names and are held, sorted.
+    pub fn water_pins(&self, m: &BTreeMap<String, String>) -> Vec<String> {
+        let mut v: Vec<String> = m.range(crate::terrain_water::IDX_PREFIX.to_string()..).take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX)).filter_map(|(_, c)| self.water.get(c)).map(|w| w.pin.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Holds a water source's digests as given, under content name `content` (tests and
+    /// `scenic-build water-key-check`: no file).
+    pub fn hold_water(&mut self, content: &str, w: crate::terrain_water::WaterIdx) {
+        self.water.insert(content.to_string(), w);
     }
 
     /// The packs whose index the last load couldn't read: (content name, why).

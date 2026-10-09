@@ -95,11 +95,16 @@ pub mod v1 {
     /// near the coverage, terrain keyed on its version, those z6 tiles, the coverage within 20 km,
     /// GLO-30 and the basemap; slope on its version, the area's terrain lo pack and its z6 tiles'
     /// hi packs.
-    pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
+        terrain_slope_targets_with(cov, m, crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c))
+    }
+
+    /// `terrain_slope_targets` with the basemap `water` (its content name, "-" for none) in the
+    /// terrain's keys: one the terrain may have been made from before the latest.
+    pub fn terrain_slope_targets_with(cov: &Coverage, m: &BTreeMap<String, String>, water: &str) -> Targets {
         use super::super::build::{coverage_tiles, grown_e7, SLOPE_V, TERRAIN_V};
         let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
         let (mut terrain, mut slope) = (Vec::new(), Vec::new());
-        let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
         for (q, ts) in &coverage_tiles(cov) {
             let qs = format!("3/{}/{}", q.0, q.1);
             let tlist: Vec<String> = ts.iter().map(|t| format!("6/{}/{}", t.0, t.1)).collect();
@@ -111,6 +116,9 @@ pub mod v1 {
         }
         (terrain, slope)
     }
+
+    /// Terrain's and slope's targets with their keys.
+    pub type Targets = (Vec<(String, String)>, Vec<(String, String)>);
 
     /// A z3 tile's "none" key under the old scheme (the coverage gone from it).
     pub fn trees_none(t: &str) -> String {
@@ -147,6 +155,22 @@ pub mod v1 {
         }
         let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
         h(&refs)
+    }
+}
+
+/// Terrain's keys from its pieces (2026-10-08) to their water's digests (2026-10-09): a piece and an
+/// assembly named the basemap their water comes from, by content name.
+pub mod v2 {
+    use super::super::build::{h, TERRAIN_LO_V, TERRAIN_V};
+
+    /// Terrain piece `t`'s key as it was: `fp` the coverage within 20 km, `basemap` its content name.
+    pub fn terrain_piece_key(t: (u32, u32), fp: &str, basemap: &str) -> String {
+        h(&[&format!("terrain {TERRAIN_V}"), &format!("6/{}/{}", t.0, t.1), fp, crate::terrain_pack::NORTH_PIN, basemap])
+    }
+
+    /// Terrain's assembly of z3 tile `q`'s key as it was.
+    pub fn terrain_lo_key(q: (u32, u32), basemap: &str, mids: &[String]) -> String {
+        h(&[&format!("terrain-lo {TERRAIN_LO_V}"), &format!("terrain {TERRAIN_V}"), &format!("3/{}/{}", q.0, q.1), basemap, &mids.join(",")])
     }
 }
 
@@ -435,8 +459,14 @@ pub struct Derived {
     pub slope_left: Vec<(String, String)>,
     /// The old records stale under the old scheme (or "none"): passed over, each with why.
     pub stale: Vec<(String, String)>,
-    /// Slope's z3 tiles whose pieces' reads can't be told now (a terrain pack's index unread).
+    /// Slope's z3 tiles whose pieces' reads can't be told now (a terrain pack's index unread), and
+    /// terrain's whose water's digests aren't there (yet): their records kept, for the next read.
     pub unknown: Vec<(String, String)>,
+    /// Terrain's z3 tiles of `terrain` made from a basemap before the latest: each with it.
+    pub older: Vec<(String, String)>,
+    /// Terrain's pieces and assemblies recorded under the keys that named the basemap (`v2`): read
+    /// under their keys now, each with the basemap.
+    pub water: Vec<(String, String)>,
 }
 
 /// The records as every reader reads them (the plan, the checklist, the regions' state, the jobs'
@@ -471,36 +501,109 @@ pub fn as_read(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String,
 /// current. Those reading another area's terrain, or the root's, or none, which the old key didn't
 /// name (and a slope area's run could read a neighbour's terrain before it was made again), are
 /// left to make; the assembly is read as current (every mid "-") only when none is.
+///
+/// The terrain's keys name the digest of the water each target reads (build::water_key; they
+/// named the basemap before 2026-10-09, `v2`). A z3 tile's terrain record is read by the digests
+/// of the basemap it was made from: the latest's, else an earlier one's whose digests the manifest
+/// names (its v1 key names that basemap), so its pieces made from an earlier basemap are current
+/// where the water they read is the latest's; one whose basemap's digests aren't there yet is kept
+/// as it is (`Derived::unknown`). A piece's or an assembly's record under its `v2` key (an older
+/// app's job), of the latest basemap or an earlier one with digests, is read under its key now by
+/// that basemap's digests (its mids those of the manifest, or all "-").
 pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Derived {
     let mut out = Derived::default();
     let z3 = |map: &BTreeMap<String, String>| -> Vec<(String, String)> { map.iter().filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3)).map(|(t, k)| (t.clone(), k.clone())).collect() };
     let (tz3, sz3) = (z3(&keys.terrain), z3(&keys.slope));
-    if tz3.is_empty() && sz3.is_empty() {
+    let v2 = keys.terrain.iter().any(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 6)) || !keys.terrain_lo.is_empty();
+    if tz3.is_empty() && sz3.is_empty() && !v2 {
         return out;
     }
-    // (The old scheme's keys, kept by `tiles` with what they're worked out from, as the new.)
-    let named = |prefix: &str| m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
-    let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
-    let from = store::naming::hash16([build::coverage_all(cov), named("layers/terrain/"), water.to_string()].join("\n").as_bytes());
-    let old = tiles.memo("terrain-targets v1", &from, || Ok(serde_json::to_string(&v1::terrain_slope_targets(cov, m)).unwrap_or_default()));
-    let (old_t, old_s): (Vec<(String, String)>, Vec<(String, String)>) = old.ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_else(|| v1::terrain_slope_targets(cov, m));
-    let (old_t, old_s): (BTreeMap<String, String>, BTreeMap<String, String>) = (old_t.into_iter().collect(), old_s.into_iter().collect());
     let by_q = build::coverage_tiles(cov);
-    let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
     let tt = build::terrain_slope_targets(cov, m, tiles);
     let pieces = |q: &str| -> Vec<(u32, u32)> { Unit::parse(q).and_then(|u| by_q.get(&(u.x, u.y)).cloned()).unwrap_or_default() };
     let none_mids = |q: &str| -> Vec<String> { pieces(q).iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect() };
+    // The basemaps the terrain may have been made from: the latest's, then each earlier one whose
+    // water's digests the manifest names (crate::terrain_water::WaterIdx). A record made from an
+    // earlier one is read under the key its water's digests there give: current when the latest's
+    // are the same.
+    let latest = crate::terrain_pack::water_source_pin(m);
+    let mut basemaps: Vec<Option<String>> = vec![latest.clone()];
+    basemaps.extend(tiles.water_pins(m).into_iter().filter(|p| Some(p) != latest.as_ref()).map(Some));
+    let water = |b: &Option<String>, t: &str, from: &str| build::water_key(b.as_deref(), b.as_deref().and_then(|p| tiles.water_idx(m, p)), t, from);
+    let fp = |x: u32, y: u32| cov.fingerprint(build::grown_e7(6, x, y, 20.0));
+    // Pieces and assemblies recorded under the keys that named the basemap (`v2`: an older app's).
+    if v2 {
+        let current: BTreeMap<&String, &String> = tt.terrain.iter().chain(&tt.terrain_lo).map(|(t, k)| (t, k)).collect();
+        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+        let mids = |q: &str| -> Vec<String> { pieces(q).iter().map(|(x, y)| format!("6/{x}/{y}={}", get(&crate::terrain_pack::mid_logical(*x, *y)))).collect() };
+        let moved: Vec<(String, String, String)> = keys.terrain.iter().filter(|(t, k)| current.get(t) != Some(k)).filter_map(|(t, k)| {
+            let u = Unit::parse(t).filter(|u| u.z == 6)?;
+            let f = fp(u.x, u.y);
+            basemaps.iter().find(|b| v2::terrain_piece_key((u.x, u.y), &f, b.as_deref().unwrap_or("-")) == *k).and_then(|b| Some((t.clone(), build::terrain_piece_key((u.x, u.y), &f, &water(b, t, &f)?), b.clone().unwrap_or_default())))
+        }).collect();
+        for (t, k, b) in moved {
+            keys.terrain.insert(t.clone(), k);
+            out.water.push((t, b));
+        }
+        let moved: Vec<(String, String, String)> = keys.terrain_lo.iter().filter(|(q, k)| current.get(q) != Some(k)).filter_map(|(q, k)| {
+            let u = Unit::parse(q).filter(|u| u.z == 3)?;
+            let lists = [mids(q), none_mids(q)];
+            basemaps.iter().find_map(|b| lists.iter().find(|l| v2::terrain_lo_key((u.x, u.y), b.as_deref().unwrap_or("-"), l) == *k).map(|l| (b, l))).and_then(|(b, l)| Some((q.clone(), build::terrain_lo_key((u.x, u.y), &water(b, q, crate::terrain_water::AREA_FROM)?, l), b.clone().unwrap_or_default())))
+        }).collect();
+        for (q, k, b) in moved {
+            keys.terrain_lo.insert(q.clone(), k);
+            out.water.push((q, b));
+        }
+    }
+    if tz3.is_empty() && sz3.is_empty() {
+        return out;
+    }
+    // (The old scheme's keys, kept by `tiles` with what they're worked out from, as the new: the
+    // latest basemap's, an earlier one's when a record isn't current with it.)
+    let named = |prefix: &str| m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
+    let old_with = |b: &str| -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+        let from = store::naming::hash16([build::coverage_all(cov), named("layers/terrain/"), b.to_string()].join("\n").as_bytes());
+        let key = if latest.as_deref().unwrap_or("-") == b { "terrain-targets v1".to_string() } else { format!("terrain-targets v1 {b}") };
+        let old = tiles.memo(&key, &from, || Ok(serde_json::to_string(&v1::terrain_slope_targets_with(cov, m, b)).unwrap_or_default()));
+        let (t, s): (Vec<(String, String)>, Vec<(String, String)>) = old.ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_else(|| v1::terrain_slope_targets_with(cov, m, b));
+        (t.into_iter().collect(), s.into_iter().collect())
+    };
+    let (old_t, old_s) = old_with(latest.as_deref().unwrap_or("-"));
+    let mut earlier: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (q, k) in tz3 {
-        keys.terrain.remove(&q);
-        if old_t.get(&q) != Some(&k) {
+        let Some(u) = Unit::parse(&q) else { continue };
+        let b = if old_t.get(&q) == Some(&k) {
+            Some(latest.clone())
+        } else {
+            basemaps.iter().skip(1).find(|b| {
+                let b = b.as_deref().unwrap_or("-");
+                earlier.entry(b.to_string()).or_insert_with(|| old_with(b).0).get(&q) == Some(&k)
+            }).cloned()
+        };
+        let Some(b) = b else {
+            keys.terrain.remove(&q);
             out.stale.push((format!("terrain {q}"), "stale under the old scheme: its pieces made".into()));
             continue;
+        };
+        // Its pieces' and assembly's keys, by the water's digests of the basemap it was made from.
+        let made: Option<Vec<(String, String)>> = pieces(&q).iter().map(|&(x, y)| {
+            let t = format!("6/{x}/{y}");
+            let f = fp(x, y);
+            Some((t.clone(), build::terrain_piece_key((x, y), &f, &water(&b, &t, &f)?)))
+        }).collect();
+        let lo = water(&b, &q, crate::terrain_water::AREA_FROM).map(|w| build::terrain_lo_key((u.x, u.y), &w, &none_mids(&q)));
+        let (Some(made), Some(lo)) = (made, lo) else {
+            out.unknown.push((q, format!("the water's digests of {} aren't there yet (the terrain-water job): its record kept", b.as_deref().unwrap_or("-"))));
+            continue;
+        };
+        keys.terrain.remove(&q);
+        for (t, kt) in made {
+            keys.terrain.entry(t).or_insert(kt);
         }
-        let Some(u) = Unit::parse(&q) else { continue };
-        for (t, kt) in tt.terrain.iter().filter(|(t, _)| build::area_of(t).as_deref() == Some(q.as_str())) {
-            keys.terrain.entry(t.clone()).or_insert_with(|| kt.clone());
+        keys.terrain_lo.entry(q.clone()).or_insert(lo);
+        if b != latest {
+            out.older.push((q.clone(), b.unwrap_or_default()));
         }
-        keys.terrain_lo.entry(q.clone()).or_insert_with(|| build::terrain_lo_key((u.x, u.y), water, &none_mids(&q)));
         out.terrain.push(q);
     }
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
@@ -1001,5 +1104,243 @@ mod tests {
         let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &TerrainTiles::new(None), &NONE_OLDER);
         assert_eq!(r.unknown.len(), 3);
         assert!(!r.changed() && done == before);
+    }
+
+    // ---- the terrain keyed on its water (2026-10-09) ----------------------------------------------
+
+    use crate::terrain_water::{tests::square, Kind, Poly, WaterIdx, WaterSource};
+
+    /// A basemap's water as a test has it: a lake (a square, its own id) in each of `lakes`' tiles,
+    /// the sea along the top of every z9 tile.
+    struct Basemap {
+        pin: String,
+        lakes: Vec<(u8, u32, u32, u64)>,
+    }
+
+    impl WaterSource for Basemap {
+        fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+            let mut v = Vec::new();
+            if z == 9 {
+                v.push(square(Kind::Sea, 0, 0.0, 0.0, 256.0, 10.0));
+            }
+            v.extend(self.lakes.iter().filter(|l| (l.0, l.1, l.2) == (z, x, y)).map(|l| square(Kind::Lake, l.3, 100.0, 100.0, 140.0, 130.0)));
+            Ok(v)
+        }
+        fn pin(&self) -> String {
+            self.pin.clone()
+        }
+    }
+
+    /// A lake fill over a basemap (as lakefill's FilledWater): a lake in every tile (z6 and finer)
+    /// of z6 tile `over`.
+    struct Filled<'a> {
+        base: &'a dyn WaterSource,
+        over: (u32, u32),
+    }
+
+    impl WaterSource for Filled<'_> {
+        fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+            let mut v = self.base.polys(z, x, y)?;
+            if z >= 6 && (x >> (z - 6), y >> (z - 6)) == self.over {
+                v.push(square(Kind::Lake, (1 << 62) | 7, 20.0, 20.0, 60.0, 50.0));
+            }
+            Ok(v)
+        }
+        fn pin(&self) -> String {
+            format!("{} + fill", self.base.pin())
+        }
+    }
+
+    /// The water digests the coverage's terrain wants of `src` (the terrain-water job's).
+    fn digests(c: &Coverage, src: &dyn WaterSource) -> WaterIdx {
+        crate::terrain_water::make_idx(src, None, &build::water_reads(c), &|_, _| {}).unwrap()
+    }
+
+    /// `m` naming basemap `b`'s content name as the latest pass's, and the digests `idx`.
+    fn with_water(m: &BTreeMap<String, String>, basemap: Option<&str>, idx: &[&WaterIdx]) -> (BTreeMap<String, String>, TerrainTiles) {
+        let mut m = m.clone();
+        if let Some(b) = basemap {
+            let l = b.split('.').next().unwrap();
+            m.insert(l.into(), b.into());
+        }
+        let mut tiles = tiles_for(&m);
+        for w in idx {
+            let l = crate::terrain_water::idx_logical(&w.pin);
+            let c = format!("{l}.{}.json", &store::naming::hash16(serde_json::to_string(w).unwrap().as_bytes()));
+            m.insert(l, c.clone());
+            tiles.hold_water(&c, (*w).clone());
+        }
+        (m, tiles)
+    }
+
+    const A: &str = "layers/basemap/world-d.aaaaaaaaaaaaaaaa.pmtiles";
+    const B: &str = "layers/basemap/world-e.bbbbbbbbbbbbbbbb.pmtiles";
+
+    /// Terrain's targets' keys, by target.
+    fn tkeys(c: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> BTreeMap<String, String> {
+        let tt = build::terrain_slope_targets(c, m, tiles);
+        tt.terrain.into_iter().chain(tt.terrain_lo).collect()
+    }
+
+    /// The first z9 tile piece `t` reads.
+    fn z9_of(c: &Coverage, t: (u32, u32)) -> (u32, u32) {
+        crate::terrain_pack::piece_levels(c, t).into_iter().find(|l| l.0 == 9).unwrap().1[0]
+    }
+
+    #[test]
+    fn a_pieces_key_names_the_water_it_reads_alone() {
+        let (c, _, m, _) = iceland(&|_| {});
+        let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
+        let (p, q) = (pieces[0], pieces[1]);
+        let (pz9, qz9) = (z9_of(&c, p), z9_of(&c, q));
+        let at = |pin: &str, lakes: Vec<(u8, u32, u32, u64)>| digests(&c, &Basemap { pin: pin.into(), lakes });
+        let keys = |b: &str, w: &WaterIdx| {
+            let (m, tiles) = with_water(&m, Some(b), &[w]);
+            tkeys(&c, &m, &tiles)
+        };
+        let (ps, qs) = (format!("6/{}/{}", p.0, p.1), format!("6/{}/{}", q.0, q.1));
+        let a = keys(A, &at(A, vec![(9, qz9.0, qz9.1, 5)]));
+        assert!(a.values().all(|k| k != build::UNKNOWN), "{a:?}");
+        // Another basemap whose water differs only far from p (another lake in q's tile): p's key
+        // and the assembly's the same, q's not.
+        let b = keys(B, &at(B, vec![(9, qz9.0, qz9.1, 6)]));
+        assert_eq!(a[&ps], b[&ps]);
+        assert_ne!(a[&qs], b[&qs]);
+        assert_eq!(a["3/3/2"], b["3/3/2"]);
+        assert_eq!(a.iter().filter(|(t, k)| b[*t] != **k).count(), 1);
+        // A lake in a tile p reads: p's key changes.
+        let b = keys(B, &at(B, vec![(9, qz9.0, qz9.1, 5), (9, pz9.0, pz9.1, 8)]));
+        assert_ne!(a[&ps], b[&ps]);
+        assert_eq!(a[&qs], b[&qs]);
+        // One in a z7 tile: the assembly's alone (the pieces read z9–12).
+        let b = keys(B, &at(B, vec![(9, qz9.0, qz9.1, 5), (7, p.0 << 1, p.1 << 1, 9)]));
+        assert_ne!(a["3/3/2"], b["3/3/2"]);
+        assert_eq!(a.iter().filter(|(t, k)| b[*t] != **k).count(), 1);
+        // The same water under another name: the same keys.
+        assert_eq!(a, keys(B, &at(B, vec![(9, qz9.0, qz9.1, 5)])));
+        // Its digests not made yet (or not readable now): its keys unknown, the job offered, nothing
+        // made meanwhile, and its area waits.
+        let (m2, tiles) = with_water(&m, Some(A), &[]);
+        assert!(tkeys(&c, &m2, &tiles).values().all(|k| k == build::UNKNOWN));
+        let done = Keys::default();
+        assert_eq!(build::terrain_water_work(&c, &m2, &done, &tiles).map(|w| w.step), Some("terrain-water".into()));
+        let w = build::terrain_work(&build::terrain_slope_targets(&c, &m2, &tiles), &m2, &done);
+        assert!(w.terrain.is_empty() && w.terrain_lo.is_empty() && w.terrain_left.contains("3/3/2"), "{w:?}");
+        // Made: no job.
+        let (m3, tiles) = with_water(&m, Some(A), &[&at(A, vec![])]);
+        assert!(build::terrain_water_work(&c, &m3, &done, &tiles).is_none());
+    }
+
+    #[test]
+    fn a_tiles_digest_is_of_what_the_terrain_makes_of_it() {
+        use crate::terrain_water::{polys_digest, OWN_FOR_TESTS};
+        let lake = |id| square(Kind::Lake, id, 1.0, 2.0, 30.0, 40.0);
+        assert_eq!(polys_digest(&[]), 0);
+        // A lake's key of its tile's own (no OSM id) by its feature's place: never its value.
+        assert_eq!(polys_digest(&[lake(OWN_FOR_TESTS | 3)]), polys_digest(&[lake(OWN_FOR_TESTS | 12345)]));
+        assert_ne!(polys_digest(&[lake(3)]), polys_digest(&[lake(4)]));
+        assert_ne!(polys_digest(&[lake(3)]), polys_digest(&[square(Kind::Sea, 3, 1.0, 2.0, 30.0, 40.0)]));
+        assert_ne!(polys_digest(&[lake(3)]), polys_digest(&[square(Kind::Lake, 3, 1.0, 2.0, 30.0, 40.5)]));
+    }
+
+    #[test]
+    fn the_switch_reads_the_records_under_their_waters_keys_and_a_new_basemap_makes_where_its_water_changed() {
+        let (c, _, m, mut done) = iceland(&|_| {});
+        let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
+        let p = pieces[0];
+        let ps = format!("6/{}/{}", p.0, p.1);
+        // The terrain made by its area's whole run from basemap A (its record: `v1`).
+        let (ma, _) = with_water(&m, Some(A), &[]);
+        done.terrain.clear();
+        done.record("terrain", &v1::terrain_slope_targets(&c, &ma).0);
+        let wa = digests(&c, &Basemap { pin: A.into(), lakes: vec![] });
+        let tw = |m: &BTreeMap<String, String>, tiles: &TerrainTiles, done: &Keys| {
+            let mut read = done.clone();
+            let d = derive(&mut read, &c, m, tiles);
+            (d, build::terrain_work(&build::terrain_slope_targets(&c, m, tiles), m, &read), read)
+        };
+        // Its digests not made yet: the record kept, nothing made, the area waits.
+        let (m0, t0) = with_water(&m, Some(A), &[]);
+        let (d, w, read) = tw(&m0, &t0, &done);
+        assert_eq!((d.terrain.len(), d.unknown.len()), (0, 1), "{d:?}");
+        assert!(read.terrain.contains_key("3/3/2") && w.terrain.is_empty() && w.terrain_left.contains("3/3/2"));
+        // Made: nothing to make (the switch).
+        let (m1, t1) = with_water(&m, Some(A), &[&wa]);
+        let (d, w, read) = tw(&m1, &t1, &done);
+        assert_eq!(d.terrain, ["3/3/2"]);
+        assert!(d.older.is_empty() && w.terrain_pieces_left.is_empty() && w.terrain_lo_left.is_empty() && w.terrain_left.is_empty(), "{w:?}");
+        assert!(!read.terrain.contains_key("3/3/2"));
+        // A new basemap B, its water the same: still nothing (the record read by A's digests).
+        let wb = WaterIdx { pin: B.into(), ..wa.clone() };
+        let (m2, t2) = with_water(&m1, Some(B), &[&wa, &wb]);
+        let (d, w, _) = tw(&m2, &t2, &done);
+        assert_eq!(d.older, [("3/3/2".to_string(), A.to_string())]);
+        assert!(w.terrain_pieces_left.is_empty() && w.terrain_lo_left.is_empty(), "{w:?}");
+        // B with a lake in a tile p reads: p alone (and its area's other pieces for their mids).
+        let pz9 = z9_of(&c, p);
+        let wb = digests(&c, &Basemap { pin: B.into(), lakes: vec![(9, pz9.0, pz9.1, 5)] });
+        let (m3, t3) = with_water(&m1, Some(B), &[&wa, &wb]);
+        let (_, w, _) = tw(&m3, &t3, &done);
+        assert_eq!(w.terrain_pieces_left.iter().cloned().collect::<Vec<_>>(), [ps.clone()]);
+        assert!(w.terrain_lo_left.is_empty());
+        // Without A's digests (not kept): every piece made again.
+        let (m4, t4) = with_water(&m, Some(B), &[&wb]);
+        let (d, w, _) = tw(&m4, &t4, &done);
+        assert_eq!(d.stale.len(), 1);
+        assert_eq!(w.terrain_pieces_left.len(), pieces.len());
+        // A piece and an assembly recorded under the keys that named the basemap (an older app's
+        // job, 2026-10-08): read under their keys now, by the digests of the basemap they name.
+        let mut v2rec = Keys::default();
+        let fp = c.fingerprint(build::grown_e7(6, p.0, p.1, 20.0));
+        v2rec.terrain.insert(ps.clone(), v2::terrain_piece_key(p, &fp, A));
+        let mids: Vec<String> = build::coverage_tiles(&c)[&(3, 2)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();
+        v2rec.terrain_lo.insert("3/2/2".into(), "x".into());
+        v2rec.terrain_lo.insert("3/3/2".into(), v2::terrain_lo_key((3, 2), A, &mids));
+        let (d, w, read) = tw(&m2, &t2, &v2rec);
+        assert_eq!(d.water.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), [ps.as_str(), "3/3/2"]);
+        assert!(!w.terrain_pieces_left.contains(&ps) && !w.terrain_lo_left.contains("3/3/2"), "{w:?}");
+        assert_eq!(read.terrain_lo["3/2/2"], "x");
+        // Twice is once.
+        let mut twice = read.clone();
+        let again = derive(&mut twice, &c, &m2, &t2);
+        assert!(again.water.is_empty() && twice == read);
+    }
+
+    #[test]
+    fn a_lake_fill_changes_the_keys_of_the_pieces_it_touches_alone() {
+        let (c, _, m, _) = iceland(&|_| {});
+        let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
+        let f = pieces[1];
+        let base = Basemap { pin: A.into(), lakes: vec![] };
+        let filled = Filled { base: &base, over: f };
+        let (ma, ta) = with_water(&m, Some(A), &[&digests(&c, &base)]);
+        let before = tkeys(&c, &ma, &ta);
+        // (The fill's water as the jobs read it: its pin names it with the basemap.)
+        let w = digests(&c, &filled);
+        assert_eq!(w.pin, format!("{A} + fill"));
+        let mut mf = ma.clone();
+        let l = crate::terrain_water::idx_logical(&w.pin);
+        mf.insert(l.clone(), format!("{l}.cccccccccccccccc.json"));
+        let mut tf = tiles_for(&mf);
+        tf.hold_water(&format!("{l}.cccccccccccccccc.json"), w.clone());
+        let idx = tf.water_idx(&mf, &w.pin).unwrap();
+        let key = |t: &str, from: &str| build::water_key(Some(&w.pin), Some(idx), t, from).unwrap();
+        let after: BTreeMap<String, String> = before
+            .keys()
+            .map(|t| {
+                let u = Unit::parse(t).unwrap();
+                let k = if u.z == 6 {
+                    let fp = c.fingerprint(build::grown_e7(6, u.x, u.y, 20.0));
+                    build::terrain_piece_key((u.x, u.y), &fp, &key(t, &fp))
+                } else {
+                    let mids: Vec<String> = build::coverage_tiles(&c)[&(u.x, u.y)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();
+                    build::terrain_lo_key((u.x, u.y), &key(t, crate::terrain_water::AREA_FROM), &mids)
+                };
+                (t.clone(), k)
+            })
+            .collect();
+        let changed: Vec<&String> = before.keys().filter(|t| before[*t] != after[*t]).collect();
+        // The piece under the fill and its area's assembly (its z6–8 tiles), nothing else.
+        assert_eq!(changed, [&format!("3/{}/{}", f.0 >> 3, f.1 >> 3), &format!("6/{}/{}", f.0, f.1)]);
     }
 }

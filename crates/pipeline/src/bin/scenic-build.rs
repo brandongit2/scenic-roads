@@ -89,6 +89,16 @@
 //!   rail [--pass d] [--dem dir] [--cache dir]  trains a day on the coverage's rail ways
 //!                                (dem/railgtfs.py, then railfreq on the pass's rail set), as
 //!                                global/railfreq
+//!   terrain-water [--pass d]     the terrain's water digests (pipeline::terrain_water::WaterIdx):
+//!                                what each terrain piece and assembly near the coverage reads of
+//!                                the latest basemap's water, as work/water-idx/<hash16 of its
+//!                                pin>; those made before for the same reads kept
+//!   water-key-check [--pass d] [--compute [--save f] | --digests f] [--fill n]  what keying
+//!                                terrain on its water's digests does with the records now
+//!                                (pipeline::agent::rekey::derive): the terrain left to make, then
+//!                                as if a new basemap came with the same water, and with n pieces'
+//!                                water changed; without the manifest's digests, --compute works
+//!                                them out here, in memory, timed. Reads only
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -182,6 +192,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     }
     if step == "p5-check" {
         return p5_check(&root, &args);
+    }
+    if step == "water-key-check" {
+        return water_key_check(&root, &args);
     }
     if step == "names-todo" {
         // names-todo [--out <dir>] [--translations <dir>]: the translations' and descriptions' to-do
@@ -353,6 +366,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             eprintln!("spoken: {} regions, {name}", s.regions().count());
         }
         "water" => water_step(&mut out, &args, &scratch)?,
+        "terrain-water" => terrain_water_step(&mut out, &args)?,
         "pass-sets" => {
             // pass-sets [--pass <date>]: the sets the pass lacks in their current filters
             // (osmpass::SETS versions), from its kept filtered planet: copied here first when
@@ -1449,6 +1463,164 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         backfill_t / 3600.0,
         backfill_s / 3600.0,
         piece_s / by_q.len().max(1) as f64
+    );
+    Ok(())
+}
+
+// ---- water-key-check -----------------------------------------------------------------------------
+
+/// `water-key-check [--pass d] [--compute [--save f] | --digests f] [--fill n]`: what keying the
+/// terrain on its water's digests (agent::build::water_key) does with the records as they are,
+/// reading only: the records read as every reader reads them (agent::rekey::derive) and the
+/// terrain left to make; then, as if a new basemap came whose water is the same, and again with
+/// `n` pieces' water changed (a lake fill's), what's left to make. The digests are the manifest's;
+/// without them, `--compute` works them out here, in memory, timed (`--save f` keeps them in a
+/// file, which `--digests f` reads instead).
+fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
+    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
+    use pipeline::terrain_water::{idx_logical, WaterIdx};
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
+    let mut m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
+    let keys = build::Keys::load_strict(root)?;
+    let (recipes, bad) = pipeline::agent::recipes::load(&root.join("inputs/regions"));
+    anyhow::ensure!(bad.is_empty(), "regions that can't be read now: {bad:?}");
+    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
+    let cov = pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines"))?;
+    let t0 = std::time::Instant::now();
+    let mut tiles = TerrainTiles::new(None);
+    let n = tiles.load(root, &m);
+    anyhow::ensure!(tiles.unread().next().is_none(), "terrain packs' indexes or water digests unread: {:?}", tiles.unread().collect::<Vec<_>>());
+    println!("pass {date}, {} regions; the terrain packs' {n} indexes read into memory ({:.1} s)", recipes.len(), t0.elapsed().as_secs_f64());
+    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| Unit::parse(t).is_some_and(|u| u.z == 3)).count();
+    println!("records: terrain {} z3 tiles' whole runs, {} pieces, {} assemblies", z3(&keys.terrain), keys.terrain.len() - z3(&keys.terrain), keys.terrain_lo.len());
+    let pin = pipeline::terrain_pack::water_source_pin(&m).context("no basemap")?;
+    println!("the water's source: {pin}");
+    // The digests: the manifest's, or worked out here.
+    let held = |m: &mut BTreeMap<String, String>, tiles: &mut TerrainTiles, idx: WaterIdx| {
+        let content = format!("{}.check.json", idx_logical(&idx.pin));
+        m.insert(idx_logical(&idx.pin), content.clone());
+        tiles.hold_water(&content, idx);
+    };
+    let idx: WaterIdx = match (tiles.water_idx(&m, &pin).cloned(), opt(args, "--digests")) {
+        (Some(w), _) => {
+            println!("its digests: the manifest's ({} targets)", w.digests.len());
+            w
+        }
+        (None, Some(f)) => {
+            let w = WaterIdx::from_bytes(&std::fs::read(&f)?)?;
+            anyhow::ensure!(w.pin == pin, "{f} is {}'s digests", w.pin);
+            println!("its digests: {f}'s ({} targets)", w.digests.len());
+            held(&mut m, &mut tiles, w.clone());
+            w
+        }
+        (None, None) => {
+            anyhow::ensure!(args.iter().any(|a| a == "--compute"), "the manifest has no water digests for {pin}: --compute works them out here, in memory");
+            let src = pipeline::terrain_water::BasemapWater::open(&root.join(&pin), &pin)?;
+            let t = std::time::Instant::now();
+            let reads = build::water_reads(&cov);
+            let wanted = t.elapsed();
+            let ntiles: usize = reads.iter().map(|r| r.2.len()).sum();
+            let pieces = reads.iter().filter(|r| r.0.starts_with("6/")).count();
+            println!("what the targets read worked out: {} pieces, {} assemblies, {ntiles} tiles ({:.1} s)", pieces, reads.len() - pieces, wanted.as_secs_f64());
+            let t = std::time::Instant::now();
+            let w = pipeline::terrain_water::make_idx(&src, None, &reads, &|d, n| {
+                if d % 50 == 0 || d == n {
+                    eprintln!("  {d} of {n} targets ({:.0} s)", t.elapsed().as_secs_f64());
+                }
+            })?;
+            let secs = t.elapsed().as_secs_f64();
+            let none = w.digests.values().filter(|(_, d)| d == "-").count();
+            println!("its digests worked out here: {} targets ({none} without water) in {secs:.1} s, {:.0} tiles/s", w.digests.len(), ntiles as f64 / secs);
+            // (A second time: the basemap's directory and this Mac's file cache warm.)
+            let t = std::time::Instant::now();
+            let again = pipeline::terrain_water::make_idx(&src, None, &reads, &|_, _| {})?;
+            println!("again: {:.1} s, {}", t.elapsed().as_secs_f64(), if again == w { "the same digests" } else { "DIFFERENT DIGESTS" });
+            if let Some(f) = opt(args, "--save") {
+                std::fs::write(&f, serde_json::to_vec(&w)?)?;
+                println!("kept in {f}");
+            }
+            held(&mut m, &mut tiles, w.clone());
+            w
+        }
+    };
+    // What's left to make, the records read as every reader reads them.
+    let left = |m: &BTreeMap<String, String>, tiles: &TerrainTiles, what: &str| -> Result<(rekey::Derived, build::TerrainWork)> {
+        let t = std::time::Instant::now();
+        let mut read = keys.clone();
+        let d = rekey::derive(&mut read, &cov, m, tiles);
+        let first = t.elapsed();
+        // (Again, as each plan after the first: kept with what it's worked out from.)
+        let t = std::time::Instant::now();
+        let mut again = keys.clone();
+        let d2 = rekey::derive(&mut again, &cov, m, tiles);
+        let next = t.elapsed();
+        anyhow::ensure!(d2 == d && again == read, "deriving again gave other records");
+        let tt = build::terrain_slope_targets(&cov, m, tiles);
+        let w = build::terrain_work(&tt, m, &read);
+        let unknown = tt.terrain.iter().chain(&tt.terrain_lo).filter(|(_, k)| k == build::UNKNOWN).count();
+        println!("{what}:");
+        println!(
+            "  derived: {} z3 tiles as their pieces and assembly ({} from an earlier basemap), {} pieces and assemblies of the keys that named the basemap; stale under the old scheme: {}; kept, their water unknown: {}; deriving {:.0} ms the first time, {:.0} ms again",
+            d.terrain.len(),
+            d.older.len(),
+            d.water.len(),
+            d.stale.len(),
+            d.unknown.len(),
+            first.as_secs_f64() * 1e3,
+            next.as_secs_f64() * 1e3
+        );
+        for (t, why) in d.stale.iter().chain(&d.unknown) {
+            println!("    {t}: {why}");
+        }
+        println!(
+            "  terrain left to make: {} of {} pieces, {} of {} assemblies ({} keys unknown); areas whose terrain is to be made: {}",
+            w.terrain_pieces_left.len(),
+            tt.terrain.len(),
+            w.terrain_lo_left.len(),
+            tt.terrain_lo.len(),
+            unknown,
+            w.terrain_left.len()
+        );
+        if !w.terrain_pieces_left.is_empty() {
+            println!("    pieces: {}", w.terrain_pieces_left.iter().cloned().collect::<Vec<_>>().join(" "));
+        }
+        if !w.terrain_lo_left.is_empty() {
+            println!("    assemblies: {}", w.terrain_lo_left.iter().cloned().collect::<Vec<_>>().join(" "));
+        }
+        Ok((d, w))
+    };
+    let (_, now) = left(&m, &tiles, "now, the terrain keyed on its water's digests")?;
+    // A new basemap, its water the same as this one's under every target: nothing to make.
+    let mut m2 = m.clone();
+    let next = "layers/basemap/world-2099-01-01";
+    m2.insert(next.into(), format!("{next}.0123456789abcdef.pmtiles"));
+    let pin2 = pipeline::terrain_pack::water_source_pin(&m2).unwrap();
+    let mut tiles2 = TerrainTiles::new(None);
+    tiles2.load(root, &m);
+    held(&mut m2, &mut tiles2, idx.clone());
+    held(&mut m2, &mut tiles2, WaterIdx { pin: pin2.clone(), ..idx.clone() });
+    let (_, same) = left(&m2, &tiles2, "a new basemap whose water is the same")?;
+    // And with some pieces' water changed (a lake fill's): those pieces, their areas' assemblies.
+    let k: usize = opt(args, "--fill").map(|v| v.parse()).transpose()?.unwrap_or(10);
+    let mut changed = WaterIdx { pin: pin2, ..idx.clone() };
+    let touched: Vec<String> = changed.digests.keys().filter(|t| t.starts_with("6/")).step_by((idx.digests.len() / k.max(1)).max(1)).take(k).cloned().collect();
+    for t in &touched {
+        let e = changed.digests.get_mut(t).unwrap();
+        e.1 = format!("{}+fill", e.1);
+    }
+    let mut tiles3 = TerrainTiles::new(None);
+    tiles3.load(root, &m);
+    let mut m3 = m2.clone();
+    held(&mut m3, &mut tiles3, idx.clone());
+    held(&mut m3, &mut tiles3, changed);
+    let (_, fill) = left(&m3, &tiles3, &format!("a new basemap with {} pieces' water changed ({})", touched.len(), touched.join(" ")))?;
+    let want: BTreeSet<String> = touched.iter().cloned().chain(now.terrain_pieces_left.iter().cloned()).collect();
+    println!(
+        "the switch: {}; a new basemap with the same water: {}; with {} pieces' water changed: {}",
+        if now.terrain_pieces_left.is_empty() && now.terrain_lo_left.is_empty() { "nothing to make".to_string() } else { format!("{} pieces and {} assemblies to make", now.terrain_pieces_left.len(), now.terrain_lo_left.len()) },
+        if same.terrain_pieces_left == now.terrain_pieces_left && same.terrain_lo_left == now.terrain_lo_left { "the same, nothing more" } else { "MORE TO MAKE" },
+        touched.len(),
+        if fill.terrain_pieces_left == want { "those pieces alone" } else { "OTHER PIECES TOO" }
     );
     Ok(())
 }
@@ -3317,6 +3489,36 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
     pack_raw_with(out, &raw_dir, &say);
     Ok(())
 }
+
+/// terrain-water [--pass d]: the terrain's water digests (`pipeline::terrain_water::make_idx`) of
+/// what each terrain piece and assembly near the coverage reads (agent::build::water_wants), of
+/// the latest basemap's water, under `work/water-idx/<hash16 of its pin>`: those already there for
+/// the same reads kept, the others read from the basemap.
+fn terrain_water_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let cov = coverage_of(out, args)?;
+    let src = pipeline::terrain_pack::open_water(out)?;
+    let idx = water_idx_of(out, &cov, &src, &|done, total| pipeline::agent::jobs::report(done, total, "targets"))?;
+    let local = out.scratch_file("terrain-water.json");
+    std::fs::write(&local, serde_json::to_vec(&idx)?)?;
+    let name = out.put_file(&pipeline::terrain_water::idx_logical(&idx.pin), "json", &local)?;
+    std::fs::remove_file(&local).ok();
+    out.save()?;
+    eprintln!("terrain-water: {} targets' digests, {name}", idx.digests.len());
+    Ok(())
+}
+
+/// The water digests the coverage's terrain wants of `src` (agent::build::water_wants), those the
+/// manifest has for its pin kept.
+fn water_idx_of(out: &Out, cov: &pipeline::coverage::Coverage, src: &dyn pipeline::terrain_water::WaterSource, progress: &dyn Fn(u64, u64)) -> Result<pipeline::terrain_water::WaterIdx> {
+    let pin = src.pin();
+    anyhow::ensure!(Some(&pin) == pipeline::terrain_pack::water_source_pin(&out.manifest).as_ref(), "the water source's pin ({pin}) isn't the one the plan names");
+    let prior = match out.get(&pipeline::terrain_water::idx_logical(&pin)) {
+        Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&std::fs::read(out.path(c))?)?),
+        None => None,
+    };
+    pipeline::terrain_water::make_idx(src, prior.as_ref(), &pipeline::agent::build::water_reads(cov), progress)
+}
+
 
 /// terrain-lo <3/x/y …>: terrain's assemblies (pipeline::terrain_pack::build_lo: each z3 tile's lo
 /// pack from its pieces' mids), then the raw tiles AWS gave packed onto the NAS.
