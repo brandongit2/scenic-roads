@@ -506,23 +506,27 @@ pub fn remove_tree(dir: &Path) -> Tree {
 mod tests {
     use super::*;
 
-    /// `try_remove`, tried for a moment: a child process another test starts holds copies of this
-    /// process's open files (their locks too) until it's started its program.
+    /// `try_remove`, tried until it's not in use: a child process another test starts holds
+    /// copies of this process's open files (their locks too) until it's started its program,
+    /// longer on a loaded Mac. Five minutes is a watchdog.
     fn remove(p: &Path) -> Removed {
-        for _ in 0..100 {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
             match try_remove(p) {
-                Removed::InUse => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Removed::InUse if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
                 r => return r,
             }
         }
-        Removed::InUse
     }
 
     fn remove_all(ps: &[PathBuf]) -> Option<u64> {
-        (0..100).find_map(|_| try_remove_all(ps).or_else(|| {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            None
-        }))
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
+            match try_remove_all(ps) {
+                None if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
+                r => return r,
+            }
+        }
     }
 
     #[test]

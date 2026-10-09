@@ -175,7 +175,15 @@ mod tests {
         // Used just now: kept within `keep`, deleted past it.
         assert_eq!(b.evict(1, Duration::from_secs(3600)), 0);
         crate::cachefile::release(&a);
-        assert_eq!(b.evict(1, Duration::ZERO), 100);
+        // (A sibling test's child may hold a copy of the hold's descriptor a moment, between its
+        // fork and its exec: evicted again until it goes, five minutes a watchdog.)
+        let end = std::time::Instant::now() + Duration::from_secs(300);
+        let mut freed = b.evict(1, Duration::ZERO);
+        while freed == 0 && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+            freed = b.evict(1, Duration::ZERO);
+        }
+        assert_eq!(freed, 100);
         assert_eq!(b.bytes(), 0);
     }
 }

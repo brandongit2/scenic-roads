@@ -1159,9 +1159,17 @@ mod tests {
         let t = trim(c, nas, &|_| false).unwrap();
         assert_eq!((t.freed, t.left), (BTreeMap::from([("blobs".to_string(), 500)]), 1000));
         assert!(held.exists());
-        // Let go: it goes.
+        // Let go: it goes. (A sibling test's child may hold a copy of the hold's descriptor a
+        // moment, between its fork and its exec: trimmed again until it goes, five minutes a
+        // watchdog.)
         store::cachefile::release(&held);
-        assert_eq!(trim(c, nas, &|_| false).unwrap().bytes(), 1000);
+        let end = std::time::Instant::now() + Duration::from_secs(300);
+        let mut freed = trim(c, nas, &|_| false).unwrap().bytes();
+        while freed == 0 && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+            freed = trim(c, nas, &|_| false).unwrap().bytes();
+        }
+        assert_eq!(freed, 1000);
     }
 
     #[test]
