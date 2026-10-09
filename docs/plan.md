@@ -369,7 +369,9 @@ record changes back through the build Mac's coordinator, which journals them for
     - AWS's raw terrain tiles (`aws-terrarium/`): as fetched, until packed onto the NAS (packed
       there before they go; a helper's stay until a job of its own packs them), and copies of its
       archives (`packs/`), filled from the NAS's archives;
-    - copies of the records' files staging reads (`blobs/`), filled from the store, and of the
+    - copies of the records' files staging reads (`blobs/`), filled from the store (a terrain hi
+      pack only for the unit whose z6 tile it is, or one holding half of the unit's box: a
+      neighbour's strip is read from the NAS's in spans, or from its copy if there is one), and of the
       roadside buildings' z8 tiles units read (`blobs/buildings/<index hash>/`), filled from
       `sources/buildings/<release>/`, the next unit's ahead of it, and of the units' kept DEM
       samples a unit read or kept whole (`blobs/dem-units/`, by the file's name, length and time),
