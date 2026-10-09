@@ -1,6 +1,8 @@
 // The colour-scale controls shared by roads, rail and ferries: a histogram of what's in view with
-// draggable range handles, auto-fit percentiles, Auto / Lock / Full / Equalise, the colour map,
+// draggable range handles, auto-fit (percentiles, ranks, or screen widths or percentiles of line by
+// the owner's pick), Auto / Lock / Full / Equalise, the colour map,
 // the low-end fade and a threshold highlight. Each owner adapts it to its own state.
+import { bestOfPct, setBestPct, type FitUnit } from '../autofit';
 import { PALETTE_ITEMS, paletteCss, paletteRgb } from '../palettes';
 import type { Dist } from '../roads/stats';
 import type { ThresholdDir } from '../state';
@@ -45,10 +47,15 @@ export interface ScaleOpts {
   /** Auto-fit to ranks in view (the low end at the n-th best, the top at the m-th) instead of
    * percentiles (landmarks). */
   rank?: { get: () => [number, number]; set: (v: [number, number]) => void };
-  /** Auto-fit to the best so much of the length in view (the low end at the first amount, full
-   * colour from the second, in `unit`s) instead of percentiles, while `active` (roads' scenic metrics). */
-  /** `best`: the word for the top of the scale (default "best"; "busiest" for frequencies). */
-  len?: { active: () => boolean; get: () => [number, number]; set: (v: [number, number]) => void; unit: string; best?: () => string };
+  /** While `active` (the roads' scenic metrics, rail's and ferries' ranked ones): auto-fit to the
+   * best so much of the line in view, the low end at the first amount, full colour from the second,
+   * in the owner's `unit` (picked in the caption): screen widths (`get`/`set`), or percent of the
+   * length in view (the best 20 % = the fit's 80th percentile). `best`: the word for the top of the
+   * scale (default "best"; "busiest" for frequencies). */
+  len?: {
+    active: () => boolean; get: () => [number, number]; set: (v: [number, number]) => void;
+    unit: () => FitUnit; setUnit: (u: FitUnit) => void; best?: () => string;
+  };
   /** A pill that makes the range follow something else (the terrain tint: the road colours'),
    * while `available`; on, the caption says so and Auto / Lock / Full turn it off. */
   follow?: { label: string; title: string; caption: string; available: () => boolean; on: () => boolean; set: (on: boolean) => void };
@@ -105,6 +112,7 @@ export class ScaleControls {
   private rankHi: HTMLInputElement | null = null;
   private lenLo: HTMLInputElement | null = null;
   private lenHi: HTMLInputElement | null = null;
+  private lenUnit: HTMLSelectElement | null = null;
   private fitHi: HTMLInputElement;
   private fade: HTMLInputElement;
   private fadeOut: HTMLOutputElement;
@@ -166,11 +174,12 @@ export class ScaleControls {
     if (o.len) {
       const len = o.len;
       const inp = (i: 0 | 1) => {
-        const e = h('input', {
-          type: 'number', class: 'pct', min: 0.5, step: 0.5,
-          title: i ? `Full colour for the ${len.best?.() ?? 'best'} this many ${len.unit} of ${o.noun} in view` : `The scale's low end: the ${len.best?.() ?? 'best'} this many ${len.unit} of ${o.noun} in view (the rest fade)`,
-        });
+        const e = h('input', { type: 'number', class: 'pct' });
         e.addEventListener('change', () => {
+          if (len.unit() === 'pct') {
+            o.set({ fit: setBestPct(o.get().fit, i, Number(e.value)) });
+            return;
+          }
           const v = Math.max(0.5, Math.round((Number(e.value) || 0.5) * 2) / 2);
           const r: [number, number] = [...len.get()];
           r[i] = v;
@@ -182,6 +191,13 @@ export class ScaleControls {
       };
       this.lenLo = inp(0);
       this.lenHi = inp(1);
+      // The unit, a word in the sentence: screen widths (a fixed amount of line at this zoom) or
+      // percent (a share of the length in view).
+      this.lenUnit = h('select', {
+        class: 'unit',
+        title: `Auto-fit in screen widths of ${o.noun} (line as long as the view is wide: a fixed amount whatever the mix in view) or in percent of the ${o.measure} in view`,
+      }, h('option', { value: 'widths' }, 'screen widths'), h('option', { value: 'pct' }, '%'));
+      this.lenUnit.addEventListener('change', () => len.setUnit(this.lenUnit!.value as FitUnit));
     }
     this.legend = h('div', { class: 'legend' }, this.canvas, h('div', { class: 'caption' }, this.caption, this.pills));
 
@@ -256,12 +272,20 @@ export class ScaleControls {
         this.rankLo.value = String(lo);
         this.rankHi.value = String(hi);
         this.caption.replaceChildren('Auto-fit: the best ', this.rankLo, ` ${this.o.noun} in view, full size from #`, this.rankHi);
-      } else if (s.auto && this.o.len?.active() && this.lenLo && this.lenHi) {
-        const [lo, hi] = this.o.len.get();
-        this.lenLo.value = String(lo);
-        this.lenHi.value = String(hi);
-        const best = this.o.len.best?.() ?? 'best';
-        this.caption.replaceChildren(`Auto-fit: the ${best} `, this.lenLo, ` ${this.o.len.unit} of ${this.o.noun} in view, full colour from the ${best} `, this.lenHi);
+      } else if (s.auto && this.o.len?.active() && this.lenLo && this.lenHi && this.lenUnit) {
+        const len = this.o.len;
+        const pct = len.unit() === 'pct';
+        const [lo, hi] = pct ? [bestOfPct(s.fit[0]), bestOfPct(s.fit[1])] : len.get();
+        const best = len.best?.() ?? 'best';
+        const what = pct ? `% of the ${this.o.measure}` : `screen widths of ${this.o.noun}`;
+        for (const [i, e, v] of [[0, this.lenLo, lo], [1, this.lenHi, hi]] as const) {
+          Object.assign(e, pct ? { min: i ? '0' : '0.5', max: i ? '99.5' : '100', step: '0.1' } : { min: '0.5', max: '', step: '0.5' });
+          e.value = String(v);
+          e.title = i ? `Full colour for the ${best} this many ${what} in view` : `The scale's low end: the ${best} this many ${what} in view (the rest fade)`;
+        }
+        this.lenUnit.value = len.unit();
+        this.caption.replaceChildren(`Auto-fit: the ${best} `, this.lenLo, this.lenUnit, ` of ${this.o.noun} in view, full colour from the ${best} `, this.lenHi, ...(pct ? [' %'] : []));
+        fitSelect(this.lenUnit);
       } else if (s.auto) this.caption.replaceChildren('Auto-fit to percentiles ', this.fitLo, '–', this.fitHi, ` of ${this.o.noun} in view`);
       else this.caption.textContent = 'Fixed range · drag the handles';
     }
@@ -449,6 +473,17 @@ export class ScaleControls {
     const step = niceStep(axis[1] - axis[0], 5);
     for (let v = Math.ceil(axis[0] / step) * step; v <= axis[1]; v += step) ctx.fillRect(X(v), HB + 1, 1, 2);
   }
+}
+
+/** A select as wide as its chosen option's text, where CSS field-sizing isn't supported. */
+function fitSelect(e: HTMLSelectElement) {
+  if (typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content')) return;
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (!ctx || !e.isConnected) return;
+  const cs = getComputedStyle(e);
+  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const text = e.selectedOptions[0]?.text ?? '';
+  e.style.width = `${Math.ceil(ctx.measureText(text).width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)) + 1}px`;
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, hh: number, r: number) {

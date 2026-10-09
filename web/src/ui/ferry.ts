@@ -60,7 +60,8 @@ export class FerryCard {
         return { domain: d.domain, step: d.step, fmt: d.fmt };
       },
       noun: 'ferry lines',
-      len: { active: () => !!ferryMetricDef(store.s.ferry.metric).byLen, get: () => store.s.ferry.fitLen, set: (fitLen) => F({ fitLen }), unit: 'screen widths', best: () => 'busiest' },
+      len: { active: () => !!ferryMetricDef(store.s.ferry.metric).byLen, get: () => store.s.ferry.fitLen, set: (fitLen) => F({ fitLen }),
+        unit: () => store.s.ferry.fitUnit, setUnit: (fitUnit) => F({ fitUnit }), best: () => 'busiest' },
       measure: 'ferry route length',
       fadeDefault: 0,
       spanDefault: 0.6,

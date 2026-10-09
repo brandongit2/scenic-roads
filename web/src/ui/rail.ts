@@ -64,7 +64,8 @@ export class RailCard {
       },
       noun: 'rail',
       len: {
-        active: () => !!railMetricDef(store.s.rail.metric).byLen, get: () => store.s.rail.fitLen, set: (fitLen) => R({ fitLen }), unit: 'screen widths',
+        active: () => !!railMetricDef(store.s.rail.metric).byLen, get: () => store.s.rail.fitLen, set: (fitLen) => R({ fitLen }),
+        unit: () => store.s.rail.fitUnit, setUnit: (fitUnit) => R({ fitUnit }),
         best: () => ({ freq: 'busiest', viaduct: 'highest', drama: 'highest', curvy: 'twistiest' } as Partial<Record<string, string>>)[store.s.rail.metric] ?? 'best',
       },
       measure: 'rail length',

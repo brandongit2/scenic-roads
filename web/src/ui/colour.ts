@@ -52,7 +52,8 @@ export class ColourCard {
       fadeDefault: 0.7,
       spanDefault: 0.6,
       fixedCaption: () => (store.s.mode === 'relief' ? 'Lowest → highest road in view' : null),
-      len: { active: () => modeGroup(store.s.mode) === 'scenic', get: () => store.s.fitLen, set: (fitLen) => store.set({ fitLen }), unit: 'screen widths' },
+      len: { active: () => modeGroup(store.s.mode) === 'scenic', get: () => store.s.fitLen, set: (fitLen) => store.set({ fitLen }),
+        unit: () => store.s.fitUnit, setUnit: (fitUnit) => store.set({ fitUnit }) },
       onPreview: (k) => this.onPalettePreview(k),
     });
 

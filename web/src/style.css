@@ -95,10 +95,18 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .legend .ticks { display: flex; justify-content: space-between; margin-top: 3px; color: var(--muted); font-size: 11px; }
 .legend .ticks b { color: var(--text); font-weight: 500; }
 .legend .caption { display: flex; flex-direction: column; align-items: stretch; gap: 5px; margin-top: 6px; color: var(--faint); font-size: 10.5px; min-height: 22px; }
-.legend .caption > span { display: flex; align-items: center; flex-wrap: wrap; gap: 0 2px; }
+/* (Flowing text, the inputs inline: the sentence wraps between words, not before a whole phrase.) */
+.legend .caption > span { display: block; line-height: 19px; }
+.legend .caption > span > input, .legend .caption > span > select { vertical-align: baseline; line-height: 12px; }
 .legend .caption .pills { justify-content: flex-end; }
 .legend .caption input.pct { width: 46px; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 3px; font-size: 10.5px; color: var(--text); margin: 0 3px; text-align: right; -moz-appearance: textfield; }
 .legend .caption input.pct::-webkit-inner-spin-button { opacity: 0.5; }
+/* The auto-fit unit, a word in the caption's sentence (screen widths or %): text with a dotted
+   underline and a small caret, a menu on click. */
+.legend .caption select.unit { appearance: none; -webkit-appearance: none; field-sizing: content; background: transparent no-repeat right 1px center / 6px 4px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 4'%3E%3Cpath d='M0 0h6L3 4z' fill='%238b94a3'/%3E%3C/svg%3E"); border: 0; border-bottom: 1px dotted var(--muted); border-radius: 0; padding: 0 10px 0 0; margin: 0 1px; height: auto; font: inherit; color: var(--text); cursor: pointer; }
+.legend .caption select.unit:hover { border-bottom-color: var(--text); }
+.legend .caption select.unit:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.legend .caption select.unit option { background: var(--card-solid); color: var(--text); }
 .pill { border: 1px solid var(--line-strong); background: none; border-radius: 999px; padding: 2px 8px; color: var(--muted); font-size: 10.5px; }
 .pill:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.25); }
 .pill.on { color: #0b0e13; background: var(--accent); border-color: var(--accent); font-weight: 600; }
@@ -484,7 +492,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #colour .rail-card { display: grid; gap: 6px; }
 #colour .rail-bd { display: grid; gap: 6px; }
 #colour .rail-card .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-items: center; }
-#colour .rail-card select { background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 2px 4px; font-size: 11px; color: var(--text); min-width: 0; }
+#colour .rail-card select:not(.unit) { background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 2px 4px; font-size: 11px; color: var(--text); min-width: 0; }
 #colour .rail-card input[type='color'] { width: 100%; height: 20px; border: 1px solid var(--line-strong); border-radius: 5px; background: none; padding: 0; }
 #colour .rail-bar { width: 100%; height: 30px; display: block; }
 #colour .rail-caption { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 11px; }
