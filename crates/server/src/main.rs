@@ -229,7 +229,11 @@ impl AppState {
     /// every five minutes); whether it's this Mac's; for this Mac's, the running job's log; and
     /// what this Mac has downloaded (downloads::summary); and the build page's addresses (`pages`).
     fn build_status(&self) -> serde_json::Value {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        self.build_status_at(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+    }
+
+    /// `build_status` at `now` (unix seconds).
+    fn build_status_at(&self, now: u64) -> serde_json::Value {
         let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
         let (mut status, local) = match own {
@@ -1026,7 +1030,7 @@ mod tests {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         std::fs::create_dir_all(home.path().join("agent")).unwrap();
         std::fs::write(home.path().join("agent/status.json"), serde_json::json!({ "host": "lead", "beat": now }).to_string()).unwrap();
-        let body = test_state(home.path(), nas.path()).build_status();
+        let body = test_state(home.path(), nas.path()).build_status_at(now);
         assert_eq!(body["local"], true);
         assert_eq!(body["pages"][0], format!("http://127.0.0.1:{}/work/", pipeline::coord::PORT));
         assert_eq!(body["pages"].as_array().unwrap().len(), 3);
@@ -1034,11 +1038,11 @@ mod tests {
         // No contact (the NAS away, or no lead running): none.
         std::fs::remove_file(pipeline::coord::contact_path(nas.path())).unwrap();
         std::fs::remove_file(home.path().join("agent/status.json")).unwrap();
-        assert_eq!(test_state(home.path(), nas.path()).build_status()["pages"], serde_json::json!([]));
+        assert_eq!(test_state(home.path(), nas.path()).build_status_at(now)["pages"], serde_json::json!([]));
         // The page over HTTPS (`tailscale serve`): first, then the addresses.
         let contact = serde_json::json!({ "urls": ["http://100.70.85.80:8090"], "token": key, "page": "https://lead.tail0.ts.net/work/" });
         std::fs::write(pipeline::coord::contact_path(nas.path()), contact.to_string()).unwrap();
-        let body = test_state(home.path(), nas.path()).build_status();
+        let body = test_state(home.path(), nas.path()).build_status_at(now);
         assert_eq!(body["pages"], serde_json::json!(["https://lead.tail0.ts.net/work/", "http://100.70.85.80:8090/work/"]));
         assert!(!body.to_string().contains(key));
     }

@@ -1229,17 +1229,21 @@ mod tests {
         serde_json::from_slice::<serde_json::Value>(&b).unwrap()
     }
 
-    /// Asks until the places are made (or the build fails): the last answer.
+    /// Asks until the places are made (or the build fails): the last answer. (As long as a busy
+    /// Mac takes: five minutes is a watchdog, not a measure.)
     async fn ready(s: &S) -> serde_json::Value {
-        for _ in 0..400 {
+        let end = Instant::now() + WATCHDOG;
+        while Instant::now() < end {
             let v = ask(s, "", None).await;
             if v["ready"] == true || v.get("failed").is_some() {
                 return v;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("the places were never made");
+        panic!("the places were never made (in {WATCHDOG:?})");
     }
+
+    const WATCHDOG: Duration = Duration::from_secs(300);
 
     #[tokio::test]
     async fn the_search_answers_once_the_maps_places_are_made() {
@@ -1364,7 +1368,8 @@ mod tests {
         catalog(nas.path(), 3, &ps3, &[]);
         assert!(s.data.refresh_catalog());
         assert_eq!(ask(&s, "lake louise", None).await["hits"].as_array().map(Vec::len), Some(1), "the old, meanwhile");
-        for _ in 0..400 {
+        let end = Instant::now() + WATCHDOG;
+        while Instant::now() < end {
             if first(&s).is_some_and(|f| f.0 == 2) {
                 break;
             }

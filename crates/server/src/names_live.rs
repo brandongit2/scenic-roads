@@ -412,8 +412,11 @@ mod tests {
         assert_eq!(d.sub, None);
         let d = s.names.display(Kind::Road, "Lac Bleu", None, &[], 2.0, 46.0);
         assert_eq!(d.sub, None);
-        // A file still being written isn't copied.
-        write_aged(&nas.path().join("translations/answers/fr-002.jsonl"), "{\"n\": \"Lac Noir\", \"kind\": \"other\", \"langs\": [\"fr\"], \"sub\": \"Black Lake\"}\n", 0);
+        // A file still being written isn't copied. (Its time an hour on: still being written
+        // however long a busy Mac takes to get to the copy.)
+        let p = nas.path().join("translations/answers/fr-002.jsonl");
+        write_aged(&p, "{\"n\": \"Lac Noir\", \"kind\": \"other\", \"langs\": [\"fr\"], \"sub\": \"Black Lake\"}\n", 0);
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
         assert!(!s.names.sync(&s.data).unwrap());
     }
 }
