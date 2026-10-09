@@ -22,7 +22,7 @@ pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse"
 pub const LEGACY: &str = "global/legacy";
 
 /// Where a pass's heritage comes from: the heritage job's outputs (`work/heritage/<date>`) when
-/// it has made them, else today's.
+/// it has made them, else the converted build's (`LEGACY`; plan §10).
 pub fn heritage_source(out: &Out, date: &str) -> String {
     let job = format!("work/heritage/{date}");
     let has = |stem: &str| out.get(&format!("{job}/{stem}")).is_some();
@@ -45,7 +45,7 @@ pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
 
 /// A point for the marks: its kind (an index of KINDS), place, record, the filters' values, lean
 /// properties, popup record, and what its id is made from (an OSM id used when no other point has
-/// it, else the reference). Today's converted points and the `marks` job's alike.
+/// it, else the reference).
 pub struct Point {
     pub kind: usize,
     pub lon: f64,
@@ -87,7 +87,7 @@ fn whc_site(url: &str) -> Option<&str> {
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then_some(id)
 }
 
-/// Today's heritage sites (World Heritage components among them).
+/// The heritage sites of `src` (World Heritage components among them).
 fn heritage_points(out: &Out, src: &str, pts: &mut Vec<Pt>) -> Result<()> {
     let details = heritage_details(out, src)?;
     let k = marks::kind_index("heritage").unwrap();

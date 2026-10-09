@@ -90,7 +90,7 @@ pub fn write_pack_local(out: &Out, layer: &str, encoding: &str, gzip: bool, scop
     Ok(Some(LocalPack { logical, local, zooms: (zmin, zmax) }))
 }
 
-/// Split a legacy tile archive into packs, keeping zooms up to `max_z`, saying how far it is as
+/// Split a tile archive into packs, keeping zooms up to `max_z`, saying how far it is as
 /// `packs written` (crate::agent::jobs::report).
 pub fn split_archive(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, gzip: bool, max_z: u8) -> Result<LayerOut> {
     split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| crate::agent::jobs::report(k, n, "packs written"))
@@ -136,7 +136,7 @@ pub fn split_archive_with(out: &mut Out, arc: &Archive, layer: &str, encoding: &
     Ok(lo)
 }
 
-/// Split one legacy z11 analysis grid layer (`grid.<var>.u8` over `grid.idx`) into hi packs of
+/// Split one z11 analysis grid layer of a unit folder (`grid.<var>.u8` over `grid.idx`) into hi packs of
 /// zstd-compressed 256 × 256 u8 tiles.
 pub fn split_grid(out: &mut Out, dir: &std::path::Path, var: &str) -> Result<LayerOut> {
     let idx = roadcore::grid::GridIndex::load(dir)?;

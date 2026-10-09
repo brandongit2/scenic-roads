@@ -104,8 +104,8 @@ pub fn tiles(ways: &[WayIn], zr: u8, xr: u32, yr: u32, zs: std::ops::RangeInclus
         let keep = move |x: u32, y: u32| x >> sh == xr && y >> sh == yr;
         let pieces = tiling::cut(z, ways, &keep, progress);
         let (rp, dp): (Vec<(u64, TileLine)>, Vec<(u64, TileLine)>) = pieces.into_iter().partition(|p| class::is_rail(p.1.style & 0x0f));
-        roads.extend(tiling::encode_zoom(z, 14, &dp, None));
-        rails.extend(tiling::encode_zoom(z, 14, &rp, None));
+        roads.extend(tiling::encode_zoom(z, 14, &dp));
+        rails.extend(tiling::encode_zoom(z, 14, &rp));
     }
     (roads, rails)
 }

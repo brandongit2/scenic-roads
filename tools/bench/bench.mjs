@@ -1,7 +1,7 @@
 // Frame-budget benchmark for the map app, driven through the Chrome DevTools Protocol.
 //
 // Start a Chrome with the real GPU (Metal) and remote debugging, then run scenarios against the app
-// served by the backend (make serve / preview "backend"):
+// served by the backend (the launch config's "backend", or the installed app):
 //
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=9333 \
 //     --user-data-dir=/tmp/bench-chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist \

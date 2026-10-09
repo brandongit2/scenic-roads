@@ -1,12 +1,12 @@
-//! base(U) (docs/plan.md §6): one unit's base pack, from its OSM piece, by today's steps run on a
-//! unit-sized build folder (`extract`, `elev`, `areaflags`, `tile … elev`, `scenic-metrics`), then the
-//! same conversion as today's data (`legacy::base_sections`) for the ways the unit owns (first
+//! base(U) (docs/plan.md §6): one unit's base pack, from its OSM piece, by the unit's programs run on
+//! a unit folder (`extract`, `elev`, `areaflags`, `tile … elev`, `scenic-metrics`), then its arrays as
+//! a base pack (`legacy::base_sections`) for the ways the unit owns (first
 //! vertex inside it) that touch the coverage, with the pass's worldwide road values.
 //!
 //! Before the expensive steps the folder is cut down to the ways that touch the coverage (whoever
 //! owns them: a way just outside still gives the clean-up its junction context at shared nodes).
 //! The global-source layers come from the catalog's packs (`stage`). Each unit reads a slice of the
-//! per-vertex DEM cache: today's cache (the seed, copied once from the NAS's `sources/dem-cache/`)
+//! per-vertex DEM cache: the seed (copied once from the NAS's `sources/dem-cache/`)
 //! and the samples every unit kept from its last run (`dem_samples_keep`), so a vertex is sampled
 //! from the DEM servers once.
 
@@ -50,7 +50,7 @@ pub const DEM_UNITS: &str = "dem-units";
 const DEM_MAGIC: &[u8; 8] = b"RDDEM002";
 const DEM_HEAD: usize = 48;
 
-/// The DEM rules' versions today's cache (the seed) was sampled under: the first of each.
+/// The DEM rules' versions the seed was sampled under: the first of each.
 const SEED_DEM_VERSIONS: [u32; 4] = [1, 1, 1, 1];
 
 fn current_dem_versions() -> [u32; 4] {
@@ -208,7 +208,7 @@ fn dem_valid_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], made: 
 }
 
 /// Copies the DEM cache entries inside `b` (w, s, e, n, E7) into `dst` (`dem-cache.*` files, for
-/// elev): the seed's (`cache`'s `dem-cache.*`, today's cache), then every unit's kept samples
+/// elev): the seed's (`cache`'s `dem-cache.*`), then every unit's kept samples
 /// in `units` whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer); entries
 /// sampled under a DEM rule's earlier version are left out. With none, nothing is written (elev
 /// samples every vertex). The files near `b` are found by the boxes in their names (one listing);
@@ -281,7 +281,7 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
     Ok(ok.len())
 }
 
-/// Puts today's DEM cache (the seed) in `cache` when it isn't there whole, from the NAS's copy
+/// Puts the DEM cache's seed in `cache` when it isn't there whole, from the NAS's copy
 /// (`sources/dem-cache/`), and holds it (store::cachefile: room-making may delete it while no job
 /// holds it, the NAS having it whole; it's copied again then). Without one the units sample every
 /// vertex anew.
@@ -373,8 +373,8 @@ pub struct Tools {
     pub bin: PathBuf,
     /// The repository's `dem/` folder (run with `uv run python`).
     pub dem: PathBuf,
-    /// This Mac's caches: `chm10/` (canopy 10° files) and `dem-cache.*` (today's per-vertex
-    /// elevations, the seed); and the units' kept results when there's no `shared`.
+    /// This Mac's caches: `chm10/` (canopy 10° files) and `dem-cache.*` (the seed's per-vertex
+    /// elevations); and the units' kept results when there's no `shared`.
     pub cache: PathBuf,
     /// Overture building boxes: a folder of `.f32` files (the unit's tiles staged by
     /// `buildtiles::stage`), when there are any.
@@ -711,9 +711,9 @@ pub struct Report {
 /// `area-shapes.geojsonseq` (crate::heritage::unit_inputs); the sites and polygons written.
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
-/// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the global-source
+/// Runs the unit's programs for unit `u` in `dir` from `piece`, with the coverage and the global-source
 /// layers on the NAS (`src`), and its scenic results from its last run (`carry`): `prepare_folder`,
-/// then its `tail`. Leaves the build folder ready for conversion.
+/// then its `tail`. Leaves the unit folder ready for its base pack.
 #[allow(clippy::too_many_arguments)]
 pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
     let rep = prepare_folder(u, piece, dir, cov, src, tools, heritage, carry)?;

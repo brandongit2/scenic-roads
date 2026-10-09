@@ -4,19 +4,16 @@
 # write the launcher's run file for the server, and restart the login item.
 #
 #   tools/app/install.sh                            the map's server
-#   tools/app/install.sh --agent [--seed-cache DIR]  also the build agent (the build Mac only);
-#       DIR (today's data/cache: canopy files, the per-vertex elevation cache) moves into the
-#       agent's cache, so the first builds reuse it
+#   tools/app/install.sh --agent                    also the build agent (the build Mac only)
 #   tools/app/install.sh --helper                   also a helper agent (the other Mac: it asks the
 #       build Mac's coordinator for the jobs that fit it of terrain, slope, tree cover, units and the
 #       landmarks' candidates and peaks, else units' last steps; docs/plan.md §8, Two Macs)
 set -euo pipefail
-agent=0 helper=0 seed=""
+agent=0 helper=0
 while (( $# )); do
   case $1 in
     --agent) agent=1 ;;
     --helper) helper=1 ;;
-    --seed-cache) seed=$2; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -46,14 +43,6 @@ if (( agent )); then reserve=150; fi
 printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" --reserve-gb $reserve > "$HOME_S/run/server"
 launchctl kickstart -k gui/$(id -u)/local.scenic.server
 if (( agent || helper )); then
-  if [[ -n $seed ]]; then
-    # Same disk: moves are instant. What the agent's cache already has stays.
-    mkdir -p "$HOME_S/agent/cache"
-    for f in "$seed"/*(N); do
-      [[ -e "$HOME_S/agent/cache/${f:t}" ]] || mv "$f" "$HOME_S/agent/cache/"
-    done
-    echo "seeded the agent's cache from $seed"
-  fi
   # The agent's jobs run osmium (Homebrew), Planetiler (Java 21) and the Python steps (uv, wherever
   # the login shell finds it: Homebrew, ~/.local/bin, a mise or asdf shim).
   uv=$(zsh -lc 'command -v uv' 2>/dev/null || true)

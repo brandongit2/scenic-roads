@@ -60,8 +60,7 @@ function post(m: WorkerResponse, transfer: Transferable[] = []) {
 
 function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): DecodedTile {
   let pos = 4;
-  // RT v7 only: its way column holds OSM way ids, lines sorted by draw class then id (older tiles
-  // held the legacy build's way indices, which nothing can look up any more).
+  // RT v7: its way column holds OSM way ids, lines sorted by draw class then id.
   if (b[0] !== 0x52 || b[1] !== 0x54 || b[2] !== 7) throw new Error(`bad tile header (expected RT v7, got v${b[2]})`);
   const extent = 1 << b[3];
   const rv = (): number => {

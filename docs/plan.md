@@ -1284,8 +1284,8 @@ folder> --scratch <local dir>` as for every step.
   feeds_v2.csv`.
 - **The MTR's lines** (`sources/rail/mtr`, `mtr.json`: researched by hand from MTR's published
   frequencies) and their stop pairs (`sources/rail/mtr-pairs`): `mtrpairs.py --mtr mtr.json
-  --stations hk-stations.geojsonseq --out pairs-mtr.bin`, the stations from the pass's `rail` set
-  (`osmium extract -b 113.8,22.1,114.5,22.6`, then `osmium tags-filter … n/railway=station,halt,stop,tram_stop
+  --stations hk-stations.geojsonseq --out pairs-mtr.bin`, the stations from the pass's filtered
+  planet (`osmium extract -b 113.8,22.1,114.5,22.6`, then `osmium tags-filter … n/railway=station,halt,stop,tram_stop
   n/public_transport=station w/railway=station` and `osmium export … -f geojsonseq`); then
   `scenic-build put sources/rail/mtr-pairs bin pairs-mtr.bin` (and `mtr.json` as `sources/rail/mtr`).
   The rail job's key follows them.

@@ -76,7 +76,7 @@ impl Summary {
         }
     }
 
-    /// The map's meta: the fields of today's `roads.json` that the app reads, with the same names.
+    /// The map's meta: the fields the app reads.
     pub fn meta(&self) -> serde_json::Value {
         let deg = |v: i32| (v as f64 * E7 * 1e4).round() / 1e4;
         let r1 = |v: f64| (v * 10.0).round() / 10.0;

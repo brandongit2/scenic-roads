@@ -1,5 +1,5 @@
-//! The `marks` job (docs/phase5.md "Build"): landmark points from their candidates, as today's
-//! scripts made them (dem/filterprops.py, dem/interest.py, dem/layers.py), for markdata and the
+//! The `marks` job (docs/phase5.md "Build"): landmark points from their candidates, as the heritage
+//! chain's scripts make theirs (dem/filterprops.py, dem/interest.py, dem/layers.py), for markdata and the
 //! thinned tiles (`markconv::write`). This part: the stops & sights.
 
 use crate::interest::{fame, isolation, min_zoom, percentile, poi_base, poi_filter_props, py_round, same_names, view_item};
@@ -247,7 +247,7 @@ pub fn summits_list(pts: &[Point]) -> Vec<(marks::SummitRec, String)> {
     named
         .into_iter()
         .enumerate()
-        // (Today's layers.py rounded the points to 6 decimals, then the summits list to 5.)
+        // (As layers.py rounds: the points to 6 decimals, then the summits list to 5.)
         .map(|(rank, (e, x, y, n))| (marks::SummitRec { rank: rank as u32, lon: marks::e7(py_round(py_round(x, 6), 5)), lat: marks::e7(py_round(py_round(y, 6), 5)), pad: 0, ele: py_round(e, 0) }, n))
         .collect()
 }

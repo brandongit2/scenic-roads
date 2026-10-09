@@ -3,7 +3,7 @@
 and Indigenous lands their OSM tags and Wikidata facts.
 
   heritage-areas.json, special.json, indigenous.json (data/build): each feature gains its index
-      as `i` (the server's /api/detail/{layer}/{i}), and details-{harea,special,indigenous}.jsonl
+      as `i` (by which the overlays job joins them), and details-{harea,special,indigenous}.jsonl
       get its area (km², spherical) — Indigenous lands also the tags of the OSM boundary with
       the same name (data/areas/areas.geojsonseq).
   parks (drawn from the basemap's park layer, which has no ids): details-park.jsonl, one record

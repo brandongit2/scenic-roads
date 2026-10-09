@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""The overlays as the map loads them (layer-*.json in data/build, served by /api/layer/): only the
-properties the map draws, filters and labels with, in draw order, with polygons simplified.
+"""The overlays' lean files (layer-*.json in data/build), from which the marks and overlays jobs
+make what the map loads by view: only the properties the map draws, filters and labels with, in draw
+order, with polygons simplified.
 
   heritage, pois   points sorted by fame (fa, least known first), so the best known are drawn on
                    top without a sort key (which would cost a draw call per dot). A World
@@ -13,7 +14,7 @@ properties the map draws, filters and labels with, in draw order, with polygons 
                    ([lon, lat, ele, name]), for the highest summit in view. Heritage sites
                    keep what the dots, labels, filters and hover title use; the rest of their
                    properties (dates, authority, source, links …) go to props-heritage.jsonl by
-                   feature index, which the server merges into /api/detail/heritage/{i}.
+                   feature index, which the marks job joins into the sites' popup records.
   whs-shapes       the World Heritage outlines (whsshapes.py) with i, their site's record.
   heritage-areas   simplified to ~1 m (topology preserved); coordinates to 6 decimals.
   indigenous, special   coordinates to 6 decimals.

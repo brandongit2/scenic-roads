@@ -1,4 +1,4 @@
-//! A unit's local copies of the global-source layers, in the files the legacy steps read
+//! A unit's local copies of the global-source layers, in the files the unit's programs read
 //! (docs/plan.md §6, base(U)): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
 //! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
 //! them), over the unit grown by a margin (viewsheds see 15 km past the unit's buffer ways).
@@ -8,9 +8,6 @@
 //! local copies of them when it has a `Blobs` cache (each pack copied once, whole: neighbouring
 //! units share most of theirs, and a pack read tile by tile over SMB took thousands of small reads),
 //! or a published catalog's (`Source::Catalog`, another root's for a pilot).
-//!
-//! Also today's heritage sites (`heritage.json`, for the flags step), clipped from the converted
-//! worldwide file (`Heritage`).
 
 use det::Det;
 use crate::out::Out;
@@ -179,7 +176,7 @@ pub struct Staged {
 pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     std::fs::create_dir_all(dir)?;
     let mut st = Staged::default();
-    // Terrain z0–12 as the legacy archive (PNG blobs as they are).
+    // Terrain z0–12 as a tile archive (PNG blobs as they are).
     let mut terrain = LayerReader::new(src, "terrain");
     let tmp = dir.join("terrain.tiles.tmp");
     let mut w = ArchiveWriter::create(&tmp, r#"{"format":"png","encoding":"terrarium"}"#)?;

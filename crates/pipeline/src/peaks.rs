@@ -54,7 +54,7 @@ pub trait Tiles: Sync {
     fn get(&self, z: u8, x: u32, y: u32) -> Option<Vec<f32>>;
 }
 
-/// A build folder's archive: its tiles, else the nearest stored ancestor upsampled (today's).
+/// A tile archive: its tiles, else the nearest stored ancestor upsampled.
 pub struct ArchiveTiles<'a>(pub &'a Archive);
 
 impl Tiles for ArchiveTiles<'_> {

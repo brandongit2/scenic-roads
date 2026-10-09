@@ -321,7 +321,7 @@ enum Flood {
     Beyond,
 }
 
-/// Today's priority flood (peaks.rs `flood`), x wrapping, and stopping at `reach` (pixels from
+/// The priority flood (peaks.rs `flood`), x wrapping, and stopping at `reach` (pixels from
 /// the summit, squared) when given.
 fn flood(d: &mut UDem, ov: Option<&dyn Ov>, sx: i64, sy: i64, e: f32, budget: usize, reach: Option<i64>) -> Flood {
     let key = |v: f32| (v * 100.0).round() as i32;
@@ -492,7 +492,7 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
             extra.push(Summit { id: p.id.clone(), kind: "peak".into(), lon: p.lon, lat: p.lat, ele: p.ele, z8: None });
         }
     }
-    // Every summit's pixel and the highest within 150 m (today's rule), from z12.
+    // Every summit's pixel and the highest within 150 m, from z12.
     let mut all: Vec<(u32, &Summit)> = need.iter().map(|&i| (i, &summits[i as usize])).collect();
     let extra_base = summits.len() as u32;
     all.extend(extra.iter().enumerate().map(|(k, s)| (extra_base + k as u32, s)));

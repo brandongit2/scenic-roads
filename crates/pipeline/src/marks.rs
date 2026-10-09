@@ -1,7 +1,6 @@
 //! Landmarks by view (docs/phase5.md): the point kinds, their records per z6 tile (`markdata`), the
 //! marks tile format the app reads (RDMT), ids, the score and the filters' fields, and the keep
-//! rule of the zoomed-out (thinned) tiles. Shared by the build (`convert-legacy-marks`, later the
-//! `marks` job) and the server, which answers the In view statistics from markdata.
+//! rule of the zoomed-out (thinned) tiles. Shared by the build (the `marks` job) and the server, which answers the In view statistics from markdata.
 
 use det::Det;
 use anyhow::{bail, ensure, Context, Result};
@@ -34,7 +33,7 @@ pub struct MarkPt {
     pub fa: f32,
     pub ia: f32,
     pub mz: f32,
-    /// The point's place in its kind's order (today's file order): the tie-break everywhere.
+    /// The point's place in its kind's order: the tie-break everywhere.
     pub rank: u32,
     /// The lowest zoom whose thinned tile keeps the point ([`KZ_NONE`]: none).
     pub kz: u8,
@@ -97,7 +96,7 @@ fn with_high(x: f64, hi: i32) -> f64 {
 /// `Math.log` as Node computes it on this Mac: V8's port of fdlibm's e_log.c (src/base/ieee754.cc)
 /// as clang compiles it for arm64, where `a * b + c` within one expression is one fused
 /// multiply-add (`f64::mul_add` here, at exactly those places). The platform's libm can differ in
-/// the last bit, and the golden test holds scores to the app's exactly.
+/// the last bit, and the server's scores must be the app's exactly.
 pub fn log_js(mut x: f64) -> f64 {
     const LN2_HI: f64 = 6.93147180369123816490e-01;
     const LN2_LO: f64 = 1.90821492927058770002e-10;

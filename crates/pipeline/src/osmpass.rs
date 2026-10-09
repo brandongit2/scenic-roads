@@ -46,8 +46,8 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     // (pipeline::watercov, tools/coastcheck), read from the pass's set rather than the basemap so the
     // check doesn't take the basemap's word for the water.
     ("water", 1, crate::watercov::SET_FILTER),
-    // Today's heritage filter (Makefile: named.osm.pbf), and World Heritage objects, for locating
-    // register records.
+    // The heritage chain's named objects (heritage, museums, lighthouses, stations, protected areas
+    // and parks), and World Heritage objects, for locating register records.
     ("named", 1, &[
         "nwr/historic", "nwr/heritage", "nwr/tourism=museum,attraction,viewpoint", "nwr/man_made=lighthouse", "nwr/railway=station",
         "nwr/building=train_station,church,cathedral", "nwr/amenity=place_of_worship", "nwr/boundary=protected_area,national_park",

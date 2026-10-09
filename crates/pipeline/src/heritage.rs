@@ -1,5 +1,5 @@
 //! Heritage sites and designated areas for the units (docs/phase5.md "Heritage and area flags").
-//! The `heritage-sites` job runs today's heritage.py on the registers' snapshot and the pass's
+//! The `heritage-sites` job runs heritage.py on the registers' snapshot and the pass's
 //! protected areas over the cover (the z12 tiles within 20 km of the coverage), then slices what
 //! the units read per z6 tile, so a unit's key names only the slices near it: the sites' positions
 //! (`work/heritage/<d>/pos/6-x-y`), and the flagged area polygons

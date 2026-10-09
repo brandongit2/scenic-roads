@@ -2,9 +2,8 @@
 //! elevation Douglas-Peucker, then an exact clip at tile edges (round caps make the seams
 //! invisible), then per tile the sub-pixel pieces merged into dots and the lines encoded.
 //!
-//! Used by the legacy `tile` step (one build directory) and by `scenic-build pack`/`lo` (the ways
-//! of one area, gathered from base packs): both describe each way with a `WayIn` and choose which
-//! tiles to keep.
+//! Used by `scenic-build pack`/`lo` (the ways of one area, gathered from base packs), which
+//! describes each way with a `WayIn` and chooses which tiles to keep.
 
 use det::Det;
 use crate::count_bar;
@@ -199,7 +198,7 @@ pub fn draw_key(style: u8) -> u8 {
 /// per-vertex data (all slices the same length as `verts`).
 pub struct WayIn<'a> {
     pub rec: &'a WayRec,
-    /// The way column: OSM way id (RT v7), or the legacy build's way index (RT v6).
+    /// The way column: the OSM way id (RT v7).
     pub id: u32,
     pub verts: &'a [[i32; 2]],
     /// Processed elevation (`roadcore::elev`).
@@ -359,7 +358,7 @@ pub struct Encoded {
 
 /// Encode one zoom level's pieces (sorted by tile, draw order, way; see `cut`): per tile, the
 /// sub-pixel pieces merged into dots (below the max zoom), then RT-encoded and gzip'd.
-pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)], progress: Option<&str>) -> Vec<Encoded> {
+pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)]) -> Vec<Encoded> {
     let el2 = extent_log2(z);
     let ext = (1u64 << el2) as f64;
     // Group by tile.
@@ -371,7 +370,6 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)], progress: Option
             s = i;
         }
     }
-    let pb = progress.map(|what| count_bar(groups.len() as u64, format!("z{z} {what} encode + gzip")));
     let encoded: Vec<Encoded> = groups
         .par_iter()
         .map(|&(key, s, e)| {
@@ -477,15 +475,9 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)], progress: Option
             let raw = encode(&owned, el2);
             let mut gz = GzEncoder::new(Vec::with_capacity(raw.len() / 2), Compression::new(6));
             gz.write_all(&raw).unwrap();
-            if let Some(pb) = &pb {
-                pb.inc(1);
-            }
             Encoded { key, gz: gz.finish().unwrap(), raw_len: raw.len(), nverts }
         })
         .collect();
-    if let Some(pb) = pb {
-        pb.finish_and_clear();
-    }
     encoded
 }
 

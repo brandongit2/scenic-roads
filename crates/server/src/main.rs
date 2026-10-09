@@ -821,7 +821,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
     let cat = s.data.catalog();
     // Landmarks by view (docs/phase5.md): the z6 tiles with points, the kinds with tiles, and their
-    // totals; absent while the catalog has only today's whole files.
+    // totals; absent while the catalog has none.
     let s2 = s.clone();
     let marks = tokio::task::spawn_blocking(move || -> serde_json::Value {
         let cat = s2.data.catalog();

@@ -10,7 +10,7 @@
 //!                                its filtered planet lacked (pipeline::osmpass::patch_ferries), all
 //!                                or those meeting the regions (10 km round); run by hand
 //!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
-//!                                base(U) from the pass's pieces (today's steps on a unit folder):
+//!                                base(U) from the pass's pieces (the unit's programs on a unit folder):
 //!                                default every unit whose piece meets the coverage
 //!   unit-snap U --out d --cache c [--carry]  unit U's folder built from the records into d, nothing
 //!                                written to the NAS, snapshotted around each step's program (for
@@ -754,7 +754,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
 // ---- catalog --------------------------------------------------------------------------------
 
 /// The map's meta, added up from the units' summaries: each base pack's own, else worked out from
-/// its sections once (today's converted packs) and kept in `state/build/summaries.json` by content
+/// its sections once (packs without it) and kept in `state/build/summaries.json` by content
 /// name (a content name never changes).
 fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::Value> {
     use pipeline::summary::Summary;
@@ -796,7 +796,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::
     Ok(m)
 }
 
-/// A layer's zoom range as its builders make it (and today's converted data has it).
+/// A layer's zoom range as its builders make it.
 fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     Some(match layer {
         "roads" | "rails" => (4, 14),
@@ -1524,7 +1524,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// marks [--pass <date>] [--facts file] [--views file]: the landmark points from the current units'
-/// candidates and peaks (pipeline::marksjob), with today's heritage sites, as markdata and the
+/// candidates and peaks (pipeline::marksjob), with the heritage sites, as markdata and the
 /// marks packs. Facts (Wikidata, by QID) and monthly pageviews: the files given, else the items
 /// job's for the pass.
 fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
@@ -1581,7 +1581,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let pts = pipeline::marksjob::poi_points(&cands, &views);
     let summits = pipeline::marksjob::summits_list(&pts);
     let mut all = pts;
-    // The pass's heritage (the heritage job's outputs), else today's.
+    // The pass's heritage (the heritage job's outputs), else the converted build's (plan §10).
     let src = pipeline::markconv::heritage_source(out, &date);
     eprintln!("marks: heritage from {src}");
     all.extend(pipeline::markconv::heritage_marks(out, &src)?);
@@ -1648,14 +1648,14 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of today's heritage chain
+/// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
 /// (heritagewd, heritagedetails, areadetails, whsshapes, filterprops' and interest's heritage parts,
 /// pageviews, layers) in the stand-in root on the heritage-sites job's outputs (docs/phase5.md
 /// "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
-/// (named with today's filter), and for the World Heritage parts the kept filtered planet within it
-/// (one clip per pass and cover, kept in the cache), as today's regional extracts were. Today's park
-/// facts and pageview months seed the caches (`sources/registers/legacy-seeds`); the pageview months
-/// are the items job's cache, the epoch's months; the layers' English names use today's names table.
+/// (named with the chain's filter), and for the World Heritage parts the kept filtered planet within
+/// it (one clip per pass and cover, kept in the cache). The seeds' park facts and pageview months
+/// seed the caches (`sources/registers/legacy-seeds`); the pageview months are the items job's
+/// cache, the epoch's months; the layers' English names use the seeds' names table.
 /// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`. What the
 /// chain fetched goes to the NAS as it ends, finished or not, or at the next start when it was
 /// stopped (`Epoch`).
@@ -1667,7 +1667,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
-    // Its parts; then today's chain, each script in its part.
+    // Its parts; then the chain, each script in its part.
     let parts = Parts(&[
         "Getting ready: the coverage's protected areas and named places (osmium)",
         "Looking up details: Wikidata facts, descriptions, the areas' sizes",
@@ -1716,7 +1716,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     stage(2, 5, "clipping the pass's named places to the coverage (osmium)");
     let named = osmium_clip(&out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?), &poly, &scratch.join("named-cover.osm.pbf"))?;
-    // Today's filter (Makefile: named.osm.pbf; the set also keeps the World Heritage tags).
+    // The chain's filter of named objects (the set also keeps the World Heritage tags).
     let named_today = scratch.join("named.osm.pbf");
     let mut c = pipeline::osmpass::osmium();
     c.arg("tags-filter").arg(&named).args([
@@ -1733,7 +1733,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "-o",
     ]);
     c.arg(&named_today).arg("--overwrite");
-    stage(3, 5, "filtering them as today's build does (osmium)");
+    stage(3, 5, "filtering them as the chain reads them (osmium)");
     osmium_run(c, "osmium tags-filter (named)")?;
     std::fs::create_dir_all(epoch.dir.join("osm"))?;
     let mut c = pipeline::osmpass::osmium();
@@ -1741,17 +1741,17 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     osmium_quiet(c, "osmium export (named)")?;
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
-    // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
+    // The kept filtered planet within the cover, once per pass and cover (whsshapes.py's merged.osm.pbf).
     stage(4, 5, "clipping the pass's filtered planet to the coverage (osmium, once a pass)");
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
-    // Today's park facts, seeding this pass's cache of them.
+    // The seeds' park facts, seeding this pass's cache of them.
     let facts = epoch.dir.join("areas-wikidata.json");
     if !facts.exists() {
         store::sys::copy_data(seeds.join("areas/wikidata.json"), &facts)?;
     }
     pipeline::sys::symlink(&facts, &root.join("data/areas/wikidata.json"))?;
-    // The pageview months: the items job's cache (the same files), today's months seeding it.
+    // The pageview months: the items job's cache (the same files), the seeds' months seeding it.
     let pv = cache.join("items");
     std::fs::create_dir_all(pv.join("months"))?;
     for e in std::fs::read_dir(seeds.join("pageviews/months"))?.flatten() {
@@ -1763,7 +1763,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
     }
     pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
-    // Today's names table, for the layers' English names.
+    // The seeds' names table, for the layers' English names.
     std::fs::create_dir_all(root.join("data/names"))?;
     pipeline::sys::symlink(&seeds.join("names/english.json"), &root.join("data/names/english.json"))?;
     for (k, (part, script, sargs)) in chain.iter().enumerate() {
@@ -1834,7 +1834,7 @@ fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
     Ok(dest.to_path_buf())
 }
 
-/// The pass's protected areas and Indigenous lands within the cover, as today's areas.geojsonseq.
+/// The pass's protected areas and Indigenous lands within the cover, as heritage.py's areas.geojsonseq.
 fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &Path) -> Result<()> {
     let set = out.path(out.get(&pipeline::osmpass::set_name(date, "areas")).context("the pass's areas set")?);
     let clip = osmium_clip(&set, poly, &scratch.join("areas-cover.osm.pbf"))?;
@@ -1846,8 +1846,8 @@ fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &P
 }
 
 /// The pass's kept filtered planet within the cover (whole relations), kept in the cache for the
-/// pass and cover (`heritage-merged-<date>-<cover>.osm.pbf`; others go): what today's regional
-/// extracts were to whsshapes.py. Read from the NAS (an hour or so for the 60 GB file: osmium reads
+/// pass and cover (`heritage-merged-<date>-<cover>.osm.pbf`; others go): whsshapes.py's
+/// merged.osm.pbf. Read from the NAS (an hour or so for the 60 GB file: osmium reads
 /// it twice), once per pass and cover.
 fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result<PathBuf> {
     let id = store::naming::hash16(&std::fs::read(poly)?)[..12].to_string();
@@ -1883,8 +1883,9 @@ fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result
     Ok(dest)
 }
 
-/// registers-import --from <dir> [--name legacy]: a registers' snapshot (today's: the build Mac's
-/// data/heritage, without osm/, which the pass's sets replace) as one archive in the manifest,
+/// registers-import --from <dir> [--name legacy]: a registers' snapshot (a folder laid out as
+/// heritage.py reads it, without osm/, which the pass's sets replace: docs/plan.md §6, Hand-made
+/// inputs) as one archive in the manifest,
 /// `sources/registers/<name>` (tar.zst, files in sorted order): what the heritage jobs extract,
 /// once per archive (thousands of small files are slow to copy over SMB one by one).
 fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
@@ -2008,7 +2009,7 @@ fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> 
     Ok(dir)
 }
 
-/// A stand-in root laid out as the repository for today's heritage scripts: `dem/` the app's
+/// A stand-in root laid out as the repository for the heritage scripts: `dem/` the app's
 /// scripts and their Python project, `data/heritage` this pass's copy of the registers' snapshot.
 fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
     let root = scratch.join("heritage-root");
@@ -2026,7 +2027,7 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Runs one of today's scripts in a stand-in root, in the Python environment of the app's `dem`
+/// Runs one of the heritage scripts in a stand-in root, in the Python environment of the app's `dem`
 /// (`dem/.venv`, which uv makes from the app's lock file the first time a step runs on a Mac, as
 /// for every other Python step; the lock file as is).
 fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&str]) -> Result<()> {
@@ -2041,9 +2042,9 @@ fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&s
 }
 
 /// heritage-sites [--pass <date>] [--dem dir] [--cache dir]: the heritage sites and designated
-/// areas the units read (pipeline::heritage): today's heritage.py in a stand-in root, over the
+/// areas the units read (pipeline::heritage): heritage.py in a stand-in root, over the
 /// tiles within 20 km of the coverage, on the registers' snapshot and the pass's protected areas
-/// (its `areas` set within those tiles, as today's areas.geojsonseq). Its outputs go to
+/// (its `areas` set within those tiles, as heritage.py's areas.geojsonseq). Its outputs go to
 /// `work/heritage/<date>/base/<file>`, and per z6 tile the sites' positions and the area polygons.
 /// What heritage.py fetched goes to the NAS as it ends, finished or not, or at the next start when
 /// it was stopped (`Epoch`).
@@ -2223,7 +2224,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         spacing_m: 8,
         snap: None,
     };
-    // Today's DEM cache, where the units' elevations start from (once per Mac).
+    // The DEM cache's seed, where the units' elevations start from (once per Mac).
     pipeline::unit::dem_seed(out.root(), &tools.cache)?;
     // What units kept in this Mac's own cache: moved to the shared one (both Macs' units read it).
     if let Some(shared) = &tools.shared {
