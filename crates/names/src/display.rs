@@ -947,16 +947,19 @@ mod tests {
 
     #[test]
     fn first_scan_trusts_old_files_only() {
+        // (Its files' times set from the scan's wall clock: an hour before it, and 2 s, however long
+        // a busy Mac takes between writing them and scanning.)
         let d = Dir::new();
-        d.write("jp/old.jsonl", "{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"a\"}\n");
-        d.write_aged("jp/new.jsonl", "{\"n\": \"B\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"b\"}\n", Duration::from_secs(2));
+        let wall = SystemTime::now();
+        d.write_at("jp/old.jsonl", "{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"a\"}\n", wall - Duration::from_secs(3600));
+        d.write_at("jp/new.jsonl", "{\"n\": \"B\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"b\"}\n", wall - Duration::from_secs(2));
         let t0 = Instant::now();
         let mut names = Names::new(&d.0);
-        assert!(names.scan(t0, SystemTime::now()).expect("scan"));
+        assert!(names.scan(t0, wall).expect("scan"));
         assert!(names.translation(Kind::Other, "A", &[l("ja")]).is_some());
         assert!(names.translation(Kind::Other, "B", &[l("ja")]).is_none());
         assert!(names.pending().is_some());
-        assert!(names.scan(t0 + Duration::from_secs(10), SystemTime::now()).expect("scan"));
+        assert!(names.scan(t0 + Duration::from_secs(10), wall + Duration::from_secs(10)).expect("scan"));
         assert!(names.translation(Kind::Other, "B", &[l("ja")]).is_some());
     }
 

@@ -49,11 +49,16 @@ pub(crate) mod testdir {
 
         /// Writes a file last modified `age` ago.
         pub fn write_aged(&self, rel: &str, text: &str, age: Duration) {
+            self.write_at(rel, text, SystemTime::now() - age);
+        }
+
+        /// Writes a file last modified at `t`.
+        pub fn write_at(&self, rel: &str, text: &str, t: SystemTime) {
             let p = self.0.join(rel);
             fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
             fs::write(&p, text).expect("write");
             let f = File::options().write(true).open(&p).expect("open");
-            f.set_times(FileTimes::new().set_modified(SystemTime::now() - age)).expect("set mtime");
+            f.set_times(FileTimes::new().set_modified(t)).expect("set mtime");
         }
     }
 

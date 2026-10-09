@@ -534,6 +534,7 @@ mod tests {
     /// The live basemap, when the NAS is mounted: a piece of it holds the very tiles the archive
     /// has there.
     #[test]
+    #[ignore = "real data: reads the live basemap on the NAS (run with --ignored)"]
     fn the_live_basemaps_pieces() {
         let dir = Path::new("/Volumes/personal/projects/scenic-roads/layers/basemap");
         let Some(path) = std::fs::read_dir(dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("world-")))) else { return };

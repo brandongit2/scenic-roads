@@ -1,5 +1,7 @@
 //! Against the real data: the label archive and basemap in `data/build`, and the converted lines
-//! by language on the NAS (`translations/0-converted`, or `$NAMES_CONVERTED`). Each test skips (passes, saying so) when its data isn't there.
+//! by language on the NAS (`translations/0-converted`, or `$NAMES_CONVERTED`). Those reading it are
+//! ignored unless asked for (`--ignored`: the suite reads no real data), and each skips (passes,
+//! saying so) when its data isn't there.
 
 use names::mvt::{self, gunzip_if_gzip, LayerRule, Tile, Value, LABELS, MAIN, OPENMAPTILES, SUB};
 use names::{Kind, Lang, Names};
@@ -50,6 +52,7 @@ fn round_trip(raw: &[u8]) -> bool {
 }
 
 #[test]
+#[ignore = "real data: reads data/build's label archive (run with --ignored)"]
 fn label_tiles_round_trip() {
     let Some(path) = build("labels.tiles") else { return };
     let a = roadcore::archive::Archive::open(&path).expect("archive");
@@ -238,6 +241,7 @@ fn hilbert_ids() {
 }
 
 #[test]
+#[ignore = "real data: reads data/build's basemap (run with --ignored)"]
 fn basemap_tiles_round_trip() {
     let Some(path) = build("base.pmtiles") else { return };
     let pm = PmTiles::open(&path);
@@ -274,6 +278,7 @@ fn ls(v: &[&str]) -> Vec<Lang> {
 }
 
 #[test]
+#[ignore = "real data: reads the converted lines on the NAS (run with --ignored)"]
 fn converted_lines() {
     let Some(n) = tables() else { return };
     assert!(n.summary().lines > 2_500_000);
@@ -347,6 +352,7 @@ fn basemap() -> Option<PathBuf> {
 }
 
 #[test]
+#[ignore = "real data: reads the converted lines on the NAS and the basemap (run with --ignored)"]
 fn attach_to_real_tiles() {
     let Some(names) = tables() else { return };
     let names = &names;
