@@ -39,6 +39,7 @@ from compression import zstd
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import cachefile
 import heritagewd
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -109,11 +110,13 @@ def _index(month: str, langs: set[str], fresh: bool = False) -> Path | None:
     _sweep(local.parent)
     if nas:
         _sweep(nas.parent)
+    # (This Mac's copy is held while this job runs: cachefile, so the build agent's room-making
+    # leaves it; one it deleted is copied again here.)
     if fresh:
-        local.unlink(missing_ok=True)
-    if _size(local) is None and nas and _size(nas) is not None:
-        _copy_whole(nas, local)
-    if _size(local) is None:
+        cachefile.discard(local)
+    if nas and _size(nas) is not None:
+        cachefile.hold(local, lambda t: _copy_into(nas, t))
+    elif not cachefile.hold_existing(local):
         return None
     try:
         covered = _langs(local)
@@ -139,11 +142,17 @@ def _index(month: str, langs: set[str], fresh: bool = False) -> Path | None:
 
 
 def _sweep(d: Path) -> None:
-    """Temporary files of this Mac's copies and streams whose process is gone (killed midway)."""
+    """Temporary files of this Mac's copies and streams whose process is gone (killed midway): on
+    the NAS by their process's name; here, those no process holds (cachefile)."""
     host = socket.gethostname().split(".")[0]
     try:
         names = [p.name for p in d.iterdir()]
     except FileNotFoundError:
+        return
+    if d == OUT / "months":
+        for n in names:
+            if n.endswith(".tmp") and ".tsv.zst." in n:
+                cachefile.try_remove(d / n)
         return
     for n in names:
         parts = n.split(".")
@@ -158,6 +167,17 @@ def _sweep(d: Path) -> None:
             (d / n).unlink(missing_ok=True)
         except PermissionError:
             pass
+
+
+def _copy_into(src: Path, dst: Path) -> None:
+    """Copies src into dst in place (a cachefile scratch file), its length checked. (Its bytes count
+    on the progress line as its month's index's: `_indexes`.)"""
+    with open(src, "rb") as a, open(dst, "wb") as b:
+        shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied")), b, 4 << 20)
+        b.flush()
+        os.fsync(b.fileno())
+    if dst.stat().st_size != src.stat().st_size:
+        raise OSError(f"{dst}: {dst.stat().st_size} of {src.stat().st_size} bytes copied")
 
 
 def _copy_whole(src: Path, dst: Path) -> None:
@@ -367,7 +387,9 @@ def _stream_index(month: str) -> Path:
 
     pumper = threading.Thread(target=pump, daemon=True)
     pumper.start()
-    tmp = local.with_name(f"{local.name}.{os.getpid()}.tmp")
+    # (Written held, a cachefile scratch file: the agent's room-making leaves it.)
+    tmp, held = cachefile.scratch(local)
+    published = False
     rows = 0
     try:
         with zstd.open(tmp, "wt", encoding="utf-8") as out:
@@ -395,8 +417,14 @@ def _stream_index(month: str) -> Path:
             raise RuntimeError(f"{month}: download failed (curl {rc[0]}, bzip2 {rc[1]}, grep {rc[2]})")
         with open(tmp, "rb") as f:
             os.fsync(f.fileno())
-        tmp.replace(local)
+        # (One here that didn't count every language goes: never renamed over.)
+        cachefile.discard(local)
+        published, f = True, held
+        cachefile.publish(f, tmp, local)
+        cachefile.hold_existing(local)
     finally:
+        if not published:
+            held.close()
         tmp.unlink(missing_ok=True)
     if STORE:
         # (One that fails is tried again the next time the month is looked up: _index.)
