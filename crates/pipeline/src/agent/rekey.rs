@@ -565,7 +565,7 @@ pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, til
         let from = store::naming::hash16([build::coverage_all(cov), named("layers/terrain/"), b.to_string()].join("\n").as_bytes());
         let key = if latest.as_deref().unwrap_or("-") == b { "terrain-targets v1".to_string() } else { format!("terrain-targets v1 {b}") };
         let old = tiles.memo(&key, &from, || Ok(serde_json::to_string(&v1::terrain_slope_targets_with(cov, m, b)).unwrap_or_default()));
-        let (t, s): (Vec<(String, String)>, Vec<(String, String)>) = old.ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_else(|| v1::terrain_slope_targets_with(cov, m, b));
+        let (t, s): v1::Targets = old.ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_else(|| v1::terrain_slope_targets_with(cov, m, b));
         (t.into_iter().collect(), s.into_iter().collect())
     };
     let (old_t, old_s) = old_with(latest.as_deref().unwrap_or("-"));
@@ -1166,7 +1166,7 @@ mod tests {
         let mut tiles = tiles_for(&m);
         for w in idx {
             let l = crate::terrain_water::idx_logical(&w.pin);
-            let c = format!("{l}.{}.json", &store::naming::hash16(serde_json::to_string(w).unwrap().as_bytes()));
+            let c = format!("{l}.{}.json", store::naming::hash16(serde_json::to_string(w).unwrap().as_bytes()));
             m.insert(l, c.clone());
             tiles.hold_water(&c, (*w).clone());
         }
@@ -1281,7 +1281,7 @@ mod tests {
         let wb = digests(&c, &Basemap { pin: B.into(), lakes: vec![(9, pz9.0, pz9.1, 5)] });
         let (m3, t3) = with_water(&m1, Some(B), &[&wa, &wb]);
         let (_, w, _) = tw(&m3, &t3, &done);
-        assert_eq!(w.terrain_pieces_left.iter().cloned().collect::<Vec<_>>(), [ps.clone()]);
+        assert_eq!(w.terrain_pieces_left.iter().cloned().collect::<Vec<_>>(), std::slice::from_ref(&ps));
         assert!(w.terrain_lo_left.is_empty());
         // Without A's digests (not kept): every piece made again.
         let (m4, t4) = with_water(&m, Some(B), &[&wb]);
