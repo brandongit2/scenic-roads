@@ -2000,6 +2000,39 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   unsaid, its agent stopped, counted to the next agent's start), and the forecast's measure of the
   helpers' pace and of a round's time. Each cost the coordinator keeps says which worker measured
   it.
+- **Timings** (`pipeline::timings`; its Python twin `dem/timings.py`; a page's task in
+  `web/work/worker.js`): every job's run is broken into named phases, each with its wall time, its
+  CPU time (user and system, the process's and its finished children's, from `getrusage`; none on
+  a page), its class (what it waits on: `nas-read`, `nas-write`, `disk`, `net`, `compute`, `wait`
+  for a lock, a thread or another worker, or `mixed` for a phase whose sub-phases split it), how
+  many spans it had, and the bytes and files it moved where the code knows them. A phase may have
+  sub-phases, one level only; a child program run within a phase (a Python step, `elev`, the
+  trees program) says its own phases, which come in as that phase's sub-phases
+  (`SCENIC_PHASES_TO`). Every kind follows one rule:
+  - every stage that moves data in bulk is its own phase of one class (the NAS read or written, the
+    network, the local disk), every distinct compute stage and every external program too;
+  - every job gets the records read and saved (`Out::open`, `Out::save`) as phases for free;
+  - a loop over areas, tiles or files is never a phase an iteration: each of its stages is one
+    phase, its spans added up (a unit's "DEM cache slice" over every area of the job);
+  - sub-phases only to split a phase that's a large share of a run and mixes classes (the DEM
+    cache slice: the seed's samples, the units' kept samples read, merged and written), or for a
+    child program's phases;
+  - nothing timed per tile or feature in a hot loop: there only counters are added to;
+  - what's left untimed (the run's wall time less its main thread's top-level phases) is under
+    about 5 % of a typical run; a kind past that is split further.
+  A phase on another thread (the unit's copying ahead of the next area) is marked `background` and
+  isn't counted against the untimed time; a phase while another thread's runs is marked
+  `overlapped`, its CPU (the whole process's) then an approximation. The unit's per-area lines
+  ("  DEM cache slice: 34s") are its stages' phases; every job's log ends with the same table of
+  its phases (`timings: …` lines: each phase's time, share, class, CPU, spans and bytes, then the
+  untimed share). The run's record (docs/formats.md, Timings) goes where the agent says
+  (`SCENIC_TIMINGS`), however the job ends (a job killed leaves none); the agent keeps it in its
+  `timings.jsonl`, and the build Mac's coordinator keeps every worker's in `coord/timings.jsonl`:
+  its own jobs' directly, a helper's job's and task's and a page's task's with its done (an older
+  worker sends none; an older lead ignores it). `scenic timings [kind] [--last N] [--host mac]`
+  prints each kind's phases over its last runs (20 by default) with their totals, shares, CPU over
+  wall (marked `~` where approximate), class and bytes: on the build Mac from its coordinator's
+  log, on another Mac by asking the coordinator (`/work/timings`), or `--here` this Mac's own jobs.
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.

@@ -449,7 +449,8 @@ downloads.json          what this Mac has downloaded (crates/server/src/download
 map-page                the address to open the map on another device (docs/plan.md §4, Devices;
                         0600, rewritten when it changes: HTTPS where tailscale serve proxies the
                         server)
-agent/                  status.json (the build Mac's; a helper writes helper.json, which that Mac's
+agent/                  timings.jsonl, timings-run.json, timings-run-2.json (the jobs' timings: Timings,
+                        below); status.json (the build Mac's; a helper writes helper.json, which that Mac's
                         server shows), state.json, round.json (the last round of publishing:
                         {began, regions, last, units: {logical: content name}, over},
                         agent::build::Round; the jobs of the one under way read its units,
@@ -530,6 +531,43 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
 `[FISHANDCHIPS.LOCAL:PERSONAL]`, both `soft=yes`.
+
+## Timings (`timings.jsonl`; pipeline::timings, docs/plan.md §8)
+
+A job's run, a JSON object (a line of the logs below), `pipeline::timings::RunRec`:
+
+```
+{v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …]}
+phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub: [phase, …]}
+```
+
+- `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` for a
+  task (`task tail`, `task bldtile`, `task treeblock`). `id`: the agent's id for the job
+  (`SCENIC_JOB_ID`, "unit 6/32/24"; a page's task, "task <lease>"). `host`: the Mac (or page) that
+  ran it, as the agent or the coordinator that kept it says. `start`: seconds since 1970.
+- `wall_s`, `cpu_s`: the run's (CPU: user and system, the process's and its finished children's;
+  none on a page). `threads`: RAYON_NUM_THREADS. `ok`: it ended without an error (a run paused
+  at a safe point isn't). `untimed_s`: `wall_s` less the top-level phases' not `background`.
+  `overhead_s`: the timing's own cost, measured.
+- A phase: its totals over its `n` spans (a loop's stage, one span an area). `class`: `nas-read`,
+  `nas-write`, `disk`, `net`, `compute`, `wait`, `mixed`. `bytes`, `files`: moved, where counted
+  (0 left out). `overlapped`: another thread's phase ran during it (its `cpu_s` counts that
+  thread's too). `background`: on a thread beside the main one. `sub`: its sub-phases (none
+  deeper; a child program's phases come in here, their own sub-phases folded in). `cpu_s`, `sub`,
+  `overlapped`, `background` left out when none, empty or false.
+
+Where they're kept:
+
+- A job writes its record, once, where `SCENIC_TIMINGS` says: `agent/timings-run.json`
+  (`timings-run-2.json` for the second job), or a helper's leased job's or task's
+  `outbox/<lease>/timings.json`. A child program writes its phases (a record, its phases read)
+  where `SCENIC_PHASES_TO` says (`$TMPDIR/scenic-phases-<pid>-<n>.json`, removed once read).
+- `agent/timings.jsonl`: every job this Mac's agent ran, a line each, as it ends.
+- `agent/coord/timings.jsonl` (the build Mac's coordinator): every worker's, its own jobs' as they
+  end, a helper's and a page's with their done (`/work/done {…, timings}`), `host` the worker's
+  name; read back by `/work/timings {kind?, last?}` (`{runs: [record, …]}`, each kind's last `last`,
+  20 by default).
+- Each log is cut to its newer half once past 16 MB.
 
 ## Server API (changes)
 
@@ -742,9 +780,11 @@ class, id) within a tile. The client sends the id with the clicked point.
     it last changed);
     `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line per target, `{unit,
     peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb` the most the
-    job's processes held together during that target, sampled).
+    job's processes held together during that target, sampled); `timings.jsonl` (every worker's
+    jobs' and tasks' timings: Timings, below).
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
-    `costs.jsonl`, `spec.json` (a task's), `task.json` (`scenic run-task`'s result) and `result.json`
+    `costs.jsonl`, `timings.json` (its timings: Timings), `spec.json` (a task's), `task.json`
+    (`scenic run-task`'s result) and `result.json`
     (`{ok, done: [step, [[target, key], …]] or null (some of the lease's targets when it paused at
     a safe point, or failed after them), failed (it failed after those: the rest held against it),
     interrupted (stopped, not failed: given back unheld), task, error}`), until the coordinator has
