@@ -64,6 +64,61 @@
    "lat": 53.84,
    "lon": -68.5,
    "name": "Northern Quebec's lakes, the owner's comparison moved east of task #124's gap"
+  },
+  "npole": {
+   "lon": 0,
+   "lat": 85,
+   "name": "The North Pole"
+  },
+  "spole": {
+   "lon": 0,
+   "lat": -85,
+   "name": "The South Pole"
+  },
+  "midn": {
+   "lon": -40,
+   "lat": 50,
+   "name": "The North Atlantic, the North Pole near the limb"
+  },
+  "mids": {
+   "lon": 140,
+   "lat": -50,
+   "name": "The Southern Ocean, the South Pole near the limb"
+  },
+  "antarctica": {
+   "lon": 0,
+   "lat": -80,
+   "name": "Antarctica"
+  },
+  "ross": {
+   "lon": 170,
+   "lat": -76,
+   "name": "The Ross Sea, Antarctica"
+  },
+  "arctic": {
+   "lon": 0,
+   "lat": 82,
+   "name": "The Arctic Ocean"
+  },
+  "archipelago": {
+   "lon": -100,
+   "lat": 76,
+   "name": "The Canadian Arctic Archipelago"
+  },
+  "svalbard": {
+   "lon": 17,
+   "lat": 78.5,
+   "name": "Svalbard"
+  },
+  "greenland": {
+   "lon": -24,
+   "lat": 70.5,
+   "name": "East Greenland: Scoresby Sound"
+  },
+  "peninsula": {
+   "lon": -62,
+   "lat": -65,
+   "name": "The Antarctic Peninsula"
   }
  },
  "views": [
@@ -3154,6 +3209,378 @@
    "globe": true,
    "sets": [
     "owner"
+   ]
+  },
+  {
+   "id": "npole-z1.2",
+   "place": "npole",
+   "lon": 0,
+   "lat": 85,
+   "z": 1.2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "spole-z1.2",
+   "place": "spole",
+   "lon": 0,
+   "lat": -85,
+   "z": 1.2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "midn-z1.2",
+   "place": "midn",
+   "lon": -40,
+   "lat": 50,
+   "z": 1.2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "mids-z1.2",
+   "place": "mids",
+   "lon": 140,
+   "lat": -50,
+   "z": 1.2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "antarctica-z2",
+   "place": "antarctica",
+   "lon": 0,
+   "lat": -80,
+   "z": 2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "arctic-z2",
+   "place": "arctic",
+   "lon": 0,
+   "lat": 82,
+   "z": 2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "ross-z3",
+   "place": "ross",
+   "lon": 170,
+   "lat": -76,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "archipelago-z3",
+   "place": "archipelago",
+   "lon": -100,
+   "lat": 76,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "ross-z4",
+   "place": "ross",
+   "lon": 170,
+   "lat": -76,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "archipelago-z4",
+   "place": "archipelago",
+   "lon": -100,
+   "lat": 76,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "svalbard-z3",
+   "place": "svalbard",
+   "lon": 17,
+   "lat": 78.5,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "svalbard-z4",
+   "place": "svalbard",
+   "lon": 17,
+   "lat": 78.5,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "svalbard-z5",
+   "place": "svalbard",
+   "lon": 17,
+   "lat": 78.5,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "svalbard-z6",
+   "place": "svalbard",
+   "lon": 17,
+   "lat": 78.5,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "greenland-z3",
+   "place": "greenland",
+   "lon": -24,
+   "lat": 70.5,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "greenland-z4",
+   "place": "greenland",
+   "lon": -24,
+   "lat": 70.5,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "greenland-z5",
+   "place": "greenland",
+   "lon": -24,
+   "lat": 70.5,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "greenland-z6",
+   "place": "greenland",
+   "lon": -24,
+   "lat": 70.5,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "peninsula-z3",
+   "place": "peninsula",
+   "lon": -62,
+   "lat": -65,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "peninsula-z4",
+   "place": "peninsula",
+   "lon": -62,
+   "lat": -65,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "peninsula-z5",
+   "place": "peninsula",
+   "lon": -62,
+   "lat": -65,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "peninsula-z6",
+   "place": "peninsula",
+   "lon": -62,
+   "lat": -65,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "arctic-f2",
+   "place": "arctic",
+   "lon": 0,
+   "lat": 82,
+   "z": 2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "svalbard-f4",
+   "place": "svalbard",
+   "lon": 17,
+   "lat": 78.5,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "polar",
+    "polarcore"
+   ]
+  },
+  {
+   "id": "peninsula-f4",
+   "place": "peninsula",
+   "lon": -62,
+   "lat": -65,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "polar"
+   ]
+  },
+  {
+   "id": "archipelago-f3",
+   "place": "archipelago",
+   "lon": -100,
+   "lat": 76,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "polar"
    ]
   }
  ]

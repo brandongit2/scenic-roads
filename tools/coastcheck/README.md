@@ -91,6 +91,12 @@ Saimaa, Labrador's lakes, Argyll's lochs, the Seto Inland Sea, the Azores and La
   archipelago), flat Web Mercator straight down at z4.4/4.6 … 8.4/8.6, and tilted 60° on the globe
   at z5.4, 5.6, 7.4 and 7.6; `fadecore` (10) a cross-section of it; `owner` (5) the owner's own
   comparisons: Hudson Bay at z4, 5 and 6, northern Quebec at z6.4 and 6.6.
+- `polar` (26, for `--screen`): toward the poles, where a tile's pixels hold ever fewer metres. The
+  whole globe (z1.2, the app's least zoom) at each pole (the app keeps the centre within 65.8° there)
+  and at 50° N and S, a pole near the limb; Antarctica at z2, the Ross Sea at z3–4, the Arctic Ocean
+  at z2 and the Canadian Arctic Archipelago at z3–4 on the globe; Svalbard, East Greenland
+  (Scoresby Sound) and the Antarctic Peninsula at z3–6; four of them flat. `polarcore` (8) a
+  cross-section of it.
 
 ## Running it
 
