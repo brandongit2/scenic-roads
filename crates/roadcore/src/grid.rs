@@ -1068,17 +1068,24 @@ pub const SEAM_MIN_Z: u8 = 9;
 /// rounds monotonically in `x`, so the values for which it's over SEAM_OUT are the lowest ones,
 /// and the median is one of them when more than half the window is (likewise under −SEAM_OUT and
 /// the highest).
+#[cfg(test)]
 fn out_of_median(v: f32, win: &[f32]) -> i8 {
-    let m = win.len() / 2;
     let (mut above, mut below) = (0usize, 0usize);
     for &x in win {
         let d = v - x;
         above += (d > SEAM_OUT) as usize;
         below += (d < -SEAM_OUT) as usize;
     }
+    median_side(above, below, win.len())
+}
+
+/// `out_of_median` from its counts: of a window of `n`, `above` more than SEAM_OUT under the pixel
+/// and `below` more than SEAM_OUT over it.
+fn median_side(above: usize, below: usize, n: usize) -> i8 {
+    let m = n / 2;
     if above > m {
         1
-    } else if below >= win.len() - m {
+    } else if below >= n - m {
         -1
     } else {
         0
@@ -1094,25 +1101,31 @@ pub fn seam_spikes(t: &mut [f32], z: u8, lat: f64) -> usize {
     let ok = |v: f32| v.is_finite() && (MIN_ELEV..=MAX_ELEV).contains(&v);
     // Candidates: out of their 5 × 5 median by more than SEAM_OUT (+1 a tower, −1 a pit).
     let mut cand = vec![0i8; t.len()];
-    let mut win: Vec<f32> = Vec::with_capacity(25);
+    // (Each window's values counted where they lie: `out_of_median`.)
+    let good: Vec<bool> = t.iter().map(|&v| ok(v)).collect();
     for p in 0..t.len() {
-        if !ok(t[p]) {
+        if !good[p] {
             continue;
         }
         let (x, y) = ((p % TS) as i32, (p / TS) as i32);
-        win.clear();
-        for dy in -2..=2 {
-            for dx in -2..=2 {
-                let (a, b) = (x + dx, y + dy);
-                if a >= 0 && b >= 0 && a < w && b < w && ok(t[(b * w + a) as usize]) {
-                    win.push(t[(b * w + a) as usize]);
+        let v = t[p];
+        let (mut n, mut above, mut below) = (0usize, 0usize, 0usize);
+        for b in (y - 2).max(0)..=(y + 2).min(w - 1) {
+            let row = (b * w) as usize;
+            for a in (x - 2).max(0)..=(x + 2).min(w - 1) {
+                let q = row + a as usize;
+                if good[q] {
+                    let d = v - t[q];
+                    n += 1;
+                    above += (d > SEAM_OUT) as usize;
+                    below += (d < -SEAM_OUT) as usize;
                 }
             }
         }
-        if win.len() < 9 {
+        if n < 9 {
             continue;
         }
-        cand[p] = out_of_median(t[p], &win);
+        cand[p] = median_side(above, below, n);
     }
     if cand.iter().all(|&c| c == 0) {
         return 0;
@@ -1325,11 +1338,12 @@ pub fn walled_patches(t: &mut [f32], z: u8, coarse: &[f32]) -> usize {
         }
     }
     let root: Vec<u32> = (0..t.len() as u32).map(|p| find(&mut parent, p)).collect();
-    let mut size: HashMap<u32, usize> = HashMap::new();
+    // (Each region's size by its root, a pixel: no map to hash every pixel into.)
+    let mut size = vec![0usize; t.len()];
     for &r in &root {
-        *size.entry(r).or_default() += 1;
+        size[r as usize] += 1;
     }
-    let largest = size.iter().max_by_key(|(r, n)| (**n, std::cmp::Reverse(**r))).map(|(r, _)| *r);
+    let largest = (0..t.len() as u32).filter(|&r| size[r as usize] > 0).max_by_key(|&r| (size[r as usize], std::cmp::Reverse(r)));
     // Each region's edge: its steps (inside − outside) where walled, and its edges in all.
     let mut steps: HashMap<u32, Vec<f32>> = HashMap::new();
     let mut edges: HashMap<u32, usize> = HashMap::new();
@@ -1349,7 +1363,7 @@ pub fn walled_patches(t: &mut [f32], z: u8, coarse: &[f32]) -> usize {
                 continue;
             }
             for (r, inn, out) in [(a, p, q), (b, q, p)] {
-                if size[&r] < PATCH_MIN || Some(r) == largest {
+                if size[r as usize] < PATCH_MIN || Some(r) == largest {
                     continue;
                 }
                 *edges.entry(r).or_default() += 1;
