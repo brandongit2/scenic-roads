@@ -253,6 +253,23 @@ pub fn put_slices(out: &mut Out, date: &str, sites: &BTreeMap<(u32, u32), Vec<[i
 /// inside the box, as the flags step reads them) and `area-shapes.geojsonseq` (the polygons of the
 /// slices meeting the box, each once). The sites and polygons written.
 pub fn unit_inputs(out: &Out, date: &str, b: [f64; 4], dir: &Path) -> Result<(usize, usize)> {
+    unit_inputs_with(out, date, b, dir, None)
+}
+
+/// The heritage-sites job's slices `unit_inputs` reads for box `b` (content names).
+pub fn unit_contents(out: &Out, date: &str, b: [f64; 4]) -> Vec<String> {
+    crate::stage::tiles_in(6, b).into_iter().flat_map(|(x, y)| [pos_logical(date, x, y), areas_logical(date, x, y)]).filter_map(|l| out.get(&l).map(str::to_string)).collect()
+}
+
+/// `unit_inputs`, the slices read from this Mac's copies of them (`blobs`: each copied whole once,
+/// where units side by side read the same ones) when given.
+pub fn unit_inputs_with(out: &Out, date: &str, b: [f64; 4], dir: &Path, blobs: Option<&store::blobs::Blobs>) -> Result<(usize, usize)> {
+    let path = |c: &str| -> Result<std::path::PathBuf> {
+        Ok(match blobs {
+            Some(bl) => bl.get(out.root(), c).with_context(|| format!("copy {c}"))?,
+            None => out.path(c),
+        })
+    };
     let inside = |p: &[i32; 2]| {
         let (x, y) = (p[0] as f64 / 1e7, p[1] as f64 / 1e7);
         x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]
@@ -261,11 +278,11 @@ pub fn unit_inputs(out: &Out, date: &str, b: [f64; 4], dir: &Path) -> Result<(us
     let mut polys: BTreeMap<String, String> = BTreeMap::new();
     for (x, y) in crate::stage::tiles_in(6, b) {
         if let Some(c) = out.get(&pos_logical(date, x, y)) {
-            let pts: Vec<[i32; 2]> = serde_json::from_slice(&std::fs::read(out.path(c))?).with_context(|| format!("{}", pos_logical(date, x, y)))?;
+            let pts: Vec<[i32; 2]> = serde_json::from_slice(&std::fs::read(path(c)?)?).with_context(|| format!("{}", pos_logical(date, x, y)))?;
             sites.extend(pts.into_iter().filter(inside));
         }
         if let Some(c) = out.get(&areas_logical(date, x, y)) {
-            for line in std::fs::read_to_string(out.path(c))?.lines().filter(|l| !l.is_empty()) {
+            for line in std::fs::read_to_string(path(c)?)?.lines().filter(|l| !l.is_empty()) {
                 polys.entry(store::naming::hash16(line.as_bytes())).or_insert_with(|| line.to_string());
             }
         }
@@ -290,6 +307,40 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A unit's heritage inputs read from this Mac's copies of the slices are those read from the
+    /// NAS's, and the copies are of what the unit reads.
+    #[test]
+    fn a_units_inputs_from_copies_are_its_inputs() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let mut m = BTreeMap::new();
+        for (x, y, pts, area) in [(20u32, 22u32, "[[-700000000,470000000],[-690000000,465000000]]", "{\"a\":1}\n{\"b\":2}\n"), (21, 22, "[[-640000000,468000000]]", "{\"b\":2}\n")] {
+            for (l, body) in [(pos_logical("d", x, y), pts), (areas_logical("d", x, y), area)] {
+                let c = store::naming::write_atomic(&root, &l, "json", store::naming::Source::Bytes(body.as_bytes())).unwrap();
+                m.insert(l, c);
+            }
+        }
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        std::fs::write(root.join("state/build/pending.json"), b"{}").unwrap();
+        let out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let b = [-71.0, 45.0, -55.0, 48.0];
+        let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
+        let (a, c) = (d.path().join("a"), d.path().join("c"));
+        let got = unit_inputs(&out, "d", b, &a).unwrap();
+        assert_eq!(unit_inputs_with(&out, "d", b, &c, Some(&blobs)).unwrap(), got);
+        assert!(got.0 > 0 && got.1 == 2, "{got:?}");
+        for f in ["heritage.json", "area-shapes.geojsonseq"] {
+            assert_eq!(std::fs::read(a.join(f)).unwrap(), std::fs::read(c.join(f)).unwrap());
+        }
+        let mut want: Vec<String> = m.values().cloned().collect();
+        want.sort();
+        let mut contents = unit_contents(&out, "d", b);
+        contents.sort();
+        assert_eq!(contents, want);
+        assert!(contents.iter().all(|c| blobs.path_of(c).exists()));
+    }
 
     #[test]
     fn rectangles_cover_exactly_the_tiles() {

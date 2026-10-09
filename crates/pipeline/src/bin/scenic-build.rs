@@ -2836,7 +2836,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if let Some(&next) = units.get(k + 1) {
             let o: &Out = out;
             let b = pipeline::stage::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM);
-            let packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(b);
+            let mut packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(b);
+            // (Its heritage slices too: pipeline::heritage::unit_inputs_with.)
+            packs.extend(pipeline::heritage::unit_contents(o, &date, b));
             let piece = o.get(&format!("sources/osm/{date}/pieces/{}", next.dash())).map(|c| (o.path(c), scratch.join(format!("piece-{}.osm.pbf", next.dash()))));
             // Its canopy squares' files, from the NAS's store into the cache the canopy step reads
             // (scenic-metrics: it takes what's there whole, else copies it itself).
@@ -2849,6 +2851,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 Some(index) => pipeline::buildtiles::tiles_for(next, reach.as_ref().and_then(|r| r.get(next))).into_iter().filter_map(|t| pipeline::buildtiles::tile_copy(o.root(), index, t, &tools.cache)).collect(),
                 None => Vec::new(),
             };
+            // Its scenic results kept from its last run, copied beside its folder.
+            let carry = (pipeline::scache::Carry { dir: tools.scenic_kept(next) }, pipeline::unit::ahead_carry(&scratch.join("units").join(next.dash())));
             let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
                 // (A phase beside the main thread's: crate::timings.)
@@ -2869,6 +2873,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 };
                 if let Some((src, dst)) = &piece {
                     copy(src, dst);
+                }
+                if let Err(e) = std::fs::create_dir_all(carry.1.parent().unwrap_or(Path::new("."))).map_err(anyhow::Error::from).and_then(|_| carry.0.fetch(&carry.1)) {
+                    eprintln!("unit: its kept scenic results not copied ahead ({e:#})");
                 }
                 for (src, local, want) in &tiles {
                     if let Err(e) = pipeline::buildtiles::fetch_tile(src, local, *want) {
@@ -2925,7 +2932,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::unit::take_peak();
         let (rep, tools) = {
             let o: &Out = out;
-            let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(o, &date, b, d);
+            // (Its heritage slices from this Mac's copies: copied ahead, or now.)
+            let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs_with(o, &date, b, d, Some(&blobs));
             // Its roadside buildings: the folder given by hand, else the release's tiles near its
             // roads.
             let mut tools = tools.clone();
@@ -3064,6 +3072,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let clean = || {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&bdir).ok();
+        std::fs::remove_dir_all(pipeline::unit::ahead_carry(&dir)).ok();
     };
     // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
     // for later units and packs. (The canopy step made canopy and cover for every tile.)

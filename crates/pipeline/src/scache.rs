@@ -266,6 +266,38 @@ impl Carry {
         Ok(())
     }
 
+    /// The kept results copied whole into `to` (made anew), ahead of the run that restores them
+    /// (`restore_ahead`): false when there are none, or they were replaced while copied.
+    pub fn fetch(&self, to: &Path) -> Result<bool> {
+        std::fs::remove_dir_all(to).ok();
+        let Ok(first) = std::fs::read(self.dir.join("basis.json")) else { return Ok(false) };
+        let tmp = to.with_extension("tmp");
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp)?;
+        for e in std::fs::read_dir(&self.dir)?.flatten() {
+            store::sys::copy_data(e.path(), tmp.join(e.file_name()))?;
+        }
+        // (Replaced meanwhile: what was copied may mix two runs.)
+        if std::fs::read(self.dir.join("basis.json")).ok().as_deref() != Some(&first[..]) || std::fs::read(tmp.join("basis.json")).ok().as_deref() != Some(&first[..]) {
+            std::fs::remove_dir_all(&tmp).ok();
+            return Ok(false);
+        }
+        std::fs::rename(&tmp, to)?;
+        Ok(true)
+    }
+
+    /// `restore`, from the copy `fetch` made in `ahead` when it's of the results kept now (its
+    /// basis the same: two runs on one basis keep the same results), else from where they're kept.
+    pub fn restore_ahead(&self, build: &Path, ahead: Option<&Path>) -> Result<Option<usize>> {
+        if let Some(a) = ahead {
+            let here = std::fs::read(a.join("basis.json")).ok();
+            if here.is_some() && here == std::fs::read(self.dir.join("basis.json")).ok() {
+                return Carry { dir: a.to_path_buf() }.restore(build);
+            }
+        }
+        self.restore(build)
+    }
+
     /// Puts the kept results into `build` (staged, its land cover made) as the canopy and view
     /// steps' previous run, with the grid tiles whose terrain or land cover changed since in
     /// `changed.tiles`. The samples kept, or None when nothing usable was kept.
@@ -351,6 +383,45 @@ mod tests {
             (lon, lat)
         };
         assert!(ch.near(centre(tiles[1]).0, centre(tiles[1]).1, 1) && !ch.near(centre(tiles[0]).0, centre(tiles[0]).1, 1));
+    }
+
+    #[test]
+    fn results_copied_ahead_restore_as_the_kept_ones_while_they_are_them() {
+        let d = tempfile::tempdir().unwrap();
+        let (run1, kept, ahead) = (d.path().join("run1"), d.path().join("kept/6-32-21"), d.path().join("units/6-32-21-carry"));
+        let tiles = [[1025u32, 673u32], [1056, 677]];
+        build_with(&run1, &[11, 22, 33], &tiles, &[100, 200]);
+        let c = Carry { dir: kept.clone() };
+        // Nothing kept: nothing copied.
+        assert!(!c.fetch(&ahead).unwrap() && !ahead.exists());
+        c.save(&run1).unwrap();
+        assert!(c.fetch(&ahead).unwrap());
+        // Restored from the copy: the same folder as from where they're kept.
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        build_with(&a, &[], &tiles, &[100, 250]);
+        build_with(&b, &[], &tiles, &[100, 250]);
+        assert_eq!(c.restore_ahead(&a, Some(&ahead)).unwrap(), Some(3));
+        assert_eq!(c.restore(&b).unwrap(), Some(3));
+        let files = |d: &Path| {
+            let mut v: Vec<(String, Vec<u8>)> = Vec::new();
+            for dir in [d.to_path_buf(), unit_dir(d)] {
+                for e in std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().is_file()) {
+                    v.push((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap()));
+                }
+            }
+            v.sort();
+            v
+        };
+        assert_eq!(files(&a), files(&b));
+        // Kept again since, on another basis: the copy isn't used.
+        let run2 = d.path().join("run2");
+        build_with(&run2, &[11, 22, 33, 44], &tiles, &[100, 300]);
+        c.save(&run2).unwrap();
+        std::fs::write(ahead.join("near.i8"), "stale").unwrap();
+        let x = d.path().join("x");
+        build_with(&x, &[], &tiles, &[100, 300]);
+        assert_eq!(c.restore_ahead(&x, Some(&ahead)).unwrap(), Some(4));
+        assert_eq!(std::fs::read_to_string(x.join("near.i8")).unwrap(), "near.i8 of 4 samples");
     }
 
     #[test]

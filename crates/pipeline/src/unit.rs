@@ -987,7 +987,9 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     // unchanged), restored over the staged grids they were made from.
     if let Some(c) = carry {
         let s = stage("scenic results restored", Class::NasRead);
-        match c.restore(dir) {
+        // (From the copy made ahead of it, while the unit before it built: `ahead_carry`.)
+        let ahead = ahead_carry(dir);
+        match c.restore_ahead(dir, ahead.is_dir().then_some(ahead.as_path())) {
             Ok(Some(n)) => eprintln!("unit {}: {n} samples' scenic results from its last run", u.slash()),
             Ok(None) => {}
             // (Without the cache's record the steps start afresh, whatever was copied.)
@@ -999,6 +1001,13 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
         s.end();
     }
     Ok(rep)
+}
+
+/// Where the unit job copies the scenic results kept for the unit whose folder is `dir`, ahead of
+/// it (scache::Carry::fetch): beside its folder.
+pub fn ahead_carry(dir: &Path) -> PathBuf {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    dir.with_file_name(format!("{name}-carry"))
 }
 
 /// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`, or
