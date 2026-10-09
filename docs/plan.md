@@ -995,6 +995,17 @@ they treat any raster.
     density (2 texels a CSS px: its tiles are the water layer's tiles): every pixel holding any land
     is a shore, placed within the pixel by its share (`web/src/coastdist.ts`), so an island smaller
     than a pixel keeps its shore and its glow, as full detail would give them.
+    - The distance is exact within 192 of a tile's pixels. Beyond that, land is "deep" (the ramp
+      reaches only 0.7 CSS px into it) and water "far", except toward the poles. There a tile's
+      pixels hold cos φ as many metres, so past 60° the water beyond comes from the tile's
+      ancestor k levels up, enough that the window holds at least half the equator's metres
+      (blended over its last quarter). A worker keeps the 12 most recent coarse tiles.
+    - Stored in metres, MapLibre's 'custom' raster-DEM encoding (R·6553.6 + G·25.6 + B·0.1 −
+      100 000; past 400 km 1/64 as steep): from −100 km of land to about 75 000 km of water, past
+      any ramp's ends at every zoom. The ramp is in metres for the view centre's scale: on the
+      globe a metre is as wide across the view as the sphere's foreshortening allows (at 84–85°
+      within 1–5 % of the centre's), on flat Mercator the band widens toward the poles with the
+      ground.
   - Without the layer in the catalog (until the agent first builds it), the basemap's water
     polygons are drawn as before.
   - Masking other layers by the water (the depth layers planned, any water overlay) takes the
@@ -1031,6 +1042,19 @@ they treat any raster.
     as well (never magnified) took the black-and-white jump to 0.01 %, at the cost of the water's
     tiles in view (12 → 30); first left out as changing nothing in the app's colours, then done
     (8 Oct) for sharpness, as above.
+- **Checked toward the poles** (`--screen`, 2026-10-08, the reference's shading measured the same
+  way, its water from this Mac's water tiles as a stand-in for the build Mac's store): 26 views,
+  the whole globe at each pole and with a pole near the limb, Antarctica, the Arctic Ocean,
+  Svalbard, East Greenland and the Antarctic Peninsula at z2–6.
+  - Visibly different in the app's colours: 0.02 % of the pixels. Before, 25.5 %: capped in tile
+    pixels and stored in metres, deep land and far water became a few metres toward the poles,
+    land lit as the shoreline's edge and water as glow, the same at every longitude, stepping
+    into rings where the globe's tile levels change.
+  - The same caps lit land elsewhere: a strip at whole zooms and tilted views' near ground
+    (since the finer level was always taken), and every continent on the whole globe
+    (Terrain-RGB's −10 km floor). On the fade views 3.64 → 0.05 % (jump 0.24 → 0.003 %), in
+    black and white 0.66 → 0.30 %. The 127 views of the coverage check are unchanged
+    (0.006 %).
 - **Cost on the map** (this Mac's Chrome, 1,180 × 820 CSS px at 2×, 2026-10-08): the densest
   views' water takes 24–55 MB of textures (17–39 tiles), against 10–22 MB of the polygons and dots
   of before. The frames' GPU and CPU times are the same within the runs' spread (GPU 2.6–8.5 ms a
@@ -1042,6 +1066,10 @@ they treat any raster.
     (Stockholm z7.6, Maine z9.6, Hudson Bay z5.6; this Mac, its test server reading the NAS) the
     last shaded tile came 0.1–0.9 s after in a map of 488 × 536 CSS px (0.4–1.2 s before) and
     0.4–3.2 s in one of 1,488 × 1,036 (1.2–3.9 s).
+  - Toward the poles (2026-10-08): the far field from coarser tiles makes a pan of eight steps
+    over Svalbard at z5 3.3–3.5 s against 2.1–2.4 s, over Saimaa at z6 (61.75°) 2.2–2.5 s against
+    1.7–2.0, Antarctica at z2 about the same; within 60° nothing changes. The coarse tiles kept
+    take up to 12 MB a worker.
 
 ### Worldwide road values (in the OSM pass)
 
