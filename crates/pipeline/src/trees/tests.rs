@@ -454,23 +454,32 @@ fn results_in_order_on_any_threads() {
 fn items_with_parallel_work_of_their_own_never_hang_it() {
     // (The pool's threads once waited in `in_order` for room, and an item's parallel work waiting on
     // such a thread never ended: many items, more than its window, each with parallel work (the
-    // first slow), and a pool thread busy as it starts, as z3's blocks. Within a minute, or it hung.)
+    // first slow), and a pool thread busy as it starts, as z3's blocks. A hang is told from a slow
+    // run by its work: none of it moves for two minutes, however slowly a busy Mac runs it.)
     use rayon::prelude::*;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    const RUNS: u64 = 3;
+    const ITEMS: u64 = 300;
+    const STEPS: u64 = 64;
+    const STALL: std::time::Duration = std::time::Duration::from_secs(120);
+    let steps = std::sync::Arc::new(AtomicU64::new(0));
     let (tx, rx) = std::sync::mpsc::channel();
+    let done = steps.clone();
     std::thread::spawn(move || {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(14).build().unwrap();
-        for _ in 0..3 {
+        for _ in 0..RUNS {
             let got = pool.install(|| {
                 rayon::spawn(|| std::thread::sleep(std::time::Duration::from_millis(100)));
                 let mut sum = 0u64;
                 in_order(
-                    300,
+                    ITEMS as usize,
                     |i| {
                         let pause = std::time::Duration::from_micros(if i == 0 { 3000 } else { 150 });
-                        Ok((0..64u64)
+                        Ok((0..STEPS)
                             .into_par_iter()
                             .map(|x| {
                                 std::thread::sleep(pause);
+                                done.fetch_add(1, Relaxed);
                                 x * i as u64
                             })
                             .sum::<u64>())
@@ -486,9 +495,20 @@ fn items_with_parallel_work_of_their_own_never_hang_it() {
             tx.send(got.map_err(|e| e.to_string())).ok();
         }
     });
-    for _ in 0..3 {
-        let got = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("in_order hung");
-        assert_eq!(got.unwrap(), (0..300u64).map(|i| (0..64u64).map(|x| x * i).sum::<u64>()).sum::<u64>());
+    for run in 0..RUNS {
+        let mut seen = steps.load(Relaxed);
+        let got = loop {
+            match rx.recv_timeout(STALL) {
+                Ok(got) => break got,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let now = steps.load(Relaxed);
+                    assert!(now > seen, "in_order hung in run {run}: no item's work moved in {STALL:?} ({now} of {} steps done)", RUNS * ITEMS * STEPS);
+                    seen = now;
+                }
+                Err(e) => panic!("in_order's thread ended without its result: {e}"),
+            }
+        };
+        assert_eq!(got.unwrap(), (0..ITEMS).map(|i| (0..STEPS).map(|x| x * i).sum::<u64>()).sum::<u64>());
     }
 }
 
