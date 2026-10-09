@@ -308,6 +308,19 @@ pub fn repair_terrain(t: &mut [f32], z: u8, lat: f64) -> Repair {
     repair_terrain_with(t, z, lat, None).0
 }
 
+#[cfg(test)]
+thread_local! {
+    /// (The tests' switch: every stage judged, as before the shortcut, to compare with it.)
+    static NO_SHORTCUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn no_shortcut() -> bool {
+    #[cfg(test)]
+    return NO_SHORTCUT.with(|c| c.get());
+    #[cfg(not(test))]
+    false
+}
+
 /// `repair_terrain`, and the blobs it flattened.
 pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob>) {
     debug_assert_eq!(t.len(), CELLS);
@@ -336,11 +349,19 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
         // finds nothing in AWS's values, one does, and the repair ends when that one finds nothing
         // too, so the tile returned is one nothing is found in as stored.)
         let mut stored = false;
+        // (The values a stage in AWS's values judged and found nothing in, knowing no ringing: a
+        // stage as stored given the very same values, nothing known of a ringing either, would
+        // judge them the same and find nothing, which ends the repair. A tile on dry land is so.)
+        let mut judged: Option<Vec<f32>> = None;
         for stage in 1..=BLOB_STAGES {
             rep.stages = stage;
             let n0 = blobs.len();
             let before = hole.clone();
             let base: Vec<f32> = if stored { t.iter().map(|&v| v.max(0.0)).collect() } else { t.to_vec() };
+            if stored && !no_shortcut() && judged.as_ref().is_some_and(|j| j.iter().zip(&base).all(|(a, b)| a.to_bits() == b.to_bits())) {
+                break;
+            }
+            let knew_none = !stored && !ringing.contains(&true);
             let neg: Vec<f32> = base.iter().map(|&v| -v).collect();
             // (Towers are judged knowing the pits of a resampling's ringing that the stage before
             // found, and this stage's pits are found for the next; as stored, there are none.)
@@ -370,6 +391,7 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
                 ringing = rung;
                 if !found && same {
                     stored = true;
+                    judged = knew_none.then_some(base);
                     continue;
                 }
             }
@@ -390,6 +412,43 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
     (rep, blobs)
 }
 
+/// `v`'s indices, highest value first (as `total_cmp` orders them), ties by index: a stable radix
+/// sort of the values' order-preserving bits, the order a comparison sort by (value descending,
+/// index) gives.
+fn highest_first(v: &[f32]) -> Vec<u32> {
+    // (total_cmp's order as unsigned keys, reversed: the highest first.)
+    let key = |x: f32| {
+        let b = x.to_bits();
+        !(if b >> 31 == 1 { !b } else { b | 0x8000_0000 })
+    };
+    let keys: Vec<u32> = v.iter().map(|&x| key(x)).collect();
+    let mut order: Vec<u32> = (0..v.len() as u32).collect();
+    let mut tmp = vec![0u32; v.len()];
+    for shift in [0u32, 8, 16, 24] {
+        let mut count = [0usize; 256];
+        for &k in &keys {
+            count[(k >> shift) as usize & 255] += 1;
+        }
+        // (A digit every key shares orders nothing.)
+        if count.iter().any(|&c| c == keys.len()) {
+            continue;
+        }
+        let mut at = [0usize; 256];
+        let mut s = 0;
+        for (d, &c) in count.iter().enumerate() {
+            at[d] = s;
+            s += c;
+        }
+        for &i in &order {
+            let d = (keys[i as usize] >> shift) as usize & 255;
+            tmp[at[d]] = i;
+            at[d] += 1;
+        }
+        std::mem::swap(&mut order, &mut tmp);
+    }
+    order
+}
+
 /// Marks in `out` the broken blobs of `v`'s upper level sets, and adds them to `blobs` (`held`: the
 /// pixels filled in at the stage's start, voids and blobs found before). The component tree is made
 /// by union–find over the pixels from the highest down (8-connected; ties by index): when a pixel
@@ -399,8 +458,7 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
 fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], under: &mut [bool], ringing: &mut [bool], blobs: &mut Vec<Blob>) {
     const NONE: u32 = u32::MAX;
     let w = TS as i32;
-    let mut order: Vec<u32> = (0..v.len() as u32).collect();
-    order.sort_unstable_by(|&a, &b| v[b as usize].total_cmp(&v[a as usize]).then(a.cmp(&b)));
+    let order = highest_first(v);
     let mut rank = vec![NONE; v.len()];
     for (k, &p) in order.iter().enumerate() {
         rank[p as usize] = k as u32;
@@ -410,15 +468,20 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     let mut top = vec![0u32; v.len()];
     let mut sides = vec![0u8; v.len()];
     // (Pixels beside a void or a blob already found, and the components that have one.)
-    let near_px: Vec<bool> = (0..v.len())
-        .map(|i| {
-            let (x, y) = ((i % TS) as i32, (i / TS) as i32);
-            !held[i] && [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)].iter().any(|&(dx, dy)| {
-                let (xx, yy) = (x + dx, y + dy);
-                xx >= 0 && yy >= 0 && xx < w && yy < w && held[(yy * w + xx) as usize]
-            })
-        })
-        .collect();
+    // (Each held pixel marks its neighbours: most tiles hold none.)
+    let mut near_px = vec![false; v.len()];
+    for i in (0..v.len()).filter(|&i| held[i]) {
+        let (x, y) = ((i % TS) as i32, (i / TS) as i32);
+        for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            let (xx, yy) = (x + dx, y + dy);
+            if xx >= 0 && yy >= 0 && xx < w && yy < w {
+                near_px[(yy * w + xx) as usize] = true;
+            }
+        }
+    }
+    for (n, &h) in near_px.iter_mut().zip(held) {
+        *n &= !h;
+    }
     let mut near = vec![false; v.len()];
     // Per component (at its root): its best so far (the kind first, then the excess), the rank at
     // which it stood so, and how it was weighed then (rise, level, reach, edge).
@@ -427,7 +490,10 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     // joins it: what's left of it is weighed in the next stage); each the rank at which it stood so
     // and how it was weighed then.
     type Best = (BlobKind, f64, u32, f32, f32, f32, bool);
-    let mut best: Vec<[Option<Best>; 3]> = vec![[None; 3]; v.len()];
+    // (Kept apart, a component's own made when it first stands out BLOB_RISE: few do, and the
+    // tile's every pixel having one would be megabytes to clear for each call.)
+    let mut best_at = vec![NONE; v.len()];
+    let mut best: Vec<[Option<Best>; 3]> = Vec::new();
     let mut comp: Vec<u32> = Vec::with_capacity(SPIKE_MAX as usize + 1);
     // (Pits that are a ringing's other half, small and steep and more than BLOB_RISE deep below
     // the ground they meet, as AWS has them: their tops and ranks, and whether a chain has one.)
@@ -490,7 +556,11 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             let l = ((a_eff / std::f64::consts::PI).sqrt() + 0.5) * px;
             let allowed = steepest(l) * l;
             let edge = sides[r as usize] != 0;
-            let slot = &mut best[r as usize];
+            if best_at[r as usize] == NONE {
+                best_at[r as usize] = best.len() as u32;
+                best.push([None; 3]);
+            }
+            let slot = &mut best[best_at[r as usize] as usize];
             // (Steepness as the map shows it: what's below sea level, the sea floor or a pit's
             // depth below zero, makes nothing steeper on the map.)
             if seen > BLOB_RISE && seen > allowed && slot[0].is_none_or(|b| seen - allowed > b.1) {
@@ -543,8 +613,10 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             if r == dom {
                 continue;
             }
-            for b in best[r as usize].into_iter().flatten() {
-                found.push((top[r as usize], b));
+            if let Some(bs) = best.get(best_at[r as usize] as usize) {
+                for b in bs.iter().flatten() {
+                    found.push((top[r as usize], *b));
+                }
             }
             parent[r as usize] = dom;
             area[dom as usize] += area[r as usize];
@@ -558,8 +630,10 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     }
     for &p in &order {
         if parent[p as usize] == p {
-            for b in best[p as usize].into_iter().flatten() {
-                found.push((top[p as usize], b));
+            if let Some(bs) = best.get(best_at[p as usize] as usize) {
+                for b in bs.iter().flatten() {
+                    found.push((top[p as usize], *b));
+                }
             }
         }
     }
@@ -988,6 +1062,29 @@ pub const SEAM_MIN_Z: u8 = 9;
 /// ground's range. It runs after the blobs' rules (repair_terrain_with), on what they left: the
 /// towers and pits that neighbouring spikes' roughness let stand, only shortened. Returns the
 /// pixels changed (by more than half a metre).
+/// Whether `v` is more than SEAM_OUT out of the median of `win` (its window, finite values, `v` among
+/// them): 1 above, −1 below, else 0; the median being the window's middle value (`win.len() / 2`
+/// from the lowest, as `total_cmp` orders them). Counted rather than selected, and the same: `v − x`
+/// rounds monotonically in `x`, so the values for which it's over SEAM_OUT are the lowest ones,
+/// and the median is one of them when more than half the window is (likewise under −SEAM_OUT and
+/// the highest).
+fn out_of_median(v: f32, win: &[f32]) -> i8 {
+    let m = win.len() / 2;
+    let (mut above, mut below) = (0usize, 0usize);
+    for &x in win {
+        let d = v - x;
+        above += (d > SEAM_OUT) as usize;
+        below += (d < -SEAM_OUT) as usize;
+    }
+    if above > m {
+        1
+    } else if below >= win.len() - m {
+        -1
+    } else {
+        0
+    }
+}
+
 pub fn seam_spikes(t: &mut [f32], z: u8, lat: f64) -> usize {
     if z < SEAM_MIN_Z {
         return 0;
@@ -1015,14 +1112,7 @@ pub fn seam_spikes(t: &mut [f32], z: u8, lat: f64) -> usize {
         if win.len() < 9 {
             continue;
         }
-        let m = win.len() / 2;
-        let med = *win.select_nth_unstable_by(m, |a, b| a.total_cmp(b)).1;
-        let d = t[p] - med;
-        if d > SEAM_OUT {
-            cand[p] = 1;
-        } else if d < -SEAM_OUT {
-            cand[p] = -1;
-        }
+        cand[p] = out_of_median(t[p], &win);
     }
     if cand.iter().all(|&c| c == 0) {
         return 0;
@@ -1553,6 +1643,77 @@ mod repair_tests {
         assert!(!again.changed() && again.blobs == 0, "a second pass found more: {again:?} ({r:?} first)");
         assert_eq!(stored, once);
         r
+    }
+
+    /// A deterministic stream of numbers in [0, 1).
+    fn lcg(seed: u64) -> impl FnMut() -> f32 {
+        let mut s = seed;
+        move || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (s >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    #[test]
+    fn highest_first_is_the_comparison_sort() {
+        let mut r = lcg(7);
+        let mut v: Vec<f32> = (0..TS * TS).map(|_| ((r() * 4000.0 - 500.0) * 4.0).round() / 4.0).collect();
+        // (Ties, both zeros, the extremes.)
+        for (i, x) in [0.0, -0.0, 0.0, -0.0, f32::MAX, f32::MIN, 1e-30, -1e-30, 8900.0, -11500.0].into_iter().enumerate() {
+            v[i * 977] = x;
+        }
+        for v in [v.clone(), vec![3.0; TS * TS], v.iter().map(|x| -x).collect()] {
+            let mut want: Vec<u32> = (0..v.len() as u32).collect();
+            want.sort_unstable_by(|&a, &b| v[b as usize].total_cmp(&v[a as usize]).then(a.cmp(&b)));
+            assert_eq!(highest_first(&v), want);
+        }
+    }
+
+    #[test]
+    fn out_of_median_is_the_selected_median() {
+        let mut r = lcg(11);
+        let mut seen = [0usize; 3];
+        for k in 0..200_000 {
+            let n = 9 + k % 17;
+            // (Values a hundred metres apart and more, and others at the edge, where rounding decides.)
+            let centre = r() * 3000.0;
+            let mut win: Vec<f32> = (0..n)
+                .map(|_| match (r() * 4.0) as u32 {
+                    0 => centre,
+                    1 => centre - SEAM_OUT,
+                    2 => centre + SEAM_OUT * (r() * 4.0 - 2.0),
+                    _ => f32::from_bits((centre - SEAM_OUT).to_bits().wrapping_add((r() * 6.0) as u32).wrapping_sub(3)),
+                })
+                .collect();
+            let v = win[(r() * n as f32) as usize % n];
+            let got = out_of_median(v, &win);
+            let med = *win.select_nth_unstable_by(n / 2, |a, b| a.total_cmp(b)).1;
+            let d = v - med;
+            let want = if d > SEAM_OUT { 1 } else if d < -SEAM_OUT { -1 } else { 0 };
+            assert_eq!(got, want, "{v} in {win:?}");
+            seen[(got + 1) as usize] += 1;
+        }
+        assert!(seen.iter().all(|&c| c > 1000), "{seen:?}");
+    }
+
+    #[test]
+    fn a_stage_as_stored_like_the_one_before_ends_it_as_judging_it_would() {
+        // Land (nothing below zero): the stage as stored is the one before; a coast: it isn't.
+        let mut spiked = hills(600.0);
+        spiked[90 * TS + 90] = 2900.0;
+        spiked[91 * TS + 90] = 2600.0;
+        let mut coast = hills(-50.0);
+        coast[40 * TS + 200] = 1800.0;
+        for (z, t) in [(12, hills(600.0)), (12, spiked.clone()), (10, spiked), (12, coast.clone()), (9, coast)] {
+            let mut a = t.clone();
+            let ra = repair_terrain_with(&mut a, z, 46.0, None);
+            NO_SHORTCUT.with(|c| c.set(true));
+            let mut b = t.clone();
+            let rb = repair_terrain_with(&mut b, z, 46.0, None);
+            NO_SHORTCUT.with(|c| c.set(false));
+            assert_eq!(ra, rb);
+            assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+        }
     }
 
     #[test]
