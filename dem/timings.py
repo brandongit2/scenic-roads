@@ -73,7 +73,7 @@ class phase:
         self.overlapped = False
         me = threading.get_ident()
         with _lock:
-            a = _accs.setdefault(self.key, {"name": self.name, "class": self.cls, "wall_s": 0.0, "cpu_s": 0.0, "n": 0, "bytes": 0, "files": 0, "overlapped": False, "background": me != _main})
+            _accs.setdefault(self.key, {"name": self.name, "class": self.cls, "wall_s": 0.0, "cpu_s": 0.0, "n": 0, "bytes": 0, "files": 0, "overlapped": False, "background": me != _main})
             for o in _open:
                 if o.thread != me:
                     o.overlapped = True
