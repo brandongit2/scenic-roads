@@ -1263,6 +1263,7 @@ mod tests {
         // The raw tiles, loose on the NAS.
         let staged = d.join("staged");
         let (q, ts, cov) = north_tiles(d, &staged);
+        std::fs::create_dir_all(&sources).unwrap();
         std::fs::rename(&staged, &store).unwrap();
         // The NAS's records' files, and this Mac's copies of them (blobs/): what the target frees.
         let cache = d.join("cache");
