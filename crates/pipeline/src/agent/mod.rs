@@ -5593,7 +5593,7 @@ mod tests {
         assert_eq!(std::fs::read(&jobs).unwrap(), before);
         drop(held);
         // (A sibling test's child may hold the lock a moment, between its fork and its exec: stepped
-        // again until the records are re-keyed, a minute at most.)
+        // again until the records are re-keyed, five minutes a watchdog.)
         let rekeyed = |a: &mut Agent| {
             let t0 = Instant::now();
             loop {
@@ -5601,7 +5601,7 @@ mod tests {
                 if build::Keys::load(&root).unit["6/28/17"] != old {
                     break;
                 }
-                assert!(t0.elapsed() < Duration::from_secs(60), "not re-keyed");
+                assert!(t0.elapsed() < Duration::from_secs(300), "not re-keyed");
                 std::thread::sleep(Duration::from_millis(50));
             }
         };

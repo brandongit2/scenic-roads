@@ -469,17 +469,17 @@ mod tests {
 
     /// What `f` finds of job `r`, once it does: the tests wait for what the job did, not for a
     /// time. A job runs at utility priority, and on a loaded Mac (other builds beside it) its shell
-    /// can take seconds to start or to take its next step. A minute at most: then the job is
-    /// stopped, and the test fails.
+    /// can take seconds to start or to take its next step. Five minutes is a watchdog: then the job
+    /// is stopped, and the test fails.
     fn wait_for<T>(r: &mut Running, what: &str, mut f: impl FnMut(&mut Running) -> Option<T>) -> T {
         let t = Instant::now();
         loop {
             if let Some(x) = f(r) {
                 return x;
             }
-            if t.elapsed() > Duration::from_secs(60) {
+            if t.elapsed() > Duration::from_secs(300) {
                 r.stop(Duration::from_secs(1));
-                panic!("{what}: not within a minute");
+                panic!("{what}: not within five minutes");
             }
             std::thread::sleep(Duration::from_millis(10));
         }

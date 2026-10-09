@@ -260,10 +260,10 @@ mod tests {
         assert_eq!(merge(&root, &scratch).unwrap(), 0);
         drop(held);
         // (A sibling test's child may hold the lock a moment, between its fork and its exec: longer
-        // on a loaded Mac. A minute at most.)
+        // on a loaded Mac. Five minutes is a watchdog.)
         let t0 = std::time::Instant::now();
         let mut merged = merge(&root, &scratch).unwrap();
-        while merged == 0 && t0.elapsed() < std::time::Duration::from_secs(60) {
+        while merged == 0 && t0.elapsed() < std::time::Duration::from_secs(300) {
             std::thread::sleep(std::time::Duration::from_millis(20));
             merged = merge(&root, &scratch).unwrap();
         }
