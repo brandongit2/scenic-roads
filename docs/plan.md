@@ -14,7 +14,8 @@
 - The diagram's source is `docs/diagram/`. To rebuild it, run `python3 page.py out.html`, then
   republish `out.html` to https://claude.ai/artifact/PrjaaDXLuuXGpGr2xt5Vjg.
 - Companions: `docs/phase5.md` (landmarks, stations, ferries and overlays by view; the landmark
-  jobs; the zoomed-out summaries) and `docs/formats.md` (file formats).
+  jobs; the zoomed-out summaries) and `docs/formats.md` (file formats). Planned: `docs/inputs.md`
+  (every input through a standard shape and a checked drop box; tasks #133–#147).
 
 **The idea in one line:** OpenStreetMap comes from one worldwide download, cut by area, and a region
 is only an outline saying which areas to build. Every step runs per area, per pack near the
