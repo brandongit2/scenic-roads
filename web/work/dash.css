@@ -2,11 +2,16 @@
    (index.html's :root) are used throughout. */
 
 #dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "machines" "pool" "road" "regions" "activity" "details"; }
+#dash.gated { grid-template-areas: "verdict" "inputs" "overview" "machines" "pool" "road" "regions" "activity" "details"; }
 @media (min-width: 1100px) {
   #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "machines road" "pool road" "activity road" "activity regions" "details details"; align-items: start; }
+  #dash.gated { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "machines road" "pool road" "activity road" "activity regions" "details details"; }
 }
 #dash > section { min-width: 0; }
 .d-verdict { grid-area: verdict; }
+.d-inputs { grid-area: inputs; }
+/* (Its row only while a unit is held or checking: #dash.gated.) */
+.d-inputs:empty { display: none; }
 .d-overview { grid-area: overview; }
 .d-machines { grid-area: machines; }
 .d-pool { grid-area: pool; }
@@ -161,6 +166,20 @@ table.t th { text-align: left; color: var(--dim); font-weight: 500; padding: 3px
 table.t td { padding: 3px 6px; border-bottom: 1px solid var(--row-line); vertical-align: top; }
 table.t td.num, table.t th.num { text-align: right; }
 .fresh { color: var(--dim); font-size: 11px; margin-top: 8px; }
+
+/* The gate (docs/inputs.md §4.7): a banner per held unit, a quiet line per unit checking. */
+.gate { background: var(--panel); border: 1px solid var(--warn-line); border-left: 3px solid var(--warn); border-radius: 8px; padding: 7px 11px; margin-bottom: 6px; }
+.gate.has-error { border-color: var(--bad-line); border-left-color: var(--bad); }
+.gate.checking { border: 0; background: none; padding: 0 2px; color: var(--dim); font-size: 11.5px; }
+.gate .gh { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.gate .gh .files { color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.gate .gh button { margin-left: auto; }
+.gate .together { color: var(--warn); font-size: 11.5px; margin-top: 3px; }
+.gate .gf { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 2px 8px; align-items: baseline; padding: 4px 0 2px; border-top: 1px solid var(--row-line); margin-top: 4px; }
+.gate .gf .msg { font-size: 12px; }
+.gate .gf .sub { grid-column: 2 / 4; color: var(--dim); font-size: 11px; }
+.gate .gf pre { grid-column: 2 / 4; margin: 2px 0 0; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); max-height: 9em; overflow: auto; white-space: pre-wrap; }
+.gate .gf button { padding: 1px 8px; font-size: 11.5px; }
 
 /* The pool (pool.js): who leads, each member, its controls. */
 .d-pool .pool-top { display: grid; gap: 4px; margin-bottom: 8px; }

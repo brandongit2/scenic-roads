@@ -521,6 +521,7 @@ async fn main() -> Result<()> {
         .route("/api/build", get(build_h))
         .route("/api/build/pause", axum::routing::post(build_pause_h))
         .route("/api/build/lead", axum::routing::post(build_lead_h))
+        .route("/api/build/inputs", axum::routing::post(build_inputs_h))
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
@@ -815,6 +816,26 @@ async fn build_lead_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
     let by = format!("the map on {}", pipeline::agent::cond::host_name());
     match tokio::task::spawn_blocking(move || pipeline::control::request_lead(&home, ask, &by)).await {
         Ok(Ok(_)) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// An acceptance of the gate's held warnings from the map's build panel (docs/inputs.md §4.5):
+/// `{"unit": <unit>, "accept": [<finding id>…]}` or `{"unit": <unit>, "all": true}`, an ask to this
+/// Mac's agent, which writes it (errors have no Accept).
+async fn build_inputs_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
+    let unit = v.get("unit").and_then(|u| u.as_str()).filter(|u| !u.is_empty() && u.len() <= 64 && !u.contains(['/', '\\', '.']));
+    let accept: Vec<String> = v.get("accept").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| pipeline::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
+    let all = v.get("all").and_then(|a| a.as_bool()) == Some(true);
+    let Some(unit) = unit.filter(|_| all || !accept.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, "{\"unit\": <unit>, \"accept\": [<finding id>…]} or {\"unit\": <unit>, \"all\": true}").into_response();
+    };
+    let ask = pipeline::inputs::Ask { unit: unit.to_string(), accept, all, by: format!("the map on {}", pipeline::agent::cond::host_name()), at: pipeline::agent::jobs::now_s(), ..Default::default() };
+    let home = s.home.join("agent");
+    match tokio::task::spawn_blocking(move || pipeline::inputs::ask(&home, &ask)).await {
+        Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

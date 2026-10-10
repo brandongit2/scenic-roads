@@ -3,8 +3,10 @@
 // Mac · building …", "· paused: the NAS isn't reachable", "· idle", "· last seen 3 h ago"), and new map data or
 // a new app that wants a reload. A click opens the details: the job and its log, what waits and
 // why, the last jobs to finish, the conditions; and the pool (docs/pool.md §10, §11): who leads, each
-// Mac's state, "Make this Mac lead", and "Take over…" when the lead is out of touch.
-import type { Agent, CatalogWatch } from '../catalog';
+// Mac's state, "Make this Mac lead", and "Take over…" when the lead is out of touch. An input held
+// at the gate (docs/inputs.md §4.7) adds a warning sign to the build item and a compact banner at
+// the top of the details, with Accept per warning and Accept All.
+import type { Agent, CatalogWatch, InputUnit } from '../catalog';
 import { h } from './dom';
 
 /** A heartbeat older than this: the build Mac is asleep, away or off (its agent writes one at least
@@ -82,6 +84,9 @@ function agentState(a: Agent): { text: string; dot: 'run' | 'paused' | 'idle' | 
   return { text: a.waiting.length ? `idle · ${a.waiting.length} waiting` : 'idle', dot: 'idle' };
 }
 
+/** The units the gate holds or checks (pipeline::inputs::view). */
+const gateUnits = (a: Agent | null): InputUnit[] => (a?.inputs ?? []).filter((v) => v.state !== 'ok');
+
 export class BuildStatus {
   private nas = h('button', { class: 'bs-nas', type: 'button' });
   private agent = h('button', { class: 'bs-agent', type: 'button' });
@@ -113,7 +118,8 @@ export class BuildStatus {
     this.agent.hidden = !a;
     if (a) {
       const st = agentState(a);
-      this.agent.replaceChildren(h('i', { class: `dot ${st.dot}` }), h('span', {}, `Build Mac · ${st.text}`));
+      const held = gateUnits(a).filter((v) => v.state === 'held');
+      this.agent.replaceChildren(h('i', { class: `dot ${st.dot}` }), h('span', {}, `Build Mac · ${st.text}`), ...(held.length ? [h('span', { class: 'bs-held', title: `Held at the gate: ${held.map((v) => v.unit).join(', ')}` }, '⚠')] : []));
       const said = (j: { what: string; paused?: string | null }) => `${j.what}${j.paused ? ` (paused: ${j.paused})` : ''}`;
       this.agent.title = a.job || a.beside ? [a.job, a.beside].filter((j) => j).map((j) => said(j!)).join('\nBeside it: ') : 'The build Mac: what it does, what waits and why (click)';
     }
@@ -236,11 +242,44 @@ export class BuildStatus {
   /** An ask sent, until the heartbeat shows it taken up. */
   private asking: 'pause' | 'resume' | null = null;
 
+  /** An acceptance of the gate's held warnings from this Mac's map (`{unit, accept}` or `{unit,
+   * all}`), through the map's server to this Mac's agent, which writes it. */
+  private async accept(body: { unit: string; accept: string[] } | { unit: string; all: true }) {
+    try {
+      const r = await fetch('/api/build/inputs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    } catch (e) {
+      alert(`Couldn't accept: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    void this.watch.poll();
+  }
+
+  /** The gate's compact banners: a held unit's files and findings (Accept per warning, Accept All;
+   * errors say what to fix), a line for a unit being checked. */
+  private gatePart(a: Agent): Node[] {
+    return gateUnits(a).map((v) => {
+      if (v.state === 'checking') return h('div', { class: 'bs-row faint' }, `${v.unit}: checking what was dropped…`);
+      const fs = v.findings ?? [];
+      const warns = fs.filter((f) => f.level === 'warning');
+      return h('div', { class: 'bs-gate' },
+        h('div', { class: 'bs-gate-h' }, h('span', { class: 'warn' }, `⚠ ${v.unit} held`), h('span', { class: 'faint' }, (v.held ?? []).join(', '))),
+        ...(v.together ? [h('div', { class: 'warn' }, v.together)] : []),
+        ...fs.map((f) => h('div', { class: 'bs-item' },
+          h('div', { class: f.level === 'error' ? 'fail' : 'warn' }, f.message),
+          h('div', { class: 'faint' }, [f.files.join(', '), ...(f.lines?.length ? [`${f.lines.length + (f.more ?? 0)} line${f.lines.length + (f.more ?? 0) === 1 ? '' : 's'}: ${f.lines.slice(0, 3).map(([n]) => n).join(', ')}${f.lines.length + (f.more ?? 0) > 3 ? '…' : ''}`] : [])].join(' · '), ...(f.at ? [' · ', h('a', { href: `/#map=13/${f.at[1].toFixed(5)}/${f.at[0].toFixed(5)}/0/0` }, 'on the map')] : [])),
+          f.level === 'warning'
+            ? h('button', { class: 'bs-btn', type: 'button', title: `Takes the change in with it (${f.id})`, onclick: () => { if (confirm(`Accept this warning of ${v.unit}?\n\n${f.message}`)) void this.accept({ unit: v.unit, accept: [f.id] }); } }, 'Accept')
+            : h('div', { class: 'faint' }, `An error: fix or remove ${f.files.join(', ')}`))),
+        ...(warns.length > 1 ? [h('button', { class: 'bs-btn', type: 'button', onclick: () => { if (confirm(`Accept all ${warns.length} warnings of ${v.unit}?\n\n${warns.map((f) => `• ${f.message}`).join('\n')}`)) void this.accept({ unit: v.unit, all: true }); } }, 'Accept all')] : []));
+    });
+  }
+
   /** The details: the build Mac (job, waiting, recent, conditions), then the map data and NAS. */
   private fill(pop: HTMLElement) {
     const c = this.watch.status, a = c?.agent ?? null;
     const hd = (t: string, right: Node | string = '') => h('div', { class: 'bs-hd' }, h('span', {}, t), typeof right === 'string' ? h('span', { class: 'faint' }, right) : right);
     const out: Node[] = [];
+    if (a && gateUnits(a).length) out.push(hd('Inputs', 'held at the gate'), ...this.gatePart(a));
     if (a) {
       const stale = now() - a.beat > STALE_S;
       out.push(

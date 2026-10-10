@@ -447,18 +447,20 @@ const NEAR_COVERAGE_KM: f64 = 20.0;
 /// units' ways (`extents`, E7), which reach past the coverage (ways are kept whole) and stay served
 /// while their region's removal waits for a rebuild.
 pub fn catalog_credits(regions: &[DrawnRegion], extents: &[[i32; 4]]) -> Vec<&'static Credit> {
+    CREDITS.iter().filter(|c| listed(c.areas, regions, extents)).collect()
+}
+
+/// Whether a credit of areas `areas` (none: anywhere) is listed by a catalog serving `regions` and
+/// the built units' ways `extents` (`catalog_credits`' rule; the inputs' descriptions' too,
+/// crate::inputs::credits).
+pub fn listed(areas: &[[f64; 4]], regions: &[DrawnRegion], extents: &[[i32; 4]]) -> bool {
     let e7 = |d: f64| (d * 1e7).round() as i32;
-    CREDITS
-        .iter()
-        .filter(|c| {
-            c.areas.is_empty()
-                || c.areas.iter().any(|a| {
-                    let b = [e7(a[0]), e7(a[1]), e7(a[2]), e7(a[3])];
-                    let near = grow(b, NEAR_COVERAGE_KM);
-                    regions.iter().any(|r| r.meets_rect(near)) || extents.iter().any(|&x| meets(b, x))
-                })
+    areas.is_empty()
+        || areas.iter().any(|a| {
+            let b = [e7(a[0]), e7(a[1]), e7(a[2]), e7(a[3])];
+            let near = grow(b, NEAR_COVERAGE_KM);
+            regions.iter().any(|r| r.meets_rect(near)) || extents.iter().any(|&x| meets(b, x))
         })
-        .collect()
 }
 
 #[cfg(test)]

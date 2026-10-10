@@ -241,6 +241,9 @@ pub struct Shared {
     /// The build page's asks of the pool's lead (`/work/lead`), for the agent to take up
     /// (crate::agent::lead).
     pub lead_asks: Vec<crate::control::LeadRequest>,
+    /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
+    /// (crate::inputs::apply_ask).
+    pub inputs_asks: Vec<crate::inputs::Ask>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
     /// The time its leases, workers' paces and their being around are reckoned in (a test's
@@ -620,7 +623,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -958,6 +961,11 @@ impl Coordinator {
     /// The build page's asks of the pool's lead since the last call (`/work/lead`).
     pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
         std::mem::take(&mut self.shared.lock().unwrap().lead_asks)
+    }
+
+    /// The build page's acceptances since the last call (`/work/inputs`).
+    pub fn take_inputs_asks(&self) -> Vec<crate::inputs::Ask> {
+        std::mem::take(&mut self.shared.lock().unwrap().inputs_asks)
     }
 
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
@@ -1371,6 +1379,19 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             };
             let by = format!("the build page ({})", caller.from);
             shared.lock().unwrap().lead_asks.push(crate::control::LeadRequest { ask, by, at: unix_now() });
+            Ok((200, ok))
+        }
+        "/work/inputs" => {
+            // The build page's Accept and Accept All on a held unit's banner (docs/inputs.md §4.5):
+            // `{"unit": <unit>, "accept": [<finding id>…]}` or `{"unit": <unit>, "all": true}`,
+            // written by this Mac's agent (warnings alone: errors have no Accept).
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let unit = b["unit"].as_str().filter(|u| !u.is_empty() && u.len() <= 64 && !u.contains(['/', '\\', '.'])).ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
+            let accept: Vec<String> = b["accept"].as_array().map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| crate::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
+            let all = b["all"].as_bool() == Some(true);
+            anyhow::ensure!(all || !accept.is_empty(), "nothing to accept");
+            let by = format!("the build page ({})", caller.from);
+            shared.lock().unwrap().inputs_asks.push(crate::inputs::Ask { unit: unit.to_string(), accept, all, by, at: unix_now(), ..Default::default() });
             Ok((200, ok))
         }
         "/work/done" => {
@@ -1858,6 +1879,7 @@ mod http {
             .route("/work/beat", any(json))
             .route("/work/pause", any(json))
             .route("/work/lead", any(json))
+            .route("/work/inputs", any(json))
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
             .route("/work/status", any(json))
@@ -1990,7 +2012,7 @@ mod http {
         // A page: its own tasks, and pausing.
         let files = ["/work/in/", "/work/net/", "/work/out/"].iter().any(|p| path.starts_with(p));
         let theirs = match *req.method() {
-            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause" | "/work/lead"),
+            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause" | "/work/lead" | "/work/inputs"),
             Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
             Method::PUT => path.starts_with("/work/out/"),
             _ => false,
@@ -2931,6 +2953,25 @@ mod tests {
         let addr = format!("127.0.0.1:{port}");
         assert_eq!(send(&addr, "POST", "/work/pause", Some(old), &[], &serde_json::json!({})).0, 401);
         assert_eq!(send(&addr, "POST", "/work/pause", Some(&c.contact.token), &[], &serde_json::json!({})).0, 200);
+    }
+
+    /// The build page's Accept and Accept All on a held unit's banner (docs/inputs.md §4.5): asks
+    /// for the agent to write, warnings' ids alone, never from a site elsewhere.
+    #[test]
+    fn a_page_accepts_the_gates_warnings() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let page = |body: serde_json::Value| send(&addr, "POST", "/work/inputs", None, &[], &body).0;
+        assert_eq!(page(serde_json::json!({ "unit": "some-unit", "accept": ["gt-neg.0123456789abcdef"] })), 200);
+        assert_eq!(page(serde_json::json!({ "unit": "some-unit", "all": true })), 200);
+        assert_eq!(page(serde_json::json!({ "unit": "some-unit", "accept": ["not an id"] })) / 100, 4);
+        assert_eq!(page(serde_json::json!({ "unit": "../state", "all": true })) / 100, 4);
+        assert_eq!(page(serde_json::json!({ "unit": "some-unit" })) / 100, 4);
+        assert_eq!(send(&addr, "POST", "/work/inputs", None, &[("Origin", "https://evil.example")], &serde_json::json!({ "unit": "some-unit", "all": true })).0, 403);
+        let asks = c.take_inputs_asks();
+        assert_eq!(asks.iter().map(|a| (a.accept.clone(), a.all)).collect::<Vec<_>>(), [(vec!["gt-neg.0123456789abcdef".to_string()], false), (vec![], true)]);
+        assert!(asks.iter().all(|a| a.unit == "some-unit" && a.by.starts_with("the build page")));
+        assert!(c.take_inputs_asks().is_empty());
     }
 
     #[test]

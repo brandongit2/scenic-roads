@@ -1,9 +1,11 @@
 # Inputs: every input through a standard shape and a checked drop box
 
-**Status: planned. Nothing in this document is built.** It is the spec for the input
-standardisation series on the task board (#133 is this document; #134–#147 build it). Where it
-describes today's code or today's NAS, it says "today" and cites the file; everything else is the
-design. Companions: `docs/plan.md` (the pipeline, keys and order, which these tasks change),
+**Status: the gate (§4) is built, on the test unit alone (#134: crate::inputs, its two-Mac trial
+of §4.10 still to run); the accessor's guard (§7.1) is built and growing with each input; the rest
+is planned.** It is the spec for the input standardisation series on the task board (#133 is this
+document; #134–#147 build it). Each section says what of it is built; where it describes today's
+code or today's NAS, it says "today" and cites the file; everything else is the design.
+Companions: `docs/plan.md` (the pipeline, keys and order, which these tasks change),
 `docs/formats.md` (files), `docs/pool.md` (the lead, jobs, the journal), `docs/phase5.md` (the
 heritage chain).
 
@@ -53,7 +55,7 @@ Standing constraints this design keeps:
   checked against the data, the gate checks it, and a wrong declaration fails loudly as a finding;
   it never corrupts output silently. A hand-entered value may at most be a hint that costs speed
   when wrong, never correctness.
-- **Docs say what's true** (this file is planned throughout; each task marks its part built as it
+- **Docs say what's true** (this file was planned throughout; each task marks its part built as it
   lands, and plan.md, formats.md and the diagram follow, #147).
 - **The NAS's limits** (plan §3; pool.md §3): listings take 3–33 s a folder under load and small-file
   creates manage about 20–55 a second over SMB, so no input is stored or read as thousands of small
@@ -151,6 +153,10 @@ What moves (each in its task; §11):
 
 ## 4. The gate (#134)
 
+**Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), with the
+test unit `_gate-test` the only unit on it (§4.10): no real input is on the gate until its own task
+(#135–#145) adds it to `inputs::UNITS`. What of this section isn't built yet is marked planned.
+
 ### 4.1 Terms
 
 - **Drop box:** the owner's folder. The build never reads it directly once its input is on the
@@ -168,12 +174,16 @@ What moves (each in its task; §11):
 ### 4.2 Noticing a change
 
 - The lead (pool.md §5) lists every drop box (recursively for translations and descriptions,
-  skipping `todo/` and `how/`) every two minutes, off its loop (a thread of its own, as its journal
-  listings are: a listing can take half a minute under load), and keeps the last listing: each
-  file's path, size and modification time.
-- `scenic inputs check [<input>]` lists now (and the Regions panel's own writes ask for a listing
-  at once, so a new region reaches the gate in seconds).
-- A file whose size or time changed in the last 10 s is left for the next listing.
+  skipping `todo/` and `how/`) and its acceptances every two minutes, off its loop (a thread of its
+  own, crate::inputs::watch, as its journal listings are: a listing can take half a minute under
+  load), and keeps the last listing: each file's path, size and modification time. (A Mac working
+  as a member doesn't list.)
+- `scenic inputs check [<unit>]` lists now (an ask to this Mac's agent, `inputs-asks/` in its
+  folder, as an acceptance asked of it is). The Regions panel's own writes asking for a listing at
+  once, so a new region reaches the gate in seconds, come with the regions (#135, planned).
+- A file whose size or time changed in the last 10 s is left for the next listing (listed again
+  11 s later), and the check job leaves one whose time is that recent as accepted (or out, while
+  new).
 - The listing is only a trigger. Whether anything changed is decided by content (§4.3): touching a
   file, or rewriting it with the same bytes, changes nothing downstream.
 - **What gets hashed:** only the files whose size or time differ from the listing the accepted
@@ -181,27 +191,32 @@ What moves (each in its task; §11):
   whose size and time are as they were is taken as unchanged without reading it, so a check of
   translations (808 MB on the NAS on 2026-10-10) reads only the files dropped or edited since. A
   file rewritten in place with the same size and time is the one case this misses; `scenic inputs
-  check --full <unit>` hashes every file, and the daily backup's own content hashing (plan §3) runs
-  it once a day as a backstop.
+  check --full <unit>` hashes every file, and the lead runs a unit's check in full once a day as a
+  backstop (a job `inputs <unit> full`, its key the normal one's with "full": the normal check runs
+  once after it, reading only what changed).
 
 ### 4.3 Checking: a job like any other
 
 Checking runs as a build step, `inputs`, one target per gate unit (`inputs regions`, `inputs
 timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4: every job hands off):
-- **Its key:** the step's version and the unit's checker version (`INPUTS_V`, and a version per
-  input's checks, bumped with any change to them), the listing (names, sizes, times: a trigger),
-  the acceptances for the unit (§4.5, by file name), the current accepted index's content name, and
-  the content names of whatever else its checks read (the pass's outlines for regions, languages
-  and the registers' territories; the accepted heritage registers for the matches). When the key
-  changes, the target is stale and the lead grants it.
-- **Where it runs:** any member (the steps table, pool.md §7.2: it needs the NAS and little
-  memory; power on battery as any light job). The lead's own slot takes it when nothing else does.
-  It's ordered before every other step, so a change is checked before the plan builds with stale
-  inputs, and it holds no region and no round.
+- **Its key** (`inputs::check_key`): the step's version and the unit's checker version
+  (`INPUTS_V`, and a version per input's checks, bumped with any change to them), the listing
+  (names, sizes, times: a trigger), the acceptances for the unit (§4.5, by file name), the current
+  accepted index's content name, and the content names of whatever else its checks read
+  (`Checks::context`: the pass's outlines for regions, languages and the registers' territories;
+  the accepted heritage registers for the matches). When the key changes, the target
+  (`inputs/<unit>`, kept with the lo keys) is stale and the lead runs it. (A check that takes a
+  change in names a new index, so the key changes once more: the check after it reads nothing and
+  changes nothing.)
+- **Where it runs:** the lead's own slots (the steps table's row: it needs the NAS and little
+  memory). Other members taking it is planned: the coordinator's offers are made with the pass's
+  region work today (crate::agent::region_work), which a check can't wait for. It's ordered before
+  every other step, so a change is checked before the plan builds with stale inputs, and it holds
+  no region and no round.
 - **What it does:**
-  1. Hashes the files the listing says may have changed (§4.2; XXH3, as content names are made:
-     formats.md, Names and hashes). A file whose bytes are those of the accepted version is
-     unchanged, whatever its time.
+  1. Hashes the files the listing says may have changed (§4.2; BLAKE3's hash16, as content names
+     are made: formats.md, Names and hashes). A file whose bytes are those of the accepted version
+     is unchanged, whatever its time.
   2. Runs the shape checks on each changed file (parse, required fields, types, references), then
      the input's own checks (§6), which may read the whole candidate and the context inputs.
   3. Works out each changed file's verdict: **clean**, or **held** by its unaccepted findings
@@ -216,25 +231,31 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   5. **Checks that version whole:** runs the unit's checks again on exactly the files it would be.
      Per-file holding can combine an old file with a new one in a way neither candidate nor the old
      version had (a recipe kept old beside a neighbour's new shape, leaving a gap). If the whole
-     version raises a finding not accepted, every changed file of the unit is held and the version
-     stays as it was; the banner says the changes were held together and why. If it's clean, it's
-     the next accepted version.
+     version raises a finding neither accepted nor raised by the accepted version as it stands (that
+     one holds no change: the version already in is never held), every changed file of the unit is
+     held and the version stays as it was; the banner says the changes were held together and why.
+     If it's clean, it's the next accepted version.
   6. Stores each file content-named under `sources/inputs/<unit>/` (§4.6), uploaded as every output
      is (read back, checked against its hash, renamed into place: plan §3).
-  7. Writes the candidate's report (its findings, and which files are held) and hands off both as
-     records changes: `inputs/<unit>` → the new accepted index (only when it differs), and
-     `inputs-held/<unit>` → the report, or none when nothing is held.
+  7. Writes the candidate's report (its findings, which files are held, and every finding id it
+     raised) and hands off both as records changes: `sources/inputs/<unit>/index` → the new
+     accepted index (only when it differs), and `sources/inputs/<unit>/held` → the report
+     (`sources/inputs/<unit>/held.<hash16>.json`), or none when nothing is held. (Those names, not
+     `inputs/<unit>`: a records entry's content name is its logical name's, which the lead checks of
+     every journal entry it merges, pool.md §7.3.)
 - **Derived facts** go in the index with each file (a register's box and entry count, a GeoTIFF's
-  resolution and extent, a feed declaration's derived box once fetched): computed from the content
-  at check time, so the steps that need them read the index instead of every file, and a fact is a
+  resolution and extent, a feed declaration's derived box once fetched; the test unit's line count):
+  computed from the content at check time, so the steps that need them read the index instead of every file, and a fact is a
   function of the content, never typed by hand.
 - **Deterministic:** the next accepted version is a function of the candidate's bytes, the
   previous accepted version and the acceptances. A re-run gives the same index.
 
 ### 4.4 Findings and their ids
 
-- A finding's id is a hash of the check's name, what it's about by identity (the region ids, the
-  register and entry id, the feed id), and what was found:
+- A finding's id (`Finding::new`) is `<check>.<hash16>`: the check's name, then a hash of the
+  check's name, what it's about by identity (the region ids, the register and entry id, the feed
+  id, a file's path), and what was found (a dot, not a colon: the id names the acceptance's file on
+  the share):
   - for a place, its geometry rounded to 100 m;
   - for a count (a register losing entries, a share of `approx` entries), the counts themselves and
     the content names of the two versions compared, so accepting "fr-merimee: 46,210 → 39,100
@@ -260,13 +281,14 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 ### 4.5 Accepting a warning
 
 - **How:** the build page's banner has Accept beside each warning and Accept All for the unit's
-  warnings (§4.7); the menu bar item and `scenic inputs accept <unit> <finding id>|--all` do the
-  same. Errors have no Accept.
+  warnings (§4.7); the map's build panel, the menu bar item and `scenic inputs accept <unit>
+  <finding id>|--all` do the same. Errors have no Accept. Built.
 - **What it writes:** `state/inputs/accepted/<unit>/<finding id>.json`, made with create-new (pool.md
   §2, principle 3: written once, never changed), holding who accepted it (member id, host label),
-  when, and the finding's message as it was. The asking member writes it itself; no round trip to
-  the lead. The next listing changes the check's key, the check runs again, and the file is no
-  longer held.
+  when, how it was asked, and the finding's message as it was. The asking member writes it itself
+  (`scenic inputs` directly; the menu bar and the map through an ask to their Mac's agent, the
+  build page through the lead's coordinator to the lead's agent); no round trip to the lead. The
+  next listing changes the check's key, the check runs again, and the file is no longer held.
 - **Undoing:** `scenic inputs unaccept <unit> <finding id>` removes the file; the finding holds its
   file again from the next check (if the file has moved on since, it holds the new change, never
   the version already in).
@@ -289,19 +311,21 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
              "fr-merimee.toml": {"file": "sources/inputs/heritage/fr-merimee.77d2…10.toml", "size": 512,
                                  "keyed": "-", "facts": {}}},
    "listed": {"fr-merimee.geojson": [81234567, 1760012345], "fr-merimee.toml": [512, 1760012345]},
-   "accepted": ["9e41…c2"]}
+   "accepted": ["h-loss.9e41…c2"]}
   ```
   `keyed` is the digest of what affects builds (§5.1: a description file's credit and licence
   don't, so editing a credit reruns no build step; it reaches the catalog through the credits'
   digest, §4.8); `listed` is each file's size and time as listed (§4.2); `accepted` lists the ids of
   the warnings the version was taken with.
-- **The records:** the manifest's `inputs/<unit>` names the index (and each file's entry roots it
-  for GC). It changes only by a check job's hand-off, merged by the lead (pool.md §5): the lead
-  stays the one writer of the records, and the gate adds no other writer.
-- **Readers:** one function in the pipeline (`inputs::open(root, records, unit)`) gives a step the
-  accepted files of a unit, by their drop-box paths, from the records it planned with. No step reads
-  a drop box (the accessor and the guard enforce it, §7). The Python steps get the files' paths on
-  their command line, from the agent, as they get every input today.
+- **The records:** the manifest's `sources/inputs/<unit>/index` names the index, whose file
+  entries root the files for GC (§4.9). It changes only by a check job's hand-off, merged by the
+  lead (pool.md §5): the lead stays the one writer of the records, and the gate adds no other
+  writer.
+- **Readers:** one function in the pipeline (`inputs::open(root, manifest, unit)`, built) gives a
+  step the accepted files of a unit, by their drop-box paths, from the records it planned with. No
+  step reads a drop box (the accessor and the guard enforce it, §7). The Python steps get the
+  files' paths on their command line, from the agent, as they get every input today. (No step reads
+  a unit yet: each input's task moves its readers here.)
 - **Every read of a drop box today** moves to it in its input's task. Besides the regions' readers
   (§6.1), the ones that would bypass the gate if missed: `scenic-build`'s `coverage_of`
   (crates/pipeline/src/bin/scenic-build.rs:3352, defaulting `--regions` to `inputs/regions`) and its
@@ -309,22 +333,23 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   `descriptions/` (crates/pipeline/src/namestodo.rs:607); the outline files read by the agent's
   regions digest and coverage key (agent/mod.rs:652, :4213); `input_digests`' read of
   `inputs/ferries/freq` (agent/mod.rs:4640); the ferries job's (ovconv.rs:384); the backups'
-  folders (agent/backup.rs:18, which become `inputs` and `state/inputs/accepted`); GC's `NEVER`
-  (agent/gc.rs:39, §4.9); `dem/bldfetch.py:248–250` (`inputs/outlines`).
+  folders (agent/backup.rs, now `inputs` and `state/inputs/accepted` beside the two folders
+  still to move, #137); GC's `NEVER` (agent/gc.rs, §4.9); `dem/bldfetch.py:248–250`
+  (`inputs/outlines`). Each is in the guard's exemptions (§7.1), naming its task.
 - **Keys:** a step names the content of the input files it reads: the index's content name when it
   reads the whole unit, or the `keyed` digests of the files it reads when it reads some (the
   heritage-sites job names the registers whose box meets its cover, so a register on another
-  continent changing reruns nothing there). This replaces today's digests of `inputs/` beside the
+  continent changing reruns nothing there). Planned, with each input's readers. This replaces today's digests of `inputs/` beside the
   manifest (`agent::input_digests`, crates/pipeline/src/agent/mod.rs:4638, which digests the
   recipes and the outline files they name by size and time: `regions_digest`, :4671).
 - **The map's server** reads its inputs the same way: the translations and descriptions from the
   accepted files the lead's manifest (`state/build/manifest.json`) names, copied to the Mac as
   `livefolder` copies the folders today (crates/server/src/livefolder.rs), and away from the NAS
   from that copy; the regions' recipes (for the Regions panel's pending and held states) from both
-  the accepted version and the drop box.
+  the accepted version and the drop box. Planned (#135, #137).
 - **The catalog** records the accepted index of every unit its data was built from
   (`"inputs": {"<unit>": "<index content name>"}`), so what a published map was made from can be
-  read back.
+  read back (planned: with the first unit whose data reaches the map, #135).
 
 ### 4.7 Where it shows
 
@@ -332,41 +357,57 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   ```json
   {"unit": "regions", "version": "sources/inputs/regions/index.7a…json", "state": "held",
    "checked": 1760100000, "held": ["wales.toml"],
-   "findings": [{"id": "r-gap:…", "level": "warning", "files": ["wales.toml", "england.toml"],
+   "findings": [{"id": "r-gap.…", "level": "warning", "files": ["wales.toml", "england.toml"],
                  "message": "A gap between Wales and England up to 340 m wide (2.1 km²): its roads would be left off",
-                 "at": [-3.07, 52.31]}]}
+                 "at": [-3.07, 52.31]}],
+   "accepted": ["r-gap.…"], "stale": []}
   ```
-  `state` is `ok`, `checking` (a check is granted or running) or `held`.
+  `state` is `ok`, `checking` (a check is planned or running) or `held`; `checked` is the time of
+  the held report's (or the index's) file on the NAS; a finding shows its first 50 flagged lines
+  (`lines`) and how many more the report has (`more`); `accepted` lists the unit's acceptances and
+  `stale` those no check raises any more (`together`, why every change was held together, and
+  `unread`, why the unit can't be read now, when they apply). Built (crate::inputs::view), the
+  lead's.
 - **The menu bar item** (`tools/status`): today one icon shows the build's state, and a problem shows
-  only when nothing builds (tools/status/main.swift:532). An input held adds a badge (a small
-  warning triangle) to whatever icon the build's state has, so a held input is visible while the
-  build goes on with the last good version. Its menu has a line per held unit ("Regions: 1 warning
-  held"), with Accept (warnings only, after a confirmation naming them) and Show on the Build Page.
-  It notifies when a unit becomes held and when it's taken in.
+  only when nothing builds (tools/status/main.swift). An input held adds a badge (a small warning
+  triangle) to whatever icon the build's state has, so a held input is visible while the build
+  goes on with the last good version. Its menu has a line per held unit ("regions: 1 warning held
+  (wales.toml)"), with Accept (warnings only, after a confirmation naming them: an ask to this
+  Mac's agent, which writes the acceptances) and Show on the Build Page. It notifies when a unit
+  becomes held and when it's taken in. Built.
 - **The build page** (`web/work/dash.js`): a banner per held unit at the top: the unit, the held
-  files, each finding with its message, a link to the place on the map for a finding with one,
-  Accept per warning and Accept All; errors say what to fix. While a unit is checking, a quiet line
-  says so.
-- **The map's build panel** (`web/src/ui/buildstatus.ts`): the same banners, compact. The Regions
-  panel marks a held recipe "held: <finding>".
-- **`scenic status`** prints a line per held unit; `scenic inputs` lists every unit's version,
-  state, findings and acceptances.
+  files, each finding with its message, where it is for a finding with a place (its coordinates:
+  the page doesn't know the map's address), Accept per warning and Accept All (`/work/inputs`, to
+  the lead's coordinator, whose agent writes the acceptance); errors say what to fix. While a unit
+  is checking, a quiet line says so. Built.
+- **The map's build panel** (`web/src/ui/buildstatus.ts`): the same banners, compact, a link to
+  the place on the map, and a warning sign on the build item (`/api/build/inputs`, an ask to this
+  Mac's agent). Built. The Regions panel marking a held recipe "held: <finding>" comes with the
+  regions (#135, planned).
+- **`scenic status`** prints a line per unit held or checking; `scenic inputs` lists every unit's
+  version, state, findings and acceptances (stale ones marked). Built.
 
 ### 4.8 Credits from the inputs
 
 - Every input whose data reaches the map has a description (§5.1) with its `credit` and `licence`.
   The catalog's `credits` (formats.md, Catalog) are made from the accepted descriptions instead of
-  `pipeline::rules::CREDITS` (crates/pipeline/src/rules.rs:179), with the same rule for which to
+  `pipeline::rules::CREDITS` (crates/pipeline/src/rules.rs), with the same rule for which to
   list: those whose extent meets the coverage, 20 km around it, or a built unit's ways
-  (`catalog_credits`, :449).
+  (`rules::listed`). Built beside `CREDITS` (crate::inputs::credits: a description in the index
+  is a file's `facts.description`, its extent `facts.extent`, a box or `"world"`; one whose extent
+  isn't known yet is listed nowhere); no unit has descriptions yet, so the catalogs' credits are
+  the table's until the inputs' tasks add theirs.
 - **The extent is derived,** never typed: a register's box from its entries, a GeoTIFF dataset's
   from its files, a feed's from its stops, a tile pyramid's from its territory's outline, a source
   declared for the whole world (`territory = "world"`) as anywhere. Today's credit boxes
   (rules.rs:129–175) go.
 - **Credit edits reach the catalog.** Credits enter no build step's key, but the catalog's key
-  (`catalog_key`, crates/pipeline/src/agent/build.rs:2552–2565: the served files, the regions, the
-  ready list) gains the digest of the credits it would list (each listed description's credit
-  fields), so a corrected credit gets a new catalog without rebuilding anything.
+  (`catalog_key`, crates/pipeline/src/agent/build.rs: the served files, the regions, the ready
+  list) gains the digest of the accepted descriptions' credit fields (`credits::digest`), so a
+  corrected credit gets a new catalog without rebuilding anything. Built, with one difference: the
+  digest is of every accepted description, not only those the catalog would list (which needs the
+  built units' extents, a plan doesn't read), so an edit to a description listed elsewhere remakes
+  a catalog listing the same credits. With no description there's no line, so the key is as it was.
 - **Popups name their source by register, not by a copied string.** Today the heritage outputs carry
   each register's credit string in every feature's `source` (`source=QC_SRC`, dem/heritage.py:205;
   `ON_SRC`, :264), which the map shows (web/src/overlays.ts:54, :860): a credit edit would need the
@@ -381,18 +422,20 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 
 ### 4.9 GC and backups
 
-- Today GC never sweeps `sources/` at all, outside retired passes (`NEVER`,
-  crates/pipeline/src/agent/gc.rs:39). #134 changes that for `sources/inputs/` alone: a file there
-  goes once nothing names it (the manifest, the held reports, any journal entry not yet merged:
+- GC never swept `sources/` at all, outside retired passes (`NEVER`,
+  crates/pipeline/src/agent/gc.rs). #134 changes that for `sources/inputs/` alone (built:
+  `gc::inputs_kept`): a file there goes once nothing names it (the manifest, the accepted indexes
+  and held reports it names, and those of any journal entry the newest records don't reflect yet:
   pool.md §7.3) and it's older than 14 days (plan §3, GC), so a version from last week can still be
-  restored by hand. The rest of `sources/` stays unswept, and so do the drop boxes and `state/inputs/`.
+  restored by hand. When any of those can't be read, nothing there is swept that day. The rest of
+  `sources/` stays unswept, and so do the drop boxes and `state/inputs/`.
 - **Appending to a big file costs a copy.** Every accepted version of a file is kept whole for 14
   days, so appending a batch to an 80 MB `.jsonl` keeps another 80 MB copy each time. The briefs
   (and `inputs/README.md`) say to drop one answer file per batch instead, which costs only the
   batch.
 - Backups (plan §3) cover `inputs/` (every drop box, so translations and descriptions once moved)
-  and `state/inputs/accepted/` (agent/backup.rs:18's folders change accordingly). `todo/` isn't
-  backed up (it's remade).
+  and `state/inputs/accepted/` (agent/backup.rs's `FOLDERS`: built). `todo/` isn't backed up (it's
+  remade).
 
 ### 4.10 What #134 builds and how it's tried
 
@@ -401,29 +444,37 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   banners, `scenic inputs`; the accessor and its test (§7.1); GC's sweep of `sources/inputs/` and
   the backups' folders (§4.9); the catalog's credits from descriptions beside `rules::CREDITS`, and
   the credits' digest in the catalog's key (§4.8).
+  All built.
 - **A test input first:** `inputs/_gate-test/` isn't real data (a name starting with `_` is
-  ignored everywhere else; the gate is told of it by a flag). Its shape: JSON lines
-  `{"k": "<string>", "v": <number>}`; its checks: an error for a line that doesn't parse, a warning
-  for a negative `v`. No build step reads it; its accepted version shows in the status. With it,
-  #134 shows on the NAS, between two Macs: a drop taken in; an error held with the last good version
-  kept; a warning accepted from the build page and from the other Mac's menu; an unaccept; a touch
-  changing nothing; a removal held and accepted; the lead handed over mid-check. Then it's removed.
+  ignored everywhere else; the gate is told of it by a flag, `state/inputs/gate-test`: `scenic
+  inputs test on|off`). Its shape: JSON lines `{"k": "<string>", "v": <number>}` in `.jsonl`
+  files; its checks (crate::inputs::gatetest): an error for a line that doesn't parse or isn't
+  that shape, a warning for a negative `v`, and a warning for a file removed (naming the version
+  removed), so a removal can be held and accepted. No build step reads it; its accepted version
+  shows in the status. With it, #134 shows on the NAS, between two Macs: a drop taken in; an error
+  held with the last good version kept; a warning accepted from the build page and from the other
+  Mac's menu; an unaccept; a touch changing nothing; a removal held and accepted; the lead handed
+  over mid-check (the procedure: `tools/check/gate-two-macs.sh`; not run yet). Then it's removed.
 - **Tests** (plan §8, Tests: no wall clock, no real NAS): the verdicts as a function of (candidate,
   previous version, acceptances); finding ids stable across unrelated edits, and new when a count or
   a flagged line changes; a held new file absent, a held edit keeping the old bytes, a held removal
   keeping the file; paired files held together; a combination of an old held file and a new clean
   one that raises a finding holding every change (the whole-version check); only files whose size
   or time changed being read; the index the same twice; the accessor refusing a drop-box path from
-  any other caller (§7.1).
+  any other caller (§7.1). Built: crate::inputs's tests (with a test unit of paired files for the
+  cross-file rules), the agent's (`the_gate_plans_a_check_first_and_shows_in_the_status`), GC's
+  (`the_inputs_copies_go_once_nothing_names_them`) and `crates/pipeline/tests/inputs_accessor.rs`.
 
 ### 4.11 Older apps during the changes
 
 Each task changes what an app reads, so for a while two apps may meet:
 - **An older lead and the new records.** The records keep the steps' records an app doesn't know
   (`build::Keys::other`, since the app after the 3D buildings: pool.md §6.1, "The 3D buildings and
-  older apps"; an app from before them drops what it doesn't know as it saves). An older lead keeps
-  the `inputs/*` and `inputs-held/*` entries it doesn't know and passes them on, but plans with its
-  own code, reading the drop boxes directly as today: it bypasses the gate for as long as it leads.
+  older apps"; an app from before them drops what it doesn't know as it saves; the checks' done
+  records are kept with the lo keys, which every app keeps). An older lead keeps the
+  `sources/inputs/*` entries it doesn't know (the manifest is a map it passes on whole) but plans
+  with its own code, reading the drop boxes directly as today: it bypasses the gate for as long as
+  it leads.
   Its member's hand-offs of an `inputs` job are refused (not a step it shares), as for the
   buildings.
 - **The same-app rule limits the window.** A member gets jobs only from a lead on its own app
@@ -464,7 +515,8 @@ TOML, as the region recipes are, since the owner writes them by hand.
 | `notes` | string | no | free text |
 
 `credit` and `licence` are required (an error without them): a source without its credit would
-break its terms. "Keyed" fields enter the file's `keyed` digest (§4.6); the others change what the
+break its terms. (The parser and its checks are built, `inputs::credits::parse_description`; no
+unit uses it yet.) "Keyed" fields enter the file's `keyed` digest (§4.6); the others change what the
 map says, not its data, as credits enter no key today (rules.rs:12).
 
 ### 5.2 Source declarations
@@ -1249,13 +1301,18 @@ function that exists (`every_exemption_names_a_function_there`).
 
 ### 7.1 Drop boxes only through the accessor (#134, growing with each input)
 
+**Built** (#134): `Out::path`'s refusal, the test (`crates/pipeline/tests/inputs_accessor.rs`,
+gating publish with the others) and `dem/inputs.py`'s `arg`, with today's readers exempt, each
+naming the task that moves it; the command-line defaults into the drop boxes go with their readers
+(#135, #137), and the publish check with a stand-in root whose drop boxes are unreadable is planned.
+
 String markers alone would miss paths built with `join`, defaults on a command line, and Python. So
 the drop boxes are reached only through an accessor that refuses everything else:
 - **In Rust:** `inputs::open` (§4.6) and the gate's check job are the only code given the drop
   boxes' paths. The NAS root type the steps receive (`Out`, the project root) refuses, at run time,
-  a path under `inputs/`, `translations/` or `descriptions/` asked for by anything but the accessor
-  (a test-visible error naming the caller), so a reader missed in a task fails its first run instead
-  of bypassing the gate quietly. Command-line defaults that point into a drop box (today
+  a path under `inputs/`, `translations/` or `descriptions/` (`Out::path` panics, naming its
+  caller: the gate and `inputs::open` never ask it for one), so a reader missed in a task fails its
+  first run instead of bypassing the gate quietly. Command-line defaults that point into a drop box (today
   `--regions`, scenic-build.rs:3352, and `--translations`, :209) are removed: a step gets its
   inputs' paths from the agent, which takes them from the accessor.
 - **The test:** as `every_cache_read_goes_through_the_accessor` does for caches, every function in
@@ -1494,10 +1551,11 @@ Not source names, but every place that would bypass the gate:
   (ovconv.rs:384) [#140, #141].
 - Keyed feeds: `key_names` of `inputs/keys.env` (agent/mod.rs:4658): stays (keys.env isn't an input),
   exempt with its reason.
-- The never-swept and backed-up folders: `agent/gc.rs:39` (`NEVER`, which also holds all of
-  `sources/`: §4.9) and `agent/backup.rs:18` (`FOLDERS`) [#134, #137].
-- The catalog's key, `catalog_key` (agent/build.rs:2552–2565): its regions digest becomes the
-  accepted index; it gains the credits' digest (§4.8) [#134, #135].
+- The never-swept and backed-up folders: `agent/gc.rs` (`NEVER`, which also holds all of
+  `sources/` but `sources/inputs/`, swept since #134: §4.9) and `agent/backup.rs` (`FOLDERS`, with
+  `state/inputs/accepted` since #134) [#137 for the two folders still to move].
+- The catalog's key, `catalog_key` (agent/build.rs): its regions digest becomes the accepted index
+  [#135]; it gained the credits' digest (§4.8) [#134, built].
 
 ### 9.11 Not sources (checked, left as they are)
 
@@ -1548,7 +1606,7 @@ The board's order, with what each needs and proves:
 | # | Task | Needs | Proves before deleting |
 |---|---|---|---|
 | 133 | this spec | | |
-| 134 | the gate (§4), on `_gate-test` | 133 | the gate's behaviour on the NAS between two Macs (§4.10) |
+| 134 | the gate (§4), on `_gate-test` (built; its trial to run) | 133 | the gate's behaviour on the NAS between two Macs (§4.10: `tools/check/gate-two-macs.sh`) |
 | 135 | regions (§6.1) | 134 | coverage fingerprints unchanged: no build step reruns; the catalog is remade once (its key names the regions' digest) |
 | 136 | languages (§6.2) | 134 | `global/spoken`'s content name unchanged |
 | 137 | translations, descriptions (§6.3, §6.4) | 134 | the served tables and descriptions unchanged |

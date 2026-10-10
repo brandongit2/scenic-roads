@@ -37,6 +37,29 @@ export interface AgentDone {
   note: string;
 }
 
+/** A finding of the gate's (pipeline::inputs::Finding, as the status shows it: its first 50
+ * flagged lines, `more` the rest). */
+export interface InputFinding {
+  id: string;
+  level: 'error' | 'warning';
+  files: string[];
+  message: string;
+  at?: [number, number];
+  lines?: [number, string][];
+  more?: number;
+}
+
+/** A gate unit (pipeline::inputs::view::InputView; docs/inputs.md §4.7). */
+export interface InputUnit {
+  unit: string;
+  version?: string;
+  state: 'ok' | 'checking' | 'held';
+  checked?: number;
+  held?: string[];
+  findings?: InputFinding[];
+  together?: string;
+}
+
 /** The build Mac's heartbeat (pipeline::agent::Status). */
 export interface Agent {
   host: string;
@@ -64,6 +87,8 @@ export interface Agent {
   /** When the build will be done and the map next updated (pipeline::agent::forecast; agents from
    * 2026-10-05 on): times in seconds since the epoch. */
   forecast?: BuildForecast | null;
+  /** The gate's units (agents from #134 on): a held change shows as a banner. */
+  inputs?: InputUnit[];
 }
 
 /** The build's forecast, the part the map shows (the worker page shows the rest). */

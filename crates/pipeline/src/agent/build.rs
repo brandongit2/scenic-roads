@@ -248,7 +248,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "spoken" | "names-todo" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
+        if step.ends_with("-root") || matches!(step, "inputs" | "labels" | "spoken" | "names-todo" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -2338,6 +2338,7 @@ pub fn label(step: &str) -> &'static str {
         "bldtiles" => "Raising the 3D buildings",
         "terrain-root" | "slope-root" => "Building the world-level terrain and slope",
         "prune" => "Removing what the regions no longer cover",
+        "inputs" => "Checking the inputs dropped",
         _ => "Publishing the new map data",
     }
 }
@@ -2550,7 +2551,10 @@ fn catalog_work(m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<Str
 
 /// What a catalog would list and record, hashed: the served files' logical and content names, the
 /// regions (`inputs` "regions": their recipes and outline files), so a region renamed, or drawn
-/// inside another, gets a catalog that records it, and which of them it records as built (`ready`).
+/// inside another, gets a catalog that records it, which of them it records as built (`ready`),
+/// and, once any input has a description, the descriptions' credits (`inputs` "credits":
+/// crate::inputs::credits::digest), so an edited credit gets a new catalog without rebuilding
+/// anything.
 pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>, ready: &[String]) -> String {
     let mut served: Vec<String> = m
         .iter()
@@ -2561,6 +2565,9 @@ pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Strin
         .collect();
     served.push(format!("regions {}", inputs.get("regions").map(String::as_str).unwrap_or("-")));
     served.push(format!("ready {}", ready.join(",")));
+    if let Some(c) = inputs.get("credits") {
+        served.push(format!("credits {c}"));
+    }
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
     h(&refs)
 }
@@ -3687,6 +3694,9 @@ pub(crate) mod tests {
         assert_eq!(line(&l, PUBLISH).left, Some(1));
         // Held for review: publishing is the held catalog.
         let k = catalog_key(&m, &BTreeMap::new(), &["r".to_string()]);
+        // The descriptions' credits in it once there are any: an edit gets a new catalog.
+        let with = |d: &str| catalog_key(&m, &[("credits".to_string(), d.to_string())].into(), &["r".to_string()]);
+        assert!(with("a") != k && with("a") != with("b"));
         done.catalog_held = Some(k);
         assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), PUBLISH).finished());
         assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), PUBLISH).finished());

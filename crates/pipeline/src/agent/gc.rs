@@ -9,8 +9,11 @@
 //! first path component of every referenced file), and the sources of passes older than the newest
 //! complete one (`sources/osm/<date>/`, `sources/items/<date>/`): their content-named files by the
 //! same rule, the rest (the planet download) once the newer pass has been complete for `keep_days`.
-//! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders, state
-//! and the app are never touched. With no readable catalog nothing is deleted.
+//! The gate's checked copies (`sources/inputs/`, docs/inputs.md §4.9) by the same rule, kept while
+//! the manifest names them, a held report or an accepted index it names lists them, or a journal
+//! entry not yet merged does (`inputs_kept`; none swept when one of those can't be read).
+//! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
+//! drop boxes), state and the app are never touched. With no readable catalog nothing is deleted.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -32,11 +35,54 @@ pub struct Report {
     /// Of the removed, files of retired passes' sources (and their bytes).
     pub retired_removed: usize,
     pub retired_bytes: u64,
+    /// Of the removed, the gate's checked copies; and why none were swept, when they weren't.
+    pub inputs_removed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inputs_skipped: Option<String>,
     pub dry_run: bool,
 }
 
-/// Folders never swept, whatever a catalog says.
+/// Folders never swept, whatever a catalog says (`sources/` but its retired passes and the gate's
+/// checked copies, `sources/inputs/`, swept on their own rules).
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
+
+/// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records `manifest` name (the
+/// units' accepted indexes and held reports), the files each such index lists, and the same of
+/// every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not merged may
+/// name a version the records will). An error when any of them can't be read now: nothing there is
+/// swept then.
+pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>) -> Result<BTreeSet<String>> {
+    use crate::pool::{journal, records::Records, term};
+    let mut keep: BTreeSet<String> = BTreeSet::new();
+    let mut named: Vec<(String, String)> = manifest.iter().filter(|(_, c)| c.starts_with("sources/inputs/")).map(|(l, c)| (l.clone(), c.clone())).collect();
+    // The journal's entries not merged yet (with the pool on).
+    match std::fs::metadata(root.join(journal::DIR)) {
+        Ok(_) => {
+            let nas = crate::pool::nas::Share::new(root);
+            let cur = term::current(&nas).context("the current term")?;
+            let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
+            for key in journal::list(&nas, None).context("the journal")? {
+                if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
+                    continue;
+                }
+                match journal::read(&nas, &key)? {
+                    journal::Read::Entry(e) => named.extend(e.handoff.changes.into_iter().filter_map(|(l, c)| c.filter(|c| c.starts_with("sources/inputs/")).map(|c| (l, c)))),
+                    journal::Read::Short => anyhow::bail!("journal entry {key} isn't whole yet"),
+                    journal::Read::Missing | journal::Read::Damaged(_) => {}
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("the journal"),
+    }
+    for (l, c) in named {
+        if crate::inputs::unit_of(&l).is_some() && l.ends_with("/index") {
+            keep.extend(crate::inputs::read_index(root, &c)?.files.into_values().map(|f| f.file));
+        }
+        keep.insert(c);
+    }
+    Ok(keep)
+}
 
 pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     use crate::timings::{phase, Class};
@@ -76,6 +122,14 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     let m: std::collections::BTreeMap<String, String> = {
         let _p = phase("build manifest read", Class::NasRead);
         crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
+    };
+    // (What the gate's copies are kept by, read before the manifest is given up.)
+    let inputs_keep = match inputs_kept(root, &m) {
+        Ok(k) => Some(k),
+        Err(e) => {
+            rep.inputs_skipped = Some(format!("{e:#}"));
+            None
+        }
     };
     referenced.extend(m.into_values());
     rep.referenced = referenced.len();
@@ -123,6 +177,44 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         }
     }
     drop(sweep);
+    // The gate's checked copies: what's kept named, the rest once old.
+    if let Some(keep) = inputs_keep {
+        let _p = phase("the inputs' copies swept", Class::NasWrite);
+        let mut stack = vec![root.join("sources/inputs")];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                let Ok(md) = e.metadata() else { continue };
+                if md.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                rep.files_seen += 1;
+                let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
+                let mtime = md.modified().unwrap_or(now);
+                if e.file_name().to_string_lossy().ends_with(".tmp") {
+                    if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
+                        remove(&p, dry_run)?;
+                        rep.tmp_removed += 1;
+                    }
+                    continue;
+                }
+                if store::naming::parse_content_name(&rel).is_none() || keep.contains(&rel) || referenced.contains(&rel) {
+                    continue;
+                }
+                if !old(mtime) {
+                    rep.young += 1;
+                    continue;
+                }
+                remove(&p, dry_run)?;
+                crate::timings::count(md.len(), 1);
+                rep.removed += 1;
+                rep.removed_bytes += md.len();
+                rep.inputs_removed += 1;
+            }
+        }
+    }
     // Retired passes' sources: passes older than the newest complete one.
     if let Some(latest) = crate::osmpass::latest_pass(root) {
         let _p = phase("retired passes swept", Class::NasWrite);
@@ -320,6 +412,56 @@ mod tests {
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.retired_removed, 1);
         assert!(root.join("sources/osm/2026-03-01/planet.osm.pbf").exists());
+    }
+
+    /// The gate's copies (docs/inputs.md §4.9): kept while the manifest's index or report names
+    /// them, or a journal entry not merged yet does; the rest of `sources/` and the drop boxes
+    /// never swept; none swept while an index can't be read.
+    #[test]
+    fn the_inputs_copies_go_once_nothing_names_them() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let put = |rel: &str, body: &str, days: u64| {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, body).unwrap();
+            age(&p, days);
+        };
+        let u = "sources/inputs/_gate-test";
+        let kept = format!("{u}/a.1111111111111111.jsonl");
+        let index = |files: &[&str]| {
+            let files: serde_json::Map<String, serde_json::Value> = files.iter().enumerate().map(|(i, f)| (format!("f{i}.jsonl"), serde_json::json!({"file": f, "size": 1, "keyed": "-"}))).collect();
+            serde_json::json!({"fmt": 1, "unit": "_gate-test", "checks": "_gate-test 1", "files": files}).to_string()
+        };
+        put(&kept, "x", 60);
+        put(&format!("{u}/a.2222222222222222.jsonl"), "x", 60); // an old version: goes
+        put(&format!("{u}/a.3333333333333333.jsonl"), "x", 3); // young: stays
+        put(&format!("{u}/b.4444444444444444.jsonl"), "x", 60); // an unmerged entry's index lists it
+        put(&format!("{u}/index.5555555555555555.json"), &index(&[&kept]), 60);
+        put(&format!("{u}/index.6666666666666666.json"), &index(&[&format!("{u}/b.4444444444444444.jsonl")]), 60);
+        put(&format!("{u}/held.7777777777777777.json"), "{}", 60);
+        put(&format!("{u}/held.8888888888888888.json"), "{}", 60); // an old report: goes
+        put("inputs/_gate-test/a.jsonl", "x", 300); // the drop box: never
+        put("sources/registers/legacy.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
+        store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::write(root.join("state/build/manifest.json"), serde_json::json!({format!("{u}/index"): format!("{u}/index.5555555555555555.json"), format!("{u}/held"): format!("{u}/held.7777777777777777.json")}).to_string()).unwrap();
+        // A journal entry the records don't reflect, naming the newer index.
+        let entry = crate::pool::journal::Entry { member: "m-0000000000000001".into(), lease: crate::pool::journal::LeaseId { term: 1, n: 7 }, step: "inputs".into(), handoff: crate::handoff::Handoff { changes: [(format!("{u}/index"), Some(format!("{u}/index.6666666666666666.json")))].into(), ..Default::default() }, at: 1_791_500_000 };
+        crate::pool::journal::write(&crate::pool::nas::Share::new(root), &entry).unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.inputs_skipped, None);
+        assert_eq!(r.inputs_removed, 2, "{r:?}");
+        assert!(!root.join(format!("{u}/a.2222222222222222.jsonl")).exists() && !root.join(format!("{u}/held.8888888888888888.json")).exists());
+        for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/index.5555555555555555.json"), format!("{u}/index.6666666666666666.json"), format!("{u}/held.7777777777777777.json"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy.9999999999999999.tar.zst".into()] {
+            assert!(root.join(&k).exists(), "{k}");
+        }
+        // An index named that can't be read: nothing there swept.
+        put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
+        fs::write(root.join(format!("{u}/index.5555555555555555.json")), b"{not json").unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
+        assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
     }
 
     #[test]

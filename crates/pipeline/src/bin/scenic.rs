@@ -38,6 +38,15 @@
 //!                                       how it stands
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
+//!   scenic inputs                       every gate unit (docs/inputs.md §4): its accepted version, its
+//!                                       state, what holds it, its acceptances (those no check raises
+//!                                       any more marked stale)
+//!   scenic inputs check [<unit>] [--full]  the drop boxes listed now (the lead's agent checks what
+//!                                       changed; --full: every file hashed)
+//!   scenic inputs accept <unit> <finding id>|--all  a held warning accepted (or all the unit's),
+//!                                       written from this Mac; errors can't be
+//!   scenic inputs unaccept <unit> <finding id>|--stale  an acceptance undone (or every stale one)
+//!   scenic inputs test on|off           the test unit `_gate-test` on the gate, or off it
 //!   scenic timings [<kind>] [--last N] [--host <mac>] [--here | --file <f>] [--json]  the jobs'
 //!                                       timings (pipeline::timings): each kind's phases over its
 //!                                       last N runs (20), with their totals and shares; the
@@ -219,6 +228,140 @@ fn lead(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `scenic inputs`: the gate (docs/inputs.md §4.5, §4.7), from the records on the NAS.
+fn inputs(args: &[String]) -> Result<()> {
+    use pipeline::inputs::{self as gi, view};
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let r = root(args, false)?;
+    // (Its words, the options and their values aside.)
+    let mut pos: Vec<&str> = Vec::new();
+    let mut it = args.iter().skip(2);
+    while let Some(a) = it.next() {
+        if a == "--home" || a == "--root" {
+            it.next();
+        } else if !a.starts_with("--") {
+            pos.push(a);
+        }
+    }
+    let manifest: std::collections::BTreeMap<String, String> = pipeline::out::read_record(&r.join("state/build/manifest.json"))?;
+    let units = gi::units(&r);
+    // (Checking, as the lead's status says.)
+    let checking: std::collections::BTreeSet<String> = agent::read_status(Some(&r), &home).map(|s| s.inputs.into_iter().filter(|v| v.state == view::State::Checking).map(|v| v.unit).collect()).unwrap_or_default();
+    let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
+    let by = format!("scenic inputs on {}", agent::cond::host_name());
+    let unit_arg = |i: usize| -> Result<String> {
+        let u = pos.get(i).map(|s| s.to_string()).context("which unit?")?;
+        anyhow::ensure!(gi::checks(&u).is_some() || views.iter().any(|v| v.unit == u), "{u} isn't a gate unit (scenic inputs lists them)");
+        Ok(u)
+    };
+    match pos.first().copied() {
+        None | Some("list") => {
+            if views.is_empty() {
+                println!("no unit is on the gate (`scenic inputs test on` puts the test unit on it)");
+            }
+            for v in &views {
+                println!("{}: {}{}", v.unit, match v.state {
+                    view::State::Ok => "taken in",
+                    view::State::Checking => "checking",
+                    view::State::Held => "held",
+                }, v.checked.map(|t| format!(", checked {}", ago(t))).unwrap_or_default());
+                println!("  version: {}", v.version.as_deref().unwrap_or("none yet"));
+                if let Some(u) = &v.unread {
+                    println!("  can't be read now: {u}");
+                }
+                if !v.held.is_empty() {
+                    println!("  held: {}", v.held.join(", "));
+                }
+                if let Some(t) = &v.together {
+                    println!("  {t}");
+                }
+                for s in &v.findings {
+                    let f = &s.finding;
+                    println!("  {} {}: {}", if f.level == gi::Level::Error { "error" } else { "warning" }, f.id, f.message);
+                    for (n, l) in f.lines.iter().take(10) {
+                        println!("      line {n}: {l}");
+                    }
+                    let more = f.lines.len().saturating_sub(10) + s.more;
+                    if more > 0 {
+                        println!("      … and {more} more (in its report)");
+                    }
+                }
+                for id in &v.accepted {
+                    println!("  accepted: {id}{}", if v.stale.contains(id) { " (stale: no check raises it any more)" } else { "" });
+                }
+            }
+            Ok(())
+        }
+        Some("check") => {
+            let full = flag(args, "--full");
+            let which: Vec<String> = match pos.get(1) {
+                Some(_) => vec![unit_arg(1)?],
+                None => units.iter().map(|u| u.to_string()).collect(),
+            };
+            for u in &which {
+                gi::ask(&home, &gi::Ask { unit: u.clone(), check: true, full, by: by.clone(), at: now_s(), ..Default::default() })?;
+            }
+            println!("asked this Mac's agent to list the drop boxes now{}: the lead checks what changed (`scenic inputs` says how it stands)", if full { ", hashing every file" } else { "" });
+            Ok(())
+        }
+        Some("accept") => {
+            let u = unit_arg(1)?;
+            let v = views.iter().find(|v| v.unit == u).context("nothing held")?;
+            let report = gi::Report { findings: v.findings.iter().map(|s| s.finding.clone()).collect(), ..Default::default() };
+            let a = match (flag(args, "--all"), pos.get(2)) {
+                (true, _) => gi::Ask { unit: u.clone(), all: true, by: by.clone(), at: now_s(), ..Default::default() },
+                (false, Some(id)) => gi::Ask { unit: u.clone(), accept: vec![id.to_string()], by: by.clone(), at: now_s(), ..Default::default() },
+                _ => bail!("scenic inputs accept <unit> <finding id>|--all"),
+            };
+            let said = gi::apply_ask(&r, &a, Some(&report), &gi::member_of(&home))?;
+            if said.is_empty() {
+                println!("nothing new to accept");
+            }
+            for s in said {
+                println!("{s}");
+            }
+            // (Listed now, should this Mac lead: else at the lead's next listing, two minutes at most.)
+            gi::ask(&home, &gi::Ask { unit: u, check: true, by, at: now_s(), ..Default::default() })?;
+            Ok(())
+        }
+        Some("unaccept") => {
+            let u = unit_arg(1)?;
+            let ids: Vec<String> = match (flag(args, "--stale"), pos.get(2)) {
+                (true, _) => views.iter().find(|v| v.unit == u).map(|v| v.stale.clone()).unwrap_or_default(),
+                (false, Some(id)) => vec![id.to_string()],
+                _ => bail!("scenic inputs unaccept <unit> <finding id>|--stale"),
+            };
+            for id in &ids {
+                println!("{}", if gi::unaccept(&r, &u, id)? { format!("unaccepted {id}") } else { format!("{id} wasn't accepted") });
+            }
+            if ids.is_empty() {
+                println!("no stale acceptance");
+            }
+            gi::ask(&home, &gi::Ask { unit: u, check: true, by, at: now_s(), ..Default::default() })?;
+            Ok(())
+        }
+        Some("test") => {
+            let p = r.join(gi::TEST_FLAG);
+            match pos.get(1).copied() {
+                Some("on") => {
+                    std::fs::create_dir_all(p.parent().unwrap())?;
+                    pipeline::whole::write(&p, format!("turned on by {by}\n").as_bytes())?;
+                    println!("on: {} is on the gate (its drop box inputs/{}/, .jsonl files of {{\"k\": …, \"v\": …}} lines)", gi::TEST_UNIT, gi::TEST_UNIT);
+                }
+                Some("off") => {
+                    if let Err(e) = std::fs::remove_file(&p) {
+                        anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "{e}");
+                    }
+                    println!("off: {} is off the gate (its records and copies stay until removed)", gi::TEST_UNIT);
+                }
+                _ => println!("{}", if p.exists() { "on" } else { "off" }),
+            }
+            Ok(())
+        }
+        Some(x) => bail!("scenic inputs [check [<unit>] [--full] | accept <unit> <id>|--all | unaccept <unit> <id>|--stale | test on|off], not {x}"),
+    }
+}
+
 fn status(args: &[String]) -> Result<()> {
     let root = root(args, false).ok();
     let Some(st) = agent::read_status(root.as_deref(), &app_home().join("agent")) else {
@@ -272,6 +415,10 @@ fn status(args: &[String]) -> Result<()> {
                 println!("    {l}");
             }
         }
+    }
+    // The gate (docs/inputs.md §4.7): a line per unit held or checking.
+    for v in st.inputs.iter().filter(|v| v.state != pipeline::inputs::view::State::Ok) {
+        println!("Inputs: {}{}", v.line(), if v.state == pipeline::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" });
     }
     println!("Regions: {}", if st.regions.is_empty() { "none yet".to_string() } else { st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ") });
     for (f, e) in &st.bad_recipes {
@@ -609,6 +756,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "timings" => timings(&args),
-        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup, timings"),
+        "inputs" => inputs(&args),
+        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup, timings, inputs"),
     }
 }

@@ -469,6 +469,12 @@ z6 tile (`layers/buildings/hi/6-x-y`), memory learned, power, any member, sixtee
 needs home. `bld-fetch` (the sources, onto the NAS, outside the manifest: its write-set is empty) is
 network work, the lead's.
 
+The gate's row (docs/inputs.md §4.3): `inputs`, a target per gate unit (`inputs/<unit>`), its
+write-set the unit's accepted index and held report (`sources/inputs/<unit>/index`,
+`sources/inputs/<unit>/held`; their files, the copies they list, are outside the manifest),
+light, kept to the lead's slots (other members taking it is planned: the coordinator's offers are
+made with the pass's region work), planned before every other job.
+
 What's planned of placement (phase 4, §12):
 
 - **Every step offered to every member's slots** whose Mac's measured room fits the target's

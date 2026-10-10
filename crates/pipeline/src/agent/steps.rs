@@ -75,7 +75,7 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
-pub const TABLE: [Step; 43] = [
+pub const TABLE: [Step; 44] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
     // planet with room to spare, less the pack cache it clears).
     Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },
@@ -93,6 +93,8 @@ pub const TABLE: [Step; 43] = [
     Step { alone: true, ..base("gc", w_none) },
     Step { ..base("backup", w_none) },
     Step { ..base("spoken", w_spoken) },
+    // The gate's checks (crate::inputs::gate): one per gate unit, light, ordered before the rest.
+    Step { ..base("inputs", w_inputs) },
     Step { ..base("names-todo", w_none) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
     // before pieces): each z6 tile's raw tiles' archive copied here and the new raw tiles held
@@ -442,6 +444,12 @@ fn w_heritage_sites(l: &str, _: bool) -> bool {
     }
 }
 
+/// A gate unit's accepted index and its held report (crate::inputs: `sources/inputs/<unit>/index`,
+/// `…/held`), the report removed once nothing's held.
+fn w_inputs(l: &str, _: bool) -> bool {
+    matches!(parts(l).as_slice(), ["sources", "inputs", u, "index" | "held"] if !u.is_empty())
+}
+
 fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
@@ -680,7 +688,8 @@ mod tests {
 
     #[test]
     fn entries_within_their_write_sets() {
-        let ok: [(&str, &[(&str, bool)]); 24] = [
+        let ok: [(&str, &[(&str, bool)]); 25] = [
+            ("inputs", &[("sources/inputs/_gate-test/index", false), ("sources/inputs/_gate-test/held", true)]),
             ("osm-pass", &[("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-09-28/pass", false), ("layers/basemap/world-2026-09-28", false), ("sources/osm/2026-08-01/sets/water", true), ("work/heritage/2026-08-01/base/heritage", true), ("work/summits/2026-08-01", true)]),
             ("pass-sets", &[("sources/osm/2026-09-28/sets/water-v2", false)]),
             ("water", &[("layers/water/root/0-0-0", false), ("layers/water/lo/3-1-2", false), ("layers/water/hi/6-1-2", false), ("layers/smallwater/hi/6-1-2", true)]),
@@ -715,7 +724,8 @@ mod tests {
         // Outside: another step's files, a name of the wrong zoom, another layer, a pass's files
         // removed by a step that doesn't retire passes, a prune that writes, a removal the step
         // doesn't make.
-        let bad: [(&str, &[(&str, bool)]); 9] = [
+        let bad: [(&str, &[(&str, bool)]); 10] = [
+            ("inputs", &[("sources/inputs/_gate-test/a", false)]),
             ("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false)]),
             ("terrain", &[("work/terrain-mid/3-1-2", false)]),
             ("lo", &[("layers/roads/lo/6-1-2", false)]),

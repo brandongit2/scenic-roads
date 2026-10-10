@@ -103,6 +103,10 @@
 //!                                as if a new basemap came with the same water, and with n pieces'
 //!                                water changed; without the manifest's digests, --compute works
 //!                                them out here, in memory, timed. Reads only
+//!   inputs <unit> [--full]       a gate unit's drop box checked (pipeline::inputs::gate): its clean
+//!                                changes taken in as its next accepted version, the held ones
+//!                                reported (`--full`: every file hashed, not only those whose size
+//!                                or time changed)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -326,6 +330,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 parts.start(1);
                 pack_raw_with(&out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
             }
+        }
+        "inputs" => {
+            // inputs <unit> [--full]: a gate unit's drop box checked against its accepted version
+            // (pipeline::inputs::gate; docs/inputs.md §4.3): the clean changes taken in, the held
+            // ones reported, both handed off as records changes.
+            let unit = positional(&args).first().map(|u| u.trim_start_matches("inputs/").to_string()).context("inputs <unit>")?;
+            let said = pipeline::inputs::gate::run(&mut out, &unit, args.iter().any(|a| a == "--full"))?;
+            eprintln!("inputs: {said}");
         }
         "summits" => summits_step(&mut out, &args, &scratch)?,
         "peaks" => peaks_step(&mut out, &args, &scratch)?,
@@ -1043,8 +1055,10 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     // its data comes from: where the coverage is, and where the units' ways are.
     let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
     let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, &dir)?;
-    let credits = pipeline::rules::catalog_credits(&regions, &unit_extents(out, &base));
-    eprintln!("catalog: {} regions, {} of {} credits", regions.len(), credits.len(), pipeline::rules::CREDITS.len());
+    // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits.)
+    let described = pipeline::inputs::credits::described(out.root(), &out.manifest)?;
+    let credits = pipeline::inputs::credits::catalog_credits(&regions, &unit_extents(out, &base), &described);
+    eprintln!("catalog: {} regions, {} credits (of the table's {} and {} description{})", regions.len(), credits.len(), pipeline::rules::CREDITS.len(), described.len(), if described.len() == 1 { "" } else { "s" });
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
     // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.
     let served = |l: &str| {

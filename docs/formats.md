@@ -408,10 +408,13 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
 ```
 
 `files` holds every file the catalog references.
-- `credits`: the sources its data comes from (`pipeline::rules::CREDITS`), those whose areas meet
+- `credits`: the sources its data comes from (`pipeline::rules::CREDITS`, and the inputs' accepted
+  descriptions beside them, a description in place of the table's entry of its `what`:
+  `pipeline::inputs::credits`, docs/inputs.md §4.8; none has one yet), those whose areas meet
   the coverage, 20 km around it (how far heritage sites and terrain reach) or a built unit's ways
   (its extent, so a removed region's data keeps its credit while it's served). `areas` is a list of
-  w, s, e, n boxes in degrees, left out for credits that hold everywhere.
+  w, s, e, n boxes in degrees, left out for credits that hold everywhere (a description's: its
+  extent read from its data, one box).
 - `coverage`: the regions the catalog's data is built for: those done at publish time as their
   recipes were then (`--ready <id>=<outline digest>,…`, the agent's plan: one redrawn since isn't),
   and those not done yet as the last catalog had
@@ -425,8 +428,9 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   then gives every credit, and builds the coverage from the recipes.
 
 GC's roots are the newest catalog, every catalog of the last 14 days and the build manifest; an
-unreferenced file goes once it's also older than 14 days, in the folders catalogs index and retired
-passes' sources (plan §3). A held catalog is written to `catalog-held/` instead
+unreferenced file goes once it's also older than 14 days, in the folders catalogs index, retired
+passes' sources and the gate's checked copies (`sources/inputs/`, kept by the indexes and reports
+the manifest or an unmerged journal entry names: plan §3). A held catalog is written to `catalog-held/` instead
 (`inputs/hold-catalog`).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
@@ -649,6 +653,8 @@ Where they're kept:
   fit is refused. Refusals are 400 `{error}`, the reason in words.
 - The menu bar (`/api/build`): beside the build's status, `offline: {world, areas, bytes, here,
   nas}` (what's downloaded; null without a mirror).
+- The gate (docs/inputs.md §4.5): `POST /api/build/inputs` `{unit, accept: [finding id]}` or `{unit,
+  all: true}`, an ask to this Mac's agent, which writes the acceptances.
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the
@@ -832,6 +838,13 @@ class, id) within a tile. The client sends the id with the clicked point.
     passes a Mac's ask on (one older than the last change is passed over); a helper's leased job
     keeps `work.json` (its step and targets) and `done.txt` in its outbox folder; `/work/fail {…, interrupted}` gives a lease back unheld.
     `state/build/pause.json` on the NAS mirrors the build Mac's.
+  - **The gate's asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5), in each Mac's agent's folder:
+    `inputs-asks/<at, 20 digits>-<pid or "menu">-….json`, a file each, `{unit, accept: [finding
+    id], all, unaccept: [finding id], check, full, by, at}`, from its menu bar (Accept), the map's
+    `POST /api/build/inputs {unit, accept} | {unit, all: true}` and `scenic inputs check`; taken up
+    and removed by its agent at its next loop, which writes the acceptances (or lists the drop boxes
+    now). The build page's go to the lead's coordinator, `POST /work/inputs {unit, accept} | {unit,
+    all: true}` (a page's, with no key), which its agent takes up the same way.
   - **The pool's lead asks** (`pipeline::control::LeadRequest`, docs/pool.md §6.3), in each Mac's
     agent's folder: `lead-request.json`, `{ask: {kind: "give", to: member id or host name} or
     {kind: "take", force, downgrade}, by, at}`, from its menu, `scenic lead` or the map's `POST
@@ -911,10 +924,29 @@ class, id) within a tile. The client sends the id with the clicked point.
   it, crate::agent::lead::View: `{at, term, lead: {term, member, host, app, since, how}, leading,
   members: [{member, host, app, beat, me, leads, state, out_of_touch, away, can_lead, why_not,
   conds}], takeover: {refused, force, downgrade}, no_lead, handing: {to, host, term, stage, since},
-  offer: {to, host, why}, auto, asked, change}`);
+  offer: {to, host, why}, auto, asked, change}`); `inputs`, the gate's units (the lead's,
+  pipeline::inputs::view::InputView: `[{unit, version (its accepted index's content name), state:
+  ok | checking | held, checked (unix seconds), held: [drop-box paths], findings: [{id, level:
+  error | warning, files, message, at: [lon, lat], lines: [[n, line]] (the first 50), more}],
+  together, accepted: [finding ids], stale: [finding ids], unread}]`, what doesn't apply left out);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
   target → key: `terrain`, `slope` (their pieces, z6 tiles; an area's whole run's records, z3 tiles,
   from before), `terrain_lo`, `slope_lo` (their assemblies, z3 tiles), `unit`, `pois`, `peaks`,
-  `pack` (z6 tiles), `lo` (z3 tiles, and the worldwide steps' under their names), `trees` (tree
+  `pack` (z6 tiles), `lo` (z3 tiles, the worldwide steps' under their names, and the gate's checks
+  as `inputs/<unit>`), `trees` (tree
   cover's pieces, z6 tiles), `trees_lo` (their assemblies, z3 tiles), `catalog`, `catalog_held`).
+- **The gate** (docs/inputs.md §3, §4): the drop boxes under `inputs/` (the owner's; today only the
+  test unit's, `inputs/_gate-test/`, `.jsonl` files of `{"k": <string>, "v": <number>}` lines, while
+  `state/inputs/gate-test` puts it on the gate); a unit's checked copies, content-named under
+  `sources/inputs/<unit>/` (`<drop-box path to its file name's first dot>.<hash16>.<the rest of the
+  name, or bin>`); its accepted index, `sources/inputs/<unit>/index.<hash16>.json`, named in the
+  manifest as `sources/inputs/<unit>/index`: `{fmt: 1, unit, checks: "<unit> <version>", files:
+  {<drop-box path>: {file (its copy's content name), size, keyed (the digest of what in it affects
+  builds), facts: {…} (read from it at check time; a description's `description` and `extent`)}},
+  listed: {<path>: [size, mtime]}, accepted: [the warnings' ids it was taken with]}`; its report
+  while a change is held, `sources/inputs/<unit>/held.<hash16>.json`, named as
+  `sources/inputs/<unit>/held`: `{fmt: 1, unit, checks, held: [paths], findings: [{id
+  ("<check>.<hash16>"), level, files, message, at, lines}], together, raised: [every id the check
+  raised]}`; the owner's acceptances, `state/inputs/accepted/<unit>/<finding id>.json`, made once
+  with create-new: `{id, member, host, at, by, message}`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

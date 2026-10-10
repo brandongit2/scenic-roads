@@ -1,6 +1,6 @@
-//! Dated copies of the user's folders (docs/plan.md §3, Backups): `translations/`,
-//! `descriptions/` and `inputs/`, kept 30 days under `state/backups/` on the NAS and mirrored to
-//! the build Mac.
+//! Dated copies of the user's folders (docs/plan.md §3, Backups): `translations/`, `descriptions/`,
+//! `inputs/` and the gate's acceptances (`state/inputs/accepted/`), kept 30 days under
+//! `state/backups/` on the NAS and mirrored to the build Mac.
 //!
 //! Content-addressed, so an unchanged file is stored once however many days keep it:
 //! `blobs/<hash16>` holds each version of a file, and `<YYYY-MM-DD>.json` lists the folder as it
@@ -15,7 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const FOLDERS: [&str; 3] = ["translations", "descriptions", "inputs"];
+/// The user's folders: the drop boxes (and the request–fulfil inputs' folders until they move under
+/// `inputs/`, #137) and the owner's acceptances of the gate's warnings (docs/inputs.md §4.9).
+pub const FOLDERS: [&str; 4] = ["translations", "descriptions", "inputs", crate::inputs::ACCEPTED];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {

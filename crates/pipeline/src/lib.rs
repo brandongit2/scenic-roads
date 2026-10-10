@@ -19,6 +19,7 @@ pub mod fetch;
 pub mod geotiff;
 pub mod handoff;
 pub mod heritage;
+pub mod inputs;
 pub mod hipack;
 pub mod interest;
 pub mod landcover;

@@ -47,6 +47,7 @@ const STEP = {
   "rail-feeds": ["Rail timetables", "#8fa2b5"], rail: ["Trains a day", "#8fa2b5"], pois: ["Landmark candidates", "#9b7be0"], peaks: ["Peaks", "#b48ae8"],
   items: ["Wikidata facts", "#c47fb5"], heritage: ["Heritage details", "#c47fb5"], marks: ["Landmarks", "#c47fb5"], overlays: ["Area overlays", "#c47fb5"],
   "bld-fetch": ["3D buildings' sources", "#8fa2b5"], bldprep: ["Buildings read", "#a39a8c"], bldtiles: ["3D buildings", "#a39a8c"], bldtile: ["3D buildings' areas", "#b8ad9c"], treeblock: ["Tree cover's blocks", "#7fa37a"], terrainsub: ["Terrain's subtrees", "#9c8f7a"],
+  inputs: ["Checking the inputs", "#8fa2b5"],
   catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], round: ["Publishing round", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
 };
 const stepName = (s) => (STEP[s] || [s])[0];
@@ -78,6 +79,7 @@ const pbar = (frac, cls = "") => { const i = h("i"); i.style.width = `${Math.rou
 const chip = (text, cls = "", title) => h("span", { class: `chip ${cls}`, title }, text);
 
 // ---- The data's shape, older coordinators' too --------------------------------------------------
+// (The gate's units, `a.inputs`: docs/inputs.md §4.7; none from an agent before it.)
 function model(sw) {
   const a = sw.agent || {};
   const now = sw.now;
@@ -149,7 +151,33 @@ function alerts(m) {
     else if (p.visible === false && p.seen_s < 300) out.push({ cls: "warn", text: `${p.label} is in the background (iPhones and iPads stop it)`, to: "machines" });
   }
   if ((a.bad_recipes || []).length) out.push({ cls: "warn", text: `${plural(a.bad_recipes.length, "region recipe")} doesn't read`, to: "details" });
+  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "inputs" });
   return out;
+}
+
+// ---- The gate (docs/inputs.md §4.7) -------------------------------------------------------------
+// A banner per held unit: its held files, each finding, Accept per warning and Accept All; errors
+// say what to fix. A quiet line per unit being checked.
+function gateBanners(m, accept) {
+  const units = (m.a.inputs || []).filter((v) => v.state !== "ok");
+  return units.map((v) => {
+    if (v.state === "checking") return h("div", "gate checking", `${v.unit}: checking what was dropped…`);
+    const fs = v.findings || [];
+    const warns = fs.filter((f) => f.level === "warning");
+    const errors = fs.filter((f) => f.level === "error");
+    const all = warns.length > 1 && h("button", { onclick: () => confirm(`Accept all ${warns.length} warnings of ${v.unit}?\n\n${warns.map((f) => `• ${f.message}`).join("\n")}`) && accept({ unit: v.unit, all: true }), title: "Accepts every warning held here; the held changes are taken in at the next check (errors stay)" }, "Accept all");
+    return h("div", `gate${errors.length ? " has-error" : ""}`,
+      h("div", "gh", h("b", null, v.unit), h("span", "files", `held: ${(v.held || []).join(", ")}`), h("span", "dim small", v.checked ? `checked ${clock(v.checked)}` : ""), all),
+      v.together ? h("div", "together", v.together) : null,
+      fs.map((f) => h("div", "gf",
+        chip(f.level, f.level === "error" ? "bad" : "warn"),
+        h("span", "msg", f.message),
+        f.level === "warning"
+          ? h("button", { onclick: () => confirm(`Accept this warning of ${v.unit}?\n\n${f.message}`) && accept({ unit: v.unit, accept: [f.id] }), title: `Takes the change in with it (${f.id})` }, "Accept")
+          : h("span", "dim small", "fix or remove"),
+        h("div", "sub", [f.files.join(", "), f.at ? ` · at ${f.at[1].toFixed(4)}, ${f.at[0].toFixed(4)}` : "", ` · ${f.id}`].join("")),
+        (f.lines || []).length ? h("pre", null, f.lines.map(([n, l]) => `${n}: ${l}`).join("\n") + (f.more ? `\n… and ${f.more} more lines (scenic inputs)` : "")) : null)));
+  });
 }
 
 function verdictText(m) {
@@ -735,7 +763,10 @@ function render() {
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
   const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool", "pool", null, null);
-  const next = [verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, pool, road, regions, activity, section("d-details", "details", null, null, details(m))];
+  const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
+  root.classList.toggle("gated", banners.length > 0);
+  const gate = h("section", { class: "d-inputs", id: "inputs" }, banners);
+  const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), machines, pool, road, regions, activity, section("d-details", "details", null, null, details(m))];
   // (A section where the user is typing or has text selected stays as it was until they're done:
   // a refresh would take their keyboard or selection away.)
   const sel = window.getSelection();

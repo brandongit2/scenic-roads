@@ -645,6 +645,10 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .bs-pop .warn { color: #f3c77a; }
 .bs-pop .bs-btn { margin: 4px 0 2px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .bs-pop .bs-btn:hover { background: var(--line); }
+#strip .r2 .build .bs-held { flex: none; color: #f3c77a; }
+.bs-pop .bs-gate { margin: 2px 0 6px; padding: 3px 7px 4px; border-left: 2px solid #f3c77a; background: rgba(243, 199, 122, 0.05); border-radius: 0 4px 4px 0; }
+.bs-pop .bs-gate-h { display: flex; justify-content: space-between; gap: 8px; }
+.bs-pop .bs-gate-h .faint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bs-pop .bs-log { margin: 3px 0 2px; padding: 4px 6px; max-height: 98px; overflow: auto; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* A region's build state (Regions panel). */

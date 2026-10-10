@@ -102,6 +102,61 @@ struct Status: Decodable {
     /// forecast: crates/pipeline/src/agent/forecast.rs; agents from 2026-10-05 on).
     let regions: [Recipe]?
     let forecast: Forecast?
+    /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
+    let inputs: [InputUnit]?
+}
+
+/// A gate unit (crates/pipeline/src/inputs/view.rs InputView).
+struct InputUnit: Decodable {
+    let unit: String
+    let state: String
+    let held: [String]?
+    let findings: [InputFinding]?
+}
+
+/// A finding holding a gate unit's change (crates/pipeline/src/inputs/mod.rs Finding).
+struct InputFinding: Decodable {
+    let id: String
+    let level: String
+    let message: String
+}
+
+/// The units the gate holds now.
+func heldInputs(_ r: Reply?) -> [InputUnit] {
+    (r?.status?.inputs ?? []).filter { $0.state == "held" }
+}
+
+/// A held unit in a line: "regions: 1 warning held, 1 error (wales.toml)".
+func inputLine(_ v: InputUnit) -> String {
+    let fs = v.findings ?? []
+    let w = fs.filter { $0.level == "warning" }.count, e = fs.count - fs.filter { $0.level == "warning" }.count
+    var parts: [String] = []
+    if w > 0 { parts.append("\(w) warning\(w == 1 ? "" : "s") held") }
+    if e > 0 { parts.append("\(e) error\(e == 1 ? "" : "s")") }
+    return "\(v.unit): \(parts.isEmpty ? "held" : parts.joined(separator: ", "))\((v.held ?? []).isEmpty ? "" : " (\((v.held ?? []).joined(separator: ", ")))")"
+}
+
+/// The icon: the build's state's symbol, with a small warning triangle while an input is held
+/// (the build goes on with the last good version meanwhile).
+func iconImage(_ kind: Kind, held: Bool, line: String) -> NSImage? {
+    guard let base = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: line) else { return nil }
+    guard held, let badge = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "an input held") else {
+        base.isTemplate = true
+        return base
+    }
+    let size = NSSize(width: 18, height: 16)
+    let img = NSImage(size: size, flipped: false) { r in
+        base.draw(in: NSRect(x: 0, y: 2, width: 14, height: 14))
+        // (Cleared under the badge so it reads over the symbol.)
+        NSGraphicsContext.current?.compositingOperation = .clear
+        NSBezierPath(ovalIn: NSRect(x: 8, y: -1, width: 11, height: 10)).fill()
+        NSGraphicsContext.current?.compositingOperation = .sourceOver
+        badge.draw(in: NSRect(x: 9, y: 0, width: 9, height: 8))
+        return true
+    }
+    img.isTemplate = true
+    img.accessibilityDescription = line + " (an input held)"
+    return img
 }
 
 /// A --replay file's this Mac's agent's own status and whether an ask to clear its caches waits,
@@ -1133,6 +1188,8 @@ struct Seen {
     var lastEnded: Int
     var outOfTouch: Bool
     var buildPaused: Bool
+    /// The gate's units held.
+    var held: Set<String> = []
 }
 
 /// This Mac's ask to its agent (crates/pipeline/src/control.rs), while it waits to be taken up: to
@@ -1335,10 +1392,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func show() {
         let (kind, line) = classify(reply)
         if let b = item.button {
-            let img = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: line)
-            img?.isTemplate = true
-            b.image = img
-            b.toolTip = line
+            let held = heldInputs(reply)
+            b.image = iconImage(kind, held: !held.isEmpty, line: line)
+            b.toolTip = held.isEmpty ? line : "\(line)\n" + held.map { "Held at the gate: \(inputLine($0))" }.joined(separator: "\n")
         }
         panel.update(reply: reply, line: line, all: lines(reply, line, own: own))
     }
@@ -1394,6 +1450,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             m.addItem(it)
         }
         m.addItem(.separator())
+        // The gate (docs/inputs.md §4.7): a line per held unit, with Accept (its warnings, after a
+        // confirmation naming them) and the build page, where its banner says what holds it.
+        let held = heldInputs(reply)
+        for v in held {
+            let it = NSMenuItem(title: inputLine(v), action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            let warns = (v.findings ?? []).filter { $0.level == "warning" }
+            let acc = NSMenuItem(title: warns.isEmpty ? "Errors: fix or remove the files" : "Accept \(warns.count == 1 ? "the Warning" : "\(warns.count) Warnings")…", action: warns.isEmpty ? nil : #selector(acceptInputs), keyEquivalent: "")
+            acc.target = self
+            acc.isEnabled = !warns.isEmpty
+            acc.representedObject = v.unit
+            sub.addItem(acc)
+            if let page = panel.shown ?? reply?.pages?.first ?? pageToShare() {
+                let show = NSMenuItem(title: "Show on the Build Page", action: #selector(openPage), keyEquivalent: "")
+                show.target = self
+                show.representedObject = page.hasSuffix("#inputs") ? page : page + "#inputs"
+                sub.addItem(show)
+            }
+            it.submenu = sub
+            m.addItem(it)
+        }
+        if !held.isEmpty { m.addItem(.separator()) }
         // The whole build paused (every Mac), or going on: an ask to this Mac's agent, which passes it
         // on to the build Mac (crates/pipeline/src/control.rs). Option: at once, frozen where it is.
         // (Paused as this Mac knows it: the build Mac's, or, a helper's own, its own.)
@@ -1556,6 +1634,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
     }
 
+    /// Accepts a held unit's warnings (the item's unit), once its owner says so, naming them: an ask
+    /// to this Mac's agent (crates/pipeline/src/inputs/mod.rs Ask, a file of its own in
+    /// `inputs-asks/`), which writes the acceptances itself within seconds.
+    @objc func acceptInputs(_ sender: NSMenuItem) {
+        guard let unit = sender.representedObject as? String, let v = heldInputs(reply).first(where: { $0.unit == unit }) else { return }
+        let warns = (v.findings ?? []).filter { $0.level == "warning" }
+        guard !warns.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Accept \(warns.count == 1 ? "this warning" : "these \(warns.count) warnings") of \(unit)?"
+        alert.informativeText = warns.map { "• \($0.message)" }.joined(separator: "\n") + "\n\nThe held change is taken in at the next check, and the map built with it. `scenic inputs unaccept` undoes it."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Accept")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        let now = Int(Date().timeIntervalSince1970)
+        let dir = home.appendingPathComponent("agent/inputs-asks")
+        let file = String(format: "%020d-menu-%d.json", now, getpid())
+        let (tmp, dst) = (dir.appendingPathComponent(file + ".menu.tmp"), dir.appendingPathComponent(file))
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["unit": unit, "accept": warns.map(\.id), "by": "the menu bar on \(name)", "at": now] as [String: Any]).write(to: tmp)
+            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch {
+            post("Couldn't accept \(unit)'s warnings", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
+
     @objc func pauseBuild(_ sender: NSMenuItem) { ask("drain") }
     @objc func pauseBuildNow(_ sender: NSMenuItem) { ask("freeze") }
     @objc func resumeBuild(_ sender: NSMenuItem) { ask(nil) }
@@ -1657,10 +1766,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         tellCaches()
         tellLead()
         guard let r = reply, let s = r.status else { return }
-        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil)
+        let held = heldInputs(r)
+        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, held: Set(held.map(\.unit)))
         defer { seen = now }
         // The first answer only sets what changes are measured from.
         guard let was = seen else { return }
+        // The gate: a unit held, or taken in (its held change accepted or fixed).
+        for v in held where !was.held.contains(v.unit) {
+            post("Input held: \(v.unit)", "\(inputLine(v)). The map goes on with the last good version.")
+        }
+        for u in was.held.subtracting(now.held).sorted() {
+            post("Input taken in: \(u)", "Its held change passed the gate")
+        }
         if now.buildPaused != was.buildPaused {
             post(now.buildPaused ? "Build paused" : "Build going on", s.pause.map { "From \($0.by)" } ?? "Picking up where it stopped")
         }
@@ -1763,7 +1880,8 @@ if args.contains("--print") {
     }.resume()
     done.wait()
     let (kind, line) = classify(r)
-    print("icon: \(kind.symbol)")
+    print("icon: \(kind.symbol)\(heldInputs(r).isEmpty ? "" : " with a warning badge")")
+    for v in heldInputs(r) { print("item: \(inputLine(v))") }
     let own = ownStatus()
     for l in lines(r, line, own: own) {
         let bar = l.style == .bar ? "[" + String(repeating: "█", count: Int(l.fraction * 20)) + String(repeating: "░", count: 20 - Int(l.fraction * 20)) + "] " : ""
@@ -1835,7 +1953,8 @@ if args.contains("--print") {
         d.reply = try? JSONDecoder().decode(Reply.self, from: data)
         let beside = try? JSONDecoder().decode(Replay.self, from: data)
         d.own = beside?.own
-        print("\(f): \(classify(d.reply).1)")
+        print("\(f): \(classify(d.reply).1)\(heldInputs(d.reply).isEmpty ? "" : " (badged)")")
+        for v in heldInputs(d.reply) { print("  item: \(inputLine(v))") }
         if let c = cachesItem(d.own, now: d.reply?.now ?? Int(Date().timeIntervalSince1970), asked: beside?.clear_asked ?? false) {
             print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
             // (What its confirmation lists.)

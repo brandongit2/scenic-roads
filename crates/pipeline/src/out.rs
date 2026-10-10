@@ -156,8 +156,15 @@ impl Out {
         &self.root
     }
 
-    /// The NAS path of a content name.
+    /// The NAS path of a content name. A path in a drop box (`inputs/`, `translations/`,
+    /// `descriptions/`) is refused, naming the caller: a step reads an input's accepted version
+    /// through `crate::inputs::open` alone (docs/inputs.md §7.1), so a reader missed fails its
+    /// first run instead of bypassing the gate.
+    #[track_caller]
     pub fn path(&self, content: &str) -> PathBuf {
+        if crate::inputs::in_drop_box(content) {
+            panic!("{}: {content} is in a drop box; a step reads an input through crate::inputs::open alone (docs/inputs.md §7.1)", std::panic::Location::caller());
+        }
         self.root.join(content)
     }
 
@@ -225,6 +232,40 @@ impl Out {
             r
         })
         .inspect(|_| on(total, total))
+    }
+
+    /// Uploads bytes as `<logical>.<hash16>.<ext>` without naming them in the manifest (the gate's
+    /// checked copies, which its index names: crate::inputs::gate), and returns the content name.
+    /// One there already is reused and touched, as `put_file` does.
+    pub fn store_bytes(&mut self, logical: &str, ext: &str, bytes: &[u8]) -> Result<String> {
+        let h = store::naming::hash16(bytes);
+        let name = store::naming::content_name(logical, &h, ext);
+        let dest = self.root.join(&name);
+        let existed = dest.exists();
+        let local = self.scratch_file(&format!("{logical}.{ext}"));
+        std::fs::write(&local, bytes)?;
+        let got = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
+        std::fs::remove_file(&local).ok();
+        anyhow::ensure!(got? == name, "{logical}: wrote another name than {name}");
+        crate::timings::count(if existed { 0 } else { bytes.len() as u64 }, 1);
+        if existed {
+            if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
+                f.set_modified(std::time::SystemTime::now()).ok();
+            }
+        } else {
+            self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));
+        }
+        Ok(name)
+    }
+
+    /// Names `content` (None: nothing) under `logical` in the manifest: a file uploaded already
+    /// (`store_bytes`).
+    pub fn set(&mut self, logical: &str, content: Option<String>) {
+        match &content {
+            Some(c) => self.manifest.insert(logical.to_string(), c.clone()),
+            None => self.manifest.remove(logical),
+        };
+        self.changes.insert(logical.to_string(), content);
     }
 
     /// Upload bytes under `logical`.

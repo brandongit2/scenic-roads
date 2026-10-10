@@ -413,6 +413,10 @@ pub struct Status {
     /// now, what it last did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<memguard::View>,
+    /// The gate (docs/inputs.md §4.7): an entry per gate unit, its version, whether it's checking
+    /// or held, and what holds it (the lead's).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<crate::inputs::view::InputView>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -861,6 +865,20 @@ pub struct Agent {
     /// The switch as the last loop read it, when it differed from this process's: acted on once two
     /// loops in a row read it so (a stat answering wrongly once restarts nothing).
     switch_seen: Option<pool::Mode>,
+    /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
+    /// plan made them, what they read, and the units a full check was asked of.
+    inputs: Gate,
+}
+
+/// The agent's part of the gate (docs/inputs.md §4.2, §4.7).
+#[derive(Default)]
+struct Gate {
+    /// The drop boxes listed off the loop (the lead's, and a lone build Mac's), with the root it
+    /// lists.
+    watch: Option<(PathBuf, crate::inputs::watch::Watch)>,
+    view: std::cell::RefCell<Vec<crate::inputs::view::InputView>>,
+    cache: std::cell::RefCell<crate::inputs::view::Cache>,
+    full: std::cell::RefCell<BTreeSet<String>>,
 }
 
 /// The caches' sizes as last counted (room::sizes: what room-making can free, what a clear would),
@@ -963,7 +981,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1951,6 +1969,12 @@ impl Agent {
             }
         }
 
+        // The gate: the drop boxes listed off the loop (the lead's), and the asks of it from this
+        // Mac's menu bar, map, `scenic inputs` and (leading) the build page.
+        if let Some(r) = root.as_deref() {
+            self.tend_gate(r);
+        }
+
         // The plan: start the first job that can run. Made when one could start (the first job's
         // slot free; the second's, each minute), when a job ends, and otherwise every five minutes
         // for the heartbeat (between, its last view is shown).
@@ -2095,6 +2119,7 @@ impl Agent {
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone(), outside: p.outside.iter().cloned().collect(), outside_n: p.outside_n }),
             memory: Some(self.guard_view()),
+            inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if let Some(sh) = self.shadow.as_mut() {
@@ -3442,6 +3467,10 @@ impl Agent {
         if ok {
             self.mem.retry.remove(id);
             self.mem.last_ok.insert(id.to_string(), now_s());
+            // (A full check asked for, done.)
+            if let Some(unit) = id.strip_prefix("inputs ").and_then(|r| r.strip_suffix(" full")) {
+                self.inputs.full.borrow_mut().remove(unit);
+            }
         } else {
             let n = self.mem.retry.get(id).map(|r| r.0).unwrap_or(0) + 1;
             // 10 min, 20, 40 … up to 6 h.
@@ -3549,11 +3578,16 @@ impl Agent {
         // The regions: terrain and slope near the coverage, base(U), pack(T), lo, a catalog.
         out.extend(self.region_work(root, have.as_deref(), newer.as_ref().map(|n| n.1.as_str()), waiting));
 
+        // The gate's checks before every other step (docs/inputs.md §4.3): a change is checked
+        // before the plan builds with stale inputs.
+        let (checks, rest): (Vec<JobSpec>, Vec<JobSpec>) = std::mem::take(&mut out).into_iter().partition(|j| j.record.as_ref().is_some_and(|w| w.step == "inputs"));
+        out = checks;
+        out.extend(rest);
         // Daily: the user's folders backed up, replaced files removed.
         if self.due("backup", Duration::from_secs(86400)) {
             out.push(JobSpec {
                 id: "backup".into(),
-                what: "Backing up translations, descriptions and inputs".into(),
+                what: "Backing up translations, descriptions, inputs and the acceptances".into(),
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
@@ -3591,7 +3625,7 @@ impl Agent {
         };
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let build_bin = s(&self.o.bin.join("scenic-build"));
-        let mut jobs: Vec<JobSpec> = Vec::new();
+        let mut jobs: Vec<JobSpec> = self.gate_work(root, &manifest, &keys, waiting);
         let job = |id: String, what: &str, step: &str, extra: Vec<String>, record: Option<build::Work>| {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
@@ -3673,7 +3707,19 @@ impl Agent {
         };
         let cov = &covs.all;
         let mut done = keys;
-        let inputs = input_digests(root);
+        let mut inputs = input_digests(root);
+        // (The inputs' descriptions' credits, for the catalog's key: crate::inputs::credits. None
+        // yet, no line, so the catalog's key is as it was; unreadable now, "?".)
+        match crate::inputs::credits::described(root, &manifest) {
+            Ok(d) => {
+                if let Some(c) = crate::inputs::credits::digest(&d) {
+                    inputs.insert("credits".into(), c);
+                }
+            }
+            Err(_) => {
+                inputs.insert("credits".into(), "?".into());
+            }
+        }
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(crate::rail::CATALOGUE) {
@@ -4790,6 +4836,98 @@ impl Agent {
             return None;
         }
         std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).filter(|cur| *cur != self.app)
+    }
+
+    /// The gate's part of a loop: the listing thread started (on the lead, a lone build Mac, a dry
+    /// run: not a member's), and the asks of it taken up: a listing now (and a full check), and
+    /// acceptances, which this Mac writes itself (docs/inputs.md §4.5).
+    fn tend_gate(&mut self, root: &Path) {
+        if !self.o.helper && self.inputs.watch.as_ref().is_none_or(|(r, _)| r != root) {
+            self.inputs.watch = Some((root.to_path_buf(), crate::inputs::watch::Watch::start(root.to_path_buf(), crate::inputs::watch::EVERY)));
+        }
+        // (Not a dry run's: the asks are the agent's that runs.)
+        if self.o.dry_run {
+            return;
+        }
+        let mut asks = crate::inputs::take_asks(&self.o.home);
+        if let Some(c) = &self.coord {
+            asks.extend(c.take_inputs_asks());
+        }
+        if asks.is_empty() {
+            return;
+        }
+        let member = crate::inputs::member_of(&self.o.home);
+        for a in asks {
+            if a.check || a.full {
+                if a.full {
+                    self.inputs.full.borrow_mut().insert(a.unit.clone());
+                }
+                eprintln!("agent: {} asked to check {}{}", if a.by.is_empty() { "someone" } else { &a.by }, a.unit, if a.full { " in full" } else { "" });
+            }
+            if a.all || !a.accept.is_empty() || !a.unaccept.is_empty() {
+                // The unit's held report as the last plan read it, else as the records name it now.
+                let shown = self.inputs.view.borrow().iter().find(|v| v.unit == a.unit).map(|v| crate::inputs::Report { findings: v.findings.iter().map(|s| s.finding.clone()).collect(), ..Default::default() });
+                let held = shown.or_else(|| {
+                    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
+                    crate::inputs::read_report(root, m.get(&crate::inputs::held_logical(&a.unit))?).ok()
+                });
+                match crate::inputs::apply_ask(root, &a, held.as_ref(), &member) {
+                    Ok(said) => {
+                        for s in said {
+                            eprintln!("agent: {} ({}): {s}", a.unit, a.by);
+                        }
+                    }
+                    Err(e) => eprintln!("agent: {}'s ask of {}: {e:#}", a.by, a.unit),
+                }
+            }
+        }
+        if let Some((_, w)) = &self.inputs.watch {
+            w.ask();
+        }
+    }
+
+    /// The gate's checks to run (docs/inputs.md §4.3): each unit on the gate whose check's key
+    /// (its listing, acceptances, accepted index) isn't the one last recorded, a full check daily
+    /// or when asked; and the status's entries, from the records it plans with.
+    fn gate_work(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        let units = crate::inputs::units(root);
+        let mut jobs = Vec::new();
+        let mut checking: BTreeSet<String> = BTreeSet::new();
+        // (Running now, on this Mac.)
+        for r in self.slots.iter().filter_map(|s| s.running.as_ref()) {
+            if let Some(w) = r.spec.record.as_ref().filter(|w| w.step == "inputs") {
+                checking.extend(w.targets.iter().filter_map(|t| t.0.strip_prefix("inputs/").map(str::to_string)));
+            }
+        }
+        if let (Some((_, watch)), false) = (&self.inputs.watch, self.o.helper) {
+            let s = |p: &Path| p.to_string_lossy().into_owned();
+            for unit in &units {
+                let Some(checks) = crate::inputs::checks(unit) else { continue };
+                if let Some(why) = watch.failed(unit) {
+                    waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its drop box can't be listed now: {why}") });
+                }
+                let Some(l) = watch.get(unit) else { continue };
+                let full = self.inputs.full.borrow().contains(*unit) || self.due(&format!("inputs {unit} full"), Duration::from_secs(86400));
+                let mut key = crate::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
+                if full {
+                    key = build::h(&[&key, "full"]);
+                }
+                let target = format!("inputs/{unit}");
+                if keys.lo.get(&target) == Some(&key) {
+                    continue;
+                }
+                checking.insert(unit.to_string());
+                let mut cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.to_string()];
+                if full {
+                    cmd.push("--full".into());
+                }
+                let id = if full { format!("inputs {unit} full") } else { format!("inputs {unit}") };
+                jobs.push(JobSpec { id, what: format!("Checking the inputs dropped in {unit}{}", if full { ", every file" } else { "" }), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "inputs".into(), targets: vec![(target, key)] }) });
+            }
+        }
+        let accepted = self.inputs.watch.as_ref().map(|(_, w)| w.accepted()).unwrap_or_default();
+        *self.inputs.view.borrow_mut() = crate::inputs::view::of(root, manifest, &units, &checking, &accepted, &mut self.inputs.cache.borrow_mut());
+        jobs
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
@@ -6225,6 +6363,82 @@ mod tests {
         a.mem.last_ok.insert("backup".into(), now_s());
         let mut w = Vec::new();
         assert!(!a.plan(&root, &st.conditions, &mut w).iter().any(|j| j.id == "backup"));
+    }
+
+    /// The gate in the agent (docs/inputs.md §4.2, §4.3, §4.7): the drop boxes listed off the loop,
+    /// a unit's check planned before every other job while its key isn't the one recorded (a full
+    /// one daily), the status's entry; an acceptance asked of the agent written by it.
+    #[test]
+    fn the_gate_plans_a_check_first_and_shows_in_the_status() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let unit = crate::inputs::TEST_UNIT;
+        let dropbox = root.join("inputs").join(unit);
+        std::fs::create_dir_all(&dropbox).unwrap();
+        let put = |text: &str| {
+            let p = dropbox.join("a.jsonl");
+            std::fs::write(&p, text).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+        };
+        put("{\"k\": \"x\", \"v\": -1}\n");
+        let mut a = agent(&root, &home);
+        // Off the gate (no flag): nothing planned.
+        a.step().unwrap();
+        let c = read_status(Some(&root), &home).unwrap().conditions;
+        let mut w = Vec::new();
+        assert!(!a.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")));
+        std::fs::create_dir_all(root.join("state/inputs")).unwrap();
+        std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
+        let watch = |a: &Agent| a.inputs.watch.as_ref().unwrap().1.get(unit);
+        let ask = |a: &Agent| a.inputs.watch.as_ref().unwrap().1.ask();
+        ask(&a);
+        let t = Instant::now();
+        while watch(&a).is_none() {
+            assert!(t.elapsed() < Duration::from_secs(30), "listed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The first check: a full one, before every other job.
+        let plan = a.plan(&root, &c, &mut w);
+        assert_eq!(plan[0].id, format!("inputs {unit} full"));
+        assert!(plan[0].cmd.ends_with(&[unit.to_string(), "--full".to_string()]) && plan[0].cmd[1] == "inputs");
+        let work = plan[0].record.clone().unwrap();
+        assert_eq!(work.targets[0].0, format!("inputs/{unit}"));
+        // Run (as its job would) and recorded: a normal check planned next (its key without the full
+        // one's), then nothing while nothing changes.
+        let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+        crate::inputs::gate::run(&mut out, unit, true).unwrap();
+        let mut keys = build::Keys::load_strict(&root).unwrap();
+        keys.record("inputs", &work.targets);
+        keys.save(&root).unwrap();
+        a.mem.last_ok.insert(format!("inputs {unit} full"), now_s());
+        let plan = a.plan(&root, &c, &mut w);
+        assert_eq!(plan[0].id, format!("inputs {unit}"));
+        let work = plan[0].record.clone().unwrap();
+        let mut keys = build::Keys::load_strict(&root).unwrap();
+        keys.record("inputs", &work.targets);
+        keys.save(&root).unwrap();
+        assert!(!a.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")));
+        // Held (the negative v): the status says so.
+        a.step().unwrap();
+        let st = read_status(Some(&root), &home).unwrap();
+        let v = st.inputs.iter().find(|v| v.unit == unit).unwrap();
+        assert_eq!(v.state, crate::inputs::view::State::Held);
+        assert_eq!(v.held, ["a.jsonl"]);
+        // An acceptance asked of the agent: written by it (not by a dry run's), and the drop boxes
+        // listed again, so its key changes and the unit's checked again.
+        a.o.dry_run = false;
+        crate::inputs::ask(&home, &crate::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() }).unwrap();
+        a.tend_gate(&root);
+        a.o.dry_run = true;
+        assert_eq!(crate::inputs::acceptances(&root, unit).unwrap().len(), 1);
+        let t = Instant::now();
+        while watch(&a).is_none_or(|l| l.accepted.is_empty()) {
+            assert!(t.elapsed() < Duration::from_secs(30), "listed again");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(a.plan(&root, &c, &mut w)[0].id, format!("inputs {unit}"));
     }
 
     #[test]
