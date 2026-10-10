@@ -5,7 +5,7 @@ import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';
 import { CLASS_LABELS } from '../config';
 import { MAP_SCHEMES, mapScheme, type MapScheme } from '../mapschemes';
-import { unitOf, withUnit } from '../autofit';
+import { FIT_LEN_DEFAULT, pairOf, unitOf, withPair, withUnit } from '../autofit';
 import { modeGroup, type Store } from '../state';
 import { h } from './dom';
 import { WeightGrid } from './controls';
@@ -53,7 +53,8 @@ export class ColourCard {
       fadeDefault: 0.7,
       spanDefault: 0.6,
       fixedCaption: () => (store.s.mode === 'relief' ? 'Lowest → highest road in view' : null),
-      len: { active: () => modeGroup(store.s.mode) === 'scenic', get: () => store.s.fitLen, set: (fitLen) => store.set({ fitLen }),
+      len: { active: () => modeGroup(store.s.mode) === 'scenic', get: () => pairOf(store.s.fitLens, store.s.mode, FIT_LEN_DEFAULT),
+        set: (v) => store.set({ fitLens: withPair(store.s.fitLens, store.s.mode, v, FIT_LEN_DEFAULT) }),
         unit: () => unitOf(store.s.fitUnits, store.s.mode), setUnit: (u) => store.set({ fitUnits: withUnit(store.s.fitUnits, store.s.mode, u) }) },
       onPreview: (k) => this.onPalettePreview(k),
     });

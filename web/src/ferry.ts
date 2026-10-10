@@ -24,7 +24,7 @@ export interface FerryMetricDef {
   range: [number, number];
   domain: [number, number];
   step: number;
-  /** Auto-fit by the busiest screen widths of ferry line in view (FerryState.fitLen), as the
+  /** Auto-fit by the busiest screen widths of ferry line in view (FerryState.fitLens), as the
    * roads' scenic metrics are; else by percentiles (season length: most lines run all year). */
   byLen?: boolean;
   fmt: (v: number) => string;

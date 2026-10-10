@@ -8,7 +8,10 @@ import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './t
 import type { BuildingColour, BuildingState } from './buildings';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
-import { unitsField, unitsOfField, unitsOfSaved, type FitUnits } from './autofit';
+import {
+  FIT_LEN_DEFAULT, fitLensOfSaved, pairOf, pairsField, pairsOfField, perMetric, samePair, unitsField, unitsOfField, unitsOfSaved, validFit, validFitLen,
+  withPair, type FitUnits, type Pair, type PerMetric,
+} from './autofit';
 import { STOP_CONTRAST } from './raildraw';
 
 export type { Mode };
@@ -173,9 +176,9 @@ const THR_OF: Record<string, ThresholdDir> = { a: 'above', b: 'below', l: 'low' 
 
 /** fit lo, fit hi, equalise, fade span, highlight on, direction, value (hash fields). */
 /** A screen-widths auto-fit from a link (more, then fewer; else `d`). */
-function fitLenOf(a: string | undefined, b: string | undefined, d: [number, number]): [number, number] {
-  const lo = Number(a), hi = Number(b);
-  return a && b && Number.isFinite(lo) && Number.isFinite(hi) && hi > 0 && lo > hi ? [lo, hi] : d;
+function fitLenOf(a: string | undefined, b: string | undefined, d: Pair): Pair {
+  const v: Pair = [Number(a), Number(b)];
+  return a && b && validFitLen(v) ? v : d;
 }
 
 function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 'equalize' | 'lowSpan' | 'threshold'> {
@@ -242,12 +245,23 @@ export const modeGroup = (m: Mode): ModeGroup => (m === 'elev' || m === 'grade' 
 export const ROAD_FIT_KEYS: Mode[] = MODES.filter((m) => modeGroup(m.key) === 'scenic').map((m) => m.key);
 export const RAIL_FIT_KEYS: RailMetric[] = RAIL_METRICS.filter((m) => m.byLen).map((m) => m.key);
 export const FERRY_FIT_KEYS: FerryMetric[] = FERRY_METRICS.filter((m) => m.byLen).map((m) => m.key);
-/** A layer's units as the last field of its link value (rail, ferries): none while all are screen
- * widths, so those links stay as they were. */
-const unitsTail = <K extends string>(u: FitUnits<K>, keys: readonly K[]): string[] => {
-  const f = unitsField(u, keys);
-  return f ? [f] : [];
-};
+/** A layer's screen-widths fits in its link value (rail, ferries): the base in the two fields
+ * the per-layer fit had, then after them the units (unitsField) and the metrics with another fit
+ * (pairsField), empty fields at the end left out, so a layer all in screen widths at one fit
+ * writes what it did before either was per metric. */
+function fitFields<K extends string>(lens: PerMetric<K>, units: FitUnits<K>, keys: readonly K[]): (string | number)[] {
+  const { base, rest } = pairsField((k) => pairOf(lens, k, FIT_LEN_DEFAULT), keys, FIT_LEN_DEFAULT);
+  const tail = [unitsField(units, keys), rest];
+  while (tail.length && !tail[tail.length - 1]) tail.pop();
+  return [base[0], base[1], ...tail];
+}
+/** A layer's screen-widths fits from its link value's fields (fitFields): the base for every
+ * metric not listed (older links: their one fit for every metric). */
+function fitLensOfFields<K extends string>(a: string | undefined, b: string | undefined, rest: string | undefined, keys: readonly K[]): PerMetric<K> {
+  const base = fitLenOf(a, b, FIT_LEN_DEFAULT), own = pairsOfField(rest, keys, validFitLen);
+  return perMetric(keys, (k) => own[k] ?? base, FIT_LEN_DEFAULT);
+}
+const isScenic = (m: Mode) => modeGroup(m) === 'scenic';
 
 /** A metric colour scale's settings (rail and ferries), as kept per metric. */
 export interface MetricLook {
@@ -328,10 +342,10 @@ export interface RailState extends ScaleFields {
   freqMin: number;
   freqMax: number;
   freqUnknown: boolean;
-  /** The ranked metrics' auto-fit (rail.ts byLen): the best this much rail in view, in screen
-   * widths, to the best this much (as the roads' fitLen). */
-  fitLen: [number, number];
-  /** What each of those metrics auto-fits in, screen widths (fitLen) or percentiles (its fit), as the roads' fitUnits. */
+  /** The ranked metrics' auto-fit (rail.ts byLen), each its own: the best this much rail in view,
+   * in screen widths, to the best this much (as the roads' fitLens). */
+  fitLens: PerMetric<RailMetric>;
+  /** What each of those metrics auto-fits in, screen widths (its fitLens) or percentiles (its fit), as the roads' fitUnits. */
   fitUnits: FitUnits<RailMetric>;
   /** The cross-ties' length, × the core line's thickness (raildraw.ts; none below zoom 9). */
   ties: number;
@@ -372,9 +386,9 @@ export interface FerryState extends ScaleFields {
   freqMax: number;
   freqUnknown: boolean;
   /** Sailings a day's auto-fit (ferry.ts byLen): the busiest this much ferry line in view, in
-   * screen widths, to the busiest this much (as the roads' fitLen). */
-  fitLen: [number, number];
-  /** What sailings a day auto-fits in, screen widths (fitLen) or percentiles (its fit), as the roads' fitUnits. */
+   * screen widths, to the busiest this much (as the roads' fitLens). */
+  fitLens: PerMetric<FerryMetric>;
+  /** What sailings a day auto-fits in, screen widths (its fitLens) or percentiles (its fit), as the roads' fitUnits. */
   fitUnits: FitUnits<FerryMetric>;
 }
 const FERRY_COLOURS: FerryColour[] = ['service', 'freq', 'season', 'operator', 'single'];
@@ -404,15 +418,20 @@ export interface AppState {
   /** Follow the view (true) or keep `range` fixed. */
   auto: boolean;
   range: [number, number];
-  /** Auto-fit percentiles of the roads in view (low, high), 0–100 (not the scenic metrics: fitLen). */
+  /** Auto-fit percentiles of the roads in view (low, high), 0–100: the display type's, or for a
+   * scenic metric its own (the other scenic metrics' in scenicFits). */
   fit: [number, number];
-  /** The scenic metrics' auto-fit: the best this much road in view, in screen widths (road as long
-   * as the view is wide at its centre): the scale's low end at the first, full colour from the
-   * second. A fixed amount of road, not a share of it, so a view of mostly bland streets doesn't
-   * pull the scale down to them (as the landmarks' top ranks). */
-  fitLen: [number, number];
-  /** What each scenic metric (mode) auto-fits in: screen widths (fitLen, the default) or
-   * percentiles of road length in view (fit, the display type's, as the other display types). */
+  /** The other scenic metrics' percentiles (the active one's is `fit`; a metric not in it has the
+   * defaults'). */
+  scenicFits: PerMetric<Mode>;
+  /** Each scenic metric's screen-widths auto-fit: the best this much road in view, in screen widths
+   * (road as long as the view is wide at its centre): the scale's low end at the first, full colour
+   * from the second (a metric not in it: FIT_LEN_DEFAULT). A fixed amount of road, not a share of
+   * it, so a view of mostly bland streets doesn't pull the scale down to them (as the landmarks'
+   * top ranks). */
+  fitLens: PerMetric<Mode>;
+  /** What each scenic metric (mode) auto-fits in: screen widths (its fitLens, the default) or
+   * percentiles of road length in view (its own: fit while shown, else scenicFits). */
   fitUnits: FitUnits<Mode>;
   /** Histogram-equalised colours. */
   equalize: boolean;
@@ -527,7 +546,8 @@ export const defaults: AppState = {
   auto: true,
   range: [0, 100],
   fit: [80, 99.9],
-  fitLen: [15, 1],
+  scenicFits: {},
+  fitLens: {},
   fitUnits: {},
   equalize: false,
   weights: [...DEFAULT_WEIGHTS],
@@ -541,7 +561,7 @@ export const defaults: AppState = {
     on: true, groups: new Array(NRAIL).fill(true), colour: 'metric', metric: 'rscore', looks: {},
     ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
     weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnits: {},
+    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLens: {}, fitUnits: {},
     ties: 2.5, stopSize: 1, stopContrast: STOP_CONTRAST, stopOutline: '#0b0e13', stopOutlineOpacity: 1,
   },
   trees: {
@@ -557,7 +577,7 @@ export const defaults: AppState = {
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnits: {} },
+    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLens: {}, fitUnits: {} },
   surface: { paved: true, unpaved: true },
   toll: { free: true, toll: true },
   lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
@@ -629,7 +649,7 @@ export class Store {
    * Switch colour mode. The current display type's settings are put aside and the new one's
    * restored (defaults the first time), so each of Elevation, Grade, Relief and Scenic keeps its
    * own palette, fades, fit, equalisation and highlight; ranges and threshold values, which are
-   * in the metric's units, are kept per mode.
+   * in the metric's units, are kept per mode, and so are the scenic metrics' fits (scenicFits).
    */
   setMode(mode: Mode) {
     const s = this.s;
@@ -639,9 +659,13 @@ export class Store {
     const d = modeDef(mode);
     const lk = looks[modeGroup(mode)] ?? (modeGroup(mode) === modeGroup(defaults.mode) ? lookOf(defaults) : FRESH_LOOK);
     const sc = scales[mode] ?? { auto: d.auto, range: [...d.range] as [number, number], thrValue: d.thrDefault };
+    // A scenic metric's percentiles are its own: the one left keeps its, the one picked brings its.
+    let scenicFits = isScenic(s.mode) ? withPair(s.scenicFits, s.mode, s.fit, defaults.fit) : s.scenicFits;
+    const fit = isScenic(mode) ? pairOf(scenicFits, mode, defaults.fit) : [...lk.fit] as Pair;
+    if (isScenic(mode)) scenicFits = withPair(scenicFits, mode, defaults.fit, defaults.fit);
     this.set({
-      mode, looks, scales,
-      palette: lk.palette, fit: [...lk.fit], equalize: lk.equalize, lowFade: lk.lowFade, lowSpan: lk.lowSpan,
+      mode, looks, scales, scenicFits,
+      palette: lk.palette, fit, equalize: lk.equalize, lowFade: lk.lowFade, lowSpan: lk.lowSpan,
       auto: sc.auto, range: [...sc.range], threshold: { on: lk.thrOn, dir: lk.thrDir, value: sc.thrValue },
     });
   }
@@ -745,8 +769,18 @@ export function toHash(s: AppState, buildings: boolean): string {
   const d = modeDef(s.mode);
   if (s.auto !== d.auto || (!s.auto && (s.range[0] !== d.range[0] || s.range[1] !== d.range[1])))
     p.set('r', s.auto ? 'auto' : `${+s.range[0].toFixed(2)},${+s.range[1].toFixed(2)}`);
-  if (s.fit[0] !== defaults.fit[0] || s.fit[1] !== defaults.fit[1]) p.set('fp', `${s.fit[0]},${s.fit[1]}`);
-  if (s.fitLen[0] !== defaults.fitLen[0] || s.fitLen[1] !== defaults.fitLen[1]) p.set('fl', `${s.fitLen[0]},${s.fitLen[1]}`);
+  // Percentiles: the display type's (fp); the scenic metrics' each their own, fp their base
+  // (while a scenic metric is shown) and fpm those with another.
+  const scen = isScenic(s.mode);
+  const fitAt = (k: Mode) => (k === s.mode ? s.fit : pairOf(s.scenicFits, k, defaults.fit));
+  const fpm = pairsField(fitAt, ROAD_FIT_KEYS, defaults.fit, scen ? undefined : defaults.fit);
+  const fpBase = scen ? fpm.base : s.fit;
+  if (!samePair(fpBase, defaults.fit)) p.set('fp', `${fpBase[0]},${fpBase[1]}`);
+  if (fpm.rest) p.set('fpm', fpm.rest);
+  // Screen widths: the scenic metrics' base (fl) and those with another (flm).
+  const flm = pairsField((k) => pairOf(s.fitLens, k, FIT_LEN_DEFAULT), ROAD_FIT_KEYS, FIT_LEN_DEFAULT);
+  if (!samePair(flm.base, FIT_LEN_DEFAULT)) p.set('fl', `${flm.base[0]},${flm.base[1]}`);
+  if (flm.rest) p.set('flm', flm.rest);
   const fu = unitsField(s.fitUnits, ROAD_FIT_KEYS);
   if (fu) p.set('fu', fu);
   if (s.equalize) p.set('eq', '1');
@@ -765,14 +799,14 @@ export function toHash(s: AppState, buildings: boolean): string {
     +r.range[0].toFixed(2), +r.range[1].toFixed(2), '', '', '', r.single.replace('#', ''), +r.lowFade.toFixed(2),
     r.freqOn ? 1 : 0, +r.freqMin.toFixed(2), +r.freqMax.toFixed(2), r.freqUnknown ? 1 : 0,
     r.fit[0], r.fit[1], r.equalize ? 1 : 0, +r.lowSpan.toFixed(2), r.threshold.on ? 1 : 0, THR_CODE[r.threshold.dir], +r.threshold.value.toFixed(3),
-    +r.opacity.toFixed(2), r.fitLen[0], r.fitLen[1], ...unitsTail(r.fitUnits, RAIL_FIT_KEYS),
+    +r.opacity.toFixed(2), ...fitFields(r.fitLens, r.fitUnits, RAIL_FIT_KEYS),
   ].join(',');
   const rsd = [
     dr.on ? 1 : 0, dr.groups.map((g) => (g ? 1 : 0)).join(''), dr.colour, dr.metric, dr.palette, dr.auto ? 1 : 0,
     dr.range[0], dr.range[1], '', '', '', dr.single.replace('#', ''), dr.lowFade,
     dr.freqOn ? 1 : 0, dr.freqMin, dr.freqMax, dr.freqUnknown ? 1 : 0,
     dr.fit[0], dr.fit[1], dr.equalize ? 1 : 0, dr.lowSpan, dr.threshold.on ? 1 : 0, THR_CODE[dr.threshold.dir], dr.threshold.value,
-    dr.opacity, dr.fitLen[0], dr.fitLen[1], ...unitsTail(dr.fitUnits, RAIL_FIT_KEYS),
+    dr.opacity, ...fitFields(dr.fitLens, dr.fitUnits, RAIL_FIT_KEYS),
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
   // Ties, then the stop dots' size, contrast, outline colour and opacity.
@@ -784,7 +818,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
-    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), f.fitLen[0], f.fitLen[1], ...unitsTail(f.fitUnits, FERRY_FIT_KEYS)].join(',');
+    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), ...fitFields(f.fitLens, f.fitUnits, FERRY_FIT_KEYS)].join(',');
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
@@ -874,10 +908,20 @@ export function fromHash(hash: string, buildings = true): AppState {
       s.range = [r[0], r[1]];
     }
   }
-  const fp = p.get('fp')?.split(',').map(Number);
-  if (fp && fp.length === 2 && fp.every(Number.isFinite) && fp[0] >= 0 && fp[1] <= 100 && fp[1] > fp[0]) s.fit = [fp[0], fp[1]];
-  const fl = p.get('fl')?.split(',').map(Number);
-  if (fl && fl.length === 2 && fl.every(Number.isFinite) && fl[1] > 0 && fl[0] > fl[1]) s.fitLen = [fl[0], fl[1]];
+  // Percentiles (toHash): fp the display type's, or while a scenic metric is shown the base of
+  // every scenic metric fpm doesn't list (older links: their one set for every scenic metric).
+  const fpv = p.get('fp')?.split(',').map(Number);
+  const fp: Pair | null = fpv && fpv.length === 2 && validFit([fpv[0], fpv[1]]) ? [fpv[0], fpv[1]] : null;
+  const fpm = pairsOfField(p.get('fpm'), ROAD_FIT_KEYS, validFit);
+  const fitBase: Pair = isScenic(s.mode) && fp ? fp : defaults.fit;
+  if (fp && !isScenic(s.mode)) s.fit = fp;
+  if (isScenic(s.mode)) s.fit = pairOf(fpm, s.mode, fitBase);
+  s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, defaults.fit);
+  // Screen widths: fl every scenic metric's but those flm lists (older links: every one's).
+  const flv = p.get('fl')?.split(',');
+  const flOwn = pairsOfField(p.get('flm'), ROAD_FIT_KEYS, validFitLen);
+  const flBase = flv && flv.length === 2 ? fitLenOf(flv[0], flv[1], FIT_LEN_DEFAULT) : FIT_LEN_DEFAULT;
+  s.fitLens = perMetric(ROAD_FIT_KEYS, (k) => flOwn[k] ?? flBase, FIT_LEN_DEFAULT);
   // ('p': every scenic metric, as links from before the unit per metric have it.)
   s.fitUnits = unitsOfField(p.get('fu'), ROAD_FIT_KEYS);
   s.equalize = p.get('eq') === '1';
@@ -917,7 +961,7 @@ export function fromHash(hash: string, buildings = true): AppState {
       freqUnknown: rs[16] === undefined ? r.freqUnknown : rs[16] === '1',
       ...(rs.length >= 24 ? parseScaleTail(rs.slice(17), r) : {}),
       opacity: rs[24] ? Math.min(1, Math.max(0.1, num(rs[24], r.opacity))) : r.opacity,
-      fitLen: fitLenOf(rs[25], rs[26], r.fitLen),
+      fitLens: fitLensOfFields(rs[25], rs[26], rs[28], RAIL_FIT_KEYS),
       fitUnits: unitsOfField(rs[27], RAIL_FIT_KEYS),
     };
     // Older links: the rail card's line weight.
@@ -958,7 +1002,7 @@ export function fromHash(hash: string, buildings = true): AppState {
       lowFade: fy[19] !== undefined && Number.isFinite(Number(fy[19])) && fy[19] !== '' ? Math.min(1, Math.max(0, Number(fy[19]))) : f.lowFade,
       ...(fy.length >= 24 ? parseScaleTail([fy[16], fy[17], fy[18], fy[20], fy[21], fy[22], fy[23]], f) : {
         fit: f.fit, equalize: f.equalize, lowSpan: f.lowSpan, threshold: f.threshold, palette: fy[3] || f.palette }),
-      fitLen: fitLenOf(fy[24], fy[25], f.fitLen),
+      fitLens: fitLensOfFields(fy[24], fy[25], fy[27], FERRY_FIT_KEYS),
       fitUnits: unitsOfField(fy[26], FERRY_FIT_KEYS),
     };
   }
@@ -1174,6 +1218,10 @@ export function fromSaved(o: unknown): AppState {
   s.fitUnits = unitsOfSaved(src, ROAD_FIT_KEYS);
   s.rail.fitUnits = unitsOfSaved(src.rail as Record<string, unknown> | undefined, RAIL_FIT_KEYS);
   s.ferry.fitUnits = unitsOfSaved(src.ferry as Record<string, unknown> | undefined, FERRY_FIT_KEYS);
+  // Each metric's screen-widths fit; saved before it was per metric, the layer's (fitLen).
+  s.fitLens = fitLensOfSaved(src, ROAD_FIT_KEYS);
+  s.rail.fitLens = fitLensOfSaved(src.rail as Record<string, unknown> | undefined, RAIL_FIT_KEYS);
+  s.ferry.fitLens = fitLensOfSaved(src.ferry as Record<string, unknown> | undefined, FERRY_FIT_KEYS);
   const oldT = rest.terrain as Record<string, unknown> | undefined;
   if (oldT && 'tintPalette' in oldT && !('tintScales' in oldT)) s.terrain = migrateTint(s.terrain, oldT);
   if (!rest.lineWeights) {
@@ -1203,6 +1251,18 @@ export function fromSaved(o: unknown): AppState {
     if (v && typeof v.auto === 'boolean' && pair(v.range) && num(v.thrValue)) s.scales[m.key] = { auto: v.auto, range: v.range, thrValue: v.thrValue! };
   }
   if (!MODES.some((m) => m.key === s.mode)) s.mode = defaults.mode;
+  // The other scenic metrics' percentiles (merge() only keeps keys the defaults have); saved
+  // before they were per metric, the scenic metrics' one set (fit while one was shown, else
+  // their display type's look) for each.
+  const others = ROAD_FIT_KEYS.filter((k) => k !== s.mode);
+  const sf = src.scenicFits;
+  if (sf && typeof sf === 'object' && !Array.isArray(sf)) {
+    const m = sf as Record<string, unknown>;
+    s.scenicFits = perMetric(others, (k) => (pair(m[k]) && validFit(m[k] as Pair) ? (m[k] as Pair) : defaults.fit), defaults.fit);
+  } else {
+    const shared = isScenic(s.mode) ? s.fit : s.looks.scenic?.fit ?? defaults.fit;
+    s.scenicFits = perMetric(others, () => shared, defaults.fit);
+  }
   if (!MAP_SCHEMES.some((m) => m.key === s.mapScheme)) s.mapScheme = defaults.mapScheme;
   const lt = s.landmarks.top as unknown;
   s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : defaults.landmarks.top;

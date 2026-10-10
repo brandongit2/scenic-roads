@@ -55,6 +55,85 @@ export function unitsOfSaved<K extends string>(o: { fitUnits?: unknown; fitUnit?
   return o?.fitUnit === 'pct' ? allPct(keys) : {};
 }
 
+/** A pair of numbers kept per metric: a screen-widths fit (the best so many to the best so few)
+ * or a percentile fit (low, high). */
+export type Pair = [number, number];
+/** Pairs by metric key; a metric not in it has the layer's default. */
+export type PerMetric<K extends string = string> = Partial<Record<K, Pair>>;
+
+/** A screen-widths fit's default: the best 15 screen widths of line in view to the best 1. */
+export const FIT_LEN_DEFAULT: Pair = [15, 1];
+/** A valid screen-widths fit: more, then fewer, both above 0. */
+export const validFitLen = (p: Pair) => p.every(Number.isFinite) && p[1] > 0 && p[0] > p[1];
+/** Valid percentiles: 0 ≤ low < high ≤ 100. */
+export const validFit = (p: Pair) => p.every(Number.isFinite) && p[0] >= 0 && p[1] <= 100 && p[1] > p[0];
+
+export const samePair = (a: Pair, b: Pair) => a[0] === b[0] && a[1] === b[1];
+
+/** A metric's pair (a copy), `d` if it has none. */
+export const pairOf = <K extends string>(r: PerMetric<K>, key: K, d: Pair): Pair => {
+  const v = r[key];
+  return v ? [v[0], v[1]] : [d[0], d[1]];
+};
+
+/** The pairs with one metric's set (the default is not kept). */
+export function withPair<K extends string>(r: PerMetric<K>, key: K, v: Pair, d: Pair): PerMetric<K> {
+  const out = { ...r };
+  if (samePair(v, d)) delete out[key];
+  else out[key] = [v[0], v[1]];
+  return out;
+}
+
+/** Each of `keys`' pair from `at`, kept where it isn't `d`. */
+export function perMetric<K extends string>(keys: readonly K[], at: (k: K) => Pair, d: Pair): PerMetric<K> {
+  const out: PerMetric<K> = {};
+  for (const k of keys) {
+    const v = at(k);
+    if (!samePair(v, d)) out[k] = [v[0], v[1]];
+  }
+  return out;
+}
+
+/** A layer's per-metric pairs in a link: a base (the most common pair, `d` when it ties for
+ * that, else the first metric's; or `base` if given), which the link's layer-wide field carries
+ * as before, and the metrics with another as `key_lo_hi` joined by '/' ("score_10_1/view_20_2"). */
+export function pairsField<K extends string>(at: (k: K) => Pair, keys: readonly K[], d: Pair, base?: Pair): { base: Pair; rest: string } {
+  let b = base;
+  if (!b) {
+    const n = new Map<string, number>();
+    for (const k of keys) n.set(at(k).join('_'), (n.get(at(k).join('_')) ?? 0) + 1);
+    const top = Math.max(0, ...n.values());
+    b = (n.get(d.join('_')) ?? 0) === top ? d : keys.map(at).find((v) => n.get(v.join('_')) === top) ?? d;
+  }
+  const bb = b;
+  const rest = keys.filter((k) => !samePair(at(k), bb)).map((k) => `${k}_${+at(k)[0]}_${+at(k)[1]}`).join('/');
+  return { base: [bb[0], bb[1]], rest };
+}
+
+/** The pairs a link's field lists (pairsField's `rest`): metrics among `keys`, pairs that are `ok`. */
+export function pairsOfField<K extends string>(v: string | null | undefined, keys: readonly K[], ok: (p: Pair) => boolean): PerMetric<K> {
+  const out: PerMetric<K> = {};
+  for (const e of v ? v.split('/') : []) {
+    const [k, a, b] = e.split('_');
+    const p: Pair = [Number(a), Number(b)];
+    if (a !== undefined && b !== undefined && a !== '' && b !== '' && keys.includes(k as K) && ok(p)) out[k as K] = p;
+  }
+  return out;
+}
+
+/** A layer's screen-widths fits from saved settings: its `fitLens` (keys among `keys`, valid
+ * pairs), else the per-layer `fitLen` they replaced, for each of its metrics. */
+export function fitLensOfSaved<K extends string>(o: { fitLens?: unknown; fitLen?: unknown } | null | undefined, keys: readonly K[]): PerMetric<K> {
+  const pair = (v: unknown): v is Pair => Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'number') && validFitLen(v as Pair);
+  const r = o?.fitLens;
+  if (r && typeof r === 'object' && !Array.isArray(r)) {
+    const m = r as Record<string, unknown>;
+    return perMetric(keys, (k) => (pair(m[k]) ? (m[k] as Pair) : FIT_LEN_DEFAULT), FIT_LEN_DEFAULT);
+  }
+  const old = o?.fitLen;
+  return pair(old) ? perMetric(keys, () => old, FIT_LEN_DEFAULT) : {};
+}
+
 /** A distribution of line length over a metric (roads/stats.ts Dist). */
 export interface LengthDist {
   /** Total length (any unit). */

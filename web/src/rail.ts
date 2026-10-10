@@ -23,7 +23,7 @@ export interface RailMetricDef {
   domain: [number, number];
   step: number;
   diverging?: boolean;
-  /** Auto-fit by the best screen widths of rail in view (RailState.fitLen), as the roads' scenic
+  /** Auto-fit by the best screen widths of rail in view (RailState.fitLens), as the roads' scenic
    * metrics are; else (elevation, gradient, ledge ↔ gorge) by percentiles, as the roads'
    * elevation and grade. */
   byLen?: boolean;

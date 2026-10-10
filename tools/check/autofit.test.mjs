@@ -1,10 +1,14 @@
 // node --test tools/check/autofit.test.mjs: auto-fitting colour ranges by screen widths or by
 // percentiles of line length (web/src/autofit.ts, which Node loads with its types stripped), and
-// each metric's unit through a link and saved settings, old ones too (web/src/state.ts, loaded through Vite for its imports).
+// each metric's unit and numbers through a link and saved settings, old ones too (web/src/state.ts, loaded
+// through Vite for its imports).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { allPct, bestOfPct, fitByPct, fitByWidths, screenWidthKm, setBestPct, spread, unitOf, unitsField, unitsOfField, withUnit } from '../../web/src/autofit.ts';
+import {
+  allPct, bestOfPct, fitByPct, fitByWidths, pairOf, pairsField, pairsOfField, screenWidthKm, setBestPct, spread, unitOf, unitsField, unitsOfField, validFit, validFitLen,
+  withPair, withUnit,
+} from '../../web/src/autofit.ts';
 import { createServer } from '../../web/node_modules/vite/dist/node/index.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `${a} ≉ ${b}`);
@@ -203,23 +207,162 @@ test('per-layer links (fu=p, a last p in rs and fy) open with every metric of th
   assert.match(again, /fy=[^&]*,15,1,p(&|$)/);
 });
 
-test('older links, without the unit, read as screen widths', () => {
+/** Every one of `keys` at `v`. */
+const allOf = (keys, v) => Object.fromEntries(keys.map((k) => [k, [...v]]));
+
+test('older links, without the unit, read as screen widths, their one screen-widths fit every metric\'s', () => {
   const s = structuredClone(st.defaults);
-  s.rail.fitLen = [20, 2];
-  s.ferry.fitLen = [12, 1];
-  s.fitLen = [10, 1];
+  s.rail.fitLens = allOf(RAIL, [20, 2]);
+  s.ferry.fitLens = { freq: [12, 1] };
+  s.fitLens = allOf(ROAD, [10, 1]);
   const h = st.toHash(s, true);
-  // Screen widths add nothing to a link: the rail and ferry fields end at fitLen, as before the unit.
+  // One fit for every metric, all in screen widths: the link as before either was per metric.
+  assert.match(h, /(^|[#&])fl=10,1(&|$)/);
+  assert.ok(!/flm=|fpm=/.test(h), h);
   assert.match(h, /rs=[^&]*,20,2(&|$)/);
   assert.match(h, /fy=[^&]*,12,1(&|$)/);
   const b = st.fromHash(h);
   assert.deepEqual(pcts(b), [[], [], []]);
-  assert.deepEqual(b.rail.fitLen, [20, 2]);
-  assert.deepEqual(b.ferry.fitLen, [12, 1]);
-  assert.deepEqual(b.fitLen, [10, 1]);
+  assert.deepEqual(b.rail.fitLens, allOf(RAIL, [20, 2]));
+  assert.deepEqual(b.ferry.fitLens, { freq: [12, 1] });
+  assert.deepEqual(b.fitLens, allOf(ROAD, [10, 1]));
   // Shorter, older rail and ferry fields too.
   const o = st.fromHash(h.replace(/(rs=[^&]*),20,2/, '$1').replace(/(fy=[^&]*),12,1/, '$1'));
   assert.deepEqual(pcts(o), [[], [], []]);
+  assert.deepEqual([o.rail.fitLens, o.ferry.fitLens], [{}, {}]);
+});
+
+test('per-metric pairs in a link: the most common as the base, the others listed', () => {
+  const keys = ['a', 'b', 'c', 'd'], d = [15, 1];
+  const at = (r) => (k) => r[k] ?? d;
+  assert.deepEqual(pairsField(at({}), keys, d), { base: [15, 1], rest: '' });
+  assert.deepEqual(pairsField(at({ b: [10, 1] }), keys, d), { base: [15, 1], rest: 'b_10_1' });
+  assert.deepEqual(pairsField(at({ a: [10, 1], b: [10, 1], c: [10, 1] }), keys, d), { base: [10, 1], rest: 'd_15_1' });
+  assert.deepEqual(pairsField(at({ a: [10, 1], b: [10, 1] }), keys, d).base, [15, 1]); // a tie with the default: the default
+  assert.deepEqual(pairsField(at({ a: [10, 1], b: [10, 1], c: [8, 0.5], d: [8, 0.5] }), keys, d), { base: [10, 1], rest: 'c_8_0.5/d_8_0.5' });
+  assert.deepEqual(pairsField(at({ a: [10, 1] }), keys, d, [10, 1]), { base: [10, 1], rest: 'b_15_1/c_15_1/d_15_1' }); // a base given
+  assert.deepEqual(pairsOfField('b_10_1/c_8_0.5', keys, validFitLen), { b: [10, 1], c: [8, 0.5] });
+  // Unknown metrics, bad and malformed pairs dropped.
+  assert.deepEqual(pairsOfField('zz_10_1/b_1_10/c_8/d__1/a_x_1', keys, validFitLen), {});
+  assert.deepEqual(pairsOfField('a_80_99.9/b_99_80', keys, validFit), { a: [80, 99.9] });
+  assert.deepEqual(pairsOfField(null, keys, validFit), {});
+  // Any mix round-trips (base and the listed ones).
+  const vals = [[15, 1], [10, 1], [20, 2.5]];
+  for (let m = 0; m < 3 ** keys.length; m++) {
+    const r = Object.fromEntries(keys.map((k, i) => [k, vals[Math.floor(m / 3 ** i) % 3]]));
+    const f = pairsField(at(r), keys, d);
+    const own = pairsOfField(f.rest, keys, validFitLen);
+    assert.deepEqual(Object.fromEntries(keys.map((k) => [k, own[k] ?? f.base])), r);
+  }
+  assert.deepEqual(withPair({ a: [10, 1] }, 'a', [15, 1], d), {});
+  assert.deepEqual(withPair({}, 'b', [8, 1], d), { b: [8, 1] });
+  assert.deepEqual(pairOf({ b: [8, 1] }, 'a', d), [15, 1]);
+});
+
+test('two scenic metrics with their own numbers and units through a link, rail and ferries too', () => {
+  const s = structuredClone(st.defaults); // the scenic score shown
+  s.fitLens = { score: [10, 1], drama: [20, 2] };
+  s.fitUnits = { view: 'pct' };
+  s.fit = [75, 99]; // the score's percentiles
+  s.scenicFits = { view: [70, 99.5] };
+  s.rail.fitLens = { rscore: [20, 2], freq: [8, 1] };
+  s.rail.fitUnits = { freq: 'pct' };
+  s.ferry.fitLens = { freq: [12, 1] };
+  const h = st.toHash(s, true);
+  assert.ok(!/(^|[#&])fl=/.test(h), h); // most scenic metrics at the default: no base
+  assert.match(h, /(^|[#&])flm=score_10_1\/drama_20_2(&|$)/);
+  assert.ok(!/(^|[#&])fp=/.test(h), h);
+  assert.match(h, /(^|[#&])fpm=score_75_99\/view_70_99\.5(&|$)/);
+  assert.match(h, /rs=[^&]*,15,1,freq,rscore_20_2\/freq_8_1(&|$)/);
+  assert.match(h, /fy=[^&]*,12,1(&|$)/);
+  const b = st.fromHash(h);
+  assert.deepEqual(b.fitLens, s.fitLens);
+  assert.deepEqual(b.fit, [75, 99]);
+  assert.deepEqual(b.scenicFits, { view: [70, 99.5] });
+  assert.deepEqual(pcts(b), [['view'], ['freq'], []]);
+  assert.deepEqual(b.rail.fitLens, s.rail.fitLens);
+  assert.deepEqual(b.ferry.fitLens, { freq: [12, 1] });
+  assert.equal(st.toHash(b, true), h);
+  // Units without other numbers keep the rail field's shape; numbers without units leave it empty.
+  const t = structuredClone(st.defaults);
+  t.rail.fitLens = { viaduct: [6, 1] };
+  assert.match(st.toHash(t, true), /rs=[^&]*,15,1,,viaduct_6_1(&|$)/);
+  assert.deepEqual(st.fromHash(st.toHash(t, true)).rail.fitLens, { viaduct: [6, 1] });
+  // Another display type shown (elevation): fp is its own, the scenic metrics' all in fpm.
+  const e = new st.Store(structuredClone(s));
+  e.setMode('elev');
+  const he = st.toHash(e.s, true);
+  assert.match(he, /(^|[#&])fpm=score_75_99\/view_70_99\.5(&|$)/);
+  const be = st.fromHash(he);
+  assert.deepEqual(be.scenicFits, { score: [75, 99], view: [70, 99.5] });
+  assert.deepEqual(be.fit, e.s.fit);
+});
+
+test('a scenic metric keeps its own percentiles when another is picked, and gets them back', () => {
+  const store = new st.Store(structuredClone(st.defaults));
+  store.set({ fit: [70, 99] }); // the score's
+  store.setMode('view');
+  assert.deepEqual(store.s.fit, st.defaults.fit); // the views': the default, 20 % … 0.1 %
+  store.set({ fit: [90, 99.5] });
+  store.setMode('elev');
+  assert.deepEqual(store.s.scenicFits, { score: [70, 99], view: [90, 99.5] });
+  store.setMode('score');
+  assert.deepEqual(store.s.fit, [70, 99]);
+  assert.deepEqual(store.s.scenicFits, { view: [90, 99.5] });
+  store.setMode('view');
+  assert.deepEqual(store.s.fit, [90, 99.5]);
+});
+
+test('per-layer links\' numbers (fl, fp, rail\'s and ferries\' fit) open as every metric\'s', () => {
+  // A link the app with the numbers per layer wrote (e6d1a8f's toHash): views shown in %, 10 screen
+  // widths to 1 for roads, rail by frequency at 20 to 2, ferries 12 to 1.
+  const h = '#m=view&fp=85,99&fl=10,1&fu=p&un=11101&rl=0.5,'
+    + '&rs=1,11111,metric,freq,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1,70,99.8,0,0.6,0,a,50,1,20,2'
+    + '&fy=1,1111,freq,oslo,,1,8fc8ff,0.9,0,0,0,1,freq,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,12,1&sqx=waterfall&oc=1';
+  const b = st.fromHash(h);
+  assert.deepEqual(b.fitLens, allOf(ROAD, [10, 1]));
+  assert.deepEqual(b.fit, [85, 99]);
+  assert.deepEqual(b.scenicFits, allOf(ROAD.filter((k) => k !== 'view'), [85, 99]));
+  assert.deepEqual(b.rail.fitLens, allOf(RAIL, [20, 2]));
+  assert.deepEqual(b.ferry.fitLens, { freq: [12, 1] });
+  assert.equal(st.toHash(b, true), h);
+  // Another scenic metric picked: the link's one set.
+  const store = new st.Store(b);
+  store.setMode('drama');
+  assert.deepEqual(store.s.fit, [85, 99]);
+  // Shown with elevation, fp was elevation's: the scenic metrics keep the default.
+  const be = st.fromHash('#m=elev&p=viridis&fp=1,99&fl=10,1&un=11101&rl=0.5,&sqx=waterfall&lf=0.7,0.6&oc=1');
+  assert.deepEqual(be.fit, [1, 99]);
+  assert.deepEqual(be.scenicFits, {});
+  assert.deepEqual(be.fitLens, allOf(ROAD, [10, 1]));
+});
+
+test('saved settings: each metric\'s numbers kept; the per-layer ones saved before apply to every metric', () => {
+  const s = structuredClone(st.defaults);
+  s.fitLens = { score: [10, 1] };
+  s.scenicFits = { view: [70, 99] };
+  s.rail.fitLens = { freq: [8, 1] };
+  s.ferry.fitLens = { freq: [12, 1] };
+  const b = st.fromSaved(JSON.parse(JSON.stringify(s)));
+  assert.deepEqual([b.fitLens, b.scenicFits, b.rail.fitLens, b.ferry.fitLens], [{ score: [10, 1] }, { view: [70, 99] }, { freq: [8, 1] }, { freq: [12, 1] }]);
+  // Saved with the numbers per layer, a scenic metric shown: its fit every scenic metric's.
+  const old = st.fromSaved({ mode: 'view', fit: [85, 99], fitLen: [10, 1], rail: { fitLen: [20, 2] }, ferry: { fitLen: [12, 1] } });
+  assert.deepEqual(old.fit, [85, 99]);
+  assert.deepEqual(old.scenicFits, allOf(ROAD.filter((k) => k !== 'view'), [85, 99]));
+  assert.deepEqual(old.fitLens, allOf(ROAD, [10, 1]));
+  assert.deepEqual(old.rail.fitLens, allOf(RAIL, [20, 2]));
+  assert.deepEqual(old.ferry.fitLens, { freq: [12, 1] });
+  // … another display type shown: the scenic look's.
+  const lk = { palette: 'pubugn', fit: [70, 99], equalize: false, lowFade: 0.8, lowSpan: 0.6, thrOn: false, thrDir: 'above' };
+  const oe = st.fromSaved({ mode: 'elev', fit: [1, 99], looks: { scenic: lk } });
+  assert.deepEqual(oe.scenicFits, allOf(ROAD, [70, 99]));
+  assert.deepEqual(oe.fit, [1, 99]);
+  // The defaults saved before: nothing kept.
+  const od = st.fromSaved({ mode: 'score', fit: [80, 99.9], fitLen: [15, 1] });
+  assert.deepEqual([od.fitLens, od.scenicFits], [{}, {}]);
+  // Bad values dropped.
+  const bad = st.fromSaved({ fitLens: { score: [1, 10], view: [10, 1], elev: [10, 1], zz: [9, 1] }, scenicFits: { view: [99, 80], water: [60, 99] }, rail: { fitLen: 'x' } });
+  assert.deepEqual([bad.fitLens, bad.scenicFits, bad.rail.fitLens], [{ view: [10, 1] }, { water: [60, 99] }, {}]);
 });
 
 test('saved settings: each metric\'s unit kept; the per-layer unit saved before it applies to every metric', () => {

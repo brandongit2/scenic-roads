@@ -4,7 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly.
 import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
-import { fitByPct, fitByWidths, screenWidthKm, spread, unitOf } from './autofit';
+import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
 import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
@@ -389,7 +389,7 @@ async function main() {
       return e ? spread(e.quantile(0), e.quantile(1), 10) : cur;
     }
     if (!s.auto) return s.range;
-    if (modeGroup(s.mode) === 'scenic' && unitOf(s.fitUnits, s.mode) === 'widths') return mdist && mdist.total > 0 && stats && stats.totalKm > 0 ? byLen(mdist, stats.totalKm, s.fitLen, d.step) : cur;
+    if (modeGroup(s.mode) === 'scenic' && unitOf(s.fitUnits, s.mode) === 'widths') return mdist && mdist.total > 0 && stats && stats.totalKm > 0 ? byLen(mdist, stats.totalKm, pairOf(s.fitLens, s.mode, FIT_LEN_DEFAULT), d.step) : cur;
     return mdist && mdist.total > 0 ? fitByPct(mdist, s.fit, d.step) : cur;
   };
   /** The best fitLen[0] screen widths of line in view to the best fitLen[1] (the roads' scenic
@@ -727,7 +727,7 @@ async function main() {
     ferryDist = ferries.metricDist();
     // (its weights are the lines' km in view)
     ferryTarget = !f.auto || !ferryDist || ferryDist.total <= 0 ? f.range
-      : d.byLen && unitOf(f.fitUnits, f.metric) === 'widths' ? byLen(ferryDist, ferryDist.total, f.fitLen, d.step)
+      : d.byLen && unitOf(f.fitUnits, f.metric) === 'widths' ? byLen(ferryDist, ferryDist.total, pairOf(f.fitLens, f.metric, FIT_LEN_DEFAULT), d.step)
       : fitByPct(ferryDist, f.fit, d.step);
     if (!ferryCur || ferryKey !== f.metric) {
       ferryKey = f.metric;
@@ -1181,7 +1181,7 @@ async function main() {
       const rd = railMetricDef(r.metric);
       const tt: [number, number] = !r.auto ? r.range
         : !railDist || railDist.total <= 0 ? railCur
-        : rd.byLen && unitOf(r.fitUnits, r.metric) === 'widths' ? (railStats && railStats.totalKm > 0 ? byLen(railDist, railStats.totalKm, r.fitLen, rd.step) : railCur)
+        : rd.byLen && unitOf(r.fitUnits, r.metric) === 'widths' ? (railStats && railStats.totalKm > 0 ? byLen(railDist, railStats.totalKm, pairOf(r.fitLens, r.metric, FIT_LEN_DEFAULT), rd.step) : railCur)
         : fitByPct(railDist, r.fit, rd.step);
       const nr: [number, number] = [railCur[0] + (tt[0] - railCur[0]) * k, railCur[1] + (tt[1] - railCur[1]) * k];
       if (Math.abs(nr[0] - railCur[0]) + Math.abs(nr[1] - railCur[1]) > rd.step * 0.01) {
