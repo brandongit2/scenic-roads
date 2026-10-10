@@ -941,7 +941,7 @@ export class FieldLayer implements CustomLayerInterface {
     t.nb = NB;
     t.orderKey = '';
     t.gmax = e.reduce((m, x) => Math.max(m, x), -Infinity);
-    t.elevFor = this.elevKey + '|' + this.hk;
+    t.elevFor = this.elevKey + '|' + this.hk + '|' + this.blockCells;
   }
 
   /** The float target the tiles are drawn into, and the copy of the frame under them. */
@@ -1113,7 +1113,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1f(u.u_tmin, this.tmin);
     gl.uniform1i(u.u_elev, 1);
     for (const t of draw) {
-      if (t.elevFor !== this.elevKey + '|' + this.hk) this.elevations(t);
+      if (t.elevFor !== this.elevKey + '|' + this.hk + '|' + this.blockCells) this.elevations(t);
       const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
       gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
       const mc = pd.tileMercatorCoords as ArrayLike<number>;
