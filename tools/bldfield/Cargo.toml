@@ -1,0 +1,12 @@
+[package]
+name = "bldfield"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+debug = false

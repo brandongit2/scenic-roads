@@ -7,7 +7,7 @@ part of the build (§3.2–3.6), the mirror, the iPad's service worker and the c
 layer; the tiles building since. **B3 built** (2026-10-08, not yet published): a tile's z8 areas as
 tasks for pages and helper Macs (§3.6), and on the map the walls on the terrain under each corner,
 the globe's feet without their saw (task #115), fog, bridges after the buildings, the camera above
-roofs, colour by height on the shared scale, the heritage tint (§4). Nothing of B4 built. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
+roofs, colour by height on the shared scale, the heritage tint (§4). Nothing of B4 built; B5, the far buildings (§4.8), designed and prototyped (2026-10-10), not built. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order),
 `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
 on the NAS (§2.6); `dem/bldmeasure.py` measured them (§2.2–2.5); `dem/bldprep.py` and
@@ -41,6 +41,8 @@ its 19.5 (§4.1).
 - z13: buildings 20 m tall or more, or with a footprint of 2,000 m² or more.
 - z12: buildings 40 m tall or more: the skyline.
 - So the layer shows the towers from zoom 12, the large buildings from 13 and every building from 14.
+  Planned (§4.8): every building at every zoom, the ones under a pixel as a field of their summed
+  roofs and walls, and every building as a mesh from zoom 13.
   A tilted view takes coarser tiles toward the horizon (MapLibre's cover), so every building near the
   camera, only the tall ones farther out, and none beyond the z12 tiles.
 - The tiles' sizes (B0, §2.5), against ~300 KB a tile: the thresholds keep z12 and z13 under it (the
@@ -987,6 +989,196 @@ artefacts call for it (B4):
   (four corners, a ridge along the long side), which villages would show;
 - distance-based detail like the roads' (perspective), and the iPad's memory under our control.
 
+### 4.8 Planned: far away, the field (task #102)
+
+**Planned, prototyped (2026-10-10), not built.** The owner's aim: buildings at every zoom, each zoom
+looking practically as the closer ones do, "as though the map were rendered at extremely high
+resolution at full detail and then downsampled to the screen". Today they vanish below zoom 12, and
+between 12 and 14 only the tall and large ones show (§1), where full detail would show a city's grey
+grain of houses. The prototype is `web/src/bldfield.ts` and `web/src/bldcmp.ts` (both behind link
+options, `?bldfield=` and `?bldcmp`), `tools/bldfield/` (the field's builder) and `tools/bldcheck/`
+(the comparison); its numbers are below.
+
+**What full detail shrinks to.** Once a building is under a pixel, what a pixel of the shrunk image
+holds is the share of it under roofs (each lit as a flat roof is), the share of walls the camera sees
+there (lit by their facing, more of them the more the view is tilted or the farther from the view's
+centre) and the ground between: sums over the buildings in the pixel. So three densities a place
+carry everything the far view needs, and being densities, the mean of four of them is the coarser
+one, exactly:
+- `f`, roof coverage: the share of the ground under a footprint that stands on the ground (its
+  exact area, as font renderers rasterize: a shed a tenth of a texel counts a tenth);
+- `w`, wall area per ground area: Σ wall length × wall height ÷ area;
+- `v`, Σ coverage × wall height (metres): `v ÷ f` is the mean roof height (for colour by height and
+  the walls' vertical gradient). A tower's setbacks stack: Σ area × (top − base) over its parts.
+
+**As the roads are.** The roads stay on screen zoomed out the same way (`roads/lod.ts`, `layer.ts`):
+every road is in every tile down to z4, a road under a pixel adds its area (length × width) to it,
+pieces merged into a cell pass their area to the one kept, and the sums are what's drawn, so a view
+is as bright at every level of detail. The water does the same with coverage tiles (task #123,
+`tools/coastcheck`). The field is the buildings' version: their area (and their walls' area) summed
+per texel, every building at every level.
+
+**The bands.** By the zoom of the tiles drawn (with MapLibre's tile size of 256 for the buildings'
+source, so each zoom's tiles one zoom earlier than today):
+
+| Map zoom | Meshes (fill-extrusion) | Field |
+|---|---|---|
+| 13 and up | z14 tiles: every building | none |
+| 12–13 | z13 tiles: 20 m or more, or 2,000 m² or more | level 13: every other building |
+| 11–12 | z12 tiles: 40 m or more | level 12: every other building |
+| under 11 | none | level ⌊zoom⌋ + 1 (down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
+
+- A field level's texel is half a CSS pixel where it's first drawn (one device pixel on a 2× screen,
+  as the roads' finest cells: `LOD_CELL_PX`), a full one where it hands over to the next.
+- The field of a level holds the buildings that level's meshes leave out, so no building is drawn
+  twice nor missed: in a tilted view, where MapLibre takes coarser tiles toward the horizon, each
+  mesh tile gets the field tile of its own zoom over it (the field's layer reads which tiles the
+  meshes' source draws), and past the meshes' least zoom the field alone, by the same distance rule.
+  (The prototype takes its tiles by the map's zoom alone: right for the straight-down views below,
+  not yet for tilted ones above zoom 11.)
+- Every building from zoom 13, not 14: at 13 a house is 2–3 device pixels, and the field's texels
+  there would blur them (the prototype's first try took level ⌊zoom⌋ at every zoom: σ1 differences
+  of 3.3 L* against full detail at z11, where level ⌊zoom⌋ + 1 has 1.6). It costs the meshes four
+  times the buildings at 13 that a view had at 14 (measured below).
+- No pop at the hand-overs: two levels' aggregates are equal by construction (only the texels'
+  sharpness changes), and a building passing from the field to a mesh does so where it is one or two
+  device pixels, its texel's light becoming its pixel's.
+
+**The look.** Drawn as fill-extrusion draws a building, so field and meshes are one material:
+- each pixel: the roofs cover `f`; the walls facing the camera add `w × g`, where `g` is the
+  projected area of a square metre of wall per square metre of ground, from the screen-space
+  Jacobian of the ground and the vertical at the point, averaged over eight wall directions, those
+  facing the camera (so it follows the tilt, the bearing, the globe's curve and the perspective at the
+  view's edges); buildings overlapping at random, the share covered is 1 − (1 − f) e^(−wg);
+- roofs and walls lit with fill-extrusion's own formula: its light (on the globe too), ambient and
+  directional terms, the walls' vertical gradient over the mean roof height, the opacity setting;
+- mixed with what's under it **in linear light**, each building pixel blended over the ground as
+  MapLibre blends a mesh (stored values, at the opacity): the frame drawn so far is copied to a
+  texture once a frame and the field replaces its pixels. So the far view equals full detail shrunk
+  in linear light, task #123's definition, and the aliased meshes the eye averages at zoom 13 continue
+  into the field without a step. Blended as stored values instead, the field was 6–9 L* darker than
+  that in Tokyo at z11.
+- on the terrain: a 32 × 32 grid a tile, its heights sampled from MapLibre's drawn surface, tested
+  against the terrain's depth with the roads' tolerance (1.5 % of the distance), before the meshes.
+- later, with the field built: colour by height (from `v ÷ f`), the fog the meshes take (flat map,
+  from 60°), the source colouring (a fourth channel, or plain far away: the owner's choice). No hover
+  on the field.
+
+**The field's tiles.** 512 × 512 texels, levels 4–13 (level 13's texel is 2.4 m at the equator):
+- built in `bldtiles T`, per z8 area, from the buildings as filled (§2.3), with the meshes: each
+  building rasterized into the area's level-13 grid a z10 block at a time (three sets: what z13's
+  meshes leave out, what z12's leave out, the rest; prefix sums of exact signed areas, walls
+  deposited along each edge texel by texel), levels 13–8 by means of four. A pure function of the
+  same inputs, so the same key (`BUILDINGS_V` raised), the same task for pages (`bldtile`), the same
+  bytes in WebAssembly; accumulated in fixed point (the prototype's f32 sums are deterministic only
+  in a fixed order).
+- a z6 tile's level-8 sums kept exactly (`work/bldfield-mid/6-x-y`, as terrain's and the trees'
+  mids), and a new step `bldfield-lo` per z3 tile assembles levels 7–4 from its z6 tiles' mids (as
+  `terrain-lo` and `trees-lo`; seconds), its key the mids' content names.
+- served as `layers/buildings-field/hi/6-x-y` (levels 8–13) and `lo/3-x-y` (4–7), encoding
+  `field3-webp`: three 8-bit channels, `f` linear, `w` as √(w ÷ 16), the mean roof height as
+  √(h ÷ 400 m), lossless WebP; decoded to linear values in a worker before the GPU's mipmaps (the
+  square roots would bias them). The lo packs (a few MB for the coverage) can go in the World
+  download, so the far buildings show offline.
+- the prototype's builder (`tools/bldfield`, Rust, from a pack's z14 tiles rather than the work
+  files) made Kantō's 6/56/25 (30.3 M buildings) in 22 s on the build Mac's 14 threads (13 GB at
+  most; ~0.6 GB a z10 block in flight), Annecy's 6/33/22 (4.5 M) in 9–21 s.
+
+**Sizes, measured on the prototype's fields** (every tile encoded as above):
+
+| | Annecy and the Alps, 6/33/22 | Kantō, 6/56/25 |
+|---|---|---|
+| buildings; the meshes' pack | 4.5 M; 79 MB | 30.3 M; 413 MB |
+| level 13 (tiles; MB; largest tile) | 4,507; 65.7 MB; 264 KB | 6,137; 289.6 MB; 485 KB |
+| level 12 | 1,166; 27.5 MB; 238 KB | 1,700; 111.8 MB; 551 KB |
+| level 11 | 307; 10.6 MB | 465; 38.0 MB |
+| levels 10–4 | 6.2 MB | 18.1 MB |
+| all levels | 110 MB (139 % of the meshes) | 458 MB (111 %) |
+| without level 13 (texels twice as big at 12–13) | 44 MB (56 %) | 168 MB (41 %) |
+| level 13 with `f` alone (its walls and heights from level 12) | 79 MB (100 %) | 328 MB (79 %) |
+
+So for the coverage, after the meshes' 4.6–6.9 GB (§2.5): ~5–8 GB more as designed, ~2–3.5 GB
+without level 13. A view's field: 1–9 tiles, 0.1–2 MB to download (Tokyo's dense ones the most);
+the largest tiles (550 KB) are over the 300 KB the meshes keep to. Before building, the owner
+chooses among the three rows (and the 8-bit coding can be tuned: the prototype stores 16 bits).
+
+**Frame time and memory.** On the build Mac (M4, headless Chrome on Metal, the 500 × 360 CSS view at
+2×, the comparison mode's few layers): the field's draw took 0.15–0.3 ms of GPU a frame (its timer
+query, which on Metal also counts work queued before it, so an upper bound; a few rounds up to
+1.5 ms), drawing 1–9 tiles; whole frames, each waited for, 1–2.5 ms with it and 0.9–2.4 without,
+within the runs' noise but for +0.3–0.5 ms in Tokyo at z9–11. Its textures (RGBA16F with mipmaps,
+2.8 MB a tile) 3–25 MB a view; RGB10_A2 or R11F_G11F_B10F would halve that. The meshes from zoom 13:
+Tokyo at z13 drew 0.80 M vertices (12 MB of buffers) in this view, at z12 (the z13 tiles) 1.0 M; the
+app's 1200 × 736 views hold ~5× that, Tokyo near B1's 2.9 M at z13.9 (§4.6). Not yet measured: the
+owner's Mac in a window at 120 Hz, and the iPad (task #114's budget).
+
+**Checked against full detail** (the prototype in `?bldcmp`: nothing but the buildings, the 3D
+terrain, land, water and the hill-shading; buildings #b9c4d4 for contrast; 500 × 360 CSS px at 2×, on
+the globe, straight down, in a headless Chrome on the build Mac's GPU, `tools/bldcheck`). The
+reference is the same page and camera drawing the z14 meshes (every building) at 4 × the pixel
+ratio, their tiles 2^k × smaller so z14's are taken at zoom 14 − k, in strips of whole z14 columns
+where a view holds more than ~120 tiles (each strip's buildings added to the ground), shrunk in
+linear light; where that's more tiles than is practical (zoom 7 and out), the prototype as at three
+zooms closer, shrunk the same way (what the closer zooms show). Lightness differences (L*) after
+blurring the light by a Gaussian of σ 1 device px (what a 2× screen shows the eye) and of 8 (a
+district's tone):
+
+| View | vs | prototype: mean L* (vs reference) | σ1 \|ΔL*\| (p95) | σ8 \|ΔL*\| | today: σ8 \|ΔL*\| |
+|---|---|---|---|---|---|
+| Tokyo z15 | full | 20.2 (20.2) | 0.1 (0.2) | 0.0 | 0.0 |
+| Tokyo z13 | full | 41.0 (41.0) | 0.8 (3.3) | 0.1 | 4.9 |
+| Tokyo z12 | full | 43.0 (43.1) | 1.9 (6.0) | 0.4 | 28.9 |
+| Tokyo z11 | full | 42.5 (43.0) | 1.6 (4.7) | 0.7 | 37.1 |
+| Tokyo z9 | full | 33.5 (33.4) | 1.3 (3.7) | 0.5 | 26.3 |
+| Tokyo z7 | full | 16.0 (15.1) | 1.4 (6.1) | 0.9 | 7.5 |
+| Tokyo z5, z3 | z+3 | 8.1 (8.1), 6.4 (6.4) | 0.0 | 0.0 | 1.3, 0.1 |
+| Annecy z13 | full | 33.2 (33.2) | 0.4 (2.5) | 0.1 | 15.1 |
+| Annecy z12 | full | 27.5 (27.4) | 1.5 (6.5) | 0.3 | 18.5 |
+| Annecy z11 | full | 19.6 (19.3) | 0.8 (3.5) | 0.3 | 11.2 |
+| Annecy z9 | full | 9.5 (8.7) | 0.8 (4.1) | 0.7 | 3.1 |
+| Annecy z7 | full | 6.5 (5.7) | 0.7 (4.4) | 0.8 | 0.6 |
+| Chamonix z13 | full | 38.0 (38.0) | 0.2 (1.0) | 0.0 | 23.6 |
+| Chamonix z12 | full | 17.3 (17.2) | 1.0 (6.1) | 0.2 | 8.5 |
+| Chamonix z11 | full | 9.2 (9.0) | 0.3 (1.9) | 0.2 | 2.6 |
+| Chamonix z9 | full | 7.4 (6.7) | 0.5 (2.8) | 0.5 | 0.9 |
+| Chamonix z7 | full | 6.7 (5.9) | 0.7 (4.5) | 0.8 | 0.6 |
+| Annecy, Chamonix z5, z3 | z+3 | 4.7–5.5 (the same) | 0.0 | 0.0 | 0.0–0.3 |
+| Tokyo z13, tilted 60° | full | 35.7 (35.7) | 0.8 (3.6) | 0.2 | 3.6 |
+
+So within about 1 L* in a district's tone from z13 out to z7 (the whole map spans ~45 L* here), and
+1–2 L* at the device pixel, the field's softness; today's map loses every building's tone below
+z12 (up to 37 L* in Tokyo). The z5 and z3 rows say only that the levels agree with each other (the
+field shrunk from three zooms closer). Not checked: Annecy's and Chamonix's z15 (the harness left
+the camera on the 3× terrain; meshes alone there, as in Tokyo's z15), and the tilted views but one:
+with the meshes' tiles forced to z14 to the horizon the reference didn't hold (tiles missing, the
+camera moved), so the tilted rows of the contact sheets are the prototype beside today's map only;
+there the walls' share (1 − e^(−wg) at 60°) brightens the field a lot, which a working tilted
+reference has to confirm.
+
+Contact sheets per place (reference, prototype, today's map, difference) are in the task's report.
+
+**Known, from the prototype:**
+- Texture: the field is a little softer than full detail at the device pixel (its texels are bilinear
+  where full detail's streets are crisp): the σ1 differences above. Halving the texels again would
+  quadruple the tiles.
+- The z12–13 meshes drawn one or two device pixels wide alias (MapLibre has no MSAA): towers as
+  bright specks where full detail shows them soft. A higher bar for those tiles (a footprint of two
+  device pixels) would hand more to the field.
+- Walls in dense high-rise districts: random overlap is a model; the residual is ±1–2 L* in a
+  district's tone, darker in Marunouchi's towers and lighter in the low-rise wards at z11.
+- Far out (z7–9) the field is 0.7–0.9 L* lighter than full detail in all three places; the
+  reference there samples each building at an eighth of its size (noisy, unbiased in theory), and
+  overlapping footprints count twice in `f` until a texel is full: which of the two, the build's
+  check is to tell.
+- The prototype's own shortcuts: tiles by the map's zoom (not matched to the meshes' tiles), no
+  tile cache bound, plain colour only, 16-bit tiles, CPU terrain sampling on the idle.
+
+**Open for the owner:** the hand-over to full meshes at zoom 13 (crisp houses, 4× the buildings at 13)
+or 14 (cheaper, softer); the texel at one device pixel or two (4× less data, visibly softer at 2×);
+skyline meshes below zoom 11 (towers standing up in tilted far views) or the field alone; mixing in
+linear light (task #123's definition; a frame copy) or as stored values (darker than full detail
+shrunk).
+
 ## 5. Phases, risks, questions, decisions
 
 ### 5.1 Phases
@@ -998,6 +1190,7 @@ artefacts call for it (B4):
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
+| **B5 Far away** (planned; prototyped 2026-10-10) | The field (§4.8): built in `bldtiles` with the meshes, its mids and a `bldfield-lo` step per z3 tile, the catalog's layer, mirror and offline; the custom layer matched to the meshes' tiles, colour by height, fog; the buildings' source at tile size 256 (every building from zoom 13); the comparison (`tools/bldcheck`) over a set of views, tilted ones too; measured on the iPad. | 1–2 weeks |
 
 B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the build
 Mac's pace in B1 over the 380 tiles' ~440 M rows): `bldprep` 2.2–4.7 s a million rows (Kantō's

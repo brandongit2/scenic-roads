@@ -66,6 +66,8 @@ import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 import { EVAL, evalState, installEval } from './evalmode';
+import { CMP, cmpState, installCmp } from './bldcmp';
+import { FieldLayer } from './bldfield';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -103,7 +105,7 @@ async function main() {
   const saved = fromSaved(prefs.load('state', null));
   const linked = location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
-  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : linked);
+  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
   history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
   boot.at(1);
   maplibregl.setWorkerUrl(mlWorkerUrl);
@@ -116,7 +118,7 @@ async function main() {
   maplibregl.setMaxParallelImageRequests(32);
   const v = store.s.view;
   // (Eval mode: the map fills the window, the panels under it.)
-  if (EVAL) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
+  if (EVAL || CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
   // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
   setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   const map = new maplibregl.Map({
@@ -139,8 +141,13 @@ async function main() {
     centerClampedToGround: false,
     // (Eval mode reads the canvas back, at its own pixel ratio, its reference finer: evalmode.ts.)
     ...(EVAL ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(EVAL.dpr ? { pixelRatio: EVAL.dpr } : {}) } : {}),
+    ...(CMP ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(CMP.dpr ? { pixelRatio: CMP.dpr } : {}) } : {}),
   });
   if (EVAL) installEval(map);
+  // PROTOTYPE (task #102): the far buildings' field (bldfield.ts) and its comparison mode (bldcmp.ts).
+  const fieldUrl = new URLSearchParams(location.search).get('bldfield');
+  const field = fieldUrl ? new FieldLayer(fieldUrl) : null;
+  if (CMP) installCmp(map, field);
   // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
   if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
@@ -1885,6 +1892,12 @@ async function main() {
     bldLook = bldLookNow();
     const b = bldPreview ? { ...s.buildings, height: { ...s.buildings.height, palette: bldPreview } } : s.buildings;
     applyBuildings(map, b, s.terrain.on ? s.terrain.exaggeration : 0, s.terrain.light, bldLook);
+    if (field) {
+      field.opacity = b.opacity;
+      field.hk = b.scale > 0 ? b.scale : Math.max(1, s.terrain.on ? s.terrain.exaggeration : 0);
+      field.on = b.on && !b.flat && s.terrain.on;
+      if (CMP) field.colour = [1, 3, 5].map((i) => parseInt(CMP!.colour.slice(i, i + 2), 16) / 255) as [number, number, number];
+    }
     layers.buildings.updateHeights(bldDist, bldLook);
   };
   onHeights(map, (d) => {
@@ -2118,6 +2131,7 @@ async function main() {
     if (meta.layers?.buildings) {
       addBuildings(map, 'water-name-line', 'boundary-county');
       heritageChanged(map, store.s.overlays.heritage);
+      if (field) map.addLayer(field, 'buildings');
     }
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).

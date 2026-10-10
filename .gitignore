@@ -11,6 +11,10 @@
 !/tools/taskboard/
 !/tools/coastcheck/
 !/tools/names/
+!/tools/bldfield/
+/tools/bldfield/target/
+/tools/bldfield/Cargo.lock
+!/tools/bldcheck/
 node_modules/
 /web/dist/
 /web/dist-new/

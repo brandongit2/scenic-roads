@@ -1,0 +1,194 @@
+[
+{
+"id": "tokyo-z15",
+"z": 15,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z13",
+"z": 13,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z12",
+"z": 12,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z11",
+"z": 11,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z9",
+"z": 9,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z7",
+"z": 7,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z5",
+"z": 5,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "tokyo-z3",
+"z": 3,
+"lat": 35.68,
+"lon": 139.75,
+"maxRefK": 7,
+"elev": 88
+},
+{
+"id": "annecy-z15",
+"z": 15,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z13",
+"z": 13,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z12",
+"z": 12,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z11",
+"z": 11,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z9",
+"z": 9,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z7",
+"z": 7,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z5",
+"z": 5,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "annecy-z3",
+"z": 3,
+"lat": 45.899,
+"lon": 6.129,
+"maxRefK": 7,
+"elev": 1354
+},
+{
+"id": "chamonix-z15",
+"z": 15,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z13",
+"z": 13,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z12",
+"z": 12,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z11",
+"z": 11,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z9",
+"z": 9,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z7",
+"z": 7,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z5",
+"z": 5,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+},
+{
+"id": "chamonix-z3",
+"z": 3,
+"lat": 45.9237,
+"lon": 6.8694,
+"maxRefK": 7,
+"elev": 3124
+}
+]
