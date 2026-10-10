@@ -3,10 +3,10 @@
 A standalone web app: the Scenic Roads task board (the Claude artifact), with its data in SQLite.
 
 ```
-node server.mjs [--port 8090] [--host 127.0.0.1] [--db taskboard.db]
+node server.mjs [--port 8077] [--host 127.0.0.1] [--db taskboard.db]
 ```
 
-Open http://127.0.0.1:8090. Needs Node 22.5+ (`node:sqlite`); no packages to install.
+Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages to install.
 
 - `public/index.html` is the artifact's page, unchanged. `public/shim.js` gives it the document-database API it was written for (`window.claude.use("db" | "user" | "assets")`) over `server.mjs`'s HTTP API; every open tab hears of a change through an event stream (`/api/stream`) and reads again.
 - `taskboard.db` holds the data: `items` (folders and tasks: a column per field, `extra` JSON for any other), `events` (each item's history), `meta` (`status`, the status bar's text; `counter`, the next task number), `blobs` (attached photos, served at `/_blob/<id>`). It is the source of truth: back it up with `sqlite3 taskboard.db ".backup copy.db"`.

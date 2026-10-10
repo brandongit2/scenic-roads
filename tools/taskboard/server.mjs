@@ -1,7 +1,7 @@
 // The Scenic Roads task board: a standalone web app. One Node process (no dependencies; Node 22.5+
 // for node:sqlite) serves the page in public/ and keeps its data in a SQLite file.
 //
-//   node server.mjs [--port 8090] [--db taskboard.db]
+//   node server.mjs [--port 8077] [--db taskboard.db]
 //
 // The page is the Claude artifact's, unchanged; public/shim.js gives it the document-database API it
 // was written against (collection/doc/get/set/update/delete/onSnapshot/acquire, and photo uploads)
@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i > 0 ? process.argv[i + 1] : d; };
-const PORT = Number(arg("port", process.env.PORT || 8090));
+const PORT = Number(arg("port", process.env.PORT || 8077));
 const HOST = arg("host", process.env.HOST || "127.0.0.1");
 const DB_PATH = path.resolve(arg("db", process.env.TASKBOARD_DB || path.join(here, "taskboard.db")));
 
