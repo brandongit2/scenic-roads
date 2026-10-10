@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T00:59:35.636Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:44.172Z",
+  "finished": "2026-10-06T02:03:00Z",
+  "kind": "task",
+  "note": "Add ability to edit items I've added, so long as they haven't been begun yet",
+  "num": 72,
+  "order": 8,
+  "parent": "g8",
+  "reply": "Done: \"Edit\" beside each of your tasks I haven't begun (what, details, priority, photos)",
+  "stage": "done",
+  "started": "2026-10-06T01:52:00Z",
+  "text": "Backlog new-task improvements, item 3",
+  "where": "Subagent"
+}

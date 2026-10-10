@@ -1,0 +1,6 @@
+{
+  "item": "s4",
+  "kind": "note",
+  "t": "2026-10-06T17:12:00Z",
+  "text": "Built (2 commits; 483 tests pass; byte-identical rebuilds). Being rebased onto main (s5, P8 landed meanwhile) before an Opus review"
+}

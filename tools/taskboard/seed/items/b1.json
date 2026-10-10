@@ -1,0 +1,9 @@
+{
+  "kind": "task",
+  "num": 1,
+  "order": 1,
+  "parent": "g6",
+  "stage": "done",
+  "text": "Plan written by an agent (docs/buildings3d.md)",
+  "where": "Subagent"
+}

@@ -1,0 +1,10 @@
+{
+  "finished": "2026-10-05T22:59:52Z",
+  "kind": "task",
+  "num": 27,
+  "order": 4,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P2 Away mode: more memory for short jobs while you're away",
+  "where": "Subagent"
+}

@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-08T09:00:00Z",
+  "kind": "task",
+  "note": "Your ask (8 Oct): expand the layers' coverage to global, except layers that only show specific points. An agent inventories each layer's global source, size and access (accounts and robots-blocked downloads come to you), moves them to tiled pyramids loaded by view, and verifies outside the three regions. Plan with totals before big downloads. Brief: scratchpad/labworld/BRIEF.md. Starts once #118's revisions land; runs beside #119 on its own branch.",
+  "num": 120,
+  "order": 14,
+  "parent": "lab",
+  "priority": 25,
+  "reply": "Done 9 Oct ~03:00; your look next on http://127.0.0.1:18091. Every grid and field layer is worldwide (37 GB of tiled archives on the NAS, loaded by view): Köppen; 9 monthly normals (CHELSA); snow days, snow water, freeze–thaw, growing days; lightning; sea temperature; light pollution; population (7 epochs); built-up age; soil type, pH, clay, carbon; wetlands; land cover (z11); flood frequency and 100-year depth (z11); rivers; cyclone tracks (1842–2025); earthquakes; ghost railways. Geology and faults now read Macrostrat's tiles (online). Checked against the old regional grids (normals within 0.06–0.14 °C, Köppen 98–99 % equal, population within 0.3 %) and by screenshots worldwide (29 in <G>/shots/labworld/).\n\nStill per region: phenology, leaf type and fall colour (need a NASA Earthdata login; #86 lists it); road metrics and trails (too costly worldwide); the point layers.\n\nWorth your look: normals over Patagonia and Japan (Fuji at z11; normals are z7, overzoomed); cyclone tracks start on one season (the range shows 1842–2025); population's faint coastal halo; no wind over Antarctica (CHELSA has none); land cover and floods are z11 now (were z13/z12 in the regions).",
+  "slot": null,
+  "stage": "waiting",
+  "started": "2026-10-08T10:10:00Z",
+  "text": "Generalized lab: every grid and field layer worldwide (point layers stay per region)",
+  "where": "You"
+}

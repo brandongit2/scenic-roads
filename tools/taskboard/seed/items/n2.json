@@ -1,0 +1,12 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:05:17.650Z",
+  "finished": "2026-10-05T23:11:56Z",
+  "kind": "task",
+  "num": 16,
+  "order": 19,
+  "parent": "g3",
+  "stage": "done",
+  "text": "Nit: slope's uploads show progress; its test covers re-runs",
+  "where": "Subagent"
+}

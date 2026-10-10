@@ -1,0 +1,11 @@
+{
+  "added": "2026-10-06T20:10:00Z",
+  "kind": "task",
+  "note": "Found by the generalized lab's Uganda build: data.bris.ac.uk's robots.txt asks for 30 s between requests; the pipeline's FABDEM fetch doesn't wait, and a new area's first unit sent ~70 requests in 14 minutes. Today's regions read FABDEM from the NAS's store, so it only bites in new areas. The lab's fix (lab/global bef8e0b: a per-host gap, SCENIC_FETCH_GAP, and one request per tile, in fetch.rs and dem/fabdem.rs) can be ported; better, a robots-aware fetch for every host the pipeline calls",
+  "num": 105,
+  "order": 60,
+  "parent": "g2",
+  "stage": "",
+  "text": "The FABDEM download honours its server's Crawl-delay (30 s)",
+  "where": "Subagent"
+}

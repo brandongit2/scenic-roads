@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T02:10:00Z",
+  "finished": "2026-10-09T03:30:00Z",
+  "kind": "task",
+  "note": "For #124 (filling Canada's missing lakes). ftp.maps.canada.ca's robots.txt disallows /pub for scripts, which is where the data lives, so per your rule it comes to you.\n\nPage: https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/canvec/shp/Hydro/ (or via open.canada.ca: \"Lakes, Rivers and Glaciers in Canada – CanVec Series – Hydrographic Features\", Shapefile).\n\nFiles: the 1:50K Hydro shapefile packages, one per province or territory, named like canvec_50K_<PR>_Hydro_shp.zip. Not the FGDB ones.\n- First, for the pilot on your view: QC.\n- Then: NT, SK, YT, MB, NU, AB, ON, BC, NL, NB.\nSizes are unknown (the directory couldn't be listed); probably several GB for the large ones.\n\nSave to: /Volumes/personal/projects/scenic-roads/sources/canvec/50k/ (zipped is fine). Tell me when they're there.\n\nWhy so many: the survey found 3,519 of the 15,375 map sheets in our Canadian regions missing their small lakes in OSM (~2.84 M km²): NWT 986, Saskatchewan 478, Yukon 442, Manitoba 413, Nunavut 377, Québec 371, Alberta 230, Ontario 168, BC 42, NL 10, NB 2. Map: scratchpad/lakes/survey/gaps.png.\n\nLicence: Open Government Licence – Canada; credit \"Lakes in parts of Canada: Natural Resources Canada, CanVec. Contains information licensed under the Open Government Licence – Canada.\"",
+  "num": 128,
+  "order": 12,
+  "parent": "f-water",
+  "reply": "All 13 zips are in, and all check out (QC's full integrity test passed). #124's fill is built from them.",
+  "stage": "done",
+  "text": "Download by hand: Canada's CanVec lakes for #124 (the site's robots.txt forbids scripts)",
+  "where": "You"
+}

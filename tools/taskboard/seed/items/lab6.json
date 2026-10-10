@@ -1,0 +1,12 @@
+{
+  "added": "2026-10-06T14:46:00Z",
+  "discuss": true,
+  "kind": "task",
+  "note": "From the Massachusetts lab: \"What's it like here in October?\". It uses PRISM's 800 m 1991–2020 normals (US only) with a month slider: highs, lows, rain, dew point and sunshine, plus frost dates and snowfall.\n\nOutside the US there are worldwide normals at ~1 km (WorldClim, CHELSA). The generalized lab (#100, #120) has 9 normals live worldwide now, and its short list for the real app puts \"monthly climate along roads and trails\" first.\n\nLicences: PRISM asks for a credit line; WorldClim's and CHELSA's terms still to check for the real app.",
+  "num": 92,
+  "order": 6,
+  "parent": "lab",
+  "stage": "",
+  "text": "From the lab: \"What's it like here in October?\": monthly climate normals as band packs with a month slider (PRISM in the US, WorldClim or CHELSA elsewhere)",
+  "where": "Subagent"
+}

@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "They already work the way every input will: the app's to-do lists ask, you drop answers in. This writes their shapes down formally and puts them through the shared checking gate (check.py's rules become the checks), so a bad drop pauses with a banner instead of going in.",
+  "num": 137,
+  "order": 5,
+  "parent": "f-inputs",
+  "priority": 33,
+  "slot": null,
+  "stage": "",
+  "text": "Translations and descriptions on the gate",
+  "where": "Subagent"
+}

@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T15:40:00Z",
+  "finished": "2026-10-08T03:05:00Z",
+  "kind": "task",
+  "note": "Your verdict on the Massachusetts lab: much of it is hyperspecific to Massachusetts; keep only what generalizes (\"Is data for this available for a large swath of the world?\"). Also explicitly in scope (your additions): trails, the experiment's original purpose (the network, route relations, trail metrics such as a scenic score, climbs, difficulty, shade, climate by month, solitude, and different visualizations of them); and playing with ways of displaying data, including novel or creative ones, not only finding new layers",
+  "num": 100,
+  "order": 11,
+  "parent": "lab",
+  "priority": 14,
+  "reply": "Done: http://127.0.0.1:18091 (scenic-lab/global/lab.sh start). Uganda's real base is built (its roads with the map's own scores, terrain, slope, trees south of the equator), so all three regions run on the real pipeline. 117 of 151 Massachusetts ideas generalize; a scenic score from worldwide data alone ranks roads like ours (0.72 Massachusetts, 0.81 Catalonia, 0.81 Uganda; 0.73–0.90 with a built-up term). Short list for the real app: monthly climate along roads and trails, sky darkness, peak-colour week, OSM trails with their metrics, land cover and forest change, built-up age with heritage, Here & now. Left (RESUME.md): a few unfinished layers, the Open-Meteo/RainViewer toggles, and remaking Uganda's lab catalog if production clears catalog 14 (from ~20 Oct)",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-06T15:40:00Z",
+  "text": "Generalize the lab: Massachusetts, Catalonia (developed) and Uganda (developing), with only layers whose data covers a large swath of the world, built by one path from the same global sources; a region switcher; the matrix of what generalizes",
+  "where": "Subagent"
+}

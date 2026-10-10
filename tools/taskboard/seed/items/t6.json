@@ -1,0 +1,12 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:04:28.458Z",
+  "finished": "2026-10-05T22:48:52Z",
+  "kind": "task",
+  "num": 59,
+  "order": 6,
+  "parent": "g1",
+  "stage": "done",
+  "text": "View and flags reuse their last results on workers too",
+  "where": "Subagent"
+}

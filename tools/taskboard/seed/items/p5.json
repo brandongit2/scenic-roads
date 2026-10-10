@@ -1,0 +1,14 @@
+{
+  "finished": "2026-10-09T09:46:00Z",
+  "kind": "task",
+  "note": "Unblocked: the build is done. An Opus subagent is designing it with P8's finer unit keys (read-only), with a rule of mine: changing the key scheme mustn't rebuild what wouldn't change, so targets that are current get their new keys recorded instead of rebuilt (otherwise P8 alone re-runs every unit, ~30 h). I review the design, then it's built once the cleanup lands",
+  "num": 32,
+  "order": 9,
+  "parent": "g3",
+  "priority": 7,
+  "reply": "Published 9 Oct 09:46 UTC (20261009-0946-7df702a).\n- Terrain and slope are built as one piece per z6 tile plus an assembly per z3 tile, proved byte-identical to the area runs on four areas (coastal Japan, lakes across borders, Iceland, the Arctic with GLO-30); pieces ran 20–40 % faster than area runs.\n- The switch rebuilds no terrain: 169 slope pieces along area borders and the 18 slope assemblies (~0.6 h), then backfills the pieces' mids in idle time.\n- Not proved: the dense area 3/2/2 (the build Mac never had the ~90 GB free it needed).",
+  "stage": "done",
+  "started": "2026-10-06T08:24:00Z",
+  "text": "P5 Per-z6 terrain, slope and tree cover, with a per-z3 assembly",
+  "where": "Subagent"
+}

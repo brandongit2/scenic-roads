@@ -1,0 +1,6 @@
+{
+  "item": "w2",
+  "kind": "note",
+  "t": "2026-10-06T17:00:00Z",
+  "text": "Self-reported lapse: ~16 HEADs and small range reads to CEDA (GEBCO's grids; robots.txt disallows all) and one window from NOAA's THREDDS (also disallowed) before the robots-first rule; nothing kept, the window deleted and the CRM dropped from the prototype. GEBCO's test windows come from download.gebco.net, which allows it. The Bay of Fundy (NONNA, tide levels, the licence text) is in"
+}

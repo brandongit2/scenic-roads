@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:02:46.254Z",
+  "finished": "2026-10-06T00:50:00Z",
+  "kind": "task",
+  "note": "Heritage done; the build Mac has 64 GB free",
+  "num": 13,
+  "order": 3,
+  "parent": "g2",
+  "stage": "done",
+  "text": "Map tiles waited for disk room until the heritage job ended",
+  "where": "Subagent"
+}

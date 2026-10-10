@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T17:04:00Z",
+  "finished": "2026-10-08T18:05:00Z",
+  "kind": "task",
+  "note": "Your ask (6 Oct): \"Let's make it not auto-copy anything. Copying should be a manual thing, where I have to actually click some download button in the regions list for it to be copied locally.\"\n\nToday each Mac's map server copies the whole catalog (250.7 GB) as room allows, the essentials first (7.8 GB: 158 worldwide files, 1.2 GB; every layer's zoomed-out root and lo packs, 6.5 GB; landmark points and area details, 0.1 GB; small islands and lakes add ~0.2 GB), then kept regions, then the rest by most recent use, keeping a reserve free (50 GB here, 150 GB on the build Mac). Settings → Regions' Keep already copies a region first and never lets it go.\n\nThe basemap (one 28.5 GB file, zooms 0–14 worldwide, today on neither Mac) by zoom: 0–8 0.2 GB, 0–9 0.7, 0–10 1.7, 0–11 3.8, 0–12 7.6, 0–13 15.4, all 28.5. Likely shape: a small “world, zoomed out” download (e.g. zooms 0–10) plus each region's detail with its own button.\n\nTo settle when it starts: whether the essentials become a download too (without them the map can't draw anything offline); the basemap's cut-off zoom; a remove button and what happens when the disk runs short; and the build Mac, whose pack and lo jobs read base packs from its copies",
+  "num": 104,
+  "order": 6,
+  "parent": "g7",
+  "priority": 18,
+  "reply": "Published (20261008-1802-1fa03d8). Nothing is copied by itself any more. On this Mac the switch deleted 874 files (7.7 GB) and copied nothing. Your next step: Settings → Regions → \"World, zoomed out\" → Download (the essentials plus the basemap's zooms 0–10), then Download on any region you want offline. A region brings the World with it; a download that won't fit says so; Remove asks first. While a build runs, copies go at 20 MB/s, so with the terrain rebuild running the World takes several minutes. Until then the map needs the NAS; the panel and the menu bar say so.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T19:00:00Z",
+  "text": "Map files copied to a Mac only when you ask: a download button per region in the regions list; nothing copied automatically",
+  "where": "Subagent"
+}

@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "The shared machinery every input uses:\n- the agent sees a change in any drop box and checks it (its shape, then the input's own checks);\n- an error or a warning pauses taking it in, while the last good version stays in use, so a bad drop never breaks the map;\n- a warning you agree with can be accepted (a button on the build page's banner, and a scenic command);\n- the menu bar icon shows a warning symbol; the build page shows a banner per input with what's wrong;\n- credits and licences come from the inputs' own description files into the catalog's credits.\n\nTried first on a test input; each input then moves onto it in its own task.",
+  "num": 134,
+  "order": 2,
+  "parent": "f-inputs",
+  "priority": 30,
+  "slot": null,
+  "stage": "",
+  "text": "Drop boxes and the checking gate: every change checked before it goes in, a warning on the menu bar and the build page, the last good version kept",
+  "where": "Subagent"
+}

@@ -1,0 +1,6 @@
+{
+  "item": "lab11",
+  "kind": "note",
+  "t": "2026-10-06T17:10:00Z",
+  "text": "Audit done (write-ups: scenic-lab/global/research/audit/a1.md, a2.md). One lapse, self-reported: an auditor sent five read-only requests to endpoints whose robots.txt disallowed them (no data kept); robots.txt is now read first, in a separate step, everywhere"
+}

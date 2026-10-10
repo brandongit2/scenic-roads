@@ -1,0 +1,12 @@
+{
+  "added": "2026-10-06T14:46:00Z",
+  "discuss": true,
+  "kind": "task",
+  "note": "From the Massachusetts lab. Heritage byways scored low on scenery but topped an \"old New England\" metric, made from every building's year built in the state's assessor parcels. So the scenic score has no history component, and roads valued for their history rank low.\n\nWorldwide the sources vary:\n- building ages only in places (assessor data); built-up epochs worldwide but coarse (GHSL);\n- historic inventories, country by country;\n- OSM's historic tags;\n- roads on old maps.\n\nThe generalized lab's short list has \"built-up age with heritage\".",
+  "num": 94,
+  "order": 8,
+  "parent": "lab",
+  "stage": "",
+  "text": "From the lab: a heritage component in the scenic score (building ages, historic inventories or OSM historic tags, roads on old maps) as a \"Heritage\" preset",
+  "where": "Subagent"
+}

@@ -1,0 +1,6 @@
+{
+  "item": "artefacts",
+  "kind": "progress",
+  "t": "2026-10-08T09:30:00Z",
+  "text": "Causes found (read-only): AWS mixes sources per pixel. Plateaus and Minecraft terraces north of 60°N: a source measured from the ellipsoid (likely ArcticDEM) beside sea-level ones, the step being the geoid height (Kivalliq lakes +47 m, Ellesmere −12 m); some Yukon/St. Elias patches likely ArcticDEM errors over snow or ice. Raised water: water missing from the detailed source, filled from a coarse one. Spikes: a missing-data marker interpolated in at land–sea seams. Uncoloured plateau tops: the map's water fill drawn over raised lakes. No verdicts were saved. Fixes need your calls: a source swap or geoid correction north of 60°N; flattening water with OSM water; two new AWS-only repair rules."
+}

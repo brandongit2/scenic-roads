@@ -1,0 +1,6 @@
+{
+  "item": "s4b",
+  "kind": "note",
+  "t": "2026-10-08T10:55:00Z",
+  "text": "Publishing from the M1 stops at the WebAssembly build: this Mac lacks the toolchain (Homebrew's llvm@22 and wasi-libc, rustup's wasm32-wasip1), and installing it means a download I won't make without you. So the water (and later the pool) are merged on main and publish from the M4 once 1Password is back in the morning. Also fixed on the way: the second-job test no longer depends on the Mac's free memory (afb30aa)."
+}

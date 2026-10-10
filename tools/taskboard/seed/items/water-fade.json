@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-08T20:20:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:46.159Z",
+  "finished": "2026-10-08T22:45:00Z",
+  "kind": "task",
+  "note": "Your report (8 Oct), after #113: it gained many small lakes and islands, but the really small ones still disappear at low zooms, and it isn't consistent across zooms. Northern Quebec at z6.6 shows many more lakes than at z6.4.\n\nWhat I found (not yet measured):\n- The water is drawn as raster tiles holding each pixel's exact share of water (coverage), 512 px a tile shown at 256 CSS px. MapLibre switches tile level at each half zoom.\n  - At z6.4 it draws the z7 tiles enlarged 1.32×: a 50 m lake is a few percent of one pixel there, so it shows as a few percent of tint. That's barely visible on the dark land.\n  - At z6.6 it draws the z8 tiles shrunk 0.76×, without mipmaps. Its linear sampling picks texels where small lakes have higher coverage, so they show stronger, sparkly but visible.\n  - So the jump at each half zoom is partly the filtering, and the fade at z6.4 is the exact-coverage design itself: a true downsample of full detail makes tiny lakes faint.\n- This conflicts with plan.md's principle (\"Zoomed out, nothing small leaves the map: every road… and every island and lake too\"). That text still describes the old dots, so the docs are out of date too.\n\nYour call: what should a lake much smaller than a pixel look like zoomed out?\n- (a) exactly its share of the pixel (true downsampling: faint), made consistent across zooms;\n- (b) always visible: a floor on its contrast, so every lake and island stays a visible speck at every zoom, its size still true where it's bigger than a pixel.\n\nMy recommendation: (b), matching the plan's principle and what you're asking for. Either way, the jump between tile levels gets fixed and measured with #113's harness on dense lake regions at fractional zooms.",
+  "num": 123,
+  "order": 10,
+  "parent": "f-water",
+  "priority": 17,
+  "reply": "Merged (4cb53f6), publishing 8 Oct 18:40; it rebuilds the water layer (~55 min on the build Mac).\n\nMeasured on 70 views (northern Quebec east of the gap, Hudson Bay, Saimaa, Maine, Stockholm; both sides of each half-zoom switch; tilted too), the final screen against full detail rendered and shrunk:\n- visibly different pixels in the map's colours: 3.29 % → 0.15 %;\n- the jump at half zooms: 2.23 % → 0.04 %;\n- Stockholm: 9.1 % → 0.23 %;\n- your views: Hudson Bay z4/z5/z6 2.8–3.7 % → 0.02–0.04 %; northern Quebec z6.4/6.6 was already right in the map's colours.\n\nThe fixes:\n- the shoreline shading measured from every pixel holding any land, at twice the density (the main cause: sub-pixel islands had no glow);\n- water and land mixed as light mixes;\n- the water tiles smoothed before shrinking (mipmaps);\n- the stored images keep \"any land\" however small (water version 2).\n\nPanning is no slower: new ground shaded in 0.1–0.9 s (was 0.4–1.2 s) in a small window. Before/after pairs: scratchpad/waterfade/shots/ (each image: map | full detail shrunk | difference in red).\n\nNoticed, not caused by this: Saimaa's water reaches ~0.1 px past the reference at z9–11 (worth a look), and more OSM water gaps east of the #124 one (#124's survey will count them).",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T20:55:00Z",
+  "text": "Water: small lakes and islands still fade out zoomed out, and differ from one zoom to the next (northern Quebec: z6.4 shows far fewer lakes than z6.6)",
+  "where": "Subagent"
+}

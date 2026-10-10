@@ -1,0 +1,17 @@
+{
+  "added": "2026-10-06T16:15:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-08T07:22:19.193Z",
+  "finished": "2026-10-06T23:00:00Z",
+  "kind": "task",
+  "note": "Found by the lab's Uganda base (its southern half had no canopy). Latent: every region today is north of the equator, but any region reaching south of it would get no trees there. The spelling is per file, not per square: at lon −100 and 0, lat=0.0 holds p95/cover5m while lat=-0.0 holds median. The lab's fix (lab/global af0f3c4: trees/mod.rs chm_urls, trees/squares.rs, scenic-metrics, dem/trees.py, a test) tries our name, then lat=-0.0, and says none only when both 404; port it. Better still: keep Meta's file list so a file that should exist and fails is an error, not silently empty",
+  "num": 101,
+  "order": 50,
+  "parent": "g2",
+  "priority": 12,
+  "reply": "Fixed in the real pipeline with P5's tree cover (e88360c, published in 20261006-2255-95cfbd9): an equator-row canopy square is asked for under Meta's lat=-0.0 name too. No output changed (no road in our regions is near the equator). Six empty “none” files on the NAS from before (Singapore's and French Guiana's units) must go before any region reaches south of the equator: plan §10 gap 5",
+  "slot": 3,
+  "stage": "done",
+  "text": "Tree cover: Meta's canopy squares on the equator row are named lat=-0.0 (25 of 29), so the build reads them as missing",
+  "where": "Subagent"
+}

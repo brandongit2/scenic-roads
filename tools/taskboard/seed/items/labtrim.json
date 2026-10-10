@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-08T06:40:00Z",
+  "finished": "2026-10-08T10:10:00Z",
+  "kind": "task",
+  "note": "Your notes (8 Oct), in full in scratchpad/labtrim/BRIEF.md: about 50 layers and road metrics removed; every colour and range control standardised on production's (the ramp picker, with the lab's ramps added); the fall-leaf layers replaced by one showing the deciduous woods' colour on a day and month (two text inputs, arrow keys step them); cyclone tracks get a Single year / Year range control with All time, and earthquakes since 1900 become the same by-year view; Built-up land by age always shows its full range; Climate zones present-day only; Ghost railways in their own section with each type toggled; the trail layers in one card like Passenger rail; Water keeps only Rivers by flow and Wetlands. Already done: Colour the roads by shows each metric's badges (99e9943).",
+  "num": 118,
+  "order": 12,
+  "parent": "lab",
+  "priority": 16,
+  "reply": "Done, live at http://127.0.0.1:18091. Removed: about 52 layers and 21 road metrics per region, with their data (~5.8 GB) and code deleted. Built: the app's colour-scale controls and ramp picker everywhere; the year control on cyclones and earthquakes by year; ghost railways by kind; one trails card. Fall colour: how far the change has gone (green, yellow, red, grey), any year 2001–2025 or the average, opacity the cover of colour-changing trees (WorldCover tree fraction × MODIS deciduous share). Commits on lab/global up to b451fd5; the deletion list is in scratchpad/labtrim/delete-list.txt.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T06:40:00Z",
+  "text": "Generalized lab: your trim and redesign (removals, production's colour controls and ramp picker, a fall-colour-by-date layer, year controls for cyclones and earthquakes, a trails card, ghost railways by type)",
+  "where": "Subagent"
+}

@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T07:45:00Z",
+  "finished": "2026-10-06T13:53:00Z",
+  "kind": "task",
+  "num": 84,
+  "order": 2.5,
+  "parent": "g5",
+  "reply": "Published (20261006-1353): the items and heritage jobs keep their Wikidata/Wikipedia answers as one archive per pass on the NAS, merged rather than overwritten when another Mac wrote meanwhile, and a Mac that lacks them takes the NAS's copy; the build Mac sends today's answers to the NAS as its new agent starts; the heritage scripts use the app's own Python environment; the 2.2 GB of pageview copies can be freed. Two reviews; two lows to close before another Mac leads (in plan §10)",
+  "stage": "done",
+  "started": "2026-10-06T07:46:00Z",
+  "text": "Nothing only the build Mac has: what the build fetched from the internet (Wikidata and Wikipedia answers, the heritage chain's downloads) kept on the NAS; the Python environments shipped with the app",
+  "where": "Subagent"
+}

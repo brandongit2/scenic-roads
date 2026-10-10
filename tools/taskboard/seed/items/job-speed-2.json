@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-09T15:10:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T18:51:19.304Z",
+  "finished": "2026-10-09T17:40:00Z",
+  "kind": "task",
+  "note": "Follows #131. Its ranked remainder:\n1. Terrain repair's broken_blobs, still ~40 % of a piece's CPU.\n2. Uploads hashed three times over, single-threaded.\n3. The base pack read back over SMB after it's written (double the largest write's traffic): a safer-or-equal check proposed before any change.\n4. Pack jobs opening every unit, not only those near their tiles.\n5. Elevation samples' same-column neighbours still read whole the first time.\n6. elev on the M1 (2.7 h a round: sampling new points over the network).\n7. Peaks decoding each pack tile just to validate it.\n8. The Python steps (bldprep, heritage, water, pass-sets) not yet profiled.\nFirst: re-rank with the live timings (#130, live since 9 Oct 09:46 UTC). Each fix measured before and after, outputs byte-identical. Brief: scratchpad/jobspeed2/BRIEF.md.",
+  "num": 150,
+  "order": 26,
+  "parent": "g2",
+  "priority": 6.5,
+  "reply": "Done, all published (last 17:40 UTC); every output byte-identical, no job key changed. About 3.5–4.5 h saved a full round, mostly slope and units.\n- Units read only the strip of each neighbour's terrain they need: staging 62–83 s → 22–42 s cold, half the disk copies.\n- Slope pieces copy their terrain pack locally in one read: four dense pieces 44–59 s → 26–27 s.\n- Peaks read their z12 tiles in coalesced spans: per tile 4.0–4.4 ms → 1.9–3.3 ms.\n- Each Mac keeps the regions' coverage (read anew when a recipe or outline changes); uploads hashed in one pass; four cache paths through the accessor, now checked on every publish.\nMeasured and left: the upload's read-back (the NAS gives only ~30–35 MB/s both ways at once; checking on the NAS needs unattended SSH, which the agents don't have), bldprep (NAS-bound).\nLeft, small: tree cover's cold canopy reads (read only the windows a piece needs), terrain's broken_blobs (≤ 0.3 h now), pack's open_units (unmeasured), base pack uploads (~2.4 h, NAS-bound).",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-09T15:10:00Z",
+  "text": "Speeding up the job code, round 2: #131's ranked remainder, re-ranked with the live timing records",
+  "where": "Subagent"
+}

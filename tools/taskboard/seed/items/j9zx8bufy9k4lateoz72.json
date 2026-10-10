@@ -1,0 +1,17 @@
+{
+  "added": "2026-10-06T02:15:42.293Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:53:24.259Z",
+  "finished": "2026-10-06T02:33:00Z",
+  "kind": "task",
+  "note": "List _all_ non-finished items in the \"Under way and next\" section, and allow me to drag and drop the items to rearrange them (the unstarted ones, at least). By default, it should slot the priority number in between the item above and below in the new position; to reassign priority to have the same number as another item, I'll simply type the number.",
+  "num": 76,
+  "order": 12,
+  "parent": "g8",
+  "priority": 1,
+  "reply": "Done: \"Under way and next\" lists every unfinished task; drag one by its ⋮⋮ handle (or press the arrow keys on it) and it takes the priority between its new neighbours; tap its number to type one",
+  "stage": "done",
+  "started": "2026-10-06T02:27:00Z",
+  "text": "Backlog artefact: drag-and-drop priority order",
+  "where": "Subagent"
+}

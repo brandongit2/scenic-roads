@@ -1,0 +1,16 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:52:32.476Z",
+  "finished": "2026-10-06T10:00:00Z",
+  "kind": "task",
+  "note": "The plan's 'spatial waves' leftovers went with the rounds change",
+  "num": 51,
+  "order": 11,
+  "parent": "g7",
+  "priority": 5,
+  "reply": "Done: the README says 88 regions (counted from the recipes on the NAS; catalog 14 and the status agree), with the build's workers, rounds and two jobs at once; the pipeline diagram has a \"Who builds it\" figure (the build Mac's agent and coordinator, the M1, a device's page; the pool planned), rounds, the roadside buildings, 3D buildings planned, and today's progress. Republished. A few stale lines it found in plan.md are being fixed",
+  "stage": "done",
+  "started": "2026-10-06T09:10:00Z",
+  "text": "Docs: README's region count; the pipeline diagram (no workers, pool, 88 regions or buildings)",
+  "where": "Subagent"
+}

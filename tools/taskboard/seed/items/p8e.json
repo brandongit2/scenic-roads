@@ -1,0 +1,15 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-08T21:05:00Z",
+  "kind": "task",
+  "note": "From the architect's review (5 Oct, \"smaller ones\").\n\nThe map-tile steps run only on the build Mac: pack (each tile's roads, rails and ways-here data) and lo (the zoomed-out tiles). The coordinator accepts no helper saves for them; its saves() takes terrain, slope, tree cover, units, pois, peaks and the buildings steps. So each round's map tiles wait on one Mac.\n\nThe review also suspected that rounds rebuild tiles along region borders 2–4 times, costing 0.5–1.5 h a rebuild. That's its estimate, not a measurement.\n\nFolded into the pool's phase 4 (#21).",
+  "num": 40,
+  "order": 17,
+  "parent": "g3",
+  "priority": 14,
+  "reply": "Folded into #21 (pool phase 4) on 8 Oct, with its details there; built as part of it.",
+  "slot": null,
+  "stage": "",
+  "text": "P8 Helpers share the map tiles",
+  "where": "Subagent"
+}

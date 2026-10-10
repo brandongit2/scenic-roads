@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "- One declaration per feed (its URL, licence and credit, operator and country, what it replaces); the Mobility Database's catalogue a declared catalogue. The app fetches and refreshes them itself.\n- railfeeds.py's hand lists (extra operators, keyed feeds, replacements, country fixes) and rail.rs's own-code table become declaration fields.\n- Ferries' GTFS feeds go the same way, counted by the same code as rail (gtfs.py's counting into the app).\n- Proved: trains and sailings a day unchanged, or explained. Then the hard-coded lists deleted.",
+  "num": 140,
+  "order": 8,
+  "parent": "f-inputs",
+  "priority": 36,
+  "slot": null,
+  "stage": "",
+  "text": "Timetables, 1: GTFS feeds as source declarations, the hand-picked lists out of the code",
+  "where": "Subagent"
+}

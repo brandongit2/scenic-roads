@@ -1,0 +1,9 @@
+{
+  "kind": "task",
+  "num": 24,
+  "order": 2,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P2 Interruptions aren't counted as failures",
+  "where": "Subagent"
+}

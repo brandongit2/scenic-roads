@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "The design to build against, for your review before any code (docs/inputs.md):\n- the three kinds of input: request–fulfil (the app's to-do lists), declare, and source declarations (where to fetch from, in a standard format);\n- the drop boxes' layout on the NAS;\n- per input: its shape (exact fields, types, an example), its checks (errors and warnings), how ingesting and rebuilding follow, and how today's data moves into the shape;\n- the inventory: every place the app's code names a specific source (URLs, hand lists, a function per register, per-dataset code, credits), each marked as becoming a declaration field, moving out to a producer, or staying as generic code.\n\nThe decisions from our discussion (9 Oct) are the requirements: regions as files with GeoJSON for custom shapes; one timetable input worldwide (declared GTFS feeds, plus static GTFS you compile by hand, no expiry, frequencies.txt allowed); heritage as one GeoJSON per register (any geometry) plus a description file, located before it's dropped, matching by rule in the build and your same/not-same pairs as an input; elevation as a description per dataset (GeoTIFF files or URLs, or a tile pyramid in a declared encoding; ground or surface; height reference; licence), any resolution, ranked and blended; languages by territory as a declare input.",
+  "num": 133,
+  "order": 1,
+  "parent": "f-inputs",
+  "priority": 29,
+  "slot": null,
+  "stage": "",
+  "text": "The inputs' spec: each input's kind, drop box, shape and checks, and every hard-coded source listed",
+  "where": "Subagent"
+}

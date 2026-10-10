@@ -1,0 +1,6 @@
+{
+  "item": "s4b",
+  "kind": "progress",
+  "t": "2026-10-08T05:15:00Z",
+  "text": "Harness built and baseline measured: over 127 views, 8.3 % of each view visibly differs from full detail on average; worst at z5–7 (9–11 %) and in tilted views (13.7 % on average, up to 31 % in Finland at z7, pitched 75–80°). At z10–12 the main error left is MapLibre's fill edge pushing shores ~0.3 px outward. Design next."
+}

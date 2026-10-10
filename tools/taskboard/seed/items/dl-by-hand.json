@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-08T03:20:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T09:21:38.776Z",
+  "finished": "2026-10-08T17:31:00Z",
+  "kind": "task",
+  "note": "Your policy (7 Oct): a download blocked to scripts comes to you instead of being dropped. Open each page in your browser, download the files named, and save them in the folder given; tick it off in a note here or tell me. Then I'll take it from there.\n\nNeeded for building depth into the map (#99):\n1. GEBCO_2026 grid + its type identifier grid (which cells were measured). Page: https://www.gebco.net/data-products/gridded-bathymetry-data → GEBCO_2026 Grid, ice surface elevation, netCDF (zip, ~4 GB), and the TID grid, netCDF (zip, ~0.1 GB). Save to /Volumes/personal/projects/scenic-roads/sources/gebco/2026/ (don't unzip). Optional: GEBCO's own subset site download.gebco.net does allow scripts, so I can fetch our regions' boxes instead; say if you'd rather skip this one.\n2. NOAA's Coastal Relief Models (US West Coast, Hawaii, Puerto Rico; 1″, ~11 GB in 9 files). Page: https://www.ngdc.noaa.gov/thredds/catalog/crm/cudem/catalog.html → for each of crm_vol1_2023.nc, vol2, vol3, vol4, vol5 (2023), vol7 and vol8 (2025), vol9 and vol10 (2023), the HTTPServer link. Save to /Volumes/personal/projects/scenic-roads/sources/ncei-crm/.\n3. NOAA's Great Lakes bathymetry (3″ grids of Superior, Michigan, Huron, Erie, Ontario, and St. Clair if offered). Page: https://www.ncei.noaa.gov/products/great-lakes-bathymetry → each lake's grid, GeoTIFF or netCDF. Save to /Volumes/personal/projects/scenic-roads/sources/ncei-greatlakes/.\n\nOptional, for the generalized lab (#100): IBTrACS, the world's storm tracks (https://www.ncei.noaa.gov/products/international-best-track-archive → CSV, ibtracs.ALL.list.v04r01.csv, ~300 MB) to /Volumes/personal/projects/scenic-lab/global/raw/ibtracs/.\n\nLicences: all public domain (NOAA) or public domain with attribution (GEBCO); for your own use as always",
+  "num": 111,
+  "order": 7,
+  "parent": "g7",
+  "reply": "All in and checked (8 Oct). GEBCO_2026.zip and gebco_2026_tid.zip are complete (7.47 GB and 3.73 GB inside). All 9 CRM files are complete: each one's size matches the size its header records, including crm_vol7_2025.nc (765 MB), downloaded again. The five Great Lakes grids are complete; St. Clair wasn't offered. The IBTrACS CSV is complete (729,695 rows, 174 columns). Depth (#99) still waits on your three decisions.",
+  "stage": "done",
+  "text": "Download by hand: files whose sites forbid scripts (robots.txt)",
+  "where": "You"
+}

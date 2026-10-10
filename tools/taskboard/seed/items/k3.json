@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:53.168Z",
+  "finished": "2026-10-06T00:58:00Z",
+  "kind": "task",
+  "num": 10,
+  "order": 3,
+  "parent": "g8",
+  "stage": "done",
+  "started": "2026-10-06T00:56:00Z",
+  "text": "Published again on your personal account",
+  "where": "Subagent"
+}

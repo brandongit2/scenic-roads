@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "The second half of the work you described: for each input, how to produce it (producer scripts, and the briefs and models for agent-made ones), kept beside its drop box so the map's inputs can be remade from scratch. Then the pipeline diagram's curated inputs and the docs updated to the drop boxes.",
+  "num": 147,
+  "order": 15,
+  "parent": "f-inputs",
+  "priority": 43,
+  "slot": null,
+  "stage": "",
+  "text": "How each input is made, written down beside its drop box; the diagram and docs brought up to date",
+  "where": "Subagent"
+}

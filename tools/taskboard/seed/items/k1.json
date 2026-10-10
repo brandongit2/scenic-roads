@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:59.384Z",
+  "finished": "2026-10-05T23:16:00Z",
+  "kind": "task",
+  "num": 8,
+  "order": 1,
+  "parent": "g8",
+  "stage": "done",
+  "started": "2026-10-05T23:12:00Z",
+  "text": "The backlog page",
+  "where": "Subagent"
+}

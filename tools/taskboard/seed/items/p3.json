@@ -1,0 +1,9 @@
+{
+  "kind": "task",
+  "num": 29,
+  "order": 6,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P3 Each target recorded as it's committed; graceful stop",
+  "where": "Subagent"
+}

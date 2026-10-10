@@ -1,0 +1,9 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:04:11.433Z",
+  "kind": "folder",
+  "note": "The pre-publish review's fixes (cd48692): NAS listings fail loudly, the edit hold counts only real edits and caps at an hour, tail memory sized by files and replaced by a measure, usual-memory work first, the forecast's second job, the status bar",
+  "order": 8,
+  "parent": "g1",
+  "text": "Fix what the review found"
+}

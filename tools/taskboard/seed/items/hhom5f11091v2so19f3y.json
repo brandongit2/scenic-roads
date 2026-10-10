@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T02:17:07.509Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:53:31.201Z",
+  "finished": "2026-10-06T02:33:00Z",
+  "kind": "task",
+  "num": 77,
+  "order": 13,
+  "parent": "g8",
+  "priority": 1,
+  "reply": "Done: \"Edit · Delete\" beside every unfinished item, mine too (a group's delete takes what's under it, after you confirm); a task's priority can be changed until it's begun",
+  "stage": "done",
+  "started": "2026-10-06T02:27:00Z",
+  "text": "Backlog artefact: Ability to delete and edit any non-finished item",
+  "where": "Subagent"
+}

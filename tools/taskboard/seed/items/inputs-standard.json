@@ -1,0 +1,17 @@
+{
+  "added": "2026-10-09T07:40:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T08:05:00Z",
+  "kind": "task",
+  "note": "Your decisions (9 Oct):\n- Every input has a standard data shape and a drop-box folder. You produce inputs however you like, to that shape, drop them in, and the agent ingests them; after any building they show on the map.\n- Any change is validated first (its shape, plus checks like thin gaps between regions). An error or warning pauses ingesting it, with a warning on the menu bar icon and a banner on the build page; the last good version stays in use.\n- Three kinds of input: request–fulfil (the app's to-do lists, as translations do today), declare, and source declarations (where to fetch from, in a standard format).\n- Regions: a file per region is the definition; custom shapes in GeoJSON instead of .poly; warn on thin gaps.\n- Timetables, one input worldwide: declared GTFS feeds the app fetches, plus static GTFS files you compile by hand for services with none (the MTR and ferry look-ups become these). OSM decides what's drawn; timetables only add counts.\n- Heritage registers: one GeoJSON file per register (any geometry), plus a small description file each (territory, licence, credit, source, date); places located before they're dropped. Merging across registers: deterministic rules stay a build step; judgment calls become an input (same/not-same pairs).\n- Elevation: a declaration per dataset (where its files are, coverage, resolution, ground or surface, height reference, licence); the app ranks and blends; FABDEM the worldwide fallback.\n- Languages by territory: a declare input, generated once.\n- No source hard-coded in the app: per-source code and hand lists move out to the producing side.\n\nFirst: a design doc (docs/inputs.md) with an inventory of every hard-coded source, each input's shape, drop box and validation, the shared validation gate, and the migration order (each step proving the map unchanged, then deleting the old path), for your review before any code. Brief: scratchpad/inputs/BRIEF.md.",
+  "num": 132,
+  "order": 23,
+  "parent": "g2",
+  "priority": 9,
+  "reply": "Archived at your word (9 Oct): new tasks will be made once the input-standardisation discussion settles.",
+  "slot": null,
+  "stage": "",
+  "started": "2026-10-09T07:45:00Z",
+  "text": "Inputs: one standard shape and drop box per input, validated before ingesting, with the data sources out of the app's code (design doc first)",
+  "where": "Subagent"
+}

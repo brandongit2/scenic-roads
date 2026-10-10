@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "The table of which languages are spoken where (CLDR 47 plus the hand refinements: Quebec, Wales, Catalonia…) moves out of the code into its drop box, with its shape written down and checked; its generator script becomes a producer outside the app. Generated once; rarely touched.",
+  "num": 136,
+  "order": 4,
+  "parent": "f-inputs",
+  "priority": 32,
+  "slot": null,
+  "stage": "",
+  "text": "Languages by territory as a declared input",
+  "where": "Subagent"
+}

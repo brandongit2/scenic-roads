@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:54:45.426Z",
+  "finished": "2026-10-05T22:48:52Z",
+  "kind": "task",
+  "num": 56,
+  "order": 3,
+  "parent": "g1",
+  "stage": "done",
+  "started": "2026-10-05T22:20:00Z",
+  "text": "Every step's reads traced; browser runs checked byte for byte against the Mac's",
+  "where": "Subagent"
+}

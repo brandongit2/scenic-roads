@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-09T04:50:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T18:50:43.124Z",
+  "finished": "2026-10-09T11:07:00Z",
+  "kind": "task",
+  "note": "Your ask (9 Oct): detailed timing logs in every job; the unit job more granular too, if that costs little performance; and no job uniquely more detailed than the others, all at about the same granularity.\n\nWhat's there today:\n- Only the unit job times its phases (\"piece copied from the NAS: 9s\", \"DEM cache slice: 34s\", …), and ~10 % of its time is still untimed.\n- terrain, pack, heritage, pass-sets, water, trees, peaks and the rest log a total and a few counts at most.\n- First look, from the build Mac's last 80 h: terrain 7.3 h, unit 6.3 h, pack 2.7 h, heritage 2.7 h, trees 2.3 h, water 1.8 h, pass-sets 1.6 h, peaks 1.5 h. Inside the unit job (52 runs), about 40 % is moving files to and from the NAS (base pack written 18 %, DEM cache slice 16 %, layers staged 8 %, DEM samples kept 6 %).\n\nFeeds #131 (profiling and speeding up the job code).",
+  "num": 130,
+  "order": 21,
+  "parent": "g2",
+  "priority": 5,
+  "reply": "Done and published 9 Oct 11:07 UTC (20261009-1107-2b5b5aa): every job kind the agent runs is timed by one rule, terrain and slope included.\n- One phase timer for Rust, Python and the pages' tasks: each phase's wall time and CPU, its class (NAS read, NAS write, disk, network, compute, wait), bytes and files; a child program's phases nested under it.\n- The rule: every bulk move and every compute stage its own phase, loops summed, no phase per tile; under 5 % untimed. Measured: 0–4.1 % untimed on every sampled kind; the timer costs under 0.01 % (0.2 % on runs under 0.2 s).\n- Every job's log ends with the same table; each run's record goes to the lead (coord/timings.jsonl), helpers' and pages' too.\n- `scenic timings [kind] [--last N]` shows each kind's phases, totals and shares on either Mac.\n- First findings, now #131's: units spend much of their time staging layers and reading their neighbours' kept elevation samples whole; pack jobs copy base packs back; the catalog stats 8,300 files one by one; peaks reload z12 tiles.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-09T04:55:00Z",
+  "text": "Detailed timing logs in every build job, at about equal granularity across all jobs",
+  "where": "Subagent"
+}

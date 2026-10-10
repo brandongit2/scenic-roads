@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-08T04:50:00Z",
+  "finished": "2026-10-08T17:36:00Z",
+  "kind": "task",
+  "note": "Your report (8 Oct): where the buildings meet the terrain, the edges are super wobbly. The wobbles keep changing while the camera moves, so the edges look jittery in motion.",
+  "num": 115,
+  "order": 9,
+  "parent": "g6",
+  "priority": 14,
+  "reply": "Fixed, holding still and in motion; it ships with B3's publish. Cause: on the globe (below zoom 16.5) MapLibre places the terrain and the buildings using low-precision numbers, so every vertex is off by 1–2 m, a different way each frame. A patch to MapLibre now places both from the same corner points, so they move together. Before/after frames from Honolulu and Barcelona: scratchpad/b3/shots/ (S1.gif, S2.gif). The build fails loudly if a MapLibre update stops the patch applying.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T17:05:00Z",
+  "text": "3D buildings: the edges where buildings meet the terrain wobble, and the wobble changes as the camera moves",
+  "where": "Subagent"
+}

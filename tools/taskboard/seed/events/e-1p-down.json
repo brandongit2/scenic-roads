@@ -1,0 +1,6 @@
+{
+  "item": "s3",
+  "kind": "note",
+  "t": "2026-10-08T09:35:00Z",
+  "text": "1Password's agent stopped answering ~05:20 EDT: no SSH to the M4, no signing, no GitHub push until you're back. Work moved to the M1; commits made unsigned where needed, to re-sign in the morning; publishing runs from the M1 (the M4's agent picks new versions up from the NAS on its own)."
+}

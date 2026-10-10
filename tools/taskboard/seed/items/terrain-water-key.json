@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-08T18:15:00Z",
+  "finished": "2026-10-09T13:49:00Z",
+  "kind": "task",
+  "note": "Since the terrain fix (#47), terrain's key names the whole basemap's content name, because water flattening reads the basemap's water. So every new basemap pass (a new OSM extract) rebuilds all terrain, then slope, peaks and every changed unit: about 15 h, even where no lake or coast moved. Instead, key each z6 terrain piece (after P5 part 2, #32) on a hash of the basemap's water features over that piece only, so a new pass rebuilds only the pieces whose water changed. Cost to weigh: reading the basemap's water tiles at plan time; it could be done once per basemap and cached by content name. Found while planning #32 (8 Oct). Needs #32.",
+  "num": 121,
+  "order": 9.5,
+  "parent": "g3",
+  "priority": 10,
+  "reply": "Published 9 Oct 13:49 UTC (20261009-1349-6b55bdd; the 13:05 attempt failed on an unrelated WebAssembly break, fixed).\n- Each terrain piece is keyed on a digest of the basemap's water it actually reads (its own z9–12 tiles), each area's assembly on its z6–8 water; computed once per basemap by a new terrain-water job and kept on the NAS (work/water-idx/), so either Mac can lead with them.\n- The switch rebuilds nothing (checked against the live records: 0 terrain to make). A new basemap with the same water makes nothing; with 10 pieces' water changed, exactly those 10.\n- #124's lake fill joins the same digest: only the pieces it adds lakes to, and their areas' assemblies, will rebuild.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-09T10:20:00Z",
+  "text": "Terrain: key each piece on the water under it, not the whole basemap",
+  "where": "Subagent"
+}

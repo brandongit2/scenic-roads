@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T00:59:08.151Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:33.967Z",
+  "finished": "2026-10-06T02:03:00Z",
+  "kind": "task",
+  "note": "Make the details text field a multi-line text box",
+  "num": 71,
+  "order": 7,
+  "parent": "g8",
+  "reply": "Done: the details box takes several lines, and they show as typed",
+  "stage": "done",
+  "started": "2026-10-06T01:52:00Z",
+  "text": "Backlog new-task improvements, item 2",
+  "where": "Subagent"
+}

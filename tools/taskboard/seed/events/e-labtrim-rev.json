@@ -1,0 +1,6 @@
+{
+  "item": "labtrim",
+  "kind": "progress",
+  "t": "2026-10-08T08:50:00Z",
+  "text": "Your revisions (8 Oct): fall colour shows how far the change has gone (green, then yellow and red, grey once the leaves are down), nothing where there are no colour-changing trees; a year input (that year's dates, the average still available); opacity follows the cover of colour-changing trees, evergreens as none; and removed layers' data and dead code are deleted, not kept. The agent is on it."
+}

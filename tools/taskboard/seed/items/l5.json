@@ -1,0 +1,14 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:02:52.800Z",
+  "finished": "2026-10-06T01:24:00Z",
+  "kind": "task",
+  "note": "Fixed (effd674): busy renames are tried again, and a save with nothing new writes nothing. Nothing was lost",
+  "num": 14,
+  "order": 4,
+  "parent": "g2",
+  "stage": "done",
+  "started": "2026-10-06T01:10:00Z",
+  "text": "A map-tile job failed at its end: a busy rename on the NAS (20:51)",
+  "where": "Subagent"
+}

@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T01:01:19.537Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:46.026Z",
+  "finished": "2026-10-06T02:03:00Z",
+  "kind": "task",
+  "note": "Visually emphasize the item(s) currently in progress. Also add priority numbers to each unfinished task, indicating the order in which you'll take them on. More than one item may have the same number, indicating that you'll take them on concurrently, or that the order between them doesn't matter.",
+  "num": 73,
+  "order": 9,
+  "parent": "g8",
+  "reply": "Done: what's under way is shaded and marked, listed first under \"Under way and next\" with the next five by priority; every unfinished task shows its number",
+  "stage": "done",
+  "started": "2026-10-06T01:52:00Z",
+  "text": "Backlog new-task improvements, item 4",
+  "where": "Subagent"
+}

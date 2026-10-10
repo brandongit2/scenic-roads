@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-08T04:40:00Z",
+  "kind": "task",
+  "note": "Why: your iPad test (#5, 8 Oct) found the map itself runs at 13–25 fps in tilted city views (median frames 37–78 ms), buildings on or off, with Safari's JavaScript heap peaking at 760–910 MB. Then you saw the same app run worse in Safari than in Chrome on the same MacBook, so the gap may be Safari's rather than the iPad's. Target: 120 fps (8.3 ms a frame) in Safari, on the Mac and the iPad.\n\nFirst, a self-benchmark: `…/#bench` flies a fixed camera path through set views (Shinjuku, Midtown, Châtelet, Barcelona, a mountain road, a wide tilted view), each with layers toggled in turn; it records frame times, the map's own render time on the main thread, tile loads and their timings, and which layers were drawing, and sends the results to the map server on this Mac, which saves them for analysis. Run in Safari and Chrome on the same Mac (Safari on the Mac can be driven without you), then on the iPad (you open the link). The Safari–Chrome comparison on one machine shows what's Safari's.\n\nThen: find what dominates a frame in Safari, fix it, and measure again until the views hold 120 fps or the remaining cost is understood",
+  "num": 114,
+  "order": 3,
+  "parent": "f-mapapp",
+  "priority": 28,
+  "slot": null,
+  "stage": "",
+  "text": "Safari performance pass: the whole map at 120 fps in Safari (Mac and iPad), measured by a self-benchmark",
+  "where": "Subagent"
+}

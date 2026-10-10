@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T07:22:00Z",
+  "finished": "2026-10-06T08:35:00Z",
+  "kind": "task",
+  "num": 81,
+  "order": 1,
+  "parent": "lab",
+  "reply": "Done: a catalogue of ~150 datasets in 16 themes, with a download plan (tier 1 ~9 GB, tier 2 ~45 GB, all without accounts). Best ideas: a climate month slider (800 m normals), a fall-foliage engine (peak-colour date and palette per road), a storm time machine (radar since 1995, tornado and hurricane tracks, snowstorm footprints), a history time machine (an 1830 map of the state!), an \"old New England\" road score (every building's year built), quiet and safe roads (traffic, deer-crash corridors), live tides, dark skies, valley fog. Saved in the lab folder on the NAS (scenic-lab/massachusetts/research)",
+  "stage": "done",
+  "started": "2026-10-06T07:18:00Z",
+  "text": "Brainstorm and research every kind of data the map could show for Massachusetts (weather in depth)",
+  "where": "Subagent"
+}

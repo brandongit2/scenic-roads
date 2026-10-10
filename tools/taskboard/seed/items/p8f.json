@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T09:52:00Z",
+  "kind": "task",
+  "note": "From P5/P8's design (6 Oct, §6 Q7).\n\nThe peaks job finds summits and their prominence for each unit. Its key names the whole terrain hi packs within 30 km, as units' keys did before P8 (#39). P8 gave units finer keys: the z11 terrain tiles a unit actually reads, by content. So today a change anywhere in a nearby pack reruns a unit's peaks, even when the terrain around its summits didn't change.\n\nThe design judged the gain small, since peaks take seconds each. But the terrain fix's rebuild (8 Oct) estimated ~2.6 h for summits across ~290 units, which reopens the question. After the rebuild, the units whose peaks actually changed would show what finer keys would have saved.",
+  "num": 87,
+  "order": 30,
+  "parent": "g3",
+  "priority": 18,
+  "slot": null,
+  "stage": "",
+  "text": "P8 for peaks: finer terrain keys for the peaks job too (it names whole hi packs within 30 km)",
+  "where": "Subagent"
+}

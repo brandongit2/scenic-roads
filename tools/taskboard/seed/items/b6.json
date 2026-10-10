@@ -1,0 +1,15 @@
+{
+  "finished": "2026-10-08T17:00:00Z",
+  "kind": "task",
+  "note": "buildings3d.md §5's B2: the agent builds every region's buildings as part of the normal build (keys, targets, order, prunes, status and forecast, shared steps, bld-fetch as a job), the mirror's group, the service worker's budget, credits; docs. Measured on one region in scratch first, scaled to the coverage. Not in it: B3, long-distance buildings (#102), the wobbly edges (#115). Brief: scratchpad/b2/BRIEF.md.",
+  "num": 6,
+  "order": 6,
+  "parent": "g6",
+  "priority": 12,
+  "reply": "Merged and publishing (de7da27..91b3cdc, two review rounds: an hourly hold on a region's publish fixed, among others). The build agent now builds every region's 3D buildings itself: bld-fetch, then bldprep and bldtiles as shared steps the M1 may take, after the regions' own work, never holding up a region's publish. Estimated worldwide: 30–70 min of the M4, +17–22 GB of work files and +4.6–6.9 GB of packs on the NAS, the same per mirror (copied last, let go first). Paris's output is byte-identical to B1's. Rule: both Macs on this app before the pool's lead may move.",
+  "slot": 0,
+  "stage": "done",
+  "started": "2026-10-08T13:00:00Z",
+  "text": "Phase B2: into the build",
+  "where": "Subagent"
+}

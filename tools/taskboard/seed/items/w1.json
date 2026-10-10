@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T15:10:00Z",
+  "finished": "2026-10-06T15:55:00Z",
+  "kind": "task",
+  "num": 97,
+  "order": 1,
+  "parent": "f-water",
+  "reply": "Done. Worldwide base GEBCO 2026 (~460 m, with a grid of which cells were measured); finer open data for every region but Taiwan, Hong Kong and Singapore (BlueTopo 4–16 m, Canada's NONNA 10/100 m, EMODnet 115 m, Japan's GtTM 60 m, IBCAO, NOAA's CRM, SHOM, INFOMAR); measured depths for tens of thousands of lakes, GLOBathy's estimates for the rest. Following the data costs ~100–160 GB to download and ~35–70 GB built. A few choices are yours (asked in chat)",
+  "stage": "done",
+  "started": "2026-10-06T15:40:00Z",
+  "text": "Research the sources: oceans (GEBCO worldwide; EMODnet, CHS NONNA, NOAA, Japan's), measured lake depths by jurisdiction, and estimated depths (GLOBathy): URLs, coverage of our 88 regions, resolution, sizes, terms; a download plan",
+  "where": "Subagent"
+}

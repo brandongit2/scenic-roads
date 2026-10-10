@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-06T08:55:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:01.409Z",
+  "finished": "2026-10-08T10:55:00Z",
+  "kind": "task",
+  "note": "Found by the NAS-state audit. Small; to go with the next change to the updater",
+  "num": 85,
+  "order": 7,
+  "parent": "g2",
+  "priority": 9,
+  "reply": "Done (9ee1d88, merged into main; publishes with the rest in the morning): a <version>.tmp/ folder nothing has written to for an hour is removed at every update check and in the prune; a copy under way writes every few seconds, so it's never one of them. Tests: a stale copy goes; a live copy, an installed version and the current.tmp link stay.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T11:20:00Z",
+  "text": "The updater prunes the half-copied app folders it leaves (a 50 MB app/20261005-1328-ace4faa.tmp on the M1 that its prune skips forever)",
+  "where": "Subagent"
+}

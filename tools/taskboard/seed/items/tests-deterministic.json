@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-09T09:50:00Z",
+  "finished": "2026-10-09T15:57:00Z",
+  "kind": "task",
+  "note": "Your call (9 Oct): the workarounds are a code smell. Five times this week a publish failed on a test that depended on timing or the real machine, and each was patched by loosening it:\n- the offload pace tests' tolerances, twice;\n- a tree-cover test's 10 s bound made relative;\n- the agent's tests reading the real battery (the build Mac unplugged at 18 %);\n- a test assuming the Mac's host name;\n- the tree-cover hand-over test ('that lease is gone' under load), now given an explicit waiting mode instead of the clock;\n- trees::tests::items_with_parallel_work_of_their_own_never_hang_it: a deadlock check that fails past 60 s of wall time (about 3 s of work), which a 34-minute suite run on a loaded M1 overran (9 Oct). Telling a hang from slowness needs another way than a clock.\n\nWanted: audit every test (Rust, Python, the web checks) for dependence on wall-clock time, sleeps, the machine's load, its battery, host name, disk, network or real files, and fix the cause:\n- decisions made by pure functions, tested on their own;\n- tests of an exchange or a loop given an injected clock, policy or environment, not real time;\n- no tolerance or bound that only holds on an idle Mac.\n\nDone when the full suite passes on a Mac under heavy load (e.g. run beside a build, or several suites at once) repeatedly, and the earlier loosenings are replaced by proper fixes.",
+  "num": 148,
+  "order": 24,
+  "parent": "g2",
+  "priority": 1,
+  "reply": "Merged into main (b4cf014..628f3d3, plus the four fixes sent ahead: 28f6569, 429a1fe, ba8fc25, ad344ef); it publishes with #150's cache-accessor fix, since a static check #131's code broke now gates publishes.\n- Code that waits reads a clock (store::clock: real, or virtual in tests, moving only when waited on): offload, the coordinator, tasks, the pool, lead tests. Tests assert counts and exact waits, not times; two now assert more than before.\n- An agent reads its Mac (power, idleness, home, memory, host) through a fixed or real cond::Mac: no test reads the real battery or the NAS's reachability.\n- Hangs told from slowness by work that stops moving, in the test's own pool; parallel tests' shared state isolated (the timings test runs in its own process).\n- Unit tests are offline from the start; real-data tests run only when asked (--ignored).\n- The earlier loosenings replaced by these fixes; the rule written in plan.md §8 (Tests).\n- Proof: full suites passing repeatedly under heavy load: two at once beside 10–12 CPU burners on both Macs (load up to 470 on the M1), every test passing but a static check of main's own code (being fixed under #150).",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-09T10:05:00Z",
+  "text": "Tests that don't depend on the clock, the Mac's load or the real machine: an injected clock, policy or environment instead",
+  "where": "Subagent"
+}

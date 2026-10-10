@@ -1,0 +1,6 @@
+{
+  "item": "b5",
+  "kind": "merge",
+  "t": "2026-10-07T00:45:00Z",
+  "text": "Merged locally as 84aef63 (21 unsigned commits rebased onto the pool's 0bed1da; no conflicts). Tests and the web build passed on d20dac7; the pool's commits touch no buildings code"
+}

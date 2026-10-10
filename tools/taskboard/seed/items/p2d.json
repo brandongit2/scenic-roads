@@ -1,0 +1,15 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-08T21:05:00Z",
+  "kind": "task",
+  "note": "From the architect's review of the build (5 Oct, P2 \"helper fairness\").\n\nA helper Mac (today the M1, your laptop) is offered a job only if its predicted memory fits what the helper says it can spare. The prediction is learned from that target's last run, and it can be badly wrong: after new code, for a denser area, or for a target never measured before. For example, terrain for the Alaska coast's z3 area once peaked at 32.9 GB.\n\nmacOS never stops a process for using too much memory. It compresses and swaps instead, so the job grinds on while the whole laptop slows down, your own apps included. The agent already measures each job's real memory every loop (footprint_of_group, agent/mod.rs), but it only displays the number.\n\nWanted:\n- a helper job that goes far over what it was given doesn't get to degrade the Mac;\n- the build learns from it, so next time that target goes to a Mac with room, or to the build Mac.\n\nPage tasks already have the second half: a task that ran out of memory is offered only to workers that spare more.\n\nThe other three P2 fixes were built on 5 Oct: interruptions not counted as failures, helpers taking terrain from the near end, and away mode. This one was deferred to the pool's phase 4 (#21), where every Mac runs jobs in slots with a memory budget. pool.md's phase 4 section doesn't mention it yet, so #21's brief must carry it.",
+  "num": 28,
+  "order": 5,
+  "parent": "g3",
+  "priority": 11,
+  "reply": "Folded into #21 (pool phase 4) on 8 Oct, with its details there; built as part of it.",
+  "slot": 0,
+  "stage": "",
+  "text": "P2 Stop a helper job that's far over its memory",
+  "where": "Subagent"
+}

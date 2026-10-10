@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "- The shape: one GeoJSON file per register (each entry any geometry: point, line, area) with standard properties, plus a small description file (name, territory covered, licence and credit, source, download date).\n- The build reads any register generically; places matched across registers by rule (same Wikidata item, same name nearby); a declare file of your same/not-same pairs for the judgment calls.\n- Today's registers converted by producers outside the app (heritage.py's function per register, federal.py's locating, crhp.py), proved to give the same heritage sites, overlays and flags, or every difference explained.\n- Then deleted: the per-register code, the registers' credits in rules.rs, and the old snapshot (sources/registers/legacy).",
+  "num": 138,
+  "order": 6,
+  "parent": "f-inputs",
+  "priority": 34,
+  "slot": null,
+  "stage": "",
+  "text": "Heritage registers: one GeoJSON file per register, today's registers converted, the per-register code out of the app",
+  "where": "Subagent"
+}

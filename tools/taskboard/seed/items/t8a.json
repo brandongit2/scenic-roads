@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:03:45.150Z",
+  "finished": "2026-10-05T23:23:57Z",
+  "kind": "task",
+  "num": 61,
+  "order": 1,
+  "parent": "t8",
+  "stage": "done",
+  "started": "2026-10-05T23:14:00Z",
+  "text": "Spot check ignores the run time in dem-stats.json (it would shut every worker out)",
+  "where": "Subagent"
+}

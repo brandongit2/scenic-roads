@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:02:35.816Z",
+  "finished": "2026-10-05T19:55:39Z",
+  "kind": "task",
+  "note": "Already fixed (e45cdfd) 12 minutes after it failed; the area builds again on the fixed app",
+  "num": 12,
+  "order": 2,
+  "parent": "g2",
+  "stage": "done",
+  "text": "Unit 6/16/23: canopy step panicked (a lookup outside its band's window)",
+  "where": "Subagent"
+}

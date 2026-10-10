@@ -1,0 +1,14 @@
+{
+  "discuss": false,
+  "finished": "2026-10-08T15:10:00Z",
+  "kind": "task",
+  "num": 19,
+  "order": 3,
+  "parent": "g5",
+  "priority": 4,
+  "reply": "On since 8 Oct ~15:00 (published in 20261008-1439-76bcf6f, then `scenic pool on`): the M4 leads term 1, caught up, and the M1 is a member. One hiccup: the M4's water job was running when I switched it on, and its old-style save was refused (nothing corrupted; the job reran under the pool). `scenic pool on|off` will refuse while a job runs unless forced. Switch off with `scenic pool off`.",
+  "stage": "done",
+  "started": "2026-10-06T08:20:00Z",
+  "text": "Phase 2: handing over, taking over, re-asserting, stepping down",
+  "where": "Subagent"
+}

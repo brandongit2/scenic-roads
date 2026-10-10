@@ -1,0 +1,10 @@
+{
+  "kind": "task",
+  "note": "Things only you can do. Found by reading every session (6 Oct); the state checked again on 8 Oct.\n\n1. **The map's HTTPS address:** on the build Mac, `tailscale serve --bg --https=8443 http://127.0.0.1:8080`. Today tailscale serve proxies only the build page (8090). Without it, the map on the iPad or iPhone has no offline mode (its service worker needs HTTPS) and can't be added to the Home Screen as an app.\n2. **NAS clean-ups:**\n   - the loose raw-tile folders sources/aws-terrarium/0–12, left from before the tiles went into archives (packs/); deleting them is irreversible;\n   - the SYNOINDEX / @eaDir cleanup you stopped on 4 Oct, because it overloaded the NAS;\n   - uninstalling Synology Drive (decided 4 Oct; check the paigetsang Drive home first);\n   - excluding the project from indexing;\n   - later, a share outside Drive for the project.\n3. **The NAS's UPS:** DSM's network UPS server switched on, so the build can pause safely when the UPS goes on battery. That pause trigger was designed on 5 Oct but isn't built yet.\n4. **Japan's ODPT and Taiwan's TDX keys,** for trains a day there. inputs/keys.env has the names, but the values are empty; registrations have been pending since 30 Sep.",
+  "num": 53,
+  "order": 13,
+  "parent": "g7",
+  "stage": "waiting",
+  "text": "Only you can: tailscale serve on 8443 for the map's offline mode; the NAS clean-ups and its UPS server; the ODPT/TDX keys",
+  "where": "You"
+}

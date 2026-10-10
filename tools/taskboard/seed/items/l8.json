@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-06T14:00:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T16:41:04.202Z",
+  "finished": "2026-10-06T16:26:00Z",
+  "kind": "task",
+  "num": 88,
+  "order": 8,
+  "parent": "g2",
+  "reply": "Published in 20261006-1626-5b15c04: the tests wait for what happened, not for a time (12 of 12 runs under heavy load); and unpacking the NAS's answer archives no longer fails with “Broken pipe” on a busy Mac. publish.sh now names any failing test",
+  "stage": "done",
+  "started": "2026-10-06T15:20:00Z",
+  "text": "A pipeline test fails now and then under load (publish 6e86461's first try: 365 of 366; passed when run again): find it and make it steady",
+  "where": "Subagent"
+}

@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-08T20:20:00Z",
+  "kind": "task",
+  "note": "Your report (8 Oct): around 53.84, −72.12 the small lakes vanish in a rectangle.\n\nWhat I found: it's the data, not our code.\n- The basemap's own z12 tiles there are under 1 KB, against 5–10 KB around them.\n- The empty area follows an exact grid: 0.5° of longitude by 0.25° of latitude (72.5–72.0°W, 53.75–54.0°N, and the block to its southwest from 73°W). That's Canada's 1:50,000 map sheets (NTS), the units Canada's lake data (CanVec / the National Hydro Network) was imported into OSM by. Those sheets were never imported, so only a few big lakes are mapped there.\n- How many such sheets exist across our regions hasn't been counted.\n\nOptions to weigh:\n- fill the gaps from Canada's own data (CanVec or the National Hydro Network: Open Government Licence – Canada, attribution required);\n- or from a worldwide water mask (e.g. JRC Global Surface Water or ESA WorldCover, 10–30 m), which would also cover gaps elsewhere;\n- or leave it as OSM has it.\n\nAny of the first two adds a source the water layer, and the terrain's water flattening, would read. Downloads and licence check first. Your call.",
+  "num": 124,
+  "order": 11,
+  "parent": "f-water",
+  "priority": null,
+  "reply": "Built and proved 9 Oct ~04:00, not merged: it waits on #121, so that the fill rebuilds only the terrain pieces it touches.\n\n- Survey: 3,519 of 15,375 map sheets in our Canadian regions lack their small lakes in OSM (2.84 M km²). Calibrated on your spot (33H/16: 1 small lake against 1,000–2,100 in each neighbour).\n- Fill, from CanVec's lakes, reservoirs and ponds (your hand downloads): 2.80 M lakes, 136,000 km². By region: NWT 877k, Québec 464k, Manitoba 435k, Saskatchewan 392k, Ontario 209k, Alberta 200k, Nunavut 142k, Yukon 80k, BC 3k. 354 sheets were left unfilled because their lakes are mostly in OSM already.\n- Where OSM cut a lake at a sheet edge (its import), the fill completes the other half up to the same line (your call, 9 Oct). Checked over 3,488 km of edge: the halves overlap by about 5 cm; 1.5 % of the edge has a gap, from the two sources' shorelines differing.\n- Proof: screenshots of your view, z6–8 and a seam at 72°W, before and after (scratchpad/lakes/proof/shots/).\n- Merging it rebuilds the water layer and, after #121, 86 terrain pieces in 7 z3 areas.\n- To do at merge: the server should memory-map the 793 MB fill rather than read it all into memory.\n- Credit: \"Contains information licensed under the Open Government Licence – Canada\" (README and the catalog's credits).",
+  "slot": null,
+  "stage": "",
+  "started": "2026-10-09T01:55:00Z",
+  "text": "Water: OpenStreetMap has no small lakes in some Canadian map sheets (northern Quebec), so whole rectangles of the map are empty",
+  "where": "Subagent"
+}

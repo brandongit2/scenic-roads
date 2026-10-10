@@ -1,0 +1,6 @@
+{
+  "item": "lab11",
+  "kind": "note",
+  "t": "2026-10-06T17:02:00Z",
+  "text": "Four more self-reported robots slips by the first auditor (single read-only requests, nothing kept: NASA POWER, CHIRPS, NOAA SWFSC ERDDAP, NCEI). The lab now enforces robots-first in its own fetch code. Open-Meteo's and RainViewer's robots.txt forbid scripts: agents stopped using them; whether the app may call them from your browser is your call"
+}

@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "OSM decides what's drawn and where; timetables only add counts. So:\n- OSM's lines no timetable covers go on a to-do list (with a brief), which you answer with hand-compiled GTFS;\n- timetable lines that match no OSM line are listed on the build page, not drawn.",
+  "num": 142,
+  "order": 10,
+  "parent": "f-inputs",
+  "priority": 38,
+  "slot": null,
+  "stage": "",
+  "text": "Timetables, 3: a to-do list of lines with no timetable, and a report of timetable lines that match nothing on the map",
+  "where": "Subagent"
+}

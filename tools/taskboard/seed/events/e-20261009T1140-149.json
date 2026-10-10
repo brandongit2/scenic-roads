@@ -1,0 +1,6 @@
+{
+  "item": "trees-workers-leak",
+  "kind": "note",
+  "t": "2026-10-09T11:40:00Z",
+  "text": "#149 added: tree cover's --workers limit leaks to the global pool (found by #148)"
+}

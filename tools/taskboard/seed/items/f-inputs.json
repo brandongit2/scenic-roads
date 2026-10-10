@@ -1,0 +1,8 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "folder",
+  "note": "From our discussion (9 Oct): every input the map takes from outside (by hand, by agents, or from declared sources) enters through one standard shape and a drop-box folder, checked before it goes in, with the data sources out of the app's code. In order: the spec, the shared gate, then each input, a guard, and how each is made.",
+  "order": 12,
+  "parent": "",
+  "text": "Input standardisation: every input through a standard shape and a checked drop box"
+}

@@ -1,0 +1,8 @@
+{
+  "added": "2026-10-06T07:22:00Z",
+  "kind": "folder",
+  "note": "Data in the NAS's projects/scenic-lab/massachusetts/ (beside the project, not in it); code on a local branch lab/massachusetts in its own checkout; a lab map server on this Mac at localhost:18090 over a Massachusetts copy of the map. Production data and app untouched.",
+  "order": 3,
+  "parent": "",
+  "text": "Massachusetts lab: everything the map could show, tried on one state (an experiment, all revertible)"
+}

@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T14:30:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T17:28:22.643Z",
+  "finished": "2026-10-06T16:26:00Z",
+  "kind": "task",
+  "note": "Found by the Massachusetts lab (its local branch has the fix); to be ported to main with a test and a review",
+  "num": 90,
+  "order": 2,
+  "parent": "f-mapapp",
+  "reply": "Published in 20261006-1626-5b15c04: the overlays are released after the frame, not in its render pass (the error on 9 of 13 cold loads with 3D terrain before, 0 of 14 after)",
+  "stage": "done",
+  "started": "2026-10-06T14:46:00Z",
+  "text": "Port the lab's fix to the real app: the road layer's prerender released the overlay layers mid-render, so MapLibre's draped-texture renderer threw once per page load with 3D terrain",
+  "where": "Subagent"
+}

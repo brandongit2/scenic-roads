@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:56.109Z",
+  "finished": "2026-10-05T23:21:00Z",
+  "kind": "task",
+  "num": 9,
+  "order": 2,
+  "parent": "g8",
+  "stage": "done",
+  "started": "2026-10-05T23:18:00Z",
+  "text": "A box for you to add tasks",
+  "where": "Subagent"
+}

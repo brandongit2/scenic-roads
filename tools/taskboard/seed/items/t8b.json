@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:03:54.658Z",
+  "finished": "2026-10-05T23:23:57Z",
+  "kind": "task",
+  "num": 62,
+  "order": 2,
+  "parent": "t8",
+  "stage": "done",
+  "started": "2026-10-05T23:14:00Z",
+  "text": "Helpers never write to or delete from the NAS's stores",
+  "where": "Subagent"
+}

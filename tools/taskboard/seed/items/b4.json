@@ -1,0 +1,13 @@
+{
+  "finished": "2026-10-06T14:00:00Z",
+  "kind": "task",
+  "num": 4,
+  "order": 4,
+  "parent": "g6",
+  "priority": 10,
+  "reply": "Done (merged 1fbfd07): all 339 M buildings measured in 13 minutes. 44 % have a height, but 85 % of those are Microsoft's ML estimates (flat: 1.2 m a floor), so the fill now puts measured heights and floors first, Microsoft's after (labelled), then neighbours, GHSL only in tall cells, then a size rule fitted per country (hold-out error 0.7 m median, 3 m at p90). Tiles: 5.8 GB; ~15 z14 tiles over the 300 KB budget (Spanish old towns, three Tokyo wards). Central Tokyo has heights for only 11 %: PLATEAU (B4) may be worth bringing forward",
+  "stage": "done",
+  "started": "2026-10-06T09:40:00Z",
+  "text": "Phase B0: data checks",
+  "where": "Subagent"
+}

@@ -1,0 +1,11 @@
+{
+  "finished": "2026-10-05T23:06:46Z",
+  "kind": "task",
+  "note": "Its review found deferred tiles could point into old base packs: replaced by the rounds fix, which redraws any tile whose own areas changed",
+  "num": 37,
+  "order": 14,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P8 Rounds draw only their own map tiles",
+  "where": "Subagent"
+}

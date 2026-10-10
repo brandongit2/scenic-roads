@@ -1,0 +1,12 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:06:17.037Z",
+  "finished": "2026-10-05T22:48:52Z",
+  "kind": "task",
+  "num": 57,
+  "order": 4,
+  "parent": "g1",
+  "stage": "done",
+  "text": "Canopy stays on the Mac while an area's canopy squares aren't on the NAS",
+  "where": "Subagent"
+}

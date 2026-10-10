@@ -1,0 +1,6 @@
+{
+  "item": "lab3",
+  "kind": "note",
+  "t": "2026-10-06T09:35:00Z",
+  "text": "Lab server up at 127.0.0.1:18090 with the MA base and 4 layers; checked: own home and root, production read-only, region edits refused, push disabled"
+}

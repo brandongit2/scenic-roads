@@ -1,0 +1,10 @@
+{
+  "finished": "2026-10-05T23:01:58Z",
+  "kind": "task",
+  "num": 36,
+  "order": 13,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P8 Terrain prefetch skips tiles already archived",
+  "where": "Subagent"
+}

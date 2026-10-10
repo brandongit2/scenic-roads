@@ -1,0 +1,12 @@
+{
+  "added": "2026-10-06T14:46:00Z",
+  "discuss": true,
+  "kind": "task",
+  "note": "From the Massachusetts lab.\n\n- **LiDAR local relief:** MassGIS's statewide 1 m LiDAR shaded relief shows stone walls, cellar holes and old roads under the forest, which no other layer shows. Public 1 m DEMs cover only some places (US 3DEP, parts of Europe, Japan and others) and are large (Massachusetts alone ~5 GB), so this is per area, not worldwide.\n- **Old maps:** the USGS Historical Topographic Map collection (US, 1880s on) as a basemap switch; other countries have their own national archives.\n\nNeither has a worldwide source. That's why the generalized lab (#100) left them out.",
+  "num": 96,
+  "order": 10,
+  "parent": "lab",
+  "stage": "",
+  "text": "From the lab: LiDAR local relief where public 1 m DEMs exist (stone walls, old roads under the forest), built per area on demand; and old topos as a basemap time switch (1885 / 1950 / now)",
+  "where": "Subagent"
+}

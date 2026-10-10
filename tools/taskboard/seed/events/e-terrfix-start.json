@@ -1,0 +1,6 @@
+{
+  "item": "s3",
+  "kind": "progress",
+  "t": "2026-10-08T09:50:00Z",
+  "text": "Your decisions (8 Oct), all of the study's fixes: north of 60°N terrain from Copernicus GLO-30 (or FABDEM if it reads better), blended at the boundary; water flattened from OSM (sea to 0 m, each lake to its shore level); two new AWS-only repair rules (seam spikes, walled patches). Then a 4th \"fixed\" view on the review map (key 4), with its zoom mismatch and verdict saving fixed. Your calls on the 9 summit pixels and Tokyo Bay's towers stay open."
+}

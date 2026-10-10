@@ -1,0 +1,10 @@
+{
+  "finished": "2026-10-05T23:04:11Z",
+  "kind": "task",
+  "num": 38,
+  "order": 15,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P8 Region work waits 15 minutes after an outline edit",
+  "where": "Subagent"
+}

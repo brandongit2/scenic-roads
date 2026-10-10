@@ -1,0 +1,6 @@
+{
+  "item": "o3",
+  "kind": "note",
+  "t": "2026-10-08T11:10:00Z",
+  "text": "#19 and #113 are merged and wait only on you unlocking 1Password: then I re-sign the night's unsigned commits, push, publish from the M4, and switch the pool on with `scenic pool on`."
+}

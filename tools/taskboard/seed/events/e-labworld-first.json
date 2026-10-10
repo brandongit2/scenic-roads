@@ -1,0 +1,6 @@
+{
+  "item": "labworld",
+  "kind": "progress",
+  "t": "2026-10-08T09:05:00Z",
+  "text": "Plan approved on your behalf (~89 GB downloaded, ~75 GB built on the NAS). First global layer up on the agent's test server: climate zones worldwide (z0–8, 20 MB), matching the old grid on 97.6 % of Catalonia's cells. Climate normals downloading; the rest follow. MODIS-based layers wait for an Earthdata login (#86)."
+}

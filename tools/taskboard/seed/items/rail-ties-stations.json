@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-09T01:00:00Z",
+  "finished": "2026-10-09T01:47:00Z",
+  "kind": "task",
+  "note": "Your asks (9 Oct):\n\n1. Cross-ties. Rail lines are drawn with short perpendicular ties that get shorter the farther out you zoom; by about z6 they're shorter than the main line is thick. Wanted:\n   - the ties at a fixed screen length;\n   - no ties at all below z9 (they clutter);\n   - a setting for the ties' length, as a multiple of the main line's thickness.\n2. Stations' dots: settings for the base dot size (or whatever reference size the app uses), the dots' size contrast (or however the app scales their sizes), and the outline's colour and opacity (black today, you think).\n3. Are stations' dots lighter or brighter than the line they sit on? To see it: all layers off but passenger rail, rail fully opaque; the dots look brighter than the lines.\n\nWhat I found in the code (not yet measured):\n- The ties aren't meant to shrink like that. In the road layer's shader (web/src/roads/layer.ts ~l. 623 and ~757: \"a thin line with cross-ties\"), a tie spans the line's full drawn width, which shrinks as you zoom out; the line's core is the larger of 42 % of that width and 0.6 device px. So zoomed out, the core's floor makes it wider than the ties. Under a pixel wide, the ties aren't drawn at all.\n- The dots' brightness: not looked into yet. Possible causes to check: the line's colour mixed toward the background by its fade (`col = mix(u_bg, col, fade)`) while the dots aren't, different opacity, or blending.",
+  "num": 127,
+  "order": 21,
+  "parent": "f-mapapp",
+  "priority": 21,
+  "reply": "Merged, publishing 9 Oct ~01:55.\n\nThe dots' brightness: you were right, a bug. The dots took the line's bare colour, but the shader draws tunnels faded toward the background (to 45 %) and the metric colouring's low end faded too, so underground stops shone ~2× their line (Tokyo: median 1.96×, 82 of 100 more than 10 % brighter → 1.00, none brighter). Now a stop takes its line's colour and opacity as drawn. At a station where a tunnel and a surface line meet, the dot can take the tunnel's darker look.\n\nCross-ties: a tie is a multiple of the line's core thickness (setting: Passenger rail → Style → Cross-ties, default 2.5×, which looks as before at z12–14). Zoomed out the core holds its minimum width, so the ties keep their screen length instead of shrinking. None below z9. Ties are still not drawn on lines thinner than a pixel, so at the default rail weight (0.5) they start around z11.5. Say if you want them on thin lines too.\n\nStop dots (Passenger rail → Style → Stop dots): Size (×¼–4), Size contrast (the app's own sizing by stop spacing; 50 % = today, 0 % = all alike), Outline colour (default the map's background, #0b0e13, not black) and its opacity. All kept in the link (rk=). Screenshots: scratchpad/railtools/shots/.",
+  "stage": "done",
+  "started": "2026-10-09T01:20:00Z",
+  "text": "Rail lines' cross-ties at a fixed screen length, gone below z9, their length a setting; stations' dots: size, size contrast, outline colour and opacity settings; dots brighter than their line?",
+  "where": "Subagent"
+}

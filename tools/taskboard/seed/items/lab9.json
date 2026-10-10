@@ -1,0 +1,12 @@
+{
+  "added": "2026-10-06T14:46:00Z",
+  "discuss": true,
+  "kind": "task",
+  "note": "Decided (6 Oct): APIs built for apps whose robots.txt forbids scripts (Open-Meteo's weather and air quality, RainViewer's radar) may be called by the app from your browser when you switch a live layer on; they stay off by default, and agents never call them. Robots-clean alternatives found too: OPERA radar (Europe), IEM NEXRAD (US), FMI SILAM air quality, DWD ICON clouds, GIBS IMERG rain",
+  "num": 95,
+  "order": 9,
+  "parent": "lab",
+  "stage": "",
+  "text": "From the lab: live layers in the real app (radar, weather warnings, river gauges, next tides, stargazing tonight), marked online",
+  "where": "Subagent"
+}

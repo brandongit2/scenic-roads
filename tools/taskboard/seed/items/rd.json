@@ -1,0 +1,14 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:03:05.617Z",
+  "finished": "2026-10-06T02:57:00Z",
+  "kind": "task",
+  "note": "Live since 22:38: the first round with a fixed scope began then with 44 regions and went out as catalog 10 at 22:57 (19 minutes). Rounds are now over once their catalog is made; the next begins an hour after the last began",
+  "num": 44,
+  "order": 5,
+  "parent": "g2",
+  "stage": "done",
+  "started": "2026-10-06T01:18:00Z",
+  "text": "Rounds go out on time: a round's work is fixed when it begins",
+  "where": "Subagent"
+}

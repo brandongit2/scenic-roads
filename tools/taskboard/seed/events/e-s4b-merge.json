@@ -1,0 +1,6 @@
+{
+  "item": "s4b",
+  "kind": "progress",
+  "t": "2026-10-08T10:20:00Z",
+  "text": "The review found no blockers. Its five fixes (bounded draws, stored tiles never waiting, a safe cache, water's own threads, a guard on regional builds) and the nits are in (ad7ffb0, unsigned while 1Password is down). Merged into main (4050309, e3ff07e, ad7ffb0); publishing from the M1."
+}

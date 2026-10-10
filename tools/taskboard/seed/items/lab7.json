@@ -1,0 +1,12 @@
+{
+  "added": "2026-10-06T14:46:00Z",
+  "discuss": true,
+  "kind": "task",
+  "note": "From the Massachusetts lab: when a road is at its peak colour, i.e. the week to drive it. The lab found peak colour around 4 Oct in the Berkshires, 10 Oct around Worcester and Boston, and 18 Oct on the Cape.\n\nSources:\n- satellite phenology for the date: MODIS MCD12Q2 / VIIRS, global at 500 m, 2001 onward;\n- the palette from tree species or leaf type.\n\nYour notes on the lab's layer (8 Oct): one layer, a fixed scale (green → yellow/red → grey), a year input, and opacity from how much of the cover is colour-changing trees.",
+  "num": 93,
+  "order": 7,
+  "parent": "lab",
+  "stage": "",
+  "text": "From the lab: a fall-colour engine: peak-colour date (MODIS, global 500 m) and palette (species or leaf type) per road, \"the week to drive this road\"",
+  "where": "Subagent"
+}

@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-09T04:50:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T18:50:49.205Z",
+  "finished": "2026-10-09T15:10:00Z",
+  "kind": "task",
+  "note": "Your ask (9 Oct): speed up the jobs themselves, not only schedule them smarter. Using #130's timings, profile each job and make it faster. Focus on:\n- Our hard resource limits, above all the NAS: batching; smarter ordering; fewer random reads and writes; its technical quirks (SMB takes ~20–55 small-file creates a second, so bulk goes as tar over SSH; fast sequential reads).\n- Pure compute: algorithmic complexity and the code's execution (allocation, parallelism, SIMD, cache locality, memory-mapping instead of copying).\n\nMy additions to weigh:\n- Work not done at all: inputs re-read or re-copied run after run that could be kept or shared; outputs rewritten unchanged; stages that could be skipped when their inputs are unchanged.\n- Overlap: I/O and compute in the same job run one after the other where they could be pipelined (read the next area while computing this one).\n- Downloads: tiles still fetched from AWS mid-job (peaks fetched dozens per area).\n- Python steps that dominate a job, ported to Rust only where a profile shows it pays.\n- Memory: peaks that force a job to run alone or swap.\n- Each fix measured before and after on real areas, outputs proved byte-identical (or every difference explained), ranked by hours saved per full rebuild.\n\nNeeds #130. First look at where time goes: see #130's notes.",
+  "num": 131,
+  "order": 22,
+  "parent": "g2",
+  "priority": 6,
+  "reply": "Done (9 Oct); the last batch publishing ~15:10 UTC. Every output byte-identical, no job keys changed.\n- Where the time went (hours per full round): units 18 (mostly NAS), terrain 9.7, peaks 5.8, pack 4.2 (base-pack copying, not drawing), bldprep 4.3, trees 4.3.\n- Terrain repair ~2.7× faster (pieces ~60 % less CPU; peaks' raw-tile work 57 % less); peaks' searches 2×.\n- Units: neighbours' elevation samples read by slice and kept locally (11.5 → 7.7 GB for five units), the next unit's heritage slices, scenic results and building tiles fetched ahead; five adjacent units 4 min 44 s → 3 min 19 s warm.\n- The build Mac keeps the base packs it just wrote (no 27-minute copy-back); catalog checks 2 min 23 s → 7 s; recipes read in parallel.\n- Fixed: two places where outputs varied run to run; tree cover kept to its cores (#149).\n- What's left, ranked, continues as #150.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-09T10:05:00Z",
+  "text": "Profile the build jobs and speed up the job code itself",
+  "where": "Subagent"
+}

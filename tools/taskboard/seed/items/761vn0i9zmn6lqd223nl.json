@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T01:05:08.304Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:50.443Z",
+  "finished": "2026-10-06T02:03:00Z",
+  "kind": "task",
+  "note": "Also allow me to edit the priorities for tasks not from myself (again, so long as the task has not begun yet). When setting/editing priorities, I should be able to enter numbers with decimal points, in order to slot a task in between two existing priorities. Doing so should make my decimal number round up to the nearest integer, pushing all items with greater priorities up by one. Extra note: Priority should start at 1 (most important; will take on next), and decrease in importance the higher the number gets.",
+  "num": 75,
+  "order": 11,
+  "parent": "g8",
+  "reply": "Done: tap any task's #number until it's begun; 2.5 becomes 3 and the tasks from 3 on move down one; a whole number joins the tasks at that number",
+  "stage": "done",
+  "started": "2026-10-06T01:52:00Z",
+  "text": "Backlog new-task improvements, item 6",
+  "where": "Subagent"
+}

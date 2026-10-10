@@ -1,0 +1,11 @@
+{
+  "added": "2026-10-06T09:00:00Z",
+  "kind": "task",
+  "note": "Meanwhile the lab sources what it can elsewhere without an account, and skips the rest.\n\nMost useful now (8 Oct): a NASA Earthdata login (free, urs.earthdata.nasa.gov). It would let the worldwide lab (#120) take MODIS's phenology and leaf-type products (MCD12Q2, MCD12Q1) global, so fall colour, green-up, the growing season, leaf type and the phenology wave would work anywhere, not only in the three regions. Without it they stay per region.",
+  "num": 86,
+  "order": 4,
+  "parent": "lab",
+  "stage": "",
+  "text": "Only you, some other time: free accounts that unlock more data (GBIF/iNaturalist downloads, eBird's weekly migration maps, NASA Earthdata's snow and phenology products, EOG night lights, NHGIS's historical census, Native Land, the FCC's coverage API)",
+  "where": "You"
+}

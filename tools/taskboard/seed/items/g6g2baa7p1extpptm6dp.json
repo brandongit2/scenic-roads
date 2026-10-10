@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T00:58:38.044Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:39.326Z",
+  "finished": "2026-10-06T02:03:00Z",
+  "kind": "task",
+  "note": "- Add ability to attach photos when adding tasks",
+  "num": 70,
+  "order": 6,
+  "parent": "g8",
+  "reply": "Done: \"Add photos\" in the box (and when editing your tasks); tap a thumbnail to see it full size",
+  "stage": "done",
+  "started": "2026-10-06T01:52:00Z",
+  "text": "Backlog new-task improvements",
+  "where": "Subagent"
+}

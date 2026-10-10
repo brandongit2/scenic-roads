@@ -1,0 +1,8 @@
+{
+  "added": "2026-10-06T15:10:00Z",
+  "kind": "folder",
+  "note": "Your decisions (6 Oct): two looks, each toggleable with its own display settings: depth colour with the floor's shading under the water, and depth contours with labels; lakes included, with estimated depths where nothing was measured (softer colour, no contours, \"estimated\" on hover); fine detail follows the data (each source at its own resolution wherever it covers), the research deciding whether that's affordable everywhere; nothing for the scenic score or ferries",
+  "order": 7.7,
+  "parent": "",
+  "text": "Depth under the water (bathymetry)"
+}

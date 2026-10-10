@@ -1,0 +1,12 @@
+{
+  "added": "2026-10-06T14:46:00Z",
+  "discuss": true,
+  "kind": "task",
+  "note": "From the Massachusetts lab (#83), which coloured roads by 28 metrics by joining values to roads by OSM way id. They included traffic (AADT), animal-crash risk, July high, January low, snow, foliage date and \"old New England\" (building ages).\n\nThe real app can colour roads only by what its packs carry: the scenic score's parts, grade and the like. So a metric from another layer can't be shown along the roads, across all regions.\n\nThe generalized lab (#100) found which metrics have worldwide data: monthly climate along roads and trails, sky darkness, peak-colour week, land cover and forest change, and built-up age.",
+  "num": 91,
+  "order": 5,
+  "parent": "lab",
+  "stage": "",
+  "text": "From the lab: per-road metrics by way id (a build step that samples layers along each way into a per-z6 sidecar; the road shader's value mode), so roads can be coloured by traffic, climate, fall colour, history…",
+  "where": "Subagent"
+}

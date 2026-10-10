@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-08T05:25:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-08T20:02:04.567Z",
+  "finished": "2026-10-08T16:30:00Z",
+  "kind": "task",
+  "note": "Your ask (8 Oct): remove all authorization requirements from the app; then, the build page's device approvals too.\n\n1. The map app. Today a device other than the Mac itself (iPhone, iPad, over the LAN, the tailnet or tailscale serve) needs the map's key, <home>/remote-key. The key comes in the address (#k=…), is handed once to POST /api/auth, and is kept in the scenic_k cookie (or sent as Authorization: Bearer). Without it, a device gets only the app's shell, not the map's data. Code: crates/server/src/remote.rs; docs: plan.md §4 Devices, formats.md (remote-key, map-page, /api/auth). The work: drop the key check, /api/auth, the cookie, the key in the map's address and remote-key.\n\n2. The build page. Today a device that helps or pauses the build through the page asks first, shows a four-digit code, and you accept it on the build Mac (status menu or `scenic devices`); it then carries its own secret until you forget it. Kept in the build Mac's agent folder, coord/devices.json; code pipeline::coord::devices; docs workers.md §7 and §9, formats.md. The work: drop the asking, the codes, the accepting and forgetting, devices.json, the devices' secrets and `scenic devices`; any page can help or pause.\n\nStays: the token between the Macs' agents (coord/workers-token) and a running job's own token, which no page or person uses. The server and the coordinator still answer only this Mac, its LAN and the tailnet, and still refuse requests from other websites' pages.\n\nAlso: the pool's wiring (#19) copies the accepted devices to state/coord/ when it's switched on; that part goes too.",
+  "num": 117,
+  "order": 5,
+  "parent": "f-mapapp",
+  "priority": 5,
+  "reply": "Done (your explicit go, 8 Oct), merged in e46444d..58a20ca and publishing. The map app has no key (remote-key, #k=, /api/auth and its cookie gone; old #k= links still open at their view). The build page needs no approval: any page on your LAN or tailnet helps and pauses (asks, codes, devices.json, scenic devices, the menu bar's asks and the pool's device seeding gone). Stays: this Mac, the LAN and the tailnet alone (Tailscale Funnel refused: a new shared check), other websites refused, the agents' token, a job's own key, a page's limits (tails only, its own leases, its name prefixed \"page \", 32 new page names a day at most). Reviewed: merge yes, its points fixed.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T11:15:00Z",
+  "text": "Remove all authorization requirements from the map app and the build page",
+  "where": "Claude"
+}

@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "- A description per dataset: GeoTIFF files (dropped in, or by URL, or a tile index) or a tile pyramid in a declared encoding (Terrarium, Terrain-RGB, GSI's); ground or surface; height reference; licence and credit. Resolution and coverage read from the data.\n- The finest valid source at each point, by resolution (an optional rank overrides), blended at the edges; known height references converted, others refused by the checks.\n- HRDEM, 3DEP, MRDEM, GSI's tiles and FABDEM declared; the roads' elevations proved unchanged (or explained, e.g. at the edges, now blended).\n- Then deleted: the per-source code and the DEM tables and credits in rules.rs. (Taiwan's MOI DTM code is deleted beforehand, separately.)",
+  "num": 143,
+  "order": 11,
+  "parent": "f-inputs",
+  "priority": 39,
+  "slot": null,
+  "stage": "",
+  "text": "Elevation, 1: datasets as descriptions, any resolution; the roads' elevations read them",
+  "where": "Subagent"
+}

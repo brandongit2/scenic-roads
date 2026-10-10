@@ -1,0 +1,10 @@
+{
+  "finished": "2026-10-05T22:54:49Z",
+  "kind": "task",
+  "num": 17,
+  "order": 1,
+  "parent": "g5",
+  "stage": "done",
+  "text": "Design, revised after the architect's review (docs/pool.md)",
+  "where": "Subagent"
+}

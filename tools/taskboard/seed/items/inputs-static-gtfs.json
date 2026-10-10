@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "- A declare drop box of static GTFS files for services with no usable feed, compiled by hand from timetables found anywhere. frequencies.txt allowed (\"every 10 min, 06:00–23:00\"); no expiry (a wide calendar range); each service's source pages recorded.\n- Counted by the same code as the feeds.\n- The MTR's researched lines and the ferry timetables looked up by hand become such files; proved unchanged; then mtrpairs.py, the MTR's stop pairs and the timetables-*.json path deleted.",
+  "num": 141,
+  "order": 9,
+  "parent": "f-inputs",
+  "priority": 37,
+  "slot": null,
+  "stage": "",
+  "text": "Timetables, 2: your hand-compiled GTFS files, a drop box; the MTR and the ferry look-ups converted",
+  "where": "Subagent"
+}

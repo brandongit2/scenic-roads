@@ -1,0 +1,6 @@
+{
+  "item": "lab9",
+  "kind": "owner",
+  "t": "2026-10-06T17:06:00Z",
+  "text": "You allowed the app to call Open-Meteo and RainViewer from your browser on a live layer's toggle; agents stay off them"
+}

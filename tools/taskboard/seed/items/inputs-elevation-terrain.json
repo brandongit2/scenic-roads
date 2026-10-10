@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "The terrain build (hill-shading, contours, slope) reads its sources through the same descriptions: AWS's Terrarium tiles and GLO-30 north of 60° declared, proved unchanged. Finer terrain zooms from the national datasets become a build question later, not an input change.",
+  "num": 144,
+  "order": 12,
+  "parent": "f-inputs",
+  "priority": 40,
+  "slot": null,
+  "stage": "",
+  "text": "Elevation, 2: the 3D terrain from the declared datasets",
+  "where": "Subagent"
+}

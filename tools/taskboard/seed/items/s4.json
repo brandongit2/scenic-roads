@@ -1,0 +1,17 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:20.159Z",
+  "finished": "2026-10-08T03:40:00Z",
+  "kind": "task",
+  "note": "Currently, small geographical features disappear when zoomed out. Fine detail needs to be preserved, even if just perceptually, at all zoom levels. We do this already with roads, for example — every road is visible at every zoom level (even if we fake it at the lower ones).",
+  "num": 48,
+  "order": 4,
+  "parent": "g7",
+  "photos": [],
+  "priority": 10,
+  "reply": "Built and live, but you judged it really poor, so it's switched off in the app (dc8a2b7, publishing now; the build still makes the layer). Its redo is #113: shorelines measured against full-detail geometry, tilted views included",
+  "stage": "done",
+  "started": "2026-10-06T10:05:00Z",
+  "text": "Asked for, not done: islands and lakes kept zoomed out",
+  "where": "Subagent"
+}

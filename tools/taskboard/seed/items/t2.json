@@ -1,0 +1,12 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:54:40.601Z",
+  "finished": "2026-10-05T22:48:52Z",
+  "kind": "task",
+  "num": 55,
+  "order": 2,
+  "parent": "g1",
+  "stage": "done",
+  "text": "Elevations moved into the tail; FABDEM read in place when the store can't be written",
+  "where": "Subagent"
+}

@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-09T11:40:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T18:51:33.496Z",
+  "finished": "2026-10-09T13:49:00Z",
+  "kind": "task",
+  "note": "Found by #148 (9 Oct). The trees program runs its z6 and z3 work inside its own thread pool, sized by --workers (fewer when you're at the Mac). But `in_order` runs each block on a plain thread, and each block's inner parallel work (its rows, the pyramid) goes to rayon's global pool, which is sized to every core. So a tree-cover job given half the cores can still use all of them, slowing your own apps while it runs.\n\nNo deadlock and no starvation between jobs (each job is its own process). Wanted: every parallel part of a job runs within the cores it was given; checked by a test that counts the threads busy at once, and the outputs byte-identical. Worth checking the other programs that take --workers for the same leak.",
+  "num": 149,
+  "order": 25,
+  "parent": "g2",
+  "priority": 10.5,
+  "reply": "Done within #131, published 13:49 UTC: a tree-cover run's blocks are now tasks of its own pool, so their parallel work stays within --workers (a new test: main's code used 14 threads with 2 workers; now at most 2). Outputs byte-identical (pieces checked against the manifest), no slower. landcover and bldtile had no leak; elev's own small parallel steps use every core, but units never limit it.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-09T13:05:00Z",
+  "text": "Tree cover keeps to the cores it's given: its blocks' parallel work spreads over every core whatever --workers says",
+  "where": "Subagent"
+}

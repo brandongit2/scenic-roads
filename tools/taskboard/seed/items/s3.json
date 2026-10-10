@@ -1,0 +1,18 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-09T08:54:58.721Z",
+  "finished": "2026-10-08T17:42:00Z",
+  "kind": "task",
+  "note": "What you asked (1 Oct, session 18d36637): when the repair was found to need repeating until nothing changes, you said \"needing to repeating the repair sounds super crude to me. Can't the repair step just be smarter the first time?\" So: one pass that gets everything.\n\nWhy: you saw towers and spikes in the 3D terrain, mostly over water (Toyama Bay; Odaiba and Toyosu in Tokyo), taller at some distances than others. The 1 Oct repair (roadcore::grid::repair_terrain) flattened the big ones, but it judges a pixel only against a ring 2–3 pixels out and its 8 neighbours, so inside a cluster the bad pixels hide each other and a pass clears only the outer layer: a second pass still changed ~1,400 tiles, a third 304, some pixels by up to 2,466 m.\n\nToday: terrain is always made from AWS's raw tiles (since 2 Oct), so a rerun gives the same result; but the repair is unchanged since 1 Oct, and every tile gets one pass of the old rules, so the inner parts of wider clusters are still on the map.\n\nTo build (the 2 Oct design): a reference surface at two scales, so a cluster can't hide inside its own window; each flagged pixel grown into its whole blob; blobs and voids filled from the clean ground around them; a cap on a blob's size (islands, sea stacks and mesas must survive); coarser zooms remade from the repaired tiles below. Terrain still depends only on AWS's tiles and the code (OSM peaks only to check results, never inside the repair).\n\nDone when: repairing its own output changes nothing anywhere at any zoom (checked by a new scan over the terrain packs); no towers at your views or the 1 Oct leftovers (Hokkaido 142.23, 44.32; the Maine coast −68.24, 44.69; Haida Gwaii, the Yukon, northern BC; the Nagasaki coast; Ogasawara 142.20, 27.19); the 1 Oct summits unchanged (Fuji, Tsurugi, Yari, Hotaka, Tateyama, Robson, Assiniboine, Temple, Logan, Mont Blanc, Aiguille Verte, Grand Teton, Washington, Tremblant, Rokko, Soffeh); tests for wide clusters, ridges, cliffs and a second run.\n\nCost: a new TERRAIN_V and terrain_z8::V, so terrain, the world's z8, slope, peaks and the units that read changed terrain rebuild.\n\nStill open: flatten crane- and building-sized bumps on flat lowland (Tokyo's wharves), at the cost of islets and sea stacks? Asked on 1 Oct, never answered.",
+  "num": 47,
+  "order": 3,
+  "parent": "g7",
+  "photos": [],
+  "priority": 6,
+  "reply": "Accepted as-is (8 Oct), merged (ee62515) and published (20261008-1742-ee62515). The rebuild started at 13:53: the world's zoomed-out terrain first, then the 18 terrain jobs and root (~2.5–3 h with both Macs), slope (~1.1 h), summits for ~290 units (~2.6 h), then every unit whose terrain changed (most of the north, every coast and lake; up to ~10 h over the pool; page workers can take their tails). Fixed = Copernicus GLO-30 north of 60°N, water flattened from the basemap, two new rules (seam spikes, walled patches); one pass, a second changes nothing. Still yours, not blocking: the 9 summit pixels and Tokyo Bay's crane-sized towers. The review map's key 4 data (NAS scenic-lab/terrfix) goes once the rebuilt terrain is out.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-06T15:10:00Z",
+  "text": "Asked for, not done: smarter one-pass terrain repair",
+  "where": "Subagent"
+}

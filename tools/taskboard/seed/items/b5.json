@@ -1,0 +1,13 @@
+{
+  "finished": "2026-10-08T04:30:00Z",
+  "kind": "task",
+  "num": 5,
+  "order": 5,
+  "parent": "g6",
+  "priority": 11,
+  "reply": "Done. Your iPad test: the buildings fit the memory budget by far (at most ~88 MB of buffers in view and cached, against 300) and cost little frame time beside the map's own: with them off the map ran at 13–25 fps in the same tilted city views. So the iPad's frame rate is the whole map's, not the buildings'. Skyline only is gone, as you asked (20d9659, publishing). Next would be B2 (#6), building the data for every region: it waits for your go",
+  "stage": "done",
+  "started": "2026-10-06T14:10:00Z",
+  "text": "Phase B1: pilot on Tokyo, Paris and New York, measured on the iPad",
+  "where": "Subagent"
+}

@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-06T20:40:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T08:55:15.803Z",
+  "finished": "2026-10-08T12:20:00Z",
+  "kind": "task",
+  "note": "Your idea (6 Oct): set the margin higher right before something that needs disk, and the agent makes that room by itself. Today the agent's room is fixed in code (30 GB before a job, more for terrain and the OSM pass, plus a sixth), and the only manual control is `scenic clean` (or the menu bar's Clear the Build's Caches), which clears all of them at once: on the build Mac 145 GB now (base packs 66 GB, canopy squares 46, the heritage planet clip 22, the DEM seed 9), each refilled from the NAS later (minutes, an hour of osmium for the heritage clip). A target, e.g. `scenic room 100` and a menu bar item, would free them in the usual order only as far as needed, keep the floor until you lower it, and be what experiments and labs ask for before a big step",
+  "num": 108,
+  "order": 62,
+  "parent": "g2",
+  "priority": 9,
+  "reply": "Done and merged into main (2d8362c..9b68cf2, publishing with the rest in the morning). `scenic room <GB>` / `scenic room off` / `scenic room` set, clear or show this Mac's target; the menu bar's Disk Room item has presets the disk can hold. While the disk is short of the target (or of what a waiting job needs past it), the agent frees its caches cheapest-to-refill first, only as far as needed, stopping if you lower the target; jobs that would eat into it wait, saying why (the daily backup and gc never do). Without a target nothing changes, except one change accepted on your behalf: Clear the Build's Caches now keeps the heritage clip unless the NAS can rebuild it. Two review rounds; their stall, busy loop and other points fixed. Known gap: the map mirror's own reserve doesn't follow the target yet (plan §10 gap 9).",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T10:55:00Z",
+  "text": "A disk room target you can raise at any moment: the build agent frees its caches until that much is free, and keeps it",
+  "where": "Subagent"
+}

@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-08T09:00:00Z",
+  "kind": "task",
+  "note": "Your verdict (8 Oct): \"the settings inputs and UI are awful and uninspired. Everything is just a checkbox with some slider beneath it when it's active.\" An agent audits every layer's controls by kind (grids, categories, time series, lines, points, live, experiments), designs purpose-built ones per kind, and builds them in the lab, keeping what you already liked unless clearly better. Brief: scratchpad/labui/BRIEF.md. Starts once #118's revisions land (same code).",
+  "num": 119,
+  "order": 13,
+  "parent": "lab",
+  "priority": 25,
+  "reply": "Built and live at http://127.0.0.1:18091; your review is next. What's new:\n- An On now dock at the top: a row per active layer with its colours, the value under the cursor, an opacity scrub (drag, two-finger swipe, arrow keys) and an x.\n- Rows with mini legends, hover previews and loading bars.\n- Category layers get chips: click to hide a class, option-click to show it alone, each with its share of the view.\n- One shared timeline (month and year rows) with the view's median and spread behind it, play, speed and loop.\n- Cyclones and quakes: a histogram behind the year control; quakes get a Smallest magnitude filter; Labels pills.\n- Swipe compare: two grids, or one at two times.\n- Saved views, a copy-link button, search that matches units and classes, and keys: / search, comma and period for the month, < > for the year, k to play.\n- Weather warnings (live) is removed.\nTry it: ?labregion=cat&lab=normals-tmax, then drag the Month row and press Compare. Screenshots: scratchpad/labui/shots/ (before/ and after/). Commits f6b5e34..aaa0c9c on lab/global.",
+  "slot": null,
+  "stage": "waiting",
+  "started": "2026-10-08T10:10:00Z",
+  "text": "Generalized lab: a pass over every control, more interesting, usable, intuitive and powerful; remove Weather warnings (live)",
+  "where": "You"
+}

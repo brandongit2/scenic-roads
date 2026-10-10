@@ -8,6 +8,7 @@
 !/tools/check/
 !/tools/app/
 !/tools/status/
+!/tools/taskboard/
 !/tools/coastcheck/
 !/tools/names/
 node_modules/

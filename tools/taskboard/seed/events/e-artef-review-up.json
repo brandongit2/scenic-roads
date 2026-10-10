@@ -1,0 +1,6 @@
+{
+  "item": "artefacts",
+  "kind": "progress",
+  "t": "2026-10-08T06:10:00Z",
+  "text": "Review map up for you: http://127.0.0.1:18093/?review=1 (~/lab/artefacts/lab.sh start|stop). 265k candidates over the whole coverage (136k at confidence ≥ 0.5); a review list of 312 across every class and zoom. Keys: 1/2/3 terrain (AWS raw, first repair, new repair), A/R/U verdict, N next. Verdicts saved to ~/lab/artefacts/data/verdicts.json. The agent's full report follows."
+}

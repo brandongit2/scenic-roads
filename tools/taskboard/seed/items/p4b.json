@@ -1,0 +1,15 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-08T21:05:00Z",
+  "kind": "task",
+  "note": "From the architect's review (5 Oct, P4).\n\nThe terrain job ends by packing the AWS raw tiles it downloaded into per-area archives on the NAS (pack_raw_with in scenic-build; the peaks job does it too). On 5 Oct this took ~2.1 of the build Mac's 4.75 h of terrain: 483k tiles at 50–120 tiles/s over SMB. All that time the job held its slot while doing only network I/O.\n\nIt matters less since then:\n- packing is incremental: only tiles fetched since the last pack;\n- the coverage's tiles are now archived, and P8 made prefetch skip archived ones.\n\nIt costs time again when the coverage grows or many new tiles are fetched. Folded into the pool's phase 4 (#21), which places I/O-bound work. Worth measuring again before building anything.",
+  "num": 31,
+  "order": 8,
+  "parent": "g3",
+  "priority": 13,
+  "reply": "Folded into #21 (pool phase 4) on 8 Oct, with its details there; built as part of it.",
+  "slot": null,
+  "stage": "",
+  "text": "P4 Raw tile packing as its own job",
+  "where": "Subagent"
+}

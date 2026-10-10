@@ -1,0 +1,17 @@
+{
+  "added": "2026-10-05T23:23:35Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:50:55.475Z",
+  "finished": "2026-10-06T07:21:00Z",
+  "kind": "task",
+  "note": "Put it in the top-right corner, left of the navigation controls.",
+  "num": 68,
+  "order": 1,
+  "parent": "f-mapapp",
+  "priority": 6,
+  "reply": "Published (20261006-0711): the box at the top right, left of the view controls (/ opens it). Fixed per its review: taps no longer reach the map, ~350 MB while held (was ~1.8 GB), names as the map shows them in translated areas, 2 letters at least",
+  "stage": "done",
+  "started": "2026-10-06T04:20:00Z",
+  "text": "Add place search to the map app.",
+  "where": "Subagent"
+}

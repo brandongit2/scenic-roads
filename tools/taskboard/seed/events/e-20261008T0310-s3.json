@@ -1,0 +1,6 @@
+{
+  "item": "s3",
+  "kind": "review",
+  "t": "2026-10-08T03:10:00Z",
+  "text": "Final report in: idempotent over the whole coverage (scan5, 3,169 s), 5.1 ms a tile, 28 of 3.0 M OSM summit pixels move (19 under AWS towers, 9 inside artifact clusters). 12 signed commits plus a staged change; not yet rebased (66 behind)"
+}

@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-08T03:30:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T09:21:22.226Z",
+  "finished": "2026-10-08T15:10:00Z",
+  "kind": "task",
+  "note": "Your verdict (8 Oct): what's in production looks really, really bad. Your recommendations: (1) judge screenshots with every unneeded overlay off and land and water in high-contrast colours; (2) compare each zoomed-out view against the same view rendered from full-detail geometry (as if at z16), aiming for pixel-for-pixel identical shorelines; (3) include off-nadir views, since today's dots ignore tilt and perspective; (4) improve the current implementation or throw it away and rewrite, whichever gives the best result and performance. The agent builds the evaluation harness first (an eval mode of the app, a full-detail reference renderer, a per-pixel metric, views at z2–12 and pitch 0–75°) and measures today's implementation as the baseline, then chooses the design with numbers",
+  "num": 113,
+  "order": 4.5,
+  "parent": "g7",
+  "reply": "Merged into main (4050309, e3ff07e, ad7ffb0) after a review with no blockers; waiting only on publishing: unlock 1Password in the morning and I re-sign, push and publish from the M4 (this Mac lacks the WebAssembly toolchain). Results: across 137 views the visibly different share fell from 7.7 % to 0.04 %; coastal shading 9.6 % to 0.14 % and shown at every zoom; frame time unchanged.",
+  "stage": "done",
+  "started": "2026-10-08T03:30:00Z",
+  "text": "Small islands and lakes, again: zoomed-out shorelines that match full detail pixel for pixel, tilted views included (improve or rewrite #48)",
+  "where": "Subagent"
+}

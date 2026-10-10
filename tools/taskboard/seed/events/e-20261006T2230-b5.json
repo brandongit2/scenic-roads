@@ -1,0 +1,6 @@
+{
+  "item": "b5",
+  "kind": "note",
+  "t": "2026-10-06T22:30:00Z",
+  "text": "Fixes in (9 commits; pilot rebuilt and re-measured; deterministic). Scoring M2's footprint bound (30 vs 60 m²) on B0's hold-out before the review resumes"
+}

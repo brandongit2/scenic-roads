@@ -1,0 +1,17 @@
+{
+  "added": "2026-10-09T02:35:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T08:55:07.620Z",
+  "finished": "2026-10-09T06:43:00Z",
+  "kind": "task",
+  "note": "Your ask (9 Oct): a Mac's room target (`scenic room`) frees its build caches only while no job runs there (agent::room::toward), so during a long rebuild it never acts. On 8 Oct the build Mac's caches reached 147 GB and the disk 43 GB free, which paused the lab (#120) for hours, though most of the caches weren't in use (canopy squares 46 GB, raw terrain tiles 27 GB, base packs 26 GB, a heritage extract 22 GB).\n\nWanted: room-making that can free anything no running job needs, at any moment, including mid-job.\n\nYour concern: lists of each job's needed files falling out of sync with the code. Design so that can't break anything:\n- Correctness never depends on a list. Every cache read goes through one accessor that gets the file or refills it from the NAS when missing (the caches are all refillable today: check the exceptions, e.g. the DEM seed, the heritage clip). A wrong deletion costs a re-fetch, never a failure.\n- In-use protection comes from the act of using a file, not a declaration. The accessor takes a shared file lock on each cache file as a job opens it, held to the job's end. The room-maker deletes a file only if it can take an exclusive lock, and skips it otherwise. This works across processes (jobs are separate programs). Deleting an open file is also safe on macOS: the job keeps reading it.\n- Declared reads (terrain_reads, units' base packs and canopy squares, tasks' traced reads) become only a hint: spare files the queued jobs will need, so they aren't fetched twice. A stale hint costs only a re-fetch.\n- Guards: a test or lint that nothing reads cache paths directly, bypassing the accessor; and a \"chaos\" run where the room-maker deletes as aggressively as possible while real jobs run, the outputs still byte-identical.\n- Keep room-making's order (the cheapest to refill first) and its rules.\n\nRelated: #21 (pool phase 4's steps table names each step's needs).",
+  "num": 129,
+  "order": 20,
+  "parent": "g2",
+  "priority": 8,
+  "reply": "Published 9 Oct 06:43 UTC (20261009-0643-90153f1), ahead of #32 after all: the rebuild ran longer than forecast, and it shares no behaviour with #32.\n\n- Every cache file a job uses is held with a shared lock as it's opened. Room-making deletes a file only if it can lock it exclusively without waiting, and checks the name still points to that file first. A job that loses the race fills the file again.\n- Every cache can be filled again from the NAS, except two never deleted while they can't be: the DEM seed while the NAS lacks it whole, and the heritage clip while the planet file can't be had.\n- Room-making, its target and its trims act during jobs. Files queued jobs will need go last.\n- Guards: a lint that no code reads a cache without the accessor; chaos tests (deleting as fast as it can during real runs) give byte-identical outputs.\n- Fixed on the way: tree cover could fail a run when a canopy square went mid-run; the base-pack trim could delete a pack another job used.\n- Every internet request asks first, so tests run offline.\n- After a publish, mid-job deletion starts once jobs the previous version started have ended.",
+  "stage": "done",
+  "started": "2026-10-09T02:45:00Z",
+  "text": "Room-making frees cache files while jobs run (anything no job is using), safely by design",
+  "where": "Subagent"
+}

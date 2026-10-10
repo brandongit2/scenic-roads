@@ -1,0 +1,15 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:57:50.076Z",
+  "finished": "2026-10-06T05:42:30Z",
+  "kind": "task",
+  "note": "17.3 GB at 20:55, about 6.3 hours left",
+  "num": 3,
+  "order": 3,
+  "parent": "g6",
+  "reply": "Done: 194 files, 61.81 GB, every file's checksum checked (sources/overture/2026-09-23-1, 56 GB; sources/ghsl/R2023A, 1.2 GB). Phase B0 can start",
+  "stage": "done",
+  "started": "2026-10-05T22:17:00Z",
+  "text": "Download Overture buildings and GHSL heights (61.8 GB)",
+  "where": "Build Mac process (dem/bldfetch.py, started by hand)"
+}

@@ -1,0 +1,13 @@
+{
+  "finished": "2026-10-06T02:57:00Z",
+  "kind": "task",
+  "note": "Published 20261006-0230-aa0b763; its first round went out at 22:57. The iPad isn't connected now (last seen 18:08): once its build page is open again it pairs itself with the key it had and takes areas",
+  "num": 65,
+  "order": 9,
+  "parent": "g1",
+  "priority": 1,
+  "stage": "done",
+  "started": "2026-10-06T02:22:00Z",
+  "text": "Review, publish, and watch the iPad take real areas",
+  "where": "Subagent"
+}

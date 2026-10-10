@@ -1,0 +1,9 @@
+{
+  "kind": "task",
+  "num": 30,
+  "order": 7,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P4 Two jobs at once on the build Mac; the chains listed from the start",
+  "where": "Subagent"
+}

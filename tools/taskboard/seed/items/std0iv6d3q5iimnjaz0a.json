@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T01:02:20.616Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:47.801Z",
+  "finished": "2026-10-06T02:03:00Z",
+  "kind": "task",
+  "note": "Allow me to assign priority numbers to my own tasks added to the backlog. And the ability to change the priorities, if the item(s) have not been begun yet.",
+  "num": 74,
+  "order": 10,
+  "parent": "g8",
+  "reply": "Done: a Priority box when you add a task, and in its editor",
+  "stage": "done",
+  "started": "2026-10-06T01:52:00Z",
+  "text": "Backlog new-task improvements, item 5",
+  "where": "Subagent"
+}

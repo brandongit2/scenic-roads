@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-08T20:45:00Z",
+  "kind": "task",
+  "note": "Found while fixing #122 (8 Oct). Today a unit job that offers its unit's tail to a page or helper must stay alive until the tail comes back. With one unit in the job, the build Mac's slot sits idle waiting, or races the worker by running the tail itself. So in single-unit jobs (16 of the M4's last 19), a page can save the Mac at most a minute of CPU for the job beside, never a slot's time. #122 limits the cost: it waits only on workers whose measured pace beats this Mac.\n\nFor pages to add real throughput, the slot would have to be freed while a worker holds the tail, with the unit committed later. The #122 agent's estimate: ~600–900 lines plus tests, 2–3 days. It touches scenic-build (the prepared unit's state saved, a commit entry point), offload/coord (tasks outliving their job's process), the agent (held units, their commit as a light job), the plan (those units under way), the pool's lease and hand-off, the units' folders kept on disk, and the forecast. plan.md §10 gap 11. Probably alongside the pool's phase 4 (#21), which brokers tasks on every member.",
+  "num": 125,
+  "order": 4.6,
+  "parent": "g5",
+  "priority": 12,
+  "slot": null,
+  "stage": "",
+  "text": "A unit job ends while a worker holds its tail, and its Mac's slot takes new work (pages then add throughput, not just checks)",
+  "where": "Subagent"
+}

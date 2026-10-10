@@ -1,0 +1,14 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:57:32.318Z",
+  "finished": "2026-10-06T07:21:00Z",
+  "kind": "task",
+  "note": "Reviewed and fixed (a hang: blocks waited on each other's threads); TREES_V kept at 2 (same pixels, so no rebuild). Published 20261006-0711",
+  "num": 42,
+  "order": 2,
+  "parent": "g4",
+  "stage": "done",
+  "started": "2026-10-06T01:50:00Z",
+  "text": "Review it, wire it into the tree packs, bump TREES_V",
+  "where": "Subagent"
+}

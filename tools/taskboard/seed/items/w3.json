@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T15:10:00Z",
+  "kind": "task",
+  "note": "From the lab (#98): research/W3-NEEDS.md in scenic-lab/bathy has the download list, the depth packs' recipe, the server's fallback, the app's two layers, the lakes chain and their calibration. Scaled to all regions: ~35–60 GB built.\n\nYour calls before it starts (asked 6 Oct): (1) the look: nautical blues, log scale to 300 m, estimated depths muted, contours on demand; (2) NOAA's 4 m US coasts at zoom 15 (17 GB) or 14 (8 GB), and surveyed lakes at zoom 16 (5–20 GB) or 15 (1–2 GB): I'd take the full detail in both; (3) GEBCO's worldwide grid through GEBCO's own subset service (allowed; my pick) or a zip you download by hand yearly",
+  "num": 99,
+  "order": 3,
+  "parent": "f-water",
+  "priority": null,
+  "slot": null,
+  "stage": "",
+  "text": "Build it into the map: download, the depth packs (worldwide coarse, then each source at its resolution), the two layers with their settings",
+  "where": "Subagent"
+}

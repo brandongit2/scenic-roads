@@ -1,0 +1,14 @@
+{
+  "finished": "2026-10-09T17:45:00Z",
+  "kind": "task",
+  "note": "From the architect's review (5 Oct, P7).\n\nPages (a build page on the iPad or in any browser) take two kinds of task today: a region's last stretch and, since B3, a 3D buildings area. Terrain and slope stay on the Macs.\n\nThe review sized pieces a browser could hold, both already pure Rust:\n- a terrain z8 subtree: 341 raw tiles, ~15 MB in, ~100–250 MB peak;\n- a slope z8 subtree: ~485 terrain tiles including a one-tile ring, ~200 MB.\n\nIts estimate of the gain: ~4 page workers come to about a quarter of the M4's CPU, and only while the pages are open on screen. That's enough to absorb much of slope and terrain over a day.\n\nNeeds P5 part 2 (#32), the per-z6 pieces this would split further. Since the terrain fix (TERRAIN_V 3), terrain also reads GLO-30 north of 60°N and the basemap's water, which a page would need too.",
+  "num": 35,
+  "order": 12,
+  "parent": "g3",
+  "priority": 15,
+  "reply": "Terrain done, publishing 9 Oct ~17:45 UTC; slope not done (below).\n- A terrain piece's z8 subtrees can go to any worker, pages included, in groups closed under lakes (a lake's level needs its whole shore). Each task carries its own inputs in one file (raw tiles, water, GLO-30 windows; 4–60 MB), so nothing new is read from the NAS or the web. A group fits a page: 724 MB in Chrome for two subtrees.\n- Proved: pieces made with a native worker and with a page in Chrome give exactly the manifest's packs and mids; WebAssembly gives the same bytes as native.\n- But under today's rule (a worker is waited on only if its measured pace beats this Mac's) it saves about nothing: the build Mac makes a subtree in ~0.5 s, a page in 6–16 s. The fix proposed (offering each piece's work ahead, judged against the head start) belongs to #21's placement and is noted there; built but switched off.\n- Slope: the same pace limit, plus a ring of neighbouring tiles per subtree; not done.\n- Side check: the latent lake-key collision occurs nowhere in today's data (0 of 1.03 M tiles); pinned and noted for the next terrain version.",
+  "stage": "done",
+  "started": "2026-10-09T14:00:00Z",
+  "text": "P7 Terrain and slope z8 subtrees as browser tasks",
+  "where": "Subagent"
+}

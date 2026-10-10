@@ -1,0 +1,6 @@
+{
+  "item": "s4",
+  "kind": "merge",
+  "t": "2026-10-06T23:10:00Z",
+  "text": "Merged to main as d20dac7 (5 signed commits on 95cfbd9; 403 pipeline, 41 server, 70 store tests pass on the build Mac); publishing"
+}

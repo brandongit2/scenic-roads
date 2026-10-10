@@ -1,0 +1,6 @@
+{
+  "item": "tests-deterministic",
+  "kind": "owner",
+  "t": "2026-10-09T09:50:00Z",
+  "text": "#148 added at P1 (your call): tests that don't depend on the clock or the Mac's load"
+}

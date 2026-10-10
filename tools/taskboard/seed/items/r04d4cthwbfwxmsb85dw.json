@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-06T20:44:16.400Z",
+  "kind": "task",
+  "note": "I'm talking about the UI seen in the screenshot.\n\nFormerly, these used to generally use percentiles for the auto-scaling, but I had it changed to use screen-widths instead. This task asks you to reintroduce percentiles, but as an option which one can pick instead of screen-widths. Screen-widths should remain the default.\n\nThis ask applies to all settings which use screen-widths as the auto-scaling measure (roads, passenger rail, ferries, etc.)",
+  "num": 110,
+  "order": 4,
+  "parent": "f-mapapp",
+  "photos": [
+    "725666bf4b2f21b68e55d3444c0e29d7"
+  ],
+  "priority": 21,
+  "reply": "Merged, publishing 9 Oct ~01:20. Every layer that auto-fits by screen widths (roads' scenic metrics, rail's and ferries' ranked metrics) now has a unit menu in its caption: \"Auto-fit: the best [15] [screen widths ▾] …\" or \"… the best [20] [% ▾] of roads in view, full colour from the best [0.1] %\". Screen widths stay the default. Percentiles are of line length in view, the same code as before the switch (it never left: Elevation and Grade use it). Kept in the link (`fu=p` for roads, a trailing `p` for rail and ferries); old links read as screen widths. Equalise, Lock, Full and Auto work with either. Screenshots: scratchpad/pct/shots/.\n\nYour calls: the percentile defaults are the old saved ones (scenic best 20 % … 0.1 %; rail ride score 30 % … 0.2 %; other rail metrics 2–98; ferries 0–100, which reads oddly as \"the busiest 100 %\"). Keep them, or set others? And the unit is per layer, not per metric (as the screen-width numbers are).",
+  "slot": null,
+  "stage": "review",
+  "started": "2026-10-09T00:50:00Z",
+  "text": "Add option for percentile colouring ranges, where \"screen-widths\" is currently supported",
+  "where": "Subagent"
+}

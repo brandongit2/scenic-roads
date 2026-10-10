@@ -1,0 +1,17 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:53.596Z",
+  "finished": "2026-10-09T00:16:00Z",
+  "kind": "task",
+  "note": "From the architect's review (5 Oct, P7).\n\nTree cover (canopy height, cover and leaf type) is built per z6 piece from z8 blocks, which read Meta's canopy squares (~2 GB GeoTIFFs, each covering a 10° square). The Rust port of trees.py (#41) also runs as WebAssembly with the same bytes, but no page is offered tree work.\n\nWhat stands in the way:\n- a page would need to read parts of those large canopy files, not whole files;\n- the blocks of one canopy square are best kept together on one worker, so each square is copied once.",
+  "num": 43,
+  "order": 3,
+  "parent": "g4",
+  "priority": 19,
+  "reply": "Built, merged (2abe11c), publishing now. Nothing rebuilds: the tiles come out byte for byte the same.\n\nA tree-cover piece's z8 blocks are now tasks of a new kind, treeblock, for pages and helper Macs. The unit is a row of up to 4 blocks: Meta's canopy files store each pixel row as one strip across the whole 10° square, so a row's blocks read the same strips. A page reads 92–289 MB a row by ranges, never a whole 2 GB file, and uses at most ~625 MB, against the iPad's ~3 GB.\n\nChecked on 4 rows (dense forest, a row across four squares' edges, the tropics, a coast): native on 1 thread and on all threads, blocks made alone, WebAssembly in Node and in the page's own runtime. All the same bytes, and the same as the live map's tiles.\n\nTimed: a headless page took a row in 20 s and matched; its pace came out ~1.07 (about this Mac's own). The build Mac makes a row in ~3 s on all its threads, so today's gain is small, as expected; the same pace rules as #122 apply (a page measured slower gets none). The payoff grows with #125.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T19:10:00Z",
+  "text": "Tree blocks as browser tasks",
+  "where": "Subagent"
+}

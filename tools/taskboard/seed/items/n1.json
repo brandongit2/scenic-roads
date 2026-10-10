@@ -1,0 +1,12 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:05:11.100Z",
+  "finished": "2026-10-05T23:09:35Z",
+  "kind": "task",
+  "num": 15,
+  "order": 18,
+  "parent": "g3",
+  "stage": "done",
+  "text": "Nit: the forecast jumped whenever you came or went",
+  "where": "Subagent"
+}

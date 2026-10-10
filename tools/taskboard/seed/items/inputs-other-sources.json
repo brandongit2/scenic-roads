@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "Everything else the build reads by name today, each made a declaration or kept with a written reason: land cover (ESA WorldCover), canopy height (Meta & WRI) and leaf type (Copernicus HRL, NALCMS), buildings (Overture, GHSL), the basemap's pinned tools and data, Wikidata and pageviews, and #124's CanVec lake fill.",
+  "num": 145,
+  "order": 13,
+  "parent": "f-inputs",
+  "priority": 41,
+  "slot": null,
+  "stage": "",
+  "text": "The remaining sources as declarations",
+  "where": "Subagent"
+}

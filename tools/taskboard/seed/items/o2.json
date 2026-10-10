@@ -1,0 +1,12 @@
+{
+  "finished": "2026-10-06T02:20:00Z",
+  "kind": "task",
+  "note": "The protocol core and its simulator (25 tests, 32,500 simulated schedules). Its review: safety holds, but two liveness faults and several smaller ones, to fix first in phase 2 (listed in docs/plan.md §10). Merging it, not wired in (it changes nothing yet), with its docs",
+  "num": 18,
+  "order": 2,
+  "parent": "g5",
+  "stage": "done",
+  "started": "2026-10-05T23:08:00Z",
+  "text": "Phase 1: member ids, terms, records per term, the journal",
+  "where": "Subagent"
+}

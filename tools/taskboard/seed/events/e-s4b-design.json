@@ -1,0 +1,6 @@
+{
+  "item": "s4b",
+  "kind": "progress",
+  "t": "2026-10-08T06:00:00Z",
+  "text": "Design chosen: water becomes an exact coverage raster built from the basemap's z14 water, drawn at the screen's density. Simulated over the 27 core views, 0.10 % of pixels visibly differ (today 10 %); tilted 0.12 % (today 15 %). It replaces the vector water fill and the small islands and lakes' dots, outlines and build step. Approved, on conditions: keep everything else that reads the water, cover zooms above 14, say how depth layers get masked by the water, keep colours live and hover/click on water working, fit the offline mirror, keep the server's on-demand cost bounded."
+}

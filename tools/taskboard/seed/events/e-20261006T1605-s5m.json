@@ -1,0 +1,6 @@
+{
+  "item": "s5",
+  "kind": "merge",
+  "t": "2026-10-06T16:04:00Z",
+  "text": "Merged to main as b487c3d (14 signed commits, rebased onto the boot fix); store 70 and server 40 tests pass; publishing"
+}

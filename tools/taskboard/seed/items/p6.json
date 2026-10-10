@@ -1,0 +1,9 @@
+{
+  "kind": "task",
+  "num": 33,
+  "order": 10,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P6 A second CPU job on the build Mac",
+  "where": "Subagent"
+}

@@ -1,0 +1,14 @@
+{
+  "finished": "2026-10-08T19:52:00Z",
+  "kind": "task",
+  "note": "pool.md §12 item 3: the owner's asks reaching the agent (hand over, make this Mac lead, take over), driven by the state machines phases 1–2 built; the menu bar's \"Hand the Build To ▸\", \"Make This Mac Lead\", \"Take Over the Build…\" and the proactive offer; the worker page's \"Make lead\" and \"Take it\"; `scenic lead give/take`; the map's build panel; the history's terms. Tested in the harness and with scratch agents only, never the live pool. After it's published, a real handover is tried once the terrain rebuild ends. Brief: scratchpad/pool3/BRIEF.md.",
+  "num": 20,
+  "order": 4,
+  "parent": "g5",
+  "priority": 8,
+  "reply": "Published (20261008-1952-2395ea5). Controls: the menu bar's \"Hand the Build To ▸\" (on the lead), \"Make This Mac Lead\" (on a member), \"Take Over the Build…\" (when the lead is out of touch, confirming), the offer when the lead is on battery or away, each Mac's state; the worker page's pool cards with \"Make lead\" and \"Take it\"; the map's build panel; `scenic lead`, `give`, `take [--force] [--downgrade]`, `auto on|off`. Forcing only from the Mac itself, never a page. Automatic handover built but off (`scenic lead auto on`; 5 min of standing offer, never within 30 min of a change). Two publishes failed on tests first: one assumed the host name began \"MacBook\", and the agents' tests read the real battery (the build Mac was unplugged at 18 %); both fixed. Nothing happens on the live pool until someone asks. A real handover is tried once the terrain rebuild ends.",
+  "stage": "done",
+  "started": "2026-10-08T18:15:00Z",
+  "text": "Phase 3: controls (menu bar, worker page, scenic lead, map panel)",
+  "where": "Subagent"
+}

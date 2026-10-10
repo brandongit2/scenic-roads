@@ -1,0 +1,6 @@
+{
+  "item": "s4",
+  "kind": "review",
+  "t": "2026-10-06T23:10:00Z",
+  "text": "Review done: merge after M1 (rings below z4); M2's guard and L1–L4 go in too. 556 tests pass on the build Mac"
+}

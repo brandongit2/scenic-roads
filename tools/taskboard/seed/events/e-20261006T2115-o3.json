@@ -1,0 +1,6 @@
+{
+  "item": "o3",
+  "kind": "review",
+  "t": "2026-10-06T21:15:00Z",
+  "text": "Fixes in; the reviewer resumed on the fixed branch. My call: with 10-minute read lag a handover rarely settles (3%), but a failed handover only leaves the old lead leading and real share lag is seconds, so it stays as is, noted in plan §10"
+}

@@ -1,0 +1,10 @@
+{
+  "finished": "2026-10-05T22:59:52Z",
+  "kind": "task",
+  "num": 25,
+  "order": 3,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P2 Helpers take terrain from the near end",
+  "where": "Subagent"
+}

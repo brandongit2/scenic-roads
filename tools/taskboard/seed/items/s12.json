@@ -1,0 +1,12 @@
+{
+  "kind": "task",
+  "note": "The \"converted legacy data\" is what the old pipeline made before the region rebuild, converted into the new layout (sources/legacy/, global/legacy/): about 105 GB (6 Oct estimate).\n\nIt's still read:\n- catalog 17 (8 Oct) lists 38 global/legacy files;\n- the map server reads them for popup details (POIs, heritage, parks, Indigenous areas), English names and ferries (crates/server/src/main.rs);\n- the items job reads sources/legacy/m1 for Wikidata facts and pageviews.\n\nDeleting is irreversible, so it waits until nothing reads it, and for your yes.",
+  "num": 52,
+  "order": 12,
+  "parent": "g7",
+  "priority": 23,
+  "slot": null,
+  "stage": "",
+  "text": "Delete the converted legacy data on the NAS (~105 GB) once nothing reads it",
+  "where": "Subagent"
+}

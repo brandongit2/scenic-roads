@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-08T03:20:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:29.475Z",
+  "discuss": false,
+  "finished": "2026-10-08T19:30:00Z",
+  "kind": "task",
+  "note": "Your ask (7 Oct), on the repair (#47) leaving more lone towers at z7–z9: \"I'd question whether artefacts even exist at those zoom levels. Did we ever characterize the nature and occurrence of the artefacts in the first place? … maybe artefacts always appear in the same places across all zoom levels, and maybe they fizzle out (to the point of being imperceptible) at lower zooms.\" An agent writes its own artefact detector, measures where and at which zooms they occur, how big they look at each zoom, whether a coarse one is AWS's average of a fine one, and where they cluster (coasts, source boundaries, latitude). Then a review map (127.0.0.1:18093) walks you through a sample: raw / today's / repaired terrain side by side, and you mark each one artefact, real or unsure, saved to disk. Your answers to #47's calls 2 and 3 wait for this. #47 merges after it",
+  "num": 112,
+  "order": 3.5,
+  "parent": "g7",
+  "priority": 11.5,
+  "reply": "Study done; your review is next: http://127.0.0.1:18093/?review=1 (312 candidates; keys 1/2/3 terrain, A/R/U verdict, N next). Artefacts exist at z7–z12 (136k confident). (a) Same places at every zoom: mostly false (29–38 % found one zoom away, at a tenth of the height); each zoom makes its own. (b) Fade at low zooms: true from z6 down; z7–z9 still 5–11 screen px, though the map rebuilds z ≤ 8 from z9 so most never show. Cluster at 60–67°N (Alaska, Yukon: 2.6×, past SRTM's edge) and above 79°N (12×). The new repair takes 42 % of confident visible ones (towers 72 %, blocks 29 %, steps 12 %, seams none); it misses most in the glaciated north, and leaves 334 the first repair took (an 821 m tower in Maryland). Report: repair/artefact-analysis.txt; images repair/img-study/.",
+  "stage": "done",
+  "started": "2026-10-08T03:20:00Z",
+  "text": "Characterise the terrain artefacts across zooms before merging the repair: a heuristic, counts and persistence by zoom, a review map for you",
+  "where": "Subagent"
+}

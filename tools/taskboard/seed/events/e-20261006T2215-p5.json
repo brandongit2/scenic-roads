@@ -1,0 +1,6 @@
+{
+  "item": "p5",
+  "kind": "review",
+  "t": "2026-10-06T22:15:00Z",
+  "text": "Part 1 built (tests pass at every commit; p5-check on the live records: 18 rebuilt, 0 re-keyed). The design's author reviews it against the design"
+}

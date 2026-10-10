@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-06T02:24:37.347Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:50:47.883Z",
+  "finished": "2026-10-06T07:21:00Z",
+  "kind": "task",
+  "note": "This should send a request to the build Mac, from where I may accept or decline it.\n\nGet rid of the \"token\" mechanism entirely.",
+  "num": 78,
+  "order": 3,
+  "parent": "f-buildpage",
+  "photos": [],
+  "priority": 2,
+  "reply": "Published (20261006-0711): a page asks the build Mac, which makes a code only you and that device see; you accept it in the Scenic menu bar on the build Mac (or `scenic devices accept <code>`). Two security reviews' fixes in; the old key is retired, so the iPad asks once when its page opens",
+  "stage": "done",
+  "started": "2026-10-06T02:34:00Z",
+  "text": "Dashboard page: Add a button to opt the tab in as a helper",
+  "where": "Subagent"
+}

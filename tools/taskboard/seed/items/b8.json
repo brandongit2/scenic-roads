@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T16:40:00Z",
+  "kind": "task",
+  "note": "Your ask (6 Oct): buildings visible at all zoom levels, even very far away, faked or approximated there. Only after 3D buildings are fully deployed in every region (B2, B3); don't complicate that work. Today the pilot draws buildings from zoom 12 up (a laptop screen about 15–20 km across at these latitudes); z12–13 tiles hold only tall and large buildings, and below zoom 12 they vanish.\n\nTo guide implementation and validation: try rendering some cities or groups of buildings from afar: at a couple zoom levels ranging from up close, all the way to z3. Each zoom level should look practically identical to the closer zoom levels, as though you had rendered the map at extremely high resolution at full detail, then downsampled from that to the screen resolution.\n\nTo make comparisons easier, disable all map layers except for the 3D buildings, 3D terrain, land+water, and hillshading, and adjust the colours of things on the map so that contrast is sufficient for visual examination.",
+  "num": 102,
+  "order": 8,
+  "parent": "g6",
+  "priority": 24,
+  "slot": null,
+  "stage": "",
+  "text": "Long-distance buildings: 3D buildings visible at every zoom, approximated far away, as the roads are",
+  "where": "Subagent"
+}

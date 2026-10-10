@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "- A file per region stays the definition (inputs/regions/); the Regions panel keeps writing them.\n- Outlines: OSM boundaries (preferred: neighbours share edges exactly), GeoJSON for custom shapes, circles.\n- Today's .poly outlines (Azores, Madeira, mainland Portugal, the Geofabrik ones) become GeoJSON, proved to select the same coverage; .poly support deleted.\n- Checks: an unknown boundary, a broken shape; a warning for a thin gap between neighbouring regions (a sliver whose roads would be left off). Overlaps are harmless.",
+  "num": 135,
+  "order": 3,
+  "parent": "f-inputs",
+  "priority": 31,
+  "slot": null,
+  "stage": "",
+  "text": "Region recipes on the gate: GeoJSON for custom shapes (no more .poly), and a warning for thin gaps between neighbouring regions",
+  "where": "Subagent"
+}

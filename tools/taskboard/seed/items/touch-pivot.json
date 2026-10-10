@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-08T04:50:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:56.463Z",
+  "finished": "2026-10-09T00:41:00Z",
+  "kind": "task",
+  "note": "Your report (8 Oct), on the iPad:\n- Zooming with two fingers is too aggressive or sensitive at really high zooms (normal at most zooms).\n- Rotating and tilting happen about a point that isn't where you'd expect. You can't tell exactly where it is, but suspect it's somewhere at sea level.\n- All of it is very pronounced in mountainous regions, and seems negligible or absent over terrain at sea level (not certain).",
+  "num": 116,
+  "order": 4,
+  "parent": "f-mapapp",
+  "priority": 20,
+  "reply": "Published (20261009-0041-627750f). The cause, as you guessed: MapLibre's touch handlers pivot on the sea-level plane under the view centre, not the terrain under your fingers. Two-finger gestures now go through the same camera code as the trackpad, about the terrain point between your fingers. Measured with real touches over Mont Blanc, Fuji and the Rockies (zooms 12–18, pitch 0–70), before → after:\n- pinch (spread doubled): zoom done median 1.66 levels, range −4.5 to +5.5, the point off by up to 4,535 px → exactly 1.000, the point within 2 px;\n- turn: the point off by up to 5,295 px (pivot up to 28 km away) → under 1 px;\n- tilt: the pivot was at sea level ~11 km ahead → at the point, under 1 px.\nNew: two-finger pan (the ground between your fingers follows them; a 6 px dead zone so a pinch doesn't drift). Tap-then-drag zoom now about the tapped point. No pan or turn inertia.\n\nPlease try on the iPad: pinch around z17 over Mont Blanc, turn and tilt in mountains, the two-finger pan; and whether the 6 px dead zone and 25 px turn threshold feel right.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T20:05:00Z",
+  "text": "Two-finger touch gestures in mountains: zoom too touchy at high zooms; rotate and tilt about an unexpected point",
+  "where": "Subagent"
+}

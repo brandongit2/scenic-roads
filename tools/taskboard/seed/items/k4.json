@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-06T04:58:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:53:14.151Z",
+  "finished": "2026-10-06T09:21:00Z",
+  "kind": "task",
+  "num": 79,
+  "order": 4,
+  "parent": "g8",
+  "priority": 1,
+  "reply": "Live: a tree of folders and tasks beside a flat priority list; stages (under way, integrating, in review, waiting on you), where each task runs, needs-discussion, archive, undo instead of confirmations, search and filters, and a trail of what happened. It saves one action at a time in click order, so nothing races. Use one tab at a time. Three reviews; 217 checks",
+  "stage": "done",
+  "started": "2026-10-06T05:03:00Z",
+  "text": "Redesign this page: a tree of folders and tasks beside a flat priority list; archive; where each task runs; stages; needs discussion; trail; undo; search",
+  "where": "Subagent"
+}

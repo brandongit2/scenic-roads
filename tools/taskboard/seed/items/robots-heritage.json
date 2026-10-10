@@ -1,0 +1,11 @@
+{
+  "added": "2026-10-06T20:10:00Z",
+  "kind": "task",
+  "note": "Found by the generalized lab: when its cache lacks the registers snapshot, heritage.py falls back to data.unesco.org/api and query.wikidata.org/sparql, both disallowed for scripts. Today's build has the snapshot cached, so it only bites on a fresh cache. Make the snapshot required (fail with a clear message) or fetch it from an allowed route",
+  "num": 106,
+  "order": 61,
+  "parent": "g2",
+  "stage": "",
+  "text": "heritage.py never falls back to endpoints whose robots.txt forbids scripts",
+  "where": "Subagent"
+}

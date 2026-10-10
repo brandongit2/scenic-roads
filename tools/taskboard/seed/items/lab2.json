@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T07:22:00Z",
+  "finished": "2026-10-06T15:50:00Z",
+  "kind": "task",
+  "num": 82,
+  "order": 2,
+  "parent": "lab",
+  "reply": "Done: 96 datasets, 64.0 GB in the lab folder on the NAS, every file verified (1,778 files). robots.txt was honoured: where it forbade a source (NCEI's /data, SPC, ERDDAP, some APIs) an official mirror or a substitute was used, or it was skipped (IBTrACS → NHC's HURDAT2, MUR → OISST…). iNaturalist plants stopped early at your request (28k of 761k records; resumable). Skipped for accounts: eBird, GBIF downloads, Daymet, VIIRS lights, Native Land, NHGIS",
+  "stage": "done",
+  "started": "2026-10-06T08:38:00Z",
+  "text": "Source and download the data into the lab folder (Sonnet subagent)",
+  "where": "Sonnet subagent"
+}

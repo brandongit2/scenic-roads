@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T07:22:00Z",
+  "finished": "2026-10-06T14:45:00Z",
+  "kind": "task",
+  "num": 83,
+  "order": 3,
+  "parent": "lab",
+  "reply": "Done: 151 layers at http://127.0.0.1:18090 (start/stop: scenic-lab/massachusetts/lab.sh on the NAS; README and 39 screenshots there), with a 20-stop Tour; roads coloured by 28 metrics. Findings: the map's score agrees with the 1982 experts (61 % of road-km through Distinctive landscapes in the map's top tenth vs 8 % unrated); heritage byways score low on scenery but top \"Old New England\" (the score lacks a history component); peak colour ~4 Oct in the Berkshires, 10 Oct Worcester and Boston, 18 Oct the Cape; animal crashes: 23 % in November, 61 % in the dark. To remove it all: lab.sh stop, then delete ~/lab and scenic-lab on the NAS",
+  "stage": "done",
+  "started": "2026-10-06T08:45:00Z",
+  "text": "Put it on the map: a lab branch of the app showing every new layer for Massachusetts (Opus subagent)",
+  "where": "Subagent"
+}

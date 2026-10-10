@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-06T06:30:00Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T14:03:11.454Z",
+  "finished": "2026-10-06T09:12:00Z",
+  "kind": "task",
+  "num": 80,
+  "order": 6,
+  "parent": "g2",
+  "reply": "Published (20261006-0856): once nothing's left to build, each Mac trims what the NAS fills again (the build Mac went from 40 to 84 GB free; it keeps its canopy squares); the menu bar's \"Clear the Build's Caches (N GB)\" asks first, listing each cache, its size and how long it takes to come back (155 GB clearable on the build Mac now), as does `scenic clean` (--yes skips it). The re-review's four small follow-ups are merged (17642ca) and go out with the next publish",
+  "stage": "done",
+  "started": "2026-10-06T06:31:00Z",
+  "text": "The build cleans up after itself: caches trimmed once nothing's left to build; a menu bar button clears the rest, canopy squares included",
+  "where": "Subagent"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "scenic-task-board",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "seed": "node seed.mjs" },
+  "engines": { "node": ">=22.5" }
+}

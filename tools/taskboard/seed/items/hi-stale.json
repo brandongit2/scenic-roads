@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-06T17:00:00Z",
+  "kind": "task",
+  "note": "Found by P8's review (plan.md §10 gap 4). 98 are z6 tiles the coverage left, whose old hi packs stay in the manifest; one (6/21/18) is a piece whose area's last run made no hi tiles, so the manifest kept its earlier hi pack (terrain_pack.rs:736). Decide: drop hi packs of tiles outside the coverage, and have a run that makes no hi tiles for a piece drop its old one. Sequence with the terrain repair (s3), which rebuilds terrain anyway",
+  "num": 103,
+  "order": 30,
+  "parent": "g3",
+  "priority": 16,
+  "slot": 3,
+  "stage": "",
+  "text": "Terrain: stale hi packs are still served (99 z6 tiles whose z9–12 tiles are older than the z8–6 tiles under them)",
+  "where": "Subagent"
+}

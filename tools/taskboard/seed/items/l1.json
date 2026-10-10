@@ -1,0 +1,11 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:02:29.204Z",
+  "kind": "task",
+  "num": 11,
+  "order": 1,
+  "parent": "g2",
+  "stage": "done",
+  "text": "Freed disk on the build Mac so map tiles could go on",
+  "where": "Subagent"
+}

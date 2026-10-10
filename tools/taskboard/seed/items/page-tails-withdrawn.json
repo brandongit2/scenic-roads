@@ -1,0 +1,15 @@
+{
+  "added": "2026-10-08T19:30:00Z",
+  "finished": "2026-10-08T20:53:00Z",
+  "kind": "task",
+  "note": "Your report (8 Oct, ~15:10): the build page's schedule put jobs on the iPad worker, but when their time came the iPad got nothing.\n\nWhat I found (8 Oct 15:15, terrain rebuild under way):\n- The iPad page was connected and counted: seen seconds before, visible, 3 GB, taking tail and bldtile. /task/workers answered 2 tail workers (the iPad and the M1).\n- The build Mac's unit jobs held one unit each (\"1 unit(s)\"), because units become ready only as each terrain area finishes.\n- A unit job offers a unit's tail to a worker so the build Mac can prepare the next unit meanwhile. With no next unit, the job goes straight to its end, where settle_tails(wait = true) takes back any tail no worker has leased yet (offload.rs settle_with: withdraw, then run here). That happens milliseconds after the offer, before a page's next ask can lease it.\n- So every tail ran on the build Mac (\"its last steps run here\" in unit-6-19-28.log and unit-6-17-25.log), and no task appears in the coordinator's history.\n- The forecast behind the schedule plans page workers into units regardless, so it shows work the pages never get.\n\nExpected to happen less once many units are ready at once (jobs of up to 6), but how often single-unit jobs occur in a rebuild hasn't been measured. Related: #21 (phase 4, pages talk to members directly), #35.",
+  "num": 122,
+  "order": 4.5,
+  "parent": "g5",
+  "priority": 7.5,
+  "reply": "Published (20261008-2053-0a94558). A job now waits on a page only once that page's measured pace beats this Mac's (25 % margin). A page not yet measured is raced at once, as before, but kept to finish, so its time gets measured; at most once an hour it's given a 30 s chance to take a task. A slow page costs nothing; a new one at most 30 s an hour. The same rule applies to 3D buildings areas. The schedule's pages lane and the build Mac's unit times count only pages measured faster. No page has done a tail yet: your iPad's first paces come once region jobs reach it. Paces are kept in the coordinator's memory, so a restart measures again. The bigger fix that frees the Mac's slot while a page works is #125. Two publishes failed first on timing-sensitive tests under the rebuild's load; the tests were loosened.",
+  "stage": "done",
+  "started": "2026-10-08T19:55:00Z",
+  "text": "Pages get no region tails when a unit job has one unit: the offer is taken back at once, though the schedule shows the iPad working",
+  "where": "Subagent"
+}

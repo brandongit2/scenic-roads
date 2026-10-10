@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:04:11.433Z",
+  "finished": "2026-10-05T23:23:57Z",
+  "kind": "task",
+  "num": 63,
+  "order": 3,
+  "parent": "t8",
+  "stage": "done",
+  "started": "2026-10-05T23:14:00Z",
+  "text": "NAS read errors aren't taken for 'not there' (Taiwan's MOI DTM can't go missing silently)",
+  "where": "Subagent"
+}

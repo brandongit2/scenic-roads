@@ -1,0 +1,9 @@
+{
+  "kind": "task",
+  "num": 23,
+  "order": 1,
+  "parent": "g3",
+  "stage": "done",
+  "text": "P1 Terrain and slope streamed per z6 tile; costs versioned",
+  "where": "Subagent"
+}

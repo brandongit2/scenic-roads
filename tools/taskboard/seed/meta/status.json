@@ -1,0 +1,4 @@
+{
+  "now": "Idle on tasks: no new ones until you say (your call, 9 Oct), and every begun one is done and published (last: 17:40 UTC). Since you left: #32, #130, #121, #149, #131, #148, #35, #150 done; Taiwan's DTM code removed; publish.sh keeps every test's and the WebAssembly build's whole output and runs the integration tests. Known flake: a pool test (member restarting after a held lock) failed once. The build Mac is backfilling terrain mids. Waiting on you: #120 (the worldwide lab).",
+  "updated": "2026-10-09T19:55:00Z"
+}

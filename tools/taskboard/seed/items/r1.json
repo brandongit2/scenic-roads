@@ -1,0 +1,14 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:57:28.976Z",
+  "finished": "2026-10-06T01:45:00Z",
+  "kind": "task",
+  "note": "Finished: same tiles and pixels as trees.py on every block compared; 3/2/2 in 90 s (trees.py: 19 min, 16.6 GB); runs as WebAssembly too",
+  "num": 41,
+  "order": 1,
+  "parent": "g4",
+  "stage": "done",
+  "started": "2026-10-05T21:45:00Z",
+  "text": "Port trees.py to Rust",
+  "where": "Subagent"
+}

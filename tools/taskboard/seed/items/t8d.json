@@ -1,0 +1,13 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T14:04:11.433Z",
+  "finished": "2026-10-05T23:23:57Z",
+  "kind": "task",
+  "num": 64,
+  "order": 4,
+  "parent": "t8",
+  "stage": "done",
+  "started": "2026-10-05T23:14:00Z",
+  "text": "Harden /net/web: no redirects, memory bounded",
+  "where": "Subagent"
+}

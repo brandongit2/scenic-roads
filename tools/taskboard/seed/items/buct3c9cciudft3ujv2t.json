@@ -1,0 +1,18 @@
+{
+  "added": "2026-10-06T20:41:22.535Z",
+  "archived": true,
+  "archivedAt": "2026-10-09T02:39:34.017Z",
+  "finished": "2026-10-08T18:40:00Z",
+  "kind": "task",
+  "note": "By \"way\", I mean roads and rail lines and stuff. It should not be possible to select anything when the HUD is hidden, and it should therefore also not highlight anything when you move your pointer over things.",
+  "num": 109,
+  "order": 3,
+  "parent": "f-mapapp",
+  "priority": 13,
+  "reply": "Done (merged, publishing with the next app): with the HUD off (I), nothing is hovered or selected, by mouse or touch: no highlight, no popup, no road card; hiding it clears what was hovered or selected, and showing it brings everything back. Panning and zooming still work. Checked over 120 points: hidden, 0 hovered and 0 selected; shown, 55 and 29.",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T18:15:00Z",
+  "text": "Disable way highlighting when HUD is hidden",
+  "where": "Subagent"
+}

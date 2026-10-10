@@ -1,0 +1,6 @@
+{
+  "item": "s4b",
+  "kind": "progress",
+  "t": "2026-10-08T09:35:00Z",
+  "text": "Built: the map's water is now each pixel's exact share of full-detail water at every zoom. Over 137 views the visibly different share fell from 7.7 % to 0.04 %; coastal shading from 9.6 % to 0.14 %, and it now shows at every zoom. Frame time unchanged; water textures 24–55 MB in the densest views (10–22 MB before); the world builds in 4.5 min, 1.4 GB. Left: in steep 3D at z14–15 the nearest water tiles load only once the view moves. In code review before merge and publish."
+}

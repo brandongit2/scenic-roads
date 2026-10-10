@@ -1,0 +1,12 @@
+{
+  "kind": "task",
+  "note": "pool.md §13: each phase of the pool is tested before it's switched on, and an Opus agent reviews its code and docs before merging.\n\nThe tests go in steps:\n1. the in-process harness (two members, fake clocks);\n2. both Macs on a scratch state;\n3. the live switch.\n\nPhases 1–2 had their review, fixes and a shadow run before going on (2008 keys the same, 0 different; switched on 8 Oct). Still to come: phase 3 (#20, under way) and phase 4 (#21). Phase 3's real handover can only be tried on the live pool, once the terrain rebuild ends.",
+  "num": 22,
+  "order": 6,
+  "parent": "g5",
+  "priority": 22,
+  "slot": null,
+  "stage": "",
+  "text": "Tests on both Macs and an Opus review of each phase",
+  "where": "Subagent"
+}

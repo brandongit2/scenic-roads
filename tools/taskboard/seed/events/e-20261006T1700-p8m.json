@@ -1,0 +1,6 @@
+{
+  "item": "p8d",
+  "kind": "merge",
+  "t": "2026-10-06T17:00:00Z",
+  "text": "Merged to main as f6d424f (8 signed commits on 5b15c04); 380 library tests pass twice; the live check (read-only) still says 261 re-keyed, 23 rebuilt; publishing"
+}

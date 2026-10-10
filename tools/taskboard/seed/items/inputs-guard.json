@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "A test that fails when a source's name or URL appears in the app's code again (generic formats and protocols allowed), plus a last sweep for any left.",
+  "num": 146,
+  "order": 14,
+  "parent": "f-inputs",
+  "priority": 42,
+  "slot": null,
+  "stage": "",
+  "text": "A guard that keeps data sources out of the app's code",
+  "where": "Subagent"
+}

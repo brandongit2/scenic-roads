@@ -1,0 +1,13 @@
+{
+  "added": "2026-10-09T09:30:00Z",
+  "kind": "task",
+  "note": "The heritage job still reads a frozen 8 MB snapshot nothing can remake (sources/registers/legacy-seeds): park facts, old pageview months, and the old English names table. Point the English at the live translation tables, and have the items job (or a declared input) supply the rest; prove the layers unchanged or explain; delete the seeds.",
+  "num": 139,
+  "order": 7,
+  "parent": "f-inputs",
+  "priority": 35,
+  "slot": null,
+  "stage": "",
+  "text": "Heritage's frozen seeds retired: English names from the live tables, park facts and pageview months made by jobs",
+  "where": "Subagent"
+}

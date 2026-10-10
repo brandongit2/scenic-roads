@@ -1,0 +1,15 @@
+{
+  "finished": "2026-10-08T17:36:00Z",
+  "kind": "task",
+  "note": "buildings3d.md §5's B3: bldtile tasks for pages (WebAssembly, byte-identical); bridges and elevated rail over buildings; walls on the terrain under each corner; fog on the extrusions; the camera's clearance; colour by height, by source, heritage tint. It also checks your #115 report (wobbly building edges at the terrain) and says whether it's fixed. Brief: scratchpad/b3/BRIEF.md.",
+  "num": 7,
+  "order": 7,
+  "parent": "g6",
+  "priority": 12,
+  "reply": "Built, merged (bfc7ff9) and now publishing. Nothing rebuilds: the packs come out byte for byte the same. bldtile runs as page tasks (WebAssembly, identical bytes). Walls stand on the terrain under each corner, 2 m below it; El Carmel shows no gaps. Fog on the extrusions, flat map only. The camera stays 4 m above a roof. Colour by height on the shared scale. Heritage tint, on by default. Bridges and elevated rail drawn over the buildings (Paris's line 6). Speed: within noise (+0.6 ms GPU at most). Not done: the hover's outline and the tallest building in view (optional); splitting areas too big for a page (Tokyo's densest stays on the Macs).",
+  "slot": null,
+  "stage": "done",
+  "started": "2026-10-08T17:05:00Z",
+  "text": "Phase B3: browser tasks and polish",
+  "where": "Subagent"
+}

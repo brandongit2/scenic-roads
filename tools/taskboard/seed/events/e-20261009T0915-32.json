@@ -1,0 +1,6 @@
+{
+  "item": "p5",
+  "kind": "merge",
+  "t": "2026-10-09T09:15:00Z",
+  "text": "#32 merged into main (cdcda97); publish waits on a flaky-test fix"
+}

@@ -1,0 +1,6 @@
+{
+  "item": "b5",
+  "kind": "note",
+  "t": "2026-10-08T04:00:00Z",
+  "text": "Your iPad test found two fingers only zoomed: Safari's gesture events were zooming beside MapLibre's own pinch, so the turn and tilt never came. Fixed (8c8bef3): the pilot's server serves it now, and it's publishing for the real map"
+}

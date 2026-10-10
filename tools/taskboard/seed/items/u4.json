@@ -1,0 +1,16 @@
+{
+  "added": "2026-10-05T23:26:35Z",
+  "archived": true,
+  "archivedAt": "2026-10-06T13:55:42.134Z",
+  "finished": "2026-10-05T23:36:00Z",
+  "kind": "task",
+  "note": "Make note of when each item was begun and also, if checked off, when it was finished",
+  "num": 69,
+  "order": 5,
+  "parent": "g8",
+  "reply": "Done: each item shows when it was begun and finished",
+  "stage": "done",
+  "started": "2026-10-05T23:31:00Z",
+  "text": "Backlog page: Note task start/end times",
+  "where": "Subagent"
+}

@@ -1,0 +1,15 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T20:48:43.922Z",
+  "finished": "2026-10-06T16:26:00Z",
+  "kind": "task",
+  "num": 49,
+  "order": 5,
+  "parent": "g7",
+  "priority": 8,
+  "reply": "Published in 20261006-1626-5b15c04. Settings → Regions keeps a region or the view on this Mac; when the disk runs short, never-used map files go first, then the least recently used, the basemap last, and kept areas never",
+  "stage": "done",
+  "started": "2026-10-06T09:40:00Z",
+  "text": "Asked for, not done: keep a region on a Mac for offline use; let old map files go when the mirror needs room (this Mac has 17 GB free of 50 kept)",
+  "where": "Subagent"
+}

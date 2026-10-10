@@ -1,0 +1,12 @@
+{
+  "archived": true,
+  "archivedAt": "2026-10-06T13:57:56.187Z",
+  "finished": "2026-10-05T23:27:56Z",
+  "kind": "task",
+  "num": 2,
+  "order": 2,
+  "parent": "g6",
+  "stage": "done",
+  "text": "Commit the plan and the downloader",
+  "where": "Subagent"
+}
