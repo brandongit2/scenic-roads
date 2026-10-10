@@ -936,23 +936,26 @@ class, id) within a tile. The client sends the id with the clicked point.
   `pack` (z6 tiles), `lo` (z3 tiles, the worldwide steps' under their names, and the gate's checks
   as `inputs/<unit>`), `trees` (tree
   cover's pieces, z6 tiles), `trees_lo` (their assemblies, z3 tiles), `catalog`, `catalog_held`).
-- **The gate** (docs/inputs.md §3, §4): the drop boxes under `inputs/` (the owner's; today only the
+- **The gate** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of lower-case
+  letters, digits, `-` and `_`, nesting: `timetables/gtfs`; its records start with `@`, which no
+  drop-box name nor unit name does): the drop boxes under `inputs/` (the owner's; today only the
   test unit's, `inputs/_gate-test/`, `.jsonl` files of `{"k": <string>, "v": <number>}` lines, while
   `state/inputs/gate-test` puts it on the gate); a unit's checked copies, content-named under
   `sources/inputs/<unit>/` (`<drop-box path to its file name's first dot>.<hash16>.<the rest of the
-  name, or bin>`); its accepted index, `sources/inputs/<unit>/index.<hash16>.json`, named in the
-  manifest as `sources/inputs/<unit>/index`: `{fmt: 1, unit, checks: "<unit> <version>", files:
+  name, or bin>`); its accepted index, `sources/inputs/<unit>/@index.<hash16>.json`, named in the
+  manifest as `sources/inputs/<unit>/@index`: `{fmt: 1, unit, checks: "<unit> <version>", files:
   {<drop-box path>: {file (its copy's content name), size, keyed (the digest of what in it affects
   builds), facts: {…} (read from it at check time; a description's `description` and `extent`)}},
   accepted: {<the id of a warning it was taken with>: [the files it's about]}}` (no file time in
   it: the same contents, the same name); its last check's sizes and times,
-  `sources/inputs/<unit>/listed.<hash16>.json`, named as `sources/inputs/<unit>/listed`: `{fmt: 1,
-  unit, listed: {<path>: [size, mtime]}}`; its report
-  while a change is held, `sources/inputs/<unit>/held.<hash16>.json`, named as
-  `sources/inputs/<unit>/held`: `{fmt: 1, unit, checks, held: [paths], findings: [{id
+  `sources/inputs/<unit>/@listed.<hash16>.json`, named as `sources/inputs/<unit>/@listed`: `{fmt: 1,
+  unit, listed: {<path>: [size, mtime]}, replaced (the index the last change of version replaced,
+  kept by GC while this is recent)}`; its report
+  while a change is held, `sources/inputs/<unit>/@held.<hash16>.json`, named as
+  `sources/inputs/<unit>/@held`: `{fmt: 1, unit, checks, held: [paths], findings: [{id
   ("<check>.<hash16>"), level, files, message, at, lines}], together, raised: [every id the check
   raised]}`; the listing and acceptances the agent gives a check (`inputs::Planned`, in its own
-  folder: `agent/inputs-listing/<unit>.<key>.json`, `{listing: {files: {<path>: [size, mtime]},
+  folder: `agent/inputs-listing/<unit, its / as +>.<key>.json`, `{listing: {files: {<path>: [size, mtime]},
   strays}, accepted: [ids]}`); the owner's acceptances, `state/inputs/accepted/<unit>/<finding id>.json`, made once
   with create-new: `{id, member, host, at, by, message}`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

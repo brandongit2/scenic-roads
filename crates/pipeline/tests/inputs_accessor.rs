@@ -11,11 +11,18 @@
 
 use std::path::{Path, PathBuf};
 
-/// What names a drop box in Rust.
-const MARKERS: &[&str] = &["\"inputs", "join(\"inputs\")", "\"translations", "\"descriptions"];
+/// What names a drop box in Rust (in a line with `sources/inputs` taken out: the checked copies
+/// aren't a drop box).
+const MARKERS: &[&str] = &["\"inputs", "join(\"inputs\")", "/inputs/", "\"translations", "}/translations", "\"descriptions", "}/descriptions"];
 
-/// What names a drop box in the Python steps.
-const PY_MARKERS: &[&str] = &["\"inputs", "/ \"inputs\"", "\"translations", "\"descriptions"];
+/// What names a drop box in the Python steps (likewise).
+const PY_MARKERS: &[&str] = &["\"inputs", "'inputs", "/ \"inputs\"", "/ 'inputs'", "/inputs/", "\"translations", "'translations", "\"descriptions", "'descriptions"];
+
+/// Whether line `l` (its code) names a drop box by `markers` or a unit's name.
+fn names_a_drop_box(l: &str, markers: &[&str], units: &[String]) -> bool {
+    let l = l.replace("sources/inputs", "");
+    markers.iter().any(|m| l.contains(m)) || units.iter().any(|m| l.contains(m.as_str()))
+}
 
 /// The accessor's calls: an item making one may name a drop box.
 const ACCESSOR: &[&str] = &["inputs::open(", "inputs::gate::run("];
@@ -23,60 +30,90 @@ const ACCESSOR: &[&str] = &["inputs::open(", "inputs::gate::run("];
 /// The Python accessor's call.
 const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 
-/// Items that name a drop box without reading one through the accessor, by file (from the
-/// repository's root) and item name (a function's, or a `const`'s or `static`'s), with why.
-const EXEMPT: &[(&str, &str, &str)] = &[
-    ("crates/pipeline/src/agent/build.rs", "label", "the `inputs` step's name"),
-    ("crates/pipeline/src/agent/build.rs", "record", "the `inputs` step's name"),
-    ("crates/pipeline/src/agent/steps.rs", "TABLE", "the `inputs` step's row"),
-    ("crates/pipeline/src/agent/steps.rs", "w_inputs", "the records' names (sources/inputs/<unit>/…)"),
-    ("crates/pipeline/src/agent/mod.rs", "finished", "the `inputs` step's job ids"),
-    ("crates/pipeline/src/agent/mod.rs", "plan", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
-    ("crates/pipeline/src/agent/mod.rs", "gate_work", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
-    ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "the backups: every drop box and the acceptances, by design (§4.9)"),
-    ("crates/pipeline/src/agent/gc.rs", "NEVER", "GC's never-swept list (§4.9)"),
-    ("crates/pipeline/src/bin/scenic.rs", "main", "`scenic add`/`remove`: the owner's tool's writes (§2), and the `inputs` command's name"),
-    ("crates/pipeline/src/offload.rs", "offer", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/offload.rs", "run_task", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/trees/task.rs", "spec", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/bld/task.rs", "spec", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/terrain_task.rs", "spec", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "names-todo's --translations default and its folders [#137]; the `inputs` step's name"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", "inputs/keys.env, not an input (§2): its key names enter keys, never its values"),
-    ("crates/pipeline/src/agent/mod.rs", "input_digests", "inputs/keys.env's key names (not an input, §2); the ferries' timetables [#140, #141]"),
-    ("crates/pipeline/src/agent/mod.rs", "step", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "region_work", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
-    ("crates/pipeline/src/agent/mod.rs", "checklist", "the regions' recipes or outline files [#135]; inputs/hold-catalog, a control"),
-    ("crates/pipeline/src/agent/mod.rs", "rekey_records", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "as_read", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "coverage", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/coverage.rs", "file_rings", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "water_key_check", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "pois_step", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "pass_and_coverage", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "coverage_of", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/terrain.rs", "scan", "the regions' recipes or outline files [#135]"),
-    ("crates/server/src/regions.rs", "nas", "the Regions panel: its writes (the owner's tool, §2) and its reads of the recipes [#135]"),
-    ("crates/pipeline/src/namestodo.rs", "run", "the descriptions' folder and the to-do lists [#137]"),
-    ("crates/server/src/names_live.rs", "new", "the map server's copy of the translations [#137]"),
-    ("crates/server/src/names_live.rs", "spawn", "the map server's copy of the translations: its log's words [#137]"),
-    ("crates/server/src/names_live.rs", "reload", "the map server's copy of the translations: its log's words [#137]"),
-    ("crates/server/src/names_live.rs", "sync", "the map server's copy of the translations [#137]"),
-    ("crates/server/src/descriptions.rs", "new", "the map server's copy of the descriptions [#137]"),
-    ("crates/server/src/descriptions.rs", "load", "the map server's copy of the descriptions: its log's words [#137]"),
-    ("crates/server/src/descriptions.rs", "spawn", "the map server's copy of the descriptions [#137]"),
-    ("crates/pipeline/src/ovconv.rs", "ferries_job", "inputs/ferries/freq [#140, #141]"),
+/// Items' lines that name a drop box without reading one through the accessor: by file (from the
+/// repository's root), item name (a function's, or a `const`'s or `static`'s) and what the line
+/// says (an anchor, so a common name like `new` exempts that line alone, and goes stale with it),
+/// with why.
+const EXEMPT: &[(&str, &str, &str, &str)] = &[
+    ("crates/pipeline/src/coverage.rs", "file_rings", "\"inputs/outlines/{f}\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
+    ("crates/pipeline/src/namestodo.rs", "run", "\"descriptions\"", "the descriptions' folder and the to-do lists [#137]"),
+    ("crates/pipeline/src/namestodo.rs", "run", "\"translations/todo\"", "the descriptions' folder and the to-do lists [#137]"),
+    ("crates/pipeline/src/namestodo.rs", "run", "\"descriptions/todo\"", "the descriptions' folder and the to-do lists [#137]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"--translations\"", "names-todo's --translations default and its folders [#137]; the `inputs` step's name"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"inputs\" => inputs_step(", "names-todo's --translations default and its folders [#137]; the `inputs` step's name"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "water_key_check", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "water_key_check", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "pois_step", "\"inputs/regions\"", "the regions' recipes or outline files [#135], --regions' default"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "pois_step", "\"inputs/outlines\"", "the regions' recipes or outline files [#135], --regions' default"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "pass_and_coverage", "\"inputs/regions\"", "the regions' recipes or outline files [#135], --regions' default"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "pass_and_coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135], --regions' default"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "coverage_of", "\"inputs/regions\"", "the regions' recipes or outline files [#135], --regions' default"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "coverage_of", "\"inputs/outlines\"", "the regions' recipes or outline files [#135], --regions' default"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", "\"inputs/keys.env\"", "inputs/keys.env, not an input (§2): its key names enter keys, never its values"),
+    ("crates/pipeline/src/bin/terrain.rs", "scan", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/terrain.rs", "scan", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::add(&root(&args, true)?.join(\"inputs/regions\")", "`scenic add`: the owner's tool's write of a recipe (§2)"),
+    ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::remove(&root(&args, true)?.join(\"inputs/regions\")", "`scenic remove`: the owner's tool's write of a recipe (§2)"),
+    ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
+    ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
+    ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
+    ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9)"),
+    ("crates/pipeline/src/agent/steps.rs", "TABLE", "base(\"inputs\", w_inputs)", "the `inputs` step's row"),
+    ("crates/pipeline/src/agent/build.rs", "record", "matches!(step, \"inputs\" | ", "the `inputs` step's name"),
+    ("crates/pipeline/src/agent/build.rs", "label", "\"inputs\" => \"Checking the inputs dropped\"", "the `inputs` step's name"),
+    ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "\"translations\"", "the backups: every drop box and the acceptances, by design (§4.9)"),
+    ("crates/pipeline/src/agent/mod.rs", "step", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
+    ("crates/pipeline/src/agent/mod.rs", "plan", "w.step == \"inputs\"", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
+    ("crates/pipeline/src/agent/mod.rs", "region_work", "\"inputs/regions\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
+    ("crates/pipeline/src/agent/mod.rs", "region_work", "\"inputs/hold-catalog\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
+    ("crates/pipeline/src/agent/mod.rs", "region_work", "\"inputs/keys.env can't be read now\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
+    ("crates/pipeline/src/agent/mod.rs", "checklist", "\"inputs/hold-catalog\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog, a control"),
+    ("crates/pipeline/src/agent/mod.rs", "rekey_records", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "as_read", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs\".into()", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "strip_prefix(\"inputs/\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs {unit} full\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs/{unit}\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs-listing\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/ferries/freq\"", "inputs/keys.env's key names (not an input, §2); the ferries' timetables [#140, #141]"),
+    ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/keys.env\"", "inputs/keys.env's key names (not an input, §2); the ferries' timetables [#140, #141]"),
+    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "\"inputs/outlines/geofabrik\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/offload.rs", "offer", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
+    ("crates/pipeline/src/offload.rs", "run_task", "spec[\"inputs\"]", "a task's input files (its spec's \"inputs\"), not a drop box"),
+    ("crates/pipeline/src/ovconv.rs", "ferries_job", "\"inputs/ferries/freq\"", "inputs/ferries/freq [#140, #141]"),
+    ("crates/server/src/regions.rs", "nas", "\"inputs/regions\"", "the Regions panel: its writes (the owner's tool, §2) and its reads of the recipes [#135]"),
+    ("crates/server/src/descriptions.rs", "new", "\"descriptions\"", "the map server's copy of the descriptions [#137]"),
+    ("crates/server/src/descriptions.rs", "load", "\"descriptions: {} from {} files\"", "the map server's copy of the descriptions: its log's words [#137]"),
+    ("crates/server/src/descriptions.rs", "spawn", "\"descriptions\"", "the map server's copy of the descriptions [#137]"),
+    ("crates/server/src/descriptions.rs", "spawn", "\"descriptions: {e:#}\"", "the map server's copy of the descriptions [#137]"),
+    ("crates/server/src/names_live.rs", "new", "\"translations\"", "the map server's copy of the translations [#137]"),
+    ("crates/server/src/names_live.rs", "spawn", "\"translations: {e:#}\"", "the map server's copy of the translations: its log's words [#137]"),
+    ("crates/server/src/names_live.rs", "reload", "\"translations: {w}\"", "the map server's copy of the translations: its log's words [#137]"),
+    ("crates/server/src/names_live.rs", "reload", "\"translations: {} lines, {} names in {} files, languages {:?} ({:.1?})\"", "the map server's copy of the translations: its log's words [#137]"),
+    ("crates/server/src/names_live.rs", "reload", "\"translations: WARNING: {ONLY_OLD}\"", "the map server's copy of the translations: its log's words [#137]"),
+    ("crates/server/src/names_live.rs", "reload", "\"translations: {e:#}\"", "the map server's copy of the translations: its log's words [#137]"),
+    ("crates/server/src/names_live.rs", "sync", "\"translations\"", "the map server's copy of the translations [#137]"),
 ];
 
 /// The same of the Python steps.
-const PY_EXEMPT: &[(&str, &str, &str)] = &[
-    ("dem/bldfetch.py", "coverage", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
-    ("dem/railfeeds.py", "keys", "inputs/keys.env, not an input (§2): named in its docstring"),
+const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
+    ("dem/railfeeds.py", "keys", "\"inputs/keys.env's keys (KEY=value lines; # comments).\"", "inputs/keys.env, not an input (§2): named in its docstring"),
+    ("dem/bldfetch.py", "coverage", "\"inputs/outlines\"", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
+    ("dem/bldfetch.py", "coverage", "\"inputs/outlines/geofabrik\"", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
 ];
 
 fn root() -> PathBuf {
@@ -96,8 +133,8 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// A Rust line's code: its string and character literals' braces blanked and its comment cut, so
-/// braces can be counted.
+/// A Rust line's code: its string and character literals' contents blanked and its comment cut, so
+/// braces can be counted and an accessor call named in a string isn't one.
 fn code_of(l: &str) -> String {
     let b: Vec<char> = l.chars().collect();
     let mut out = String::new();
@@ -113,7 +150,7 @@ fn code_of(l: &str) -> String {
             if c == '"' {
                 in_str = false;
             }
-            out.push(if c == '{' || c == '}' { ' ' } else { c });
+            out.push(if c == '"' { c } else { ' ' });
         } else if c == '/' && b.get(i + 1) == Some(&'/') {
             break;
         } else if c == '"' {
@@ -240,7 +277,7 @@ fn enclosing_rs(code: &[String], i: usize) -> Option<(String, String)> {
 /// code (comments cut); None outside any.
 fn enclosing_py(lines: &[&str], i: usize) -> Option<(String, String)> {
     let indent = |l: &str| l.len() - l.trim_start().len();
-    let code = |l: &str| l.split(" #").next().unwrap_or("").to_string();
+    let code = |l: &str| py_code(l);
     for k in (0..=i).rev() {
         let t = lines[k].trim_start();
         if let Some(r) = t.strip_prefix("def ").or_else(|| t.strip_prefix("async def ")) {
@@ -259,6 +296,37 @@ fn enclosing_py(lines: &[&str], i: usize) -> Option<(String, String)> {
     None
 }
 
+/// A Python line's code: its comment cut and its string literals' contents blanked.
+fn py_code(l: &str) -> String {
+    let mut out = String::new();
+    let mut q: Option<char> = None;
+    let mut esc = false;
+    for c in l.chars() {
+        match q {
+            Some(open) => {
+                if esc {
+                    esc = false;
+                } else if c == '\\' {
+                    esc = true;
+                } else if c == open {
+                    q = None;
+                    out.push(c);
+                    continue;
+                }
+                out.push(' ');
+            }
+            None if c == '#' => break,
+            None => {
+                if c == '"' || c == '\'' {
+                    q = Some(c);
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// Each gate unit's name as code would write it in a path.
 fn unit_markers() -> Vec<String> {
     pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).map(|u| format!("\"{u}")).collect()
@@ -269,7 +337,7 @@ fn scan() -> (Vec<String>, Vec<String>) {
     let root = root();
     let units = unit_markers();
     let mut bad = Vec::new();
-    let mut used = std::collections::BTreeSet::new();
+    let mut used = std::collections::BTreeSet::<usize>::new();
     let mut rs = Vec::new();
     files(&root.join("crates"), "rs", &mut rs);
     for f in rs {
@@ -286,15 +354,15 @@ fn scan() -> (Vec<String>, Vec<String>) {
             let l = lines[i];
             // (A marker in code, not in a comment.)
             let c = l.split("//").next().unwrap_or("");
-            if tests[i] || !(MARKERS.iter().any(|m| c.contains(m)) || units.iter().any(|m| c.contains(m.as_str()))) {
+            if tests[i] || !names_a_drop_box(c, MARKERS, &units) {
                 continue;
             }
             let (name, body) = enclosing_rs(&code, i).unwrap_or_else(|| ("<top level>".into(), String::new()));
             if ACCESSOR.iter().any(|a| body.contains(a)) {
                 continue;
             }
-            if let Some(e) = EXEMPT.iter().find(|(ef, en, _)| *ef == rel && *en == name) {
-                used.insert((e.0, e.1));
+            if let Some(k) = EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor)) {
+                used.insert(k);
                 continue;
             }
             bad.push(format!("{rel}:{} in {name}: {}", i + 1, l.trim()));
@@ -302,7 +370,7 @@ fn scan() -> (Vec<String>, Vec<String>) {
     }
     let mut py = Vec::new();
     files(&root.join("dem"), "py", &mut py);
-    let mut py_used = std::collections::BTreeSet::new();
+    let mut py_used = std::collections::BTreeSet::<usize>::new();
     for f in py {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         if rel == "dem/inputs.py" {
@@ -311,22 +379,23 @@ fn scan() -> (Vec<String>, Vec<String>) {
         let text = std::fs::read_to_string(&f).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         for (i, l) in lines.iter().enumerate() {
+            // (A marker in a string or code, a comment cut.)
             let c = l.split(" #").next().unwrap_or("");
-            if c.trim_start().starts_with('#') || !(PY_MARKERS.iter().any(|m| c.contains(m)) || units.iter().any(|m| c.contains(m.as_str()))) {
+            if c.trim_start().starts_with('#') || !names_a_drop_box(c, PY_MARKERS, &units) {
                 continue;
             }
             let (name, body) = enclosing_py(&lines, i).unwrap_or_else(|| ("<top level>".into(), String::new()));
             if PY_ACCESSOR.iter().any(|a| body.contains(a)) {
                 continue;
             }
-            if let Some(e) = PY_EXEMPT.iter().find(|(ef, en, _)| *ef == rel && *en == name) {
-                py_used.insert((e.0, e.1));
+            if let Some(k) = PY_EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor)) {
+                py_used.insert(k);
                 continue;
             }
             bad.push(format!("{rel}:{} in {name}: {}", i + 1, l.trim()));
         }
     }
-    let unused: Vec<String> = EXEMPT.iter().filter(|(f, n, _)| !used.contains(&(*f, *n))).chain(PY_EXEMPT.iter().filter(|(f, n, _)| !py_used.contains(&(*f, *n)))).map(|(f, n, _)| format!("{f}: {n}")).collect();
+    let unused: Vec<String> = EXEMPT.iter().enumerate().filter(|(k, _)| !used.contains(k)).chain(PY_EXEMPT.iter().enumerate().filter(|(k, _)| !py_used.contains(k))).map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}")).collect();
     (bad, unused)
 }
 
@@ -367,6 +436,11 @@ static D: [&str; 1] = ["translations"];"#;
     assert_eq!(enclosing_rs(&code, 5).map(|e| e.0).as_deref(), Some("b"));
     assert_eq!(enclosing_rs(&code, 8).map(|e| e.0).as_deref(), Some("c"));
     assert_eq!(enclosing_rs(&code, 10).map(|e| e.0).as_deref(), Some("D"));
+    // (An accessor call named in a string isn't one; a marker with `sources/inputs` out of it.)
+    assert!(!code_of("let s = \"inputs::open(\";").contains("inputs::open("));
+    assert!(!py_code("x = 'inputs.arg(p)'  # inputs.arg(").contains("inputs.arg("));
+    assert!(names_a_drop_box("root.join(\"x/inputs/y\")", MARKERS, &[]) && !names_a_drop_box("\"sources/inputs/x\"", MARKERS, &[]));
+    assert!(names_a_drop_box("p = root / 'inputs' / 'x'", PY_MARKERS, &[]));
     let py = ["X = Path(\"inputs\")", "def f():", "    return \"inputs/a\"", "", "def g():", "    pass"];
     assert_eq!(enclosing_py(&py, 0).map(|e| e.0).as_deref(), Some("X"));
     assert_eq!(enclosing_py(&py, 2).map(|e| e.0).as_deref(), Some("f"));

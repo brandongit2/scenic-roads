@@ -4927,10 +4927,12 @@ impl Agent {
                 checking.insert(unit.to_string());
                 // (The listing and acceptances the key is made from, for the job to check exactly
                 // them: inputs::Planned.)
-                let planned = self.o.home.join("inputs-listing").join(format!("{unit}.{key}.json"));
+                // (Named by the unit flat, `timetables+gtfs`: a nested unit's name is one file's.)
+                let flat = crate::inputs::flat(unit);
+                let planned = self.o.home.join("inputs-listing").join(format!("{flat}.{key}.json"));
                 let wrote = std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
                     for e in std::fs::read_dir(planned.parent().unwrap())?.flatten() {
-                        if e.file_name().to_string_lossy().starts_with(&format!("{unit}.")) && e.path() != planned {
+                        if e.file_name().to_string_lossy().starts_with(&format!("{flat}.")) && e.path() != planned {
                             std::fs::remove_file(e.path()).ok();
                         }
                     }

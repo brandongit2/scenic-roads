@@ -826,7 +826,7 @@ async fn build_lead_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
 /// Mac's agent, which writes it (errors have no Accept).
 async fn build_inputs_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
-    let unit = v.get("unit").and_then(|u| u.as_str()).filter(|u| !u.is_empty() && u.len() <= 64 && !u.contains(['/', '\\', '.']));
+    let unit = v.get("unit").and_then(|u| u.as_str()).filter(|u| u.len() <= 64 && pipeline::inputs::valid_unit(u));
     let accept: Vec<String> = v.get("accept").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| pipeline::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
     let all = v.get("all").and_then(|a| a.as_bool()) == Some(true);
     let Some(unit) = unit.filter(|_| all || !accept.is_empty()) else {

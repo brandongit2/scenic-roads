@@ -59,7 +59,7 @@ fn held(d: &Decision) -> Vec<String> {
     d.report.as_ref().map(|r| r.held.clone()).unwrap_or_default()
 }
 
-const GT: &gatetest::GateTest = &gatetest::GateTest;
+const GT: &gatetest::GateTest = &gatetest::GateTest(TEST_UNIT);
 
 #[test]
 fn a_good_drop_is_taken_in_and_the_index_is_the_same_twice() {
@@ -358,6 +358,77 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     assert!(!m2.contains_key(&held_logical(TEST_UNIT)));
 }
 
+/// An accepted file changed or deleted after the plan listed it: neither read nor taken as removed,
+/// it stays as accepted; the next listing, which differs, checks it again.
+#[test]
+fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("nas");
+    let dropbox = root.join("inputs").join(TEST_UNIT);
+    std::fs::create_dir_all(&dropbox).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    let put = |name: &str, text: &str| {
+        let p = dropbox.join(name);
+        std::fs::write(&p, text).unwrap();
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
+    };
+    put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n");
+    put("b.jsonl", "{\"k\": \"y\", \"v\": 2}\n");
+    let store = Store::default();
+    let listing = list(&root, TEST_UNIT, false).unwrap();
+    let mut b = Box_::default();
+    for n in ["a.jsonl", "b.jsonl"] {
+        b.files.insert(n.into(), (std::fs::read(dropbox.join(n)).unwrap(), listing.files[n].1));
+    }
+    let v1 = check(GT, &b, None, &[], &store, false);
+    // The plan lists them; then a is rewritten (half-written, say) and b deleted.
+    let planned = Planned { listing: listing.clone(), accepted: BTreeSet::new() };
+    std::fs::write(dropbox.join("a.jsonl"), "{\"k\": \"x\",").unwrap();
+    std::fs::remove_file(dropbox.join("b.jsonl")).unwrap();
+    let (l, acc, unsettled) = gate::candidate(&root, TEST_UNIT, false, Some(planned), crate::agent::jobs::now_s()).unwrap();
+    assert_eq!(unsettled, ["a.jsonl".to_string(), "b.jsonl".to_string()].into());
+    let read_new = |p: &str| -> Result<Vec<u8>> { panic!("{p} read though it changed since the plan") };
+    let read_old = |e: &FileEntry| store.copies.borrow().get(&e.file).cloned().context("no copy");
+    let d2 = decide(&gate::Given { checks: GT, prev: Some(&v1.index), prev_listed: &v1.listed, listing: &l, unsettled: &unsettled, accepted: &acc, full: false, read_new: &read_new, read_old: &read_old }).unwrap();
+    assert!(!d2.changed && d2.report.is_none() && d2.index == v1.index, "both stay as accepted, b not taken as removed");
+    assert_eq!(d2.listed, v1.listed, "and their listed times stay, so the next check reads them again");
+}
+
+/// A nested unit (`timetables/gtfs`'s kind): its copies and records under its nested folder, its
+/// version read back, its records' names the steps table's.
+#[test]
+fn a_nested_units_check_keeps_its_records_in_its_folder() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("nas");
+    let dropbox = root.join("inputs").join(TEST_NESTED);
+    std::fs::create_dir_all(&dropbox).unwrap();
+    std::fs::create_dir_all(root.join("state/build")).unwrap();
+    let put = |text: &str| {
+        let p = dropbox.join("a.jsonl");
+        std::fs::write(&p, text).unwrap();
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
+    };
+    put("{\"k\": \"x\", \"v\": 1}\n");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+    gate::run(&mut out, TEST_NESTED, false, None).unwrap();
+    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    let a = open(&root, &m, TEST_NESTED).unwrap().unwrap();
+    assert!(a.version.starts_with("sources/inputs/_gate-nest/inner/@index.") && a.index.files["a.jsonl"].file.starts_with("sources/inputs/_gate-nest/inner/a."));
+    for l in m.keys() {
+        assert_eq!(unit_of(l), Some(TEST_NESTED), "{l}");
+        assert!(crate::agent::steps::row("inputs").is_some_and(|s| (s.writes)(l, false)), "{l}");
+    }
+    // A change of version: the check's state names the index it replaced.
+    put("{\"k\": \"x\", \"v\": 22}\n");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+    gate::run(&mut out, TEST_NESTED, false, None).unwrap();
+    let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    assert_eq!(read_listed(&root, &m2, TEST_NESTED).unwrap().replaced.as_deref(), Some(a.version.as_str()));
+    // A copy named like a record can't be one: '@' starts no drop-box name.
+    assert!(record_of("sources/inputs/_gate-nest/inner/index").is_none() && record_of("sources/inputs/x/b/@index").is_some_and(|r| r.0 == "x/b"));
+    assert_eq!(flat(TEST_NESTED), "_gate-nest+inner");
+}
+
 /// An acceptance whose file was edited (and taken in without the warning) or removed is no longer
 /// the version's: stale, which `scenic inputs unaccept --stale` removes.
 #[test]
@@ -378,7 +449,7 @@ fn acceptances_of_files_changed_since_are_stale() {
     // In the status: a's acceptance stale.
     let d = tempfile::tempdir().unwrap();
     let root = d.path();
-    let name = format!("{}/index.0123456789abcdef.json", store_dir(TEST_UNIT));
+    let name = format!("{}/@index.0123456789abcdef.json", store_dir(TEST_UNIT));
     std::fs::create_dir_all(root.join(store_dir(TEST_UNIT))).unwrap();
     std::fs::write(root.join(&name), serde_json::to_vec(&v2).unwrap()).unwrap();
     let m: BTreeMap<String, String> = [(logical(TEST_UNIT), name)].into();
@@ -416,7 +487,7 @@ fn the_key_follows_the_listing_the_acceptances_and_the_index() {
     l2.files.insert("a.jsonl".into(), (10, 101));
     assert_ne!(check_key(GT, &l2, &none, &m), k, "a touch is a trigger");
     assert_ne!(check_key(GT, &l, &["gt-neg.0123456789abcdef".to_string()].into(), &m), k);
-    let m2: BTreeMap<String, String> = [(logical(TEST_UNIT), "sources/inputs/_gate-test/index.0123456789abcdef.json".to_string())].into();
+    let m2: BTreeMap<String, String> = [(logical(TEST_UNIT), "sources/inputs/_gate-test/@index.0123456789abcdef.json".to_string())].into();
     assert_ne!(check_key(GT, &l, &none, &m2), k);
 }
 
@@ -477,7 +548,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     let a = open(&root, &m, TEST_UNIT).unwrap().unwrap();
-    assert!(a.version.starts_with("sources/inputs/_gate-test/index.") && root.join(&a.version).exists());
+    assert!(a.version.starts_with("sources/inputs/_gate-test/@index.") && root.join(&a.version).exists());
     assert_eq!(a.read("a.jsonl").unwrap(), b"{\"k\": \"x\", \"v\": 1}\n");
     assert!(!m.contains_key(&held_logical(TEST_UNIT)));
     // A warning: held, its report named; the version as it was.

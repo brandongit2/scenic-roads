@@ -10,9 +10,9 @@
 //! 5. That version checked whole: a finding it raises that's neither accepted nor raised by the
 //!    accepted version as it stands holds every change of the unit together.
 //! 6. The taken files stored content-named under `sources/inputs/<unit>/`, the index and the report
-//!    too, and handed off as records changes: `sources/inputs/<unit>/index` (only when it differs),
-//!    `sources/inputs/<unit>/listed` (likewise) and `sources/inputs/<unit>/held` (the report, or
-//!    none when nothing is held).
+//!    too, and handed off as records changes: `sources/inputs/<unit>/@index` (only when it differs),
+//!    `sources/inputs/<unit>/@listed` (likewise, with the index replaced) and
+//!    `sources/inputs/<unit>/@held` (the report, or none when nothing is held).
 //!
 //! `decide` is all of it but the reading and the writing, a function of (candidate, accepted
 //! version, acceptances): the tests' subject. `run` is the job.
@@ -282,7 +282,8 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     let p = phase("the accepted version and the drop box listed", Class::NasRead);
     let prev_name = out.get(&super::logical(unit)).map(str::to_string);
     let prev = prev_name.as_ref().map(|n| super::read_index(&root, n)).transpose()?;
-    let prev_listed = super::read_listed(&root, &out.manifest, unit)?;
+    let state = super::read_listed(&root, &out.manifest, unit)?;
+    let prev_listed = state.listed.clone();
     let (listing, accepted, unsettled) = candidate(&root, unit, checks.recursive(), planned, crate::agent::jobs::now_s())?;
     drop(p);
     let p = phase("the changes read and checked", Class::NasRead);
@@ -298,25 +299,28 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         out.store_bytes(c.logical, c.ext, bytes)?;
     }
     let mut said = format!("{unit}: {} file{} read of {}", d.read.len(), if d.read.len() == 1 { "" } else { "s" }, listing.files.len());
+    // (The index a change of version replaces, kept in the check's state: GC keeps it and its files
+    // while that state is recent, so the version replaced stays restorable: gc::inputs_kept.)
+    let mut replaced = state.replaced.clone();
     if d.changed {
-        let name = out.store_bytes(&format!("{}/index", super::store_dir(unit)), "json", &serde_json::to_vec_pretty(&d.index)?)?;
-        // The version replaced: its index's time made now, so GC keeps it and the copies it lists
-        // the 14 days a version replaced stays restorable (gc::inputs_kept).
+        let name = out.store_bytes(&super::logical(unit), "json", &serde_json::to_vec_pretty(&d.index)?)?;
         if let Some(old) = prev_name.as_ref().filter(|o| **o != name) {
-            if let Ok(f) = std::fs::File::options().write(true).open(root.join(old)) {
-                f.set_modified(std::time::SystemTime::now()).ok();
+            replaced = Some(old.clone());
+            // (And its time made now, for GC's rule by time too; a failure only said.)
+            if let Err(e) = std::fs::File::options().write(true).open(root.join(old)).and_then(|f| f.set_modified(std::time::SystemTime::now())) {
+                eprintln!("inputs: {unit}: the index replaced, {old}, couldn't be touched ({e}); the check's state keeps it named");
             }
         }
         out.set(&super::logical(unit), Some(name.clone()));
         said += &format!("; taken in: {name}");
     }
-    if d.listed_changed {
-        let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone() };
-        let name = out.store_bytes(&format!("{}/listed", super::store_dir(unit)), "json", &serde_json::to_vec_pretty(&l)?)?;
+    if d.listed_changed || replaced != state.replaced {
+        let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone(), replaced };
+        let name = out.store_bytes(&super::listed_logical(unit), "json", &serde_json::to_vec_pretty(&l)?)?;
         out.set(&super::listed_logical(unit), Some(name));
     }
     let report = match &d.report {
-        Some(r) => Some(out.store_bytes(&format!("{}/held", super::store_dir(unit)), "json", &serde_json::to_vec_pretty(r)?)?),
+        Some(r) => Some(out.store_bytes(&super::held_logical(unit), "json", &serde_json::to_vec_pretty(r)?)?),
         None => None,
     };
     if out.get(&super::held_logical(unit)) != report.as_deref() {

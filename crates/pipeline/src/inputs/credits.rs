@@ -163,7 +163,7 @@ static READ: Mutex<Option<HashMap<String, Vec<Described>>>> = Mutex::new(None);
 pub fn described(root: &Path, manifest: &BTreeMap<String, String>) -> anyhow::Result<Vec<Described>> {
     let mut out = Vec::new();
     for (l, name) in manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/")) {
-        if super::unit_of(l).is_none() || !l.ends_with("/index") {
+        if super::record_of(l).is_none_or(|(_, r)| r != "@index") {
             continue;
         }
         if let Some(d) = READ.lock().unwrap().get_or_insert_with(HashMap::new).get(name) {

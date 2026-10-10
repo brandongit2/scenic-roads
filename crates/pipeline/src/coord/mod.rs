@@ -1386,7 +1386,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // `{"unit": <unit>, "accept": [<finding id>…]}` or `{"unit": <unit>, "all": true}`,
             // written by this Mac's agent (warnings alone: errors have no Accept).
             let b: serde_json::Value = serde_json::from_slice(body)?;
-            let unit = b["unit"].as_str().filter(|u| !u.is_empty() && u.len() <= 64 && !u.contains(['/', '\\', '.'])).ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
+            let unit = b["unit"].as_str().filter(|u| u.len() <= 64 && crate::inputs::valid_unit(u)).ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
             let accept: Vec<String> = b["accept"].as_array().map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| crate::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
             let all = b["all"].as_bool() == Some(true);
             anyhow::ensure!(all || !accept.is_empty(), "nothing to accept");

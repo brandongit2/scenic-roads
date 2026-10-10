@@ -4,7 +4,7 @@
 //! gate unit, a job like any other (it hands off; the lead merges). A change with an unaccepted
 //! finding is held, and the last accepted version stays in use. The build reads only the accepted
 //! version: checked copies, content-named under `sources/inputs/<unit>/`, listed by an index whose
-//! content name is the unit's version, named in the records as `sources/inputs/<unit>/index` (`open`, the one
+//! content name is the unit's version, named in the records as `sources/inputs/<unit>/@index` (`open`, the one
 //! accessor: §7.1).
 //!
 //! The parts: the units and their checks (`Checks`; the test unit's, crate::inputs::gatetest); the
@@ -37,6 +37,10 @@ pub const UNITS: [&str; 0] = [];
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
 
+/// A nested test unit, its name with a `/` as the spec's `timetables/gtfs` has: its checks are the
+/// test unit's; never on the gate, the tests' alone.
+pub const TEST_NESTED: &str = "_gate-nest/inner";
+
 /// The control that puts the test unit on the gate (`scenic inputs test on|off`).
 pub const TEST_FLAG: &str = "state/inputs/gate-test";
 
@@ -63,32 +67,51 @@ pub fn units(root: &Path) -> Vec<&'static str> {
 /// The checks of unit `unit`; None for a unit this app doesn't know.
 pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
     match unit {
-        TEST_UNIT => Some(&gatetest::GateTest),
+        TEST_UNIT => Some(&gatetest::GateTest(TEST_UNIT)),
+        TEST_NESTED => Some(&gatetest::GateTest(TEST_NESTED)),
         _ => None,
     }
 }
 
-/// The records' entry naming unit `unit`'s accepted index (`sources/inputs/<unit>/index`: a
+/// A unit's own records, in its folder under `sources/inputs/`: its accepted index, its held report,
+/// its last listing. A `@` starts no component of a drop-box path (`ignored`) nor of a unit's name
+/// (`valid_unit`), so these are never a copy's name nor a nested unit's (`a`'s copy of `b/x.json`
+/// and unit `a/b`'s index can't be confused).
+pub const RECORDS: [&str; 3] = ["@index", "@held", "@listed"];
+
+/// A unit's name: `/`-separated components of lower-case letters, digits, `-` and `_`
+/// (`timetables/gtfs`).
+pub fn valid_unit(u: &str) -> bool {
+    !u.is_empty() && u.split('/').all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'))
+}
+
+/// The records' entry naming unit `unit`'s accepted index (`sources/inputs/<unit>/@index`: a
 /// content name is its logical name's, as the lead checks every entry's at merge).
 pub fn logical(unit: &str) -> String {
-    format!("{}/index", store_dir(unit))
+    format!("{}/@index", store_dir(unit))
 }
 
 /// The records' entry naming unit `unit`'s report while a change is held.
 pub fn held_logical(unit: &str) -> String {
-    format!("{}/held", store_dir(unit))
+    format!("{}/@held", store_dir(unit))
 }
 
 /// The records' entry naming the files' sizes and times unit `unit`'s last check listed (`Listed`:
 /// the check's own state, apart from the index, so the version's name is its contents' alone).
 pub fn listed_logical(unit: &str) -> String {
-    format!("{}/listed", store_dir(unit))
+    format!("{}/@listed", store_dir(unit))
 }
 
-/// The unit of a records entry `sources/inputs/<unit>/index`, `…/held` or `…/listed`.
+/// The unit of one of a unit's records' logical names (`sources/inputs/<unit>/@index`, `…/@held`,
+/// `…/@listed`), and which (`@index`…); the unit's name may hold `/`s.
+pub fn record_of(logical: &str) -> Option<(&str, &str)> {
+    let (unit, last) = logical.strip_prefix("sources/inputs/")?.rsplit_once('/')?;
+    (RECORDS.contains(&last) && valid_unit(unit)).then_some((unit, last))
+}
+
+/// The unit of one of a unit's records' logical names (`record_of`).
 pub fn unit_of(logical: &str) -> Option<&str> {
-    let rest = logical.strip_prefix("sources/inputs/")?;
-    rest.strip_suffix("/index").or_else(|| rest.strip_suffix("/held")).or_else(|| rest.strip_suffix("/listed")).filter(|u| !u.is_empty() && !u.contains('/'))
+    record_of(logical).map(|(u, _)| u)
 }
 
 /// Whether `rel` (a path relative to the NAS project folder) lies in a drop box: what the NAS root
@@ -251,22 +274,37 @@ pub struct Index {
     pub accepted: BTreeMap<String, Vec<String>>,
 }
 
-/// The sizes and times of a unit's files as its last check listed them
-/// (`sources/inputs/<unit>/listed.<hash16>.json`, `listed_logical`): what the next check compares
-/// a listing with, reading only the files that differ. A held change's file keeps the time of the
-/// version accepted, so it's read again; a file only touched takes its new time, so it isn't.
+/// The check's own state (`sources/inputs/<unit>/@listed.<hash16>.json`, `listed_logical`): the
+/// sizes and times of a unit's files as its last check listed them, what the next check compares a
+/// listing with, reading only the files that differ (a held change's file keeps the time of the
+/// version accepted, so it's read again; a file only touched takes its new time, so it isn't); and
+/// the index the last change of version replaced, which GC keeps, with its files, while this state
+/// is recent (gc::inputs_kept), so a version replaced stays restorable.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Listed {
     pub fmt: u32,
     pub unit: String,
     pub listed: BTreeMap<String, (u64, u64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
 }
 
-/// A unit's last listed sizes and times, as the records name them (none before its first check).
-pub fn read_listed(root: &Path, manifest: &BTreeMap<String, String>, unit: &str) -> Result<BTreeMap<String, (u64, u64)>> {
-    let Some(name) = manifest.get(&listed_logical(unit)) else { return Ok(BTreeMap::new()) };
+/// A unit's check's state, as the records name it (empty before its first check).
+pub fn read_listed(root: &Path, manifest: &BTreeMap<String, String>, unit: &str) -> Result<Listed> {
+    let Some(name) = manifest.get(&listed_logical(unit)) else { return Ok(Listed { fmt: 1, unit: unit.into(), ..Default::default() }) };
+    read_listed_file(root, name)
+}
+
+/// A check's state, by its content name.
+pub fn read_listed_file(root: &Path, name: &str) -> Result<Listed> {
     let b = std::fs::read(root.join(name)).with_context(|| format!("read {name}"))?;
-    Ok(serde_json::from_slice::<Listed>(&b).with_context(|| format!("parse {name}"))?.listed)
+    serde_json::from_slice::<Listed>(&b).with_context(|| format!("parse {name}"))
+}
+
+/// A unit's name as one component of a file name (`timetables/gtfs` → `timetables+gtfs`: `+` is in
+/// no unit's name).
+pub fn flat(unit: &str) -> String {
+    unit.replace('/', "+")
 }
 
 /// The report of a check that held something (`inputs-held/<unit>`): `sources/inputs/<unit>/
@@ -474,6 +512,7 @@ pub fn accept(root: &Path, unit: &str, f: &Finding, member: &str, by: &str) -> R
         bail!("{} is an error: errors can't be accepted; fix or remove {}", f.id, f.files.join(", "));
     }
     anyhow::ensure!(valid_id(&f.id), "{:?} isn't a finding id", f.id);
+    anyhow::ensure!(valid_unit(unit), "{unit:?} isn't a unit's name");
     let d = accepted_dir(root, unit);
     std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;
     let a = Acceptance { id: f.id.clone(), member: member.to_string(), host: crate::agent::cond::host_name(), at: crate::agent::jobs::now_s(), by: by.to_string(), message: f.message.clone() };
@@ -492,6 +531,7 @@ pub fn accept(root: &Path, unit: &str, f: &Finding, member: &str, by: &str) -> R
 /// Removes the acceptance of `id` for unit `unit`: whether there was one.
 pub fn unaccept(root: &Path, unit: &str, id: &str) -> Result<bool> {
     anyhow::ensure!(valid_id(id), "{id:?} isn't a finding id");
+    anyhow::ensure!(valid_unit(unit), "{unit:?} isn't a unit's name");
     match std::fs::remove_file(accepted_dir(root, unit).join(format!("{id}.json"))) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),

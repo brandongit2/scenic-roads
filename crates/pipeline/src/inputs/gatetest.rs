@@ -6,7 +6,8 @@
 
 use super::{Checks, FileCheck, FileEntry, Finding, Level};
 
-pub struct GateTest;
+/// The test unit's checks, for the unit named (the test unit, or the tests' nested one).
+pub struct GateTest(pub &'static str);
 
 /// The shape's check names.
 const SHAPE: &str = "gt-shape";
@@ -16,7 +17,7 @@ const REMOVED: &str = "gt-removed";
 
 impl Checks for GateTest {
     fn unit(&self) -> &'static str {
-        super::TEST_UNIT
+        self.0
     }
 
     fn version(&self) -> u32 {

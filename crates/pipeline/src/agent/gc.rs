@@ -51,11 +51,13 @@ const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "ap
 /// today's file, and with the pool on the newest records' own manifest, which today's may lag:
 /// the units' accepted indexes, listings and held reports), the files each such index lists, the
 /// same of every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not
-/// merged may name a version the records will), and the files listed by every index whose time is
+/// merged may name a version the records will), the files listed by every index whose time is
 /// within `within` of `now` (one made lately, or replaced lately: the check touches the index it
-/// replaces), so a version replaced stays restorable for `within` and a step reading the version it
-/// planned with finds its files. An error when any of them can't be read now: nothing there is
-/// swept then.
+/// replaces), and the index each check's state made within `within` names as replaced, with its
+/// files (whatever that index's own time: a touch that failed loses nothing). So a version replaced
+/// stays restorable for `within` and a step reading the version it planned with finds its files.
+/// Units' names may be nested (`timetables/gtfs`): every folder under `sources/inputs/` is walked.
+/// An error when any of them can't be read now: nothing there is swept then.
 pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>, within: Duration, now: SystemTime) -> Result<BTreeSet<String>> {
     use crate::pool::{journal, records::Records, term};
     let mut keep: BTreeSet<String> = BTreeSet::new();
@@ -81,31 +83,46 @@ pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, St
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).context("the journal"),
     }
+    let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
+        keep.extend(crate::inputs::read_index(root, c)?.files.into_values().map(|f| f.file));
+        keep.insert(c.to_string());
+        Ok(())
+    };
     for (l, c) in named {
-        if crate::inputs::unit_of(&l).is_some() && l.ends_with("/index") {
-            keep.extend(crate::inputs::read_index(root, &c)?.files.into_values().map(|f| f.file));
+        if crate::inputs::record_of(&l).is_some_and(|(_, r)| r == "@index") {
+            index_files(&c, &mut keep)?;
         }
         keep.insert(c);
     }
-    // Every index made or replaced within `within`: its files.
-    let units = match std::fs::read_dir(root.join("sources/inputs")) {
-        Ok(rd) => rd.collect::<std::io::Result<Vec<_>>>().context("list sources/inputs")?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).context("list sources/inputs"),
-    };
-    for u in units {
-        let unit = u.file_name().to_string_lossy().into_owned();
-        if !u.file_type()?.is_dir() {
-            continue;
-        }
-        for e in std::fs::read_dir(u.path()).with_context(|| format!("list sources/inputs/{unit}"))? {
-            let e = e?;
-            let rel = format!("sources/inputs/{unit}/{}", e.file_name().to_string_lossy());
-            let is_index = store::naming::parse_content_name(&rel).is_some_and(|n| n.logical == crate::inputs::logical(&unit) && n.ext == "json");
+    // Every unit's records made within `within` (by walking every folder: units' names nest): an
+    // index's files, and a check's state's replaced index with its files.
+    let mut stack = vec![root.join("sources/inputs")];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+        };
+        for e in rd {
+            let e = e.with_context(|| format!("list {}", dir.display()))?;
+            if e.file_type()?.is_dir() {
+                stack.push(e.path());
+                continue;
+            }
+            let rel = e.path().strip_prefix(root).unwrap_or(&e.path()).to_string_lossy().replace('\\', "/");
+            let Some(record) = store::naming::parse_content_name(&rel).filter(|n| n.ext == "json").and_then(|n| crate::inputs::record_of(n.logical)).map(|(_, r)| r) else { continue };
             let young = e.metadata()?.modified().ok().is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
-            if is_index && young {
-                keep.extend(crate::inputs::read_index(root, &rel)?.files.into_values().map(|f| f.file));
-                keep.insert(rel);
+            if !young {
+                continue;
+            }
+            match record {
+                "@index" => index_files(&rel, &mut keep)?,
+                "@listed" => {
+                    if let Some(old) = crate::inputs::read_listed_file(root, &rel)?.replaced {
+                        index_files(&old, &mut keep)?;
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -457,48 +474,64 @@ mod tests {
         };
         let u = "sources/inputs/_gate-test";
         let kept = format!("{u}/a.1111111111111111.jsonl");
-        let index = |files: &[&str]| {
+        let index = |unit: &str, files: &[&str]| {
             let files: serde_json::Map<String, serde_json::Value> = files.iter().enumerate().map(|(i, f)| (format!("f{i}.jsonl"), serde_json::json!({"file": f, "size": 1, "keyed": "-"}))).collect();
-            serde_json::json!({"fmt": 1, "unit": "_gate-test", "checks": "_gate-test 1", "files": files}).to_string()
+            serde_json::json!({"fmt": 1, "unit": unit, "checks": format!("{unit} 1"), "files": files}).to_string()
         };
         put(&kept, "x", 60);
         put(&format!("{u}/a.2222222222222222.jsonl"), "x", 60); // an old version: goes
         put(&format!("{u}/a.3333333333333333.jsonl"), "x", 3); // young: stays
         put(&format!("{u}/b.4444444444444444.jsonl"), "x", 60); // an unmerged entry's index lists it
-        put(&format!("{u}/index.5555555555555555.json"), &index(&[&kept]), 60);
-        put(&format!("{u}/index.6666666666666666.json"), &index(&[&format!("{u}/b.4444444444444444.jsonl")]), 60);
-        put(&format!("{u}/held.7777777777777777.json"), "{}", 60);
-        put(&format!("{u}/held.8888888888888888.json"), "{}", 60); // an old report: goes
+        put(&format!("{u}/@index.5555555555555555.json"), &index("_gate-test", &[&kept]), 60);
+        put(&format!("{u}/@index.6666666666666666.json"), &index("_gate-test", &[&format!("{u}/b.4444444444444444.jsonl")]), 60);
+        put(&format!("{u}/@held.7777777777777777.json"), "{}", 60);
+        put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
         put("inputs/_gate-test/a.jsonl", "x", 300); // the drop box: never
         put("sources/registers/legacy.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
-        fs::write(root.join("state/build/manifest.json"), serde_json::json!({format!("{u}/index"): format!("{u}/index.5555555555555555.json"), format!("{u}/held"): format!("{u}/held.7777777777777777.json")}).to_string()).unwrap();
+        // A nested unit (`timetables/gtfs`'s kind): its index named, its copy kept; an old copy of
+        // it gone.
+        let n = "sources/inputs/_gate-nest/inner";
+        put(&format!("{n}/c.aaaaaaaaaaaaaaab.zip"), "x", 60);
+        put(&format!("{n}/c.aaaaaaaaaaaaaaac.zip"), "x", 60); // an old version: goes
+        put(&format!("{n}/@index.aaaaaaaaaaaaaaad.json"), &index("_gate-nest/inner", &[&format!("{n}/c.aaaaaaaaaaaaaaab.zip")]), 60);
+        fs::write(root.join("state/build/manifest.json"), serde_json::json!({format!("{u}/@index"): format!("{u}/@index.5555555555555555.json"), format!("{u}/@held"): format!("{u}/@held.7777777777777777.json"), format!("{n}/@index"): format!("{n}/@index.aaaaaaaaaaaaaaad.json")}).to_string()).unwrap();
         // A journal entry the records don't reflect, naming the newer index.
-        let entry = crate::pool::journal::Entry { member: "m-0000000000000001".into(), lease: crate::pool::journal::LeaseId { term: 1, n: 7 }, step: "inputs".into(), handoff: crate::handoff::Handoff { changes: [(format!("{u}/index"), Some(format!("{u}/index.6666666666666666.json")))].into(), ..Default::default() }, at: 1_791_500_000 };
+        let entry = crate::pool::journal::Entry { member: "m-0000000000000001".into(), lease: crate::pool::journal::LeaseId { term: 1, n: 7 }, step: "inputs".into(), handoff: crate::handoff::Handoff { changes: [(format!("{u}/@index"), Some(format!("{u}/@index.6666666666666666.json")))].into(), ..Default::default() }, at: 1_791_500_000 };
         crate::pool::journal::write(&crate::pool::nas::Share::new(root), &entry).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.inputs_skipped, None);
-        assert_eq!(r.inputs_removed, 2, "{r:?}");
-        assert!(!root.join(format!("{u}/a.2222222222222222.jsonl")).exists() && !root.join(format!("{u}/held.8888888888888888.json")).exists());
-        for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/index.5555555555555555.json"), format!("{u}/index.6666666666666666.json"), format!("{u}/held.7777777777777777.json"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy.9999999999999999.tar.zst".into()] {
+        assert_eq!(r.inputs_removed, 3, "{r:?}");
+        assert!(!root.join(format!("{u}/a.2222222222222222.jsonl")).exists() && !root.join(format!("{u}/@held.8888888888888888.json")).exists() && !root.join(format!("{n}/c.aaaaaaaaaaaaaaac.zip")).exists());
+        for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/@index.5555555555555555.json"), format!("{u}/@index.6666666666666666.json"), format!("{u}/@held.7777777777777777.json"), format!("{n}/c.aaaaaaaaaaaaaaab.zip"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy.9999999999999999.tar.zst".into()] {
             assert!(root.join(&k).exists(), "{k}");
         }
         // A version replaced: its index touched as the check replaced it (yesterday), the copy it
         // lists accepted 30 days ago and named by no record any more: kept, restorable.
         put(&format!("{u}/a.cccccccccccccccc.jsonl"), "x", 30);
-        put(&format!("{u}/index.dddddddddddddddd.json"), &index(&[&format!("{u}/a.cccccccccccccccc.jsonl")]), 1);
+        put(&format!("{u}/@index.dddddddddddddddd.json"), &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]), 1);
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
-        // 15 days after it was replaced: gone, with its index.
-        age(&root.join(format!("{u}/index.dddddddddddddddd.json")), 15);
+        // Its touch failed (its time 30 days old), but the check's state made yesterday names it
+        // replaced: kept all the same, the nested unit's alike.
+        age(&root.join(format!("{u}/@index.dddddddddddddddd.json")), 30);
+        put(&format!("{u}/@listed.eeeeeeeeeeeeeeee.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-test", "listed": {}, "replaced": format!("{u}/@index.dddddddddddddddd.json")}).to_string(), 1);
+        put(&format!("{n}/c.aaaaaaaaaaaaaaae.zip"), "x", 40);
+        put(&format!("{n}/@index.aaaaaaaaaaaaaaaf.json"), &index("_gate-nest/inner", &[&format!("{n}/c.aaaaaaaaaaaaaaae.zip")]), 40);
+        put(&format!("{n}/@listed.bbbbbbbbbbbbbbbb.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-nest/inner", "listed": {}, "replaced": format!("{n}/@index.aaaaaaaaaaaaaaaf.json")}).to_string(), 2);
         let r = run(root, 14, false).unwrap();
-        assert_eq!(r.inputs_removed, 2, "{r:?}");
+        assert_eq!(r.inputs_removed, 0, "{r:?}");
+        assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists() && root.join(format!("{n}/c.aaaaaaaaaaaaaaae.zip")).exists());
+        // 15 days after it was replaced (the state that named it that old too): gone, with its index.
+        age(&root.join(format!("{u}/@listed.eeeeeeeeeeeeeeee.json")), 15);
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.inputs_removed, 3, "the copy, its index, the old state: {r:?}");
         assert!(!root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // An index named that can't be read: nothing there swept.
         put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
-        fs::write(root.join(format!("{u}/index.5555555555555555.json")), b"{not json").unwrap();
+        fs::write(root.join(format!("{u}/@index.5555555555555555.json")), b"{not json").unwrap();
         let r = run(root, 14, false).unwrap();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());

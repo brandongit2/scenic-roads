@@ -447,10 +447,11 @@ fn w_heritage_sites(l: &str, _: bool) -> bool {
     }
 }
 
-/// A gate unit's accepted index, its held report and its last listing (crate::inputs:
-/// `sources/inputs/<unit>/index`, `…/held`, `…/listed`), the report removed once nothing's held.
+/// A gate unit's accepted index, its held report and its check's state (crate::inputs::record_of:
+/// `sources/inputs/<unit>/@index`, `…/@held`, `…/@listed`, the unit's name nested or not), the
+/// report removed once nothing's held.
 fn w_inputs(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "inputs", u, "index" | "held" | "listed"] if !u.is_empty())
+    crate::inputs::record_of(l).is_some()
 }
 
 fn w_spoken(l: &str, _: bool) -> bool {
@@ -692,7 +693,7 @@ mod tests {
     #[test]
     fn entries_within_their_write_sets() {
         let ok: [(&str, &[(&str, bool)]); 25] = [
-            ("inputs", &[("sources/inputs/_gate-test/index", false), ("sources/inputs/_gate-test/held", true)]),
+            ("inputs", &[("sources/inputs/_gate-test/@index", false), ("sources/inputs/_gate-test/@held", true), ("sources/inputs/_gate-test/@listed", false), ("sources/inputs/_gate-nest/inner/@index", false), ("sources/inputs/_gate-nest/inner/@listed", false)]),
             ("osm-pass", &[("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-09-28/pass", false), ("layers/basemap/world-2026-09-28", false), ("sources/osm/2026-08-01/sets/water", true), ("work/heritage/2026-08-01/base/heritage", true), ("work/summits/2026-08-01", true)]),
             ("pass-sets", &[("sources/osm/2026-09-28/sets/water-v2", false)]),
             ("water", &[("layers/water/root/0-0-0", false), ("layers/water/lo/3-1-2", false), ("layers/water/hi/6-1-2", false), ("layers/smallwater/hi/6-1-2", true)]),
@@ -728,7 +729,7 @@ mod tests {
         // removed by a step that doesn't retire passes, a prune that writes, a removal the step
         // doesn't make.
         let bad: [(&str, &[(&str, bool)]); 10] = [
-            ("inputs", &[("sources/inputs/_gate-test/a", false)]),
+            ("inputs", &[("sources/inputs/_gate-test/a", false), ("sources/inputs/_gate-test/index", false), ("sources/inputs/x/y/@other", false)]),
             ("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false)]),
             ("terrain", &[("work/terrain-mid/3-1-2", false)]),
             ("lo", &[("layers/roads/lo/6-1-2", false)]),

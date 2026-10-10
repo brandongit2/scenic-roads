@@ -191,10 +191,12 @@ test unit `_gate-test` the only unit on it (§4.10): no real input is on the gat
 - The listing is only a trigger. Whether anything changed is decided by content (§4.3): touching a
   file, or rewriting it with the same bytes, changes nothing downstream.
 - **What gets hashed:** only the files whose size or time differ from those the last check listed
-  (the check's own state, `sources/inputs/<unit>/listed.<hash16>.json`, named in the records as
-  `sources/inputs/<unit>/listed`, apart from the index so the version's name is its contents'
+  (the check's own state, `sources/inputs/<unit>/@listed.<hash16>.json`, named in the records as
+  `sources/inputs/<unit>/@listed`, apart from the index so the version's name is its contents'
   alone: a held change's file keeps the accepted version's time, so it's read again; a file only
-  touched takes its new time, so it's read once). A file whose size and time are as they were is
+  touched takes its new time, so it's read once; and the index the last change of version
+  replaced, `replaced`, which GC keeps while this state is recent, §4.9). A file whose size and
+  time are as they were is
   taken as unchanged without reading it, so a check of
   translations (808 MB on the NAS on 2026-10-10) reads only the files dropped or edited since. A
   file rewritten in place with the same size and time is the one case this misses; `scenic inputs
@@ -248,11 +250,13 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   6. Stores each file content-named under `sources/inputs/<unit>/` (§4.6), uploaded as every output
      is (read back, checked against its hash, renamed into place: plan §3).
   7. Writes the candidate's report (its findings, which files are held, and every finding id it
-     raised) and hands off the records changes: `sources/inputs/<unit>/index` → the new accepted
+     raised) and hands off the records changes: `sources/inputs/<unit>/@index` → the new accepted
      index (only when it differs; the index it replaces is touched, so GC keeps that version
-     restorable, §4.9), `sources/inputs/<unit>/listed` → the sizes and times listed (only when they
-     differ), and `sources/inputs/<unit>/held` → the report
-     (`sources/inputs/<unit>/held.<hash16>.json`), or none when nothing is held. (Those names, not
+     restorable, §4.9), `sources/inputs/<unit>/@listed` → the sizes and times listed (only when they
+     differ), and `sources/inputs/<unit>/@held` → the report
+     (`sources/inputs/<unit>/@held.<hash16>.json`), or none when nothing is held. (A `@` starts no
+     component of a drop-box path, nor of a unit's name, so a unit's records are never confused
+     with a copy, nor with a nested unit's, `timetables/gtfs` among them. Those names, not
      `inputs/<unit>`: a records entry's content name is its logical name's, which the lead checks of
      every journal entry it merges, pool.md §7.3.)
 - **Derived facts** go in the index with each file (a register's box and entry count, a GeoTIFF's
@@ -314,7 +318,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 - **Files:** each accepted file is `sources/inputs/<unit>/<path>.<hash16>.<ext>` (its drop-box path,
   slashes kept, content-named as every built file: plan §3), so the same bytes are stored once
   however often they're dropped.
-- **The index:** `sources/inputs/<unit>/index.<hash16>.json`:
+- **The index:** `sources/inputs/<unit>/@index.<hash16>.json`:
   ```json
   {"fmt": 1, "unit": "heritage", "checks": "heritage 1",
    "files": {"fr-merimee.geojson": {"file": "sources/inputs/heritage/fr-merimee.4b1e…a0.geojson",
@@ -330,7 +334,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   each kept while those files are in the version unchanged (a file edited or removed drops its
   warnings: their acceptances are then stale, §4.5). No file time is in it (§4.2: `listed`), so the
   same contents always have the same version.
-- **The records:** the manifest's `sources/inputs/<unit>/index` names the index, whose file
+- **The records:** the manifest's `sources/inputs/<unit>/@index` names the index, whose file
   entries root the files for GC (§4.9). It changes only by a check job's hand-off, merged by the
   lead (pool.md §5): the lead stays the one writer of the records, and the gate adds no other
   writer.
@@ -444,11 +448,15 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   crates/pipeline/src/agent/gc.rs). #134 changes that for `sources/inputs/` alone (built:
   `gc::inputs_kept`): a file there goes once nothing names it (the manifest, and with the pool on
   the newest records' own; the accepted indexes, listings and held reports they name, and those of
-  any journal entry the newest records don't reflect yet: pool.md §7.3; and every index whose time
-  is within 14 days, the check touching the index it replaces) and it's older than 14 days (plan
-  §3, GC). So a version replaced is kept whole, restorable by hand, for 14 days after it's replaced,
-  however long ago its files were accepted, and a step reading the version it planned with finds its
-  files. When any of those can't be read, nothing there is swept that day. The rest of
+  any journal entry the newest records don't reflect yet: pool.md §7.3; every index whose time is
+  within `keep_days` (`scenic gc --days`, default 14), the check touching the index it replaces;
+  and the index each check's state made within `keep_days` names as `replaced`, with its files,
+  whatever that index's own time, so a touch that failed loses nothing) and it's older than
+  `keep_days` (plan §3, GC). So with the default a version replaced is kept whole, restorable by
+  hand, for 14 days after it's replaced, however long ago its files were accepted, and a step
+  reading the version it planned with finds its files. GC walks every folder under
+  `sources/inputs/`, a unit's name nesting (`timetables/gtfs`). When any of those can't be read,
+  nothing there is swept that day. The rest of
   `sources/` stays unswept, and so do the drop boxes and `state/inputs/`.
 - **Appending to a big file costs a copy.** Every accepted version of a file is kept whole for 14
   days, so appending a batch to an 80 MB `.jsonl` keeps another 80 MB copy each time. The briefs
@@ -1341,19 +1349,22 @@ the drop boxes are reached only through an accessor that refuses everything else
   inputs' paths from the agent, which takes them from the accessor.
 - **The test:** every item in `crates/` outside `#[cfg(test)]` code (a function, `const fn`
   included, by its block; a `const` or `static`; a line outside any is the file's top level) whose
-  code (not its comments) names a drop box (`"inputs`, `join("inputs")`, `"translations`,
-  `"descriptions`, and each unit's name) must make an accessor call (`inputs::open(`,
-  `inputs::gate::run(`) or be exempt by its name with a reason (the Regions panel's and `scenic
-  add`'s writes, the backups, GC's never-swept list, the records' names, today's readers with their
-  tasks). An exemption that matches no line fails the test too, so the list can't outlive what it
-  exempts (`every_exemption_matches_a_line`), and the scanner's own rules have a test.
+  code (not its comments) names a drop box (`"inputs`, `join("inputs")`, `/inputs/`,
+  `"translations`, `}/translations`, `"descriptions`, `}/descriptions`, and each unit's name; a
+  line's `sources/inputs` aside) must make an accessor call (`inputs::open(`, `inputs::gate::run(`;
+  one named in a string doesn't count) or be exempt, by the item's name and an anchor in the line
+  (what it says: so a common name like `new` exempts that line alone), with a reason (the Regions
+  panel's and `scenic add`'s writes, the backups, GC's never-swept list, the records' names, today's
+  readers with their tasks). An exemption that matches no line fails the test too, so the list
+  can't outlive what it exempts (`every_exemption_matches_a_line`), and the scanner's own rules have
+  a test.
 - **In Python:** the steps never build a drop-box path; they receive input paths on their command
   line, from the agent. `dem/` gets a small helper every step uses to open an input argument
   (`inputs.arg(path)`), which refuses a path under a drop box (anything not under
   `sources/inputs/`, `sources/fetched/` or the job's scratch); the same test scans `dem/**/*.py`
   (a function by its indentation, a top-level statement by its name) for drop-box names in code
-  outside a function calling `inputs.arg(`, by the same rules (exemptions by name, each matching a
-  line), and
+  outside a function calling `inputs.arg(`, by the same rules (single-quoted forms too; exemptions
+  by name and anchor, each matching a line), and
   `publish.sh`'s check that every Python step loads from a copy of `dem/` (plan §8, App
   publishing) runs with a stand-in NAS root whose drop boxes are unreadable, so a step that opens
   one fails there.
