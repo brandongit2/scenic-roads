@@ -109,7 +109,9 @@ struct Status: Decodable {
 /// A gate unit (crates/pipeline/src/inputs/view.rs InputView).
 struct InputUnit: Decodable {
     let unit: String
+    /// "ok", "checking" or "held" (held while it's checked again too: `checking`).
     let state: String
+    let checking: Bool?
     let held: [String]?
     let findings: [InputFinding]?
 }
@@ -133,7 +135,7 @@ func inputLine(_ v: InputUnit) -> String {
     var parts: [String] = []
     if w > 0 { parts.append("\(w) warning\(w == 1 ? "" : "s") held") }
     if e > 0 { parts.append("\(e) error\(e == 1 ? "" : "s")") }
-    return "\(v.unit): \(parts.isEmpty ? "held" : parts.joined(separator: ", "))\((v.held ?? []).isEmpty ? "" : " (\((v.held ?? []).joined(separator: ", ")))")"
+    return "\(v.unit): \(parts.isEmpty ? "held" : parts.joined(separator: ", "))\((v.held ?? []).isEmpty ? "" : " (\((v.held ?? []).joined(separator: ", ")))")\(v.checking == true ? ", checking again" : "")"
 }
 
 /// The icon: the build's state's symbol, with a small warning triangle while an input is held
@@ -1767,11 +1769,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         tellLead()
         guard let r = reply, let s = r.status else { return }
         let held = heldInputs(r)
-        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, held: Set(held.map(\.unit)))
+        // (A unit held stays so for the notifications while it's checked again, its report gone
+        // but the check not over: taken in only once its state is ok.)
+        let rechecking = Set((s.inputs ?? []).filter { $0.state == "checking" }.map(\.unit)).intersection(seen?.held ?? [])
+        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, held: Set(held.map(\.unit)).union(rechecking))
         defer { seen = now }
         // The first answer only sets what changes are measured from.
         guard let was = seen else { return }
-        // The gate: a unit held, or taken in (its held change accepted or fixed).
+        // The gate: a unit held, or taken in (its held change accepted or fixed, its check over).
         for v in held where !was.held.contains(v.unit) {
             post("Input held: \(v.unit)", "\(inputLine(v)). The map goes on with the last good version.")
         }

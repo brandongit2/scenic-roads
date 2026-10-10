@@ -63,8 +63,7 @@ impl Watch {
                     let mut g = lock.lock().unwrap();
                     match (raw, acc) {
                         (Ok(raw), Ok(accepted)) => {
-                            let before = g.units.get(unit).map(|(r, _)| r.clone());
-                            let listing = super::settle(before.as_ref(), &raw, at);
+                            let listing = super::settle(&raw, at);
                             unsettled |= listing.files.len() < raw.files.len();
                             g.units.insert(unit.to_string(), (raw, Listed { listing, accepted, at }));
                             g.failed.remove(unit);

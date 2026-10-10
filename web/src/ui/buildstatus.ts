@@ -262,7 +262,7 @@ export class BuildStatus {
       const fs = v.findings ?? [];
       const warns = fs.filter((f) => f.level === 'warning');
       return h('div', { class: 'bs-gate' },
-        h('div', { class: 'bs-gate-h' }, h('span', { class: 'warn' }, `⚠ ${v.unit} held`), h('span', { class: 'faint' }, (v.held ?? []).join(', '))),
+        h('div', { class: 'bs-gate-h' }, h('span', { class: 'warn' }, `⚠ ${v.unit} held${v.checking ? ', checking again' : ''}`), h('span', { class: 'faint' }, (v.held ?? []).join(', '))),
         ...(v.together ? [h('div', { class: 'warn' }, v.together)] : []),
         ...fs.map((f) => h('div', { class: 'bs-item' },
           h('div', { class: f.level === 'error' ? 'fail' : 'warn' }, f.message),

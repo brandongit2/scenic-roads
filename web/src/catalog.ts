@@ -53,7 +53,9 @@ export interface InputFinding {
 export interface InputUnit {
   unit: string;
   version?: string;
+  /** Held while it's checked again too (`checking`). */
   state: 'ok' | 'checking' | 'held';
+  checking?: boolean;
   checked?: number;
   held?: string[];
   findings?: InputFinding[];

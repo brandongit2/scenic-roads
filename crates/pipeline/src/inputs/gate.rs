@@ -1,8 +1,8 @@
 //! The check job (docs/inputs.md §4.3): one gate unit's drop box against its accepted version.
 //!
-//! 1. The files whose size or time differ from those the accepted version was taken with are read
-//!    and hashed (all of them with `full`); one whose bytes are those accepted is unchanged,
-//!    whatever its time.
+//! 1. The files whose size or time differ from those the last check listed (`super::Listed`) are
+//!    read and hashed (all of them with `full`); one whose bytes are those accepted is unchanged,
+//!    whatever its time. The candidate is the listing the lead's key was made from (`candidate`).
 //! 2. The changed files' shape checks, a removal's, then the unit's own checks over the candidate.
 //! 3. Each change's verdict: clean, or held by an unaccepted finding about it; partners held
 //!    together, and a file naming a held one held with it.
@@ -10,8 +10,9 @@
 //! 5. That version checked whole: a finding it raises that's neither accepted nor raised by the
 //!    accepted version as it stands holds every change of the unit together.
 //! 6. The taken files stored content-named under `sources/inputs/<unit>/`, the index and the report
-//!    too, and handed off as records changes: `sources/inputs/<unit>/index` (only when it differs)
-//!    and `sources/inputs/<unit>/held` (the report, or none when nothing is held).
+//!    too, and handed off as records changes: `sources/inputs/<unit>/index` (only when it differs),
+//!    `sources/inputs/<unit>/listed` (likewise) and `sources/inputs/<unit>/held` (the report, or
+//!    none when nothing is held).
 //!
 //! `decide` is all of it but the reading and the writing, a function of (candidate, accepted
 //! version, acceptances): the tests' subject. `run` is the job.
@@ -26,8 +27,14 @@ pub struct Given<'a> {
     pub checks: &'a dyn Checks,
     /// The accepted version (None: none yet).
     pub prev: Option<&'a Index>,
+    /// The sizes and times the last check listed (`super::Listed`): a file listed as it was there
+    /// isn't read.
+    pub prev_listed: &'a BTreeMap<String, (u64, u64)>,
     /// The candidate: the drop box as listed, its files held still.
     pub listing: &'a Listing,
+    /// Files there but not held still now (changed since the listing, or too recent): as accepted
+    /// if they are, absent while new; neither read nor taken as removed.
+    pub unsettled: &'a BTreeSet<String>,
     pub accepted: &'a BTreeSet<String>,
     /// Every file read and hashed, whatever its size and time.
     pub full: bool,
@@ -44,6 +51,10 @@ pub struct Decision {
     pub index: Index,
     /// Whether it differs from the previous one (else nothing is written for it).
     pub changed: bool,
+    /// The sizes and times to compare the next listing with, and whether they differ from those
+    /// given (else nothing is written for them).
+    pub listed: BTreeMap<String, (u64, u64)>,
+    pub listed_changed: bool,
     /// The report, when something is held.
     pub report: Option<Report>,
     /// The bytes of the files taken in, by their copies' content names, to store.
@@ -69,8 +80,11 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let mut findings: Vec<Finding> = Vec::new();
     // 1. What changed, by content.
     for (p, &listed) in &g.listing.files {
+        if g.unsettled.contains(p) {
+            continue;
+        }
         let was = prev.files.get(p);
-        if !g.full && was.is_some() && prev.listed.get(p) == Some(&listed) {
+        if !g.full && was.is_some() && g.prev_listed.get(p) == Some(&listed) {
             continue;
         }
         let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the drop box"))?;
@@ -88,7 +102,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         changes.insert(p.clone(), Change::Put { bytes: Arc::new(bytes), hash, check });
     }
     for (p, was) in &prev.files {
-        if !g.listing.files.contains_key(p) {
+        if !g.listing.files.contains_key(p) && !g.unsettled.contains(p) {
             findings.extend(g.checks.removed(p, was));
             changes.insert(p.clone(), Change::Removed);
         }
@@ -97,11 +111,13 @@ pub fn decide(g: &Given) -> Result<Decision> {
     for s in &g.listing.strays {
         findings.push(Finding::new("stray", Level::Error, &[s], &[], vec![s.clone()], format!("{s}: {unit} takes no folders (but todo/ and how/): move what's in it up, or out")));
     }
-    // The candidate, checked whole.
+    // The candidate, checked whole: the files held still, and those that aren't as accepted.
     let candidate: BTreeMap<String, Option<Arc<Vec<u8>>>> = g
         .listing
         .files
         .keys()
+        .filter(|p| !g.unsettled.contains(*p) || prev.files.contains_key(*p))
+        .chain(prev.files.keys().filter(|p| g.unsettled.contains(*p)))
         .map(|p| {
             let b = match changes.get(p) {
                 Some(Change::Put { bytes, .. }) => Some(bytes.clone()),
@@ -138,33 +154,28 @@ pub fn decide(g: &Given) -> Result<Decision> {
         held.extend(more);
     }
     // 4. The next version: the clean changes applied.
-    let mut files = prev.files.clone();
-    let mut listed = prev.listed.clone();
-    let mut taken: BTreeMap<String, Arc<Vec<u8>>> = BTreeMap::new();
-    for (p, c) in &changes {
-        if held.contains(p) {
-            continue;
-        }
-        match c {
-            Change::Put { bytes, hash, check } => {
-                let file = super::copy_name(unit, p, hash).expect("checked above");
-                let keyed = check.keyed.clone().unwrap_or_else(|| hash.clone());
-                files.insert(p.clone(), FileEntry { file: file.clone(), size: bytes.len() as u64, keyed, facts: check.facts.clone() });
-                listed.insert(p.clone(), g.listing.files[p]);
-                taken.insert(file, bytes.clone());
+    let apply = |held: &BTreeSet<String>| {
+        let mut files = prev.files.clone();
+        let mut taken: BTreeMap<String, Arc<Vec<u8>>> = BTreeMap::new();
+        for (p, c) in &changes {
+            if held.contains(p) {
+                continue;
             }
-            Change::Removed => {
-                files.remove(p);
-                listed.remove(p);
+            match c {
+                Change::Put { bytes, hash, check } => {
+                    let file = super::copy_name(unit, p, hash).expect("checked above");
+                    let keyed = check.keyed.clone().unwrap_or_else(|| hash.clone());
+                    files.insert(p.clone(), FileEntry { file: file.clone(), size: bytes.len() as u64, keyed, facts: check.facts.clone() });
+                    taken.insert(file, bytes.clone());
+                }
+                Change::Removed => {
+                    files.remove(p);
+                }
             }
         }
-    }
-    // (A file unchanged but touched: its time as listed now, should the version change.)
-    for (p, &l) in &g.listing.files {
-        if files.contains_key(p) && !changes.contains_key(p) {
-            listed.insert(p.clone(), l);
-        }
-    }
+        (files, taken)
+    };
+    let (mut files, mut taken) = apply(&held);
     let mut together = None;
     let mut whole_found: Vec<Finding> = Vec::new();
     // 5. The next version checked whole.
@@ -184,24 +195,36 @@ pub fn decide(g: &Given) -> Result<Decision> {
         if !bad.is_empty() {
             together = Some(format!("the changes taken alone would make a version that raises {}: every change held together", bad.iter().map(|f| format!("\"{}\"", f.message)).collect::<Vec<_>>().join(", ")));
             held.extend(changes.keys().cloned());
-            files = prev.files.clone();
-            listed = prev.listed.clone();
-            taken.clear();
+            (files, taken) = apply(&held);
             findings.extend(bad);
         }
     }
-    // The index: the accepted warnings it's taken with, kept.
-    let mut accepted: BTreeSet<String> = prev.accepted.iter().cloned().collect();
+    // The warnings the version is taken with: those still about files of it unchanged, and those
+    // that let a change in, about files still in it (one about none of its files no longer counts:
+    // its acceptance is stale).
+    let lets: BTreeSet<&String> = changes.keys().filter(|p| !held.contains(*p)).collect();
+    let mut accepted: BTreeMap<String, Vec<String>> = prev.accepted.iter().filter(|(_, fs)| fs.iter().all(|p| files.contains_key(p) && !lets.contains(p))).map(|(k, v)| (k.clone(), v.clone())).collect();
     if files != prev.files {
-        let lets: BTreeSet<&String> = changes.keys().filter(|p| !held.contains(*p)).collect();
         for f in findings.iter().chain(&whole_found) {
-            if f.level == Level::Warning && g.accepted.contains(&f.id) && (f.files.iter().any(|p| lets.contains(p)) || whole_found.iter().any(|w| w.id == f.id)) {
-                accepted.insert(f.id.clone());
+            let lets_in = f.files.iter().any(|p| lets.contains(p)) || whole_found.iter().any(|w| w.id == f.id);
+            if f.level == Level::Warning && g.accepted.contains(&f.id) && lets_in && f.files.iter().any(|p| files.contains_key(p)) {
+                accepted.insert(f.id.clone(), f.files.clone());
             }
         }
     }
-    let changed = files != prev.files;
-    let index = if changed { Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), files, listed, accepted: accepted.into_iter().collect() } } else { prev.clone() };
+    let changed = files != prev.files || accepted != prev.accepted;
+    let index = if changed { Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), files, accepted } } else { prev.clone() };
+    // The sizes and times to compare with next time: a file taken in, or unchanged (touched or
+    // not), as listed now; a held change's, or one not held still, as before (read again).
+    let mut listed = BTreeMap::new();
+    for p in index.files.keys() {
+        let changed_held = changes.contains_key(p) && held.contains(p);
+        let l = if changed_held || g.unsettled.contains(p) { g.prev_listed.get(p).copied() } else { g.listing.files.get(p).copied().or_else(|| g.prev_listed.get(p).copied()) };
+        if let Some(l) = l {
+            listed.insert(p.clone(), l);
+        }
+    }
+    let listed_changed = listed != *g.prev_listed;
     // The report.
     let strays: BTreeSet<String> = g.listing.strays.iter().cloned().collect();
     let report = (!held.is_empty() || !strays.is_empty()).then(|| {
@@ -213,7 +236,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         raised.dedup();
         Report { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), held: held.iter().chain(&strays).cloned().collect(), findings: shown, together, raised }
     });
-    Ok(Decision { index, changed, report, store: taken, read })
+    Ok(Decision { index, changed, listed, listed_changed, report, store: taken, read })
 }
 
 /// A version's bytes, by path: `files`' own, else (None there) the accepted copy's, each read once.
@@ -233,32 +256,40 @@ fn reader<'a>(files: &'a BTreeMap<String, Option<Arc<Vec<u8>>>>, prev: &'a Index
     }
 }
 
-/// The job: unit `unit` checked (`full`: every file read), its outcome handed off with `out`.
-pub fn run(out: &mut crate::out::Out, unit: &str, full: bool) -> Result<String> {
+/// The candidate a check uses, from `planned` (what the lead's key was made from: its listing and
+/// acceptances), or listed now by itself (by hand). A file whose size or time isn't the listing's
+/// now (changed since it was listed), or changed in the last `QUIET_S` (listed here), isn't held
+/// still: it's left as accepted, or out while new, and the next listing, which differs, checks it
+/// again. So the key recorded never names a file the check didn't take as listed.
+pub fn candidate(root: &std::path::Path, unit: &str, recursive: bool, planned: Option<super::Planned>, now: u64) -> Result<(Listing, BTreeSet<String>, BTreeSet<String>)> {
+    let raw = super::list(root, unit, recursive)?;
+    let (listing, accepted) = match planned {
+        Some(p) => (p.listing, p.accepted),
+        None => (super::settle(&raw, now), super::acceptances(root, unit)?),
+    };
+    let mut unsettled: BTreeSet<String> = listing.files.iter().filter(|(p, l)| raw.files.get(*p) != Some(l)).map(|(p, _)| p.clone()).collect();
+    // (A file there now that the listing passed over as too recent: not taken as removed.)
+    unsettled.extend(raw.files.keys().filter(|p| !listing.files.contains_key(*p)).cloned());
+    Ok((listing, accepted, unsettled))
+}
+
+/// The job: unit `unit` checked (`full`: every file read; `planned`: the listing and acceptances
+/// the lead's key was made from), its outcome handed off with `out`.
+pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
     use crate::timings::{phase, Class};
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
     let root = out.root().to_path_buf();
     let p = phase("the accepted version and the drop box listed", Class::NasRead);
-    let prev = out.get(&super::logical(unit)).map(|n| super::read_index(&root, n)).transpose()?;
-    let raw = super::list(&root, unit, checks.recursive())?;
-    // (A file changed in the last QUIET_S is left as accepted, or out while new: the next listing
-    // checks it again.)
-    let now = crate::agent::jobs::now_s();
-    let mut listing = Listing { files: BTreeMap::new(), strays: raw.strays.clone() };
-    for (path, &(size, t)) in &raw.files {
-        if t + super::QUIET_S <= now {
-            listing.files.insert(path.clone(), (size, t));
-        } else if let Some(&was) = prev.as_ref().and_then(|i| i.files.contains_key(path).then(|| i.listed.get(path)).flatten()) {
-            listing.files.insert(path.clone(), was);
-        }
-    }
-    let accepted = super::acceptances(&root, unit)?;
+    let prev_name = out.get(&super::logical(unit)).map(str::to_string);
+    let prev = prev_name.as_ref().map(|n| super::read_index(&root, n)).transpose()?;
+    let prev_listed = super::read_listed(&root, &out.manifest, unit)?;
+    let (listing, accepted, unsettled) = candidate(&root, unit, checks.recursive(), planned, crate::agent::jobs::now_s())?;
     drop(p);
     let p = phase("the changes read and checked", Class::NasRead);
     let dir = super::drop_box(&root, unit);
     let read_new = |path: &str| std::fs::read(dir.join(path)).with_context(|| format!("read {}", dir.join(path).display()));
     let read_old = |e: &FileEntry| std::fs::read(root.join(&e.file)).with_context(|| format!("read {}", e.file));
-    let d = decide(&Given { checks, prev: prev.as_ref(), listing: &listing, accepted: &accepted, full, read_new: &read_new, read_old: &read_old })?;
+    let d = decide(&Given { checks, prev: prev.as_ref(), prev_listed: &prev_listed, listing: &listing, unsettled: &unsettled, accepted: &accepted, full, read_new: &read_new, read_old: &read_old })?;
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
     let p = phase("the accepted files, the index and the report stored", Class::NasWrite);
@@ -269,8 +300,20 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool) -> Result<String> 
     let mut said = format!("{unit}: {} file{} read of {}", d.read.len(), if d.read.len() == 1 { "" } else { "s" }, listing.files.len());
     if d.changed {
         let name = out.store_bytes(&format!("{}/index", super::store_dir(unit)), "json", &serde_json::to_vec_pretty(&d.index)?)?;
+        // The version replaced: its index's time made now, so GC keeps it and the copies it lists
+        // the 14 days a version replaced stays restorable (gc::inputs_kept).
+        if let Some(old) = prev_name.as_ref().filter(|o| **o != name) {
+            if let Ok(f) = std::fs::File::options().write(true).open(root.join(old)) {
+                f.set_modified(std::time::SystemTime::now()).ok();
+            }
+        }
         out.set(&super::logical(unit), Some(name.clone()));
         said += &format!("; taken in: {name}");
+    }
+    if d.listed_changed {
+        let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone() };
+        let name = out.store_bytes(&format!("{}/listed", super::store_dir(unit)), "json", &serde_json::to_vec_pretty(&l)?)?;
+        out.set(&super::listed_logical(unit), Some(name));
     }
     let report = match &d.report {
         Some(r) => Some(out.store_bytes(&format!("{}/held", super::store_dir(unit)), "json", &serde_json::to_vec_pretty(r)?)?),

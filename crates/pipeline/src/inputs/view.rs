@@ -15,9 +15,10 @@ pub enum State {
     /// Its accepted version is the drop box's.
     #[default]
     Ok,
-    /// A check of it is granted or running.
+    /// A check of it is planned or running, nothing of it held (`checking` says so of a held one).
     Checking,
-    /// A change of it is held.
+    /// A change of it is held (while it's checked again too: the report holds until the check
+    /// says otherwise).
     Held,
 }
 
@@ -43,6 +44,9 @@ pub struct InputView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub state: State,
+    /// A check of it is planned or running (whatever its state: a held unit stays held meanwhile).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checking: bool,
     /// When it was last checked (its report's or index's time on the NAS), once it has been.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked: Option<u64>,
@@ -84,7 +88,7 @@ impl InputView {
                 if e > 0 {
                     parts.push(n(e, "error"));
                 }
-                format!("{}: {} ({})", self.unit, if parts.is_empty() { "held".to_string() } else { parts.join(", ") }, self.held.join(", "))
+                format!("{}: {} ({}){}", self.unit, if parts.is_empty() { "held".to_string() } else { parts.join(", ") }, self.held.join(", "), if self.checking { ", checking again" } else { "" })
             }
             State::Checking => format!("{}: checking", self.unit),
             State::Ok => format!("{}: taken in", self.unit),
@@ -167,14 +171,16 @@ pub fn of(root: &Path, manifest: &BTreeMap<String, String>, units: &[&str], chec
         }
         if let Some(name) = v.version.clone() {
             match cache.index(root, &name) {
-                Ok(i) => raised.extend(i.accepted.iter().cloned()),
+                Ok(i) => raised.extend(i.accepted.keys().cloned()),
                 Err(e) => v.unread = Some(format!("{e:#}")),
             }
             if v.checked.is_none() {
                 v.checked = cache.time(root, &name);
             }
         }
-        if checking.contains(&unit) {
+        // (Checked again while held: still held, its findings shown, until the check says.)
+        v.checking = checking.contains(&unit);
+        if v.checking && v.state == State::Ok {
             v.state = State::Checking;
         }
         v.accepted = acc.iter().cloned().collect();

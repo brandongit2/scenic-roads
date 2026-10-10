@@ -167,7 +167,7 @@ function gateBanners(m, accept) {
     const errors = fs.filter((f) => f.level === "error");
     const all = warns.length > 1 && h("button", { onclick: () => confirm(`Accept all ${warns.length} warnings of ${v.unit}?\n\n${warns.map((f) => `• ${f.message}`).join("\n")}`) && accept({ unit: v.unit, all: true }), title: "Accepts every warning held here; the held changes are taken in at the next check (errors stay)" }, "Accept all");
     return h("div", `gate${errors.length ? " has-error" : ""}`,
-      h("div", "gh", h("b", null, v.unit), h("span", "files", `held: ${(v.held || []).join(", ")}`), h("span", "dim small", v.checked ? `checked ${clock(v.checked)}` : ""), all),
+      h("div", "gh", h("b", null, v.unit), h("span", "files", `held: ${(v.held || []).join(", ")}`), h("span", "dim small", v.checking ? "checking again…" : v.checked ? `checked ${clock(v.checked)}` : ""), all),
       v.together ? h("div", "together", v.together) : null,
       fs.map((f) => h("div", "gf",
         chip(f.level, f.level === "error" ? "bad" : "warn"),

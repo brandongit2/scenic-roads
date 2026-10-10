@@ -879,6 +879,9 @@ struct Gate {
     view: std::cell::RefCell<Vec<crate::inputs::view::InputView>>,
     cache: std::cell::RefCell<crate::inputs::view::Cache>,
     full: std::cell::RefCell<BTreeSet<String>>,
+    /// The descriptions' credits' digest as last read (None inside: there are none), for the
+    /// catalog's key while they can't be read.
+    credits: std::cell::RefCell<Option<Option<String>>>,
 }
 
 /// The caches' sizes as last counted (room::sizes: what room-making can free, what a clear would),
@@ -3709,16 +3712,17 @@ impl Agent {
         let mut done = keys;
         let mut inputs = input_digests(root);
         // (The inputs' descriptions' credits, for the catalog's key: crate::inputs::credits. None
-        // yet, no line, so the catalog's key is as it was; unreadable now, "?".)
+        // yet, no line, so the catalog's key is as it was. Unreadable now: the last digest read
+        // stands, or, with none read yet, the catalog waits; never a key that flips on a failed
+        // read.)
+        let mut credits_unread = None;
         match crate::inputs::credits::described(root, &manifest) {
-            Ok(d) => {
-                if let Some(c) = crate::inputs::credits::digest(&d) {
-                    inputs.insert("credits".into(), c);
-                }
-            }
-            Err(_) => {
-                inputs.insert("credits".into(), "?".into());
-            }
+            Ok(d) => *self.inputs.credits.borrow_mut() = Some(crate::inputs::credits::digest(&d)),
+            Err(e) if self.inputs.credits.borrow().is_none() => credits_unread = Some(format!("{e:#}")),
+            Err(_) => {}
+        }
+        if let Some(Some(c)) = self.inputs.credits.borrow().clone() {
+            inputs.insert("credits".into(), c);
         }
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
@@ -3791,6 +3795,10 @@ impl Agent {
             None => id.clone(),
         }).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
+        if let Some(why) = credits_unread.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
+            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("the inputs' descriptions (their credits) can't be read now: {why}") });
+            plan.retain(|w| w.step != "catalog");
+        }
         // Just edited: the regions' work waits a while for more edits (each would build again what
         // the last started); what runs carries on.
         if let Some((age, left)) = edit_hold.filter(|_| !plan.is_empty()) {
@@ -4917,7 +4925,22 @@ impl Agent {
                     continue;
                 }
                 checking.insert(unit.to_string());
-                let mut cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.to_string()];
+                // (The listing and acceptances the key is made from, for the job to check exactly
+                // them: inputs::Planned.)
+                let planned = self.o.home.join("inputs-listing").join(format!("{unit}.{key}.json"));
+                let wrote = std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
+                    for e in std::fs::read_dir(planned.parent().unwrap())?.flatten() {
+                        if e.file_name().to_string_lossy().starts_with(&format!("{unit}.")) && e.path() != planned {
+                            std::fs::remove_file(e.path()).ok();
+                        }
+                    }
+                    crate::whole::write(&planned, &serde_json::to_vec(&crate::inputs::Planned { listing: l.listing.clone(), accepted: l.accepted.clone() })?)
+                });
+                if let Err(e) = wrote {
+                    waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its listing can't be kept for the check: {e:#}") });
+                    continue;
+                }
+                let mut cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.to_string(), "--listing".into(), s(&planned)];
                 if full {
                     cmd.push("--full".into());
                 }
@@ -6402,13 +6425,17 @@ mod tests {
         // The first check: a full one, before every other job.
         let plan = a.plan(&root, &c, &mut w);
         assert_eq!(plan[0].id, format!("inputs {unit} full"));
-        assert!(plan[0].cmd.ends_with(&[unit.to_string(), "--full".to_string()]) && plan[0].cmd[1] == "inputs");
+        assert!(plan[0].cmd[1] == "inputs" && plan[0].cmd.ends_with(&["--full".to_string()]) && plan[0].cmd.contains(&unit.to_string()));
+        // (Given the listing and acceptances its key was made from: inputs::Planned.)
+        let at = plan[0].cmd.iter().position(|a| a == "--listing").unwrap();
+        let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&plan[0].cmd[at + 1]).unwrap()).unwrap();
+        assert_eq!(given.listing.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl"]);
         let work = plan[0].record.clone().unwrap();
         assert_eq!(work.targets[0].0, format!("inputs/{unit}"));
         // Run (as its job would) and recorded: a normal check planned next (its key without the full
         // one's), then nothing while nothing changes.
         let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-        crate::inputs::gate::run(&mut out, unit, true).unwrap();
+        crate::inputs::gate::run(&mut out, unit, true, None).unwrap();
         let mut keys = build::Keys::load_strict(&root).unwrap();
         keys.record("inputs", &work.targets);
         keys.save(&root).unwrap();

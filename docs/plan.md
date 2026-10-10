@@ -261,8 +261,9 @@ record changes back through the build Mac's coordinator, which journals them for
   by the same rule, their other files (the planet download, the pass's answers) 14 days after the
   newer pass completed, then the empty folders.
 - And the gate's checked copies (`sources/inputs/`, inputs.md §4.9) by the same rule, kept while the
-  manifest names them, an accepted index or held report it names lists them, or a journal entry
-  the newest records don't reflect yet does (none swept the day one of those can't be read).
+  manifest (or the newest records) names them, an accepted index it names lists them, a journal
+  entry the newest records don't reflect yet does, or an index made or replaced in the last 14 days
+  lists them (none swept the day one of those can't be read).
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (registers,
   the basemap's data, the DEM seed, the rail sources with the files they replaced), translations, descriptions, inputs, state, app and nas.
 
@@ -2314,8 +2315,9 @@ between jobs into the other way. On:
 **Order:**
 0. **The gate's checks** (`inputs <unit>`, docs/inputs.md §4.3), before every other job: a unit on
    the gate whose drop box's listing, acceptances or accepted index changed since its check last
-   ran is checked (in full once a day), so nothing builds with a change unchecked. Only the test
-   unit is on the gate today (inputs.md §4.10).
+   ran is checked (in full once a day), so nothing builds with a change unchecked: in the first
+   slot, or in the second beside any job the steps table lets a second run beside (its first
+   choice there). Only the test unit is on the gate today (inputs.md §4.10).
 1. **The OSM pass**, when the NAS holds a newer planet than the newest pass.
 2. **The pass's worldwide jobs:**
    - `pass-sets`;

@@ -20,10 +20,16 @@ impl Box_ {
     }
 }
 
-/// The store of accepted copies, in memory, as the job keeps it.
+/// The store of accepted copies, in memory, as the job keeps it, and the sizes and times the last
+/// check of each version listed (the records' `listed`, kept by the version it's of here).
 #[derive(Default)]
 struct Store {
     copies: RefCell<BTreeMap<String, Vec<u8>>>,
+    listed: RefCell<BTreeMap<String, BTreeMap<String, (u64, u64)>>>,
+}
+
+fn version_key(i: &Index) -> String {
+    serde_json::to_string(i).unwrap()
 }
 
 /// One check of `b` against `prev` with `accepted` (and what it read), the taken copies kept.
@@ -36,10 +42,12 @@ fn check(checks: &dyn Checks, b: &Box_, prev: Option<&Index>, accepted: &[&str],
     let read_old = |e: &FileEntry| store.copies.borrow().get(&e.file).cloned().context("no copy");
     let acc: BTreeSet<String> = accepted.iter().map(|s| s.to_string()).collect();
     let listing = b.listing();
-    let d = decide(&Given { checks, prev, listing: &listing, accepted: &acc, full, read_new: &read_new, read_old: &read_old }).unwrap();
+    let prev_listed = prev.and_then(|i| store.listed.borrow().get(&version_key(i)).cloned()).unwrap_or_default();
+    let d = decide(&Given { checks, prev, prev_listed: &prev_listed, listing: &listing, unsettled: &BTreeSet::new(), accepted: &acc, full, read_new: &read_new, read_old: &read_old }).unwrap();
     for (n, bytes) in &d.store {
         store.copies.borrow_mut().insert(n.clone(), bytes.to_vec());
     }
+    store.listed.borrow_mut().insert(version_key(&d.index), d.listed.clone());
     d
 }
 
@@ -63,7 +71,9 @@ fn a_good_drop_is_taken_in_and_the_index_is_the_same_twice() {
     let e = &d.index.files["a.jsonl"];
     assert!(e.file.starts_with("sources/inputs/_gate-test/a.") && e.file.ends_with(".jsonl"), "{}", e.file);
     assert_eq!(e.facts["lines"], 2);
-    assert_eq!(d.index.listed["a.jsonl"], (b.files["a.jsonl"].0.len() as u64, 100));
+    assert_eq!(d.listed["a.jsonl"], (b.files["a.jsonl"].0.len() as u64, 100));
+    // The index names no time: the version's name is its contents' alone.
+    assert!(!serde_json::to_string(&d.index).unwrap().contains("listed"));
     // The same candidate again, from nothing: the same index, byte for byte.
     let again = check(GT, &b, None, &[], &Store::default(), false);
     assert_eq!(serde_json::to_vec(&again.index).unwrap(), serde_json::to_vec(&d.index).unwrap());
@@ -84,7 +94,7 @@ fn an_error_holds_and_the_last_good_version_stays() {
     let d = check(GT, &b, Some(&v1), &[], &store, false);
     assert_eq!(held(&d), ["a.jsonl"]);
     assert_eq!(d.index.files["a.jsonl"], v1.files["a.jsonl"], "the held edit keeps the accepted bytes");
-    assert_eq!(d.index.listed["a.jsonl"], v1.listed["a.jsonl"], "and its listing, so it's read again next time");
+    assert_eq!(d.listed["a.jsonl"], ("{\"k\": \"x\", \"v\": 1}\n".len() as u64, 100), "and its listing, so it's read again next time");
     assert!(d.index.files.contains_key("b.jsonl"));
     let r = d.report.as_ref().unwrap();
     assert_eq!(r.findings[0].level, Level::Error);
@@ -122,7 +132,7 @@ fn a_warning_holds_until_accepted_and_a_removal_too() {
     // Accepted: taken in, the version records it was taken with it.
     let v2 = check(GT, &b, Some(&v1), &[&w.id], &store, false);
     assert!(v2.changed && v2.report.is_none());
-    assert_eq!(v2.index.accepted, [w.id.clone()]);
+    assert_eq!(v2.index.accepted, [(w.id.clone(), vec!["a.jsonl".to_string()])].into());
     assert_ne!(v2.index.files["a.jsonl"], v1.files["a.jsonl"]);
     // Unaccepted afterwards: the version already in stays (it isn't held again).
     let v3 = check(GT, &b, Some(&v2.index), &[], &store, false);
@@ -136,6 +146,8 @@ fn a_warning_holds_until_accepted_and_a_removal_too() {
     assert!(rid.starts_with("gt-removed."));
     let r2 = check(GT, &b, Some(&v2.index), &[&rid], &store, false);
     assert!(r2.changed && r2.index.files.is_empty() && r2.report.is_none());
+    // The removed file's warnings no longer count: their acceptances are stale.
+    assert!(r2.index.accepted.is_empty());
 }
 
 #[test]
@@ -195,7 +207,10 @@ fn only_files_whose_size_or_time_changed_are_read_and_a_touch_changes_nothing() 
     b2.files.insert("f0.jsonl".into(), (bytes, 500));
     let t = check(GT, &b2, Some(&v1), &[], &store, false);
     assert_eq!(t.read, ["f0.jsonl"]);
-    assert!(!t.changed && t.index == v1);
+    assert!(!t.changed && t.index == v1 && t.listed_changed);
+    // Its new time kept: the next check reads nothing.
+    let again = check(GT, &b2, Some(&v1), &[], &store, false);
+    assert!(again.read.is_empty() && !again.changed && !again.listed_changed);
     // --full: every file read; still nothing changes.
     let f = check(GT, &b2, Some(&v1), &[], &store, true);
     assert_eq!(f.read.len(), 5);
@@ -286,19 +301,91 @@ fn a_version_checked_whole_holds_every_change_when_old_and_new_files_clash() {
     let d2 = check(&Pairs, &b, Some(&v1), &[&gap], &store, false);
     assert_eq!(held(&d2), ["left.data"]);
     assert!(d2.changed && d2.index.files["right.data"].file != v1.files["right.data"].file);
-    assert!(d2.index.accepted.contains(&gap));
+    assert!(d2.index.accepted.contains_key(&gap));
 }
 
 #[test]
 fn quiet_files_alone_are_settled() {
-    let before = Listing { files: [("a".to_string(), (1, 100)), ("b".to_string(), (1, 195))].into(), strays: vec![] };
     let now = Listing { files: [("a".to_string(), (1, 100)), ("b".to_string(), (2, 198)), ("c".to_string(), (1, 150))].into(), strays: vec![] };
-    // a as before, c old enough; b changed 2 s before the listing: left for the next.
-    let s = settle(Some(&before), &now, 200);
-    assert_eq!(s.files.keys().cloned().collect::<Vec<_>>(), ["a", "c"]);
-    // Held still since the last listing: taken, however recent its time.
-    let s2 = settle(Some(&now), &now, 199);
-    assert_eq!(s2.files.len(), 3);
+    // a and c old enough; b changed 2 s before the listing: left for the next.
+    assert_eq!(settle(&now, 200).files.keys().cloned().collect::<Vec<_>>(), ["a", "c"]);
+    // The same in two listings a few seconds apart is no proof it's whole: by its time alone.
+    assert_eq!(settle(&now, 203).files.keys().cloned().collect::<Vec<_>>(), ["a", "c"]);
+    assert_eq!(settle(&now, 208).files.len(), 3);
+}
+
+/// A file written at T, listed at T+2 and T+5 (unchanged), the check at T+6: never taken while it
+/// may be half written, and the key recorded is the one of what the check used, so a later
+/// listing checks it again (docs/inputs.md §4.2).
+#[test]
+fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("nas");
+    let dropbox = root.join("inputs").join(TEST_UNIT);
+    std::fs::create_dir_all(&dropbox).unwrap();
+    std::fs::create_dir_all(root.join("state/build")).unwrap();
+    let now = crate::agent::jobs::now_s();
+    let t = now - 6;
+    let p = dropbox.join("a.jsonl");
+    std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n").unwrap();
+    std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)).unwrap();
+    let raw = list(&root, TEST_UNIT, false).unwrap();
+    // The listings at T+2 and T+5: it isn't settled at either.
+    assert!(settle(&raw, t + 2).files.is_empty() && settle(&raw, t + 5).files.is_empty());
+    let planned = Planned { listing: settle(&raw, t + 5), accepted: BTreeSet::new() };
+    let m: BTreeMap<String, String> = BTreeMap::new();
+    let key = check_key(GT, &planned.listing, &planned.accepted, &m);
+    // The check at T+6, given what the key was made from: it isn't taken, nor taken as removed.
+    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+    gate::run(&mut out, TEST_UNIT, false, Some(planned)).unwrap();
+    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    assert!(open(&root, &m, TEST_UNIT).unwrap().is_none());
+    // Once it has held still, the listing (and so the key) is another: it's checked, and taken.
+    let later = settle(&raw, t + 11);
+    assert_eq!(later.files.len(), 1);
+    assert_ne!(check_key(GT, &later, &BTreeSet::new(), &m), key);
+    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+    gate::run(&mut out, TEST_UNIT, false, Some(Planned { listing: later, accepted: BTreeSet::new() })).unwrap();
+    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    assert!(open(&root, &m, TEST_UNIT).unwrap().unwrap().index.files.contains_key("a.jsonl"));
+    // A planned listing a file has changed since: left as it was (here, out), not taken half-read.
+    std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n{\"k\":").unwrap();
+    let stale = Planned { listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![] }, accepted: BTreeSet::new() };
+    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+    gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
+    let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    assert_eq!(m2.get(&logical(TEST_UNIT)), m.get(&logical(TEST_UNIT)));
+    assert!(!m2.contains_key(&held_logical(TEST_UNIT)));
+}
+
+/// An acceptance whose file was edited (and taken in without the warning) or removed is no longer
+/// the version's: stale, which `scenic inputs unaccept --stale` removes.
+#[test]
+fn acceptances_of_files_changed_since_are_stale() {
+    let store = Store::default();
+    let mut b = Box_::default();
+    b.put("a.jsonl", "{\"k\": \"x\", \"v\": -1}\n", 100);
+    b.put("b.jsonl", "{\"k\": \"y\", \"v\": -2}\n", 100);
+    let d = check(GT, &b, None, &[], &store, false);
+    let ws: Vec<String> = d.report.unwrap().findings.iter().map(|f| f.id.clone()).collect();
+    let refs: Vec<&str> = ws.iter().map(String::as_str).collect();
+    let v1 = check(GT, &b, None, &refs, &store, false).index;
+    assert_eq!(v1.accepted.len(), 2);
+    // a fixed: its warning no longer the version's; b's stays.
+    b.put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n", 200);
+    let v2 = check(GT, &b, Some(&v1), &refs, &store, false).index;
+    assert_eq!(v2.accepted.keys().cloned().collect::<Vec<_>>(), [ws.iter().find(|w| v1.accepted[*w] == ["b.jsonl"]).unwrap().clone()]);
+    // In the status: a's acceptance stale.
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let name = format!("{}/index.0123456789abcdef.json", store_dir(TEST_UNIT));
+    std::fs::create_dir_all(root.join(store_dir(TEST_UNIT))).unwrap();
+    std::fs::write(root.join(&name), serde_json::to_vec(&v2).unwrap()).unwrap();
+    let m: BTreeMap<String, String> = [(logical(TEST_UNIT), name)].into();
+    let acc: BTreeMap<String, BTreeSet<String>> = [(TEST_UNIT.to_string(), ws.iter().cloned().collect())].into();
+    let v = view::of(root, &m, &[TEST_UNIT], &BTreeSet::new(), &acc, &mut view::Cache::default());
+    let a_id = ws.iter().find(|w| v1.accepted[*w] == ["a.jsonl"]).unwrap();
+    assert_eq!(v[0].stale, [a_id.clone()]);
 }
 
 #[test]
@@ -387,7 +474,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n");
     std::fs::create_dir_all(root.join("state/build")).unwrap();
     let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    gate::run(&mut out, TEST_UNIT, false).unwrap();
+    gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     let a = open(&root, &m, TEST_UNIT).unwrap().unwrap();
     assert!(a.version.starts_with("sources/inputs/_gate-test/index.") && root.join(&a.version).exists());
@@ -396,7 +483,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     // A warning: held, its report named; the version as it was.
     put("a.jsonl", "{\"k\": \"x\", \"v\": -1}\n");
     let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    gate::run(&mut out, TEST_UNIT, false).unwrap();
+    gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_eq!(m2[&logical(TEST_UNIT)], a.version);
     let r = read_report(&root, &m2[&held_logical(TEST_UNIT)]).unwrap();
@@ -405,13 +492,21 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     let v = view::of(&root, &m2, &[TEST_UNIT], &BTreeSet::new(), &BTreeMap::new(), &mut view::Cache::default());
     assert_eq!((v.len(), v[0].state, v[0].held.clone()), (1, view::State::Held, vec!["a.jsonl".to_string()]));
     assert!(v[0].line().contains("1 warning held"), "{}", v[0].line());
-    // Accepted: taken in, the report gone.
+    // Checked again while held: still held, its findings shown, flagged checking.
+    let v = view::of(&root, &m2, &[TEST_UNIT], &[TEST_UNIT.to_string()].into(), &BTreeMap::new(), &mut view::Cache::default());
+    assert!(v[0].state == view::State::Held && v[0].checking && !v[0].findings.is_empty());
+    // Accepted: taken in, the report gone; the version replaced made young (its index touched),
+    // so GC keeps it restorable.
     assert!(accept(&root, TEST_UNIT, &r.findings[0], "-", "test").unwrap());
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+    std::fs::File::options().write(true).open(root.join(&a.version)).unwrap().set_modified(old).unwrap();
     let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    gate::run(&mut out, TEST_UNIT, false).unwrap();
+    gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m3: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_ne!(m3[&logical(TEST_UNIT)], a.version);
+    assert!(std::fs::metadata(root.join(&a.version)).unwrap().modified().unwrap() > old + std::time::Duration::from_secs(86400));
     assert!(!m3.contains_key(&held_logical(TEST_UNIT)));
+    assert!(m3.contains_key(&listed_logical(TEST_UNIT)));
     assert_eq!(open(&root, &m3, TEST_UNIT).unwrap().unwrap().read("a.jsonl").unwrap(), b"{\"k\": \"x\", \"v\": -1}\n");
     let v = view::of(&root, &m3, &[TEST_UNIT], &BTreeSet::new(), &BTreeMap::new(), &mut view::Cache::default());
     assert_eq!(v[0].state, view::State::Ok);

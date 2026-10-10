@@ -79,10 +79,16 @@ pub fn held_logical(unit: &str) -> String {
     format!("{}/held", store_dir(unit))
 }
 
-/// The unit of a records entry `sources/inputs/<unit>/index` or `…/held`.
+/// The records' entry naming the files' sizes and times unit `unit`'s last check listed (`Listed`:
+/// the check's own state, apart from the index, so the version's name is its contents' alone).
+pub fn listed_logical(unit: &str) -> String {
+    format!("{}/listed", store_dir(unit))
+}
+
+/// The unit of a records entry `sources/inputs/<unit>/index`, `…/held` or `…/listed`.
 pub fn unit_of(logical: &str) -> Option<&str> {
     let rest = logical.strip_prefix("sources/inputs/")?;
-    rest.strip_suffix("/index").or_else(|| rest.strip_suffix("/held")).filter(|u| !u.is_empty() && !u.contains('/'))
+    rest.strip_suffix("/index").or_else(|| rest.strip_suffix("/held")).or_else(|| rest.strip_suffix("/listed")).filter(|u| !u.is_empty() && !u.contains('/'))
 }
 
 /// Whether `rel` (a path relative to the NAS project folder) lies in a drop box: what the NAS root
@@ -239,13 +245,28 @@ pub struct Index {
     pub checks: String,
     /// By drop-box path.
     pub files: BTreeMap<String, FileEntry>,
-    /// Each file's size and time as listed when it was taken (what a later check compares a
-    /// listing with, reading only what differs).
+    /// The warnings it was taken with, by id, each with the files it's about: kept while those
+    /// files are in the version unchanged (an acceptance of none of them is stale).
     #[serde(default)]
+    pub accepted: BTreeMap<String, Vec<String>>,
+}
+
+/// The sizes and times of a unit's files as its last check listed them
+/// (`sources/inputs/<unit>/listed.<hash16>.json`, `listed_logical`): what the next check compares
+/// a listing with, reading only the files that differ. A held change's file keeps the time of the
+/// version accepted, so it's read again; a file only touched takes its new time, so it isn't.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Listed {
+    pub fmt: u32,
+    pub unit: String,
     pub listed: BTreeMap<String, (u64, u64)>,
-    /// The ids of the warnings it was taken with.
-    #[serde(default)]
-    pub accepted: Vec<String>,
+}
+
+/// A unit's last listed sizes and times, as the records name them (none before its first check).
+pub fn read_listed(root: &Path, manifest: &BTreeMap<String, String>, unit: &str) -> Result<BTreeMap<String, (u64, u64)>> {
+    let Some(name) = manifest.get(&listed_logical(unit)) else { return Ok(BTreeMap::new()) };
+    let b = std::fs::read(root.join(name)).with_context(|| format!("read {name}"))?;
+    Ok(serde_json::from_slice::<Listed>(&b).with_context(|| format!("parse {name}"))?.listed)
 }
 
 /// The report of a check that held something (`inputs-held/<unit>`): `sources/inputs/<unit>/
@@ -390,12 +411,20 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
     Ok(l)
 }
 
-/// What of listing `now` (made at `at`, seconds) has held still: files as the listing before
-/// (`before`) had them, or not changed in the last `QUIET_S`. One changed since is left for the next
-/// listing (as is a stray seen once).
-pub fn settle(before: Option<&Listing>, now: &Listing, at: u64) -> Listing {
-    let files = now.files.iter().filter(|(p, &(size, t))| before.is_some_and(|b| b.files.get(*p) == Some(&(size, t))) || t + QUIET_S <= at).map(|(p, v)| (p.clone(), *v)).collect();
+/// What of listing `now` (made at `at`, seconds) has held still: the files not changed in the last
+/// `QUIET_S`, by their time alone (a file the same in two listings a few seconds apart may still be
+/// being written). One changed since is left for the next listing.
+pub fn settle(now: &Listing, at: u64) -> Listing {
+    let files = now.files.iter().filter(|(_, &(_, t))| t + QUIET_S <= at).map(|(p, v)| (p.clone(), *v)).collect();
     Listing { files, strays: now.strays.clone() }
+}
+
+/// What a check is given to check (`scenic-build inputs --listing`): the listing and acceptances
+/// its key was made from, so the key recorded is the one of what the check used.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Planned {
+    pub listing: Listing,
+    pub accepted: BTreeSet<String>,
 }
 
 // ---- Acceptances -------------------------------------------------------------------------------

@@ -470,10 +470,12 @@ needs home. `bld-fetch` (the sources, onto the NAS, outside the manifest: its wr
 network work, the lead's.
 
 The gate's row (docs/inputs.md §4.3): `inputs`, a target per gate unit (`inputs/<unit>`), its
-write-set the unit's accepted index and held report (`sources/inputs/<unit>/index`,
-`sources/inputs/<unit>/held`; their files, the copies they list, are outside the manifest),
-light, kept to the lead's slots (other members taking it is planned: the coordinator's offers are
-made with the pass's region work), planned before every other job.
+write-set the unit's accepted index, last listing and held report (`sources/inputs/<unit>/index`,
+`…/listed`, `…/held`; their files, the copies they list, are outside the manifest), kept to the
+lead's slots (other members taking it is planned: the coordinator's offers are made with the pass's
+region work), planned before every other job, and the second job's first choice (`beside` rank 0),
+in the heavy-NAS-reads group: so it runs beside any first job the table lets a second run beside,
+never beside a step that runs alone, nor beside `bldprep`, nor beside another check.
 
 What's planned of placement (phase 4, §12):
 

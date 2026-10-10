@@ -93,8 +93,11 @@ pub const TABLE: [Step; 44] = [
     Step { alone: true, ..base("gc", w_none) },
     Step { ..base("backup", w_none) },
     Step { ..base("spoken", w_spoken) },
-    // The gate's checks (crate::inputs::gate): one per gate unit, light, ordered before the rest.
-    Step { ..base("inputs", w_inputs) },
+    // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest, and the
+    // second job's first choice (so one doesn't wait behind a long first job, a step running alone
+    // aside); reading the drop boxes and the accepted copies on the NAS, never beside another of
+    // the heavy NAS readers.
+    Step { beside: Some(0), groups: &[Group::NasReads], ..base("inputs", w_inputs) },
     Step { ..base("names-todo", w_none) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
     // before pieces): each z6 tile's raw tiles' archive copied here and the new raw tiles held
@@ -106,7 +109,7 @@ pub const TABLE: [Step; 44] = [
     Step { ..base("terrain-water", w_terrain_water) },
     Step { groups: &[Group::Raw], ..base("terrain-root", w_terrain_root) },
     // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the area's lo tiles.)
-    Step { mem_mb: 1500, shared: Some(1), beside: Some(10), batch: 8, ..base("slope", w_slope) },
+    Step { mem_mb: 1500, shared: Some(1), beside: Some(11), batch: 8, ..base("slope", w_slope) },
     Step { mem_mb: 1000, batch: 4, ..base("slope-lo", w_slope_lo) },
     Step { ..base("slope-root", w_slope_root) },
     // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
@@ -115,25 +118,25 @@ pub const TABLE: [Step; 44] = [
     Step { mem_mb: 1000, shared: Some(2), batch: 4, ..base("trees", w_trees) },
     Step { mem_mb: 500, batch: 4, ..base("trees-lo", w_trees_lo) },
     // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
-    Step { mem_mb: 8600, shared: Some(3), beside: Some(9), batch: 6, ..base("unit", w_unit) },
-    Step { mem_mb: 2048, shared: Some(4), beside: Some(7), batch: 24, ..base("pois", w_pois) },
-    Step { mem_mb: 2500, shared: Some(5), beside: Some(8), groups: &[Group::Raw], batch: 12, ..base("peaks", w_peaks) },
+    Step { mem_mb: 8600, shared: Some(3), beside: Some(10), batch: 6, ..base("unit", w_unit) },
+    Step { mem_mb: 2048, shared: Some(4), beside: Some(8), batch: 24, ..base("pois", w_pois) },
+    Step { mem_mb: 2500, shared: Some(5), beside: Some(9), groups: &[Group::Raw], batch: 12, ..base("peaks", w_peaks) },
     Step { batch: 16, ..base("pack", w_pack) },
     Step { batch: 2, ..base("lo", w_lo) },
-    Step { mem_mb: 3072, beside: Some(1), groups: &[Group::Wiki], answered: true, ..base("items", w_items) },
-    Step { mem_mb: 6144, beside: Some(0), groups: &[Group::Wiki], answered: true, ..base("heritage", w_heritage) },
-    Step { mem_mb: 4096, beside: Some(5), ..base("marks", w_marks) },
-    Step { mem_mb: 4096, beside: Some(6), ..base("overlays", w_overlays) },
+    Step { mem_mb: 3072, beside: Some(2), groups: &[Group::Wiki], answered: true, ..base("items", w_items) },
+    Step { mem_mb: 6144, beside: Some(1), groups: &[Group::Wiki], answered: true, ..base("heritage", w_heritage) },
+    Step { mem_mb: 4096, beside: Some(6), ..base("marks", w_marks) },
+    Step { mem_mb: 4096, beside: Some(7), ..base("overlays", w_overlays) },
     Step { ..base("roadunits", w_roadunits) },
     Step { ..base("stations", w_stations) },
     Step { ..base("ferries", w_ferries) },
-    Step { mem_mb: 1024, beside: Some(2), ..base("rail-feeds", w_rail_feeds) },
-    Step { mem_mb: 6144, beside: Some(3), ..base("rail", w_rail) },
-    Step { mem_mb: 1024, beside: Some(4), ..base("bld-fetch", w_none) },
+    Step { mem_mb: 1024, beside: Some(3), ..base("rail-feeds", w_rail_feeds) },
+    Step { mem_mb: 6144, beside: Some(4), ..base("rail", w_rail) },
+    Step { mem_mb: 1024, beside: Some(5), ..base("bld-fetch", w_none) },
     // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
     // 5.1 GB to read its 30.3 M rows, 3.3 GB to raise its tiles. Offered by the rows they read.)
-    Step { mem_mb: 5200, shared: Some(6), beside: Some(11), groups: &[Group::NasReads], batch: 8, ..base("bldprep", w_bldprep) },
-    Step { mem_mb: 3400, shared: Some(7), beside: Some(12), batch: 16, ..base("bldtiles", w_bldtiles) },
+    Step { mem_mb: 5200, shared: Some(6), beside: Some(12), groups: &[Group::NasReads], batch: 8, ..base("bldprep", w_bldprep) },
+    Step { mem_mb: 3400, shared: Some(7), beside: Some(13), batch: 16, ..base("bldtiles", w_bldtiles) },
     Step { ..base("catalog", w_none) },
     Step { ..base("catalog-held", w_none) },
     Step { ..base("prune", w_prune) },
@@ -273,7 +276,7 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 /// preference: what later steps wait on first.
 pub const SHARED: [&str; 8] = set_of(Set::Shared);
 /// The steps a Mac's second job takes, in its order of preference.
-pub const SECOND: [&str; 13] = set_of(Set::Beside);
+pub const SECOND: [&str; 14] = set_of(Set::Beside);
 /// The steps that run alone, never beside another job.
 pub const ALONE: [&str; 11] = set_of(Set::Alone);
 /// The steps that read AWS's raw terrain tiles here: never two at once.
@@ -281,7 +284,7 @@ pub const RAW: [&str; 5] = set_of(Set::Raw);
 /// The steps that ask Wikidata and Wikipedia a great deal from this Mac's address: never two at once.
 pub const WIKI: [&str; 2] = set_of(Set::Wiki);
 /// The steps that read gigabytes of the NAS's sources a target: never two at once on one Mac.
-pub const NAS_READS: [&str; 1] = set_of(Set::NasReads);
+pub const NAS_READS: [&str; 2] = set_of(Set::NasReads);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -444,10 +447,10 @@ fn w_heritage_sites(l: &str, _: bool) -> bool {
     }
 }
 
-/// A gate unit's accepted index and its held report (crate::inputs: `sources/inputs/<unit>/index`,
-/// `…/held`), the report removed once nothing's held.
+/// A gate unit's accepted index, its held report and its last listing (crate::inputs:
+/// `sources/inputs/<unit>/index`, `…/held`, `…/listed`), the report removed once nothing's held.
 fn w_inputs(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "inputs", u, "index" | "held"] if !u.is_empty())
+    matches!(parts(l).as_slice(), ["sources", "inputs", u, "index" | "held" | "listed"] if !u.is_empty())
 }
 
 fn w_spoken(l: &str, _: bool) -> bool {
@@ -587,12 +590,12 @@ mod tests {
     fn the_sets_are_todays() {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
-        assert_eq!(SECOND, ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
+        assert_eq!(SECOND, ["inputs", "heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
         assert_eq!(ALONE, ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water", "heritage-sites", "gc"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&RAW), set(&["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"]));
         assert_eq!(set(&WIKI), set(&["items", "heritage"]));
-        assert_eq!(NAS_READS, ["bldprep"]);
+        assert_eq!(set(&NAS_READS), set(&["bldprep", "inputs"]));
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
     }
 

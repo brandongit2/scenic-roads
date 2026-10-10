@@ -103,7 +103,7 @@
 //!                                as if a new basemap came with the same water, and with n pieces'
 //!                                water changed; without the manifest's digests, --compute works
 //!                                them out here, in memory, timed. Reads only
-//!   inputs <unit> [--full]       a gate unit's drop box checked (pipeline::inputs::gate): its clean
+//!   inputs <unit> [--full] [--listing f]  a gate unit's drop box checked (pipeline::inputs::gate): its clean
 //!                                changes taken in as its next accepted version, the held ones
 //!                                reported (`--full`: every file hashed, not only those whose size
 //!                                or time changed)
@@ -180,6 +180,19 @@ fn main() -> Result<()> {
     let step = args.get(1).cloned().unwrap_or_default();
     // Its phases' times (pipeline::timings: the log's table, the agent's record), however it ends.
     pipeline::timings::job(&step, || step_main(&args, &step))
+}
+
+/// inputs <unit> [--full] [--listing f]: a gate unit's drop box checked against its accepted version
+/// (pipeline::inputs::gate; docs/inputs.md §4.3): the clean changes taken in, the held ones
+/// reported, both handed off as records changes. `--listing <file>`: the listing and acceptances
+/// the agent's key was made from, so the key recorded is the one of what was checked; by hand, the
+/// drop box listed now.
+fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let unit = positional(args).first().map(|u| u.trim_start_matches("inputs/").to_string()).context("inputs <unit>")?;
+    let planned = opt(args, "--listing").map(|f| -> Result<pipeline::inputs::Planned> { Ok(serde_json::from_slice(&std::fs::read(&f).with_context(|| format!("read {f}"))?)?) }).transpose()?;
+    let said = pipeline::inputs::gate::run(out, &unit, args.iter().any(|a| a == "--full"), planned)?;
+    eprintln!("inputs: {said}");
+    Ok(())
 }
 
 fn step_main(args: &[String], step: &str) -> Result<()> {
@@ -331,14 +344,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 pack_raw_with(&out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
             }
         }
-        "inputs" => {
-            // inputs <unit> [--full]: a gate unit's drop box checked against its accepted version
-            // (pipeline::inputs::gate; docs/inputs.md §4.3): the clean changes taken in, the held
-            // ones reported, both handed off as records changes.
-            let unit = positional(&args).first().map(|u| u.trim_start_matches("inputs/").to_string()).context("inputs <unit>")?;
-            let said = pipeline::inputs::gate::run(&mut out, &unit, args.iter().any(|a| a == "--full"))?;
-            eprintln!("inputs: {said}");
-        }
+        "inputs" => inputs_step(&mut out, &args)?,
         "summits" => summits_step(&mut out, &args, &scratch)?,
         "peaks" => peaks_step(&mut out, &args, &scratch)?,
         "marks" => marks_step(&mut out, &args)?,
@@ -1055,7 +1061,9 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     // its data comes from: where the coverage is, and where the units' ways are.
     let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
     let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, &dir)?;
-    // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits.)
+    // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits;
+    // one that can't be read now fails the catalog, as the agent's plan waits then, rather than
+    // publish credits without it.)
     let described = pipeline::inputs::credits::described(out.root(), &out.manifest)?;
     let credits = pipeline::inputs::credits::catalog_credits(&regions, &unit_extents(out, &base), &described);
     eprintln!("catalog: {} regions, {} credits (of the table's {} and {} description{})", regions.len(), credits.len(), pipeline::rules::CREDITS.len(), described.len(), if described.len() == 1 { "" } else { "s" });

@@ -10,8 +10,9 @@
 //! complete one (`sources/osm/<date>/`, `sources/items/<date>/`): their content-named files by the
 //! same rule, the rest (the planet download) once the newer pass has been complete for `keep_days`.
 //! The gate's checked copies (`sources/inputs/`, docs/inputs.md §4.9) by the same rule, kept while
-//! the manifest names them, a held report or an accepted index it names lists them, or a journal
-//! entry not yet merged does (`inputs_kept`; none swept when one of those can't be read).
+//! the manifest (or the newest records) names them, an accepted index it names lists them, a
+//! journal entry not yet merged does, or an index made or replaced within `keep_days` lists them
+//! (`inputs_kept`; none swept when one of those can't be read).
 //! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
 //! drop boxes), state and the app are never touched. With no readable catalog nothing is deleted.
 
@@ -46,12 +47,16 @@ pub struct Report {
 /// checked copies, `sources/inputs/`, swept on their own rules).
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
 
-/// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records `manifest` name (the
-/// units' accepted indexes and held reports), the files each such index lists, and the same of
-/// every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not merged may
-/// name a version the records will). An error when any of them can't be read now: nothing there is
+/// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records name (`manifest`,
+/// today's file, and with the pool on the newest records' own manifest, which today's may lag:
+/// the units' accepted indexes, listings and held reports), the files each such index lists, the
+/// same of every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not
+/// merged may name a version the records will), and the files listed by every index whose time is
+/// within `within` of `now` (one made lately, or replaced lately: the check touches the index it
+/// replaces), so a version replaced stays restorable for `within` and a step reading the version it
+/// planned with finds its files. An error when any of them can't be read now: nothing there is
 /// swept then.
-pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>) -> Result<BTreeSet<String>> {
+pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>, within: Duration, now: SystemTime) -> Result<BTreeSet<String>> {
     use crate::pool::{journal, records::Records, term};
     let mut keep: BTreeSet<String> = BTreeSet::new();
     let mut named: Vec<(String, String)> = manifest.iter().filter(|(_, c)| c.starts_with("sources/inputs/")).map(|(l, c)| (l.clone(), c.clone())).collect();
@@ -61,6 +66,7 @@ pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, St
             let nas = crate::pool::nas::Share::new(root);
             let cur = term::current(&nas).context("the current term")?;
             let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
+            named.extend(r.manifest.iter().filter(|(_, c)| c.starts_with("sources/inputs/")).map(|(l, c)| (l.clone(), c.clone())));
             for key in journal::list(&nas, None).context("the journal")? {
                 if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
                     continue;
@@ -80,6 +86,28 @@ pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, St
             keep.extend(crate::inputs::read_index(root, &c)?.files.into_values().map(|f| f.file));
         }
         keep.insert(c);
+    }
+    // Every index made or replaced within `within`: its files.
+    let units = match std::fs::read_dir(root.join("sources/inputs")) {
+        Ok(rd) => rd.collect::<std::io::Result<Vec<_>>>().context("list sources/inputs")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).context("list sources/inputs"),
+    };
+    for u in units {
+        let unit = u.file_name().to_string_lossy().into_owned();
+        if !u.file_type()?.is_dir() {
+            continue;
+        }
+        for e in std::fs::read_dir(u.path()).with_context(|| format!("list sources/inputs/{unit}"))? {
+            let e = e?;
+            let rel = format!("sources/inputs/{unit}/{}", e.file_name().to_string_lossy());
+            let is_index = store::naming::parse_content_name(&rel).is_some_and(|n| n.logical == crate::inputs::logical(&unit) && n.ext == "json");
+            let young = e.metadata()?.modified().ok().is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
+            if is_index && young {
+                keep.extend(crate::inputs::read_index(root, &rel)?.files.into_values().map(|f| f.file));
+                keep.insert(rel);
+            }
+        }
     }
     Ok(keep)
 }
@@ -124,7 +152,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
     };
     // (What the gate's copies are kept by, read before the manifest is given up.)
-    let inputs_keep = match inputs_kept(root, &m) {
+    let inputs_keep = match inputs_kept(root, &m, keep, now) {
         Ok(k) => Some(k),
         Err(e) => {
             rep.inputs_skipped = Some(format!("{e:#}"));
@@ -456,6 +484,18 @@ mod tests {
         for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/index.5555555555555555.json"), format!("{u}/index.6666666666666666.json"), format!("{u}/held.7777777777777777.json"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy.9999999999999999.tar.zst".into()] {
             assert!(root.join(&k).exists(), "{k}");
         }
+        // A version replaced: its index touched as the check replaced it (yesterday), the copy it
+        // lists accepted 30 days ago and named by no record any more: kept, restorable.
+        put(&format!("{u}/a.cccccccccccccccc.jsonl"), "x", 30);
+        put(&format!("{u}/index.dddddddddddddddd.json"), &index(&[&format!("{u}/a.cccccccccccccccc.jsonl")]), 1);
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.inputs_removed, 0, "{r:?}");
+        assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
+        // 15 days after it was replaced: gone, with its index.
+        age(&root.join(format!("{u}/index.dddddddddddddddd.json")), 15);
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.inputs_removed, 2, "{r:?}");
+        assert!(!root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // An index named that can't be read: nothing there swept.
         put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
         fs::write(root.join(format!("{u}/index.5555555555555555.json")), b"{not json").unwrap();

@@ -926,7 +926,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   conds}], takeover: {refused, force, downgrade}, no_lead, handing: {to, host, term, stage, since},
   offer: {to, host, why}, auto, asked, change}`); `inputs`, the gate's units (the lead's,
   pipeline::inputs::view::InputView: `[{unit, version (its accepted index's content name), state:
-  ok | checking | held, checked (unix seconds), held: [drop-box paths], findings: [{id, level:
+  ok | checking | held, checking (true while a check is planned or running, a held unit staying
+  held meanwhile), checked (unix seconds), held: [drop-box paths], findings: [{id, level:
   error | warning, files, message, at: [lon, lat], lines: [[n, line]] (the first 50), more}],
   together, accepted: [finding ids], stale: [finding ids], unread}]`, what doesn't apply left out);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
@@ -943,10 +944,15 @@ class, id) within a tile. The client sends the id with the clicked point.
   manifest as `sources/inputs/<unit>/index`: `{fmt: 1, unit, checks: "<unit> <version>", files:
   {<drop-box path>: {file (its copy's content name), size, keyed (the digest of what in it affects
   builds), facts: {…} (read from it at check time; a description's `description` and `extent`)}},
-  listed: {<path>: [size, mtime]}, accepted: [the warnings' ids it was taken with]}`; its report
+  accepted: {<the id of a warning it was taken with>: [the files it's about]}}` (no file time in
+  it: the same contents, the same name); its last check's sizes and times,
+  `sources/inputs/<unit>/listed.<hash16>.json`, named as `sources/inputs/<unit>/listed`: `{fmt: 1,
+  unit, listed: {<path>: [size, mtime]}}`; its report
   while a change is held, `sources/inputs/<unit>/held.<hash16>.json`, named as
   `sources/inputs/<unit>/held`: `{fmt: 1, unit, checks, held: [paths], findings: [{id
   ("<check>.<hash16>"), level, files, message, at, lines}], together, raised: [every id the check
-  raised]}`; the owner's acceptances, `state/inputs/accepted/<unit>/<finding id>.json`, made once
+  raised]}`; the listing and acceptances the agent gives a check (`inputs::Planned`, in its own
+  folder: `agent/inputs-listing/<unit>.<key>.json`, `{listing: {files: {<path>: [size, mtime]},
+  strays}, accepted: [ids]}`); the owner's acceptances, `state/inputs/accepted/<unit>/<finding id>.json`, made once
   with create-new: `{id, member, host, at, by, message}`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.
