@@ -834,7 +834,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   against main's area run (TERRAIN_V 3) on synthetic tiles with GLO-30, a lake across two pieces and
   the walled patches' z9 tiles (`terrain_pack` tests), and on the build's own data (§10).
   - **The root (z0–2):** from the lo packs (AWS's raw z3 tile where there's none), made again
-    when one changes or goes (41 s on the build Mac, slope's 17 s: 2026-10-09).
+    when one changes or goes (41 s on the build Mac, slope's 17 s: 2026-10-09), once nothing that
+    makes them is left (terrain's pieces and assemblies; for slope's root, slope's too), so a root
+    isn't made while an assembly runs and again after it.
   - **Sources:** AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's cache
     and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the cache
     when it lacks one; north of 60°N, Copernicus DEM GLO-30 (`sources/copernicus-dem/`, below); and

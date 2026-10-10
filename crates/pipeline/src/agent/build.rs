@@ -1616,17 +1616,21 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
             let gb = crate::hipack::grow(b, 100.0);
             last || each.iter().any(|c| c.meets_rect(b)) || !to_build.iter().any(|e| e[0] <= gb[2] && e[2] >= gb[0] && e[1] <= gb[3] && e[3] >= gb[1])
         };
+        // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for
+        // the terrain left (its pieces' mids, its assemblies), slope's for that and the slope left,
+        // so a root isn't made while an assembly runs (or waits to be merged) and again after it.
+        let roots_held = [!tw.terrain_left.is_empty(), !tw.terrain_left.is_empty() || !tw.slope_left.is_empty()];
         // (Listed after them, not held back: while one waits out a failure, the others publish.)
         match prune_units(cov, date, m, &units) {
             Some(w) => work.push(w),
-            None => match roads_chain_drawing(date, &m_then, done, inputs, Some(reach), &keep) {
+            None => match roads_chain_drawing(date, &m_then, done, inputs, Some(reach), &keep, roots_held) {
                 Some(w) => work.push(w),
                 None => work.extend(catalog_work(&m_then, done, inputs, &ready, rounds.held)),
             },
         }
         // (Not while the regions can't be read: its catalog waits for them.)
         ends = work.len() == before && inputs.get("regions").map(String::as_str) != Some("?");
-        round_left = remaining(done, |d| roads_chain_drawing(date, &m_then, d, inputs, Some(reach), &keep).or_else(|| catalog_work(&m_then, d, inputs, &ready, rounds.held)));
+        round_left = remaining(done, |d| roads_chain_drawing(date, &m_then, d, inputs, Some(reach), &keep, roots_held).or_else(|| catalog_work(&m_then, d, inputs, &ready, rounds.held)));
         // The regions done meanwhile: their slope and tree cover; then the regions' terrain and
         // units: a helper's, and this Mac's while the round's work is another's or waits out a
         // failure.
@@ -1793,12 +1797,13 @@ fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<
 /// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
 /// the terrain and slope roots; its first stale step.
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
-    roads_chain_drawing(date, m, done, inputs, reach, &|_, _| true)
+    roads_chain_drawing(date, m, done, inputs, reach, &|_, _| true, [false, false])
 }
 
 /// `roads_chain`, drawing the map tiles (pack(T)) `keep` says, by their z6 tile, and those whose
 /// owners changed (`owners_changed`); the rest wait.
-fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool) -> Option<Work> {
+#[allow(clippy::too_many_arguments)]
+fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool, roots_held: [bool; 2]) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
     if let Some(w) = prune_tiles(m, reach) {
@@ -1855,7 +1860,10 @@ fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, in
     }
 
     // The terrain and slope roots (z0–2), from their lo packs.
-    for (layer, step) in [("terrain", "terrain-root"), ("slope", "slope-root")] {
+    for ((layer, step), held) in [("terrain", "terrain-root"), ("slope", "slope-root")].into_iter().zip(roots_held) {
+        if held {
+            continue;
+        }
         let Some(k) = root_key(layer, m) else { continue };
         if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
             return Some(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
@@ -2874,6 +2882,43 @@ pub(crate) mod tests {
         assert!(at("terrain 6/29/16") < at("unit 6/28/16") && at("terrain 6/29/16") < at("peaks 6/28/16"), "{then:?}");
         assert!(!m.keys().any(|l| l.ends_with("6-29-16") || l.ends_with("3-4-2")), "{m:?}");
         assert!(run_all(&c, &reach, &mut m, &mut done).is_empty());
+    }
+
+    /// A root isn't made while what makes the lo packs it reads is left (an assembly to run, or run
+    /// and waiting to be merged: its record not yet there), only once after it.
+    #[test]
+    fn the_roots_wait_for_their_lo_packs() {
+        let c = cov();
+        let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
+        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] });
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        let mut done = Keys::default();
+        run_all(&c, &reach, &mut m, &mut done);
+        let plan = |m: &BTreeMap<String, String>, done: &Keys| -> Vec<Work> {
+            super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work
+        };
+        assert!(plan(&m, &done).is_empty());
+        // An assembly made again (its version bumped, say): its new lo pack written, its job not
+        // yet merged (its record the older key), so its root's key is stale.
+        for (step, layer, roots) in [("slope-lo", "slope", vec!["slope-root slope-root"]), ("terrain-lo", "terrain", vec!["terrain-root terrain-root", "slope-root slope-root"])] {
+            let mut d2 = done.clone();
+            let map = if step == "slope-lo" { &mut d2.slope_lo } else { &mut d2.terrain_lo };
+            map.insert("3/3/2".into(), "an older key".into());
+            let mut m2 = m.clone();
+            let l = format!("layers/{layer}/lo/3-3-2");
+            m2.insert(l.clone(), format!("{l}.7777777777777777.pack"));
+            let w = plan(&m2, &d2);
+            let steps: Vec<&str> = w.iter().map(|w| w.step.as_str()).collect();
+            assert!(steps.contains(&step) && !steps.iter().any(|s| s.ends_with("-root")), "{step}: {steps:?}");
+            // Merged: the roots its lo pack feeds, once each.
+            let w = w.into_iter().find(|w| w.step == step).unwrap();
+            d2.record(&w.step, &w.targets);
+            let after = run_all(&c, &reach, &mut m2, &mut d2);
+            let made: Vec<&str> = after.iter().map(String::as_str).filter(|s| s.ends_with("-root")).collect();
+            assert_eq!(made, roots, "{step}: {after:?}");
+        }
     }
 
     /// The coverage leaving a z6 tile, coming back, and leaving again: a piece, then a "none"

@@ -1003,6 +1003,53 @@ mod tests {
         Ok(rep)
     }
 
+    /// With terrain: an assembly over a lo pack an earlier run stored, holding real slope tiles of a
+    /// z6 tile that isn't its piece (6/24/23's z6 tile and a z7 tile of it, another tile's bytes),
+    /// comes out as a fresh build's assembly, byte for byte: nothing of the earlier run kept.
+    #[test]
+    fn an_assembly_over_an_earlier_runs_lo_pack_is_a_fresh_builds() {
+        let d = tempfile::tempdir().unwrap();
+        // Terrain for 3/3/2: its z6–z3 tiles (a lo pack) and four z9 tiles of its piece 6/28/16 (a
+        // hi pack), each its own slope.
+        let png = |z: u8, x: u32, y: u32| {
+            let e: Vec<f32> = (0..256 * 256).map(|i| 300.0 + ((i % 256) as f32 * 0.05 + x as f32 + z as f32).sin() * 120.0 + ((i / 256) as f32 * 0.03 + y as f32).cos() * 80.0).collect();
+            let b = encode_terrain_png(&e, 256, 256).unwrap();
+            let n = b.len() as u32;
+            (z, x, y, b, n)
+        };
+        let terrain = |out: &mut Out| {
+            let lo: Vec<_> = (3..=6u8).flat_map(|z| {
+                let s = 1u32 << (z - 3);
+                (3 * s..4 * s).flat_map(move |x| (2 * s..3 * s).map(move |y| (z, x, y)))
+            }).map(|(z, x, y)| png(z, x, y)).collect();
+            crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, 3, 2), &mut lo.into_iter()).unwrap();
+            let hi: Vec<_> = [(224, 128), (224, 129), (225, 128), (225, 129)].into_iter().map(|(x, y)| png(9, x, y)).collect();
+            crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, 28, 16), &mut hi.into_iter()).unwrap();
+            out.save().unwrap();
+        };
+        let lo = "layers/slope/lo/3-3-2";
+        let mut fresh = Out::open(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
+        terrain(&mut fresh);
+        build_piece(&mut fresh, (28, 16), false, &|_, _, _| {}).unwrap();
+        build_lo(&mut fresh, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
+        assert!(fresh.get(lo).is_some());
+        // (Real slope tiles, another z6 tile's and the piece's z7's, as an earlier run would have
+        // stored them for 6/24/23.)
+        let made = ManifestTiles::new(&fresh, "slope");
+        let (z6, z7) = (made.get(6, 25, 23).unwrap().unwrap(), made.get(7, 56, 32).unwrap().unwrap());
+        assert!(made.get(7, 48, 46).unwrap().is_none(), "a fresh build stores no z7 tile of a z6 tile that isn't its piece");
+        assert_ne!(made.get(6, 24, 23).unwrap().as_ref(), Some(&z6), "the earlier run's tile isn't the fresh one");
+        drop(made);
+        let mut again = Out::open(&d.path().join("again"), &d.path().join("again-scratch")).unwrap();
+        terrain(&mut again);
+        let old = vec![(6, 24, 23, z6.clone(), z6.len() as u32), (7, 48, 46, z7.clone(), z7.len() as u32)];
+        crate::layers::write_pack(&mut again, "slope", "slope4-png", false, "lo", (3, 3, 2), &mut old.into_iter()).unwrap();
+        again.save().unwrap();
+        build_piece(&mut again, (28, 16), false, &|_, _, _| {}).unwrap();
+        build_lo(&mut again, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
+        assert_eq!(again.get(lo), fresh.get(lo), "the same lo pack as a fresh build's");
+    }
+
     /// A piece whose terrain has no hi tile makes no hi tile, and drops the hi pack an earlier run
     /// left (expected the same, it isn't: refused, nothing uploaded); a z6 tile the coverage has
     /// left drops its hi pack and mid (`drop_piece`); an area's whole run drops the first the same.
