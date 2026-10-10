@@ -267,6 +267,11 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 - stations and overlays name the built units; ferries the pass's ferries set and the timetables'
   digest (they're made worldwide, whatever is built);
 - `pass-sets` and `terrain-z8` have no keys: they run when their versioned outputs are missing.
+- peaks (`agent::build::peaks_keys`) name the unit's candidates, the pass's summits, `terrain-z8`
+  and its max, and the terrain hi packs of the z6 tiles within U + 30 km, by content name: a
+  change anywhere in one of those packs runs the unit's peaks again. Not the z12 tiles its peaks
+  read, by content, as a unit's key names its terrain tiles (plan §6, Job keys; plan §12 says
+  why).
 
 **Network jobs** (terrain, terrain-z8, peaks, items, heritage): a tile or answer that can't be
 fetched fails the job (retried later), never counts as "none".

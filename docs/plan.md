@@ -849,8 +849,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     water tiles (none coarser) and its pieces' mids (their lakes' levels). Their digests (Job keys)
     are worked out once a basemap by the `terrain-water` job, so a new pass makes again only the
     pieces whose water changed and the assemblies of their areas (each assembly too when its z6–8
-    water changed), and the steps after them where their tiles' bytes changed (slope, units and
-    peaks where a tile they read changed). GLO-30's tiles don't change (the bucket's of May 2022);
+    water changed), and the steps after them where their tiles' bytes changed (slope and units
+    where a tile they read changed, peaks where a hi pack within 30 km did: `docs/phase5.md`,
+    Keys). GLO-30's tiles don't change (the bucket's of May 2022);
     a tile the coverage newly wants is fetched into the store by the job.
   - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass that takes what
     is broken or undefined and nothing else. Voids are filled; a tower or a pit is a blob of the
@@ -2956,6 +2957,18 @@ pausing, which with the pool on would hold an owner's download off for hours.
   not the terrain hi packs within 30 km. A terrain run that changed part of a z6 tile rebuilt every
   unit within 30 km of it, while the hi packs' names couldn't see the zoomed-out tiles a long way
   reads, nor a stale hi pack's z6 tile made again from the raw tiles alone.
+- **The peaks' key names the terrain hi packs within 30 km, not the z12 tiles its peaks read**
+  (`docs/phase5.md`, Keys; measured 2026-10-10). In the terrain fix's rebuild (2026-10-08/09) 388
+  units' peaks ran again (2.7 h of job time by their logs) and 184 came out the same, 68 of them
+  without peaks. Keyed on the tiles read, none would have been spared: the same fix made
+  `terrain-z8` (v1 to v3) and so the summits again, which every peaks key names, as it must (the
+  coarse stage reads the z8 worldwide). Counting the hi tiles alone, 150 would have been (1.4 h):
+  the 68 and 82 whose every z12 tile comes from AWS's raw tiles, processed by the terrain's code.
+  Those raw tiles' processing isn't in a tile's content name, so a finer key would have to name the
+  terrain's version for them, and a terrain code change, the one change that leaves the summits as
+  they are, would run them all again anyway. What a finer key spares is a hi pack changed beside a
+  unit without the summits or the z8: the coverage grown next to it, a few units of seconds to
+  minutes each; a new pass makes the summits again.
 - **A change of key scheme re-keys the records** (§8, A new key scheme): a change of keys
   mustn't build again what would come out the same, and the units' alone would have rebuilt all
   284 (some seven hours of the build Mac).
