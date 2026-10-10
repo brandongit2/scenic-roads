@@ -157,6 +157,12 @@ struct Slot {
     mem_drain_alone: bool,
     /// Its job is being stopped by the memory guard (its lease ends so: kept from this Mac).
     guard_stopped: bool,
+    /// Its job took claim files as it started (crate::agent::claims: the build Mac's own job with
+    /// the pool off): kept fresh and released by that, whatever part the process plays since.
+    claimed: bool,
+    /// Its own job's timings, taken as it ended, for the lead when this Mac no longer leads (the
+    /// job's hand-off carries them: `end_lease`).
+    timings_out: Option<crate::timings::RunRec>,
 }
 
 /// How long the first slot may pass over a job that can't share the Mac with the second's (it then
@@ -748,6 +754,9 @@ pub struct Agent {
     /// on for (a newer one installed, its update waiting on its own job: `hand_for_update`).
     slots_on: bool,
     lead_awake: Option<std::process::Child>,
+    /// The NAS's project folder as the loop last found it (a job ending between loops tells the
+    /// lead through a client made from it).
+    last_root: Option<PathBuf>,
     update_handed: Option<String>,
     /// The Mac it reads its conditions and resources from (a test's fixed one: cond::Mac::TEST).
     pub(crate) mac: cond::Mac,
@@ -937,7 +946,7 @@ impl Agent {
         // (with a root of its own too: a test's, on a port of its own, SCENIC_COORD_PORT).
         let pooled = run.is_some();
         let lockless = pool_mode == Some(pool::Mode::On) && run.is_none();
-        let coord = if !o.helper && lock.is_some() && !o.dry_run && !lockless && (o.root.is_none() || pooled) { make_coordinator(&o, run.as_ref(), &app) } else { None };
+        let coord = if !o.helper && lock.is_some() && !o.dry_run && !lockless && (o.root.is_none() || pooled) { make_coordinator(&o, run.as_ref(), &app, &cond::host_name()) } else { None };
         if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
             pool::took_up(r, coord.as_ref(), out, &cond::host_name(), &[]);
             // (The terms' events a member's process before this one kept, for this coordinator's
@@ -953,7 +962,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, lead_awake: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1320,6 +1329,13 @@ impl Agent {
         let pid = self.slots[k].running.as_ref().map(|r| r.pgid as u32);
         // What its targets took at least, as the guard's sampler saw them (crate::agent::memguard),
         // but those its run measured: learned whatever the guard does.
+        // (The lead's client, made again when it isn't there, as `beat` makes it: a lead a moment
+        // ago has none, its job's end told to the new lead all the same.)
+        if self.client.is_none() && self.coord.is_none() && matches!(self.slots[k].lease, Some(Held::Pooled { .. } | Held::Leased { .. })) {
+            if let Some(r) = self.last_root.clone() {
+                self.client(&r, &mut Vec::new());
+            }
+        }
         let watch = self.sampler.unwatch(k).unwrap_or_default();
         let floors_of = |costs: &[(String, crate::coord::Cost)]| watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>());
         let guard_stopped = self.slots[k].guard_stopped;
@@ -1372,7 +1388,7 @@ impl Agent {
                     let failed = outcome == Outcome::Failed || guard_stopped;
                     let floors = floors_of(&costs);
                     let r = match entry.as_ref().filter(|e| e.handoff.done.is_some()) {
-                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings: read_timings(&dir), ..Default::default() }).map(|_| ()),
+                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings: if own { self.slots[k].timings_out.take() } else { read_timings(&dir) }, ..Default::default() }).map(|_| ()),
                         None if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => c.give_back_with(id, note, &floors),
                         None => c.fail_with(id, note, None, &floors),
                     };
@@ -1469,8 +1485,8 @@ impl Agent {
 
     /// Drops slot `k`'s job's claims (crate::agent::claims), as it ends.
     fn release_claims(&mut self, k: usize, root: Option<&Path>) {
-        // (A helper's leased job holds no claim files.)
-        if self.o.helper {
+        // (A job that took none, a leased one's, holds no claim files.)
+        if !std::mem::take(&mut self.slots[k].claimed) {
             self.slots[k].claims_fresh = None;
             return;
         }
@@ -1484,8 +1500,8 @@ impl Agent {
     /// while it's paused: a paused job's claims go stale, so the other Mac may take them. False when
     /// another agent holds one of them now (the job is then stopped, unrecorded: that one builds it).
     fn keep_claims(&mut self, k: usize, root: Option<&Path>) -> bool {
-        // (A helper's leased job holds no claim files: its lease is kept by beats.)
-        if self.o.helper {
+        // (A job that took none, a leased one's, holds no claim files: its lease is kept by beats.)
+        if !self.slots[k].claimed {
             return true;
         }
         let me = self.me_of(k);
@@ -1515,7 +1531,9 @@ impl Agent {
     /// Slot `k`'s ended job's timings (crate::timings): kept in this Mac's log (`timings.jsonl`),
     /// and in the build's, its coordinator's (`coord/timings.jsonl`), here; a helper's go with its
     /// hand-off (`send_outbox`, `end_lease`), from its folder.
-    fn take_timings(&self, k: usize) {
+    fn take_timings(&mut self, k: usize) {
+        // (By where the job writes them, whoever leads now: a member's leased job in its folder,
+        // this Mac's own in the agent's.)
         let handed = match &self.slots[k].lease {
             Some(Held::Leased { dir, .. } | Held::Pooled { dir, own: false, .. }) => Some(dir.join(TIMINGS_FILE)),
             _ => None,
@@ -1529,9 +1547,12 @@ impl Agent {
         if let Err(e) = crate::timings::append(&self.o.home.join("timings.jsonl"), &rec) {
             eprintln!("agent: keeping a job's timings: {e}");
         }
-        // (With a coordinator here, its lease ends here, `end_lease`: its timings kept here too.)
-        if let Some(c) = &self.coord {
-            c.add_timings(&rec);
+        // (With a coordinator here, its lease ends here, `end_lease`: its timings kept here too; this
+        // Mac's own job's without one, a lead a moment ago, go to the lead with its hand-off.)
+        match (&self.coord, &handed) {
+            (Some(c), _) => c.add_timings(&rec),
+            (None, None) => self.slots[k].timings_out = Some(rec),
+            (None, Some(_)) => {}
         }
     }
 
@@ -1777,6 +1798,9 @@ impl Agent {
             }
         }
         let root = self.root();
+        if root.is_some() {
+            self.last_root = root.clone();
+        }
         // The owner's disk room target, as set now (`scenic room`, the menu bar).
         let target = room::target(&self.o.home);
         if target.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {
@@ -2578,6 +2602,7 @@ impl Agent {
             }
             self.slots[k].lease = lease.map(Held::Own);
             self.slots[k].claims_fresh = Some(Instant::now());
+            self.slots[k].claimed = true;
         }
         // In the pool, every job of the lead's holds a lease of its coordinator, and saves into a
         // folder of its own (`<term>-<id>`), handed to the journal as it ends (docs/pool.md §7.3).
@@ -2589,7 +2614,7 @@ impl Agent {
             };
             let (Some(n), Some(c)) = (held, &self.coord) else {
                 waiting.push(Waiting { step: Some(w.step.clone()), what: what.clone(), why: if self.coord.is_none() { "this Mac's coordinator isn't running: no lease to hand its work off under".into() } else { "another worker holds part of it; planning again".into() } });
-                if let (Some((step, ts)), Some(r)) = (shared_targets(&spec), root) {
+                if let (Some((step, ts)), Some(r), true) = (shared_targets(&spec), root, std::mem::take(&mut self.slots[k].claimed)) {
                     claims::release(r, &step, &ts, &self.me_of(k));
                 }
                 return false;
@@ -2614,7 +2639,7 @@ impl Agent {
             // It couldn't even start (a missing program, a full disk): retried later.
             eprintln!("agent: can't start {id}: {e:#}");
             self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
-            if let (Some((step, ts)), Some(r), false) = (shared, root, self.o.helper) {
+            if let (Some((step, ts)), Some(r), true) = (shared, root, std::mem::take(&mut self.slots[k].claimed)) {
                 claims::release(r, &step, &ts, &self.me_of(k));
             }
             self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
@@ -4563,8 +4588,9 @@ impl Agent {
         }
         lead::take(run, &home);
         let out = run.step(able);
-        // (Its part changed, in this process: its coordinator started or stopped, its jobs going on.)
-        if run.in_process {
+        // (Its part changed, in this process: its coordinator started or stopped, its jobs going on;
+        // not tried again once a restart is asked for, its coordinator failing to start.)
+        if run.in_process && run.restart.is_none() {
             self.change_part(r, &out);
         }
         let keep: Vec<u64> = self.slots.iter().filter_map(|s| match &s.lease {
@@ -4612,9 +4638,11 @@ impl Agent {
     fn change_part(&mut self, root: &Path, out: &crate::pool::driver::Out) {
         let Some(run) = self.pool.as_mut() else { return };
         match (run.role, out.leads) {
-            (pool::Role::Member, Some(term)) => match make_coordinator(&self.o, Some(run), &self.app) {
+            (pool::Role::Member, Some(term)) => match make_coordinator(&self.o, Some(run), &self.app, &self.host) {
                 Some(c) => {
                     eprintln!("agent: this Mac leads term {term}: its coordinator started, its jobs going on");
+                    // (The terms' events its member kept meanwhile, for this coordinator's history.)
+                    lead::replay(&self.o.home.join("pool"), &c);
                     run.role = pool::Role::Lead;
                     self.o.helper = false;
                     self.coord = Some(c);
@@ -4627,6 +4655,15 @@ impl Agent {
             (pool::Role::Lead, None) if out.stop.is_none() => {
                 eprintln!("agent: this Mac no longer leads: its coordinator stopped, its jobs going on through the lead");
                 run.role = pool::Role::Member;
+                // (Its coordinator first: what ends from here, the duties stopped below too, ends
+                // through the new lead, `end_lease`.)
+                let old = self.coord.take();
+                if let Some(c) = &old {
+                    c.unpublish(root);
+                    c.stop();
+                }
+                self.o.helper = true;
+                self.client = None;
                 // (Its duties in flight stopped, a catalog or a sweep: the lead's alone.)
                 for k in 0..SLOTS {
                     let duty = self.slots[k].running.as_ref().and_then(|j| step_of(&j.spec.id)).is_some_and(|st| pool::PUBLISHES.contains(&st.as_str()) || pool::SWEEPS.contains(&st.as_str()));
@@ -4639,13 +4676,8 @@ impl Agent {
                         std::fs::remove_file(self.record_path(k)).ok();
                     }
                 }
-                if let Some(c) = self.coord.take() {
-                    c.unpublish(root);
-                    c.stop();
-                }
+                drop(old);
                 self.published = None;
-                self.o.helper = true;
-                self.client = None;
                 self.lead_awake_off();
             }
             _ => {}
@@ -4917,16 +4949,17 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
     (n.nas && !c.nas).then(|| "the NAS isn't reachable".into())
 }
 
-/// The lead's coordinator for an agent of options `o` on app `app`, the pool's `run` when it's on
+/// The lead's coordinator for an agent of options `o` on app `app`, on Mac `host` (its own jobs'
+/// leases held under its name), the pool's `run` when it's on
 /// (its token copied from the pool first: the same on every lead); None when it can't start (this
 /// Mac then builds alone, or, a member that took the lead in its process, restarts into it).
-fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str) -> Option<crate::coord::Coordinator> {
+fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str) -> Option<crate::coord::Coordinator> {
     if let Some(r) = run {
         if let Err(e) = pool::seed(r.side.nas(), &o.home.join("coord")) {
             eprintln!("agent: the pool's token: {e:#}");
         }
     }
-    match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), coord_port(), &cond::host_name(), app) {
+    match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), coord_port(), host, app) {
         Ok(c) => {
             eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
             Some(c)
@@ -6748,6 +6781,116 @@ mod pool_tests {
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));
+    }
+
+    #[test]
+    fn the_leads_own_job_goes_on_across_a_handover_through_the_new_lead() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        TEST_ABLE.with(|c| c.set(Some(true)));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, pool::SLOTS);
+        let bin = app(d.path());
+        let gate = d.path().join("gate");
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        std::fs::write(bin.join("scenic-build"), script).unwrap();
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.step().unwrap();
+        let im = m.pool.as_ref().unwrap().side.member().id.clone();
+        lead.pool.as_mut().unwrap().side.know(&im);
+        // (Two Macs' names: the member's coordinator holds its own jobs' leases under its own, so
+        // the old lead's, under the old lead's, stay when it takes up.)
+        m.host = "the-member".into();
+        // The lead's own job, under its coordinator's lease, its files in the agent's folder.
+        let job = JobSpec { id: "pack 6/4/4".into(), what: "map tiles".into(), cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pack".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }) };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(matches!(lead.slots[0].lease, Some(Held::Pooled { own: true, .. })));
+        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        let both = |lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool| {
+            let end = Instant::now() + WATCHDOG;
+            loop {
+                lead.step().unwrap();
+                m.step().unwrap();
+                if done(lead, m) {
+                    return;
+                }
+                assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", lead.pool.as_ref().unwrap().controls.kept.asked);
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        };
+        both(&mut lead, &mut m, &|l, m| m.pool.as_ref().unwrap().side.driver().leads().is_some() && m.coord.is_some() && l.coord.is_none());
+        // The old lead's job runs on, its lease renewed with the new lead by HTTP (it knows it: the
+        // term's state handed over).
+        assert!(lead.slots[0].running.is_some());
+        let lid = match lead.slots[0].lease { Some(Held::Pooled { id, .. }) => id, _ => panic!() };
+        assert!(m.coord.as_ref().unwrap().held("pack").contains("6/4/4"), "the new lead holds its lease");
+        lead.slots[0].beaten = None;
+        assert!(lead.beat(0, Some(&r)), "renewed by HTTP");
+        assert!(matches!(lead.slots[0].lease, Some(Held::Pooled { id, .. }) if id == lid));
+        // It ends: its entry in the new lead's records (the new lead reading the old one's mail),
+        // its lease ended there.
+        let il = lead.pool.as_ref().unwrap().side.member().id.clone();
+        m.pool.as_mut().unwrap().side.know(&il);
+        std::fs::write(&gate, b"").unwrap();
+        both(&mut lead, &mut m, &|l, m| l.slots[0].running.is_none() && m.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/4/4") == Some("kn")));
+        assert!(m.coord.as_ref().unwrap().held("pack").is_empty());
+        assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        TEST_ABLE.with(|c| c.set(None));
+    }
+
+    #[test]
+    fn a_coordinator_that_cant_start_in_the_process_leaves_the_part_to_a_restart() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, pool::SLOTS);
+        let bin = app(d.path());
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
+        m.step().unwrap();
+        assert_eq!(m.pool.as_ref().unwrap().role, pool::Role::Member);
+        // (The port its coordinator would take is the lead's, still answering.)
+        let out = crate::pool::driver::Out { leads: Some(2), ..Default::default() };
+        m.change_part(&r, &out);
+        assert!(m.coord.is_none() && m.o.helper);
+        assert!(m.pool_restart().is_some_and(|w| w.contains("didn't start")), "{:?}", m.pool_restart());
+        drop(lead);
+    }
+
+    #[test]
+    fn a_lead_that_loses_its_term_in_its_process_stops_its_duties_and_its_coordinator() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, pool::SLOTS);
+        let bin = app(d.path());
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let catalog = JobSpec { id: "catalog catalog".into(), what: "catalog".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }) };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(lead.try_start(0, catalog, &cond, Some(&r), &mut Vec::new()));
+        let port = TEST_PORT.with(|p| p.get()).unwrap();
+        // (Its step said it leads no term any more.)
+        let out = crate::pool::driver::Out::default();
+        lead.change_part(&r, &out);
+        assert!(lead.slots[0].running.is_none(), "its catalog stopped");
+        assert!(lead.coord.is_none() && lead.o.helper && lead.pool.as_ref().unwrap().role == pool::Role::Member);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(std::net::TcpListener::bind(("0.0.0.0", port)).is_ok(), "its port free");
     }
 
     #[test]

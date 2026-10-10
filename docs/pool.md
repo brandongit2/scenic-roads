@@ -644,16 +644,25 @@ They call the lead through one interface, re-resolved on every call (crate::agen
 `end_lease`, built: phase 4's fourth batch): in process while this Mac leads, over HTTP while it's a
 member, whoever granted the lease, so a job running across a handover just carries on. A lease's
 worker is its Mac's name whichever coordinator granted it, so the next lead's coordinator, holding
-the leases handed over with the term, takes the old lead's renewals and hand-offs as any member's;
-one it doesn't know (a takeover, its state older) is held again under a new id, its hand-off keeping
-the lease it began under. They use the journal and validation like anyone's (none of the shortcuts
+the leases handed over with the term, takes the old lead's renewals and hand-offs as any member's.
+A job of the new lead's own process whose lease its coordinator doesn't know (a takeover, its state
+older) is held again under a new id, its hand-off keeping the lease it began under; a member's job
+whose lease the lead doesn't know is stopped, its done targets handed off, as a lapsed lease's. A
+job's tasks (a unit's tail, the 3D buildings' areas, terrain's subtrees, tree cover's rows) are
+offered through its own Mac's coordinator: one that stopped (the Mac no longer leading), crashed,
+or no longer knows the job's key (the lead taken back, with a new one) answers nothing, and the
+job runs each task out itself (crate::offload: as a task no one took), so it carries on. A job's
+end reaches the new lead whatever ended it, its client made again when the old lead had none;
+what claims a job took (the pool off) are kept and released by the job, whatever part its process
+plays since. They use the journal and validation like anyone's (none of the shortcuts
 for the build Mac's own jobs), and the in-process path never holds the coordinator's lock during
 NAS I/O. With the part changing in its process (`state/pool/slots`), a member that takes up a term
 starts its coordinator (its port free a moment after the last lead in that process stopped one),
 keeping the leases of the jobs it runs (a take-up drops its own host's leases from before only for
 jobs no longer running), and a lead that loses its term stops its coordinator and takes its contact
-off the NAS; neither restarts. A coordinator that can't start leaves the part to a restart, as
-without the switch. A lead whose update waits on one of its jobs (a newer app installed: it starts
+off the NAS, then stops its duties in flight (a catalog, a sweep), their leases ended through the
+new lead; neither restarts. A coordinator that can't start leaves the part to a restart, as without
+the switch, and isn't tried again in that process. A lead whose update waits on one of its jobs (a newer app installed: it starts
 nothing new and restarts once its slots are free) hands the lead, once per app, to a member already
 on that app that can lead, as the owner's ask would (the same-app rule otherwise leaves that member
 idle meanwhile: plan.md §8).

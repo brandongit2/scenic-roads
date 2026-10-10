@@ -220,9 +220,26 @@ impl Offload {
     /// gets measured: the coordinator keeps the task for it to finish when the job runs it itself);
     /// then, a worker holding it, while its pace says it'll be back before this Mac's own run would
     /// end.
+    /// Task `t`'s status as the coordinator says it; `gone` when it can't say (it stopped, its Mac
+    /// no longer leading: docs/pool.md §7.6; it crashed; or it no longer knows this job's key, a
+    /// lead taken back with a new one): the job runs the task itself.
+    fn status(&self, t: &Offered) -> serde_json::Value {
+        match self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})) {
+            Ok((200, v)) => v,
+            Ok((code, _)) => {
+                eprintln!("offload: task {}: the coordinator answered {code}: run here", t.id);
+                serde_json::json!({ "state": "gone" })
+            }
+            Err(e) => {
+                eprintln!("offload: task {}: the coordinator doesn't answer ({e:#}): run here", t.id);
+                serde_json::json!({ "state": "gone" })
+            }
+        }
+    }
+
     fn wait_on(&self, t: &Offered, mut st: serde_json::Value, p: Patience) -> Result<serde_json::Value> {
         let _p = crate::timings::phase("waiting on other workers", crate::timings::Class::Wait);
-        let status = || self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).map(|r| r.1);
+        let status = || -> Result<serde_json::Value> { Ok(self.status(t)) };
         let clock = &*self.clock;
         let since = |t: std::time::Instant| clock.now().saturating_duration_since(t);
         let began = clock.now();
@@ -271,7 +288,7 @@ impl Offload {
     /// and a worker's result that came in too compared with this Mac's run (`same`, with the status
     /// and when that run began). Its folder goes.
     pub fn settle_with(&self, t: &Offered, wait: bool, p: Patience, here: &mut dyn FnMut() -> Result<()>, take: &mut dyn FnMut(&serde_json::Value) -> Result<()>, same: &mut dyn FnMut(&serde_json::Value, std::time::SystemTime) -> Result<bool>) -> Result<Option<Settled>> {
-        let mut st = self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({}))?.1;
+        let mut st = self.status(t);
         if wait {
             st = self.wait_on(t, st, p)?;
         }
@@ -305,7 +322,8 @@ impl Offload {
             _ if !wait => return Ok(None),
             _ => {
                 // Taken back if no one has it; raced if someone does.
-                let withdrawn = self.client.post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({}))?.1["withdrawn"].as_bool() == Some(true);
+                // (A coordinator that can't answer: as withdrawn, run here, no worker's to compare.)
+                let withdrawn = self.client.post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({})).map_or(true, |r| r.0 != 200 || r.1["withdrawn"].as_bool() == Some(true));
                 let since = std::time::SystemTime::now();
                 here()?;
                 let late = if withdrawn { None } else { self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).ok().map(|r| r.1) };
@@ -665,6 +683,40 @@ mod tests {
         // process id, as an older job's tasks were kept under): both end.
         c.close_tasks(owner());
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
+    }
+
+    #[test]
+    fn a_task_whose_coordinator_is_gone_or_doesnt_know_the_job_is_run_here() {
+        // The lead's coordinator stopped (its Mac no longer leads), or one that took the lead back
+        // with a new key for its jobs: each task out is settled by running it here, the job going on.
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let url = format!("http://127.0.0.1:{port}");
+        let offer = |o: &Offload, name: &str| {
+            let root = o.task_root(name);
+            std::fs::create_dir_all(root.join("u")).unwrap();
+            std::fs::write(root.join("u/x"), b"x").unwrap();
+            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, [("u/x".to_string(), 1)].into(), 100).unwrap()
+        };
+        let settle = |o: &Offload, t: &Offered, wait: bool| {
+            let mut ran = false;
+            let s = o.settle_with(t, wait, Patience { here_s: Some(1.0) }, &mut || {
+                ran = true;
+                Ok(())
+            }, &mut |_| panic!("no worker's result"), &mut |_, _| panic!("no worker's result"));
+            (s.unwrap(), ran)
+        };
+        // A key the coordinator doesn't know (401): run here, waiting or not.
+        let job = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
+        let (t1, t2) = (offer(&job, "a"), offer(&job, "b"));
+        let stranger = Offload::at(url.clone(), "not the job's key".into(), &d.path().join("other"));
+        assert!(matches!(settle(&stranger, &t1, true), (Some(Settled::Here(None)), true)));
+        // The coordinator stopped: run here, waiting or not.
+        c.stop();
+        drop(c);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(matches!(settle(&job, &t2, true), (Some(Settled::Here(None)), true)));
+        assert!(matches!(settle(&job, &t2, false), (Some(Settled::Here(None)), true)));
     }
 
     #[test]
