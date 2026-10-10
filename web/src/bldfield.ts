@@ -48,17 +48,12 @@ const LUT_N = 2048;
 const trOf = (map: MLMap): any => (map as any)._camera?.transform ?? (map as any).transform;
 
 const VS = `
-layout(location=0) in vec3 a_corner;  // the unit box's corner
-layout(location=1) in float a_face;   // its face: 0 the top, 1–4 the sides (y = 0, y = max, x = 0, x = max), 5 the bottom
-layout(location=3) in vec4 a_blk;     // the block: its corner (tile units), its buildings' lowest ground and highest roof (m)
-uniform float u_bs;        // a block's size (tile units)
-uniform float u_infl;      // widened by (tile units: on the globe, its chords' sag)
-uniform float u_sag;       // raised and lowered by (m)
+layout(location=0) in vec2 a_pos;     // tile units
+layout(location=1) in float a_alt;    // m (absolute)
+layout(location=2) in float a_face;   // 0 a column's top, 1–4 its sides facing −y, +y, −x, +x
 out vec3 v_p;              // tile units, tile units, altitude (m)
 out float v_clip;
 flat out int v_face;
-flat out vec4 v_blk;       // the block's extent (tile units)
-flat out vec2 v_bt;        // its bottom and top (m)
 
 vec4 projAt(vec2 p, float h) {
 #ifdef GLOBE
@@ -70,18 +65,13 @@ vec4 projAt(vec2 p, float h) {
 }
 
 void main() {
-  vec2 lo = a_blk.xy - u_infl, hi = a_blk.xy + u_bs + u_infl;
-  vec2 pos = mix(lo, hi, a_corner.xy);
-  v_bt = vec2(a_blk.z - u_sag - 1.0, a_blk.w + u_sag + 1.0);
-  float alt = a_corner.z > 0.5 ? v_bt.y : v_bt.x;
   v_face = int(a_face + 0.5);
-  v_blk = vec4(max(a_blk.xy, vec2(0.0)), min(a_blk.xy + u_bs, vec2(${EXTENT}.0)));
-  v_p = vec3(pos, alt);
+  v_p = vec3(a_pos, a_alt);
   v_clip = 0.0;
 #ifdef GLOBE
-  if (u_projection_transition > 0.999) v_clip = globeComputeClippingZ(projectToSphere(pos, pos));
+  if (u_projection_transition > 0.999) v_clip = globeComputeClippingZ(projectToSphere(a_pos, a_pos));
 #endif
-  gl_Position = projAt(pos, alt);
+  gl_Position = projAt(a_pos, a_alt);
 }`;
 
 const FS = `#version 300 es
@@ -105,6 +95,10 @@ uniform float u_pixAngle;   // radians a device pixel spans
 uniform vec4 u_camTile;
 uniform float u_top;
 uniform float u_gmin;
+uniform float u_gmax;   // the tile's highest ground (m)
+uniform highp sampler2D u_top128;   // the tallest roof over each 4 × 4 texels and the texel around them (m)
+uniform highp sampler2D u_tb;
+uniform float u_stepTexel;   // the steps' least length (texels)   // each cell's hull column's top (m; −1e9: none)
 uniform float u_wallSign;   // (a test: which way MapLibre's wall normals face)     // the tile's lowest ground (m)
 uniform float u_hk;
 uniform vec4 u_box;
@@ -114,8 +108,6 @@ uniform float u_colorvalue;
 uniform vec3 u_colour;
 uniform vec3 u_lightcolor;
 in vec3 v_p;
-flat in vec4 v_blk;
-flat in vec2 v_bt;
 uniform float u_trans;
 uniform vec3 u_fwd;
 uniform int u_byHeight;
@@ -127,7 +119,7 @@ flat in int v_face;
 out vec4 fragColor;
 uniform highp usampler2D u_cmask;   // the classes each texel and its neighbours hold (bits), as a pyramid
 uniform float u_dRoof;
-uniform vec4 u_dWallA;
+uniform vec4 u_dWallA;   // fill-extrusion's directional term for a wall facing each of 8 directions (22.5° + 45° k from east, toward south)
 uniform vec4 u_dWallB;
 uniform float u_opacity;
 uniform int u_linear;
@@ -159,23 +151,19 @@ void main() {
   vec3 E = vec3(v_p.xy * mpu, v_p.z);
   vec3 C = vec3(u_camTile.xy * mpu, u_camTile.z);
   vec3 d = normalize(E - C);
-  // Only where the ray enters the box (the face it leaves by is drawn too).
-  bool enter = v_face == 0 ? d.z < 0.0 : v_face == 1 ? d.y > 0.0 : v_face == 2 ? d.y < 0.0 : v_face == 3 ? d.x > 0.0 : v_face == 4 ? d.x < 0.0 : d.z > 0.0;
+  // Only where the ray comes into the hull (the faces it leaves by are drawn too): a column's top
+  // coming down, a side from the lower neighbour it faces.
+  bool enter = v_face == 0 ? d.z < 0.0 : v_face == 1 ? d.y > 0.0 : v_face == 2 ? d.y < 0.0 : v_face == 3 ? d.x > 0.0 : d.x < 0.0;
   if (!enter) discard;
-  // How far it runs in the box: to the tile's edges and its top (the ground stops it on the way).
+  // How far it may run: to the tile's edges, its top and its lowest ground; the hull stops it sooner.
   float tmax = 1e9;
-  vec2 lo = (v_blk.xy - v_p.xy) * mpu, hi = (v_blk.zw - v_p.xy) * mpu;
+  vec2 lo = (vec2(0.0) - v_p.xy) * mpu, hi = (vec2(${EXTENT}.0) - v_p.xy) * mpu;
   if (abs(d.x) > 1e-6) tmax = min(tmax, max((lo.x) / d.x, (hi.x) / d.x));
   if (abs(d.y) > 1e-6) tmax = min(tmax, max((lo.y) / d.y, (hi.y) / d.y));
-  if (d.z > 1e-6) tmax = min(tmax, (v_bt.y - E.z) / d.z);
-  if (d.z < -1e-6) tmax = min(tmax, (E.z - v_bt.x) / -d.z);
+  if (d.z > 1e-6) tmax = min(tmax, (u_gmax + u_top + 2.0 - E.z) / d.z);
+  if (d.z < -1e-6) tmax = min(tmax, (E.z - u_gmin + 1.0) / -d.z);
   tmax = clamp(tmax, 0.0, 1e6);
-  // (and from where it enters the block itself: a face widened for the globe's chords may stand in a
-  // neighbour's block, which marches that part)
   float t0 = 0.0;
-  if (abs(d.x) > 1e-6) t0 = max(t0, min(lo.x / d.x, hi.x / d.x));
-  if (abs(d.y) > 1e-6) t0 = max(t0, min(lo.y / d.y, hi.y / d.y));
-  if (t0 >= tmax) discard;
   if (u_dbg == 2) { fragColor = vec4(0.0, 0.0, 0.0, 0.01); return; }
   float texel = mpu * ${EXTENT / 512}.0;
   float dist0 = length(E - C);
@@ -206,16 +194,33 @@ void main() {
   float a0 = E.z + d.z * t0 - ground((E.xy + d.xy * t0) / mpu);
   int fine = 0;
   bool done = false;
+  // The roofs already passed over: a building is in one class only, so the classes' footprints are
+  // apart. A ray straight down that missed the taller classes' roofs is over the rest of the texel,
+  // and meets a lower class's roofs with probability f ÷ (1 − the share it missed), not f; the
+  // classes taken apart at random would see 1 − Π(1 − f) of a texel's roofs instead of Σ f. As the
+  // ray travels across, what it passed over decorrelates over the buildings' own width (4 f H ÷ w:
+  // a footprint's side from its area and walls).
+  float covE = 0.0, covL = 10.0;
+  float prevBound = 1e9;
   for (int k = 0; k < 96; k++) {
     if (done || t >= tmax) break;
     vec2 p = (E.xy + d.xy * t) / mpu;
-    ivec2 cell = clamp(ivec2(floor(p / ${EXTENT / 32}.0)), ivec2(0), ivec2(31));
+    // (the cell a little ahead: a point on an edge takes the cell it's going into)
+    vec2 ps = p + (length(dT) > 1e-12 ? normalize(dT) * 0.05 : vec2(0.0));
+    ivec2 cell = clamp(ivec2(floor(ps / ${EXTENT / 32}.0)), ivec2(0), ivec2(31));
     float te = tmax;
     if (abs(dT.x) > 1e-12) te = min(te, t + ((dT.x > 0.0 ? float(cell.x + 1) : float(cell.x)) * ${EXTENT / 32}.0 - p.x) / dT.x);
     if (abs(dT.y) > 1e-12) te = min(te, t + ((dT.y > 0.0 ? float(cell.y + 1) : float(cell.y)) * ${EXTENT / 32}.0 - p.y) / dT.y);
     te = clamp(te, t + 0.01, tmax);
     vec2 tg = texelFetch(u_top32, cell, 0).rg;
     float topc = tg.r * u_hk;
+    // The hull: each cell holding buildings a column from the ground to its highest ground plus its
+    // tallest roof (+ 0.5 m), as the faces are drawn; the ray leaves it going into a column below it
+    // (or a cell without any), or rising out of the one it was in. Each entry's fragment marches only
+    // till then, so a ray meeting the hull twice is counted once a stretch.
+    float bound = texelFetch(u_tb, cell, 0).r;
+    if (k > 0 && E.z + d.z * t >= min(bound, prevBound)) break;
+    prevBound = bound;
     // (above the cell's highest ground plus its tallest roof, at both ends: no ground to look up)
     if (min(E.z + d.z * t, E.z + d.z * te) > tg.g + topc + 1.0) {
       t = te;
@@ -239,16 +244,36 @@ void main() {
     float aIn = a0 + (aEnd - a0) * (tIn - t) / seg;
     float tOut = aEnd < topc ? te : t + (a0 - topc) / min(a0 - aEnd, -1e-6) * seg;   // (rising out of the roofs)
     tOut = clamp(tOut, tIn, te);
-    float run = tOut - tIn;
-    float n = clamp(ceil(run * hl / max((dist0 + tIn) * u_pixAngle, 1e-3)), 1.0, 8.0);
+    float da = (aEnd - a0) / seg;   // height change a metre along the ray
+    // The run below the cell's tallest roof walked across its 4 × 4 sub-cells (4 × 4 texels each):
+    // one skipped whole where the ray stays above its own tallest roof; in the others the steps.
+    float s0 = tIn;
+    // (a run of one step anyway, a steep ray's: one step, no walk)
+    // (steps a pixel's footprint long, but no shorter than a texel: the field is linear between its
+    // texels, so shorter steps add nothing)
+    float stepMin = u_stepTexel * texel;
+    bool oneStep = (tOut - tIn) * hl <= max((dist0 + tIn) * u_pixAngle, stepMin);
+    for (int jj = 0; jj < 8; jj++) {
+    if (done || s0 >= tOut - 1e-4) break;
+    vec2 q0 = (E.xy + d.xy * s0) / mpu;
+    vec2 qs = q0 + (length(dT) > 1e-12 ? normalize(dT) * 0.02 : vec2(0.0));
+    ivec2 sc = clamp(ivec2(floor(qs / ${EXTENT / 128}.0)), ivec2(0), ivec2(127));
+    float s1 = tOut;
+    if (abs(dT.x) > 1e-12) s1 = min(s1, s0 + ((dT.x > 0.0 ? float(sc.x + 1) : float(sc.x)) * ${EXTENT / 128}.0 - q0.x) / dT.x);
+    if (abs(dT.y) > 1e-12) s1 = min(s1, s0 + ((dT.y > 0.0 ? float(sc.y + 1) : float(sc.y)) * ${EXTENT / 128}.0 - q0.y) / dT.y);
+    s1 = oneStep ? tOut : clamp(s1, s0 + 0.01, tOut);
+    float as0 = a0 + da * (s0 - t), as1 = a0 + da * (s1 - t);   // its heights over the ground
+    if (u_dbg != 22 && !oneStep && min(as0, as1) > texelFetch(u_top128, sc, 0).r * u_hk) { covE *= exp(-(s1 - s0) * hl / covL); s0 = s1; continue; }
+    float run = s1 - s0;
+    float n = u_dbg == 21 ? 1.0 : clamp(ceil(run * hl / max(max((dist0 + s0) * u_pixAngle, stepMin), 1e-3)), 1.0, 4.0);
     float step = run / n;
     float hstep = step * hl;
-    float da = (aEnd - a0) / seg;   // height change a metre along the ray
-    float ac = aIn;
-    for (int i = 0; i < 8; i++) {
+    float ac = as0;
+    float tB = s0;
+    for (int i = 0; i < 4; i++) {
       if (float(i) >= n || fine >= ${STEPS}) { done = done || fine >= ${STEPS}; break; }
       fine++;
-      float t1 = tIn + float(i + 1) * step;
+      float t1 = tB + float(i + 1) * step;
       float a1 = ac + da * step;
       float sg = a1 < 0.0 ? clamp(ac / max(ac - a1, 1e-6), 0.0, 1.0) : 1.0;   // the share before the ground
       vec2 pt = (E.xy + d.xy * (t1 - step * (1.0 - 0.5 * sg))) / mpu;
@@ -256,7 +281,7 @@ void main() {
       vec2 uv = pt / ${EXTENT}.0;
       // The five height classes present (f, w, v of each), read at the pixel's footprint.
       float F[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), W[5] = F, V[5] = F;
-      if (inBox) {
+      if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         vec4 s;
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -266,7 +291,8 @@ void main() {
         // (and not a class whose tallest possible roof, 8, 20, 40, 100 m, is under the whole step)
         float mina = min(ac, a1) / u_hk;
         int cut = int(mina > 8.0) + int(mina > 20.0) + int(mina > 40.0) + int(mina > 100.0);
-        mk &= (31 << cut) & 31;
+        if (u_dbg != 15) mk &= (31 << cut) & 31;
+        if (u_dbg == 19) mk &= 24;
         if ((mk & 1) != 0) { s = textureLod(u_c0, uv, lod); F[0] = s.r; W[0] = s.g; V[0] = s.b; }
         if ((mk & 2) != 0) { s = textureLod(u_c1, uv, lod); F[1] = s.r; W[1] = s.g; V[1] = s.b; }
         if ((mk & 4) != 0) { s = textureLod(u_c2, uv, lod); F[2] = s.r; W[2] = s.g; V[2] = s.b; }
@@ -276,7 +302,14 @@ void main() {
       float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
       float tt = 0.0;
       vec3 hit = vec3(0.0);   // Σ τ × colour over the classes' roofs and walls
-      for (int c = 0; c < 5; c++) {
+      covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
+      // The open share around the ray at its height: a ray that hasn't met a building is in the
+      // open, so it meets walls at their crossings ÷ π a metre over that share (the walls of a
+      // random set entered from outside it), the buildings taller than the ray its obstacles.
+      float amid = 0.5 * (ac + ae), Ftall = 0.0;
+      if (u_dbg != 23) for (int c = 0; c < 5; c++) if (F[c] > 1e-5 && max(V[c] / F[c], 0.5) * u_hk > amid) Ftall += clamp(F[c], 0.0, 0.999);
+      float openK = 1.0 / max(1.0 - Ftall, 0.05);
+      for (int c = 4; c >= 0; c--) {   // (tallest first: the order a ray coming down meets them)
         float f = clamp(F[c], 0.0, 0.999);
         if (f < 1e-5) continue;
         float H = max(V[c] / F[c], 0.5);
@@ -287,12 +320,20 @@ void main() {
           float sh = clamp((Hs - ac) / (ae - ac), 0.0, 1.0) * sg;   // where it passes H
           below = ae < ac ? (ac < Hs ? sg : sg - sh) : (ac < Hs ? sh : 0.0);
         }
-        float tc = max(W[c], 0.0) * u_hk / Hs / 3.14159265 * hstep * below;
-        float tr = (ac >= Hs && ae < Hs) ? -log(1.0 - f) : 0.0;
+        float tc = max(W[c], 0.0) * u_hk / Hs / 3.14159265 * hstep * below * openK * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0);
+        float tr = 0.0;
+        if (ac >= Hs && ae < Hs) {
+          tr = -log(1.0 - clamp(f / max(1.0 - covE, 1e-3), 0.0, 0.999));
+          covE = min(covE + f, 0.999);
+          covL = clamp(4.0 * f * Hs / max(W[c] * u_hk, 1e-6), 2.0, 200.0);
+        }
         if (tc + tr <= 0.0) continue;
         // The class's colour: the plain one, or the colour scale's at its mean top (the app's own
         // scale, palette and fades, read from the lookup the map gives).
-        float gv = 0.5 * (gmin + clamp(sqrt(Hs / 150.0), gmin, 1.0));
+        // (fill-extrusion's gradient up a wall, from gmin at its foot to its top's: at the height the
+        // ray is where it meets it, the middle of its run below the roofs in the step)
+        float hm = 0.5 * (clamp(ac, 0.0, Hs) + clamp(ae, 0.0, Hs));
+        float gv = mix(gmin, clamp(sqrt(Hs / 150.0), gmin, 1.0), clamp(hm / Hs, 0.0, 1.0));
         vec3 roof = roofC, wall = clamp(wallC * gv, lowc, vec3(1.0));
         if (u_byHeight == 1) {
           vec3 base = texture(u_lut, vec2(clamp(H / ${LUT_MAX_M}.0, 0.0, 1.0), 0.5)).rgb;
@@ -311,6 +352,8 @@ void main() {
       }
       if (T < u_tmin || a1 < 0.0) { done = true; break; }
       ac = a1;
+    }
+    s0 = s1;
     }
     t = te;
     a0 = aEnd;
@@ -381,8 +424,17 @@ interface FTile {
   top32: WebGLTexture | null;
   /** The classes each texel and its neighbours hold (R8UI bits, a pyramid). */
   cmask: WebGLTexture | null;
-  /** Its blocks holding buildings: corner (tile units), lowest ground, highest roof (m). */
-  blocks: Float32Array | null;
+  /** Its hull's faces by cell (indices into its vertex buffer), their order's key, the index count. */
+  cells: { k: number; idx: number[] }[] | null;
+  ibuf: WebGLBuffer | null;
+  /** Its columns a side, and each cell's column's figure (R32F 32 × 32). */
+  nb: number;
+  tbTex: WebGLTexture | null;
+  /** The tallest roof over each 4 × 4 texels and around them (R32F 128 × 128). */
+  top128: WebGLTexture | null;
+  orderKey: string;
+  icount: number;
+  gmax: number;
   /** The same on the CPU, and the cells' highest ground with it (RG32F: top, ground). */
   top32cpu: Float32Array | null;
   elev: WebGLBuffer | null;
@@ -412,7 +464,7 @@ export class FieldLayer implements CustomLayerInterface {
   maxZoom = 14;
   /** Matched to the meshes' tiles (off: the field alone, by distance, every building). */
   meshOn = true;
-  dbg = 0;
+  dbg = Number(new URLSearchParams(location.search).get('fdbg')) || 0;
   /** Colour by height: the colour of each height 0 … LUT_MAX_M m (RGB, LUT_N entries), or null (plain). */
   heightLut: Uint8Array | null = null;
   private lutTex: WebGLTexture | null = null;
@@ -425,6 +477,9 @@ export class FieldLayer implements CustomLayerInterface {
   /** MapLibre's wall normals face inward of the ring as the tiles wind it (checked against the
    * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
   wallSign = -1;
+  /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone). */
+  stepTexel = Number(new URLSearchParams(location.search).get('fstx') ?? 1);
+  lastTrans = -1;
   /** The hulls' blocks: cells a side (`?fblk=`; 1, 2, 4, 8). */
   blockCells = Number(new URLSearchParams(location.search).get('fblk')) || 8;
   /** The land colour the buildings are mixed over in linear light (stored values), or the map's background layer's. */
@@ -539,7 +594,7 @@ export class FieldLayer implements CustomLayerInterface {
     const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
     const p = link(gl, head + VS, FS);
     const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_bs', 'u_infl', 'u_sag', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
+    for (const n of ['u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
       'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(sd.variantName, pr);
@@ -641,7 +696,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (t) return t;
-    t = { z, x, y, key, state: 'loading', tex: null, top32: null, cmask: null, blocks: null, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0 };
+    t = { z, x, y, key, state: 'loading', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0 };
     this.tiles.set(key, t);
     const tt = t;
     void (async () => {
@@ -697,6 +752,21 @@ export class FieldLayer implements CustomLayerInterface {
             if (h > hmax[i]) hmax[i] = h;
           }
         }
+        // (and over each 4 × 4 texels and the texel around them: the march's sub-cells)
+        const d128 = new Float32Array(128 * 128);
+        for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) {
+          const h = hmax[y * 512 + x];
+          if (!h) continue;
+          for (let cy = Math.max(0, (y - 1) >> 2); cy <= Math.min(127, (y + 1) >> 2); cy++)
+            for (let cx = Math.max(0, (x - 1) >> 2); cx <= Math.min(127, (x + 1) >> 2); cx++) if (h > d128[cy * 128 + cx]) d128[cy * 128 + cx] = h;
+        }
+        const t128 = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, t128);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 128, 128, 0, gl.RED, gl.FLOAT, d128);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        tt.top128 = t128;
         const d32 = new Float32Array(32 * 32);
         for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) {
           const h = hmax[y * 512 + x];
@@ -800,22 +870,77 @@ export class FieldLayer implements CustomLayerInterface {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    // Its blocks of blockCells × blockCells cells that hold buildings: each a box from their lowest ground to their
-    // highest roof (the cells' corners' ground, the tops scaled).
-    const blk: number[] = [];
-    const bc = this.blockCells, nbs = 32 / bc;
-    for (let by = 0; by < nbs; by++) for (let bx = 0; bx < nbs; bx++) {
-      let lo = Infinity, hi = -Infinity;
-      for (let cy = by * bc; cy < by * bc + bc; cy++) for (let cx = bx * bc; cx < bx * bc + bc; cx++) {
-        const top = t.top32cpu ? t.top32cpu[cy * 32 + cx] : 0;
-        if (!(top > 0)) continue;
-        const c4 = [e[cy * (G + 1) + cx], e[cy * (G + 1) + cx + 1], e[(cy + 1) * (G + 1) + cx], e[(cy + 1) * (G + 1) + cx + 1]];
-        lo = Math.min(lo, ...c4);
-        hi = Math.max(hi, Math.max(...c4) + top * this.hk);
-      }
-      if (hi > -Infinity) blk.push(bx * (EXTENT / nbs), by * (EXTENT / nbs), lo, hi);
+    // The hull: a column over each 1/32 cell holding buildings, from the ground to its highest ground
+    // plus its tallest roof (+ 0.5 m; the march tests the same figure, from the same floats), its top
+    // and its sides where the neighbour's column is lower (or none: at the tile's edge too), each
+    // face with the way it faces; grouped by cell, for drawing them far to near.
+    const f32 = new Float32Array(1);
+    const fr = (x: number) => ((f32[0] = x), f32[0]);
+    // (a column a block of B × B cells, `?fblk=`: its highest cell's figure, its lowest ground)
+    const B = Math.max(1, Math.min(32, this.blockCells)), NB = 32 / B;
+    const bound = new Float64Array(NB * NB).fill(-Infinity), low = new Float64Array(NB * NB).fill(Infinity);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      const k = y * 32 + x, kb = Math.floor(y / B) * NB + Math.floor(x / B);
+      const top = t.top32cpu ? t.top32cpu[k] : 0;
+      const c4 = [e[y * (G + 1) + x], e[y * (G + 1) + x + 1], e[(y + 1) * (G + 1) + x], e[(y + 1) * (G + 1) + x + 1]];
+      if (top > 0) bound[kb] = Math.max(bound[kb], fr(fr(fr(Math.max(...c4)) + fr(fr(top) * fr(this.hk))) + 0.5));
+      low[kb] = Math.min(low[kb], ...c4);
     }
-    t.blocks = Float32Array.from(blk);
+    // (each cell's column's figure, for the march's test: the same floats)
+    const tb = new Float32Array(32 * 32);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) tb[y * 32 + x] = bound[Math.floor(y / B) * NB + Math.floor(x / B)];
+    if (!t.tbTex) t.tbTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, t.tbTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 32, 32, 0, gl.RED, gl.FLOAT, tb.map((x) => (x === -Infinity ? -1e9 : x)));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    const v: number[] = [], cells: { k: number; idx: number[] }[] = [];
+    const C = EXTENT / NB;
+    const quad = (pts: number[][], face: number, idx: number[]) => {
+      const b0 = v.length / 4;
+      for (const q of pts) v.push(q[0], q[1], q[2], face);
+      idx.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3);
+    };
+    for (let y = 0; y < NB; y++) for (let x = 0; x < NB; x++) {
+      const k = y * NB + x, hb = bound[k];
+      if (hb === -Infinity) continue;
+      const idx: number[] = [];
+      const x0 = x * C, x1 = x0 + C, y0 = y * C, y1 = y0 + C;
+      quad([[x0, y0, hb], [x1, y0, hb], [x1, y1, hb], [x0, y1, hb]], 0, idx);
+      const side = (nx: number, ny: number, face: number, a: number[], b2: number[]) => {
+        const inside = nx >= 0 && ny >= 0 && nx < NB && ny < NB;
+        const hn = inside ? bound[ny * NB + nx] : -Infinity;
+        if (hn >= hb) return;
+        const bot = hn > -Infinity ? hn : Math.min(low[k], inside ? low[ny * NB + nx] : low[k]) - 2;
+        quad([[a[0], a[1], bot], [b2[0], b2[1], bot], [b2[0], b2[1], hb], [a[0], a[1], hb]], face, idx);
+      };
+      side(x, y - 1, 1, [x0, y0], [x1, y0]);
+      side(x, y + 1, 2, [x0, y1], [x1, y1]);
+      side(x - 1, y, 3, [x0, y0], [x0, y1]);
+      side(x + 1, y, 4, [x1, y0], [x1, y1]);
+      cells.push({ k, idx });
+    }
+    if (!t.vao) {
+      t.vao = gl.createVertexArray()!;
+      t.elev = gl.createBuffer()!;
+      t.ibuf = gl.createBuffer()!;
+    }
+    gl.bindVertexArray(t.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, t.elev);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 16, 8);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 16, 12);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, t.ibuf!);
+    gl.bindVertexArray(null);
+    t.cells = cells;
+    t.nb = NB;
+    t.orderKey = '';
+    t.gmax = e.reduce((m, x) => Math.max(m, x), -Infinity);
     t.elevFor = this.elevKey + '|' + this.hk;
   }
 
@@ -925,6 +1050,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform2f(u.u_viewport, vp[2], vp[3]);
     gl.uniform1f(u.u_pixAngle, opts.fov / vp[3]);
     gl.uniform1f(u.u_opacity, this.opacity);
+    gl.uniform1f(u.u_stepTexel, this.stepTexel);
     gl.uniform1i(u.u_linear, this.linear ? 1 : 0);
     {
       // (the land colour under the buildings: the background layer's)
@@ -961,7 +1087,14 @@ export class FieldLayer implements CustomLayerInterface {
     const exag = map.getTerrain()?.exaggeration ?? 0;
     gl.uniform2f(u.u_ztol, 0.015, 75 * Math.max(exag, 1));
     const style = (map as unknown as { style: { light: { getCartesianPosition(): number[]; properties: { get(k: string): { r: number; g: number; b: number } & number } } } }).style;
-    const lp = style.light.getCartesianPosition();
+    const lp0 = style.light.getCartesianPosition() as unknown as number[];
+    // (anchored to the viewport, the light turns with the map's bearing, as fill-extrusion's uniforms turn it)
+    const lp = [...lp0];
+    if ((style.light.properties.get('anchor') as unknown as string) === 'viewport') {
+      const br = (map.getBearing() * Math.PI) / 180, c = Math.cos(br), sn = Math.sin(br);
+      lp[0] = c * lp0[0] - sn * lp0[1];
+      lp[1] = sn * lp0[0] + c * lp0[1];
+    }
     gl.uniform3fv(u.u_lightpos, lp);
     const lpg = tr.transformLightDirection(lp) as number[];
     gl.uniform3fv(u.u_lightpos_globe, lpg);
@@ -1001,7 +1134,8 @@ export class FieldLayer implements CustomLayerInterface {
       // The light here (on the globe turned into the tile's frame at its centre, mixed by the hand-off):
       // the roofs' term and eight wall directions'.
       {
-        const trans = pd.projectionTransition;
+        const trans = this.dbg === 13 ? 0 : this.dbg === 14 ? 0.5 : pd.projectionTransition;
+        this.lastTrans = pd.projectionTransition;
         let LG = lp;
         if (trans > 0) {
           const sx = ((t.x + 0.5) / n) * Math.PI * 2 + Math.PI;
@@ -1016,9 +1150,10 @@ export class FieldLayer implements CustomLayerInterface {
         const c01 = (x: number) => Math.max(0, Math.min(1, x));
         const dirOf = (v: number[]) => (1 - trans) * c01(v[0] * lp[0] + v[1] * lp[1] + v[2] * lp[2]) + trans * c01(v[0] * LG[0] + v[1] * LG[1] + v[2] * LG[2]);
         gl.uniform1f(u.u_dRoof, dirOf([0, 0, 1]));
-        const w8 = [0, 1, 2, 3, 4, 5, 6, 7].map((q) => {
+        const w8 = Array.from({ length: 8 }, (_, q) => {
           const bb = (q + 0.5) * (Math.PI / 4);
-          return dirOf([this.wallSign * Math.cos(bb), this.wallSign * Math.sin(bb), 0]);
+          const dn = dirOf([this.wallSign * Math.cos(bb), this.wallSign * Math.sin(bb), 0]), dp = dirOf([-this.wallSign * Math.cos(bb), -this.wallSign * Math.sin(bb), 0]);
+          return this.dbg === 11 ? Math.max(dn, dp) : this.dbg === 12 ? 0.5 * (dn + dp) : dn;
         });
         gl.uniform4f(u.u_dWallA, w8[0], w8[1], w8[2], w8[3]);
         gl.uniform4f(u.u_dWallB, w8[4], w8[5], w8[6], w8[7]);
@@ -1040,31 +1175,39 @@ export class FieldLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, t.top32);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
-      // Its blocks, far to near (a ray meets each box once, so each fragment marches its own block,
-      // composited over the blocks behind it).
+      // Its columns' faces, far to near by their cells (a ray's stretches in the hull are composited
+      // over the ones behind them); the order kept while the camera stays over the same cell.
       {
-        const b = t.blocks!;
-        const nb = b.length / 4;
         const cx = (camM.x * n - t.x) * EXTENT, cy = (camM.y * n - t.y) * EXTENT;
-        const bsz = (EXTENT / 32) * this.blockCells, hb = bsz / 2;
-        const ord = Array.from({ length: nb }, (_, i) => i).sort((i, j) => Math.hypot(b[j * 4] + hb - cx, b[j * 4 + 1] + hb - cy) - Math.hypot(b[i * 4] + hb - cx, b[i * 4 + 1] + hb - cy));
-        const inst = new Float32Array(nb * 4);
-        ord.forEach((i, k) => inst.set(b.subarray(i * 4, i * 4 + 4), k * 4));
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
-        gl.bufferData(gl.ARRAY_BUFFER, inst, gl.DYNAMIC_DRAW);
-        const blockM = bsz * ((40075016.686 * Math.cos(lat)) / n / EXTENT);
-        const glob = pd.projectionTransition > 0;
-        gl.uniform1f(u.u_bs, bsz);
-        gl.uniform1f(u.u_infl, glob ? 0.03 * bsz : 0);
-        gl.uniform1f(u.u_sag, glob ? (2 * blockM * blockM) / (8 * 6371008.8) * 1.5 + 2 : 0);
-        gl.bindVertexArray(this.boxVao);
-        if (!(this.skip & 8) && nb) gl.drawElementsInstanced(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0, nb);
+        const NB = t.nb, C = EXTENT / NB;
+        const okx = Math.max(-1, Math.min(NB, Math.floor(cx / C))), oky = Math.max(-1, Math.min(NB, Math.floor(cy / C)));
+        const key = `${okx},${oky}`;
+        gl.bindVertexArray(t.vao);
+        if (t.orderKey !== key) {
+          const ccx = (okx + 0.5) * C, ccy = (oky + 0.5) * C;
+          const dist = (k: number) => Math.hypot(((k % NB) + 0.5) * C - ccx, (Math.floor(k / NB) + 0.5) * C - ccy);
+          const ord = [...t.cells!].sort((a2, b2) => dist(b2.k) - dist(a2.k));
+          const ix: number[] = [];
+          for (const c of ord) for (const i of c.idx) ix.push(i);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, t.ibuf!);
+          gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, Uint32Array.from(ix), gl.DYNAMIC_DRAW);
+          t.icount = ix.length;
+          t.orderKey = key;
+        }
+        gl.uniform1f(u.u_gmax, t.gmax);
+        gl.activeTexture(gl.TEXTURE12);
+        gl.bindTexture(gl.TEXTURE_2D, t.tbTex);
+        gl.uniform1i(u.u_tb, 12);
+        gl.activeTexture(gl.TEXTURE13);
+        gl.bindTexture(gl.TEXTURE_2D, t.top128);
+        gl.uniform1i(u.u_top128, 13);
+        if (!(this.skip & 8) && t.icount) gl.drawElements(gl.TRIANGLES, t.icount, gl.UNSIGNED_INT, 0);
       }
       this.drawn.push(t.key);
     }
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
-    for (const k of [0, 1, 4, 5, 6, 7, 8, 9, 10, 11]) {
+    for (const k of [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }

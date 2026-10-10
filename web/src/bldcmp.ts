@@ -129,6 +129,9 @@ function shrink(w: number, h: number, px: Uint8Array | Float32Array, ss: number)
 export function installCmp(map: MLMap, field: FieldLayer | null) {
   if (field && CMP?.byHeight) field.heightLut = heightLut(2048, 700);
   map.on('styledata', () => enforce(map));
+  // (a test: the light's intensity, `lint=`)
+  const lint = new URLSearchParams(location.search).get('lint');
+  if (lint !== null) map.once('idle', () => map.setLight({ intensity: Number(lint) } as never));
   const dpr = map.getPixelRatio();
   /** The buildings' source and layers as the app added them. */
   let orig: { src: SourceSpecification; layers: { spec: LayerSpecification; before?: string }[] } | null = null;
@@ -192,6 +195,8 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
         field.linear = o.linear ?? true;
         field.box = o.box ?? null;
         field.wallSign = o.wallSign ?? -1;
+        // (no meshes: the field alone, every building, not matched to the meshes' tiles)
+        field.meshOn = o.buildings !== false;
       }
       map.setPixelRatio(dpr * o.ss);
       const op = o.opacity ?? 0.85;
@@ -270,6 +275,7 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
       }
       if (field) {
         field.on = true;
+        field.meshOn = true;
         field.levelBias = 0;
         field.maxZoom = 14;
         field.linear = true;
