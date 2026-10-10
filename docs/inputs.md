@@ -483,7 +483,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   shows in the status. With it, #134 shows on the NAS, between two Macs: a drop taken in; an error
   held with the last good version kept; a warning accepted from the build page and from the other
   Mac's menu; an unaccept; a touch changing nothing; a removal held and accepted; the lead handed
-  over mid-check (the procedure: `tools/check/gate-two-macs.sh`; not run yet). Then it's removed.
+  over mid-check (the procedure: `tools/check/gate-two-macs.sh`; run on 2026-10-10 on the NAS
+  between the two Macs, what it showed in its header). Then it's removed.
 - **Tests** (plan §8, Tests: no wall clock, no real NAS): the verdicts as a function of (candidate,
   previous version, acceptances); finding ids stable across unrelated edits, and new when a count or
   a flagged line changes; a held new file absent, a held edit keeping the old bytes, a held removal

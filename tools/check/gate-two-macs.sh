@@ -51,11 +51,35 @@
 #   8. The lead handed over mid-check: `big <F> c.jsonl 2000000`; once `state` says 'checking',
 #      `lead <dir> give <the other member>`; the check's hand-off reaches the new lead's records
 #      through the journal: wait 'taken in' with c.jsonl in the version (`state` on either Mac).
+#      (A check of 2,000,000 lines takes ~6 s and a handover ~90 s, so the check ends before the
+#      handover does and the old lead merges it. To have it end under the new lead, stop the check
+#      by its exact pid as it starts, `kill -STOP <pid>` of `<dir>/v/app/current/scenic-build
+#      inputs`, give the lead, and `kill -CONT <pid>` once the give returns.)
 # Then `scenic inputs test off --root <F>` and the scratch folder removed.
 #
-# What a run shows so far (2026-10-10, the M4 alone, over a local scratch folder, not the NAS):
-# steps 1–7 as said, each change taken in or held within the listing's two minutes and a check
-# (the check itself 2 s, a debug build). Step 8, and all of it on the NAS between two Macs, are to run.
+# What a run shows (2026-10-10, the M4 and the M1 over a NAS scratch folder, the pool on with
+# state/pool/slots, one release build, the same shasum on both; logs kept with the task #134 run):
+# 1. taken in at the first listing (2 min), then a check reading nothing ("0 files read of 1").
+# 2. the bad line held as `error gt-line`, the version of step 1 kept, on both Macs' `state`.
+# 3. `page-accept` wrote the acceptance (by "the build page (<address>)") and it was taken in 36 s
+#    later: the agent asks its listing again after an ask, without the two minutes.
+# 4. the M1's `menu-accept` wrote the acceptance as the M1's member; taken in at the lead's next
+#    listing (129 s): a member's acceptance waits for that listing.
+# 5. the unaccept checked again, "0 files read of 2", the version as it was.
+# 6. the touch read once, "1 file read of 2", the version the same, only @listed new.
+# 7. the removal held as `gt-removed`, accepted with `scenic inputs accept` on the M1; the version
+#    went back to step 3's own content name, and the acceptance is listed stale at once.
+# 8. given M4 → M1 unfrozen: the check (6.2 s) ended and merged at the old lead, the handover 95 s.
+#    Given M1 → M4 with the M1's check stopped across it: the new lead (term 5) took up the lease
+#    handed over, and merged the check's journal entry (lease 4-…, the M1's member) once it ended.
+# A lead taking over runs each unit's full check once (its own daily timer), here 0.5 s.
+# GC (`scenic gc`, 14 days, with a catalog there: with none GC sweeps nothing), every copy aged 30
+# days, then a change: kept the current index and its files, the index it replaced (touched by the
+# check, and again with its touch undone, by @listed's `replaced`) and the current @listed; old
+# indexes, listings, held reports and copies no version names went. The nested unit
+# (`_gate-nest/inner`, never on the gate: `scenic-build inputs` run by hand on its own scratch
+# folder without the pool) checked, held, accepted, taken in and swept the same way. After `test
+# off` no check runs; the status still lists the unit while its records are there.
 set -euo pipefail
 cmd=${1:?root, app, run, stop, drop, big, touch, remove, state, wait, page-accept, menu-accept or lead}
 V=20261010-0000-gatetest
