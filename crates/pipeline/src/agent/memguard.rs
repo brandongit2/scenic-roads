@@ -194,8 +194,7 @@ pub struct Watch {
     /// the top of its scratch folder as last looked at.
     pub disk_now: u64,
     /// The most it took on the disk while each target was under way (bytes, by cost key): its
-    /// scratch folder's top and what its accessors wrote since that target began, or (while it ran
-    /// alone) the disk's free space fallen since it began, the larger.
+    /// scratch folder's top and what its accessors wrote since that target began.
     pub disk_seen: BTreeMap<String, u64>,
     /// The disk's free space as it began (bytes; None: unknown), and whether it has run alone so far.
     pub free_start: Option<u64>,
@@ -203,6 +202,12 @@ pub struct Watch {
     /// The disk guard froze it (the Mac short of room, it growing fastest: the agent's loop makes
     /// room, then lets it go on or gives it back).
     pub disk_frozen: bool,
+    /// The most it took on the disk over its whole run, by its counts (bytes): a batch's, for the
+    /// next jobs of its step (crate::coord's `job_disks`).
+    pub disk_peak: u64,
+    /// The most the disk's free space fell while it ran alone (bytes): a weaker signal, logged
+    /// beside its counts, never a floor.
+    pub disk_fell: u64,
     /// Its disk counts over the last `DISK_EVERY` (when, bytes), for how fast it grows.
     pub disk_hist: std::collections::VecDeque<(std::time::Instant, u64)>,
     /// The target under way as its disk was last counted, and what its accessors had written and the
@@ -275,7 +280,13 @@ impl Watch {
             let e = d.entry(k).or_insert(0);
             *e = (*e).max(mb);
         }
-        d.into_iter().filter(|(_, mb)| *mb > 0).collect()
+        // (A target that took nothing keeps its 0: its own measure, not its step's prior.)
+        d.into_iter().collect()
+    }
+
+    /// The most it took on the disk over its run (MB).
+    pub fn job_disk_mb(&self) -> u64 {
+        self.disk_peak >> 20
     }
 
     /// How fast it grows on the disk: its count now less its count `DISK_EVERY` ago (or at the first
@@ -557,7 +568,7 @@ impl Sampler {
 impl Sampler {
     /// The disk's part of a sample (docs/pool.md §7.7): each job's disk counted (what its accessors
     /// wrote, `WRITTEN_ENV`'s file; the top of its scratch folder, every `DISK_EVERY`), kept against
-    /// its target under way, with the disk's fall while it runs alone; and, the disk guard on and the
+    /// its target under way (the disk's fall while it runs alone kept apart, logged, not a floor); and, the disk guard on and the
     /// disk's free space short of the reserve, the job growing fastest frozen at once (the agent's
     /// loop makes room from what no job holds, then lets it go on, or gives it back).
     pub fn tick_disk(&self) {
@@ -592,6 +603,7 @@ impl Sampler {
             }
             w.alone &= n <= 1;
             w.disk_now = written + w.scratch_top;
+            w.disk_peak = w.disk_peak.max(w.disk_now);
             w.disk_hist.push_back((now, w.disk_now));
             while w.disk_hist.len() > 1 && w.disk_hist.front().is_some_and(|(t, _)| now.duration_since(*t) > DISK_EVERY) {
                 w.disk_hist.pop_front();
@@ -611,14 +623,38 @@ impl Sampler {
                 (true, Some(a), Some(b)) => a.saturating_sub(b),
                 _ => 0,
             };
-            let took = (w.scratch_top + written.saturating_sub(since)).max(fell);
+            // (The disk's fall kept apart, a weaker signal: other programs on the Mac move it too,
+            // and one outlier would hold the target, and its step's prior, to it.)
+            w.disk_fell = w.disk_fell.max(fell);
+            let took = w.scratch_top + written.saturating_sub(since);
             let e = w.disk_seen.entry(key).or_insert(0);
             *e = (*e).max(took);
         }
         // The disk guard: short of the reserve, none frozen for it yet: the job growing fastest
         // (else the largest) frozen at once.
         let short = g.disk_on && free.is_some_and(|f| f < g.reserve);
-        if !short || g.watches.iter().flatten().any(|w| w.disk_frozen) {
+        if !short {
+            return;
+        }
+        // One frozen already, the disk still falling past half the reserve (the other job filling
+        // it meanwhile): the others frozen too, until room is made.
+        if g.watches.iter().flatten().any(|w| w.disk_frozen) {
+            if free.is_some_and(|f| f < g.reserve / 2) {
+                let real = g.held_set.is_none() && g.disk_set.is_none();
+                let (mut said, reserve) = (Vec::new(), g.reserve);
+                for (k, w) in g.watches.iter_mut().enumerate() {
+                    let Some(w) = w.as_mut().filter(|w| !w.disk_frozen) else { continue };
+                    if real && !w.frozen {
+                        crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+                    }
+                    w.disk_frozen = true;
+                    said.push(format!("froze slot {k}'s job too: the disk has {:.1} GB free, under half the {} GB kept free, while another job is frozen for it", free.unwrap_or(0) as f64 / (1u64 << 30) as f64, reserve >> 30));
+                }
+                for what in said {
+                    eprintln!("agent: disk guard {what}");
+                    g.froze.push((crate::agent::jobs::now_s(), what));
+                }
+            }
             return;
         }
         let Some(k) = g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().map(|w| (k, w.disk_growth(), w.disk_now))).max_by_key(|&(k, grew, now)| (grew, now, std::cmp::Reverse(k))).map(|(k, _, _)| k) else { return };
@@ -797,10 +833,15 @@ mod tests {
         s.tick();
         assert!(s.disk_frozen(0) && !s.disk_frozen(1));
         assert!(s.take_froze().iter().any(|(_, w)| w.contains("grew fastest")));
-        // Once: none other frozen while it is.
-        s.set_test_disk(Some(10 * g), Some(vec![Some(4 * g), Some(3 * g)]));
+        // Once: none other frozen while it is, while the disk keeps half the reserve.
+        s.set_test_disk(Some(18 * g), Some(vec![Some(4 * g), Some(2 * g)]));
         s.tick();
         assert!(!s.disk_frozen(1));
+        // The other filling it meanwhile, past half the reserve: frozen too, said.
+        s.set_test_disk(Some(10 * g), Some(vec![Some(4 * g), Some(3 * g)]));
+        s.tick();
+        assert!(s.disk_frozen(1) && s.take_froze().iter().any(|(_, w)| w.contains("too")));
+        assert!(s.thaw_disk(1));
         assert!(s.thaw_disk(0) && !s.disk_frozen(0));
         let w = s.unwatch(0).unwrap();
         let floors: BTreeMap<String, u64> = w.disk_floors().into_iter().collect();

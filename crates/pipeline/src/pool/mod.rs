@@ -135,8 +135,7 @@ fn parse_uuid(ioreg: &str) -> Option<String> {
 /// dropped.
 #[derive(Debug)]
 pub struct MemberLock {
-    file: std::fs::File,
-    path: std::path::PathBuf,
+    lock: crate::sys::PathLock,
 }
 
 impl MemberLock {
@@ -145,7 +144,7 @@ impl MemberLock {
         anyhow::ensure!(is_member_id(id), "{id:?} isn't a member id");
         std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
         let path = dir.join(format!("pool-{id}.lock"));
-        Ok(lock_file(&path)?.map(|file| MemberLock { file, path }))
+        Ok(lock_file(&path)?.map(|lock| MemberLock { lock }))
     }
 
     /// Whether this process still holds it: true when its path still names the file it holds, or
@@ -153,15 +152,15 @@ impl MemberLock {
     /// it; false when another process holds it (this one isn't the member's only one, and stops);
     /// an error when it can't tell (its folder unreadable a moment: checked again).
     pub fn check(&mut self) -> Result<bool> {
-        match std::fs::metadata(&self.path) {
-            Ok(m) if same_file(&m, &self.file.metadata().with_context(|| format!("stat {}", self.path.display()))?) => return Ok(true),
+        match std::fs::metadata(self.lock.path()) {
+            Ok(_) if self.lock.holds() => return Ok(true),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("stat {}", self.path.display())),
+            Err(e) => return Err(e).with_context(|| format!("stat {}", self.lock.path().display())),
         }
-        match lock_file(&self.path)? {
-            Some(file) => {
-                self.file = file;
+        match lock_file(self.lock.path())? {
+            Some(lock) => {
+                self.lock = lock;
                 Ok(true)
             }
             None => Ok(false),
@@ -170,28 +169,14 @@ impl MemberLock {
 
     /// Its file.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.lock.path()
     }
 }
 
-/// The file at `path`, made if it isn't there, locked; None when another process holds its lock.
-fn lock_file(path: &Path) -> Result<Option<std::fs::File>> {
-    let f = std::fs::File::options().create(true).truncate(false).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
-    Ok(crate::sys::lock(&f, false).with_context(|| format!("lock {}", path.display()))?.then_some(f))
-}
-
-/// Whether two files' metadata are of one file (its device and inode).
-fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (a.dev(), a.ino()) == (b.dev(), b.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (a, b);
-        true
-    }
+/// The file at `path`, made if it isn't there, locked (crate::sys::PathLock: its file removed as
+/// it's let go); None when another process holds its lock.
+fn lock_file(path: &Path) -> Result<Option<crate::sys::PathLock>> {
+    crate::sys::PathLock::take(path, false).with_context(|| format!("lock {}", path.display()))
 }
 
 /// Whether `s` is a member id: `m-` and 16 lowercase hex digits.

@@ -209,8 +209,8 @@ enum Outcome {
 #[derive(Clone, Debug)]
 enum Tell {
     Done(Box<crate::coord::Done>),
-    GiveBack { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)> },
-    Fail { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)> },
+    GiveBack { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)>, job_disk: u64 },
+    Fail { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)>, job_disk: u64 },
 }
 
 impl Tell {
@@ -219,8 +219,8 @@ impl Tell {
     fn to(&self, c: &crate::coord::client::Client) -> bool {
         let (id, r) = match self {
             Tell::Done(d) => (d.lease, c.done(d).map(|h| if let crate::coord::client::Handed::Refused(why) = h { eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease) })),
-            Tell::GiveBack { id, why, floors, disks } => (*id, c.end_with(*id, why, true, floors, disks)),
-            Tell::Fail { id, why, floors, disks } => (*id, c.end_with(*id, why, false, floors, disks)),
+            Tell::GiveBack { id, why, floors, disks, job_disk } => (*id, c.end_with(*id, why, true, floors, disks, *job_disk)),
+            Tell::Fail { id, why, floors, disks, job_disk } => (*id, c.end_with(*id, why, false, floors, disks, *job_disk)),
         };
         match r {
             Ok(()) => true,
@@ -666,17 +666,13 @@ fn answers(root: &Path) -> bool {
 }
 
 /// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs.
-pub struct AgentLock(#[allow(dead_code)] std::fs::File);
+pub struct AgentLock(#[allow(dead_code)] crate::sys::PathLock);
 
 impl AgentLock {
     /// None when another agent holds it.
     pub fn try_take(home: &Path) -> Result<Option<AgentLock>> {
         std::fs::create_dir_all(home)?;
-        let f = std::fs::File::options().create(true).truncate(false).write(true).open(home.join("agent.lock"))?;
-        if !crate::sys::lock(&f, false)? {
-            return Ok(None);
-        }
-        Ok(Some(AgentLock(f)))
+        Ok(crate::sys::PathLock::take(&home.join("agent.lock"), false)?.map(AgentLock))
     }
 }
 
@@ -800,9 +796,12 @@ pub struct Agent {
     /// only if both jobs' measured memory and disk fit what the Mac has left, a cold start alone, in
     /// place of the steps table's run-alone, second-job and raw-tile lists; the disk guard on.
     by_measure: bool,
-    /// The disk guard's room-making for a job it froze (slot, when it began): its result decides
-    /// whether the job goes on or is given back.
-    disk_room: Option<(usize, Instant)>,
+    /// The disk guard's room-making for the jobs it froze (when it began): its result decides
+    /// whether they go on or one is given back.
+    disk_room: Option<Instant>,
+    /// Whether the NAS's folder answers now (`answers`: a stat on a thread, eight seconds at most); a
+    /// test's own, deciding it without the clock or the Mac's load (`test_agent`).
+    probe: fn(&Path) -> bool,
     lead_awake: Option<std::process::Child>,
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
     /// lead through a client made from it).
@@ -974,7 +973,13 @@ struct Planned {
 }
 
 impl Agent {
-    pub fn new(mut o: Options) -> Result<Agent> {
+    pub fn new(o: Options) -> Result<Agent> {
+        Agent::new_with(o, answers)
+    }
+
+    /// `new`, with how it asks whether the NAS's folder answers (`probe`: the real one, `answers`;
+    /// a test's).
+    fn new_with(mut o: Options, probe: fn(&Path) -> bool) -> Result<Agent> {
         std::fs::create_dir_all(&o.home).with_context(|| format!("create {}", o.home.display()))?;
         let lock = AgentLock::try_take(&o.home)?;
         if lock.is_none() {
@@ -1001,7 +1006,7 @@ impl Agent {
         let mut run: Option<pool::Run> = None;
         let mut first: Option<(crate::pool::driver::Out, PathBuf)> = None;
         if lock.is_some() && !o.dry_run {
-            if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| answers(r)) {
+            if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
                 pool_mode = pool::mode(&r);
                 if pool_mode == Some(pool::Mode::On) {
                     let nas: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
@@ -1041,7 +1046,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, disk_room: None, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1417,8 +1422,14 @@ impl Agent {
         }
         let watch = self.sampler.unwatch(k).unwrap_or_default();
         let floors_of = |costs: &[(String, crate::coord::Cost)]| watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>());
-        // (And what they took on the disk at least: learned whatever the switch, docs/pool.md §7.7.)
+        // (And what they took on the disk at least, and the job over its run: learned whatever the
+        // switch, docs/pool.md §7.7.)
         let disks = watch.disk_floors();
+        let job_disk = watch.job_disk_mb();
+        let job_step = watch.step.clone();
+        if watch.disk_fell > 0 {
+            eprintln!("agent: slot {k}'s job: the disk fell {} while it ran alone, its counts {} (a weaker signal, not a floor)", room::size(watch.disk_fell), room::size(watch.disk_peak));
+        }
         let guard_stopped = self.slots[k].guard_stopped;
         // An own job's timings, taken whichever way it ends (none left for the slot's next job).
         let own_timings = self.slots[k].timings_out.take();
@@ -1433,6 +1444,7 @@ impl Agent {
                     let measured = read_costs(&costs);
                     c.add_floors(&floors_of(&measured));
                     c.add_disks(&disks);
+                    c.add_job_disk(&job_step, job_disk);
                     c.add_costs_by(&measured, &self.worker_of(k));
                     std::fs::remove_file(costs).ok();
                 }
@@ -1464,6 +1476,7 @@ impl Agent {
                         }
                         c.add_floors(&floors_of(&costs));
                         c.add_disks(&disks);
+                        c.add_job_disk(&job_step, job_disk);
                         c.add_costs_by(&costs, &self.worker_of(k));
                         std::fs::remove_file(self.costs_path(k)).ok();
                     }
@@ -1480,10 +1493,10 @@ impl Agent {
                     // a lead's duty as pass-sets', by having ended so, whatever it handed off.)
                     let no_targets = kept.as_ref().is_some_and(|w| w.targets.is_empty());
                     let tell = match entry.as_ref() {
-                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, disks, failed, journaled: true, timings, ..Default::default() })),
-                        e if no_targets && outcome == Outcome::Done && !guard_stopped => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: e.map(|e| e.handoff.clone()), costs, floors, disks, journaled: true, timings, ..Default::default() })),
-                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => Tell::GiveBack { id, why: note.to_string(), floors, disks },
-                        _ => Tell::Fail { id, why: note.to_string(), floors, disks },
+                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, disks, job_disk_mb: job_disk, failed, journaled: true, timings, ..Default::default() })),
+                        e if no_targets && outcome == Outcome::Done && !guard_stopped => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: e.map(|e| e.handoff.clone()), costs, floors, disks, job_disk_mb: job_disk, journaled: true, timings, ..Default::default() })),
+                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => Tell::GiveBack { id, why: note.to_string(), floors, disks, job_disk },
+                        _ => Tell::Fail { id, why: note.to_string(), floors, disks, job_disk },
                     };
                     if self.coord.is_some() {
                         eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
@@ -1833,7 +1846,7 @@ impl Agent {
                 r
             }
         };
-        root.filter(|r| answers(r))
+        root.filter(|r| (self.probe)(r))
     }
 
     /// Runs until stopped (SIGTERM, SIGINT), or for one loop with `once`.
@@ -2301,7 +2314,8 @@ impl Agent {
             let recorded = self.record_done(root, &step, &done);
             let r = self.slots[k].running.as_mut().unwrap();
             let note = if ok {
-                String::new()
+                // (GC's warnings, its job's note in the status: agent::gc::Report::warnings.)
+                if step_of(&r.spec.id).as_deref() == Some("gc") { jobs::tail(&r.log, 50).lines().filter(|l| l.contains("gc: warning:")).collect::<Vec<_>>().join("\n") } else { String::new() }
             } else if paused {
                 format!("paused at a safe point, {} of {of} done; the rest goes on when the build does", done.len())
             } else {
@@ -3044,24 +3058,29 @@ impl Agent {
     /// disk floor learned). The switch off, a job it froze goes on. True when it stopped a job.
     fn disk_guard(&mut self, root: Option<&Path>) -> bool {
         self.sampler.set_disk(self.by_measure, room::RESERVE, &self.o.home);
-        let Some(k) = (0..SLOTS).find(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)) else {
+        let frozen: Vec<usize> = (0..SLOTS).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
+        if frozen.is_empty() {
             self.disk_room = None;
             return false;
-        };
+        }
         if !self.by_measure || self.disk_free() >= room::RESERVE {
-            if self.sampler.thaw_disk(k) {
-                let why = if self.by_measure { format!("goes on: the disk has {} free again", room::size(self.disk_free())) } else { "goes on (the Mac shared by measure, and its disk guard, off)".to_string() };
-                eprintln!("agent: disk guard: slot {k}'s job {why}");
-                self.guard_last = Some((now_s(), format!("slot {k}'s job {why}")));
+            for &k in &frozen {
+                if self.sampler.thaw_disk(k) {
+                    let why = if self.by_measure { format!("goes on: the disk has {} free again", room::size(self.disk_free())) } else { "goes on (the Mac shared by measure, and its disk guard, off)".to_string() };
+                    eprintln!("agent: disk guard: slot {k}'s job {why}");
+                    self.guard_last = Some((now_s(), format!("slot {k}'s job {why}")));
+                }
             }
             self.disk_room = None;
             return false;
         }
+        // (Of several frozen, the one taking the most is given back first: the most room back.)
+        let k = frozen.iter().copied().max_by_key(|&k| (self.sampler.disk_now(k).unwrap_or(0), std::cmp::Reverse(k))).unwrap_or(frozen[0]);
         let ours = self.caches_task.as_ref().is_some_and(|t| t.disk);
         match self.disk_room {
-            Some((j, _)) if j == k && ours => false,
+            Some(_) if ours => false,
             // (Made, and still short: given back.)
-            Some((j, _)) if j == k && self.caches_task.is_none() => {
+            Some(_) if self.caches_task.is_none() => {
                 self.disk_room = None;
                 let why = format!("given back by the disk guard: the disk had {} free, short of the {} kept free, with no more room to be made from the caches no job holds (what it took on the disk is kept as the least its target takes)", room::size(self.disk_free()), room::size(room::RESERVE));
                 self.guard_stop(k, root, "disk guard", &why)
@@ -3076,7 +3095,7 @@ impl Agent {
                 match std::thread::Builder::new().name("caches".into()).spawn(move || room::toward(&cache, &sources, goal, &hints)) {
                     Ok(thread) => {
                         self.caches_task = Some(CachesTask { ask: None, toward: None, disk: true, began: Instant::now(), thread });
-                        self.disk_room = Some((k, Instant::now()));
+                        self.disk_room = Some(Instant::now());
                         // (One loop at a time, `--once`: waited for.)
                         if self.o.once {
                             if let Some(t) = self.caches_task.take() {
@@ -3097,19 +3116,37 @@ impl Agent {
     /// with no coordinator to ask.
     fn measured_job(&self, spec: &JobSpec) -> Option<crate::coord::Measured> {
         let c = self.coord.as_ref()?;
-        let each: Vec<Option<crate::coord::Measured>> = match spec.record.as_ref() {
-            Some(w) if !w.targets.is_empty() => w.targets.iter().map(|(t, _)| c.measured(&w.step, t)).collect(),
+        match spec.record.as_ref() {
+            Some(w) if !w.targets.is_empty() => c.measured_batch(&w.step, &w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()),
             _ => {
                 let key = own_cost_key(&spec.id);
                 let step = memguard::step_of_key(&key).to_string();
                 let target = key.strip_prefix(&format!("{step} ")).unwrap_or(&key).to_string();
-                vec![c.measured(&step, &target)]
+                c.measured_batch(&step, &[target])
+            }
+        }
+    }
+
+    /// What slot `k`'s job has still to take on the disk, by measure (bytes): its targets not noted
+    /// done yet, their disks summed (the one under way whole), or what the most a job of its step
+    /// took over its run leaves past what it has taken, the larger.
+    fn disk_left(&self, k: usize) -> u64 {
+        let (Some(r), Some(c)) = (self.slots[k].running.as_ref(), self.coord.as_ref()) else { return 0 };
+        let now = self.sampler.disk_now(k).unwrap_or(0);
+        let (step, left): (String, Vec<String>) = match r.spec.record.as_ref() {
+            Some(w) if !w.targets.is_empty() => {
+                let done = crate::control::read_done(&self.done_path(k), &w.step);
+                (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).filter(|t| !done.contains(t)).collect())
+            }
+            _ => {
+                let key = own_cost_key(&r.spec.id);
+                let step = memguard::step_of_key(&key).to_string();
+                let target = key.strip_prefix(&format!("{step} ")).unwrap_or(&key).to_string();
+                (step, vec![target])
             }
         };
-        each.into_iter().try_fold(crate::coord::Measured { own: true, ..Default::default() }, |a, m| {
-            let m = m?;
-            Some(crate::coord::Measured { mem_mb: a.mem_mb.max(m.mem_mb), disk_mb: a.disk_mb.max(m.disk_mb), own: a.own && m.own })
-        })
+        let targets: u64 = left.iter().filter_map(|t| c.measured(&step, t)).map(|m| m.disk_mb << 20).sum();
+        targets.max((c.job_disk(&step) << 20).saturating_sub(now))
     }
 
     /// Whether `spec` runs alone on this Mac: by measure, a cold start (`measured_job` none); else as
@@ -3153,7 +3190,7 @@ impl Agent {
         if mine.mem_mb + theirs_mb > limit {
             return Some(format!("measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB", gb(mine.mem_mb), gb(theirs_mb), gb(limit)));
         }
-        let left = (theirs.disk_mb << 20).saturating_sub(self.sampler.disk_now(other).unwrap_or(0));
+        let left = self.disk_left(other);
         let (need, free) = ((mine.disk_mb << 20) + left + room::RESERVE, self.disk_free());
         if need > free {
             return Some(format!("measured at {:.1} GB on the disk, with {beside}'s {:.1} GB still to come and the {} GB kept free, past the disk's {} free", gb(mine.disk_mb), left as f64 / (1u64 << 30) as f64, room::RESERVE >> 30, room::size(free)));
@@ -5678,7 +5715,9 @@ fn batch_size(step: &str) -> usize {
 /// An agent for a test: it reads the test's fixed Mac (cond::Mac::TEST), not the one running it.
 #[cfg(test)]
 fn test_agent(o: Options) -> Result<Agent> {
-    Agent::new(o).map(|mut a| {
+    // (The NAS's answer as the real probe decides it, by its folder, but at once: a loaded Mac's
+    // threads can't make a test's NAS look away.)
+    Agent::new_with(o, |r| r.join("catalog").is_dir()).map(|mut a| {
         a.mac = cond::Mac::TEST;
         a
     })
@@ -6117,6 +6156,84 @@ mod tests {
         assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
         assert!(a.coord.as_ref().unwrap().disks().get(&crate::coord::cost_key("terrain", "6/1/1")).is_some_and(|mb| *mb >= 7 << 10), "{:?}", a.coord.as_ref().unwrap().disks());
         assert!(a.guard_last.as_ref().is_some_and(|(_, w)| w.contains("given back by the disk guard")), "{:?}", a.guard_last);
+        // Two frozen (the second filling the disk past half the reserve meanwhile), no room to make:
+        // the one taking the most given back first, the other kept frozen until the next decision.
+        a.free_set = Some(200 * g);
+        assert!(a.try_start(0, job("6/2/2"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(1, job("6/3/3"), &cond, Some(&root), &mut Vec::new()));
+        a.sampler.set_test_disk(Some(20 * g), Some(vec![Some(2 * g), None]));
+        a.sampler.tick();
+        a.sampler.set_test_disk(Some(10 * g), Some(vec![Some(2 * g), Some(9 * g)]));
+        a.sampler.tick();
+        assert!(a.sampler.disk_frozen(0) && a.sampler.disk_frozen(1));
+        a.free_set = Some(10 * g);
+        assert!(!a.disk_guard(Some(&root)));
+        assert!(a.disk_guard(Some(&root)) && a.slots[1].running.is_none() && a.slots[0].running.is_some(), "the larger given back");
+        assert!(a.sampler.disk_frozen(0));
+        a.free_set = Some(40 * g);
+        assert!(!a.disk_guard(Some(&root)) && !a.sampler.disk_frozen(0), "the other goes on once there's room");
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+    }
+
+    /// A batch's disk by measure (docs/pool.md §7.7): its targets' disks summed, not its largest (a
+    /// batch's cache writes add up), and what's still to come of the one running by its targets not
+    /// done yet; a stale or high floor never stalls the first slot: alone, it starts with the room
+    /// there is, the disk guard its backstop.
+    #[test]
+    fn by_measure_a_batchs_disk_is_its_targets_summed() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.mem_set = Some((64 << 10, 56 << 10));
+        a.by_measure = true;
+        let g: u64 = 1 << 30;
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        // 40 map tiles of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
+        let tiles: Vec<String> = (0..40).map(|i| format!("6/{i}/0")).collect();
+        let c = a.coord.as_ref().unwrap();
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        c.add_costs(&[(crate::coord::cost_key("pack", "6/0/0"), cost("pack", 1000)), (crate::coord::cost_key("unit", "6/9/9"), cost("unit", 4000))]);
+        let mut disks: Vec<(String, u64)> = tiles.iter().map(|t| (crate::coord::cost_key("pack", t), 1024)).collect();
+        disks[39].1 = 3072;
+        disks.push((crate::coord::cost_key("unit", "6/9/9"), 10 << 10));
+        c.add_disks(&disks);
+        let batch = JobSpec { id: "pack 6/0/0".into(), what: "map tiles".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: tiles.iter().map(|t| (t.clone(), "k".into())).collect() }) };
+        assert_eq!(a.measured_job(&batch).map(|m| m.disk_mb), Some(39 * 1024 + 3072), "summed, not its largest");
+        a.free_set = Some(100 * g);
+        assert!(a.try_start(0, batch, &cond, Some(&root), &mut Vec::new()));
+        // Five done, 5 GB taken so far: 34 of 1 GB and one of 3 GB still to come.
+        std::fs::write(a.done_path(0), (0..5).map(|i| format!("pack 6/{i}/0\n")).collect::<String>()).unwrap();
+        a.sampler.set_test(Some(vec![None, None]), Some(false));
+        a.sampler.set_test_disk(Some(60 * g), Some(vec![Some(5 * g), None]));
+        a.sampler.tick();
+        assert_eq!(a.disk_left(0), (34 * 1024 + 3072) << 20);
+        let unit = JobSpec { id: "unit 6/9/9".into(), what: "a unit".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] }) };
+        // 10 GB, 37 GB to come and the 30 kept free: past 60 GB free (its largest alone, 3 GB, would
+        // have let it start, and the guard give it back an hour on, and again).
+        a.free_set = Some(60 * g);
+        assert!(a.fits_beside(&unit, 0).is_some_and(|w| w.contains("still to come")), "{:?}", a.fits_beside(&unit, 0));
+        a.free_set = Some(90 * g);
+        assert_eq!(a.fits_beside(&unit, 0), None);
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+        a.slots[0].running = None;
+        // A floor far past the disk (stale, or an outlier's): alone, the first slot starts it all the
+        // same once room-making has done what it can.
+        c_disks_huge(a.coord.as_ref().unwrap());
+        a.free_set = Some(40 * g);
+        assert!(a.try_start(0, unit.clone(), &cond, Some(&root), &mut Vec::new()), "started alone, the guard its backstop");
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+    }
+
+    fn c_disks_huge(c: &crate::coord::Coordinator) {
+        c.add_disks(&[(crate::coord::cost_key("unit", "6/9/9"), 500 << 10)]);
     }
 
     #[test]
@@ -7211,6 +7328,15 @@ mod pool_tests {
         bin
     }
 
+    /// Waits until process `pid` (a child of this one) has exited, leaving it to be reaped (waitid
+    /// with WNOWAIT): no clock decides it.
+    fn exited(pid: i32) {
+        // SAFETY: waitid on a child of this process, into a zeroed siginfo it owns.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(r, 0, "waitid: {}", std::io::Error::last_os_error());
+    }
+
     fn free_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
     }
@@ -7656,8 +7782,8 @@ mod pool_tests {
         switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
-        let (gate, ended) = (d.path().join("gate"), d.path().join("ended"));
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display())).replace("exit 0\n", &format!("[ \"$step\" = pack ] && touch '{}'\nexit 0\n", ended.display()));
+        let gate = d.path().join("gate");
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         // (Each coordinator on a port of its own: the frozen lead's still holds its own.)
         TEST_PORT.with(|p| p.set(Some(free_port())));
@@ -7686,12 +7812,10 @@ mod pool_tests {
         assert!(m.coord.as_ref().unwrap().held("pack").contains("6/4/4"), "the new lead holds the frozen lead's lease");
         // The job ends while the lead is frozen; the lead wakes, its next loop ending it.
         std::fs::write(&gate, b"").unwrap();
-        let end = Instant::now() + WATCHDOG;
-        while !ended.exists() {
-            assert!(Instant::now() < end);
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        std::thread::sleep(Duration::from_millis(300));
+        // (Its process waited for until it has exited, not reaped: the lead's next loop reaps it,
+        // however long a loaded Mac takes.)
+        let pid = lead.slots[0].running.as_ref().unwrap().pgid;
+        exited(pid);
         lead.step().unwrap();
         assert!(lead.slots[0].running.is_none() && lead.coord.is_none(), "its job ended, its coordinator stopped");
         until(&mut m, |m| !m.coord.as_ref().unwrap().held("pack").contains("6/4/4"));

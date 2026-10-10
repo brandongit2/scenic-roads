@@ -813,7 +813,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     crate::agent::memguard::Floor; a measure in `costs.json` takes its place; `scenic pool floors`
     lists and clears them through the coordinator's `/work/floors`), `disks.json` (`{<cost key>:
     MB}`: the most disk a target was seen to take, its disk floor, rising only, the OSM pass's
-    latest pass's alone: docs/pool.md §7.7; listed and cleared with the floors),
+    latest pass's alone: docs/pool.md §7.7; listed and cleared with the floors; a target measured at
+    0 keeps its 0), `job-disks.json` (`{<step>: MB}`: the most disk a job of the step took over its
+    whole run, rising only),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when
@@ -913,7 +915,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already
     (the coordinator checks only that its done record is its lease's, a job of no targets of its own
     done with none); `/work/done` and `/work/fail` carry `floors` and `disks` (`[[cost key, MB],
-    …]`), what the job saw its lease's targets take at least.
+    …]`), what the job saw its lease's targets take at least, and `job_disk_mb`, the most it took
+    on the disk over its run. The coordinator's state per term carries `job_disks` beside `disks`.
   - `state/pool-off/<day>-<unix seconds>/`: the pool's files above, moved aside by `scenic pool off`
     once its agents left it, by their paths.
   - `state/pool-shadow/`: a shadow run's files, as the pool's above under it (its terms, records,

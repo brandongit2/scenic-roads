@@ -1956,7 +1956,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     the accessor that writes its cache files (store::cachefile: each file a process names, at its
     size; a step's cost line notes its target's, `disk_mb`), and by the agent's sampler every minute
     at the top of the job's scratch folder (the allocated sizes of the files there: the outside
-    programs' outputs) and, while it runs alone, by the disk's free space falling; the most each
+    programs' outputs) (the disk's fall while it runs alone logged beside, not counted); the most each
     target took is its **disk floor**, kept by the lead's coordinator (`disks.json`) and sent with a
     member's lease's end. With `state/pool/by-measure` on, the **disk guard**: when the disk's free
     space falls below the reserve, the sampler freezes the job growing fastest at once, the agent
@@ -2783,13 +2783,22 @@ At each phase's end an Opus agent reviews the work against this plan.
      entry written since by a member gone before telling, which may name uploads made days before
      (its Mac away), is merged only by the next daily listing. GC of the content-named files reads
      the journal's entries itself (every entry the newest records don't reflect keeps the files it
-     names: agent::gc::unmerged); an entry still unwritten on its member's disk names files no one
-     reads, kept only while they're younger than GC's two weeks, and one written in the minutes
-     between GC's read of the journal and its sweep isn't seen by that sweep;
+     names: agent::gc::unmerged), listing the days from the records' horizon (none moves it yet:
+     every day is listed, a folder each, growing a day a day); an entry still unwritten on its
+     member's disk names files no one reads, kept only while they're younger than GC's two weeks,
+     and one written in the minutes between GC's read of the journal and its sweep isn't seen by
+     that sweep. (No watermark short of the horizon: an entry kept unwritten for weeks is written
+     into the day of its first try, so a day once merged whole may gain one.) A file reused by name
+     is touched as it's reused, uploaded again if it can't be or is gone once touched, and GC looks
+     at a file's time again right before it removes it; an entry not whole a day on is passed over,
+     said as GC's warning in the status;
    - the disk a job takes is counted by the caches' accessor in Rust alone: dem/cachefile.py's
-     writes (the pageview months) count only through the scratch folder's look and the disk's
-     fall while a job runs alone; a member's job's disk is learned, but members are offered work by
-     `helper_need`'s figures until batch 9 places every step by measured room (pool.md §12);
+     writes (the pageview months) count only through the scratch folder's look (the disk's fall,
+     logged, is no floor); a unit's disk is what the accessor wrote while it was built here, its
+     tail's writes after the next unit began counted to that one; a member's job's disk is learned,
+     but members are offered work by `helper_need`'s figures until batch 9 places every step by
+     measured room, and with the Mac shared by measure a member takes every job as a cold start
+     (pool.md §7.7, §12);
    - a records snapshot, saved whole after each merge, holds the lease that last set each target
      (one per step and target, as the job keys are: about as large as the keys again) and every
      entry's key since the pool began: until GC is built nothing moves the forget horizon, so the

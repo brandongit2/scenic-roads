@@ -191,18 +191,23 @@ impl Out {
         let (h, sha) = hashes_of(local)?;
         let name = store::naming::content_name(logical, &h, ext);
         let dest = self.root.join(&name);
-        let existed = dest.exists();
-        let sha = (!existed).then_some(sha);
+        let mut existed = dest.exists();
         let got = store::naming::write_atomic_hashed(&self.root, logical, ext, local, &h, size)?;
         anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
-        // (Its bytes, to the phase it's uploaded in: crate::timings.)
-        crate::timings::count(if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) }, 1);
         if existed {
-            // In use again: a fresh time keeps GC's age rule from taking it before a catalog does.
-            if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
-                f.set_modified(std::time::SystemTime::now()).ok();
+            // In use again: a fresh time keeps GC's age rule from taking it before a catalog does
+            // (GC looks at a file's time again right before it removes it). One that can't be
+            // touched, or is gone once touched (GC took it between), is uploaded again.
+            let touched = std::fs::File::options().write(true).open(&dest).and_then(|f| f.set_modified(std::time::SystemTime::now())).is_ok();
+            if !touched || !dest.exists() {
+                existed = false;
+                let again = store::naming::write_atomic_hashed(&self.root, logical, ext, local, &h, size)?;
+                anyhow::ensure!(again == name, "{logical}: wrote {again}, expected {name}");
             }
         }
+        let sha = (!existed).then_some(sha);
+        // (Its bytes, to the phase it's uploaded in: crate::timings.)
+        crate::timings::count(if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) }, 1);
         if let Some(sha) = sha {
             self.pending.insert(name.clone(), sha);
         }
@@ -433,31 +438,25 @@ pub fn check_writer(root: &Path) -> Result<()> {
 
 /// An exclusive lock for saving a root's manifest among this Mac's processes, in a local file named
 /// after the root: released when dropped.
-pub struct BuildLock(#[allow(dead_code)] std::fs::File);
+pub struct BuildLock(#[allow(dead_code)] crate::sys::PathLock);
 
 impl BuildLock {
-    fn file(root: &Path) -> Result<std::fs::File> {
+    fn file(root: &Path) -> PathBuf {
         // By the root's real path: `x`, `x/` and a link to it are one build.
         let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let key = store::naming::hash16(real.to_string_lossy().as_bytes());
-        let p = std::env::temp_dir().join(format!("scenic-build-{key}.lock"));
-        std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))
+        std::env::temp_dir().join(format!("scenic-build-{key}.lock"))
     }
 
     /// Waits until the lock is ours.
     pub fn take(root: &Path) -> Result<BuildLock> {
-        let f = Self::file(root)?;
-        crate::sys::lock(&f, true).context("lock the build manifest")?;
-        Ok(BuildLock(f))
+        let l = crate::sys::PathLock::take(&Self::file(root), true).context("lock the build manifest")?;
+        Ok(BuildLock(l.context("lock the build manifest: not taken")?))
     }
 
     /// The lock when it's free now; None when another holds it (a paused job may, for hours).
     pub fn try_take(root: &Path) -> Result<Option<BuildLock>> {
-        let f = Self::file(root)?;
-        if !crate::sys::lock(&f, false).context("lock the build manifest")? {
-            return Ok(None);
-        }
-        Ok(Some(BuildLock(f)))
+        Ok(crate::sys::PathLock::take(&Self::file(root), false).context("lock the build manifest")?.map(BuildLock))
     }
 }
 
@@ -480,6 +479,36 @@ mod tests {
         }
     }
 
+    /// A file reused by name is touched (GC's age rule, looked at again right before it removes a
+    /// file, then passes it over); one that can't be touched is uploaded as new (pending its check).
+    #[test]
+    fn a_file_reused_by_name_is_touched_or_uploaded_again() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let mut out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let local = |n: &str| {
+            let p = d.path().join(n);
+            std::fs::write(&p, b"the same bytes").unwrap();
+            p
+        };
+        let name = out.put_file("work/x/6-1-1", "bin", &local("a")).unwrap();
+        out.pending.clear();
+        let dest = root.join(&name);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+        std::fs::File::options().write(true).open(&dest).unwrap().set_modified(old).unwrap();
+        assert_eq!(out.put_file("work/x/6-1-1", "bin", &local("b")).unwrap(), name);
+        let t = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        assert!(t.elapsed().unwrap() < std::time::Duration::from_secs(600), "touched");
+        assert!(out.pending.is_empty(), "reused, not uploaded");
+        // Can't be touched (read-only here): taken as an upload of its own, its check pending.
+        let mut perm = std::fs::metadata(&dest).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&dest, perm).unwrap();
+        assert_eq!(out.put_file("work/x/6-1-1", "bin", &local("c")).unwrap(), name);
+        assert!(out.pending.contains_key(&name));
+    }
+
     #[test]
     fn a_root_and_its_spelling_with_a_slash_share_the_lock() {
         let d = tempfile::tempdir().unwrap();
@@ -487,14 +516,10 @@ mod tests {
         let slashed = PathBuf::from(format!("{}/", d.path().display()));
         assert!(BuildLock::try_take(&slashed).unwrap().is_none());
         drop(held);
-        // (A process another test is starting can hold a copy of the descriptor, and with it the
-        // lock, between its fork and its exec: a few milliseconds, longer on a loaded Mac. Five
-        // minutes is a watchdog.)
-        let t = std::time::Instant::now();
-        while BuildLock::try_take(&slashed).unwrap().is_none() {
-            assert!(t.elapsed() < std::time::Duration::from_secs(300), "the lock wasn't free after it was dropped");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        // (Free at once, however loaded the Mac: its file went with it, so a copy of its descriptor
+        // a process another test is starting holds between its fork and its exec holds nothing:
+        // crate::sys::PathLock.)
+        assert!(BuildLock::try_take(&slashed).unwrap().is_some(), "the lock wasn't free after it was dropped");
     }
 
     #[test]

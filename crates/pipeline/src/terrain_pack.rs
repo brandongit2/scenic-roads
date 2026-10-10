@@ -604,6 +604,10 @@ pub struct RawTiles {
     /// by another job here or room-making, of tiles this job's cache held) has an area's archives
     /// opened again before a tile they lack is fetched from AWS.
     index_stamp: Mutex<Option<(std::time::SystemTime, u64)>>,
+    /// The index file's time and size each area's archives were opened by (`index_stamp` as it
+    /// was then): an area whose index has changed since is opened again before AWS is asked for a
+    /// tile it lacks, whichever area read the index last.
+    opened_at: Mutex<HashMap<String, Option<(std::time::SystemTime, u64)>>>,
     /// Each area's archives, newest first, opened when first wanted: by the area's own lock, so
     /// reading one from the NAS holds up only the tiles of that area.
     archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<Opened>>>>>,
@@ -612,12 +616,12 @@ pub struct RawTiles {
 impl RawTiles {
     /// A local cache alone (no NAS store).
     pub fn new(dir: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), index: Default::default(), index_stamp: Default::default(), archives: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), index: Default::default(), index_stamp: Default::default(), opened_at: Default::default(), archives: Default::default() }
     }
 
     /// The local cache `dir`, filled from the NAS's `store` where it has a tile.
     pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), index: Default::default(), index_stamp: Default::default(), archives: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), index: Default::default(), index_stamp: Default::default(), opened_at: Default::default(), archives: Default::default() }
     }
 
     /// The names in the store's column `z/x`, listed once (none when it isn't there); None when it
@@ -740,6 +744,7 @@ impl RawTiles {
             let mut c = cell.lock().unwrap();
             if c.is_none() {
                 *c = Some(self.open_area(st, &area)?);
+                self.opened_at.lock().unwrap().insert(area.clone(), *self.index_stamp.lock().unwrap());
             }
             // (Read a few times: copied here whole, if it can be; else read by range from now on.)
             if let Some(Opened::Ranged { reads, stay: stay @ false, .. }) = c.as_mut() {
@@ -782,7 +787,10 @@ impl RawTiles {
         let mut c = cell.lock().unwrap();
         if c.is_none() {
             match self.open_area(st, &area) {
-                Some(o) => *c = Some(o),
+                Some(o) => {
+                    *c = Some(o);
+                    self.opened_at.lock().unwrap().insert(area.clone(), *self.index_stamp.lock().unwrap());
+                }
                 None => return false,
             }
         }
@@ -829,9 +837,9 @@ impl RawTiles {
             // room-making or another job's packing meanwhile): its area's archives opened again,
             // the index read afresh, before AWS is asked (docs/pool.md §7.7: two raw-tile jobs at
             // once on one Mac).
-            let stamp = *self.index_stamp.lock().unwrap();
-            if stamp.is_some() && index_stamp(st) != stamp {
-                let area = crate::rawpack::area(z, x, y);
+            let area = crate::rawpack::area(z, x, y);
+            let was = self.opened_at.lock().unwrap().get(&area).copied();
+            if was.is_some_and(|w| index_stamp(st) != w) {
                 if let Some(cell) = self.archives.lock().unwrap().get(&area).cloned() {
                     *cell.lock().unwrap() = None;
                 }

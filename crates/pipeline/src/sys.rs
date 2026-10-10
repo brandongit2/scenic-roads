@@ -164,6 +164,70 @@ pub fn lock(f: &File, wait: bool) -> io::Result<bool> {
     }
 }
 
+/// An exclusive lock on the file at a path (`lock`), the file made when it isn't there; let go when
+/// dropped, its file removed first while it's still held. So a copy of its descriptor that a child
+/// process holds for a moment, between its fork and its exec (a process another thread is starting),
+/// holds nothing anyone wants: the next taker makes the file again, and its lock is its own at
+/// once, however loaded the Mac. A taker checks, once it has the lock, that the path still names
+/// the file it locked (one removed meanwhile by a holder letting go: it takes the path's new file).
+#[derive(Debug)]
+pub struct PathLock {
+    file: File,
+    path: std::path::PathBuf,
+}
+
+impl PathLock {
+    /// The lock of `path` (waiting for it when `wait`); None when another holds it.
+    pub fn take(path: &std::path::Path, wait: bool) -> io::Result<Option<PathLock>> {
+        // (Each turn a holder let go between our open and our lock: not time, but files.)
+        for _ in 0..100 {
+            let f = File::options().create(true).truncate(false).write(true).open(path)?;
+            if !lock(&f, wait)? {
+                return Ok(None);
+            }
+            if same_file(path, &f) {
+                return Ok(Some(PathLock { file: f, path: path.to_path_buf() }));
+            }
+        }
+        Err(io::Error::other(format!("{}: removed each time it was locked", path.display())))
+    }
+
+    /// Whether its path still names the file it holds.
+    pub fn holds(&self) -> bool {
+        same_file(&self.path, &self.file)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for PathLock {
+    fn drop(&mut self) {
+        // (Removed only while it names this file, held: another's file, made since, stays.)
+        if self.holds() {
+            std::fs::remove_file(&self.path).ok();
+        }
+    }
+}
+
+/// Whether `path` names the file `f` is open on (its device and inode).
+fn same_file(path: &std::path::Path, f: &File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(path), f.metadata()) {
+            (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = f;
+        path.exists()
+    }
+}
+
 /// Calls `handler` on SIGTERM and SIGINT (it may only store to atomics).
 pub fn on_terminate(handler: extern "C" fn(i32)) {
     #[cfg(unix)]
