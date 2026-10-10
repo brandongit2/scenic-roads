@@ -3883,7 +3883,7 @@ impl Agent {
             // The pack cache is cleared when the pass starts (it refills from the mirror or the NAS):
             // its space counts as free, and so does the cheap caches' (room::make_room frees it).
             let pack_cache = self.o.home.join("cache").join("base");
-            let mut free = cond::free_bytes(&self.o.home).unwrap_or(0) + dir_bytes(&pack_cache);
+            let mut free = self.disk_free() + dir_bytes(&pack_cache);
             if free < PASS_SPACE {
                 free += room::cheap_bytes(&self.o.home.join("cache"), Some(&root.join("sources")));
             }
@@ -5849,8 +5849,8 @@ mod tests {
         std::fs::write(root.join("sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"), b"x").unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#).unwrap();
-        // (The freeing's thread sees this Mac's disk: a target past what it has free.)
-        let big = cond::free_bytes(&home).unwrap() + (100 << 30);
+        // (The freeing's thread sees a test's disk, 1 TB free unless it says: a target past it.)
+        let big = (1u64 << 40) + (100 << 30);
         room::set_target(&home, Some(big), "a test").unwrap();
         a.room_target = room::target(&home);
         assert_eq!(a.toward_due(), Some(big));
@@ -5890,7 +5890,7 @@ mod tests {
         store::cachefile::hold_existing(&used).unwrap();
         // A target past what's free (the freeing's thread sees this Mac's disk): freed toward now,
         // the job running, all but what it holds.
-        let target = cond::free_bytes(&home).unwrap() + (100 << 30);
+        let target = (1u64 << 40) + (100 << 30);
         room::set_target(&home, Some(target), "a test").unwrap();
         a.room_target = room::target(&home);
         assert!(!a.idle());
@@ -5917,7 +5917,7 @@ mod tests {
         std::fs::write(home.join("cache/base/base/6-1-1.0000000000000001.base"), vec![0u8; 1000]).unwrap();
         // A target past what's free (the freeing's thread sees this Mac's disk), and a unit held by
         // it: the caches are due a freeing toward the unit's room past the target.
-        let target = cond::free_bytes(&home).unwrap() + (100 << 30);
+        let target = (1u64 << 40) + (100 << 30);
         let room = target + (30 << 30);
         room::set_target(&home, Some(target), "a test").unwrap();
         a.room_target = room::target(&home);
@@ -7150,15 +7150,16 @@ mod tests {
         std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), b"x").unwrap();
         std::fs::create_dir_all(root.join("sources/basemap")).unwrap();
         std::fs::write(root.join("sources/basemap/planetiler.jar"), b"x").unwrap();
-        let a = agent(&root, &home);
+        let mut a = agent(&root, &home);
+        // (The disk as the test says, both ways: not this Mac's.)
+        a.free_set = Some(PASS_SPACE);
         let mut w = Vec::new();
         let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
-        let free = cond::free_bytes(&home).unwrap_or(0);
-        if free >= PASS_SPACE {
-            assert!(plan.iter().any(|j| j.id == "osm-pass 2026-09-28"));
-        } else {
-            assert!(w.iter().any(|x| x.why.contains("GB free")), "{w:?}");
-        }
+        assert!(plan.iter().any(|j| j.id == "osm-pass 2026-09-28"));
+        a.free_set = Some(PASS_SPACE / 4);
+        let mut w = Vec::new();
+        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        assert!(!plan.iter().any(|j| j.id == "osm-pass 2026-09-28") && w.iter().any(|x| x.why.contains("GB free")), "{w:?}");
         // A complete pass of that planet: nothing to do.
         std::fs::write(root.join("sources/osm/2026-09-28/pass.0123456789abcdef.json"), b"{}").unwrap();
         let mut w = Vec::new();

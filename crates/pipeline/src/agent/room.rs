@@ -1064,10 +1064,14 @@ pub(crate) fn walk_for_test(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// The free space on the disk holding `path` (a local disk).
 pub fn disk_free(path: &Path) -> std::io::Result<u64> {
+    // (A test's disk is its own, never this Mac's: what's free here, with other suites running,
+    // decides nothing. 1 TB unless the test says.)
     #[cfg(test)]
-    if let Some(f) = TEST_FREE.with(|c| c.get()) {
-        return Ok(f);
+    {
+        let _ = path;
+        Ok(TEST_FREE.with(|c| c.get()).unwrap_or(1 << 40))
     }
+    #[cfg(not(test))]
     super::cond::free_bytes(path).ok_or_else(std::io::Error::last_os_error)
 }
 
