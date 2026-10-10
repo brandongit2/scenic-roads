@@ -2647,9 +2647,13 @@ At each phase's end an Opus agent reviews the work against this plan.
      `TERRAIN_V` versions for the packs and the peaks' key: not tied to `TERRAIN_V`, which also
      bumps for what the z8 doesn't read (GLO-30, the water, the coarse data), so that each such
      bump doesn't make the z8, the summits and every unit's peaks again. What keeps it safe is a
-     test (`terrain_z8::tests::the_raw_path_is_versioned`): the bytes `process` makes of a raw tile
-     with no sources, at z8 and z12, are pinned with both versions, and a change to them fails it,
-     saying to bump both.
+     test (`terrain_z8::tests::the_raw_path_is_versioned`): the elevations `process` makes of a raw
+     tile with no sources, at z8, z9 and z12, are pinned with both versions, and a change to them
+     fails it, saying to bump both. The tile has towers, a pit, a void and bathymetry, which the
+     blobs' rules take at every zoom, and AWS's ringing and needle off Maryland, which the seam rule
+     takes at z9 (at z12 the blobs' rules take them first). The walled patches' rule never runs on
+     the raw path (it weighs a tile against AWS's z9 tile over it, which only the terrain's pieces
+     pass), so there's nothing of it to pin.
    - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
      DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
@@ -2971,7 +2975,7 @@ pausing, which with the pool on would hold an owner's download off for hours.
   `state/build/term/1/first.json`; 181 of the 395 runs, counting each), 68 of the 388 without
   peaks. Keyed on the tiles read, only those 68 would have been spared (a unit without peak
   candidates reads nothing, about half a second each): the same fix made `terrain-z8` (v1 to v3)
-  and so the summits again, which every peaks key with peaks names, as it must (the coarse stage
+  and so the summits again, which every peaks key names (those with peaks must: the coarse stage
   reads the z8 worldwide). Counting the hi tiles alone, 82 more would have been (1.4 h with the
   68): those whose every z12 tile is AWS's raw tile, which no content name pins, as it's processed
   by the terrain's code; so the key names `TERRAIN_V`, and a terrain code change, the one change

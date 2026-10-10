@@ -154,10 +154,31 @@ impl Z8 {
 mod tests {
     use super::*;
 
-    /// What `process` makes of a raw tile with no sources, as the z8 here and the peaks' z12
-    /// outside the packs read it (crate::peaks::unit::UnitZ12): a slope with a tower, a pit, a
-    /// void and bathymetry, at z8 and z12.
-    fn raw_path() -> Vec<u64> {
+    /// AWS's own values where its sources meet (roadcore::grid's tests): 9/145/195 around pixel
+    /// 113,22, an 880 m tower beside a pit to −3 m, which the blobs' rules leave and the seam rule
+    /// takes (a ringing; with its pit at 130 m, a needle, 2.6 pixel widths out of every pixel beside
+    /// it).
+    const MARYLAND_Z9: [[i16; 15]; 15] = [
+        [88, 75, 76, 80, 97, 138, 132, 160, 184, 186, 212, 267, 355, 416, 355],
+        [121, 97, 80, 77, 82, 89, 95, 147, 171, 191, 233, 292, 382, 398, 324],
+        [179, 154, 114, 93, 80, 72, 79, 91, 133, 189, 257, 332, 387, 338, 248],
+        [166, 147, 145, 147, 116, 90, 94, 93, 80, 124, 222, 320, 322, 294, 207],
+        [155, 147, 151, 148, 139, 138, 128, 114, 75, 99, 138, 254, 233, 237, 178],
+        [154, 153, 152, 134, 135, 164, 159, 144, 113, 81, 92, 143, 124, 112, 93],
+        [153, 150, 142, 111, 115, 117, 105, 82, 108, 75, 71, 64, 62, 63, 73],
+        [149, 141, 117, 84, 93, 81, -3, 880, 71, 182, 153, 146, 161, 144, 90],
+        [147, 134, 88, 91, 109, 116, 118, 139, 192, 264, 273, 268, 258, 188, 125],
+        [146, 97, 101, 128, 175, 173, 215, 212, 299, 330, 305, 256, 209, 163, 143],
+        [96, 87, 132, 190, 189, 213, 266, 318, 338, 312, 266, 213, 175, 142, 143],
+        [117, 116, 165, 204, 220, 271, 322, 348, 311, 250, 204, 175, 155, 126, 131],
+        [106, 152, 179, 202, 256, 321, 358, 330, 262, 211, 165, 144, 134, 130, 135],
+        [138, 170, 171, 208, 286, 349, 355, 293, 232, 196, 170, 138, 136, 148, 146],
+        [163, 179, 171, 223, 307, 350, 324, 257, 206, 176, 167, 143, 140, 159, 156],
+    ];
+
+    /// A raw tile: a slope with a tower, a pit, a void and bathymetry, and Maryland's ringing and,
+    /// beside it, its needle (AWS's values, on ground at 150 m).
+    fn raw_tile() -> Vec<f32> {
         let mut e: Vec<f32> = (0..256 * 256).map(|i| 200.0 + 0.5 * (i % 256) as f32 + 0.3 * (i / 256) as f32).collect();
         for y in 100..104 {
             for x in 100..104 {
@@ -169,16 +190,59 @@ mod tests {
         for v in e[230 * 256..].iter_mut() {
             *v = -50.0;
         }
+        for (ox, needle) in [(140, false), (170, true)] {
+            for j in 0..25 {
+                for i in 0..25 {
+                    e[(140 + j) * 256 + ox + i - 5] = 150.0;
+                }
+            }
+            for (j, row) in MARYLAND_Z9.iter().enumerate() {
+                for (i, &v) in row.iter().enumerate() {
+                    e[(145 + j) * 256 + ox + i] = v as f32;
+                }
+            }
+            if needle {
+                e[(145 + 7) * 256 + ox + 6] = 130.0;
+            }
+        }
+        e
+    }
+
+    /// What `process` makes of `raw_tile` with no sources, as the z8 here and the peaks' z12
+    /// outside the packs read it (crate::peaks::unit::UnitZ12), at z8, z9 (Maryland's tile) and
+    /// z12: each tile's elevations as decoded (not its PNG's bytes, which an encoder's change would
+    /// change alone), by their bits.
+    fn raw_path() -> Vec<u64> {
+        let e = raw_tile();
         let png = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
-        [(Z, 40, 90), (12, 640, 1440)]
+        let input = roadcore::grid::decode_terrain_png(&png).unwrap();
+        [(Z, 40, 90), (9, 145, 195), (12, 640, 1440)]
             .iter()
             .map(|&(z, x, y)| {
                 let (out, _, _) = process(png.clone(), z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+                let got = roadcore::grid::decode_terrain_png(&out).unwrap();
                 // (The repair changes it: the values below see its rules.)
-                assert_ne!(roadcore::grid::decode_terrain_png(&out).unwrap(), roadcore::grid::decode_terrain_png(&png).unwrap());
-                store::naming::xxh3(&out)
+                assert_ne!(got, input);
+                let bits: Vec<u8> = got.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect();
+                store::naming::xxh3(&bits)
             })
             .collect()
+    }
+
+    #[test]
+    fn the_raw_tile_meets_the_seam_rule() {
+        // (Maryland's ringing and needle: the seam rule takes both at z9, as the blobs' rules
+        // don't; and its towers come down into the ground's range through `process`.)
+        let mut t = raw_tile();
+        let (r, _) = roadcore::grid::repair_terrain_with(&mut t, 9, crate::terrain_pack::tile_lat(9, 195), None);
+        assert!(r.seam >= 3, "{r:?}");
+        let png = roadcore::grid::encode_terrain_png(&raw_tile(), 256, 256).unwrap();
+        let (out, _, _) = process(png, 9, 145, 195, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+        let got = roadcore::grid::decode_terrain_png(&out).unwrap();
+        for ox in [140, 170] {
+            let v = got[(145 + 7) * 256 + ox + 7];
+            assert!(v <= 200.0, "the tower at {ox}: {v}");
+        }
     }
 
     #[test]
@@ -187,6 +251,6 @@ mod tests {
         // every unit's peaks again) and to the peaks' z12 outside the packs (bump
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
         assert_eq!((V, crate::agent::build::TERRAIN_V), (3, 3), "the raw path's versions changed: update the values below");
-        assert_eq!(raw_path(), vec![3732127099477634275, 5080787860211985803], "terrain_pack::process's raw path makes other bytes: bump terrain_z8::V and TERRAIN_V");
+        assert_eq!(raw_path(), vec![12970933280215579373, 1265511795488754836, 16515892396236032722], "terrain_pack::process's raw path makes other elevations: bump terrain_z8::V and TERRAIN_V");
     }
 }
