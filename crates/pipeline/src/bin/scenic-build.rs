@@ -2875,7 +2875,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             a.on(&u.slash());
             a.say(true);
         });
-        // (Under way, for the agent: crate::agent::memguard.)
+        // (Under way, for the agent, crate::agent::memguard; its processes' most held from here,
+        // its measure.)
+        pipeline::sys::reset_group_peak();
         note_started(&pipeline::coord::cost_key("unit", &u.slash()));
         let t = std::time::Instant::now();
         if let Some(h) = ahead.take() {
@@ -3010,7 +3012,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if rep.kept_ways > 0 {
             run_tail(here, &dir, &tools)?;
         }
-        let b = Built { u, dir: dir.clone(), bdir: bdir.clone(), rep, tools, carry, piece, t, peak: pipeline::unit::take_peak(), anywhere: anywhere.to_vec() };
+        let b = Built { u, dir: dir.clone(), bdir: bdir.clone(), rep, tools, carry, piece, t, peak: pipeline::unit::take_peak(), group: pipeline::sys::group_peak(), anywhere: anywhere.to_vec() };
         let offering = phase("tails offered to other workers", Class::Net);
         let offered = match &offload {
             Some(o) if b.rep.kept_ways > 0 && out_now.len() < o.depth() => match o.offer(u, &b.dir, b.tools.buildings.as_deref(), &b.anywhere) {
@@ -3062,6 +3064,9 @@ struct Built {
     piece: PathBuf,
     t: std::time::Instant,
     peak: u64,
+    /// The most the job's processes held together while it was built here (bytes, sampled: what
+    /// the agent's memory guard measures too), its measure (`SCENIC_COSTS`).
+    group: u64,
     /// Its tail's steps any worker may run.
     anywhere: Vec<pipeline::unit::Run>,
 }
@@ -3109,7 +3114,7 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
 /// it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, .. } = b;
+    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, .. } = b;
     use pipeline::timings::Class;
     use pipeline::unit::{owns, stage as unit_stage};
     areas(|a| a.on(&u.slash()));
@@ -3222,13 +3227,15 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     drop(lg);
     clean();
     s.end();
-    // The most memory one of its steps' programs took here, against its piece's size; noted for
-    // the coordinator (`SCENIC_COSTS`), which gives a worker only units that fit its memory.
+    // The most memory the job's processes held together while it was built here (as the agent's
+    // memory guard measures a job: the same kind of figure, so either takes the other's place),
+    // noted for the coordinator (`SCENIC_COSTS`), which gives a worker only units that fit its
+    // memory; its steps' programs' most, one at a time, logged against its piece's size.
     let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
     let peak = peak.max(pipeline::unit::take_peak());
     eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), peak as f64 / 1e9);
     if let Some(p) = std::env::var_os("SCENIC_COSTS") {
-        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": peak >> 20, "secs": t.elapsed().as_secs() });
+        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::coord::cost_version("unit") });
         let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
         if let Err(e) = r {
             eprintln!("unit {}: noting what it cost: {e}", u.slash());

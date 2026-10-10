@@ -251,6 +251,48 @@ pub fn peak_rss() -> u64 {
     0
 }
 
+/// A sysctl's value by name, into `T` (plain old data); None where it can't be read.
+#[cfg(target_os = "macos")]
+fn sysctl<T: Copy>(name: &str) -> Option<T> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: T is plain old data the call fills, its size given; the name is a C string.
+    let mut v: T = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<T>();
+    let r = unsafe { libc::sysctlbyname(name.as_ptr(), (&mut v as *mut T).cast(), &mut len, std::ptr::null_mut(), 0) };
+    (r == 0 && len == std::mem::size_of::<T>()).then_some(v)
+}
+
+/// This Mac's memory (bytes); None where it can't be read (never kept: a failed read is tried
+/// again).
+pub fn memsize() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl::<u64>("hw.memsize").filter(|&b| b > 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The kernel's memory pressure now: 1 normal, 2 warning, 4 critical; None where it can't be read.
+pub fn memory_pressure() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl::<u32>("kern.memorystatus_vm_pressure_level")
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The swap in use now (bytes); None where it can't be read.
+pub fn swap_used() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl::<libc::xsw_usage>("vm.swapusage").map(|u| u.xsu_used)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
 /// The memory this process's group holds now (bytes): a job's (the agent starts each in a group of
 /// its own: scenic-build and every program it runs, a pool's workers too), its processes' physical
 /// footprints (each one's memory as Activity Monitor shows it) summed; None where it can't be read.
@@ -333,6 +375,15 @@ pub fn group_peak() -> u64 {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_macs_memory_pressure_and_swap_read() {
+        // (What the memory guard reads: crate::agent::memguard.)
+        let mem = memsize().expect("hw.memsize");
+        assert!(mem >= 4 << 30, "{mem}");
+        assert!(memory_pressure().is_some_and(|p| [1, 2, 4].contains(&p)), "{:?}", memory_pressure());
+        assert!(swap_used().is_some());
+    }
 
     #[test]
     fn a_groups_memory_is_its_processes_together() {

@@ -29,6 +29,7 @@ pub mod history;
 pub mod lease;
 pub mod task;
 
+use crate::agent::memguard::Floor;
 use crate::handoff::Handoff;
 use anyhow::Result;
 use lease::{Lease, Leases, Work};
@@ -105,6 +106,9 @@ pub fn cost_version(step: &str) -> u32 {
     match step {
         "terrain" | "slope" => 3,
         "trees" => 2,
+        // (A unit's measure its job's processes together, as the memory guard measures a job; 0
+        // was its programs' most, one at a time.)
+        "unit" => 1,
         "trees-lo" | "terrain-lo" | "slope-lo" => 1,
         _ => 0,
     }
@@ -113,7 +117,7 @@ pub fn cost_version(step: &str) -> u32 {
 /// A unit's predicted peak memory (MB): what it took last time, else about ten times its piece (the
 /// densest measured: 6.6 GB for 668 MB), and never under 3.7 GB (the canopy step's).
 pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 {
-    costs.get(unit).map(|c| c.peak_mb).unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
+    costs.get(unit).filter(|c| c.v >= cost_version("unit")).map(|c| c.peak_mb).unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
 /// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`),
@@ -215,11 +219,11 @@ pub struct Shared {
     pub tasks: task::Tasks,
     pub workers: BTreeMap<String, Worker>,
     pub costs: BTreeMap<String, Cost>,
-    /// What a target takes at least (MB, by cost key), as a run that didn't measure it saw it hold
-    /// (crate::agent::memguard: a job stopped past its Mac's limit, or one whose step notes no
-    /// costs): its predicted memory is never below it. A measure of the target, a run's own, takes
+    /// What a target takes at least (by cost key: crate::agent::memguard::Floor), as a run that
+    /// didn't measure it saw it hold: its predicted memory is never below it. A measure of the
+    /// target, a run's own (the same kind of figure: its job's processes together, sampled), takes
     /// its place. Kept in `floors.json`.
-    pub floors: BTreeMap<String, u64>,
+    pub floors: BTreeMap<String, Floor>,
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
@@ -275,23 +279,40 @@ impl Shared {
         }
     }
 
-    /// Floors seen (`floors`, MB by cost key): each kept where it's above the target's floor as it
-    /// was (a floor only rises, until a measure takes its place).
-    fn add_floors(&mut self, floors: &[(String, u64)]) -> bool {
+    /// Floors seen (by cost key): each kept where its target has none, one of an older way of its
+    /// step, or a lower one; or where it was learned alone and the one kept wasn't (a batch's floor
+    /// may be its earlier targets' caches). A floor of the OSM pass (`osm-pass <date>`) puts the
+    /// earlier passes' away. True when any changed.
+    fn add_floors(&mut self, floors: &[(String, Floor)]) -> bool {
         let mut any = false;
-        for (u, mb) in floors {
-            if self.floors.get(u).is_none_or(|f| mb > f) {
-                self.floors.insert(u.clone(), *mb);
+        for (u, f) in floors {
+            let take = match self.floors.get(u) {
+                None => true,
+                Some(old) if old.v != f.v => f.v > old.v,
+                Some(old) => f.mb > old.mb || (f.alone && !old.alone),
+            };
+            if take {
+                if u.starts_with("osm-pass ") {
+                    self.floors.retain(|k, _| !k.starts_with("osm-pass ") || k == u);
+                }
+                self.floors.insert(u.clone(), *f);
                 any = true;
             }
         }
         any
     }
 
+    /// The floor of `target` of `step` that holds it off a Mac: one learned alone, the way its step
+    /// runs now (crate::coord::cost_version).
+    fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
+        self.floors.get(&cost_key(step, target)).filter(|f| f.v >= cost_version(step)).copied()
+    }
+
     /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from
-    /// its costs and `size`, and never below its floor.
+    /// its costs and `size`, and never below its floor (one of an older way of its step too: the best
+    /// estimate there is until it runs again).
     fn peak_of(&self, step: &str, target: &str, size: u64) -> u64 {
-        job_peak(&self.costs, step, target, size).max(self.floors.get(&cost_key(step, target)).copied().unwrap_or(0))
+        job_peak(&self.costs, step, target, size).max(self.floors.get(&cost_key(step, target)).map_or(0, |f| f.mb))
     }
 
     /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
@@ -315,7 +336,14 @@ impl Shared {
         };
         let take = |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
         if !away {
-            return take(open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size) <= a.mem_mb).take(n).collect());
+            let fits: Vec<&(String, String, u64)> = open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size) <= a.mem_mb).collect();
+            // (A target whose floor wasn't learned alone, a batch's, runs alone: its first such, by
+            // itself, else the others without it.)
+            let batch_floor = |t: &str| self.floors.get(&cost_key(&o.step, t)).is_some_and(|f| !f.alone);
+            if let Some(first) = fits.first().filter(|(t, _, _)| batch_floor(t)) {
+                return take(vec![*first]);
+            }
+            return take(fits.into_iter().filter(|(t, _, _)| !batch_floor(t)).take(n).collect());
         }
         let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return Vec::new() };
         // Its owner away: a job that fits the more it spares then, as long as it ends in time.
@@ -509,9 +537,9 @@ pub struct Done {
     pub failed: bool,
     #[serde(default)]
     pub costs: Vec<(String, Cost)>,
-    /// What its targets took at least, as it saw them (crate::agent::memguard: cost key, MB).
+    /// What its targets took at least, as it saw them (crate::agent::memguard: cost key, floor).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub floors: Vec<(String, u64)>,
+    pub floors: Vec<(String, Floor)>,
     #[serde(default)]
     pub outputs: Vec<task::Output>,
     /// Inputs a task's programs removed.
@@ -543,10 +571,10 @@ pub struct Fail {
     /// there): its targets aren't kept from the worker.
     #[serde(default)]
     pub interrupted: bool,
-    /// What a job's targets took at least, as it saw them (crate::agent::memguard: cost key, MB):
+    /// What a job's targets took at least, as it saw them (crate::agent::memguard: cost key, floor):
     /// a job stopped past its Mac's limit says what it held.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub floors: Vec<(String, u64)>,
+    pub floors: Vec<(String, Floor)>,
 }
 
 impl Coordinator {
@@ -784,17 +812,29 @@ impl Coordinator {
         s.save_costs();
     }
 
-    /// What this Mac's job saw its targets hold at least (crate::agent::memguard: cost key, MB).
-    pub fn add_floors(&self, floors: &[(String, u64)]) {
+    /// What this Mac's job saw its targets hold at least (crate::agent::memguard: cost key, floor).
+    pub fn add_floors(&self, floors: &[(String, Floor)]) {
         let mut s = self.shared.lock().unwrap();
         if s.add_floors(floors) {
             s.save_costs();
         }
     }
 
-    /// The floor of `target` of `step` (MB: what it takes at least), when one was seen.
-    pub fn floor(&self, step: &str, target: &str) -> Option<u64> {
+    /// The floor of `target` of `step` (what it takes at least), when one was seen, of any way its
+    /// step ran.
+    pub fn floor(&self, step: &str, target: &str) -> Option<Floor> {
         self.shared.lock().unwrap().floors.get(&cost_key(step, target)).copied()
+    }
+
+    /// The floor of `target` of `step` that may hold it off a Mac: the way its step runs now.
+    pub fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
+        self.shared.lock().unwrap().holding_floor(step, target)
+    }
+
+    /// The floors kept, after clearing those of `step` (all, with no step), or of its `target`
+    /// (`scenic pool floors --clear`), when `clear`.
+    pub fn floors(&self, clear: bool, step: Option<&str>, target: Option<&str>) -> BTreeMap<String, Floor> {
+        floors_cleared(&mut self.shared.lock().unwrap(), clear, step, target)
     }
 
     /// The largest memory limit a worker around says its Mac has (crate::agent::memguard::limit_mb:
@@ -812,7 +852,7 @@ impl Coordinator {
         let s = self.shared.lock().unwrap();
         let measured = s.costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step)).map(|c| c.peak_mb);
         let offered = s.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)).map(|t| s.peak_of(step, target, t.2));
-        let floor = s.floors.get(&cost_key(step, target)).copied();
+        let floor = s.floors.get(&cost_key(step, target)).map(|f| f.mb);
         match (measured.or(offered), floor) {
             (Some(p), f) => Some(p.max(f.unwrap_or(0))),
             (None, f) => f,
@@ -902,8 +942,15 @@ impl Coordinator {
         let mut s = self.shared.lock().unwrap();
         let (now, unix) = (s.now(), unix_now());
         let n = s.leases.restore(&p.leases, now)?;
+        // (Its measures, each in place of a floor kept here that the other lead had none of: its
+        // measure took that floor's place there.)
+        for k in p.costs.keys() {
+            if !p.floors.contains_key(k) {
+                s.floors.remove(k);
+            }
+        }
         s.costs.extend(p.costs.clone());
-        let floors: Vec<(String, u64)> = p.floors.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let floors: Vec<(String, Floor)> = p.floors.iter().map(|(k, v)| (k.clone(), *v)).collect();
         s.add_floors(&floors);
         for (w, k, at, n) in &p.failed {
             let at = now.checked_sub(Duration::from_secs(unix.saturating_sub(*at))).unwrap_or(now);
@@ -938,9 +985,9 @@ pub struct PoolState {
     pub leases: serde_json::Value,
     #[serde(default)]
     pub costs: BTreeMap<String, Cost>,
-    /// The targets' floors (crate::agent::memguard: cost key → MB).
+    /// The targets' floors (crate::agent::memguard: cost key → floor).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub floors: BTreeMap<String, u64>,
+    pub floors: BTreeMap<String, Floor>,
     /// (worker, cost key, when it last failed: unix seconds, how many times).
     #[serde(default)]
     pub failed: Vec<(String, String, u64, u32)>,
@@ -950,20 +997,24 @@ pub struct PoolState {
     pub pause_at: u64,
 }
 
-/// Whether an agent on app `theirs` may build for a coordinator on `ours`: the same, or a newer
-/// published one (a step a newer app changed is built again under the keys that say so, once this
-/// Mac runs it; an older app's work would be recorded as current). `ours` empty (tests): any.
+/// Whether an agent on app `theirs` may build for a coordinator on `ours`: only the same. A target's
+/// key is the coordinator's code's, its result the worker's: on another app, older or newer, the
+/// two may differ (a step changed with its key, or without it), and the result would be recorded
+/// under a key that says it's current. No list of what changed: any other app waits. `ours` empty
+/// (tests): any.
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
+    ours.is_empty() || theirs == Some(ours)
+}
+
+/// Whether app `a` was published after app `b` (both published: `20261005-1508-84142d3`, its UTC
+/// publish time first); false when either isn't.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn app_newer(a: &str, b: &str) -> bool {
     // (By bytes: a version is a worker's to say, and slicing a string mid-character would panic with
     // the coordinator's lock held.)
     let published = |v: &[u8]| v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit);
-    match theirs {
-        _ if ours.is_empty() => true,
-        Some(t) if t == ours => true,
-        Some(t) => published(t.as_bytes()) && published(ours.as_bytes()) && t.as_bytes()[..13] > ours.as_bytes()[..13],
-        None => false,
-    }
+    published(a.as_bytes()) && published(b.as_bytes()) && a.as_bytes()[..13] > b.as_bytes()[..13]
 }
 
 /// An app version (`20261005-1508-84142d3`: its UTC publish time, then its commit) in words: "5 Oct
@@ -1033,6 +1084,24 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         anyhow::ensure!(h.pending.contains_key(c), "{c} isn't one of its uploads");
     }
     Ok(())
+}
+
+/// The floors `s` keeps, after clearing those of `step` (all, with no step), or of its `target`,
+/// when `clear` (`scenic pool floors --clear`).
+fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Option<&str>) -> BTreeMap<String, Floor> {
+    if clear {
+        let n = s.floors.len();
+        s.floors.retain(|k, _| match (step, target) {
+            (None, _) => false,
+            (Some(st), None) => crate::agent::memguard::step_of_key(k) != st,
+            (Some(st), Some(t)) => *k != cost_key(st, t),
+        });
+        if s.floors.len() != n {
+            eprintln!("coordinator: {} floor{} cleared", n - s.floors.len(), if n - s.floors.len() == 1 { "" } else { "s" });
+            s.save_costs();
+        }
+    }
+    s.floors.clone()
 }
 
 /// The build paused (how, by whom) or going on (`Coordinator::set_pause`, `/work/pause`), kept in
@@ -1160,13 +1229,18 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 s.seen(&a.worker, format!("waiting: {}", p.why()), None, now);
                 return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": p.why(), "pause": p })) } else { (204, serde_json::Value::Null) });
             }
-            // An agent on an older app than this one's (its updater not yet run) waits for this one's
-            // or a newer (this Mac's agent switches between jobs): its work would be built with
-            // other code than the keys it records say. (Before it's seen as a worker that does
-            // tasks: a unit job's tails would wait for it.)
+            // An agent on another app than this one's waits until the two run the same (its updater
+            // run, or this Mac's: an agent switches between jobs, a lead re-asserting on its new app;
+            // or the lead handed to a Mac on the newer): its work would be built with other code than
+            // the keys it records say. (Before it's seen as a worker that does tasks: a unit job's
+            // tails would wait for it.) Jobs it runs already go on.
             if a.kind == "native" && !app_ok(a.app.as_deref(), &s.app) {
                 let theirs = a.app.as_deref().map_or("an older one".to_string(), app_when);
-                let why = format!("on the app of {theirs}, the build Mac on {}'s: it builds once it runs that one or a newer", app_when(&s.app));
+                let why = if a.app.as_deref().is_some_and(|t| app_newer(t, &s.app)) {
+                    format!("on the app of {theirs}, the lead on {}'s: it builds once the lead runs the same (its updater, or the lead handed to a Mac on the newer)", app_when(&s.app))
+                } else {
+                    format!("on the app of {theirs}, the lead on {}'s: it builds once it runs that one", app_when(&s.app))
+                };
                 s.seen(&a.worker, why.clone(), None, now);
                 return Ok((409, serde_json::json!({ "error": why })));
             }
@@ -1338,7 +1412,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     let by = d.worker.clone();
                     s.add_costs(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))), &by);
                     // (What the lease's targets took at least, those it didn't finish too.)
-                    let floors: Vec<(String, u64)> = d.floors.into_iter().filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0))).collect();
+                    let floors: Vec<(String, Floor)> = d.floors.into_iter().filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0))).collect();
                     s.add_floors(&floors);
                     s.save_leases();
                     s.save_costs();
@@ -1393,7 +1467,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         }
                     }
                     // (What its targets took at least: a job stopped past its Mac's limit.)
-                    let floors: Vec<(String, u64)> = f.floors.iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))).cloned().collect();
+                    let floors: Vec<(String, Floor)> = f.floors.iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))).cloned().collect();
                     if s.add_floors(&floors) {
                         s.save_costs();
                     }
@@ -1500,6 +1574,13 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let max = b["max"].as_u64().map_or(500, |m| m.min(5000)) as usize;
             let s = shared.lock().unwrap();
             Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
+        }
+        "/work/floors" => {
+            // The targets' floors (crate::agent::memguard), cleared (`{"clear": true}`, of a `step`,
+            // of its `target`) first when asked: `scenic pool floors`.
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let floors = floors_cleared(&mut shared.lock().unwrap(), b["clear"].as_bool() == Some(true), b["step"].as_str(), b["target"].as_str());
+            Ok((200, serde_json::json!({ "floors": floors })))
         }
         "/work/timings" => {
             // The runs' timings kept (crate::timings), the last `last` of each kind (or of `kind`):
@@ -1749,6 +1830,7 @@ mod http {
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
             .route("/work/timings", any(json))
+            .route("/work/floors", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))
@@ -2192,7 +2274,7 @@ mod tests {
         let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two areas (the third too big), hands one back.
-        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None, v: 0 });
+        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None, v: cost_version("unit") });
         let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
@@ -2322,9 +2404,12 @@ mod tests {
         assert!(matches!(g.work, Granted::Job { ref step, .. } if step == "unit"));
         // A page (its code is this coordinator's) never says.
         assert_eq!(app_when("development"), "development");
-        // A newer one builds (the build Mac's agent finishing a job on the last); development ones
-        // only with their like.
-        assert!(app_ok(Some("20261005-1613-d05125b"), "20261005-1508-84142d3"));
+        // A newer one doesn't either (its results would go under the older code's keys), saying it
+        // waits for the lead; development ones only with their like.
+        let e = w.ask(&Ask { app: Some("20261006-0900-1234567".into()), ..ask(4096) }).unwrap_err();
+        assert!(e.to_string().contains("once the lead runs the same"), "{e:#}");
+        assert!(!app_ok(Some("20261005-1613-d05125b"), "20261005-1508-84142d3"));
+        assert!(app_newer("20261005-1613-d05125b", "20261005-1508-84142d3") && !app_newer("20261005-1508-84142d3", "20261005-1613-d05125b") && !app_newer("development", "20261005-1508-84142d3"));
         assert!(!app_ok(Some("20261005-1508-aaaaaaa"), "20261005-1613-d05125b") && !app_ok(None, "20261005-1508-84142d3"));
         assert!(app_ok(Some("development"), "development") && !app_ok(Some("development"), "20261005-1508-84142d3") && !app_ok(Some("20261005-1613-d05125b"), "development"));
         assert!(app_ok(None, ""));
@@ -2335,31 +2420,71 @@ mod tests {
     #[test]
     fn a_floor_keeps_a_target_from_a_worker_too_small_and_a_measure_takes_its_place() {
         let (_d, c, w) = start();
-        let o = |ts: &[(&str, u64)]| Offer { step: "peaks".into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch: 1 };
-        c.offer("p", vec![o(&[("6/1/1", 2500)])]);
+        let o = |ts: &[(&str, u64)], batch: usize| Offer { step: "peaks".into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch };
+        c.offer("p", vec![o(&[("6/1/1", 2500)], 1)]);
         let can = |mem: u64| Ask { can: vec!["peaks".into()], limit_mb: Some(12 << 10), ..ask(mem) };
+        let f = |mb: u64, alone: bool| Floor { mb, alone, v: 0 };
         let g = w.ask(&can(4096)).unwrap().unwrap();
         assert_eq!(c.largest_limit(), Some(12 << 10), "its Mac's limit, as it says");
         // Stopped past its Mac's limit: given back with what it held, the floor of its target (not
         // another's, nor a target of no lease of it).
-        w.give_back_with(g.lease, "stopped by the memory guard", &[(cost_key("peaks", "6/1/1"), 9000), (cost_key("peaks", "6/9/9"), 1)]).unwrap();
-        assert_eq!((c.floor("peaks", "6/1/1"), c.floor("peaks", "6/9/9")), (Some(9000), None));
+        w.give_back_with(g.lease, "stopped by the memory guard", &[(cost_key("peaks", "6/1/1"), f(9000, true)), (cost_key("peaks", "6/9/9"), f(1, true))]).unwrap();
+        assert_eq!((c.floor("peaks", "6/1/1"), c.floor("peaks", "6/9/9")), (Some(f(9000, true)), None));
         assert_eq!(c.peak("peaks", "6/1/1"), Some(9000), "never below its floor");
         // Not to a worker that spares less; to one that spares more.
         assert!(w.ask(&can(4096)).unwrap().is_none());
         let g = w.ask(&can(10 << 10)).unwrap().unwrap();
         // A floor only rises (a lower one seen later changes nothing); it moves with the pool's state.
-        w.give_back_with(g.lease, "the build paused", &[(cost_key("peaks", "6/1/1"), 5000)]).unwrap();
-        assert_eq!(c.floor("peaks", "6/1/1"), Some(9000));
-        assert_eq!(c.pool_state().floors.get(&cost_key("peaks", "6/1/1")), Some(&9000));
+        w.give_back_with(g.lease, "the build paused", &[(cost_key("peaks", "6/1/1"), f(5000, true))]).unwrap();
+        assert_eq!(c.floor("peaks", "6/1/1").map(|f| f.mb), Some(9000));
+        assert_eq!(c.pool_state().floors.get(&cost_key("peaks", "6/1/1")).map(|f| f.mb), Some(9000));
         // A run's measure takes its place.
         c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0 })]);
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
-        assert!(w.ask(&can(4096)).unwrap().is_some());
-        // Kept across a restart of the coordinator.
-        c.add_floors(&[(cost_key("peaks", "6/2/2"), 7000)]);
-        let kept: BTreeMap<String, u64> = serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
-        assert_eq!(kept.get(&cost_key("peaks", "6/2/2")), Some(&7000));
+        let g = w.ask(&can(4096)).unwrap().unwrap();
+        // A member's done carries its floors (of the lease's targets alone).
+        let h = Handoff { changes: [("work/peaks/6-1-1".to_string(), Some("work/peaks/6-1-1.0000000000000003.sect".to_string()))].into(), done: Some(("peaks".into(), vec![("6/1/1".into(), "k 6/1/1".into())])), ..Default::default() };
+        w.done(&Done { lease: g.lease, handoff: Some(h), floors: vec![(cost_key("peaks", "6/1/1"), f(3500, true)), (cost_key("peaks", "6/7/7"), f(9, true))], ..Default::default() }).unwrap();
+        assert_eq!((c.floor("peaks", "6/1/1").map(|f| f.mb), c.floor("peaks", "6/7/7")), (Some(3500), None));
+        // A batch's floor gives way to one learned alone, even lower; a floor of an older way of its
+        // step doesn't hold the target, though it's an estimate.
+        c.add_floors(&[(cost_key("peaks", "6/2/2"), f(20_000, false))]);
+        c.add_floors(&[(cost_key("peaks", "6/2/2"), f(4000, true))]);
+        assert_eq!(c.floor("peaks", "6/2/2"), Some(f(4000, true)));
+        c.add_floors(&[(cost_key("terrain", "6/3/3"), Floor { mb: 20_000, alone: true, v: 1 })]);
+        assert_eq!((c.holding_floor("terrain", "6/3/3"), c.peak("terrain", "6/3/3")), (None, Some(20_000)));
+        // The OSM pass's floor puts an earlier pass's away.
+        c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
+        c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);
+        assert_eq!((c.floor("osm-pass", "2026-08-01"), c.floor("osm-pass", "2026-09-28").map(|f| f.mb)), (None, Some(31_000)));
+        // A target whose floor is a batch's goes alone to a worker.
+        c.offer("p", vec![o(&[("6/4/1", 100), ("6/4/2", 100), ("6/4/3", 100)], 3)]);
+        c.add_floors(&[(cost_key("peaks", "6/4/2"), f(2000, false))]);
+        let g = w.ask(&can(8 << 10)).unwrap().unwrap();
+        let Granted::Job { targets, .. } = g.work else { panic!() };
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/3", "6/4/1"], "the others without it");
+        let g = w.ask(&can(8 << 10)).unwrap().unwrap();
+        let Granted::Job { targets, .. } = g.work else { panic!() };
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/2"], "by itself");
+        // Kept across a restart of the coordinator; cleared as the owner asks (`scenic pool floors`).
+        let kept: BTreeMap<String, Floor> = serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
+        assert_eq!(kept.get(&cost_key("peaks", "6/2/2")), Some(&f(4000, true)));
+        let (code, v) = w.post_json("/work/floors", &serde_json::json!({ "clear": true, "step": "peaks", "target": "6/2/2" })).unwrap();
+        assert!(code == 200 && v["floors"].get(cost_key("peaks", "6/2/2")).is_none() && v["floors"].get(cost_key("peaks", "6/1/1")).is_some(), "{v}");
+        assert!(c.floors(true, Some("peaks"), None).keys().all(|k| !k.starts_with("peaks ")));
+        assert!(c.floors(true, None, None).is_empty());
+    }
+
+    #[test]
+    fn a_take_up_keeps_the_newer_of_a_floor_and_a_measure() {
+        let (_d, c, _w) = start();
+        let f = |mb: u64| Floor { mb, alone: true, v: 0 };
+        c.add_floors(&[(cost_key("peaks", "6/1/1"), f(9000)), (cost_key("peaks", "6/1/2"), f(9000))]);
+        // The other lead measured 6/1/1 (its floor gone there), and saw a higher floor for 6/1/3.
+        let p = PoolState { costs: [(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0 })].into(), floors: [(cost_key("peaks", "6/1/3"), f(7000))].into(), leases: serde_json::json!({ "next": 1, "leases": [] }), ..Default::default() };
+        c.load_pool_state(&p).unwrap();
+        assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
+        assert_eq!((c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)), (Some(9000), Some(7000)));
     }
 
     #[test]

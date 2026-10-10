@@ -518,7 +518,24 @@ fn main() -> Result<()> {
                 Some("on") => println!("{}", agent::pool::switch_on(&r, &agent::app_version(&bin), force)?),
                 Some("off") => println!("{}", agent::pool::switch_off(&r, force)?),
                 Some("status") | None => println!("{}", agent::pool::status(&r)),
-                Some(x) => bail!("scenic pool on|off|status [--force], not {x}"),
+                Some("floors") => {
+                    // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
+                    // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
+                    // one target's (a step fixed, or a floor learned wrong).
+                    let clear = flag(&args, "--clear");
+                    let rest: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--") && Some(*a) != opt(&args, "--root").as_ref()).collect();
+                    let c = pipeline::coord::client::Client::from_nas(&r, &agent::cond::host_name())?.context("no lead's coordinator to ask")?;
+                    let (code, v) = c.post_json("/work/floors", &serde_json::json!({ "clear": clear, "step": rest.first(), "target": rest.get(1) }))?;
+                    anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
+                    let floors: std::collections::BTreeMap<String, pipeline::agent::memguard::Floor> = serde_json::from_value(v["floors"].clone())?;
+                    if floors.is_empty() {
+                        println!("no floors");
+                    }
+                    for (k, f) in floors {
+                        println!("{k}: {:.1} GB{}{}", f.mb as f64 / 1024.0, if f.alone { ", held alone" } else { ", in a batch" }, if f.v > 0 { format!(", v{}", f.v) } else { String::new() });
+                    }
+                }
+                Some(x) => bail!("scenic pool on|off|status [--force] | floors [--clear [<step> [<target>]]], not {x}"),
             }
             Ok(())
         }
