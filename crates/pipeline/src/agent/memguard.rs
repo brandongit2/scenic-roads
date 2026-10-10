@@ -365,6 +365,7 @@ impl Sampler {
             let key = self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
             got.push((k, pgid, held, key));
         }
+        let live: Option<(PathBuf, Live)>;
         let over: Vec<usize> = {
             let Ok(mut g) = self.inner.lock() else { return };
             for (k, pgid, held, key) in &got {
@@ -377,17 +378,19 @@ impl Sampler {
                 }
             }
             let limit = g.limit_mb;
-            if let Some(f) = g.file.clone() {
-                let live = Live { at: crate::agent::jobs::now_s(), on: g.on, limit_mb: limit, held_mb: g.watches.iter().map(|w| w.as_ref().and_then(|w| w.held)).collect(), frozen: g.watches.iter().map(|w| w.as_ref().is_some_and(|w| w.frozen)).collect() };
-                if let Ok(b) = serde_json::to_vec(&live) {
-                    crate::whole::write(&f, &b).ok();
-                }
-            }
+            // (Written once the lock is let go: the agent's loop doesn't wait on the write.)
+            live = g.file.clone().map(|f| (f, Live { at: crate::agent::jobs::now_s(), on: g.on, limit_mb: limit, held_mb: g.watches.iter().map(|w| w.as_ref().and_then(|w| w.held)).collect(), frozen: g.watches.iter().map(|w| w.as_ref().is_some_and(|w| w.frozen)).collect() }));
             if !g.on || limit == 0 {
-                return;
+                Vec::new()
+            } else {
+                g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > limit)).map(|_| k)).collect()
             }
-            g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > limit)).map(|_| k)).collect()
         };
+        if let Some((f, l)) = live {
+            if let Ok(b) = serde_json::to_vec(&l) {
+                crate::whole::write(&f, &b).ok();
+            }
+        }
         for k in over {
             if !self.in_trouble() {
                 continue;

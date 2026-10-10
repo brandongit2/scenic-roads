@@ -1020,12 +1020,17 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       the first slot leaving network work to the second, a general rule with no list: a slot whose
       next job only can't share the Mac with the other's (a group of the table; later, a lock at the
       resource) takes the next job in plan order that can start, the one passed over starting as
-      soon as the clash ends, and waited for once passed over half an hour. No switch (each is a
+      soon as the clash ends (in the second slot too if it's one of the second job's steps, else
+      in the first's), and waited for once passed over half an hour, the second then starting
+      nothing new but it; started, or gone from the plan, it holds nothing up. The first slot's
+      threads no longer halve while the owner is at the Mac. The forecast doesn't model the
+      passing over (plan.md §10). No switch (each is a
       rule gone, the owner's). Tests: a job's conditions the NAS alone, at any charge,
       away or home; a record of an older app's job read as its NAS alone; a second job beside the
       first whoever is at the Mac, in the forecast too; the heritage chain beside, the first slot
       taking the map tiles rather than wait for the Wikidata facts, which start once it ends; one
-      passed over half an hour waited for, the second starting nothing but it.
+      passed over half an hour waited for, the second starting nothing but it; one started in the
+      second slot and ended past the half hour holding nothing up.
    4. **The lead's slots as any member's** (§7.6, phase 2's part of the agent): its jobs ask, beat
       and end through one client, in process while it leads and over HTTP after a handover, so a
       change of part restarts nothing (only its coordinator starts or stops), and the lead stays

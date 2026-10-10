@@ -273,14 +273,23 @@ record changes back through the build Mac's coordinator, which journals them for
 - **Two jobs at once at most:** the plan's first, and a second beside it when the two fit (§8, Two
   jobs at once). Each job is a child process group at utility priority (`taskpolicy -c utility`;
   `-b` would confine it to the efficiency cores, ~17× slower).
-  - The first job's Rust steps take half the cores when the user is active as the job starts, and
-    all of them when idle (`RAYON_NUM_THREADS`); the second's, half the cores.
+  - The first job's Rust steps take all the cores (`RAYON_NUM_THREADS`; a helper's, all but two),
+    whoever is at the Mac (the owner's choice: it may be busier while they use it); the second's,
+    half.
   - osmium, Planetiler and the Python steps take what they take.
 - **Power:** none waited on: jobs run at any charge (the owner's choice). Every job needs the NAS.
+  A job holds `caffeinate -i` (no idle sleep, on battery too), so a laptop left unplugged can run
+  down to macOS's emergency hibernation mid-job: that costs the target under way, never results
+  (every target is noted done as it's saved), and the job starts again past the targets it noted
+  done once the Mac wakes.
+  A record of a running job this app writes (`Needs`, the NAS alone) can't be read by an app from
+  before it (whose `Needs` has no default for power): an owner's downgrade while a job runs leaves
+  that job's record unread, the job run again.
 - **Away from home** the agent mounts the share by the NAS's bare name, which Tailscale's DNS sends
   through the tunnel (~12 MB/s), when the Keychain has that name's password. Every job runs, those
   that move the whole planet or world through the NAS (the OSM pass, a pass's missing sets, the
-  units' reach, the world's buildings) too, slowly (the owner's choice). Home again, with no job
+  units' reach, the world's buildings) too, slowly (the owner's choice: the OSM pass alone reads
+  about 80 GB, the planet and its filtered copy, over Tailscale's ~12 MB/s). Home again, with no job
   running, it unmounts a tunnel mount and mounts the share by its LAN name.
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
@@ -439,7 +448,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   `cost_version` 1; a measure of its programs' most, one at a time, counting for nothing now), else
   about ten times its piece, never under 3.7 GB (over the M1's first 205 units, pieces up to 150 MB,
   their programs took 3.7 GB at most), and never below its floor (docs/pool.md §7.2).
-- **How:** at any charge; half its cores while its user is at it, all but two otherwise; each job started with its step's room free (15 GB, terrain's
+- **How:** at any charge; all but two of its cores, whoever is at it; each job started with its step's room free (15 GB, terrain's
   pieces too, a task 5), from the caches the NAS keeps; only work it can make that for is asked
   for, and a job it can't is given back.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
@@ -1838,9 +1847,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     alone or needs room made is the first's next; when it only can't share the Mac with the second's
     (one of the steps table's groups: two Wikidata steps, two raw-tile readers, two heavy NAS
     readers), the first takes the next job in plan order that can start, and the job passed over
-    starts as soon as the clash ends (in whichever slot frees: the second takes it too); one passed
-    over for half an hour is waited for, the second starting nothing new but it (the forecast,
-    which doesn't model these clashes, is the nearer for it);
+    starts as soon as the clash ends (in whichever slot frees, if it's one of the second job's
+    steps: else in the first's alone); one passed over for half an hour is waited for, the second
+    starting nothing new but it (so for one the second doesn't take, the second stands idle until
+    the first slot frees and starts it); started in either slot, or gone from the plan (done, or
+    waiting for a reason of its own), it holds nothing up;
   - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
     claims its own, and half the cores;
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
@@ -2677,6 +2688,9 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
+   - the forecast doesn't model the agent's passing over a first job that can't share the Mac with
+     the second's (§8, Two jobs at once), nor these clashes at all: it takes such jobs as running
+     beside each other;
    - the memory guard (`agent::memguard`) samples each job's memory every 5 s: a job growing faster
      can swap its Mac that long before it's frozen; a unit's measure is taken while it's built
      here, so a tail it runs here later is counted against the unit under way then; and a helper's

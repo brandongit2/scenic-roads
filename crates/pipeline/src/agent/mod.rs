@@ -2338,10 +2338,11 @@ impl Agent {
         only_grouped && self.passed_over.get(&spec.id).is_none_or(|t| t.elapsed() < PASS_MAX)
     }
 
-    /// A job the first slot has passed over for `PASS_MAX` (the second slot then starts nothing new
-    /// but it, so it starts as soon as the job in its way ends).
-    fn starving(&self) -> Option<&String> {
-        self.passed_over.iter().find(|(_, t)| t.elapsed() >= PASS_MAX).map(|(id, _)| id)
+    /// A job of the plan the first slot has passed over for `PASS_MAX` (the second slot then starts
+    /// nothing new but it, so it starts as soon as the job in its way ends; one not in the plan any
+    /// more, done or waiting for a reason of its own, counts for nothing).
+    fn starving(&self, plan: &[JobSpec]) -> Option<&String> {
+        self.passed_over.iter().find(|(id, t)| t.elapsed() >= PASS_MAX && plan.iter().any(|p| p.id == **id)).map(|(id, _)| id)
     }
 
     /// Why `spec` can't start now for itself: a condition it needs gone, or a failure's wait.
@@ -2643,7 +2644,7 @@ impl Agent {
         }
         // (A job the first slot passed over too long: nothing new here but it, so it starts as soon
         // as the job in its way ends.)
-        let starving = self.starving().cloned();
+        let starving = self.starving(plan).cloned();
         let rank = |s: &JobSpec| step_of(&s.id).and_then(|st| SECOND.iter().position(|x| *x == st));
         let mut picks: Vec<&JobSpec> = plan.iter().filter(|s| rank(s).is_some() && starving.as_ref().is_none_or(|id| *id == s.id)).collect();
         if let (Some(id), true) = (&starving, picks.is_empty()) {
@@ -3283,16 +3284,14 @@ impl Agent {
         }
     }
 
-    fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
+    fn start(&mut self, k: usize, mut spec: JobSpec, _c: &Conditions) -> Result<()> {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        // Half the cores while the user is active, all of them when away (a helper, two fewer:
-        // its Mac has less memory, and its user's work comes first). The second job: half (the two
-        // jobs' threads share the cores).
-        let threads = match (k, c.user_active(), self.o.helper) {
-            (1.., _, _) => (cores / 2).max(1),
-            (_, true, _) => (cores / 2).max(1),
-            (_, false, true) => cores.saturating_sub(2).max(1),
-            (_, false, false) => cores,
+        // All the cores, whoever is at the Mac (the owner's choice; a helper, two fewer: its Mac has
+        // less memory). The second job: half (the two jobs' threads share the cores).
+        let threads = match (k, self.o.helper) {
+            (1.., _) => (cores / 2).max(1),
+            (_, true) => cores.saturating_sub(2).max(1),
+            (_, false) => cores,
         };
         // The second job's scratch folder its own (a step's work in it, wiped by its next run).
         if k > 0 {
@@ -3350,6 +3349,8 @@ impl Agent {
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
+        // (Started: no longer passed over, in either slot.)
+        self.passed_over.remove(&spec.id);
         // (Its costs file afresh: a line an earlier job left, a target begun and never ended, would
         // name a target under way that isn't, crate::agent::memguard.)
         let costs = self.slot_costs(k);
@@ -5472,6 +5473,22 @@ mod tests {
         a.start_second(&plan, &in_use, Some(&root));
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("items items"), "{:?}", a.beside_why);
         stop(&mut a);
+        // Passed over, started in the second slot, ended more than half an hour after it was first
+        // passed over: it holds nothing up (no longer passed over once it started, and only a job of
+        // the plan counts): the second slot starts other work.
+        assert!(a.try_start(0, job("pack 6/1/8"), &in_use, Some(&root), &mut Vec::new()));
+        a.passed_over.insert("items items".into(), Instant::now() - PASS_MAX - Duration::from_secs(1));
+        assert!(a.try_start(1, job("items items"), &in_use, Some(&root), &mut Vec::new()));
+        assert!(!a.passed_over.contains_key("items items"));
+        if let Some(r) = a.slots[1].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+        a.slots[1] = Slot::default();
+        a.passed_over.insert("items items".into(), Instant::now() - PASS_MAX - Duration::from_secs(1));
+        a.start_second(&[job("unit 6/3/3")], &in_use, Some(&root));
+        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("unit 6/3/3"), "{:?}", a.beside_why);
+        stop(&mut a);
+        a.passed_over.clear();
         // Passed over too long: the first slot waits for it, and the second starts nothing new but it.
         assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
         a.passed_over.insert("items items".into(), Instant::now() - PASS_MAX - Duration::from_secs(1));
