@@ -802,13 +802,16 @@ class, id) within a tile. The client sends the id with the clicked point.
     another shared step's job, and `"<kind> <unit>"` for a task: `"tail 6/x/y"` a unit's last
     steps, `"bldtile 8/x/y"` a 3D buildings' z8 area, `"treeblock 8/x/y"` a row of tree cover blocks,
     by its first, `"terrainsub 8/x/y"` a terrain piece's group of z8 subtrees, by its first),
+    `floors.json` (`{<cost key>: MB}`: what a target takes at least, as a run that didn't measure
+    it saw it hold, crate::agent::memguard; a measure in `costs.json` takes its place),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when
     it last changed);
-    `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line per target, `{unit,
-    peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb` the most the
-    job's processes held together during that target, sampled); `timings.jsonl` (every worker's
+    `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line as each target begins,
+    `{unit, started}` (unix seconds: which target is under way, for the memory guard), and one as it
+    ends, `{unit, peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb`
+    the most the job's processes held together during that target, sampled); `timings.jsonl` (every worker's
     jobs' and tasks' timings: Timings, below).
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
     `costs.jsonl`, `timings.json` (its timings: Timings), `spec.json` (a task's), `task.json`
@@ -867,6 +870,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     able}}`, what isn't so left out (`conds`: apps from phase 3's controls on; older ones ignore it).
   - `state/pool/auto-handover`: the owner's switch for the proactive offer to be taken by itself
     (`scenic lead auto on|off`; a line saying who turned it on), off while missing.
+  - `state/pool/memory-guard`: the memory guard's switch (crate::agent::memguard: docs/pool.md
+    §7.2), `off` or `on` in it; missing, on. Read by every agent, the pool on or off.
   - `state/pool/mail/<to>/<from>.json`: the messages `from` sent `to`, its last 64, `{msgs: [[n,
     msg], …]}`, `n` rising (the sender's clock in ms, and on), `msg` one of `{"Tell": [keys]}`,
     `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`, `{"HandTo": member}`.

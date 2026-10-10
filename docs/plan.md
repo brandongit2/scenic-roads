@@ -1800,7 +1800,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     nor a bldprep beside another (each reads up to ~3 GB of the NAS's parquet a tile);
   - while the Mac is in use, only work that mostly waits on the network;
   - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
-    second's within three quarters of the Mac's, and the second's free now with 2 GB to spare;
+    second's within three quarters of the Mac's, and the second's free now with 2 GB to spare (a
+    target's prediction never below its floor, what a run saw it hold: docs/pool.md §7.2);
+  - when they hold more together than the Mac's limit all the same, the memory guard stops the job
+    beside the larger at its next safe point, or the larger at once if it passes the limit alone
+    (docs/pool.md §7.2, crate::agent::memguard);
   - starts only with its need free (10 GB for the network steps, the reserve for the others): room
     on the disk is made only while no other job runs (a job beside may read what's deleted, and the
     loop that looks after it waits meanwhile);
@@ -2634,6 +2638,10 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
+   - the memory guard (`agent::memguard`) samples each job's memory once a loop (every 20 s): a job
+     growing faster can swap its Mac for a loop before it's stopped; and a helper's job with the
+     pool off sends its targets' floors nowhere (its result has none: the pool-off path goes,
+     pool.md §12);
    - the steps' write-sets (`agent::steps`, phase 4's first batch) are checked at merge and what lies
      outside them reported, not refused: an entry a step's bug sends outside its write-set is merged
      all the same until the fifth batch enforces them (pool.md §7.3, §12);
@@ -2793,6 +2801,10 @@ At each phase's end an Opus agent reviews the work against this plan.
   two first guesses of a step's memory that disagreed for the network steps (the forecast's 1.5 GB,
   a job beside another's 1 to 6 GB, reckoned from what their Python and osmium hold): one now, the
   latter, the closer reckoning (neither was measured, unlike a unit's, the most its batches took).
+- **A job far over its memory is stopped by measure, on by default** (the owner's choice): the
+  guard decides by what the jobs hold, never by a prediction or the steps table (the owner won't
+  have placement or stopping rest on hand-kept figures that can go stale), and the jobs it stops
+  cost their current target's work, which an unguarded Mac swapping for hours costs more of.
 - **A job far over its memory is stopped, not frozen** (pool.md §7.2): a frozen job keeps what it
   holds, swapped out or compressed, so the Mac stays short; stopped, it frees it, losing its current
   target's work, and what it held is kept as its target's floor so the next offer goes where it

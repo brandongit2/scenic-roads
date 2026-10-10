@@ -3,8 +3,8 @@
 Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its driver and phase
 2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls built**
 (crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); **phase 4's
-first batch built** (the steps table, crate::agent::steps, its write-sets checked and reported at
-merge: §7.2, §7.3, §12); the rest is planned. It replaces the fixed
+first two batches built** (the steps table, crate::agent::steps, its write-sets checked and reported
+at merge; the memory guard, crate::agent::memguard: §7.2, §7.3, §12); the rest is planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -482,27 +482,47 @@ What's planned of placement (phase 4, §12):
 - **The forecast** is rewritten for equal machines (each member's slots as lanes, the pages as one):
   a large piece of phase 4, not a detail.
 
-**A job far over its memory** (planned, phase 4's second batch: §12). macOS swaps rather than kills,
-so a job far past what it was predicted to take (terrain's whole-area run on the Alaska coast held
-32.9 GB against a prediction of a few) leaves its Mac swapping for as long as it runs, every other
-job and the owner's own work with it. The agent already samples each running job's memory, its
-processes' footprints summed (crate::sys::footprint_of_group, for the status); it will act on it:
+**A job far over its memory** (crate::agent::memguard, built: phase 4's second batch, §12). macOS
+swaps rather than kills, so a job holding more than its Mac has (terrain's whole-area run on the
+Alaska coast held 32.9 GB) leaves the Mac swapping for as long as it runs, every other job and the
+owner's own work with it. Every agent, the lead's and each member's, acts on what its jobs hold, by
+measure alone: no prediction, and nothing from the steps table, decides it.
 
-- **A limit per Mac:** its memory less a reserve for macOS and the owner (an eighth, 4 GB at least).
-  A job's footprint passing it, while it's over its own prediction (the job that caused it, not
-  one beside it that's within its own), is stopped: first the job beside it, if it has one and
-  stopping that (at its next safe point, as a pause does) brings the Mac under; else the job itself,
-  at once (its group terminated, then killed after a grace), its targets not finished given back,
-  not held against them as a failure (the targets it noted done kept, as any stop keeps them).
-- **Learning:** what it held when stopped is kept as the least its target takes (its cost marked
-  so: a floor, not a measure, raised by any later run), so the coordinator offers that target only
-  to a slot that spares that much, the next time on a Mac with room. A job that ends on its own
-  keeps its measured peak as now, over its prediction or not.
-- **More than any member has:** a target whose floor passes every member's limit isn't offered
-  again; the status says so ("needs about N GB, more than any Mac in the pool has"), for the owner:
-  a step whose memory grows with its target is a fault to fix in the step, not in placement.
-- **Behind its own switch** (`state/pool/memory-guard`, off while missing, §12): stopping a job
-  costs its current target's work.
+- **Sampled each loop** (every 20 s, sooner when a job ends): each running job's processes'
+  physical footprints summed (crate::sys::footprint_of_group, as the status shows them), kept per
+  target as the most the job held while that target was under way. Which target is under way the
+  job says itself: a step that notes its targets' costs (`SCENIC_COSTS`) notes a `started` line as
+  each begins, beside the `peak_mb` line it notes as each ends; a job of a step that notes none is
+  on the first of its targets it hasn't noted done (`SCENIC_DONE`), and a job of no targets (the OSM
+  pass) is its own. A job growing faster than a loop can briefly swap before the guard sees it.
+- **A limit per Mac:** its memory less an eighth for macOS and the owner's work, 4 GB at least (42
+  GB of the M4's 48, 12 of the M1's 16). While its jobs hold more together, the guard decides by
+  what each holds now: when the largest fits the limit alone, the job beside it stops at its next
+  safe point (as a pause stops it; frozen by no pause meanwhile; stopped at once if it reaches none
+  in the time a pause gives, 15 minutes) and nothing starts beside the largest until it ends; when
+  the largest passes the limit by itself, it stops at once (its group terminated, then killed after
+  30 s). Either is given back, not held against its targets as a failure; the targets it noted done
+  are kept, as any stop keeps them; the history and the status (`memory`: the switch, the limit,
+  what the jobs hold, what the guard last did) say why.
+- **Learning, whatever the switch:** what a job held while a target was under way is that target's
+  **floor**, the least it takes (crate::coord's floors, `floors.json` beside the costs, and the
+  pool's coordinator state across terms): a floor only rises; a run that measures the target itself
+  (its `peak_mb`, sampled four times a second) takes its place. A target's predicted memory is never
+  below its floor, so the coordinator offers it only to a slot sparing that much, and a second job
+  starts beside another only if both fit. A member sends its jobs' floors with the lease's end (done,
+  given back or failed: `floors`); its asks say its Mac's limit (`limit_mb`).
+- **Held where it can't fit:** a target whose floor (a unit's with the GB its job holds besides)
+  passes this Mac's limit isn't started here: a shared step's is left to the members whose Macs have
+  room ("left to a Mac with room"); one past every Mac's limit the lead knows from the members'
+  asks, or a step only the lead runs, waits, the status saying so ("more than any Mac in the pool
+  has"), for the owner: a step whose memory grows with its target is a fault to fix in the step, not
+  in placement.
+- **A target never run** is placed as before the guard (a member by the size it's offered with, the
+  lead's first slot whatever it holds); if it overruns, the guard stops it and its floor places it
+  next time. Nothing in the guard trusts a first guess.
+- **The switch:** `state/pool/memory-guard` on the NAS, `off` in it to stop no job, `on` to stop
+  them; missing, on (the owner's choice: `memguard::DEFAULT`). Off, nothing is stopped or held, and
+  the floors are still learned.
 
 ### 7.3 Results: the journal
 
@@ -884,13 +904,20 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       the journal), though they hold none of the pass's worldwide steps (the OSM pass, its sets, the
       reach, the world's buildings, the summits, the heritage sites; the labels and the water once
       each). Needs no switch.
-   2. **A job far over its memory** (§7.2): the limit per Mac, the job over its prediction stopped
-      (the one beside it first, when that suffices), what it held kept as its target's floor so the
-      next offer goes to a slot that spares it, a target over every member's limit held with why.
-      Learning (any job's peak kept, a stopped job's as a floor) needs no switch; stopping is behind
-      `state/pool/memory-guard`. Tests: a job that grows past a test limit stopped and given back,
-      not failed; its floor kept and offered only to a larger slot; one beside stopped first; the
-      floor over every member's held, the status saying why.
+   2. **A job far over its memory: built** (crate::agent::memguard; §7.2). Each job's memory
+      sampled each loop per target under way (a job says which: `started` lines in its costs
+      file); the limit per Mac; by measure alone, the job beside the largest drained when that
+      suffices, else the largest stopped, given back, not failed; what a target held kept as its
+      floor (learned whatever the switch), so its next offer goes to a slot that spares it; a
+      target past this Mac's limit left to a Mac with room, one past every Mac's held with why.
+      The switch `state/pool/memory-guard` (`off` or `on`), on while missing (the owner's choice).
+      Tests: decisions by measure; the limit; the target under way; floors from what a run held
+      but what it measured; the switch; a coordinator's floor keeping a target from a worker too
+      small and given to a larger, rising only, carried in the pool's state, a measure taking its
+      place; the agent draining the job beside, nothing starting beside the larger meanwhile,
+      then stopping the one past the limit at once, not as a failure, its target's floor learned,
+      that target held here and left to a Mac with room, held everywhere when none has room, and
+      nothing stopped or held with the switch off.
    3. **The lead's slots as any member's** (§7.6, phase 2's part of the agent): its jobs ask, beat
       and end through one client, in process while it leads and over HTTP after a handover, so a
       change of part restarts nothing (only its coordinator starts or stops), and the lead stays

@@ -28,6 +28,7 @@ pub mod forecast;
 pub mod gc;
 pub mod jobs;
 pub mod lead;
+pub mod memguard;
 pub mod pool;
 pub mod recipes;
 pub mod rekey;
@@ -153,6 +154,12 @@ struct Slot {
     claims_fresh: Option<Instant>,
     drain_since: Option<Instant>,
     job_eta: Option<u64>,
+    /// The most its job's processes held while each target was under way (MB, by cost key:
+    /// crate::agent::memguard), sampled each loop: the floors its end teaches.
+    mem_seen: BTreeMap<String, u64>,
+    /// Why its job stops at its next safe point for the memory guard (the job beside it fits this
+    /// Mac's limit alone): kept until it ends.
+    mem_drain: Option<String>,
 }
 
 /// How a job's lease ended, for the coordinator.
@@ -380,6 +387,10 @@ pub struct Status {
     /// This Mac in the pool, while it's on (docs/pool.md §12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolView>,
+    /// The memory guard (crate::agent::memguard): its switch, this Mac's limit, what the jobs hold
+    /// now, what it last did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<memguard::View>,
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
@@ -703,6 +714,14 @@ pub struct Agent {
     /// The memory's total and free MB as a test sets them (`start_second`), so a test doesn't
     /// depend on what the Mac running it has free.
     mem_set: Option<(u64, u64)>,
+    /// The memory guard (crate::agent::memguard): its switch as last read (None: not read yet, as
+    /// its default), the slot and job the guard drained the one beside (nothing starts beside that
+    /// job until it ends), what it last did, for the status; and what each slot's job holds as
+    /// a test sets it (MB).
+    guard_on: Option<bool>,
+    guard_hold: Option<(usize, String)>,
+    guard_last: Option<(u64, String)>,
+    held_set: Option<Vec<Option<u64>>>,
     /// The Mac it reads its conditions and resources from (a test's fixed one: cond::Mac::TEST).
     pub(crate) mac: cond::Mac,
     sleep: SleepWatch,
@@ -927,7 +946,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, held_set: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1152,6 +1171,7 @@ impl Agent {
             app: Some(self.app.clone()),
             more_mb: away.then(|| helper_memory(true)),
             max_secs: away.then_some(AWAY_JOB),
+            limit_mb: Some(memguard::limit_mb(self.total_mb())),
             ..Default::default()
         };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
@@ -1291,6 +1311,11 @@ impl Agent {
         // (A job ended: what a helper's caches can free is counted again before it next asks.)
         self.cheap = None;
         let pid = self.slots[k].running.as_ref().map(|r| r.pgid as u32);
+        // What its targets took at least, as it saw them (crate::agent::memguard), but those its
+        // run measured: learned whatever the guard does.
+        let seen = std::mem::take(&mut self.slots[k].mem_seen);
+        let step_now = self.slots[k].running.as_ref().map(|r| r.spec.record.as_ref().map_or_else(|| step_of(&r.spec.id).unwrap_or_default(), |w| w.step.clone())).unwrap_or_default();
+        let floors_of = |costs: &[(String, crate::coord::Cost)]| memguard::floors(&step_now, &seen, &costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>());
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
@@ -1299,7 +1324,9 @@ impl Agent {
                         c.close_tasks(p);
                     }
                     let costs = self.costs_path(k);
-                    c.add_costs_by(&read_costs(&costs), &self.worker_of(k));
+                    let measured = read_costs(&costs);
+                    c.add_floors(&floors_of(&measured));
+                    c.add_costs_by(&measured, &self.worker_of(k));
                     std::fs::remove_file(costs).ok();
                 }
             }
@@ -1324,6 +1351,7 @@ impl Agent {
                         if let Some(p) = pid {
                             c.close_tasks(p);
                         }
+                        c.add_floors(&floors_of(&costs));
                         c.add_costs_by(&costs, &self.worker_of(k));
                         std::fs::remove_file(self.costs_path(k)).ok();
                     }
@@ -1332,10 +1360,11 @@ impl Agent {
                     // Best effort: unanswered, the lease lapses, and the merged records say they're
                     // built.)
                     let failed = outcome == Outcome::Failed;
+                    let floors = floors_of(&costs);
                     let r = match entry.as_ref().filter(|e| e.handoff.done.is_some()) {
-                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, failed, journaled: true, timings: read_timings(&dir), ..Default::default() }).map(|_| ()),
-                        None if matches!(outcome, Outcome::Paused | Outcome::Interrupted) => c.give_back(id, note),
-                        None => c.fail(id, note, None),
+                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings: read_timings(&dir), ..Default::default() }).map(|_| ()),
+                        None if matches!(outcome, Outcome::Paused | Outcome::Interrupted) => c.give_back_with(id, note, &floors),
+                        None => c.fail_with(id, note, None, &floors),
                     };
                     if let Err(e) = r {
                         eprintln!("agent: telling the lead lease {id} ended: {e:#} (it lapses)");
@@ -1762,10 +1791,18 @@ impl Agent {
             }
         }
 
-        // The running jobs.
+        // The running jobs; then what they hold together, against this Mac's limit (the memory
+        // guard: crate::agent::memguard), its switch as the NAS says.
+        if let Some(on) = root.as_deref().and_then(memguard::on) {
+            if self.guard_on != Some(on) {
+                eprintln!("agent: the memory guard is {}", if on { "on" } else { "off" });
+            }
+            self.guard_on = Some(on);
+        }
         for k in 0..SLOTS {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
+        ended |= self.guard(root.as_deref());
         // (A job ended: room for the target may be made again.)
         if ended {
             self.floor_short = None;
@@ -2007,6 +2044,7 @@ impl Agent {
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone(), outside: p.outside.iter().cloned().collect(), outside_n: p.outside_n }),
+            memory: Some(self.guard_view()),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if let Some(sh) = self.shadow.as_mut() {
@@ -2094,6 +2132,7 @@ impl Agent {
             self.end_lease(k, outcome, &handed, &note);
             self.finished(&id, &what, ok || paused, secs, note);
             self.slots[k].drain_since = None;
+            self.slots[k].mem_drain = None;
             self.release_claims(k, root);
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
@@ -2109,6 +2148,12 @@ impl Agent {
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(false);
+        }
+        // What it holds now, kept against the target under way (its floor, if it's more than the
+        // target's measure: crate::agent::memguard).
+        if let (Some(mb), Some(key)) = (self.held_mb(k), self.current_key(k)) {
+            let e = self.slots[k].mem_seen.entry(key).or_insert(0);
+            *e = (*e).max(mb);
         }
         let paused_job = self.slots[k].running.as_ref().unwrap().paused.is_some();
         if (!paused_job || self.pause.is_some()) && self.slots[k].lease.is_some() && self.slots[k].beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.beat(k, root) {
@@ -2144,7 +2189,7 @@ impl Agent {
         let pause = self.pause.clone();
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut().unwrap();
-        match stop_for(&r.spec.needs, c, pause.as_ref()) {
+        match stop_for(&r.spec.needs, c, pause.as_ref()).or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why))) {
             Some((crate::control::Mode::Freeze, why)) => {
                 if r.paused.is_none() {
                     eprintln!("agent: pausing {}: {why}", r.spec.id);
@@ -2236,6 +2281,16 @@ impl Agent {
         if let Some(why) = lapsed(&spec.needs, c) {
             return Some(why);
         }
+        // (A job of no targets of its own, the OSM pass's: held by the memory guard when what it
+        // held before passes this Mac's limit, the targets of a job with them dropped from the plan
+        // already, `guard_holds`.)
+        if let (None, Some(co), true) = (spec.record.as_ref(), self.coord.as_ref(), self.guard_stops()) {
+            let (step, rest) = spec.id.split_once(' ').unwrap_or((spec.id.as_str(), spec.id.as_str()));
+            let limit = memguard::limit_mb(self.total_mb());
+            if let Some(f) = co.floor(step, rest).map(|f| f + memguard::own_mb(step)).filter(|f| *f > limit) {
+                return Some(format!("needs about {:.1} GB, past this Mac's limit of {:.1} GB, and no other Mac runs it: for the owner to see to", f as f64 / 1024.0, limit as f64 / 1024.0));
+            }
+        }
         // (A helper's job came from the coordinator, which keeps a target it failed from it for an
         // hour, doubling: no wait of its own on top.)
         match self.mem.retry.get(&spec.id).filter(|_| !self.o.helper) {
@@ -2277,6 +2332,9 @@ impl Agent {
     /// fit three quarters of the memory. The first slot then waits for it rather than start later
     /// work, and the second starts nothing new meanwhile (`start_second`): neither starves it.
     fn waits_for_second(&self, spec: &JobSpec) -> Option<String> {
+        if let Some(id) = self.guard_held(1) {
+            return Some(format!("waits for the job beside it ({id}) to end: the jobs here held more memory together than this Mac's limit lately"));
+        }
         let r = self.slots[1].running.as_ref()?;
         let (s, b) = (step_of(&spec.id).unwrap_or_default(), step_of(&r.spec.id).unwrap_or_default());
         let beside = build::label(&b);
@@ -2516,6 +2574,11 @@ impl Agent {
     /// predicted, or as it is now if more), and the second's free now with 2 GB to spare. Why none
     /// starts, in `beside_why`.
     fn start_second(&mut self, plan: &[JobSpec], c: &Conditions, root: Option<&Path>) {
+        // (The memory guard drained a job beside the first: nothing starts beside it until it ends.)
+        if let Some(id) = self.guard_held(0) {
+            self.beside_why = Some(format!("the jobs here held more memory together than this Mac's limit lately: nothing starts beside {id} until it ends"));
+            return;
+        }
         let rank = |s: &JobSpec| step_of(&s.id).and_then(|st| SECOND.iter().position(|x| *x == st));
         let mut picks: Vec<&JobSpec> = plan.iter().filter(|s| rank(s).is_some()).collect();
         picks.sort_by_key(|s| rank(s));
@@ -2575,9 +2638,161 @@ impl Agent {
         // (A unit's measure is its programs' most, one at a time: its job holds a GB besides.)
         let own = if step == "unit" { 1024 } else { 0 };
         match (&self.coord, spec.record.as_ref()) {
-            (Some(c), Some(w)) => own + w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| first_peak(&w.step))).max().unwrap_or(0),
+            (Some(c), Some(w)) => own + w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| first_peak(&w.step)).max(c.floor(&w.step, t).unwrap_or(0))).max().unwrap_or(0),
             _ => first_peak(&step),
         }
+    }
+
+    /// This Mac's memory (MB): as a test sets it, else as the Mac says.
+    fn total_mb(&self) -> u64 {
+        self.mem_set.map(|m| m.0).unwrap_or_else(|| (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64)
+    }
+
+    /// Whether the memory guard stops jobs: as its switch says, as its default until it's read.
+    fn guard_stops(&self) -> bool {
+        self.guard_on.unwrap_or(memguard::DEFAULT)
+    }
+
+    /// What slot `k`'s job holds now (MB: its processes' footprints summed), as a test sets it, else
+    /// as the Mac says; None with no job (or its memory unknown).
+    fn held_mb(&self, k: usize) -> Option<u64> {
+        let r = self.slots[k].running.as_ref()?;
+        match &self.held_set {
+            Some(v) => v.get(k).copied().flatten(),
+            None => crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
+        }
+    }
+
+    /// Where slot `k`'s job notes what its targets cost (`SCENIC_COSTS`): this Mac's own job's in
+    /// the agent's folder, a member's leased job's in its lease's folder.
+    fn slot_costs(&self, k: usize) -> PathBuf {
+        match &self.slots[k].lease {
+            Some(Held::Leased { dir, .. } | Held::Pooled { dir, own: false, .. }) => dir.join("costs.jsonl"),
+            _ => self.costs_path(k),
+        }
+    }
+
+    /// The cost key of the target slot `k`'s job is on: the last its costs file says began and
+    /// hasn't ended (crate::agent::memguard::current); else, for a step that notes no costs, the
+    /// first of its targets it hasn't noted done, or the job itself (`<step> <rest of its id>`).
+    fn current_key(&self, k: usize) -> Option<String> {
+        let r = self.slots[k].running.as_ref()?;
+        if let Some(key) = memguard::current(&self.slot_costs(k)) {
+            return Some(key);
+        }
+        match r.spec.record.as_ref() {
+            Some(w) => {
+                let done = crate::control::read_done(&self.done_path(k), &w.step);
+                w.targets.iter().find(|(t, _)| !done.contains(t)).map(|(t, _)| crate::coord::cost_key(&w.step, t))
+            }
+            None => {
+                let (step, rest) = r.spec.id.split_once(' ').unwrap_or((r.spec.id.as_str(), r.spec.id.as_str()));
+                Some(crate::coord::cost_key(step, rest))
+            }
+        }
+    }
+
+    /// The memory guard (crate::agent::memguard), once a loop after the jobs are tended: while the
+    /// jobs here hold more together than this Mac's limit, the job beside the largest stops at its
+    /// next safe point when the largest fits alone (and nothing starts beside it until it ends),
+    /// else the largest stops at once (given back, not failed; what it held its target's floor), as
+    /// does a job drained that reached no safe point in the time a pause gives one. True when it
+    /// stopped a job.
+    fn guard(&mut self, root: Option<&Path>) -> bool {
+        if !self.guard_stops() {
+            return false;
+        }
+        let held: Vec<Option<u64>> = (0..SLOTS).map(|k| self.held_mb(k)).collect();
+        let limit = memguard::limit_mb(self.total_mb());
+        let total: u64 = held.iter().flatten().sum();
+        if total <= limit {
+            return false;
+        }
+        let draining: Vec<bool> = self.slots.iter().map(|s| s.mem_drain.is_some()).collect();
+        let late = (0..SLOTS).find(|&k| draining[k] && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= DRAIN_GRACE));
+        let gb = |mb: u64| mb as f64 / 1024.0;
+        let act = match late {
+            Some(k) => memguard::Act::Stop(k),
+            None => memguard::decide(&held, limit, &draining),
+        };
+        match act {
+            memguard::Act::Nothing => false,
+            memguard::Act::Drain(k) => {
+                let big = (0..SLOTS).find(|&b| b != k && held[b].is_some()).unwrap_or(0);
+                let beside = self.slots[big].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
+                let why = format!("the jobs here hold {:.1} GB together, past this Mac's limit of {:.1} GB: it makes room for {beside} ({:.1} GB)", gb(total), gb(limit), gb(held[big].unwrap_or(0)));
+                let id = self.slots[k].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
+                eprintln!("agent: memory guard: {id} stops at its next safe point: {why}");
+                self.guard_last = Some((now_s(), format!("{id} stopped at its next safe point: {why}")));
+                self.slots[k].mem_drain = Some(why);
+                self.guard_hold = Some((big, beside));
+                false
+            }
+            memguard::Act::Stop(k) => {
+                let Some(r) = self.slots[k].running.as_mut() else { return false };
+                let id = r.spec.id.clone();
+                let mb = held[k].unwrap_or(0);
+                let why = if late == Some(k) {
+                    format!("stopped by the memory guard: it reached no safe point in {} min while the jobs here held {:.1} GB together, past this Mac's limit of {:.1} GB", DRAIN_GRACE.as_secs() / 60, gb(total), gb(limit))
+                } else {
+                    format!("stopped by the memory guard: it held {:.1} GB, past this Mac's limit of {:.1} GB (what it held is kept as the least its target takes, so it goes to a Mac with room)", gb(mb), gb(limit))
+                };
+                eprintln!("agent: memory guard: {id} {why}");
+                r.stop(Duration::from_secs(30));
+                self.guard_last = Some((now_s(), format!("{id} {why}")));
+                self.stopped(k, root, &why);
+                self.release_claims(k, root);
+                self.slots[k].running = None;
+                self.slots[k].drain_since = None;
+                self.slots[k].mem_drain = None;
+                std::fs::remove_file(self.record_path(k)).ok();
+                true
+            }
+        }
+    }
+
+    /// The job in slot `k` the memory guard drained the one beside, while it runs: nothing starts
+    /// in the other slot until it ends.
+    fn guard_held(&self, k: usize) -> Option<String> {
+        let (slot, id) = self.guard_hold.clone()?;
+        (slot == k && self.slots[slot].running.as_ref().map(|r| &r.spec.id) == Some(&id)).then_some(id)
+    }
+
+    /// The memory guard for the status.
+    fn guard_view(&self) -> memguard::View {
+        memguard::View { on: self.guard_stops(), limit_mb: memguard::limit_mb(self.total_mb()), held_mb: (0..SLOTS).filter_map(|k| self.held_mb(k)).sum(), last: self.guard_last.clone() }
+    }
+
+    /// The targets of the plan's `works` the memory guard holds (its switch on): those whose floor,
+    /// with what its job holds besides, passes this Mac's limit (`here`), and of them those past
+    /// every Mac's in the pool, as the lead knows them (`all`: a step only this Mac runs, this
+    /// Mac's limit alone), with why for the status.
+    fn guard_holds(&self, works: &[build::Work]) -> (BTreeSet<(String, String)>, BTreeSet<(String, String)>, Vec<Waiting>) {
+        let (mut here, mut all, mut waiting) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+        let Some(c) = self.coord.as_ref().filter(|_| self.guard_stops()) else { return (here, all, waiting) };
+        let limit = memguard::limit_mb(self.total_mb());
+        let largest = c.largest_limit().unwrap_or(0).max(limit);
+        let gb = |mb: u64| mb as f64 / 1024.0;
+        for w in works {
+            let most = if steps::SHARED.contains(&w.step.as_str()) { largest } else { limit };
+            let (mut n_here, mut n_all, mut need) = (0, 0, 0u64);
+            for (t, _) in &w.targets {
+                let Some(f) = c.floor(&w.step, t).map(|f| f + memguard::own_mb(&w.step)).filter(|f| *f > limit) else { continue };
+                need = need.max(f);
+                here.insert((w.step.clone(), t.clone()));
+                n_here += 1;
+                if f > most {
+                    all.insert((w.step.clone(), t.clone()));
+                    n_all += 1;
+                }
+            }
+            if n_all > 0 {
+                waiting.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
+            } else if n_here > 0 {
+                waiting.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
+            }
+        }
+        (here, all, waiting)
     }
 
     /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
@@ -3451,6 +3666,13 @@ impl Agent {
         } else {
             BTreeMap::new()
         };
+        // (The memory guard's holds: a target past every Mac's limit offered to none, one past this
+        // Mac's built only by a Mac with room.)
+        let (held_here, held_all, held_why) = self.guard_holds(&plan);
+        waiting.extend(held_why);
+        for w in plan.iter_mut() {
+            w.targets.retain(|t| !held_all.contains(&(w.step.clone(), t.0.clone())));
+        }
         for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str())) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator, or claimed (a helper on an app from before it).
@@ -3483,6 +3705,9 @@ impl Agent {
         offers.sort_by_key(|o| steps::SHARED.iter().position(|s| *s == o.step));
         if let Some(c) = &self.coord {
             c.offer(date, offers);
+        }
+        for w in plan.iter_mut() {
+            w.targets.retain(|t| !held_here.contains(&(w.step.clone(), t.0.clone())));
         }
         // The forecast of the work left (crate::agent::forecast): the build Mac's, for the status (made
         // again at most each minute: idle, the plan's made each loop).
@@ -4998,6 +5223,88 @@ mod tests {
         assert!(a.slots[1].running.is_none());
         assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("alone")), "{:?}", a.beside_why);
         if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn the_memory_guard_drains_the_job_beside_then_stops_the_one_past_the_limit_and_learns() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.free_set = Some(40 << 30);
+        // (A Mac of 16 GB: its limit 12 GB.)
+        a.mem_set = Some((16 << 10, 12 << 10));
+        let job = |id: &str, targets: &[&str]| {
+            let step = id.split(' ').next().unwrap();
+            let record = Some(build::Work { step: step.into(), targets: targets.iter().map(|t| (t.to_string(), "k".to_string())).collect() });
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job("terrain 6/1/1", &["6/1/1", "6/1/2"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(1, job("bldtiles 6/2/2", &["6/2/2"]), &cond, Some(&root), &mut Vec::new()));
+        let tend = |a: &mut Agent| {
+            for k in 0..SLOTS {
+                a.tend(k, &cond, Some(&root), 0).unwrap();
+            }
+        };
+        // Together within the limit: nothing.
+        a.held_set = Some(vec![Some(7 << 10), Some(4 << 10)]);
+        tend(&mut a);
+        assert!(!a.guard(Some(&root)) && a.slots[1].mem_drain.is_none());
+        // Together past it, the larger fitting alone: the one beside it stops at its next safe point
+        // (asked through its channel), and nothing starts beside the larger meanwhile.
+        a.held_set = Some(vec![Some(9 << 10), Some(4 << 10)]);
+        assert!(!a.guard(Some(&root)));
+        assert!(a.slots[1].mem_drain.as_deref().is_some_and(|w| w.contains("past this Mac's limit of 12.0 GB")), "{:?}", a.slots[1].mem_drain);
+        tend(&mut a);
+        assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
+        assert!(a.slots[1].running.is_some() && a.slots[0].running.is_some());
+        a.start_second(&[job("unit 6/3/3", &["6/3/3"])], &cond, Some(&root));
+        assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("nothing starts beside terrain 6/1/1")), "{:?}", a.beside_why);
+        // The larger past the limit by itself: stopped at once, given back, not failed; what it held
+        // the floor of the target it was on (its first not noted done), not of the others.
+        a.held_set = Some(vec![Some(13 << 10), Some(4 << 10)]);
+        tend(&mut a);
+        assert!(a.guard(Some(&root)));
+        assert!(a.slots[0].running.is_none() && a.slots[1].running.is_some());
+        let c = a.coord.as_ref().unwrap();
+        assert_eq!((c.floor("terrain", "6/1/1"), c.floor("terrain", "6/1/2")), (Some(13 << 10), None));
+        assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
+        let v = a.guard_view();
+        assert!(v.on && v.limit_mb == 12 << 10 && v.last.as_ref().is_some_and(|(_, w)| w.contains("terrain 6/1/1 stopped by the memory guard: it held 13.0 GB")), "{v:?}");
+        // The plan's next: that target held here (past this Mac's limit, and every Mac's it knows),
+        // the status saying why; its other target not.
+        let works = vec![build::Work { step: "terrain".into(), targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())] }];
+        let (here, all, why) = a.guard_holds(&works);
+        assert!(here.contains(&("terrain".to_string(), "6/1/1".to_string())) && here.len() == 1 && all.len() == 1);
+        assert!(why[0].why.contains("more than any Mac in the pool has"), "{:?}", why);
+        // With a Mac of more room in the pool, held here only, left to it.
+        let w = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{}", c.contact.urls[0].rsplit(':').next().unwrap())], c.contact.token.clone(), "big");
+        let _ = w.ask(&crate::coord::Ask { kind: "native".into(), can: vec!["terrain".into()], mem_mb: 30 << 10, limit_mb: Some(42 << 10), ..Default::default() });
+        let (here, all, why) = a.guard_holds(&works);
+        assert!(here.len() == 1 && all.is_empty() && why[0].why.contains("left to a Mac with room"), "{:?}", why);
+        // The job beside the larger drained when the larger is the second slot's: the first slot
+        // starts nothing until the larger ends.
+        a.held_set = Some(vec![None, Some(9 << 10)]);
+        assert!(a.try_start(0, job("pack 6/4/4", &["6/4/4"]), &cond, Some(&root), &mut Vec::new()));
+        a.held_set = Some(vec![Some(4 << 10), Some(9 << 10)]);
+        assert!(!a.guard(Some(&root)) && a.slots[0].mem_drain.is_some());
+        assert!(a.waits_for_second(&job("unit 6/3/3", &["6/3/3"])).is_some_and(|w| w.contains("held more memory together")));
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+        a.slots[0] = Slot::default();
+        // The switch off: nothing stopped, nothing held; what's learned is kept all the same.
+        std::fs::create_dir_all(root.join("state/pool")).unwrap();
+        std::fs::write(root.join(memguard::SWITCH), "off").unwrap();
+        a.guard_on = memguard::on(&root);
+        a.held_set = Some(vec![None, Some(20 << 10)]);
+        assert!(!a.guard(Some(&root)) && a.slots[1].running.is_some());
+        assert!(a.guard_holds(&works).0.is_empty());
+        if let Some(r) = a.slots[1].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
     }

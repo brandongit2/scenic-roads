@@ -179,7 +179,13 @@ impl Client {
 
     /// Gives lease `lease` back, failed (`oom_mb`: a task out of memory at that peak).
     pub fn fail(&self, lease: u64, error: &str, oom_mb: Option<u64>) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb, interrupted: false };
+        self.fail_with(lease, error, oom_mb, &[])
+    }
+
+    /// `fail`, with what the job saw its targets hold at least (crate::agent::memguard: cost key,
+    /// MB), for the lease's floors.
+    pub fn fail_with(&self, lease: u64, error: &str, oom_mb: Option<u64>, floors: &[(String, u64)]) -> Result<()> {
+        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb, interrupted: false, floors: floors.to_vec() };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }
@@ -187,7 +193,13 @@ impl Client {
     /// Gives lease `lease` back unfinished, not failed (`why`: the build paused, the Mac slept, its
     /// agent restarted, it couldn't start here): its targets aren't kept from this worker.
     pub fn give_back(&self, lease: u64, why: &str) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted: true };
+        self.give_back_with(lease, why, &[])
+    }
+
+    /// `give_back`, with what the job saw its targets hold at least (crate::agent::memguard: cost
+    /// key, MB), for the lease's floors.
+    pub fn give_back_with(&self, lease: u64, why: &str, floors: &[(String, u64)]) -> Result<()> {
+        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted: true, floors: floors.to_vec() };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }

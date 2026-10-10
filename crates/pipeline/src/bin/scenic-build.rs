@@ -464,7 +464,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             for (k, &u) in ts.iter().enumerate() {
                 pipeline::control::safe_point("trees");
                 pipeline::agent::jobs::part(2 * k, &names);
-                let t = cost_start();
+                let t = cost_start("trees", &u.slash());
                 let writing = || pipeline::agent::jobs::part(2 * k + 1, &names);
                 if u.z == 3 {
                     pipeline::treepacks::build_with(&mut out, &cov, u, &dem, &chm, &scratch, workers, &writing)?;
@@ -484,7 +484,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             for (k, &q) in qs.iter().enumerate() {
                 pipeline::control::safe_point("trees-lo");
                 pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
-                let t = cost_start();
+                let t = cost_start("trees-lo", &q.slash());
                 pipeline::treepacks::build_lo(&mut out, &cov, q, &scratch, workers)?;
                 pipeline::control::done("trees-lo", &q.slash());
                 note_cost("trees-lo", &q.slash(), t);
@@ -1171,10 +1171,23 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .collect()
 }
 
-/// A target's start, for `note_cost`: its time, and the job's peak memory started again.
-fn cost_start() -> std::time::Instant {
+/// Target `target` of `step` begins, for `note_cost`: its time, and the job's peak memory started
+/// again; noted for the agent (`SCENIC_COSTS`, a `started` line), which keeps what the job holds
+/// while a target is under way as what that target takes at least (crate::agent::memguard).
+fn cost_start(step: &str, target: &str) -> std::time::Instant {
     pipeline::sys::reset_group_peak();
+    note_started(&pipeline::coord::cost_key(step, target));
     std::time::Instant::now()
+}
+
+/// Notes that the target whose cost key is `key` begins (`SCENIC_COSTS`).
+fn note_started(key: &str) {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    let line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
+    let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+    if let Err(e) = r {
+        eprintln!("{key}: noting its start: {e}");
+    }
 }
 
 /// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
@@ -1831,7 +1844,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     for (k, &u) in units.iter().enumerate() {
         pipeline::control::safe_point("pois");
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
-        let t = cost_start();
+        let t = cost_start("pois", &u.slash());
         let Some(piece) = out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).map(|n| out.path(n)) else {
             eprintln!("pois {}: no piece", u.slash());
             continue;
@@ -1982,7 +1995,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // (A safe point before each area: the raw tiles fetched wait in the cache for the next job.)
         pipeline::control::safe_point("peaks");
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
-        let t = cost_start();
+        let t = cost_start("peaks", &u.slash());
         let p = phase("candidates read", Class::NasRead);
         let pois = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)).with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
         let peaks: Vec<unit::UnitPeak> = pipeline::candidates::read(&pois)?
@@ -2862,6 +2875,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             a.on(&u.slash());
             a.say(true);
         });
+        // (Under way, for the agent: crate::agent::memguard.)
+        note_started(&pipeline::coord::cost_key("unit", &u.slash()));
         let t = std::time::Instant::now();
         if let Some(h) = ahead.take() {
             // (The area before's copying ahead of this one's piece and packs, not done yet.)
@@ -3379,7 +3394,7 @@ fn bldprep_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point("bldprep");
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start();
+        let c = cost_start("bldprep", &t.slash());
         let st = pipeline::bld::prep::run(out, t, &dem, pipeline::buildtiles::RELEASE)?;
         eprintln!("bldprep {}: {}", t.slash(), serde_json::to_string(&st)?);
         pipeline::control::done("bldprep", &t.slash());
@@ -3401,7 +3416,7 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point("bldtiles");
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start();
+        let c = cost_start("bldtiles", &t.slash());
         let sum = pipeline::bld::job::build(out, &cov, t, offload.as_ref())?;
         eprintln!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
         pipeline::control::done("bldtiles", &t.slash());
@@ -3582,7 +3597,7 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
     for (k, t) in ts.iter().enumerate() {
         pipeline::control::safe_point("terrain");
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start();
+        let c = cost_start("terrain", &t.slash());
         let offers = match ahead.take() {
             Some(o) => o,
             None => offer(t),
@@ -3647,7 +3662,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, (q, ts)) in qs.iter().enumerate() {
         pipeline::control::safe_point("terrain-lo");
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start();
+        let c = cost_start("terrain-lo", &q.slash());
         let r = pipeline::terrain_pack::build_lo(out, &raw, (q.x, q.y), ts, &src, &say)?;
         eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("terrain-lo", &q.slash());
@@ -3666,7 +3681,7 @@ fn slope_pieces(out: &mut Out, ts: &[Unit], same: &BTreeSet<String>) -> Result<(
     for (k, t) in ts.iter().enumerate() {
         pipeline::control::safe_point("slope");
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start();
+        let c = cost_start("slope", &t.slash());
         let r = pipeline::slope_pack::build_piece(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
         eprintln!("slope {}: {r:?} ({:.0?})", t.slash(), c.elapsed());
         pipeline::control::done("slope", &t.slash());
@@ -3682,7 +3697,7 @@ fn slope_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, (q, ts)) in qs.iter().enumerate() {
         pipeline::control::safe_point("slope-lo");
         pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
-        let c = cost_start();
+        let c = cost_start("slope-lo", &q.slash());
         let r = pipeline::slope_pack::build_lo(out, (q.x, q.y), ts, &|_, _, _| {})?;
         eprintln!("slope-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("slope-lo", &q.slash());
@@ -3723,7 +3738,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point("terrain");
         pipeline::agent::jobs::part(2 * k, &names);
         let writing = std::sync::atomic::AtomicBool::new(false);
-        let t = cost_start();
+        let t = cost_start("terrain", &format!("3/{}/{}", q.0, q.1));
         let r = pipeline::terrain_pack::build_q_with(out, &raw, q, &list, &cov, &src, &|what, done, total| {
             if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 pipeline::agent::jobs::part(2 * k + 1, &names);
@@ -3763,7 +3778,7 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point("slope");
         pipeline::agent::jobs::part(2 * k, &names);
         let writing = std::sync::atomic::AtomicBool::new(false);
-        let t = cost_start();
+        let t = cost_start("slope", &format!("3/{}/{}", q.0, q.1));
         let r = pipeline::slope_pack::build_q_with(out, q, &list, &|what, done, total| {
             if what == "packs written" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 pipeline::agent::jobs::part(2 * k + 1, &names);
