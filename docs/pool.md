@@ -437,10 +437,10 @@ Its columns:
 | batch | how many targets a job takes (a few minutes to a quarter of an hour of work) |
 | write-set | the logical names its jobs may add, change or remove in the manifest, as patterns of its targets' tiles and the pass's date, removals apart (the OSM pass removes older passes' entries; a prune only removes); a shared step's files for each target it did are kept apart too (`saves`: what its hand-off may change) |
 
-Planned columns (phase 4, §12): a **floor** of memory whatever the measurement (the OSM pass runs
-Planetiler with 24 GB of heap: 32 GB Macs only); **moves**: whether a job of it can run anywhere
-(most), or resumes on the Mac holding its progress; the groups across the pool (one Wikidata step at
-a time: one address at home).
+Planned columns (phase 4, §12): **moves**, whether a job of it can run anywhere (most), or resumes
+on the Mac holding its progress (the fourth batch); a **floor** of memory whatever the measurement
+(the OSM pass runs Planetiler with 24 GB of heap: 32 GB Macs only), and the groups across the pool
+(one Wikidata step at a time: one address at home) (the fifth).
 
 Tree cover's rows (plan.md §6, Trees): `trees`, a piece per z6 tile (it may add, change or remove
 that tile's hi packs of the three tree layers and its mid, `work/trees-mid/6-x-y`; a lease of the
@@ -874,12 +874,16 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    1. **The steps table, its write-sets reported: built** (crate::agent::steps; §7.2, §7.3). A row
       per step: memory's first guess, disk, power, home, shared and its rank, alone, beside and its
       rank, light, the groups never two on one Mac, the answers kept, the batch, the write-set. The
-      step sets the agent and the coordinator test are made from it as the app is built, a set of
-      the wrong size failing the build, and its tests check them, the rows' memory, disk, needs and
-      batches, and a shared step's saves within its write-set. The lead checks every entry it merges against
-      its step's write-set and reports what lies outside, refusing nothing for it; every one of the
-      574 entries in the journal of 8–9 Oct 2026 is within (`real_journal_entries_are_within_their_
-      write_sets`, run on a copy of the journal). Needs no switch.
+      step sets the agent and the coordinator test are made from it as the app is built (a set of
+      the wrong size, two steps of one rank or a rank missing failing the build), in the orders the
+      agent and the forecast walk them, and its tests check them, the rows' memory, disk, needs
+      and batches, a row for every step the agent runs, and a shared step's saves within its
+      write-set. The lead checks every entry it merges against its step's write-set and reports
+      what lies outside, refusing nothing for it; every one of the 574 entries in the journal of
+      8–9 Oct 2026 is within (`real_journal_entries_are_within_their_write_sets`, run on a copy of
+      the journal), though they hold none of the pass's worldwide steps (the OSM pass, its sets, the
+      reach, the world's buildings, the summits, the heritage sites; the labels and the water once
+      each). Needs no switch.
    2. **A job far over its memory** (§7.2): the limit per Mac, the job over its prediction stopped
       (the one beside it first, when that suffices), what it held kept as its target's floor so the
       next offer goes to a slot that spares it, a target over every member's limit held with why.
@@ -898,11 +902,13 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       its Mac's disk named on the NAS (`state/pool/progress/<step>.json`), offered to that Mac only
       for 24 hours or until the owner releases it; `Out::open` laying the Mac's unmerged hand-offs
       for its step over the snapshot; a pass complete when its records say so, not by
-      `pass.*.json`. Behind `state/pool/resume`. Tests: an OSM pass stopped mid-stage resumed by its
+      `pass.*.json`. The steps table gains its **moves** column here: whether a job of a step
+      runs anywhere or resumes on the Mac holding its progress. Behind `state/pool/resume`. Tests: an OSM pass stopped mid-stage resumed by its
       Mac from its stages, offered to no other, released after a day; plans the same from the
       records as from today's files.
    5. **Every step to every member, write-sets enforced** (§7.2, §7.3): the lead's coordinator
-      offers every step whose row a member's Mac meets (memory and the new floor column, disk,
+      offers every step whose row a member's Mac meets (memory and the **floor** column, added to
+      the steps table here, disk,
       home, power, in use, network work to the second slot), the map tiles' `pack` and `lo` among
       them (each Mac's saves already reach the records only through the journal, so what a member
       makes is merged as the lead's is); work in contiguous runs from the front of the plan, near
@@ -910,7 +916,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       groups across the pool (one Wikidata step at a time); claims no longer read with the pool on;
       and entries outside their write-sets refused. Behind `state/pool/every-step` and
       `state/pool/write-sets`, the latter once the first batch's reports have shown none outside
-      for a fortnight of the real build. Tests: a member offered `pack` and its entry merged; a
+      over a whole OSM pass, its worldwide steps among them, and a fortnight of the real build at
+      least. Tests: a member offered `pack` and its entry merged; a
       member short of a row's needs offered none of it; runs contiguous; the reservation draining
       one Mac only; an entry outside refused, its why noted; the simulator's runs with entries
       outside refused by every lead.
@@ -933,8 +940,14 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       from the steps table and the placement. Reports only: no switch.
    9. **What goes:** the claims (crate::agent::claims, `state/build/claims/`), once no app that
       reads them runs; `install.sh` without `--agent` and `--helper` (a launch file passing them
-      still accepted and ignored); the docs (plan.md §8, workers.md, formats.md) rewritten around
-      the pool.
+      still accepted and ignored); the agent without the pool, the owner's choice: `scenic pool
+      off` and the switch `state/pool/enabled` (the pool always on), and everything kept for the
+      pool off: the writer named (`state/build/writer`), `check_writer`'s pass, `SCENIC_BUILD_MAC`,
+      the build Mac's own merging of hand-offs, re-keying and records-writing, the helpers'
+      coordination (`--helper`'s outbox, the NAS's hand-off folders), and today's three files as
+      the records' truth (the records' readers read the term's snapshot first, §6.2, and the lead
+      stops writing today's files once no reader of them is left); the docs (plan.md §8,
+      workers.md, formats.md) rewritten around the pool.
 
    Packing the raw terrain tiles a job fetched onto the NAS (`pack_raw_with`) stays a step of
    each terrain piece's job, its own tiles only, with no job of its own: it takes about 1 % of a

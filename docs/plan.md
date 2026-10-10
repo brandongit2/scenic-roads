@@ -2788,10 +2788,11 @@ At each phase's end an Opus agent reviews the work against this plan.
   switch, while the rest is built on them: refusing entries (the write-sets are reported from the
   first batch, enforced in the fifth), stopping a job over its memory (second), a job across a
   handover (third), resuming on one Mac (fourth).
-- **One table for every per-step rule** (crate::agent::steps): the step sets, memory, disk, needs and
+- **One table for the per-step rules** (crate::agent::steps): the step sets, memory, disk, needs and
   batches were constants spread over the agent, the coordinator and the claims, and the agent kept
   two first guesses of a step's memory that disagreed for the network steps (the forecast's 1.5 GB,
-  a job beside another's 1 to 6 GB): one now, the latter's, which was measured.
+  a job beside another's 1 to 6 GB, reckoned from what their Python and osmium hold): one now, the
+  latter, the closer reckoning (neither was measured, unlike a unit's, the most its batches took).
 - **A job far over its memory is stopped, not frozen** (pool.md §7.2): a frozen job keeps what it
   holds, swapped out or compressed, so the Mac stays short; stopped, it frees it, losing its current
   target's work, and what it held is kept as its target's floor so the next offer goes where it

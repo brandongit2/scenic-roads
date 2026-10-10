@@ -194,8 +194,8 @@ enum Set {
     Answered,
 }
 
-/// Whether row `s` is in `set`, and its rank there (ranked sets by their rank, the others in the
-/// table's order).
+/// Whether row `s` is in `set`, and its rank there (the shared and second job's steps by their
+/// ranks, the light ones by their second job's rank, the others in the table's order).
 const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
     const fn has(g: &[Group], want: Group) -> bool {
         let mut k = 0;
@@ -216,7 +216,12 @@ const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
             Some(r) => Some(r as usize),
             None => None,
         },
-        Set::Light if s.light => Some(i),
+        // (The light steps in the second job's order, which the agent and the forecast walk them
+        // by: one a second job doesn't take has no place in it, and fails the build.)
+        Set::Light if s.light => match s.beside {
+            Some(r) => Some(r as usize),
+            None => panic!("a light step that a second job doesn't take"),
+        },
         Set::Alone if s.alone => Some(i),
         Set::Raw if has(s.groups, Group::Raw) => Some(i),
         Set::Wiki if has(s.groups, Group::Wiki) => Some(i),
@@ -226,8 +231,14 @@ const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
     }
 }
 
-/// The steps of `set`, by rank: N of them, or the build fails (a ranked set's ranks must be 0 to
-/// N-1, each once).
+/// Whether `set`'s ranks are its own, 0 to N-1 (the shared and second job's steps), not an order
+/// borrowed from another set (the light steps take the second job's) or the table's.
+const fn dense(set: Set) -> bool {
+    matches!(set, Set::Shared | Set::Beside)
+}
+
+/// The steps of `set`, by rank: N of them, or the build fails: two steps of one rank, a rank
+/// missing from a set whose ranks are its own (`dense`), more steps than N or fewer.
 const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
     let mut out = [""; N];
     let mut n = 0;
@@ -254,6 +265,17 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
         }
         match best {
             Some((r, i)) => {
+                // (No other row of the same rank: it would be passed over.)
+                let mut k = 0;
+                while k < TABLE.len() {
+                    if k != i {
+                        if let Some(r2) = rank_in(&TABLE[k], set, k) {
+                            assert!(r2 != r, "two steps of the table share a rank in a set");
+                        }
+                    }
+                    k += 1;
+                }
+                assert!(!dense(set) || r == n, "a rank is missing from a set of the table");
                 assert!(n < N, "the table has more steps in a set than its size");
                 out[n] = TABLE[i].name;
                 n += 1;
@@ -581,9 +603,10 @@ mod tests {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
         assert_eq!(SECOND, ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
+        // (In the order the agent and the forecast walk them: the light steps as the second job's.)
+        assert_eq!(LIGHT, ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays"]);
+        assert_eq!(ALONE, ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water", "heritage-sites", "gc"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
-        assert_eq!(set(&LIGHT), set(&["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays"]));
-        assert_eq!(set(&ALONE), set(&["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water", "heritage-sites", "gc"]));
         assert_eq!(set(&RAW), set(&["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"]));
         assert_eq!(set(&WIKI), set(&["items", "heritage"]));
         assert_eq!(NAS_READS, ["bldprep"]);
@@ -617,7 +640,7 @@ mod tests {
         assert_eq!(row("water").unwrap().disk, RESERVE + 5 * GB);
         assert_eq!(row("osm-pass").unwrap().disk, super::super::PASS_SPACE);
         assert_eq!(row("unit").unwrap().disk, RESERVE);
-        // Every step the checklist names has a row, and no row twice.
+        // No row twice.
         for s in TABLE.iter().map(|s| s.name) {
             assert_eq!(TABLE.iter().filter(|r| r.name == s).count(), 1, "{s}");
         }
@@ -639,6 +662,44 @@ mod tests {
             }
         }
         assert!(!saves("pack", "6/3/4", "hidata/6-3-4"), "not a shared step");
+    }
+
+    #[test]
+    fn every_step_the_agent_runs_has_a_row() {
+        // The steps the agent makes jobs of, as its source names them: the planner's work
+        // (`Work { step: "…"`), the jobs it titles (`job(format!("…`, `id: "…"`), the steps the
+        // checklist labels (build::label's arms), and those whose names it puts together.
+        let (agent, build) = (include_str!("mod.rs"), include_str!("build.rs"));
+        let mut named = std::collections::BTreeSet::<String>::new();
+        let mut take = |src: &str, pat: &str| {
+            for (i, _) in src.match_indices(pat) {
+                let name: String = src[i + pat.len()..].chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
+                if name.len() > 1 {
+                    named.insert(name);
+                }
+            }
+        };
+        take(build, "Work { step: \"");
+        take(agent, "Work { step: \"");
+        take(agent, "job(format!(\"");
+        take(agent, "id: \"");
+        take(agent, "id: format!(\"");
+        let label = &build[build.find("pub fn label(").unwrap()..];
+        let label = &label[..label.find("\n}\n").unwrap()];
+        for arm in label.lines().filter_map(|l| l.trim().strip_prefix('"')) {
+            for alt in arm.split(" | ") {
+                take(&format!("\"{alt}"), "\"");
+            }
+        }
+        named.extend(["stations", "ferries", "terrain-lo", "slope-lo", "terrain-root", "slope-root", "unit", "terrain-z8"].map(String::from));
+        // (Not steps: a task's lease.)
+        named.remove("task");
+        assert!(named.len() >= 40, "{named:?}");
+        let missing: Vec<&String> = named.iter().filter(|s| row(s).is_none()).collect();
+        assert!(missing.is_empty(), "steps the agent runs with no row: {missing:?} (of {named:?})");
+        // And no row for a step the agent never runs.
+        let unused: Vec<&str> = TABLE.iter().map(|s| s.name).filter(|s| !named.contains(*s)).collect();
+        assert!(unused.is_empty(), "rows of no step the agent runs: {unused:?}");
     }
 
     fn entry(step: &str, changes: &[(&str, bool)]) -> Entry {

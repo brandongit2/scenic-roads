@@ -927,7 +927,7 @@ impl Run {
             if !self.outside_seen.insert(o.key.clone()) {
                 continue;
             }
-            eprintln!("pool: entry {} ({}) {}; merged all the same (the write-sets aren't enforced yet)", o.key, o.step, o.why);
+            eprintln!("pool: entry {} ({}) {}; not refused for it (the write-sets aren't enforced yet)", o.key, o.step, o.why);
             self.outside_n += 1;
             self.outside.push_back(o);
             while self.outside.len() > OUTSIDE_KEPT {
