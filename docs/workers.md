@@ -231,7 +231,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
   a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an
   app other than the lead's, older or newer, gets nothing (409, why in words) until the two run the
-  same (docs/plan.md §8, The same app); its jobs under way go on.
+  same (docs/plan.md §8, The same app); its jobs under way go on. A page asks with no app: its code
+  is the coordinator's own WebAssembly, and its results are verified (below).
 - **Pausing** (`docs/plan.md` §8, Pausing): the coordinator holds the build's pause (`pause.json`)
   and says it in its answers: an agent's ask is refused (409) with the pause, a page's gets nothing,
   and a beat carries it, so a running job stops at its next safe point (or freezes, as the pause

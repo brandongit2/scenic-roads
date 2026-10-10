@@ -336,14 +336,10 @@ impl Shared {
         };
         let take = |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
         if !away {
-            let fits: Vec<&(String, String, u64)> = open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size) <= a.mem_mb).collect();
-            // (A target whose floor wasn't learned alone, a batch's, runs alone: its first such, by
-            // itself, else the others without it.)
-            let batch_floor = |t: &str| self.floors.get(&cost_key(&o.step, t)).is_some_and(|f| !f.alone);
-            if let Some(first) = fits.first().filter(|(t, _, _)| batch_floor(t)) {
-                return take(vec![*first]);
-            }
-            return take(fits.into_iter().filter(|(t, _, _)| !batch_floor(t)).take(n).collect());
+            // (A floor past a worker's limit keeps the target from it: its predicted memory is never
+            // below it. The lead tries a target whose floor past its own limit was a batch's in a job
+            // of its own, crate::agent's `guard_holds`; one under a worker's runs batched.)
+            return take(open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size) <= a.mem_mb).take(n).collect());
         }
         let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return Vec::new() };
         // Its owner away: a job that fits the more it spares then, as long as it ends in time.
@@ -2457,15 +2453,12 @@ mod tests {
         c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
         c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);
         assert_eq!((c.floor("osm-pass", "2026-08-01"), c.floor("osm-pass", "2026-09-28").map(|f| f.mb)), (None, Some(31_000)));
-        // A target whose floor is a batch's goes alone to a worker.
+        // A target whose floor is a batch's, under what a worker spares, goes batched as any.
         c.offer("p", vec![o(&[("6/4/1", 100), ("6/4/2", 100), ("6/4/3", 100)], 3)]);
         c.add_floors(&[(cost_key("peaks", "6/4/2"), f(2000, false))]);
         let g = w.ask(&can(8 << 10)).unwrap().unwrap();
         let Granted::Job { targets, .. } = g.work else { panic!() };
-        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/3", "6/4/1"], "the others without it");
-        let g = w.ask(&can(8 << 10)).unwrap().unwrap();
-        let Granted::Job { targets, .. } = g.work else { panic!() };
-        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/2"], "by itself");
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/3", "6/4/2", "6/4/1"]);
         // Kept across a restart of the coordinator; cleared as the owner asks (`scenic pool floors`).
         let kept: BTreeMap<String, Floor> = serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
         assert_eq!(kept.get(&cost_key("peaks", "6/2/2")), Some(&f(4000, true)));

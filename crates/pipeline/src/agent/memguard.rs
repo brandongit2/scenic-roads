@@ -31,8 +31,11 @@ pub const DEFAULT: bool = true;
 /// How often the jobs' memory is sampled.
 pub const EVERY: Duration = Duration::from_secs(5);
 
-/// The swap a job's run may add before the guard takes the Mac to be in trouble.
+/// The swap that, grown within `SWAP_WINDOW`, takes the Mac to be in trouble.
 const SWAP_GROWTH: u64 = 1 << 30;
+/// The window swap growth is judged over: recent, so the owner's own use growing swap hours ago
+/// doesn't leave a long job in trouble for good.
+pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
 
 /// The guard as the switch at `root` says: on or off; None when it can't be read now (the share not
 /// answering: the caller keeps what it had).
@@ -86,9 +89,10 @@ pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool]) -> Act {
 }
 
 /// Whether the Mac is in trouble for its memory: the kernel's memory pressure at warning or worse
-/// (`pressure`), or a GB more swap in use (`swap`) than when the job began (`swap_at`).
-pub fn trouble(pressure: Option<u32>, swap: Option<u64>, swap_at: Option<u64>) -> bool {
-    pressure.is_some_and(|p| p >= 2) || matches!((swap, swap_at), (Some(now), Some(then)) if now >= then.saturating_add(SWAP_GROWTH))
+/// (`pressure`), or a GB more swap in use (`swap`) than the least in use in the last few minutes
+/// (`swap_low`, over `SWAP_WINDOW`).
+pub fn trouble(pressure: Option<u32>, swap: Option<u64>, swap_low: Option<u64>) -> bool {
+    pressure.is_some_and(|p| p >= 2) || matches!((swap, swap_low), (Some(now), Some(low)) if now >= low.saturating_add(SWAP_GROWTH))
 }
 
 /// The target a job is on, as its costs file says (`SCENIC_COSTS`: a `started` line as each target
@@ -115,6 +119,7 @@ pub fn current(costs: &Path) -> Option<String> {
 /// targets, aren't the last's, so only a floor learned alone holds a target off a Mac); and the way
 /// its step ran then (crate::coord::cost_version).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "FloorRead")]
 pub struct Floor {
     pub mb: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -125,6 +130,30 @@ pub struct Floor {
 
 fn is_zero(v: &u32) -> bool {
     *v == 0
+}
+
+/// A floor as read: as written now, or a bare MB (a build before floors said more), learned in a
+/// batch the way its step ran first.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum FloorRead {
+    Mb(u64),
+    Full {
+        mb: u64,
+        #[serde(default)]
+        alone: bool,
+        #[serde(default)]
+        v: u32,
+    },
+}
+
+impl From<FloorRead> for Floor {
+    fn from(r: FloorRead) -> Floor {
+        match r {
+            FloorRead::Mb(mb) => Floor { mb, alone: false, v: 0 },
+            FloorRead::Full { mb, alone, v } => Floor { mb, alone, v },
+        }
+    }
 }
 
 /// The step of a cost key (crate::coord::cost_key): a unit's is its target alone.
@@ -149,9 +178,8 @@ pub struct Watch {
     /// The most it held while each target was under way (MB, by cost key), and what it holds now.
     pub seen: BTreeMap<String, u64>,
     pub held: Option<u64>,
-    /// The swap in use as it began, and whether the guard froze it (the Mac in trouble with it past
-    /// the limit alone: the agent's loop stops it).
-    pub swap_at: Option<u64>,
+    /// Whether the guard froze it (the Mac in trouble with it past the limit alone: the agent's loop
+    /// stops it).
     pub frozen: bool,
 }
 
@@ -189,6 +217,8 @@ struct Inner {
     trouble_set: Option<bool>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
+    /// The swap in use as each sample read it, over the last `SWAP_WINDOW`.
+    swap: std::collections::VecDeque<(std::time::Instant, u64)>,
 }
 
 /// The guard's sampler: a thread sampling the watched jobs every `EVERY` (`spawn`; a test calls
@@ -216,8 +246,7 @@ impl Sampler {
     }
 
     /// Watches slot `k`'s job, from its start.
-    pub fn watch(&self, k: usize, mut w: Watch) {
-        w.swap_at = crate::sys::swap_used();
+    pub fn watch(&self, k: usize, w: Watch) {
         if let Ok(mut g) = self.inner.lock() {
             if let Some(s) = g.watches.get_mut(k) {
                 *s = Some(w);
@@ -262,15 +291,23 @@ impl Sampler {
         crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
     }
 
-    /// Whether the Mac is in trouble with slot `k`'s job (`trouble`).
-    pub fn in_trouble(&self, k: usize) -> bool {
-        let Ok(g) = self.inner.lock() else { return false };
+    /// Whether the Mac is in trouble now (`trouble`: its pressure, or swap grown within the last few
+    /// minutes, as the samples read it).
+    pub fn in_trouble(&self) -> bool {
+        let Ok(mut g) = self.inner.lock() else { return false };
         if let Some(t) = g.trouble_set {
             return t;
         }
-        let at = g.watches.get(k).and_then(|w| w.as_ref().and_then(|w| w.swap_at));
+        let now = crate::sys::swap_used();
+        if let Some(n) = now {
+            g.swap.push_back((std::time::Instant::now(), n));
+        }
+        while g.swap.front().is_some_and(|(t, _)| t.elapsed() > SWAP_WINDOW) {
+            g.swap.pop_front();
+        }
+        let low = g.swap.iter().map(|(_, n)| *n).min();
         drop(g);
-        trouble(crate::sys::memory_pressure(), crate::sys::swap_used(), at)
+        trouble(crate::sys::memory_pressure(), now, low)
     }
 
     /// What the thread did since the last call, for the agent's loop to note.
@@ -287,19 +324,22 @@ impl Sampler {
         };
         let set = self.inner.lock().ok().and_then(|g| g.held_set.clone());
         // (Read outside the lock: the footprints and the files take time.)
-        let mut got: Vec<(usize, Option<u64>, Option<String>)> = Vec::new();
+        let mut got: Vec<(usize, i32, Option<u64>, Option<String>)> = Vec::new();
+        // (Each sample reads the swap too: its window's least, for `in_trouble`.)
+        self.in_trouble();
         for (k, pgid) in watches {
             let held = match &set {
                 Some(v) => v.get(k).copied().flatten(),
                 None => crate::sys::footprint_of_group(pgid).map(|b| b >> 20),
             };
             let key = self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
-            got.push((k, held, key));
+            got.push((k, pgid, held, key));
         }
         let over: Vec<usize> = {
             let Ok(mut g) = self.inner.lock() else { return };
-            for (k, held, key) in &got {
-                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut) else { continue };
+            for (k, pgid, held, key) in &got {
+                // (Only the job read: another started in its slot meanwhile takes none of it.)
+                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else { continue };
                 w.held = *held;
                 if let (Some(mb), Some(key)) = (held, key) {
                     let e = w.seen.entry(key.clone()).or_insert(0);
@@ -313,7 +353,7 @@ impl Sampler {
             g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > limit)).map(|_| k)).collect()
         };
         for k in over {
-            if !self.in_trouble(k) {
+            if !self.in_trouble() {
                 continue;
             }
             let Ok(mut g) = self.inner.lock() else { return };
@@ -372,6 +412,9 @@ mod tests {
 
     #[test]
     fn trouble_is_the_kernels_pressure_or_swap_grown() {
+        // (Floors read as written before they said more: a bare MB.)
+        let old: BTreeMap<String, Floor> = serde_json::from_str(r#"{"a": 9000, "b": {"mb": 5, "alone": true, "v": 3}}"#).unwrap();
+        assert_eq!((old["a"], old["b"]), (Floor { mb: 9000, alone: false, v: 0 }, Floor { mb: 5, alone: true, v: 3 }));
         assert!(!trouble(Some(1), Some(5 << 30), Some(5 << 30)));
         assert!(trouble(Some(2), None, None) && trouble(Some(4), None, None));
         assert!(trouble(Some(1), Some(6 << 30), Some(5 << 30)));
@@ -437,6 +480,12 @@ mod tests {
         assert!(s.frozen(0) && s.take_froze().len() == 1);
         let w = s.unwatch(0).unwrap();
         assert_eq!(w.seen.get("pack 6/1/1"), Some(&(13 << 10)));
+        // A new job in the slot (another process group) starts with nothing of the last's.
+        s.watch(0, Watch { pgid: 7, costs: d.path().join("c2.jsonl"), done: d.path().join("d3.txt"), step: "pack".into(), targets: vec!["6/1/3".into()], ..Default::default() });
+        s.set_test(Some(vec![Some(100), None]), Some(false));
+        s.tick();
+        let w = s.unwatch(0).unwrap();
+        assert!(!w.frozen && w.seen.get("pack 6/1/1").is_none() && w.seen.get("pack 6/1/3") == Some(&100));
         // Off, or the limit unknown: learning only.
         s.watch(1, Watch { pgid: 0, step: "pack".into(), targets: vec!["6/2/2".into()], done: d.path().join("d2.txt"), ..Default::default() });
         s.set(true, 0);

@@ -157,6 +157,10 @@ struct Slot {
     /// Why its job stops at its next safe point for the memory guard (crate::agent::memguard):
     /// kept until it ends.
     mem_drain: Option<String>,
+    /// That drain is for its job alone past the limit while the Mac isn't short of memory: only
+    /// trouble stops it at once, not the time a pause gives a safe point (a long single-target job,
+    /// an area's whole terrain run, may have none for hours).
+    mem_drain_alone: bool,
     /// Its job is being stopped by the memory guard (its lease ends so: kept from this Mac).
     guard_stopped: bool,
 }
@@ -2156,6 +2160,7 @@ impl Agent {
             self.finished(&id, &what, ok || paused, secs, note);
             self.slots[k].drain_since = None;
             self.slots[k].mem_drain = None;
+            self.slots[k].mem_drain_alone = false;
             self.release_claims(k, root);
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
@@ -2740,7 +2745,7 @@ impl Agent {
             return false;
         }
         let draining: Vec<bool> = self.slots.iter().map(|s| s.mem_drain.is_some()).collect();
-        let late = (0..SLOTS).find(|&k| draining[k] && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= DRAIN_GRACE));
+        let late = (0..SLOTS).find(|&k| draining[k] && !self.slots[k].mem_drain_alone && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= DRAIN_GRACE));
         let gb = |mb: u64| mb as f64 / 1024.0;
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
         let stop = match (late, memguard::decide(&held, limit, &draining)) {
@@ -2754,12 +2759,13 @@ impl Agent {
                 eprintln!("agent: memory guard: {id} stops at its next safe point: {why}");
                 self.guard_last = Some((now_s(), format!("{id} stopped at its next safe point: {why}")));
                 self.slots[k].mem_drain = Some(why);
+                self.slots[k].mem_drain_alone = false;
                 self.guard_hold = Some((big, beside));
                 None
             }
             (None, memguard::Act::Over(k)) => {
                 let mb = held[k].unwrap_or(0);
-                if self.sampler.frozen(k) || self.sampler.in_trouble(k) {
+                if self.sampler.frozen(k) || self.sampler.in_trouble() {
                     Some((k, format!("stopped by the memory guard: it held {:.1} GB, past this Mac's limit of {:.1} GB, the Mac short of memory (what it held is kept as the least its target takes, so it goes to a Mac with room)", gb(mb), gb(limit))))
                 } else {
                     if !draining[k] {
@@ -2768,6 +2774,7 @@ impl Agent {
                         eprintln!("agent: memory guard: {id} stops at its next safe point: {why}");
                         self.guard_last = Some((now_s(), format!("{id} stopped at its next safe point: {why}")));
                         self.slots[k].mem_drain = Some(why);
+                        self.slots[k].mem_drain_alone = true;
                     }
                     None
                 }
@@ -2788,6 +2795,7 @@ impl Agent {
         self.slots[k].running = None;
         self.slots[k].drain_since = None;
         self.slots[k].mem_drain = None;
+        self.slots[k].mem_drain_alone = false;
         self.slots[k].guard_stopped = false;
         std::fs::remove_file(self.record_path(k)).ok();
         true
@@ -5354,6 +5362,11 @@ mod tests {
         // Mac for an hour; what it held its target's floor, a batch's (two targets).
         tick(&mut a, vec![Some(13 << 10), None], false);
         assert!(!a.guard(Some(&root)) && a.slots[0].mem_drain.is_some() && a.slots[0].running.is_some());
+        // (Past the time a pause gives a safe point, not short of memory: still only drained; a long
+        // job alone may have none for hours.)
+        a.slots[0].drain_since = Some(Instant::now() - DRAIN_GRACE - Duration::from_secs(1));
+        tick(&mut a, vec![Some(13 << 10), None], false);
+        assert!(!a.guard(Some(&root)) && a.slots[0].running.is_some());
         tick(&mut a, vec![Some(13 << 10), None], true);
         assert!(a.sampler.frozen(0));
         assert!(a.guard(Some(&root)) && a.slots[0].running.is_none());

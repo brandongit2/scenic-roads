@@ -2183,7 +2183,11 @@ and, when none fits it, units' last steps.
   code didn't make (a step changed with its key or without it); no list of what changed. Its jobs
   under way go on. It builds once the two run the same: its updater, the lead's (an agent switches
   between jobs), or the lead handed to a Mac on the newer (the term's app rule lets a newer app
-  lead: docs/pool.md §6.1), so a lead on an older app holds no member up for good.
+  lead: docs/pool.md §6.1), so a lead on an older app holds no member up for good (planned: it hands
+  over by itself while its update waits on a job of its own, pool.md §12, batch 4). A page's tasks
+  run the serving coordinator's own WebAssembly, so the same app by construction; its results, and
+  a native worker's tasks', are checked as any worker's are (its first three, then one in eight,
+  against the job's own run: docs/workers.md §5).
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
   name) and the token (kept on the build Mac) the agents' requests carry (a page helps with no key:
   docs/workers.md §7); taken off the NAS when the agent stops. A worker reads it again when it can't reach the coordinator or its token is refused.
