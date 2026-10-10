@@ -1334,6 +1334,35 @@ field's cost is the difference of the medians). Budget: 2 ms.
   - the per-tile renderer kept for the straight-down and sloping views, where it meets the budget.
 
   The pipeline isn't built on this renderer.
+- **Hulls and a texel walk on the single march (10 Oct, the owner's decision): still over.**
+  - Before the march, a box over each block of 8 × 8 cells that holds buildings (from its
+    buildings' lowest ground to their highest roof, widened and raised by its chords' sag on the
+    globe) is drawn instanced with MapLibre's projection. Each pixel keeps the nearest and farthest
+    face along its ray by MIN blending into an RG32F target: the march's start and end. A pixel no
+    hull covers doesn't march.
+  - Inside, the march walks the texels of the level whose texel spans the pixel's footprint, and
+    meets each class as a box of the texel's mean roof (exact texels by texelFetch, walls by their
+    density along the run below the roof, a roof where it comes down through it).
+  - The images are as before, a little crisper.
+
+  Timings below are the field's cost (ms), both renderers in one session; whole frames as above,
+  and the pass's own timer (copies, hulls and last pass alone: 1.8–2.2).
+
+  | View | single march + hulls + texel walk | per-tile boxes | pass: hulls + texel walk | pass: per-tile |
+  |---|---|---|---|---|
+  | Tokyo z11 straight down | +4.1–5.2 | +1.9–2.0 | 5.5 | 3.2–3.5 |
+  | Manhattan z11 straight down | +4.4–4.8 | +1.9–2.0 | 5.6 | 3.3–3.5 |
+  | Chamonix z12, 65° | +4.9–5.6 | +1.2–1.6 | 6.0–6.2 | 2.9–3.2 |
+  | CN Tower z10, 80° | +1.9–2.0 | +1.9–2.3 | 3.5 | 2.9 |
+  | Kantō z10, 70° | +6.5–6.9 | +2.6–3.0 | 9.1 | 4.5 |
+  | Manhattan z11, 70° | +8.1 | +5.6–5.9 | 10.7–10.8 | 8.3 |
+
+  The hulls take the empty-space walk away: a ray now walks almost no cells and 5–15 texels. The
+  cost left is those texels' work: stopping each ray after its first texel takes Manhattan at 70°
+  from 10.9 ms to 4.9 by the pass timer. Each texel reads up to five classes and does each one's
+  box test and lighting, over 4.7 million pixels. The per-tile renderer stays cheaper: its shader
+  has no lookup and no globe arithmetic. Next proposed (option 3): temporal amortization. Not
+  started; numbers first.
 - **The iPad** (the owner's): serve a build of this branch with the field (`?bldfield=` pointing at
   a field server as tools/bldcheck/serve.mjs serves it), open it in Safari on the iPad, and in the
   console run `__bld.frames(120)` at the views above (`#map=` hashes in tools/bldcheck/views): it
