@@ -132,11 +132,51 @@ vec4 interpolateProjection(vec2 posInTile, vec3 spherePos, float elevation) {
     return result;
 }
 
+// Scenic Roads: the globe's 3D positions without float32's noise. Multiplying a unit-sphere point by
+// the view matrix in float32 lands each vertex up to a metre or two off, a different way for every
+// vertex and camera: the terrain was bumpy at its mesh's spacing and a wall's foot a saw of spikes
+// (the app's task #115). Here a position is the tile's flat (fallback) projection, exact in small
+// numbers, plus the globe-minus-flat difference interpolated across the z14 cell the vertex is in
+// from its four corners: a corner's mercator coordinates are exact, so every vertex of every layer
+// near it gets the same difference and the float32 error moves terrain and buildings together.
+// (Bilinear across a z14 cell, the sphere's own curve is off by ~0.1 m at most.) The elevation's
+// share is added from the vertex's own sphere point. Placing each vertex from one anchor in the
+// cell instead didn't help: the shader compiler is free to fold the two matrix products into one.
+
+// The lattice: z14 cells.
+const float LATTICE = 16384.0;
+
+// A lattice point's globe position (its mercator coordinates exact).
+vec4 globeAtLattice(vec2 merc) {
+    float sx = merc.x * PI * 2.0 + PI;
+    float t = exp(PI - (merc.y * PI * 2.0));
+    float t2 = t * t;
+    float den = t2 + 1.0;
+    return u_projection_matrix * vec4(sin(sx) * (2.0 * t) / den, (t2 - 1.0) / den, cos(sx) * (2.0 * t) / den, 1.0);
+}
+
 // Unlike interpolateProjection, this variant of the function preserves the Z value of the final vector.
 vec4 interpolateProjectionFor3D(vec2 posInTile, vec3 spherePos, float elevation) {
     v_projection_tile_x = posInTile.x;
-    vec3 elevatedPos = spherePos * (1.0 + elevation / GLOBE_RADIUS);
-    vec4 globePosition = u_projection_matrix * vec4(elevatedPos, 1.0);
+    vec4 globePosition;
+    if ((posInTile.y < -32767.5) || (posInTile.y > 32766.5)) {
+        // The poles' vertices.
+        globePosition = u_projection_matrix * vec4(spherePos * (1.0 + elevation / GLOBE_RADIUS), 1.0);
+    } else {
+        vec2 o = u_projection_tile_mercator_coords.xy;
+        vec2 k = u_projection_tile_mercator_coords.zw;
+        vec2 g = floor((o + k * posInTile) * LATTICE);
+        vec2 f = ((o - g / LATTICE) + k * posInTile) * LATTICE;
+        vec2 c0 = (g / LATTICE - o) / k;
+        vec2 c1 = ((g + 1.0) / LATTICE - o) / k;
+        mat4 F = u_projection_fallback_matrix;
+        vec4 a00 = globeAtLattice(g / LATTICE) - F * vec4(c0.x, c0.y, 0.0, 1.0);
+        vec4 a10 = globeAtLattice(vec2(g.x + 1.0, g.y) / LATTICE) - F * vec4(c1.x, c0.y, 0.0, 1.0);
+        vec4 a01 = globeAtLattice(vec2(g.x, g.y + 1.0) / LATTICE) - F * vec4(c0.x, c1.y, 0.0, 1.0);
+        vec4 a11 = globeAtLattice((g + 1.0) / LATTICE) - F * vec4(c1.x, c1.y, 0.0, 1.0);
+        vec4 a = mix(mix(a00, a10, f.x), mix(a01, a11, f.x), f.y);
+        globePosition = F * vec4(posInTile, 0.0, 1.0) + a + (elevation / GLOBE_RADIUS) * (u_projection_matrix * vec4(spherePos, 0.0));
+    }
 
     if (u_projection_transition > 0.999) {
         return globePosition;

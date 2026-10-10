@@ -15,6 +15,9 @@ layout(location = 1) in ivec4 a_normal_ed;
 
 
 out vec4 v_color;
+// Scenic Roads: the terrain's fog on the extrusions (fill_extrusion.fragment.glsl).
+uniform mat4 u_fog_matrix;
+out float v_fog_depth;
 
 #pragma maplibre: define highp float base
 #pragma maplibre: define highp float height
@@ -34,12 +37,14 @@ void main() {
     float gradient_height = max(0.0, height);
 
     #ifdef TERRAIN3D
-	    // Raise the "ceiling" of elements by the elevation of the centroid, in meters.
+        // Raise the "ceiling" of elements by the elevation of the centroid, in meters: the roof
+        // stays level.
         float height_terrain3d_offset = get_elevation(a_centroid);
-        // To avoid having buildings "hang above a slope", create a "basement"
-        // by lowering the "floor" of ground-level (and below) elements.
-        // This is in addition to the elevation of the centroid, in meters.
-        float base_terrain3d_offset = height_terrain3d_offset - (base > 0.0 ? 0.0 : 10.0);
+        // Scenic Roads: a ground-level (base 0) wall stands on the terrain under its own corner,
+        // 2 m into it (the same DEM sampling as the terrain's mesh), never above the roof, so on a
+        // slope no wall is buried to its foot nor floats (upstream sank every base 10 m below the
+        // centroid's ground). A part with a base of its own keeps it above the centroid's ground.
+        float base_terrain3d_offset = base > 0.0 ? height_terrain3d_offset : min(get_elevation(a_pos) - 2.0, height_terrain3d_offset + max(0.0, height));
     #else
         float height_terrain3d_offset = 0.0;
         float base_terrain3d_offset = 0.0;
@@ -59,6 +64,8 @@ void main() {
     #else
         gl_Position = u_projection_matrix * vec4(posInTile, elevation, 1.0);
     #endif
+    vec4 fog_pos = u_fog_matrix * vec4(posInTile, elevation, 1.0);
+    v_fog_depth = fog_pos.z / fog_pos.w * 0.5 + 0.5;
 
     // Relative luminance (how dark/bright is the surface color?)
     float colorvalue = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722;

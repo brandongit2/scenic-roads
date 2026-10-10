@@ -58,8 +58,10 @@ void main() {
     // compute opacity and exit if too transparent:
     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
     float fade_change = fade_opacity[1] > 0.5 ? u_symbol_fade_change : -u_symbol_fade_change;
-    // Terrain can hide the ground anchor while the elevated symbol remains visible.
-    float visibility = calculate_visibility(projectedPoint);
+    // Terrain can hide the ground anchor while the elevated symbol remains visible. Scenic Roads:
+    // the depth compared with the terrain depth texture is projectTileFor3D's, as that texture was
+    // drawn (on the globe projectTileWithElevation returns the clipping-plane depth instead).
+    float visibility = calculate_visibility(projectTileFor3D(translated_a_pos, ele));
     v_total_opacity = opacity * max(0.0, min(visibility, fade_opacity[0] + fade_change));
     if (v_total_opacity < 0.1){
         gl_Position = vec4(-2., -2., -2., 1.);

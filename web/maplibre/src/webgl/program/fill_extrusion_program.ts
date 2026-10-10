@@ -3,9 +3,12 @@ import {
     Uniform1i,
     Uniform1f,
     Uniform2f,
-    Uniform3f
+    Uniform3f,
+    UniformColor,
+    UniformMatrix4f
 } from '../uniform_binding.ts';
-import {mat3, vec3} from 'gl-matrix';
+import {mat3, mat4, vec3} from 'gl-matrix';
+import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {extend} from '../../util/util.ts';
 
 import type {Context} from '../../webgl/context.ts';
@@ -23,6 +26,14 @@ export type FillExtrusionUniformsType = {
     'u_vertical_gradient': Uniform1f;
     'u_opacity': Uniform1f;
     'u_fill_translate': Uniform2f;
+    // The terrain's fog (fill_extrusion.fragment.glsl)
+    'u_fog_matrix': UniformMatrix4f;
+    'u_fog_color': UniformColor;
+    'u_fog_ground_blend': Uniform1f;
+    'u_fog_ground_blend_opacity': Uniform1f;
+    'u_horizon_color': UniformColor;
+    'u_horizon_fog_blend': Uniform1f;
+    'u_is_globe_mode': Uniform1f;
 };
 
 export type FillExtrusionPatternUniformsType = {
@@ -51,6 +62,13 @@ const fillExtrusionUniforms = (context: Context, locations: UniformLocations): F
     'u_vertical_gradient': new Uniform1f(context, locations.u_vertical_gradient),
     'u_opacity': new Uniform1f(context, locations.u_opacity),
     'u_fill_translate': new Uniform2f(context, locations.u_fill_translate),
+    'u_fog_matrix': new UniformMatrix4f(context, locations.u_fog_matrix),
+    'u_fog_color': new UniformColor(context, locations.u_fog_color),
+    'u_fog_ground_blend': new Uniform1f(context, locations.u_fog_ground_blend),
+    'u_fog_ground_blend_opacity': new Uniform1f(context, locations.u_fog_ground_blend_opacity),
+    'u_horizon_color': new UniformColor(context, locations.u_horizon_color),
+    'u_horizon_fog_blend': new Uniform1f(context, locations.u_horizon_fog_blend),
+    'u_is_globe_mode': new Uniform1f(context, locations.u_is_globe_mode),
 });
 
 const fillExtrusionPatternUniforms = (context: Context, locations: UniformLocations): FillExtrusionPatternUniformsType => ({
@@ -71,12 +89,14 @@ const fillExtrusionPatternUniforms = (context: Context, locations: UniformLocati
     'u_fade': new Uniform1f(context, locations.u_fade)
 });
 
-const fillExtrusionUniformValues = (
+type FillExtrusionBaseUniformsType = Omit<FillExtrusionUniformsType, 'u_fog_matrix' | 'u_fog_color' | 'u_fog_ground_blend' | 'u_fog_ground_blend_opacity' | 'u_horizon_color' | 'u_horizon_fog_blend' | 'u_is_globe_mode'>;
+
+const fillExtrusionBaseUniformValues = (
     painter: Painter,
     shouldUseVerticalGradient: boolean,
     opacity: number,
     translate: [number, number],
-): UniformValues<FillExtrusionUniformsType> => {
+): UniformValues<FillExtrusionBaseUniformsType> => {
     const light = painter.style.light;
     const lightPos = light.getCartesianPosition();
     const lightMat = mat3.create();
@@ -99,6 +119,33 @@ const fillExtrusionUniformValues = (
     };
 };
 
+const zeroMatrix = new Float32Array(16) as mat4;
+
+/**
+ * The extrusions' uniforms, with the terrain's fog as draw_terrain sets it for the same tile (on
+ * the globe, where the terrain isn't fogged, none).
+ */
+const fillExtrusionUniformValues = (
+    painter: Painter,
+    shouldUseVerticalGradient: boolean,
+    opacity: number,
+    translate: [number, number],
+    coord: OverscaledTileID,
+    isRenderingGlobe: boolean,
+): UniformValues<FillExtrusionUniformsType> => {
+    const sky = painter.style.sky;
+    const transform = painter.transform;
+    return extend(fillExtrusionBaseUniformValues(painter, shouldUseVerticalGradient, opacity, translate), {
+        'u_fog_matrix': isRenderingGlobe ? zeroMatrix : transform.calculateFogMatrix(coord.toUnwrapped()),
+        'u_fog_color': sky ? sky.properties.get('fog-color') : Color.white,
+        'u_fog_ground_blend': sky ? sky.properties.get('fog-ground-blend') : 1,
+        'u_fog_ground_blend_opacity': isRenderingGlobe || !sky ? 0 : sky.calculateFogBlendOpacity(transform.pitch),
+        'u_horizon_color': sky ? sky.properties.get('horizon-color') : Color.white,
+        'u_horizon_fog_blend': sky ? sky.properties.get('horizon-fog-blend') : 1,
+        'u_is_globe_mode': isRenderingGlobe ? 1 : 0,
+    });
+};
+
 const fillExtrusionPatternUniformValues = (
     painter: Painter,
     shouldUseVerticalGradient: boolean,
@@ -108,7 +155,7 @@ const fillExtrusionPatternUniformValues = (
     crossfade: CrossfadeParameters,
     tile: Tile
 ): UniformValues<FillExtrusionPatternUniformsType> => {
-    return extend(fillExtrusionUniformValues(painter, shouldUseVerticalGradient, opacity, translate),
+    return extend(fillExtrusionBaseUniformValues(painter, shouldUseVerticalGradient, opacity, translate),
         patternUniformValues(crossfade, painter, tile),
         {
             'u_height_factor': -Math.pow(2, coord.overscaledZ) / tile.tileSize / 8

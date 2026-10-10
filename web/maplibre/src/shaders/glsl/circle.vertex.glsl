@@ -34,7 +34,8 @@ void main(void) {
     // in extrusion data
     vec2 circle_center = vec2(pos_raw >> 3) + u_translate;
     float ele = get_elevation(circle_center);
-    v_visibility = calculate_visibility(projectTileWithElevation(circle_center, ele));
+    // Scenic Roads: the depth as the terrain depth texture was drawn (projectTileFor3D), as for symbols.
+    v_visibility = calculate_visibility(projectTileFor3D(circle_center, ele));
 
     if (u_pitch_with_map) {
 #ifdef GLOBE

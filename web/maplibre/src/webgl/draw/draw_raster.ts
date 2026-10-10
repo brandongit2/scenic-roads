@@ -104,6 +104,11 @@ function drawTiles(
     const textureFilter = useNearest ?  gl.NEAREST : gl.LINEAR;
     const fadeDuration = layer.paint.get('raster-fade-duration');
     const isTerrain = !!painter.style.map.terrain;
+    // Scenic Roads: a layer whose metadata sets `scenic:mipmap` to `linear` is minified between its two
+    // nearest mipmap levels (trilinear), not from the nearer one alone, so its look doesn't jump at
+    // each half zoom (the app's water raster, task #123).
+    const minFilter = (layer.metadata as Record<string, unknown> | undefined)?.['scenic:mipmap'] === 'linear' ?
+        gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_NEAREST;
 
     // Draw all tiles
     for (const coord of coords) {
@@ -116,7 +121,7 @@ function drawTiles(
 
         // create and bind first texture
         context.activeTexture.set(gl.TEXTURE0);
-        tile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
+        tile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, minFilter);
 
         // create second texture - use either the current tile or fade tile to bind second texture below
         context.activeTexture.set(gl.TEXTURE1);
@@ -124,9 +129,9 @@ function drawTiles(
         tile.fadeOpacity = fadeValues.tileOpacity;
         if (parentTile) {
             parentTile.fadeOpacity = fadeValues.parentTileOpacity;
-            parentTile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
+            parentTile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, minFilter);
         } else {
-            tile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
+            tile.texture.bind(textureFilter, gl.CLAMP_TO_EDGE, minFilter);
         }
 
         // Enable anisotropic filtering only when the pitch is greater than the threshold pitch.
