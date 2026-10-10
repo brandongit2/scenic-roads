@@ -5,6 +5,7 @@ import {ConvexVolume} from '../../util/primitives/convex_volume.ts';
 import {GlobeTransform} from './globe_transform.ts';
 import {coveringTiles} from './covering_tiles.ts';
 import {LngLat, earthRadius} from '../lng_lat.ts';
+import type {OverscaledTileID} from '../../tile/tile_id.ts';
 
 describe('bounding volume creation', () => {
     test('z=0', () => {
@@ -150,5 +151,56 @@ describe('elevated content tile retention', () => {
         }
         expect(withElevated.size).toBeGreaterThan(without.length);
         expect(withElevated, 'a tile well beyond the surface horizon is retained').toContain('4/8/3');
+    });
+});
+
+describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => {
+    const terrainOf = (state: {demVersion: number; max: number | null}) => ({
+        get demVersion() { return state.demVersion; },
+        getMinMaxElevation: () => ({minElevation: state.max === null ? null : 0, maxElevation: state.max}),
+    }) as any;
+    const reach = (volume: ConvexVolume) => Math.max(...volume.points.map((p) => Math.hypot(p[0], p[1], p[2])));
+
+    test('a volume made before its DEM tile loaded is made again once one loads', () => {
+        const detailsProvider = new GlobeCoveringTilesDetailsProvider();
+        const state = {demVersion: 0, max: null};
+        const options = {tileSize: 512, terrain: terrainOf(state)};
+        const tile = {x: 2100, y: 1300, z: 12};
+        const before = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
+        expect(reach(before)).toBeCloseTo(1, 6);
+        // Asked again in later frames, unchanged elevations: the same volume.
+        detailsProvider.prepareNextFrame();
+        expect(detailsProvider.getTileBoundingVolume(tile, 0, 0, options)).toBe(before);
+        // A DEM tile loads: 900 m.
+        state.demVersion = 1;
+        state.max = 900;
+        detailsProvider.prepareNextFrame();
+        const after = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
+        expect(after).not.toBe(before);
+        expect(reach(after)).toBeGreaterThan(1 + 800 / earthRadius);
+    });
+
+    test('tiles on a slope near the camera, culled at sea level, are covered once their DEM tile loads', () => {
+        // Looking down a slope rising toward the camera: at sea level the ground near the camera
+        // lies below the frustum's bottom; at its real height it is in view.
+        const transform = new GlobeTransform();
+        transform.resize(1400, 800);
+        transform.setMaxPitch(85);
+        transform.setCenter(new LngLat(-5.45, 56.3));
+        transform.setZoom(15);
+        transform.setBearing(300);
+        transform.setPitch(50);
+        const state = {demVersion: 0, max: null};
+        const options = {tileSize: 512, minzoom: 0, maxzoom: 15, terrain: terrainOf(state)};
+        const key = (t: OverscaledTileID) => t.key;
+        const atSeaLevel = coveringTiles(transform, options).map(key);
+        state.demVersion = 1;
+        state.max = 1200;
+        const withGround = coveringTiles(transform, options).map(key);
+        expect(withGround.filter((k) => !atSeaLevel.includes(k)).length).toBeGreaterThan(0);
+        // ... as a transform that never saw the elevations unknown covers them.
+        const fresh = new GlobeTransform();
+        fresh.apply(transform);
+        expect(coveringTiles(fresh, options).map(key)).toEqual(withGround);
     });
 });

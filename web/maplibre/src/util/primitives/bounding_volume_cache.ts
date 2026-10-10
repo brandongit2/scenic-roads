@@ -30,6 +30,15 @@ export class BoundingVolumeCache<T extends IBoundingVolume> {
     }
 
     /**
+     * Scenic Roads: forgets every bounding volume, as when what they were made from has changed.
+     */
+    clear(): void {
+        this._cache.clear();
+        this._cachePrevious.clear();
+        this._hadAnyChanges = false;
+    }
+
+    /**
      * Returns the bounding volume of the specified tile, fetching it from cache or creating it using the factory function if needed.
      * @param tileID - Tile x, y and z for zoom.
      */

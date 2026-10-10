@@ -72,3 +72,13 @@ now source changes:
   `draw_fill_extrusion.ts`): they take the terrain's fog, as the terrain sets it for the same tile.
 - **Trilinear mipmaps on request** (`draw_raster.ts`): a raster layer whose metadata has
   `"scenic:mipmap": "linear"` is minified between its two nearest mipmap levels (the app's water).
+
+### Tile covers over 3D terrain
+
+- **Covers worked out again when the terrain's elevations arrive**
+  (`globe_covering_tiles_details_provider.ts`, `bounding_volume_cache.ts`, `TileManager.demVersion`,
+  `Terrain.demVersion`): the globe keeps each tile's bounding volume for as long as each frame asks
+  for it, with the terrain's elevations as they were when it was made. One made before its DEM tile
+  loaded lay at sea level, so tilted over steep ground the tiles on the slopes nearest the camera
+  were culled and not asked for until the camera moved (lochs missing in the Highlands until a
+  no-op `jumpTo`). The cache is now cleared whenever a DEM tile loads.

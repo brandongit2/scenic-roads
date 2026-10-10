@@ -85,6 +85,10 @@ export class TileManager extends Evented<SourceEventType> {
     _shouldReloadOnResume: boolean;
     transform: ITransform;
     terrain: Terrain;
+    /**
+     * Scenic Roads: how many DEM tiles this (raster-dem) manager has loaded: `Terrain.demVersion`.
+     */
+    demVersion: number = 0;
     used: boolean;
     usedForTerrain: boolean;
     tileSize: number;
@@ -319,6 +323,7 @@ export class TileManager extends Evented<SourceEventType> {
 
         if (this.getSource().type === 'raster-dem' && tile.dem) {
             backfillDEM(tile, this._inViewTiles);
+            this.demVersion++;
         }
         // Reset feature state revision so initializeTileState re-applies
         // feature state to the tile's new bucket data after a reload.

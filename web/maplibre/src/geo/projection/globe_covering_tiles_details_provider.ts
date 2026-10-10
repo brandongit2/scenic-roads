@@ -45,6 +45,7 @@ function distanceToTileWrapX(pointX: number, pointY: number, tileCornerX: number
 
 export class GlobeCoveringTilesDetailsProvider implements CoveringTilesDetailsProvider {
     private _boundingVolumeCache: BoundingVolumeCache<ConvexVolume> = new BoundingVolumeCache(this._computeTileBoundingVolume);
+    private _demVersion: number = -1;
 
     /**
      * Prepares the internal bounding volume cache for the next frame.
@@ -107,6 +108,15 @@ export class GlobeCoveringTilesDetailsProvider implements CoveringTilesDetailsPr
     }
 
     getTileBoundingVolume(tileID: { x: number; y: number; z: number }, wrap: number, elevation: number, options: CoveringTilesOptionsInternal): ConvexVolume {
+        // Scenic Roads: the volumes hold the terrain's elevations as they were when made, and the
+        // cache keeps a volume for as long as each frame asks for it. A volume made before its DEM
+        // tile loaded (at sea level, then) culled the tiles on slopes near the camera and kept them
+        // culled until the camera moved: the cache is cleared whenever a DEM tile loads.
+        const demVersion = options?.terrain?.demVersion;
+        if (demVersion !== undefined && demVersion !== this._demVersion) {
+            this._demVersion = demVersion;
+            this._boundingVolumeCache.clear();
+        }
         return this._boundingVolumeCache.getTileBoundingVolume(tileID, wrap, elevation, options);
     }
 

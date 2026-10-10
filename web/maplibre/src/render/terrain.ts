@@ -512,6 +512,14 @@ export class Terrain {
         return minMax;
     }
 
+    /**
+     * Scenic Roads: how many DEM tiles have loaded so far. Anything worked out from the elevations
+     * at hand (the tile covers' bounding volumes, culled with them) is out of date once it changes.
+     */
+    get demVersion(): number {
+        return this.tileManager.tileManager.demVersion;
+    }
+
     _getOverscaledTileIDFromLngLatZoom(lnglat: LngLat, zoom: number): { tileID: OverscaledTileID; mercatorX: number; mercatorY: number} {
         const mercatorCoordinate = MercatorCoordinate.fromLngLat(lnglat.wrap());
         const worldSize = (1 << zoom) * EXTENT;

@@ -2797,19 +2797,12 @@ At each phase's end an Opus agent reviews the work against this plan.
    pass and its share of `pass-sets` (65 min over the LAN for this set), for a reference read apart
    from the basemap. Dropping it from `osmpass::SETS` would leave the check to build its store from
    the basemap's own z14 tiles (then not an independent reference).
-7. **The water near the camera in steep 3D terrain, before the view first moves** (§6, Water):
-   MapLibre works out a source's tiles as the camera moves, culling with the elevations it has
-   then; tilted at z14–15 over the Highlands with 3D terrain, the water's tiles on the slopes
-   nearest the camera were left out and not asked for until the camera moved (a no-op `jumpTo`
-   brings them) (a loch at the bottom of the view missing: 1.9 % of the pixels in the
-   shoreline check's Scotland z15 view; the basemap's coarser polygon tiles covered it). Fix:
-   have the sources' tiles worked out again once the terrain under the camera has loaded.
-8. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
+7. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
    mirror's reserve (50 GB on the M1, 150 GB on the build Mac) can be filled by a download's copies
    once the agent frees toward it, leaving the agent short of it with nothing of its own to free
    (it says so). Fix: the server reads the agent's `room-target.json` and keeps its mirror's
    reserve at the larger of the two while one is set.
-9. **Names by language** (§7), what's short of the design:
+8. **Names by language** (§7), what's short of the design:
    - **The area tables are still on the NAS** (`translations/<area>/`, 342 MB): each server copies
      them and leaves their lines out. Fix: delete the nine folders once a published server shows
      the converted lines (`translations/0-converted/`).
@@ -2833,7 +2826,7 @@ At each phase's end an Opus agent reviews the work against this plan.
      two overlap the smaller wins, so a thing within about a kilometre of a border may take its
      neighbour's languages (the ruins of Wasigenstein, in Alsace 300 m from the border, read German).
      Fix, if it matters: the outlines' full rings near borders.
-10. **A worker's tail in a one-unit job only frees the build Mac's cores** (docs/workers.md §3):
+9. **A worker's tail in a one-unit job only frees the build Mac's cores** (docs/workers.md §3):
    the job waits on a worker holding its tail only while its measured pace says it'll be back
    before the build Mac's own run would end, so a worker slower than the build Mac is raced at once
    (and kept to finish only to measure it), and the build Mac runs the tail anyway. The paces live
