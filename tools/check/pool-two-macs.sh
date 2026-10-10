@@ -43,6 +43,19 @@
 # records through the journal and its mail, acknowledged; the lead restarted re-asserts; the lead
 # moved to the older app stands down, the member takes over after two minutes, restarts into the
 # lead, its coordinator up; the old lead, newer again, works as a member of it.
+#
+# With state/pool/slots on (2026-10-10, `root … slots`, `region`, `jobs … 300`): the lead handed to
+# the member by `scenic lead give` mid-job, neither agent restarting (same pids), the member's
+# coordinator up in its process and the old lead's port free, the contact the new lead's, the lead's
+# idle-sleep assertion (`caffeinate -i -w <agent>`) moving with the lead; the member's job, granted in
+# the term before, ending in the new lead's coordinator, and the old lead's own job ending there by
+# HTTP, both entries in the new lead's records; the old lead, a member, given a job by the new lead
+# over HTTP, merged; `newest` on the member, then on the lead mid-job: the lead hands the lead over
+# once, its job running on and ending at the new lead, then restarts into the update; the lead
+# frozen (SIGSTOP) past ten minutes and taken over (`scenic lead take`, unforced), then thawed: it
+# stands down to a member in its process, its coordinator stopped and port free, the new lead's
+# contact left alone, nothing granted; a lead killed (-9) mid-job relaunched, re-asserting, its
+# coordinator up, the job its process left stopped and started again.
 set -euo pipefail
 cmd=${1:?root, region, app, run, older, newer, newest, jobs or stop}
 case $cmd in
