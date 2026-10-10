@@ -3577,18 +3577,46 @@ fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<O
 }
 
 /// The z3 tiles named (assemblies: `terrain-lo`, `slope-lo`), each with its pieces (its z6 tiles
-/// near the coverage, in column then row order).
+/// near the coverage, in column then row order; none for a "none" assembly, a z3 tile the coverage
+/// has left, whose run drops its lo pack).
 fn areas_named(cov: &pipeline::coverage::Coverage, args: &[String], step: &str) -> Result<Vec<(Unit, Vec<(u32, u32)>)>> {
     let _p = phase("the areas' pieces near the coverage worked out", Class::Compute);
     let near = pipeline::agent::build::coverage_tiles(cov);
     let qs: Vec<Unit> = positional(args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
     anyhow::ensure!(!qs.is_empty(), "{step} <3/x/y …>");
-    qs.into_iter().map(|q| Ok((q, near.get(&(q.x, q.y)).cloned().with_context(|| format!("{}: no tile of it is near the coverage", q.slash()))?))).collect()
+    Ok(qs.into_iter().map(|q| (q, near.get(&(q.x, q.y)).cloned().unwrap_or_default())).collect())
+}
+
+/// The "none" assemblies of `qs` (those without a piece: `areas_named`) run: each z3 tile's lo pack
+/// of `step`'s layer dropped; the others returned. Nothing is read for them, so a job of them alone opens
+/// no sources.
+fn none_assemblies(out: &mut Out, step: &str, qs: Vec<(Unit, Vec<(u32, u32)>)>) -> Result<Vec<(Unit, Vec<(u32, u32)>)>> {
+    let (gone, rest): (Vec<_>, Vec<_>) = qs.into_iter().partition(|(_, ts)| ts.is_empty());
+    for (q, _) in &gone {
+        pipeline::control::safe_point(step);
+        let n = if step == "terrain-lo" { pipeline::terrain_pack::drop_lo(out, (q.x, q.y))? } else { pipeline::slope_pack::drop_lo(out, (q.x, q.y))? };
+        eprintln!("{step} {}: the coverage has left it; {n} files dropped", q.slash());
+        pipeline::control::done(step, &q.slash());
+    }
+    Ok(rest)
 }
 
 /// terrain <6/x/y …> [--expect-same T,…]: terrain's pieces (pipeline::terrain_pack::build_piece:
 /// each z6 tile's hi pack and mid), then the raw tiles AWS gave packed onto the NAS.
 fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Coverage, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
+    // ("None" pieces, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
+    // read, no cost noted; a job of them alone opens no sources and packs nothing.)
+    let (ts, gone): (Vec<Unit>, Vec<Unit>) = ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0));
+    for t in &gone {
+        pipeline::control::safe_point("terrain");
+        let n = pipeline::terrain_pack::drop_piece(out, (t.x, t.y))?;
+        eprintln!("terrain {}: the coverage has left it; {n} files dropped", t.slash());
+        pipeline::control::done("terrain", &t.slash());
+    }
+    if ts.is_empty() {
+        return Ok(());
+    }
+    let ts = &ts[..];
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
     let raw = raw_tiles(out, &raw_dir);
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
@@ -3661,7 +3689,10 @@ fn water_idx_of(out: &Out, cov: &pipeline::coverage::Coverage, src: &dyn pipelin
 /// pack from its pieces' mids), then the raw tiles AWS gave packed onto the NAS.
 fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
-    let qs = areas_named(&cov, args, "terrain-lo")?;
+    let qs = none_assemblies(out, "terrain-lo", areas_named(&cov, args, "terrain-lo")?)?;
+    if qs.is_empty() {
+        return Ok(());
+    }
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
     let raw = raw_tiles(out, &raw_dir);
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
@@ -3712,7 +3743,7 @@ fn slope_pieces(out: &mut Out, cov: &pipeline::coverage::Coverage, ts: &[Unit], 
 /// slope-lo <3/x/y …>: slope's assemblies (pipeline::slope_pack::build_lo).
 fn slope_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
-    let qs = areas_named(&cov, args, "slope-lo")?;
+    let qs = none_assemblies(out, "slope-lo", areas_named(&cov, args, "slope-lo")?)?;
     for (k, (q, ts)) in qs.iter().enumerate() {
         pipeline::control::safe_point("slope-lo");
         pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");

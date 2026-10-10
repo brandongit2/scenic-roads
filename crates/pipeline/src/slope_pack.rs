@@ -276,6 +276,14 @@ pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
     Ok(n)
 }
 
+/// Drops z3 tile `q`'s slope lo pack from the manifest (a "none" assembly: the coverage has left
+/// the z3 tile), saving it; how many it had.
+pub fn drop_lo(out: &mut Out, q: (u32, u32)) -> Result<usize> {
+    let n = crate::terrain_pack::drop_named(out, &[format!("layers/slope/lo/3-{}-{}", q.0, q.1)]);
+    out.save()?;
+    Ok(n)
+}
+
 /// Z6 tile (`x`, `y`)'s slope mid in the manifest: its z6–8 tiles as made (`build_piece`), which its
 /// area's assembly reads (`build_lo`).
 pub fn mid_logical(x: u32, y: u32) -> String {
@@ -359,9 +367,10 @@ fn piece(terrain: &Terrain, has: &(dyn Fn(u8, u32, u32) -> bool + Sync), t: (u32
 
 /// An area's assembly (z3 tile `q`, its pieces `ts`): its lo tiles (z3–8), sorted. Each piece's
 /// z6–8 tiles from `mids` (its mid, or the slope lo pack's for one that has none: a piece current
-/// without one has its tiles there), its z6 tile's quadrant read from its stored z6 tile; the other
-/// z6 tiles of q as the lo pack has them (a z6 tile's quadrant from its stored tile, or where it has
-/// none its terrain's own slope; its z7–8 tiles kept), then z5–z3.
+/// without one has its tiles there), its z6 tile's quadrant read from its stored z6 tile; each other
+/// z6 tile of q its terrain's own slope (none of its z7–8 tiles: the server makes them from the
+/// terrain, as for any tile the layer lacks), never what an earlier run stored, so the pack is what
+/// a fresh build makes; then z5–z3.
 fn assemble(out: &Out, terrain: &Terrain, q: (u32, u32), ts: &[(u32, u32)], mids: &BTreeMap<(u32, u32), Vec<Made>>, count: &Count) -> Result<Vec<Made>> {
     let slope_now = ManifestTiles::new(out, "slope");
     let mut made: Vec<Made> = Vec::new();
@@ -389,29 +398,16 @@ fn assemble(out: &Out, terrain: &Terrain, q: (u32, u32), ts: &[(u32, u32)], mids
         }
         made.extend(tiles);
     }
-    // The other z6 tiles of q: their stored slope's quadrant, else their terrain's own slope.
+    // The other z6 tiles of q: their terrain's own slope.
     for x in q.0 * 8..(q.0 + 1) * 8 {
         for y in q.1 * 8..(q.1 + 1) * 8 {
             if z6q.contains_key(&(x, y)) {
                 continue;
             }
             count.one();
-            let kept = slope_now.get(6, x, y)?;
-            let v = match kept.as_ref().and_then(|b| decode_slope4(b)) {
-                Some(v) => {
-                    // Kept as stored (byte for byte), its quadrant read from it.
-                    made.push((6, x, y, kept.unwrap()));
-                    v
-                }
-                None => match compose(terrain, 6, x, y, &[]) {
-                    Some(v) => {
-                        let (blob, v) = stored(&v);
-                        made.push((6, x, y, blob));
-                        v
-                    }
-                    None => continue,
-                },
-            };
+            let Some(v) = compose(terrain, 6, x, y, &[]) else { continue };
+            let (blob, v) = stored(&v);
+            made.push((6, x, y, blob));
             z6q.insert((x, y), quadrant(&v));
         }
     }
@@ -438,24 +434,7 @@ fn assemble(out: &Out, terrain: &Terrain, q: (u32, u32), ts: &[(u32, u32)], mids
     }
     made.sort_by_key(|t| (t.0, t.1, t.2));
     made.dedup_by_key(|t| (t.0, t.1, t.2));
-    // The lo pack keeps the z7–8 tiles of the other z6 tiles of q as they are.
-    let ours: HashSet<(u32, u32)> = ts.iter().copied().collect();
-    let mut lo: Vec<Made> = made.into_iter().filter(|t| t.0 <= 8).collect();
-    for z in 7..=8u8 {
-        let s = 1u32 << (z - 3);
-        for x in q.0 * s..(q.0 + 1) * s {
-            for y in q.1 * s..(q.1 + 1) * s {
-                if ours.contains(&(x >> (z - 6), y >> (z - 6))) {
-                    continue;
-                }
-                if let Some(b) = slope_now.get(z, x, y)? {
-                    lo.push((z, x, y, b));
-                }
-            }
-        }
-    }
-    lo.sort_by_key(|t| (t.0, t.1, t.2));
-    Ok(lo)
+    Ok(made.into_iter().filter(|t| t.0 <= 8).collect())
 }
 
 /// The build's terrain as a job reads it (`Terrain`), from the manifest's packs as it opened them.
@@ -463,10 +442,10 @@ fn terrain_reads(terr: &ManifestTiles) -> (impl Fn(u8, u32, u32) -> Option<Vec<u
     (move |z: u8, x: u32, y: u32| terr.get(z, x, y).ok().flatten(), move |z: u8, x: u32, y: u32| terr.has(z, x, y).unwrap_or(false))
 }
 
-/// The slope of the z6 tiles `ts` (in z3 tile `q`) from the build's terrain packs: each one's hi pack
+/// The slope of the z6 tiles `ts` (in z3 tile `q`: all its pieces) from the build's terrain packs: each one's hi pack
 /// (z9–11), written as soon as it's worked out (an area holds a z6 tile's tiles at a time, under a
 /// GB, where all of them took up to 20 GB), and `q`'s lo pack (z3–8), the other z6 tiles of `q`
-/// taken from the slope lo pack as it is: its pieces (`build_piece`'s runs) and its assembly
+/// from their terrain (`assemble`): its pieces (`build_piece`'s runs) and its assembly
 /// (`build_lo`'s, from the pieces' z6–8 tiles held here), the same bytes as their jobs make, a
 /// piece's hi pack dropped when it makes no hi tile, as its job drops it. (A z6 tile of `q` the
 /// coverage has left, not among `ts`, is left as it is: its "none" piece's job drops its hi pack and
@@ -1067,6 +1046,25 @@ mod tests {
         }
         build_q(&mut area, (3, 2), &[(28, 16)]).unwrap();
         assert!(area.get(&hi).is_none() && area.get(&lhi).is_some());
+        // An assembly over a lo pack an earlier run stored, holding tiles of z6 tiles that aren't
+        // its pieces (6/24/23's z6 and a z7 tile of it): none kept, the lo pack what a fresh build's
+        // assembly makes. (No terrain here: the fresh one has no tiles, so the old pack goes.)
+        let lo = "layers/slope/lo/3-3-2";
+        let old: Vec<(u8, u32, u32, Vec<u8>, u32)> = vec![(6, 24, 23, b"old z6".to_vec(), 6), (7, 48, 46, b"old z7".to_vec(), 6)];
+        crate::layers::write_pack(&mut out, "slope", "slope4-png", false, "lo", (3, 3, 2), &mut old.into_iter()).unwrap();
+        out.save().unwrap();
+        assert!(out.get(lo).is_some());
+        build_lo(&mut out, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
+        let mut fresh = Out::open(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
+        build_piece(&mut fresh, (28, 16), false, &|_, _, _| {}).unwrap();
+        build_lo(&mut fresh, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
+        assert_eq!(out.get(lo), fresh.get(lo), "the same lo pack as a fresh build's");
+        assert!(out.get(lo).is_none(), "nothing of the earlier run's kept");
+        // A z3 tile the coverage has left: its "none" assembly drops its lo pack.
+        crate::layers::write_pack(&mut out, "slope", "slope4-png", false, "lo", (3, 5, 2), &mut vec![(6, 40, 20, b"old".to_vec(), 3)].into_iter()).unwrap();
+        out.save().unwrap();
+        assert_eq!(drop_lo(&mut out, (5, 2)).unwrap(), 1);
+        assert!(out.get("layers/slope/lo/3-5-2").is_none());
     }
 
     /// Two areas' slope (3/3/1 and 3/4/1: a coverage on lon 0° at 70.5°N, their border pieces reading
@@ -1225,16 +1223,15 @@ mod tests {
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let terrain = d.path().join("terrain");
         crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
-        // Its slope, both ways, each over a copy of the terrain's root: the area's first, then one of
-        // its z6 tiles again (as after a change there), the others' slope read as stored (their
-        // z6 tiles' quadrants, and their z7–8 tiles kept in the lo pack).
+        // Its slope, both ways, each over a copy of the terrain's root: the area's first, then again
+        // over what the first stored (nothing an earlier run stored is read back: the same packs).
         let made = |name: &str, way: &dyn Fn(&mut Out, &[(u32, u32)])| {
             let root = d.path().join(name);
             copy_dir(&terrain, &root);
             let slope = || Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
             way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
             let first = slope();
-            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), &ts[..1]);
+            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
             (first, slope())
         };
         let now = made("now", &|out, ts| {
@@ -1245,6 +1242,7 @@ mod tests {
             whole_area(out, q, ts, &|_, _, _| {}).unwrap();
         });
         assert_eq!(now.0.len(), ts.len() + 1, "{:?}", now.0);
+        assert_eq!(now.0, now.1, "made again over what it stored: the same");
         assert_eq!(now, before, "the same packs, byte for byte (their content names), first and again");
     }
 }

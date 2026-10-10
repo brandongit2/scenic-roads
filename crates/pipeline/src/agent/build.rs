@@ -743,7 +743,10 @@ pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str,
 /// The assemblies' versions (their keys): bumped on any change to the bytes of the lo packs an
 /// assembly makes from the same pieces' mids.
 pub const TERRAIN_LO_V: u32 = 1;
-pub const SLOPE_LO_V: u32 = 1;
+/// Slope's 2: an assembly's z6 tiles that aren't its pieces' made from their terrain, never kept
+/// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
+/// (crate::slope_pack::assemble).
+pub const SLOPE_LO_V: u32 = 2;
 
 /// Terrain's and slope's targets, each with its key, done or not (docs/plan.md §6, Terrain): a
 /// piece per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with pieces.
@@ -764,13 +767,22 @@ pub struct TerrainTargets {
     /// pack.
     pub slope_lo: Vec<(String, String)>,
     /// The z6 tiles ("6/x/y") with a terrain hi pack or mid that the coverage has left (no piece):
-    /// "none" pieces, whose runs drop them (`none_piece_key`). Not in `terrain`: no assembly waits
-    /// for them.
+    /// "none" pieces, whose runs drop them (`none_piece_key`). Not in `terrain`: terrain's assembly
+    /// doesn't wait for them (it reads no hi pack).
     #[serde(default)]
     pub terrain_none: Vec<(String, String)>,
-    /// The same of slope's hi packs and mids.
+    /// The same of slope's hi packs and mids (their area's slope assembly waits for them, as for
+    /// any of its slope pieces left).
     #[serde(default)]
     pub slope_none: Vec<(String, String)>,
+    /// The z3 tiles ("3/x/y") with a terrain lo pack that the coverage has left (no piece): "none"
+    /// assemblies, whose runs drop it (`none_lo_key`); the root is then made again (its key names
+    /// the lo packs).
+    #[serde(default)]
+    pub terrain_lo_none: Vec<(String, String)>,
+    /// The same of slope's lo packs.
+    #[serde(default)]
+    pub slope_lo_none: Vec<(String, String)>,
 }
 
 /// The z3 tile ("3/x/y") of a z6 tile ("6/x/y").
@@ -785,7 +797,7 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
     // and the mids by content, the basemap. A plan works them out again only when one changes; not
     // kept while a slope piece's key can't be told.)
     let named = |prefix: &str| m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
-    let from = h(&[&coverage_all(cov), &named("layers/terrain/"), &named("layers/slope/hi/"), &named("work/terrain-mid/"), &named("work/slope-mid/"), &named(crate::terrain_water::IDX_PREFIX), &crate::terrain_pack::water_source_pin(m).unwrap_or_default()]);
+    let from = h(&[&coverage_all(cov), &named("layers/terrain/"), &named("layers/slope/"), &named("work/terrain-mid/"), &named("work/slope-mid/"), &named(crate::terrain_water::IDX_PREFIX), &crate::terrain_pack::water_source_pin(m).unwrap_or_default()]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
         let t = terrain_slope_targets_made(cov, m, tiles);
@@ -826,7 +838,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
         out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)))));
     }
     // The z6 tiles the coverage has left with a hi pack or a mid still named: "none" pieces.
-    let pieces: BTreeSet<(u32, u32)> = near.into_values().flatten().collect();
+    let pieces: BTreeSet<(u32, u32)> = near.values().flatten().copied().collect();
     let left = |step: &str, prefixes: [&str; 2]| -> Vec<(String, String)> {
         let mut ts: BTreeSet<(u32, u32)> = BTreeSet::new();
         for p in prefixes {
@@ -836,7 +848,22 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
     };
     out.terrain_none = left("terrain", ["layers/terrain/hi/", "work/terrain-mid/"]);
     out.slope_none = left("slope", ["layers/slope/hi/", "work/slope-mid/"]);
+    // The z3 tiles the coverage has left with a lo pack still named: "none" assemblies.
+    let lo_left = |layer: &str| -> Vec<(String, String)> {
+        let p = format!("layers/{layer}/lo/");
+        m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).filter_map(|(l, _)| Unit::parse(&l[p.len()..])).filter(|u| u.z == 3 && !near.contains_key(&(u.x, u.y))).map(|u| format!("3/{}/{}", u.x, u.y)).map(|q| (q.clone(), none_lo_key(layer, &q))).collect()
+    };
+    out.terrain_lo_none = lo_left("terrain");
+    out.slope_lo_none = lo_left("slope");
     out
+}
+
+/// The key of a terrain or slope assembly (of `layer`) of a z3 tile the coverage has left ("3/x/y"),
+/// with a lo pack still named: its run drops it (crate::terrain_pack::drop_lo,
+/// crate::slope_pack::drop_lo).
+pub fn none_lo_key(layer: &str, q: &str) -> String {
+    let v = if layer == "terrain" { TERRAIN_LO_V } else { SLOPE_LO_V };
+    h(&[&format!("{layer}-lo {v}"), q, "none"])
 }
 
 /// The key of a terrain or slope piece (`step`) the coverage has left ("6/x/y"), with a hi pack or a
@@ -1039,14 +1066,16 @@ pub struct TerrainWork {
     /// piece of it is): made again as they are, expected the same; and the "none" pieces not yet
     /// run (`TerrainTargets::terrain_none`), last.
     pub terrain: Vec<(String, String)>,
-    /// Its assemblies that can run: stale, every piece of theirs current with its mid.
+    /// Its assemblies that can run: stale, every piece of theirs current with its mid; and the
+    /// "none" assemblies not yet run (`TerrainTargets::terrain_lo_none`), whenever, last.
     pub terrain_lo: Vec<(String, String)>,
     /// Slope's pieces that can run: stale, their key known, the terrain of their area and of their
     /// edge neighbours' areas built (none of them in `terrain_left`); and the "none" pieces not yet
     /// run (`TerrainTargets::slope_none`), whenever, last.
     pub slope: Vec<(String, String)>,
     /// Its assemblies that can run: stale, every piece of theirs current, their area's terrain
-    /// built (one current without a mid has its tiles in the lo pack).
+    /// built (one current without a mid has its tiles in the lo pack); and the "none" assemblies
+    /// not yet run (`TerrainTargets::slope_lo_none`), whenever, last.
     pub slope_lo: Vec<(String, String)>,
     /// The current pieces without a mid nothing else makes (those the re-keying recorded:
     /// agent::rekey): their mids made in idle time, after all other work, expected the same:
@@ -1078,7 +1107,8 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     // (A "none" piece, the coverage gone from its z6 tile, counts as one left until its run has
     // dropped its hi pack and mid: the units reading its tiles wait for it.)
     w.terrain_pieces_left = tt.terrain.iter().chain(&tt.terrain_none).filter(|(t, k)| !current(t, k)).map(|p| p.0.clone()).collect();
-    w.terrain_lo_left = tt.terrain_lo.iter().filter(|(q, k)| k == UNKNOWN || done.terrain_lo.get(q) != Some(k)).map(|l| l.0.clone()).collect();
+    let lo_none: Vec<(String, String)> = tt.terrain_lo_none.iter().filter(|(q, k)| done.terrain_lo.get(q) != Some(k)).cloned().collect();
+    w.terrain_lo_left = tt.terrain_lo.iter().filter(|(q, k)| k == UNKNOWN || done.terrain_lo.get(q) != Some(k)).map(|l| l.0.clone()).chain(lo_none.iter().map(|l| l.0.clone())).collect();
     let changing: BTreeSet<String> = w.terrain_lo_left.iter().cloned().chain(w.terrain_pieces_left.iter().filter_map(|t| area_of(t))).collect();
     let mut idle = Vec::new();
     for (t, k) in &tt.terrain {
@@ -1094,6 +1124,8 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     }
     w.terrain.extend(tt.terrain_none.iter().filter(|(t, k)| !current(t, k)).cloned());
     w.terrain_lo = tt.terrain_lo.iter().filter(|(q, k)| k != UNKNOWN && w.terrain_lo_left.contains(q) && tt.terrain.iter().filter(|(t, _)| area_of(t).as_deref() == Some(q.as_str())).all(|(t, k)| current(t, k) && has_mid(&tmid, t))).cloned().collect();
+    // (A "none" assembly reads nothing: it runs whenever, its area left until it has.)
+    w.terrain_lo.extend(lo_none);
     w.terrain_left = changing;
     if !idle.is_empty() {
         w.backfill.push(Work { step: "terrain".into(), targets: idle });
@@ -1102,7 +1134,8 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     let scurrent = |t: &str, k: &Option<String>| k.as_ref().is_some_and(|k| done.slope.get(t) == Some(k));
     let snone: Vec<(String, String)> = tt.slope_none.iter().filter(|(t, k)| done.slope.get(t) != Some(k)).cloned().collect();
     w.slope_pieces_left = tt.slope.iter().filter(|(t, k)| !scurrent(t, k)).map(|p| p.0.clone()).chain(snone.iter().map(|p| p.0.clone())).collect();
-    w.slope_lo_left = tt.slope_lo.iter().filter(|(q, k)| done.slope_lo.get(q) != Some(k)).map(|l| l.0.clone()).collect();
+    let slo_none: Vec<(String, String)> = tt.slope_lo_none.iter().filter(|(q, k)| done.slope_lo.get(q) != Some(k)).cloned().collect();
+    w.slope_lo_left = tt.slope_lo.iter().filter(|(q, k)| done.slope_lo.get(q) != Some(k)).map(|l| l.0.clone()).chain(slo_none.iter().map(|l| l.0.clone())).collect();
     w.slope_left = w.slope_lo_left.iter().cloned().chain(w.slope_pieces_left.iter().filter_map(|t| area_of(t))).collect();
     let built = |t: &str| {
         Unit::parse(t).is_some_and(|u| std::iter::once((u.x, u.y)).chain(edge_neighbours(6, u.x, u.y)).all(|(x, y)| !w.terrain_left.contains(&format!("3/{}/{}", x >> 3, y >> 3))))
@@ -1121,6 +1154,7 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     // (A "none" piece reads no terrain: it runs whenever.)
     w.slope.extend(snone);
     w.slope_lo = tt.slope_lo.iter().filter(|(q, _)| w.slope_lo_left.contains(q) && !w.terrain_left.contains(q) && !w.slope_pieces_left.iter().any(|t| area_of(t).as_deref() == Some(q.as_str()))).cloned().collect();
+    w.slope_lo.extend(slo_none);
     if !idle.is_empty() {
         w.backfill.push(Work { step: "slope".into(), targets: idle });
     }
@@ -1822,18 +1856,26 @@ fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, in
 
     // The terrain and slope roots (z0–2), from their lo packs.
     for (layer, step) in [("terrain", "terrain-root"), ("slope", "slope-root")] {
-        let mut ins = vec![format!("{step} 1")];
-        ins.extend(m.range(format!("layers/{layer}/lo/")..).take_while(|(l, _)| l.starts_with(&format!("layers/{layer}/lo/"))).map(|(_, c)| c.clone()));
-        if ins.len() == 1 {
-            continue;
-        }
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        let k = h(&refs);
+        let Some(k) = root_key(layer, m) else { continue };
         if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
             return Some(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
         }
     }
     None
+}
+
+/// The terrain's or slope's root key (`layer`): its lo packs by content name (a lo pack dropped,
+/// the coverage gone from its z3 tile, makes it again); None without one.
+pub fn root_key(layer: &str, m: &BTreeMap<String, String>) -> Option<String> {
+    let step = format!("{layer}-root");
+    let p = format!("layers/{layer}/lo/");
+    let mut ins = vec![format!("{step} 1")];
+    ins.extend(m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(_, c)| c.clone()));
+    if ins.len() == 1 {
+        return None;
+    }
+    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+    Some(h(&refs))
 }
 
 /// The items' facts and pageviews' key (network; only new items within a pass): the current units'
@@ -2643,6 +2685,10 @@ pub(crate) mod tests {
             if *k == none_piece_key(layer, t) {
                 continue;
             }
+            if *k == none_lo_key(layer, t) {
+                m.remove(&format!("layers/{layer}/lo/{}", u.dash()));
+                continue;
+            }
             let l = format!("layers/{layer}/{}/{}", if u.z == 6 { "hi" } else { "lo" }, u.dash());
             m.insert(l.clone(), format!("{l}.{k}.pack"));
         }
@@ -2708,7 +2754,14 @@ pub(crate) mod tests {
         for l in [crate::terrain_pack::mid_logical(24, 23), crate::slope_pack::mid_logical(40, 20)] {
             m.insert(l.clone(), format!("{l}.2222222222222222.sect"));
         }
+        // And 3/5/2's lo packs, a z3 tile the coverage has left: "none" assemblies.
+        for l in ["layers/terrain/lo/3-5-2", "layers/slope/lo/3-5-2"] {
+            m.insert(l.into(), format!("{l}.3333333333333333.pack"));
+        }
         let tt = terrain_slope_targets(&c, &m, &tiles_for(&m));
+        assert_eq!(tt.terrain_lo_none, vec![("3/5/2".to_string(), none_lo_key("terrain", "3/5/2"))]);
+        assert_eq!(tt.slope_lo_none, vec![("3/5/2".to_string(), none_lo_key("slope", "3/5/2"))]);
+        assert!(!tt.terrain_lo.iter().any(|(q, _)| q == "3/5/2"));
         assert!(!pieces.contains(&(24, 23)) && !pieces.contains(&(40, 20)));
         assert_eq!(tt.terrain_none, vec![("6/24/23".to_string(), none_piece_key("terrain", "6/24/23")), ("6/40/20".to_string(), none_piece_key("terrain", "6/40/20"))]);
         assert_eq!(tt.slope_none, vec![("6/24/23".to_string(), none_piece_key("slope", "6/24/23")), ("6/40/20".to_string(), none_piece_key("slope", "6/40/20"))]);
@@ -2721,15 +2774,18 @@ pub(crate) mod tests {
         let tw = terrain_work(&tt, &m, &done);
         assert_eq!(tw.terrain, tt.terrain_none, "the none pieces alone");
         assert_eq!(tw.slope, tt.slope_none, "slope's whenever: they read no terrain");
-        assert!(tw.terrain_lo.is_empty() && tw.slope_lo.is_empty(), "{tw:?}");
+        assert_eq!(tw.terrain_lo, tt.terrain_lo_none, "the none assembly alone, whenever");
+        assert_eq!(tw.slope_lo, tt.slope_lo_none, "3/3/2's slope assembly waits for its none piece");
         assert_eq!(tw.terrain_left, ["3/3/2", "3/5/2"].map(String::from).into(), "their areas left until they've run");
         assert!(tw.terrain_pieces_left.contains("6/24/23") && tw.slope_pieces_left.contains("6/40/20"));
         // Run: their packs and mids dropped, gone from the targets.
         terrain_did(&mut m, &mut done, &Work { step: "terrain".into(), targets: tw.terrain.clone() });
         terrain_did(&mut m, &mut done, &Work { step: "slope".into(), targets: tw.slope.clone() });
-        assert!(!m.keys().any(|l| l.ends_with("6-24-23") || l.ends_with("6-40-20")), "{m:?}");
+        terrain_did(&mut m, &mut done, &Work { step: "terrain-lo".into(), targets: tw.terrain_lo.clone() });
+        terrain_did(&mut m, &mut done, &Work { step: "slope-lo".into(), targets: tw.slope_lo.clone() });
+        assert!(!m.keys().any(|l| l.ends_with("6-24-23") || l.ends_with("6-40-20") || l.ends_with("3-5-2")), "{m:?}");
         let tt = terrain_slope_targets(&c, &m, &tiles_for(&m));
-        assert!(tt.terrain_none.is_empty() && tt.slope_none.is_empty());
+        assert!(tt.terrain_none.is_empty() && tt.slope_none.is_empty() && tt.terrain_lo_none.is_empty() && tt.slope_lo_none.is_empty());
         let tw = terrain_work(&tt, &m, &done);
         assert!(tw.terrain.is_empty() && tw.terrain_left.is_empty(), "{tw:?}");
         // A run's hand-off waiting to be merged (its record on top, the manifest not yet changed):
@@ -2748,6 +2804,124 @@ pub(crate) mod tests {
         assert_ne!(k, terrain_piece_key((21, 18), &fp, "-"), "a record from before its hi pack was dropped isn't current");
         let fp = near.fingerprint(grown_e7(6, 22, 18, 20.0));
         assert_eq!(tt.terrain.iter().find(|(t, _)| t == "6/22/18").unwrap().1, terrain_piece_key((22, 18), &fp, "-"), "one making hi tiles: keyed as before");
+    }
+
+    /// Every step of the plan done as its job does it (`did`, `terrain_did`), a unit's candidates in
+    /// the manifest once they're made; the steps run, in order, until nothing's left.
+    fn run_all(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<String> {
+        let mut ran = Vec::new();
+        for _ in 0..60 {
+            let w = super::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), &tiles_for(m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+            let Some(w) = w.into_iter().next() else { return ran };
+            ran.extend(w.targets.iter().map(|t| format!("{} {}", w.step, t.0)));
+            match w.step.as_str() {
+                "heritage-sites" => heritage_done(m, done, "d", &w),
+                s if s.starts_with("terrain") || s.starts_with("slope") => terrain_did(m, done, &w),
+                "pois" => {
+                    did(m, done, &w);
+                    for (t, _) in &w.targets {
+                        let u = Unit::parse(t).unwrap();
+                        m.insert(format!("work/pois/{}", u.dash()), format!("work/pois/{}.5151515151515151.json", u.dash()));
+                    }
+                }
+                _ => did(m, done, &w),
+            }
+        }
+        panic!("the plan never ran out: {ran:?}");
+    }
+
+    /// A terrain and slope hi pack the coverage has left within a unit's 30 km (6/29/16, beside
+    /// Reykjavik's 6/28/16), and the lo packs of a z3 tile it has left (3/4/2): their "none" pieces
+    /// and assemblies first, the unit and its peaks waiting for them, then built again once each,
+    /// and the roots made again once; nothing after.
+    #[test]
+    fn a_units_terrain_dropped_where_the_coverage_has_left_rebuilds_it_once() {
+        let c = cov();
+        let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
+        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] });
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        // (The pass's route ends, summits and worldwide z8: the candidates and their peaks run.)
+        for l in ["work/trailends/d".to_string(), "work/summits/d".to_string(), crate::terrain_z8::logical(), crate::terrain_z8::max_logical()] {
+            m.insert(l.clone(), format!("{l}.6161616161616161.bin"));
+        }
+        let mut done = Keys::default();
+        let first = run_all(&c, &reach, &mut m, &mut done);
+        assert!(first.contains(&"unit 6/28/16".to_string()) && first.contains(&"peaks 6/28/16".to_string()), "{first:?}");
+        assert!(!coverage_tiles(&c).into_values().flatten().any(|t| t == (29, 16)));
+        // The stale packs, as an earlier, larger coverage left them, the unit and its peaks built
+        // reading them (recorded under the keys that name them).
+        for l in ["layers/terrain/hi/6-29-16", "layers/slope/hi/6-29-16", "layers/terrain/lo/3-4-2", "layers/slope/lo/3-4-2"] {
+            m.insert(l.into(), format!("{l}.2222222222222222.pack"));
+        }
+        for layer in ["terrain", "slope"] {
+            done.record(&format!("{layer}-root"), &[(format!("{layer}-root"), root_key(layer, &m).unwrap())]);
+        }
+        let (uk, pk) = (ukeys(&c, "d", &m, Some(&reach)), peaks_keys(&c, "d", &m));
+        assert!(uk[0].1 != done.unit["6/28/16"] && pk[0].1 != done.peaks["6/28/16"], "their keys see the packs");
+        done.record("unit", &[("6/28/16".to_string(), uk[0].1.clone())]);
+        done.record("peaks", &[("6/28/16".to_string(), pk[0].1.clone())]);
+        let w = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+        let steps: Vec<String> = w.iter().flat_map(|w| w.targets.iter().map(|t| format!("{} {}", w.step, t.0))).collect();
+        assert!(steps.contains(&"terrain 6/29/16".to_string()) && steps.contains(&"slope 6/29/16".to_string()), "{steps:?}");
+        assert!(!steps.iter().any(|s| s.starts_with("unit ") || s.starts_with("peaks ")), "they wait for the terrain: {steps:?}");
+        let then = run_all(&c, &reach, &mut m, &mut done);
+        let n = |s: &str| then.iter().filter(|t| *t == s).count();
+        assert_eq!((n("terrain 6/29/16"), n("slope 6/29/16"), n("unit 6/28/16"), n("peaks 6/28/16")), (1, 1, 1, 1), "{then:?}");
+        assert_eq!((n("terrain-lo 3/4/2"), n("slope-lo 3/4/2"), n("terrain-root terrain-root"), n("slope-root slope-root")), (1, 1, 1, 1), "{then:?}");
+        let at = |s: &str| then.iter().position(|t| t == s).unwrap();
+        assert!(at("terrain 6/29/16") < at("unit 6/28/16") && at("terrain 6/29/16") < at("peaks 6/28/16"), "{then:?}");
+        assert!(!m.keys().any(|l| l.ends_with("6-29-16") || l.ends_with("3-4-2")), "{m:?}");
+        assert!(run_all(&c, &reach, &mut m, &mut done).is_empty());
+    }
+
+    /// The coverage leaving a z6 tile, coming back, and leaving again: a piece, then a "none"
+    /// piece, then a piece, then "none" again, each run once, its records never taken for another's.
+    #[test]
+    fn a_z6_tile_the_coverage_leaves_and_comes_back_to() {
+        let d = tempfile::tempdir().unwrap();
+        let small = cov();
+        let big = Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into(), "place:47.8,54.2,5".into()] }], None, d.path()).unwrap();
+        assert!(coverage_tiles(&big).into_values().flatten().any(|t| t == (40, 20)));
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        let step = |c: &Coverage, m: &mut BTreeMap<String, String>, done: &mut Keys| -> Vec<String> {
+            let mut ran = Vec::new();
+            for _ in 0..10 {
+                let tw = terrain_work(&terrain_slope_targets(c, m, &tiles_for(m)), m, done);
+                let works = [("terrain", tw.terrain), ("terrain-lo", tw.terrain_lo), ("slope", tw.slope), ("slope-lo", tw.slope_lo)];
+                let Some((s, ts)) = works.into_iter().find(|(_, t)| !t.is_empty()) else { return ran };
+                ran.extend(ts.iter().filter(|t| t.0.ends_with("40/20") || t.0 == "3/5/2").map(|t| format!("{s} {}", t.0)));
+                terrain_did(m, done, &Work { step: s.into(), targets: ts });
+            }
+            panic!("never done: {ran:?}");
+        };
+        assert_eq!(step(&big, &mut m, &mut done), ["terrain 6/40/20", "terrain-lo 3/5/2", "slope 6/40/20", "slope-lo 3/5/2"]);
+        assert!(m.contains_key("layers/terrain/hi/6-40-20") && m.contains_key("layers/terrain/lo/3-5-2"));
+        assert_eq!(step(&small, &mut m, &mut done), ["terrain 6/40/20", "terrain-lo 3/5/2", "slope 6/40/20", "slope-lo 3/5/2"], "none");
+        assert!(!m.keys().any(|l| l.ends_with("6-40-20") || l.ends_with("3-5-2")), "{m:?}");
+        assert_eq!(step(&big, &mut m, &mut done), ["terrain 6/40/20", "terrain-lo 3/5/2", "slope 6/40/20", "slope-lo 3/5/2"], "a piece again");
+        assert_eq!(step(&small, &mut m, &mut done), ["terrain 6/40/20", "terrain-lo 3/5/2", "slope 6/40/20", "slope-lo 3/5/2"], "none again");
+        assert!(step(&small, &mut m, &mut done).is_empty());
+    }
+
+    /// A "none" piece's or assembly's hand-off removes files and writes none: the lead's merge
+    /// check (agent::pool::check) and the steps table's write-sets take it.
+    #[test]
+    fn a_removal_only_hand_off_is_taken() {
+        use crate::pool::journal::Entry;
+        for (step, t, ls) in [("terrain", "6/40/20", vec!["layers/terrain/hi/6-40-20", "work/terrain-mid/6-40-20"]), ("slope", "6/40/20", vec!["layers/slope/hi/6-40-20", "work/slope-mid/6-40-20"]), ("terrain-lo", "3/5/2", vec!["layers/terrain/lo/3-5-2"]), ("slope-lo", "3/5/2", vec!["layers/slope/lo/3-5-2"])] {
+            let mut h = crate::handoff::Handoff::default();
+            for l in &ls {
+                h.changes.insert(l.to_string(), None);
+            }
+            let k = if step.ends_with("-lo") { none_lo_key(step.trim_end_matches("-lo"), t) } else { none_piece_key(step, t) };
+            h.done = Some((step.to_string(), vec![(t.to_string(), k)]));
+            let e = Entry { member: "m-0000000000000001".into(), lease: crate::pool::journal::LeaseId { term: 1, n: 1 }, step: step.into(), handoff: h, at: 1_791_500_000 };
+            assert_eq!(crate::agent::pool::check(&e, &crate::pool::records::Records::default()), Ok(()), "{step}");
+            assert_eq!(crate::agent::steps::outside(&e), None, "{step}");
+        }
     }
 
     #[test]

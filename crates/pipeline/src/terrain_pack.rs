@@ -1182,17 +1182,21 @@ pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)>
 /// Whether z6 tile `t`'s piece makes any hi tile (`piece_levels` not all empty): one near the
 /// coverage at z6 can still have none of its z9–12 tiles near it (6/21/18).
 pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
-    let (tx, ty) = t;
-    (9..=12u8).any(|z| {
-        let s = 1u32 << (z - 6);
-        (tx * s..(tx + 1) * s).any(|x| (ty * s..(ty + 1) * s).any(|y| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)))
-    })
+    piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty())
 }
 
 /// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a piece the coverage has left:
 /// docs/plan.md §5, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
     let n = drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)]);
+    out.save()?;
+    Ok(n)
+}
+
+/// Drops z3 tile `q`'s terrain lo pack from the manifest (a "none" assembly: the coverage has left
+/// the z3 tile, docs/plan.md §5, Shrinking), saving it; how many it had.
+pub fn drop_lo(out: &mut Out, q: (u32, u32)) -> anyhow::Result<usize> {
+    let n = drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
     out.save()?;
     Ok(n)
 }
@@ -1253,9 +1257,9 @@ fn saying<T>(mk: &Maker, total: u64, progress: crate::rawpack::Progress, run: im
 ///
 /// Its pieces, a z6 tile at a time (`build_piece`'s run: its levels z12 → z9 made, then its hi pack
 /// written, so only its tiles are held), then its assembly (`build_lo`'s, from the pieces' mids held
-/// here): the same bytes as the pieces' jobs and the assembly's, and the same names dropped (a
-/// piece's hi pack when it makes no hi tile; the hi pack and mid of each z6 tile of `q` the coverage
-/// has left, as its piece's run drops them: `drop_piece`). A tile's making reads only its own raw
+/// here): the same bytes as the pieces' jobs and the assembly's, and the same hi packs dropped (a
+/// piece's when it makes no hi tile; that of each z6 tile of `q` the coverage has left, as its
+/// "none" piece's run drops it with its mid, `drop_piece`: a whole run writes no mids). A tile's making reads only its own raw
 /// tile and its children's (`process`): the same bytes in any order.
 pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     let mut rep = PackReport::default();
@@ -1278,11 +1282,13 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
             }
             mids.push((t, mid));
         }
-        // (The area's z6 tiles the coverage has left: their hi packs and mids go.)
+        // (The area's z6 tiles the coverage has left: their hi packs go. Not their mids, which
+        // a whole run never writes (its lease's write-set: agent::steps::saves); their "none"
+        // pieces drop those.)
         for x in q.0 * 8..(q.0 + 1) * 8 {
             for y in q.1 * 8..(q.1 + 1) * 8 {
                 if !near_coverage(cov, 6, x, y, 20.0) {
-                    drop_named(out, &[format!("layers/terrain/hi/6-{x}-{y}"), mid_logical(x, y)]);
+                    drop_named(out, &[format!("layers/terrain/hi/6-{x}-{y}")]);
                 }
             }
         }
@@ -2281,8 +2287,9 @@ pub(crate) mod tests {
         let again = Out::open(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
         assert!(again.get(&hi).is_none() && again.get(&lhi).is_none() && again.get(&lmid).is_none() && again.get(&mid).is_some());
         assert_eq!(drop_piece(&mut out, (10, 10)).unwrap(), 0, "nothing left to drop");
-        // An area's whole run drops the same: the hi pack of its piece making no hi tile, and the
-        // hi pack and mid of its z6 tile the coverage has left; its other pieces' it writes.
+        // An area's whole run drops the same hi packs: its piece's making no hi tile, and its z6
+        // tile's the coverage has left (that tile's mid left to its "none" piece); its other
+        // pieces' it writes. Every name it changes is one its lease may (agent::steps::saves).
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let ts = by_q.get(&(2, 2)).unwrap().clone();
         assert!(ts.contains(&(21, 18)) && ts.contains(&(22, 18)), "{ts:?}");
@@ -2294,8 +2301,14 @@ pub(crate) mod tests {
         for l in [&ahi, &alhi, &almid] {
             fake(&mut area, l);
         }
+        let before = area.manifest.clone();
         build_q(&mut area, &raw, (2, 2), &ts, &cov, &src).unwrap();
-        assert!(area.get(&ahi).is_none() && area.get(&alhi).is_none() && area.get(&almid).is_none());
+        let changed: Vec<&String> = before.keys().chain(area.manifest.keys()).filter(|l| before.get(*l) != area.manifest.get(*l)).collect();
+        assert!(changed.iter().any(|l| l.as_str() == alhi), "{changed:?}");
+        for l in &changed {
+            assert!(crate::agent::steps::saves("terrain", "3/2/2", l), "{l}: outside an area run's write-set");
+        }
+        assert!(area.get(&ahi).is_none() && area.get(&alhi).is_none() && area.get(&almid).is_some());
         assert!(area.get("layers/terrain/hi/6-22-18").is_some() && area.get("layers/terrain/lo/3-2-2").is_some());
     }
 

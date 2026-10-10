@@ -6111,6 +6111,20 @@ mod tests {
         assert!(units.iter().enumerate().all(|(i, t)| t.0 == format!("6/{i}/0") && t.1 == format!("k{i}")));
     }
 
+    /// A "none" terrain or slope piece (the coverage gone from its z6 tile) is never expected the
+    /// same, its piece's earlier record or its own (a flap back) whatever: its job drops files.
+    #[test]
+    fn none_pieces_are_never_expected_the_same() {
+        let mut done = build::Keys::default();
+        done.terrain.insert("6/40/20".into(), "piece".into());
+        done.slope.insert("6/40/20".into(), "piece".into());
+        done.terrain.insert("6/41/20".into(), "earlier".into());
+        for step in ["terrain", "slope"] {
+            let w = build::Work { step: step.into(), targets: vec![("6/40/20".into(), build::none_piece_key(step, "6/40/20")), ("6/41/20".into(), build::none_piece_key(step, "6/41/20"))] };
+            assert!(expect_same(&w, &done).is_empty(), "{step}");
+        }
+    }
+
     #[test]
     fn tree_pieces_made_again_under_their_recorded_key_are_expected_the_same() {
         let mut done = build::Keys::default();

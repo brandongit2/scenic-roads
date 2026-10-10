@@ -690,9 +690,10 @@ the region. Each entry is one of these:
   layer without tiles). The next catalog drops them, and GC frees their files. Grid tiles stay,
   which is harmless. A z6 tile the coverage has left loses its terrain's and slope's hi packs and
   mids (its "none" pieces' runs: §6, Global-source layers) and its tree cover (its hi packs and
-  mid), and a z3 tile its zoomed-out tree cover. A z3 tile's terrain and slope lo packs stay (the
-  map's zoomed-out terrain, the whole z3 tile's z8 → z3), and a slope lo pack keeps the z6–8 tiles
-  it has of a z6 tile the coverage has left.
+  mid), and a z3 tile its zoomed-out terrain, slope and tree cover (its lo packs: "none"
+  assemblies; the terrain's and slope's roots are then made again). What's left is what a fresh
+  build of the coverage makes: the map's server makes the terrain and slope tiles they lack from
+  the stored ones over them.
 
 **Today's set** (since 2026-10-05): 88 recipes in `inputs/regions/`, by political unit, every one
 of them OpenStreetMap boundaries (`osm:` relations from the pass's outline set).
@@ -821,6 +822,8 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     tile's z8 → z3, z8 and coarser made again from their children where those exist (a piece's z9
     tiles' means, from its mid), since AWS's coarse levels come from coarser sources: its lo pack.
     Not a piece's z8–z6 alone: a lake's level at z8 is gathered from the whole area's z8 tiles.
+    A z3 tile the coverage has left (no piece) with a lo pack is a "none" assembly, whose run drops
+    it (`drop_lo`).
   - A piece's z8 subtrees, in groups closed under the lakes they share, are tasks (`terrainsub`,
     docs/workers.md §3, `pipeline::terrain_task`): a piece's run offers some to pages and helpers,
     each group's raw tiles, water and GLO-30's windows in one file, and takes their tiles and mid
@@ -830,7 +833,8 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   `scenic-build terrain 3/x/y` runs by hand, is the pieces and the assembly in memory): checked
   against main's area run (TERRAIN_V 3) on synthetic tiles with GLO-30, a lake across two pieces and
   the walled patches' z9 tiles (`terrain_pack` tests), and on the build's own data (§10).
-  - **The root (z0–2):** from the lo packs.
+  - **The root (z0–2):** from the lo packs (AWS's raw z3 tile where there's none), made again
+    when one changes or goes (41 s on the build Mac, slope's 17 s: 2026-10-09).
   - **Sources:** AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's cache
     and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the cache
     when it lacks one; north of 60°N, Copernicus DEM GLO-30 (`sources/copernicus-dem/`, below); and
@@ -908,7 +912,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   has no hi tile makes none, and drops the hi pack it had; a z6 tile the coverage has left is a
   "none" piece, its hi pack and mid dropped, as terrain's); and **slope-lo**, an assembly per z3
   tile (its z6–8 tiles from its pieces' mids, or the lo pack's for a piece current without one;
-  the area's other z6 tiles as the lo pack has them; z5–z3 from them). Together the
+  the area's other z6 tiles from their terrain's own slope, none of their z7–8, never what an
+  earlier run stored; z5–z3 from them; a z3 tile the coverage has left, a "none" assembly, drops
+  its lo pack, as terrain's). Together the
   area's whole run's packs, byte for byte (`slope_pack` tests: two areas whose border pieces read
   each other's terrain).
 - **Worldwide z8 terrain** (`sources/terrain-z8-v3`, once, not served): every z8 tile, repaired, with
@@ -1373,21 +1379,25 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   `TERRAIN_WATER_V`; "-" without a basemap); and "no hi tiles" for a piece that makes none
   (`agent::build::piece_key_made`: its run drops the hi pack it had, so a record from before isn't
   current). A z6 tile the coverage has left with a hi pack or a mid is a "none" piece, keyed on
-  the version and the tile (`none_piece_key`): its run drops them. No assembly waits for one, but
-  its area counts as left until it has run, so the units reading its tiles wait (their keys see
-  the tiles go) and are built once;
+  the version and the tile (`none_piece_key`): its run drops them. Terrain's assembly doesn't wait
+  for one (it reads no hi pack), but its area counts as left until it has run, so the units and
+  peaks reading its tiles wait (their keys see the tiles go) and are built once;
 - **terrain-lo (an assembly, per z3 tile):** its pieces' mids by content ("-" for a piece without
   one: it can't be assembled until each has, but its key with every mid "-" is what the records of
   an area's whole run are read as: §8, A new key scheme) and the digest of its z6–8 water;
-  `TERRAIN_LO_V`;
+  `TERRAIN_LO_V`. A z3 tile the coverage has left with a lo pack is a "none" assembly, keyed on the
+  version and the tile (`none_lo_key`), run whenever, its area left until it has (as a "none"
+  piece's);
 - **slope (a piece, per z6 tile):** its terrain hi pack (which tiles it works out) and every
   terrain tile it can read, by content, from the packs' indexes (`agent::build::slope_piece_reads`):
   each tile it works out from its terrain (a z12 one, or one its children don't all cover) and the
   tiles west, east, north and south of it, each resolved as the job resolves it. A change in a
   neighbour's interior changes nothing here, one along its edge does. A "none" slope piece as
-  terrain's, run whenever (it reads no terrain);
+  terrain's, run whenever (it reads no terrain); its area's slope assembly waits for it, as for
+  any of its pieces;
 - **slope-lo (an assembly, per z3 tile):** its pieces' mids by content and the area's terrain lo
-  pack; `SLOPE_LO_V`;
+  pack; `SLOPE_LO_V` (2: its other z6 tiles from their terrain, nothing kept from an earlier run's
+  pack). A "none" assembly as terrain's;
 - **trees (a tree cover piece, per z6 tile):** the coverage inside the tile ("none" once it has left
   a tile with tree packs or a mid: its run drops them). Its version, `TREES_V`, changes with any
   change to the bytes a piece writes, its hi packs' or its mid's, pixels or not: a piece made again
