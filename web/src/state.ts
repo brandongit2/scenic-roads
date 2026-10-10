@@ -174,13 +174,13 @@ export interface Stretch {
 const THR_CODE: Record<ThresholdDir, string> = { above: 'a', below: 'b', low: 'l' };
 const THR_OF: Record<string, ThresholdDir> = { a: 'above', b: 'below', l: 'low' };
 
-/** fit lo, fit hi, equalise, fade span, highlight on, direction, value (hash fields). */
 /** A screen-widths auto-fit from a link (more, then fewer; else `d`). */
 function fitLenOf(a: string | undefined, b: string | undefined, d: Pair): Pair {
   const v: Pair = [Number(a), Number(b)];
   return a && b && validFitLen(v) ? v : d;
 }
 
+/** fit lo, fit hi, equalise, fade span, highlight on, direction, value (hash fields). */
 function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 'equalize' | 'lowSpan' | 'threshold'> {
   const n = (x: string, dv: number) => (x !== '' && Number.isFinite(Number(x)) ? Number(x) : dv);
   const lo = Math.min(99.5, Math.max(0, n(v[0], d.fit[0]))), hi = Math.min(100, Math.max(lo + 0.5, n(v[1], d.fit[1])));
@@ -245,13 +245,17 @@ export const modeGroup = (m: Mode): ModeGroup => (m === 'elev' || m === 'grade' 
 export const ROAD_FIT_KEYS: Mode[] = MODES.filter((m) => modeGroup(m.key) === 'scenic').map((m) => m.key);
 export const RAIL_FIT_KEYS: RailMetric[] = RAIL_METRICS.filter((m) => m.byLen).map((m) => m.key);
 export const FERRY_FIT_KEYS: FerryMetric[] = FERRY_METRICS.filter((m) => m.byLen).map((m) => m.key);
+/** Every rail and ferry metric (each keeps its own look). */
+const RAIL_KEYS: RailMetric[] = RAIL_METRICS.map((m) => m.key);
+const FERRY_KEYS: FerryMetric[] = FERRY_METRICS.map((m) => m.key);
 /** A layer's screen-widths fits in its link value (rail, ferries): the base in the two fields
- * the per-layer fit had, then after them the units (unitsField) and the metrics with another fit
- * (pairsField), empty fields at the end left out, so a layer all in screen widths at one fit
- * writes what it did before either was per metric. */
-function fitFields<K extends string>(lens: PerMetric<K>, units: FitUnits<K>, keys: readonly K[]): (string | number)[] {
+ * the per-layer fit had, then after them the units (unitsField), the metrics with another fit
+ * (pairsField) and the other metrics' palettes and percentiles (looksField), empty fields at the
+ * end left out, so a layer all in screen widths at one fit, its other metrics as first picked,
+ * writes what it did before any of these were per metric. */
+function fitFields<K extends string>(lens: PerMetric<K>, units: FitUnits<K>, keys: readonly K[], looks: string): (string | number)[] {
   const { base, rest } = pairsField((k) => pairOf(lens, k, FIT_LEN_DEFAULT), keys, FIT_LEN_DEFAULT);
-  const tail = [unitsField(units, keys), rest];
+  const tail = [unitsField(units, keys), rest, looks];
   while (tail.length && !tail[tail.length - 1]) tail.pop();
   return [base[0], base[1], ...tail];
 }
@@ -301,6 +305,40 @@ export function scaleOfLook(l: MetricLook): ScaleFields {
     palette: l.palette, fit: [...l.fit], equalize: l.equalize, lowFade: l.lowFade, lowSpan: l.lowSpan,
     auto: l.auto, range: [...l.range], threshold: { on: l.thrOn, dir: l.thrDir, value: l.thrValue },
   };
+}
+
+/** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts). */
+export const railFreshLook = (m: RailMetric): MetricLook => freshLook(railMetricDef(m).range, 0.4);
+export const ferryFreshLook = (m: FerryMetric): MetricLook => ({ ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] });
+
+/** The metrics but the one shown, their palettes and percentiles in a link value (rail,
+ * ferries): `key_palette_lo_hi` for each whose differ from its look when first picked, the palette
+ * left empty and the percentiles left out where they are that look's, joined by '/'
+ * ("freq_magma/curvy__5_95"; a reversed ramp's palette ends in _r: "view_plasma_r"). */
+function looksField<K extends string>(looks: Partial<Record<K, MetricLook>>, shown: K, keys: readonly K[], fresh: (k: K) => MetricLook): string {
+  return keys.flatMap((k) => {
+    const l = looks[k];
+    if (k === shown || !l) return [];
+    const f = fresh(k);
+    const pal = l.palette === f.palette ? '' : l.palette, fit = samePair(l.fit, f.fit) ? '' : `_${+l.fit[0]}_${+l.fit[1]}`;
+    return pal || fit ? [`${k}_${pal}${fit}`] : [];
+  }).join('/');
+}
+/** The looks a link value lists (looksField): each its look when first picked with the listed
+ * palette and percentiles; metrics not among `keys`, the one shown and malformed entries dropped. */
+function looksOfField<K extends string>(v: string | undefined, shown: K, keys: readonly K[], fresh: (k: K) => MetricLook): Partial<Record<K, MetricLook>> {
+  const out: Partial<Record<K, MetricLook>> = {};
+  for (const e of v ? v.split('/') : []) {
+    const parts = e.split('_'), n = parts.length, k = parts[0] as K;
+    if (n < 2 || k === shown || !keys.includes(k)) continue;
+    const tail: Pair = [Number(parts[n - 2]), Number(parts[n - 1])];
+    const hasFit = n >= 4 && parts[n - 2] !== '' && parts[n - 1] !== '' && validFit(tail);
+    const pal = parts.slice(1, hasFit ? n - 2 : n).join('_');
+    if (pal && !/^[a-z0-9-]+(_r)?$/i.test(pal)) continue;
+    if (!pal && !hasFit) continue;
+    out[k] = { ...fresh(k), ...(pal ? { palette: pal } : {}), ...(hasFit ? { fit: tail } : {}) };
+  }
+  return out;
 }
 
 /** A metric's look the first time it is picked. */
@@ -769,13 +807,14 @@ export function toHash(s: AppState, buildings: boolean): string {
   const d = modeDef(s.mode);
   if (s.auto !== d.auto || (!s.auto && (s.range[0] !== d.range[0] || s.range[1] !== d.range[1])))
     p.set('r', s.auto ? 'auto' : `${+s.range[0].toFixed(2)},${+s.range[1].toFixed(2)}`);
-  // Percentiles: the display type's (fp); the scenic metrics' each their own, fp their base
-  // (while a scenic metric is shown) and fpm those with another.
+  // Percentiles: the display type's (fp); the scenic metrics' each their own: their base in fp
+  // while a scenic metric is shown, else in fpb, and fpm those with another.
   const scen = isScenic(s.mode);
   const fitAt = (k: Mode) => (k === s.mode ? s.fit : pairOf(s.scenicFits, k, defaults.fit));
-  const fpm = pairsField(fitAt, ROAD_FIT_KEYS, defaults.fit, scen ? undefined : defaults.fit);
+  const fpm = pairsField(fitAt, ROAD_FIT_KEYS, defaults.fit);
   const fpBase = scen ? fpm.base : s.fit;
   if (!samePair(fpBase, defaults.fit)) p.set('fp', `${fpBase[0]},${fpBase[1]}`);
+  if (!scen && !samePair(fpm.base, defaults.fit)) p.set('fpb', `${fpm.base[0]},${fpm.base[1]}`);
   if (fpm.rest) p.set('fpm', fpm.rest);
   // Screen widths: the scenic metrics' base (fl) and those with another (flm).
   const flm = pairsField((k) => pairOf(s.fitLens, k, FIT_LEN_DEFAULT), ROAD_FIT_KEYS, FIT_LEN_DEFAULT);
@@ -799,14 +838,14 @@ export function toHash(s: AppState, buildings: boolean): string {
     +r.range[0].toFixed(2), +r.range[1].toFixed(2), '', '', '', r.single.replace('#', ''), +r.lowFade.toFixed(2),
     r.freqOn ? 1 : 0, +r.freqMin.toFixed(2), +r.freqMax.toFixed(2), r.freqUnknown ? 1 : 0,
     r.fit[0], r.fit[1], r.equalize ? 1 : 0, +r.lowSpan.toFixed(2), r.threshold.on ? 1 : 0, THR_CODE[r.threshold.dir], +r.threshold.value.toFixed(3),
-    +r.opacity.toFixed(2), ...fitFields(r.fitLens, r.fitUnits, RAIL_FIT_KEYS),
+    +r.opacity.toFixed(2), ...fitFields(r.fitLens, r.fitUnits, RAIL_FIT_KEYS, looksField(r.looks, r.metric, RAIL_KEYS, railFreshLook)),
   ].join(',');
   const rsd = [
     dr.on ? 1 : 0, dr.groups.map((g) => (g ? 1 : 0)).join(''), dr.colour, dr.metric, dr.palette, dr.auto ? 1 : 0,
     dr.range[0], dr.range[1], '', '', '', dr.single.replace('#', ''), dr.lowFade,
     dr.freqOn ? 1 : 0, dr.freqMin, dr.freqMax, dr.freqUnknown ? 1 : 0,
     dr.fit[0], dr.fit[1], dr.equalize ? 1 : 0, dr.lowSpan, dr.threshold.on ? 1 : 0, THR_CODE[dr.threshold.dir], dr.threshold.value,
-    dr.opacity, ...fitFields(dr.fitLens, dr.fitUnits, RAIL_FIT_KEYS),
+    dr.opacity, ...fitFields(dr.fitLens, dr.fitUnits, RAIL_FIT_KEYS, looksField(dr.looks, dr.metric, RAIL_KEYS, railFreshLook)),
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
   // Ties, then the stop dots' size, contrast, outline colour and opacity.
@@ -818,7 +857,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
-    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), ...fitFields(f.fitLens, f.fitUnits, FERRY_FIT_KEYS)].join(',');
+    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), ...fitFields(f.fitLens, f.fitUnits, FERRY_FIT_KEYS, looksField(f.looks, f.metric, FERRY_KEYS, ferryFreshLook))].join(',');
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
@@ -909,11 +948,15 @@ export function fromHash(hash: string, buildings = true): AppState {
     }
   }
   // Percentiles (toHash): fp the display type's, or while a scenic metric is shown the base of
-  // every scenic metric fpm doesn't list (older links: their one set for every scenic metric).
-  const fpv = p.get('fp')?.split(',').map(Number);
-  const fp: Pair | null = fpv && fpv.length === 2 && validFit([fpv[0], fpv[1]]) ? [fpv[0], fpv[1]] : null;
+  // every scenic metric fpm doesn't list (older links: their one set for every scenic metric);
+  // while another display type is shown, that base in fpb.
+  const pctPair = (k: string): Pair | null => {
+    const v = p.get(k)?.split(',').map(Number);
+    return v && v.length === 2 && validFit([v[0], v[1]]) ? [v[0], v[1]] : null;
+  };
+  const fp = pctPair('fp');
   const fpm = pairsOfField(p.get('fpm'), ROAD_FIT_KEYS, validFit);
-  const fitBase: Pair = isScenic(s.mode) && fp ? fp : defaults.fit;
+  const fitBase: Pair = (isScenic(s.mode) ? fp : pctPair('fpb')) ?? defaults.fit;
   if (fp && !isScenic(s.mode)) s.fit = fp;
   if (isScenic(s.mode)) s.fit = pairOf(fpm, s.mode, fitBase);
   s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, defaults.fit);
@@ -944,12 +987,15 @@ export function fromHash(hash: string, buildings = true): AppState {
     const rs = rsv;
     const num = (v: string, d: number) => (Number.isFinite(Number(v)) && v !== '' ? Number(v) : d);
     const r = s.rail;
+    const metric = RAIL_METRICS.some((m) => m.key === rs[3]) ? (rs[3] as RailMetric) : r.metric;
     s.rail = {
       ...r,
       on: rs[0] === '1',
       groups: rs[1].length === NRAIL ? [...rs[1]].map((c) => c === '1') : r.groups,
       colour: RAIL_COLOURS.includes(rs[2] as RailColour) ? (rs[2] as RailColour) : r.colour,
-      metric: RAIL_METRICS.some((m) => m.key === rs[3]) ? (rs[3] as RailMetric) : r.metric,
+      metric,
+      // The other metrics' palettes and percentiles (older links: none, as first picked).
+      looks: looksOfField(rs[29], metric, RAIL_KEYS, railFreshLook),
       palette: rs[4] || r.palette,
       auto: rs[5] === '1',
       range: [num(rs[6], r.range[0]), num(rs[7], r.range[1])],
@@ -981,6 +1027,7 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (fy && fy.length >= 7) {
     const f = s.ferry;
     const op = Number(fy[7]);
+    const metric = FERRY_METRICS.some((m) => m.key === fy[12]) ? (fy[12] as FerryMetric) : f.metric;
     // Older links: the ferry card's line weight.
     if (fy[4] && Number.isFinite(Number(fy[4]))) s.lineWeights.ferries = clampWeight(Number(fy[4]));
     s.ferry = {
@@ -995,8 +1042,8 @@ export function fromHash(hash: string, buildings = true): AppState {
       freqMin: Math.max(0, Number(fy[9]) || 0),
       freqMax: Math.max(0, Number(fy[10]) || 0),
       freqUnknown: fy[11] === undefined ? f.freqUnknown : fy[11] === '1',
-      metric: FERRY_METRICS.some((m) => m.key === fy[12]) ? (fy[12] as FerryMetric) : f.metric,
-      looks: f.looks,
+      metric,
+      looks: looksOfField(fy[28], metric, FERRY_KEYS, ferryFreshLook),
       auto: fy[13] === undefined ? f.auto : fy[13] === '1',
       range: fy.length >= 16 && fy[14] !== '' && fy[15] !== '' && Number(fy[15]) > Number(fy[14]) ? [Number(fy[14]), Number(fy[15])] : f.range,
       lowFade: fy[19] !== undefined && Number.isFinite(Number(fy[19])) && fy[19] !== '' ? Math.min(1, Math.max(0, Number(fy[19]))) : f.lowFade,

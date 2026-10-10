@@ -4,7 +4,7 @@ import { RAIL_GROUPS } from '../config';
 import { railPresets } from '../presets';
 import { RAIL_COMPONENTS, RAIL_GROUP_COLOURS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from '../rail';
 import type { Dist } from '../roads/stats';
-import { freshLook, lookOfScale, scaleOfLook, type RailState, type Store } from '../state';
+import { lookOfScale, railFreshLook, scaleOfLook, type RailState, type Store } from '../state';
 import { WeightGrid } from './controls';
 import { h } from './dom';
 import { PresetBar } from './presets';
@@ -53,7 +53,7 @@ export class RailCard {
       const next = this.metricSel.value as RailMetric;
       if (next === r.metric) return;
       const looks = { ...r.looks, [r.metric]: lookOfScale(r) };
-      R({ metric: next, looks, ...scaleOfLook(looks[next] ?? freshLook(railMetricDef(next).range, 0.4)) });
+      R({ metric: next, looks, ...scaleOfLook(looks[next] ?? railFreshLook(next)) });
     });
     this.metricHelp = h('div', { class: 'mode-help' });
     this.scale = new ScaleControls({

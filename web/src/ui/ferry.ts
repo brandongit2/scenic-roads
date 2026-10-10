@@ -3,7 +3,7 @@ import { FIT_LEN_DEFAULT, pairOf, unitOf, withPair, withUnit } from '../autofit'
 import { FERRY_GROUP_COLOURS, FERRY_GROUPS, FERRY_METRICS, HEADWAY_ONLY, SEASONS, UNKNOWN, ferryMetricDef, type FerryColour, type FerryMetric } from '../ferry';
 import type { FerryCoverage } from '../ferries';
 import type { Dist } from '../roads/stats';
-import { freshLook, lookOfScale, scaleOfLook, type FerryState, type Store } from '../state';
+import { ferryFreshLook, lookOfScale, scaleOfLook, type FerryState, type Store } from '../state';
 import { h } from './dom';
 import { ScaleControls } from './scale';
 
@@ -49,8 +49,7 @@ export class FerryCard {
       const next = this.metricSel.value as FerryMetric;
       if (next === f.metric) return;
       const looks = { ...f.looks, [f.metric]: lookOfScale(f) };
-      const d = ferryMetricDef(next);
-      F({ metric: next, looks, ...scaleOfLook(looks[next] ?? { ...freshLook(d.range, 0), fit: [0, 100] }) });
+      F({ metric: next, looks, ...scaleOfLook(looks[next] ?? ferryFreshLook(next)) });
     });
     this.metricHelp = h('div', { class: 'mode-help' });
     this.scale = new ScaleControls({

@@ -35,11 +35,15 @@ export function unitsField<K extends string>(u: FitUnits<K>, keys: readonly K[])
   return b.length < a.length ? b : a;
 }
 
-/** A layer's units from a link's field (unitsField; keys not among `keys` are dropped). */
+/** A layer's units from a link's field (unitsField; keys not among `keys` are dropped, and '-'
+ * with nothing after it reads as no field). A metric the link's app didn't have (added since)
+ * fits by % under 'p' and '-…' (every metric but those named) and by screen widths under a list
+ * of names. */
 export function unitsOfField<K extends string>(v: string | null | undefined, keys: readonly K[]): FitUnits<K> {
   if (!v) return {};
   if (v === 'p') return allPct(keys);
   const but = v.startsWith('-');
+  if (but && v.length === 1) return {}; // '-' alone: malformed
   const named = new Set((but ? v.slice(1) : v).split('.'));
   return Object.fromEntries(keys.filter((k) => named.has(k) !== but).map((k) => [k, 'pct'])) as FitUnits<K>;
 }
@@ -114,9 +118,11 @@ export function pairsField<K extends string>(at: (k: K) => Pair, keys: readonly 
 export function pairsOfField<K extends string>(v: string | null | undefined, keys: readonly K[], ok: (p: Pair) => boolean): PerMetric<K> {
   const out: PerMetric<K> = {};
   for (const e of v ? v.split('/') : []) {
-    const [k, a, b] = e.split('_');
+    const parts = e.split('_');
+    if (parts.length !== 3) continue;
+    const [k, a, b] = parts;
     const p: Pair = [Number(a), Number(b)];
-    if (a !== undefined && b !== undefined && a !== '' && b !== '' && keys.includes(k as K) && ok(p)) out[k as K] = p;
+    if (a !== '' && b !== '' && keys.includes(k as K) && ok(p)) out[k as K] = p;
   }
   return out;
 }
