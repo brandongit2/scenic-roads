@@ -1246,18 +1246,54 @@ The nine cases:
    Aleutians' few buildings show on either side. The fields are per z6 tile, so nothing crosses it.
 9. **Steep terrain:** as B.
 
-**What this changes, for the owner** (before the build):
-- **Storage, materially.** Five classes instead of one and level 14 (decisions 1 and 2 together: the
-  field over the z13 meshes at zoom 13–14 needs a level finer than 13 for one-device-pixel texels).
-  Encoded per class present (an RGB WebP each: f, w, H), Annecy's 6/33/22 measures ~290 MB (its
-  meshes 79 MB; the first design 110 MB), level 14 alone ~160 MB of it; Kantō estimated ~1.1 GB
-  (meshes 413 MB). For the coverage, after the meshes' 4.6–6.9 GB: **~13–25 GB more as decided**,
-  ~6–11 GB without level 14 (its texels two device pixels at zoom 13–14, softer there), less again
-  without each class's H at the finest levels (its class's middle instead: −15–30 %).
-- **Rendering:** a ray march a pixel (160 steps, four texture reads each, the depth copy and a frame
-  copy): to be measured on the iPad; the first field's 0.15–0.3 ms isn't this one's.
-- Known: the field is 1–2 L* darker than full detail in tilted dense views (the random-overlap model
-  against streets of buildings in rows), 0.5–1.5 at z11–13 straight down.
+**Storage: the choice made (10 Oct, the PM for the owner):** **no level 14 for now.** Five classes
+at levels 4–13, each class's mean top kept at every level. For the coverage, after the meshes'
+4.6–6.9 GB: ~6–11 GB more (Annecy's 6/33/22 ~130 MB against its meshes' 79 MB; the first design's one
+class 110 MB). The cost: the field's texels are two device pixels at zoom 13–14 (level 13 over the
+z13 meshes, magnified), so the small buildings left to the field there are softer than the rest.
+**Later, an option:** level 14 (~+7–14 GB for the coverage; Annecy's ~160 MB) gives one-device-pixel
+texels there; the format doesn't change (a level more in the hi packs), so it can be added alone.
+Not taken either, for now: each class's mean top left out at the finest levels (its class's middle
+instead: −15–30 %). Why: the build Mac has ~53 GB free and mirrors the catalog, and the buildings'
+meshes are 5.6 GB today.
+
+**The march, timed** (10 Oct, the build Mac: M4, a windowed Chrome at the display's 120 Hz, a 1440 ×
+900 window at 2× (2880 × 1626 device px), the comparison mode's layers; 300 frames turning slowly, the
+field on and off, twice; whole frames timed on the GPU by a timer query around MapLibre's frame; the
+field's cost is the difference of the medians). Budget: 2 ms.
+
+| View | the first ray march (160 steps, four reads a step) | adaptive steps, at half resolution | adaptive, cells above the roofs skipped, full resolution |
+|---|---|---|---|
+| Tokyo z11 straight down | +40–60 ms | +1.2 ms | **+1.8** |
+| Manhattan z11 straight down | +40–60 ms | +1.0 | **+1.8** |
+| Chamonix z12, 65° | +8 | +0.6–0.9 | **+1.3–1.5** |
+| CN Tower z10, 80° | +24 | +1.0–1.1 | **+1.6–2.0** |
+| Kantō z10, 70° | +30 | +1.0–1.2 | +3.6–5.9 |
+| Manhattan z11, 70° | +40 | +1.7–2.1 (32 steps) | +6.9–8.4 |
+
+- Half resolution meets the budget everywhere but loses what the field is for: straight down, σ1
+  differences from full detail of 4.3 L* against 2.6 at full resolution, and at a glancing angle the
+  CN Tower and the downtown skyline blur away (check A fails again).
+- At full resolution the field skips the cells (1/32 of a tile) where the ray stays above the cell's
+  tallest roof (from their absolute heights, no ground looked up), steps a pixel's footprint at a time
+  only below a cell's roofs (one or two steps for a steep ray, eight at most a cell, 64 a ray), and
+  stops once 0.4 % of the light gets through. Straight down, on slopes and at the CN Tower that's
+  within the budget, at the dense tilted cities 2–4× over it: a tile's rays are marched though a
+  nearer tile in front made the pixel opaque (each tile is its own box), and dense blocks take many
+  footprint steps below their roofs.
+- **Next, not built:** one march a pixel through every tile along its ray (the tiles' textures in a
+  texture array, a tile grid to find them), so a ray stops at the first opaque point whatever the
+  tile, and full resolution for short runs with half resolution only for long grazing runs (far away,
+  where a pixel's footprint is large anyway). Expected within the budget; to be measured.
+- **The iPad** (the owner's): serve a build of this branch with the field (`?bldfield=` pointing at
+  a field server as tools/bldcheck/serve.mjs serves it), open it in Safari on the iPad, and in the
+  console run `__bld.frames(120)` at the views above (`#map=` hashes in tools/bldcheck/views): it
+  returns the frames' GPU time with the field on (`frameMs`) and, after `__bld.field.on = false`,
+  off; Safari has no timer query on all iPads, so also record the frame rate in Web Inspector's
+  Timelines over 10 s of slow orbiting, the field on and off.
+
+Known: the field is 1–2 L* darker than full detail in tilted dense views (the random-overlap model
+against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 
 ## 5. Phases, risks, questions, decisions
 

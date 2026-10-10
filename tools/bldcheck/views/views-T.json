@@ -1,0 +1,8 @@
+[
+{"id": "t-manhattan-p70", "z": 11, "lat": 40.74, "lon": -73.99, "pitch": 70, "bearing": 30},
+{"id": "t-kanto-p70", "z": 10, "lat": 35.65, "lon": 139.6, "pitch": 70, "bearing": 60},
+{"id": "t-cn-p80", "z": 10, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0},
+{"id": "t-chamonix-p65", "z": 12, "lat": 45.915, "lon": 6.86, "pitch": 65, "bearing": 60},
+{"id": "t-tokyo-z11", "z": 11, "lat": 35.68, "lon": 139.75},
+{"id": "t-manhattan-z11", "z": 11, "lat": 40.758, "lon": -73.985}
+]
