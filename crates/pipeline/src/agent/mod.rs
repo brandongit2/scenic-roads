@@ -7888,7 +7888,7 @@ mod pool_tests {
         lead.change_part(&r, &out);
         assert!(lead.slots[0].running.is_none(), "its catalog stopped");
         assert!(lead.coord.is_none() && lead.o.helper && lead.pool.as_ref().unwrap().role == pool::Role::Member);
-        std::thread::sleep(Duration::from_millis(1500));
+        // (Free as its stop returned: no wait.)
         assert!(std::net::TcpListener::bind(("0.0.0.0", port)).is_ok(), "its port free");
     }
 
@@ -7899,7 +7899,9 @@ mod pool_tests {
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
         c.stop();
         drop(c);
-        // (The next on the same port starts, a few tries while the first's listener closes.)
+        // (Its port free as its stop returned, however loaded the Mac.)
+        assert!(std::net::TcpListener::bind(("0.0.0.0", port)).is_ok(), "its port free");
+        // (The next on the same port starts.)
         let c2 = crate::coord::Coordinator::start(&d.path().join("b"), None, port, "m4", "").unwrap();
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
         drop(c2);

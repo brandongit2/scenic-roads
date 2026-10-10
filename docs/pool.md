@@ -677,7 +677,7 @@ pool on, the build Mac's with it off) are kept and released by the job, whatever
 plays since. They use the journal and validation like anyone's (none of the shortcuts
 for the build Mac's own jobs), and the in-process path never holds the coordinator's lock during
 NAS I/O. With the part changing in its process (`state/pool/slots`), a member that takes up a term
-starts its coordinator (its port free a moment after the last lead in that process stopped one),
+starts its coordinator (its port free once the last lead in that process has stopped one: a stop returns with its listener closed),
 keeping the leases of the jobs it runs (a take-up drops its own host's leases from before only for
 jobs no longer running), and a lead that loses its term stops its coordinator and takes its contact
 off the NAS, then stops its duties in flight (a catalog, a sweep), their leases ended through the
@@ -1094,7 +1094,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    4. **The lead's slots as any member's: built** (§7.6, phase 2's part of the agent): its jobs'
       leases renewed and ended through the lead wherever it is, in process while it leads and over
       HTTP while it's a member, so a change of part restarts nothing (its coordinator starts or
-      stops: a coordinator stopped frees its port within a second), and the lead stays awake while
+      stops: a coordinator stopped frees its port as its stop returns), and the lead stays awake while
       it leads with leases out (§6.7). A lead whose own update is pending (a newer app installed,
       its slot busy, a member on the newer app idle by the same-app rule: plan.md §8) hands the lead
       to such a member by itself, rather than leave the members idle while its job runs (hours,
