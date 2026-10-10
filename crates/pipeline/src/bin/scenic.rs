@@ -235,6 +235,12 @@ fn status(args: &[String]) -> Result<()> {
     if now_s().saturating_sub(st.beat) > 600 {
         println!("  (not seen for a while: asleep, away or off; work waits for it)");
     }
+    // The memory guard as its thread last sampled (every 5 s, whatever the agent's loop waits on).
+    if let Some(m) = agent::memguard::live(&app_home().join("agent")).filter(|m| now_s().saturating_sub(m.at) < 60) {
+        let held: u64 = m.held_mb.iter().flatten().sum();
+        let frozen = if m.frozen.iter().any(|f| *f) { ", a job frozen past it" } else { "" };
+        println!("  memory: the jobs hold {:.1} GB of this Mac's limit of {:.1} GB ({}{frozen}, {})", held as f64 / 1024.0, m.limit_mb as f64 / 1024.0, if m.on { "guarded" } else { "not guarded" }, ago(m.at));
+    }
     match &st.job {
         Some(j) => {
             println!("Running: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());

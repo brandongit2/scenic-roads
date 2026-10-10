@@ -86,10 +86,9 @@ nothing built depends on how the coverage is divided into regions.
   `todo/`, with the translators' and writers' briefs.
 
 **Everything else is automatic:**
-- **Building and refreshing:** whenever the build Mac is awake, reaches the NAS, and has power
-  (plugged in, or on battery down to 30 %). Away from home it builds through Tailscale, slowly; the
-  OpenStreetMap pass and the other jobs that move the whole planet or world through the NAS wait
-  for home.
+- **Building and refreshing:** whenever a Mac of the pool is awake and reaches the NAS, at any
+  charge. Away from home it builds through Tailscale, slowly, the OpenStreetMap pass and the other
+  jobs that move the whole planet or world through the NAS among them.
 - Copying what's downloaded to each Mac, and keeping it current with each new catalog.
 - Emptying each Mac's build caches once the build is done (§8, Room on the disk).
 - **Installing a newly published app:** each Mac's server picks it up and restarts into it when the
@@ -275,15 +274,13 @@ record changes back through the build Mac's coordinator, which journals them for
   jobs at once). Each job is a child process group at utility priority (`taskpolicy -c utility`;
   `-b` would confine it to the efficiency cores, ~17× slower).
   - The first job's Rust steps take half the cores when the user is active as the job starts, and
-    all of them when idle (`RAYON_NUM_THREADS`); the second's, four threads for a step that mostly
-    waits on the network, else half the cores.
+    all of them when idle (`RAYON_NUM_THREADS`); the second's, half the cores.
   - osmium, Planetiler and the Python steps take what they take.
-- **Power:** CPU jobs run on mains power or on battery down to 30 % charge, then pause until the Mac
-  is plugged in. Every job also needs the NAS.
+- **Power:** none waited on: jobs run at any charge (the owner's choice). Every job needs the NAS.
 - **Away from home** the agent mounts the share by the NAS's bare name, which Tailscale's DNS sends
-  through the tunnel (~12 MB/s), when the Keychain has that name's password. Every job runs
-  except those that move the whole planet or world through the NAS (the OSM pass, a pass's missing
-  sets, the units' reach, the world's buildings), which wait for home. Home again, with no job
+  through the tunnel (~12 MB/s), when the Keychain has that name's password. Every job runs, those
+  that move the whole planet or world through the NAS (the OSM pass, a pass's missing sets, the
+  units' reach, the world's buildings) too, slowly (the owner's choice). Home again, with no job
   running, it unmounts a tunnel mount and mounts the share by its LAN name.
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
@@ -442,8 +439,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   `cost_version` 1; a measure of its programs' most, one at a time, counting for nothing now), else
   about ten times its piece, never under 3.7 GB (over the M1's first 205 units, pieces up to 150 MB,
   their programs took 3.7 GB at most), and never below its floor (docs/pool.md §7.2).
-- **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
-  is at it, all but two otherwise; each job started with its step's room free (15 GB, terrain's
+- **How:** at any charge; half its cores while its user is at it, all but two otherwise; each job started with its step's room free (15 GB, terrain's
   pieces too, a task 5), from the caches the NAS keeps; only work it can make that for is asked
   for, and a job it can't is given back.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
@@ -1820,7 +1816,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   steps that mostly wait on the internet (the heritage chain, the items' facts, the rail feeds and
   trains a day, the 3D buildings' sources, the landmark points and overlays), then the candidates
   and peaks, then units and slope, then the 3D buildings' bldprep and bldtiles (they hold up
-  neither the roads nor the terrain). A unit spent
+  neither the roads nor the terrain), whoever is at the Mac (the owner's choice). A unit spent
   380 of its 860 s writing to the NAS and reading the caches (6/17/25, 2026-10-05): two at once build
   more. A second job:
   - never runs beside a job that runs alone (the OSM pass, the pass's worldwide jobs, GC), nor
@@ -1828,29 +1824,23 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots),
     nor the items' facts beside the heritage chain (both ask Wikidata, each paced as if alone),
     nor a bldprep beside another (each reads up to ~3 GB of the NAS's parquet a tile);
-  - while the Mac is in use, only work that mostly waits on the network;
   - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
     second's within three quarters of the Mac's, and the second's free now with 2 GB to spare (a
     target's prediction never below its floor, what a run saw it hold: docs/pool.md §7.2);
   - when they hold more together than the Mac's limit all the same, the memory guard stops the job
     beside the larger at its next safe point, or the larger at once if it passes the limit alone
     (docs/pool.md §7.2, crate::agent::memguard);
-  - starts only with its need free (10 GB for the network steps, the reserve for the others): room
-    on the disk is made only while no other job runs (a job beside may read what's deleted, and the
-    loop that looks after it waits meanwhile);
-  - the network work is the second's: the first job leaves it to it while there's other work for
-    the first (an hour of it would hold the first slot while the regions' terrain and units wait);
+  - starts only with the reserve free: room on the disk is made only while no other job runs (a job
+    beside may read what's deleted, and the loop that looks after it waits meanwhile);
   - doesn't starve the first: when the first's next job can't start beside the second's (it runs
     alone, it needs room made, or the two wouldn't fit the memory), the first waits for it rather
     than start later work, and the second starts nothing new meanwhile, nor while one that runs
     alone or needs room made is the first's next;
   - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
-    claims its own, and four threads for network work, half the cores for the rest;
+    claims its own, and half the cores;
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
-    measured as a helper's is (four fifths of the build Mac's until it is); the forecast takes a
-    Mac in use now to stay so for half an hour, not to the end (made every minute, its finish
-    otherwise jumped each time the owner came or went). The status has it as `beside`, or why
-    there's none (`beside_why`).
+    measured as a helper's is (four fifths of the build Mac's until it is). The status has it as
+    `beside`, or why there's none (`beside_why`).
 - **A newly installed app:** the first job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one; a second job still running stops then (what it
   finished kept) and goes on under the new one.
@@ -1880,9 +1870,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     the agents and the coordinator keep running and reporting (the heartbeat says paused, and each
     job stopping or frozen); a job stopped by the pause, or by sleep, a restart or not starting, is
     given back, not counted as a failure.
-  - **By itself:** a job without the NAS (or a whole-planet job away from home) is frozen at once,
-    as it can't save; on battery under 30 %, a CPU job stops at its next safe point. Each goes on once
-    its condition holds again.
+  - **By itself:** a job without the NAS is frozen at once, as it can't save, and goes on once it's
+    back. None waits for power or home (the owner's choice).
   - **Any job's end** (done, paused, failed, stopped) records the targets it noted done, so they're
     never built again.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
@@ -2040,7 +2029,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   of every step to the end, each saying what it does ("Choosing and drawing the landmarks"): its
   jobs left by name, in the order they'll run ("Measuring the peaks' prominence and isolation: 178
   areas", then the next), and for one with work left that isn't this
-  Mac's job now, why: another Mac is on it, it waits for the home network or out a failure, or (the
+  Mac's job now, why: another Mac is on it, it waits for the NAS or out a failure, or (the
   publishing) for the steps above, since a catalog follows each chain as it ends. A job of
   several parts says them as each begins (`parts: <i> [names]` in its log), and the status lists
   them under the job, done, under way and to come, the progress bar under the one under way
@@ -2414,11 +2403,10 @@ between jobs into the other way. On:
 mid-job. Nothing depends on it being available at a given time.
 - **No deadlines.** Until work is done, the map serves the last catalog.
 - **Conditions per step:**
-  - Every job needs the NAS: at home, or through Tailscale away from home, except the whole-planet
-    reads, which need home. CPU jobs run on mains power, or on battery down to 30 %.
-  - When the NAS goes (or home, for a whole-planet job), the agent freezes the job (`SIGSTOP` to its
-    process group) and lets it go on (`SIGCONT`) when it's back; on battery under 30 %, a CPU job
-    stops at its next safe point instead (Pausing, above).
+  - Every job needs the NAS: at home, or through Tailscale away from home (the whole-planet reads
+    too, slowly), at any charge (the owner's choice).
+  - When the NAS goes, the agent freezes the job (`SIGSTOP` to its process group) and lets it go on
+    (`SIGCONT`) when it's back.
 - **Sleep** suspends every process. Open SMB handles often don't survive it, so a job that touches the
   NAS is restarted after wake.
 - **Kills** lose only the target under way: every job notes each target done as it's saved, and
@@ -2566,8 +2554,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    - The server serves from packs, base packs and catalogs: lazy, paged, by id plus location,
      offline start, names attached. The client follows.
 2. **Agent and moves: done.**
-   - The agent (recipes, heartbeat, conditions with the battery rule, batches, progress and
-     checklist, backups, GC).
+   - The agent (recipes, heartbeat, conditions, batches, progress and checklist, backups, GC).
    - Both Macs' data moved to the NAS, the local copies deleted.
    - Descriptions moved to `descriptions/`. The menu bar item.
 3. **The OSM pass and global-source layers: mostly done.**
@@ -2685,6 +2672,10 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
+   - with no step left to the second job (the light steps' list gone: pool.md §12, batch 3), a
+     first job that can't run beside the second's (two Wikidata steps, the heritage chain and the
+     items' facts) waits for it to end, an hour or more, rather than start the map tiles after it;
+     the Mac shared by measure (batch 5) and placement (batch 11) take this up;
    - the memory guard (`agent::memguard`) samples each job's memory every 5 s: a job growing faster
      can swap its Mac that long before it's frozen; a unit's measure is taken while it's built
      here, so a tail it runs here later is counted against the unit under way then; and a helper's
@@ -2951,7 +2942,9 @@ pausing, which with the pool on would hold an owner's download off for hours.
   Andes and the Himalaya reach 5,800 m.
 - **Failures are never cached, and the breaker needs a failed probe.** A busy link slows reads
   without the NAS being gone.
-- **Power: mains, or the battery down to 30 %** (asked for 2026-10-03); caffeinate per job.
+- **Any charge, at home or away** (the owner's, 2026-10-10: no job waits on the battery, the home
+  network, or who's at the Mac; the pass's whole-planet reads go over Tailscale away, slowly);
+  caffeinate per job.
 - **The menu bar item,** with progress to the end (asked for 2026-10-03).
 - **What the internet answered is kept on the NAS** (§4, Downloads): the items job's and the
   heritage chain's Wikidata and Wikipedia answers, a pass's at a time, as an archive each step

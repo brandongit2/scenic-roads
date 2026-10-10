@@ -469,9 +469,8 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   first region in the order they're built whose coverage meets the tile, then `spatial_order`), so
   the buildings of the region being built come first. With no "bld-release" in the plan's inputs
   (a caller that didn't read the sources) or "?" (unreadable now), no buildings work at all.
-- **The second job** (`agent::steps::SECOND`) takes `bld-fetch` with the network steps (`agent::steps::LIGHT`:
-  while the Mac is in use too), and `bldprep` and `bldtiles` last, after units and slope, as CPU
-  work (not while the Mac is in use). Never `bldprep` beside another `bldprep` (`agent::steps::NAS_READS`:
+- **The second job** (`agent::steps::SECOND`) takes `bld-fetch` with the network steps, and
+  `bldprep` and `bldtiles` last, after units and slope. Never `bldprep` beside another `bldprep` (`agent::steps::NAS_READS`:
   each reads up to ~3 GB of the NAS's parquet), nor anything beside a job that runs alone (the OSM
   pass, the pass's worldwide jobs, the water, GC: `agent::steps::ALONE`), so never beside the planet's
   reads.

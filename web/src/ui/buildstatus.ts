@@ -1,6 +1,6 @@
 // The status bar's build items (docs/plan.md §1, §8 Status): the NAS when it can't be reached (map
 // data not mirrored on this Mac may be missing), the build Mac's state from its heartbeat ("Build
-// Mac · building …", "· paused: on battery", "· idle", "· last seen 3 h ago"), and new map data or
+// Mac · building …", "· paused: the NAS isn't reachable", "· idle", "· last seen 3 h ago"), and new map data or
 // a new app that wants a reload. A click opens the details: the job and its log, what waits and
 // why, the last jobs to finish, the conditions; and the pool (docs/pool.md §10, §11): who leads, each
 // Mac's state, "Make this Mac lead", and "Take over…" when the lead is out of touch.

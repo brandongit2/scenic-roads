@@ -18,6 +18,11 @@
 #                                                   agent restarts into it between jobs
 #   pool-two-macs.sh stop <dir>                     the launcher and the agent stopped
 #
+# On the M1, run its launcher inside a persistent ssh session (a `tmux` or `screen` there, or the
+# session kept open), not under `nohup` with the session closed: macOS's local-network privacy then
+# cuts the agent off the LAN ("No route to host" to the NAS), so it reports itself away from home,
+# can't reach the share by its LAN name, and never takes over by itself.
+#
 # What a run shows (2026-10-08, the M4 the build Mac, the M1 a member): the build Mac makes term 1
 # and leads; both drain what they held from before the pool into the journal; the lead's jobs hand
 # off under its term's leases, its sweep after a re-assertion; the member's entry reaches the lead's

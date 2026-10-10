@@ -12,19 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// What a job needs to run.
+/// What a job needs to run: the NAS (every job's: a test's may not). It runs at any charge, at home
+/// or away (the owner's choice: docs/pool.md §7.7); a record an older app wrote, with its power and
+/// home, reads as this.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Needs {
-    /// CPU work: it runs on mains power, or on battery down to `cond::BATTERY_MIN` (30 %), then
-    /// waits for mains (`lapsed`). Light work (a backup, GC) runs on any charge.
-    #[serde(alias = "ac")]
-    pub cpu: bool,
-    /// The NAS.
-    pub nas: bool,
-    /// The home network: the job reads the whole planet (or every piece of it) from the NAS, too
-    /// much to read through Tailscale.
     #[serde(default)]
-    pub home: bool,
+    pub nas: bool,
 }
 
 /// A job: one step for one unit or pack, or one worldwide step.

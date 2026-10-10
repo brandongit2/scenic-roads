@@ -1,5 +1,7 @@
-//! The build Mac's conditions (docs/plan.md §8, Interruptions): power (mains, or the battery's
-//! charge), the NAS, the user at the keyboard, and sleep.
+//! A Mac's conditions (docs/plan.md §8, Interruptions): the NAS (and whether it answers by its LAN
+//! name: at home), the user at the keyboard, sleep; and its power, which no job waits on, for the
+//! status and for whether it may lead (crate::agent::lead: a lead on battery or away is offered to
+//! hand over).
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -8,7 +10,8 @@ use std::time::{Instant, SystemTime};
 /// Seconds without keyboard or mouse input after which the user counts as away.
 pub const AWAY_S: u64 = 300;
 
-/// On battery, CPU work goes on down to this charge (%), then waits for mains power.
+/// On battery, a Mac below this charge (%) isn't able to lead (crate::agent::pool's `able`: the
+/// proactive offer, a takeover by itself). No job waits on the charge.
 pub const BATTERY_MIN: u8 = 30;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

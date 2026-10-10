@@ -97,11 +97,10 @@ const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 const SLOTS: usize = 2;
 
 /// The steps the second job takes, in its order of preference (the steps table's: crate::agent::
-/// steps), and those of them that mostly wait on the network, which run beside the first job while
-/// the Mac is in use too (the others only while it isn't); the steps that run alone; those that keep
-/// the pass's Wikidata and Wikipedia answers here and on the NAS (crate::answers: none starts while
-/// the agent sends them as it starts, `Agent::seed_answers`).
-use steps::{ALONE, ANSWERED, LIGHT, SECOND};
+/// steps); the steps that run alone; those that keep the pass's Wikidata and Wikipedia answers here
+/// and on the NAS (crate::answers: none starts while the agent sends them as it starts,
+/// `Agent::seed_answers`).
+use steps::{ALONE, ANSWERED, SECOND};
 
 /// The last round of publishing, in the agent's folder (build::Round): its jobs read the units of
 /// the one under way there (crate::out::UNITS_AS_OF_ENV).
@@ -127,14 +126,9 @@ fn clash(a: &str, b: &str) -> bool {
     steps::alone(a) || steps::alone(b) || steps::grouped(a, b) || (a == b && !steps::SHARED.contains(&a))
 }
 
-/// The free space the second job starts with (it makes no room: `reads_caches`): the network steps'
-/// a little, the others' the build Mac's reserve.
-fn second_need(step: &str) -> u64 {
-    if LIGHT.contains(&step) {
-        10 << 30
-    } else {
-        room::RESERVE
-    }
+/// The free space the second job starts with (it makes no room: `reads_caches`): the reserve.
+fn second_need(_step: &str) -> u64 {
+    room::RESERVE
 }
 
 /// The build Mac's second job as a worker (the build's history, the forecast's machines, the worker
@@ -1139,7 +1133,7 @@ impl Agent {
     /// a shared step's targets, none needing more memory than it spares), built from the pass it
     /// says, saving into the lease's outbox folder. Asked only when it could start now.
     fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
-        let needs = Needs { cpu: true, nas: true, home: false };
+        let needs = Needs { nas: true };
         if let Some(why) = lapsed(&needs, c) {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
@@ -1293,7 +1287,7 @@ impl Agent {
                 } else {
                     format!("Scenery for the build Mac's area {unit}")
                 };
-                vec![JobSpec { id: format!("task {id}"), what, cmd, needs: Needs { cpu: true, nas: true, home: false }, restart_after_sleep: false, record: None }]
+                vec![JobSpec { id: format!("task {id}"), what, cmd, needs: Needs { nas: true }, restart_after_sleep: false, record: None }]
             }
             Ok(Some(g)) => {
                 fail(self, g.lease, "this helper can't do that work");
@@ -1688,7 +1682,9 @@ impl Agent {
     pub fn run(&mut self) -> Result<()> {
         // (The handler only stores to an atomic.)
         crate::sys::on_terminate(on_signal);
-        // The memory guard's sampler, on a thread of its own (crate::agent::memguard).
+        // The memory guard's sampler, on a thread of its own (crate::agent::memguard), its latest
+        // sample written for the status whatever this loop waits on.
+        self.sampler.write_to(self.o.home.join(memguard::LIVE));
         self.sampler.spawn();
         if self._lock.is_some() {
             // (What they finished, recorded once the NAS answers: a helper's goes back with its
@@ -2138,7 +2134,7 @@ impl Agent {
             self.note_end(k, &step, &done, secs, ok, &how);
             // (What a target of its step takes here, for the forecast: the first job's, and the
             // second's network work, whose time the job beside it doesn't change.)
-            if ok && of > 0 && !step.is_empty() && (k == 0 || LIGHT.contains(&step.as_str())) {
+            if ok && of > 0 && !step.is_empty() && k == 0 {
                 let each = secs as f64 / of as f64;
                 let e = self.mem.step_secs.entry(secs_key(&step)).or_insert(each);
                 *e = 0.7 * *e + 0.3 * each;
@@ -2277,7 +2273,7 @@ impl Agent {
     }
 
     /// The first job, when its slot is free: the plan's first that can start, not the second job's
-    /// own, nor network work left to it (`left_to_second`); one that waits for a reason of its own
+    /// own; one that waits for a reason of its own
     /// passed over, one that waits for the job beside it (`waits_for_second`) waited for, not passed
     /// over. Why the jobs before it wait, in `waiting`.
     fn start_first(&mut self, plan: &[JobSpec], c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) {
@@ -2287,7 +2283,7 @@ impl Agent {
         let mut held = u64::MAX;
         self.floor_held = None;
         for spec in plan {
-            if beside.as_deref() == Some(spec.id.as_str()) || self.left_to_second(spec, plan, c) {
+            if beside.as_deref() == Some(spec.id.as_str()) {
                 continue;
             }
             if self.need_of(0, spec).saturating_add(self.floor_for(&step_of(&spec.id).unwrap_or_default())) >= held {
@@ -2341,7 +2337,7 @@ impl Agent {
     /// (their own reasons, the job beside it), as the start loop says.
     fn why_waiting(&self, plan: &[JobSpec], c: &Conditions, waiting: &mut Vec<Waiting>) {
         let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
-        for spec in plan.iter().filter(|s| !running.contains(&s.id.as_str()) && !self.left_to_second(s, plan, c)) {
+        for spec in plan.iter().filter(|s| !running.contains(&s.id.as_str())) {
             match self.wait_reason(spec, c).or_else(|| self.waits_for_second(spec)) {
                 Some(why) => waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why }),
                 None => break,
@@ -2349,19 +2345,11 @@ impl Agent {
         }
     }
 
-    /// Whether the first slot leaves `spec`, network work (`LIGHT`), to the second job: while a
-    /// second may run and the plan has other work the first can do (an hour of it would hold the
-    /// first slot while the regions' terrain and units wait).
-    fn left_to_second(&self, spec: &JobSpec, plan: &[JobSpec], c: &Conditions) -> bool {
-        let light = |s: &JobSpec| LIGHT.contains(&step_of(&s.id).unwrap_or_default().as_str());
-        self.second_allowed() && light(spec) && plan.iter().any(|p| !light(p) && self.wait_reason(p, c).is_none())
-    }
-
     /// The job the first slot would start next: the plan's first that isn't running, left to the
     /// second job, or waiting for a reason of its own.
     fn head<'a>(&self, plan: &'a [JobSpec], c: &Conditions) -> Option<&'a JobSpec> {
         let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
-        plan.iter().find(|s| !running.contains(&s.id.as_str()) && !self.left_to_second(s, plan, c) && self.wait_reason(s, c).is_none())
+        plan.iter().find(|s| !running.contains(&s.id.as_str()) && self.wait_reason(s, c).is_none())
     }
 
     /// Why `spec` can't start in the first slot beside the second job's, when it can't: they don't
@@ -2379,9 +2367,8 @@ impl Agent {
         if clash(&s, &b) {
             return Some(format!("waits for the job beside it ({beside}) to end: they don't run together"));
         }
-        // (Beside one that mostly waits on the network, room is made all the same: try_start_said.)
         let (need, free) = (self.need_of(0, spec).saturating_add(self.floor_for(&s)), self.disk_free());
-        if free < need && !LIGHT.contains(&b.as_str()) {
+        if free < need {
             return Some(format!("needs {} GB free on the disk ({} GB free{}): room is made once the job beside it ({beside}) ends", need >> 30, free >> 30, self.floor_words()));
         }
         let res = self.mac.resources(&self.o.home, None, None, None);
@@ -2444,8 +2431,7 @@ impl Agent {
         // more, its area's archive copies spared; the OSM pass's own need, less the pack cache it
         // clears; a helper's Mac has less room). Made before its targets are claimed: it can take
         // minutes, and a claim is refreshed only while a job runs. Made only while no other job
-        // runs here (the loop that looks after it waits meanwhile), or one that mostly waits on the
-        // network (the first job doesn't wait hours for it): beside another, a job starts only with
+        // runs here (the loop that looks after it waits meanwhile): beside another, a job starts only with
         // the room there is, the target's freeing on a thread of its own (`tend_caches`). Nothing a
         // running job uses goes (it holds it: store::cachefile); not while a freeing of the caches
         // runs (it frees already), nor while a job an earlier agent left runs (`locks_kept`).
@@ -2455,7 +2441,7 @@ impl Agent {
         let floor = self.floor_for(&step);
         let room = need.saturating_add(floor);
         let others: Vec<String> = self.slots.iter().enumerate().filter(|(j, _)| *j != k).filter_map(|(_, s)| s.running.as_ref().map(|r| step_of(&r.spec.id).unwrap_or_default())).collect();
-        let other = !others.is_empty() && !(k == 0 && others.iter().all(|s| LIGHT.contains(&s.as_str())));
+        let other = !others.is_empty();
         // (Room-making fell short of the target lately: not tried again until a job ends, the
         // target changes or ten minutes pass; the job waits.)
         let short = self.floor_short.is_some_and(|(t, n, at)| t == floor && room >= n && at.elapsed() < Duration::from_secs(600));
@@ -2607,7 +2593,7 @@ impl Agent {
 
     /// The second job (docs/plan.md §8, Two jobs at once), when its slot is free: of the plan's
     /// jobs, the first by its steps' order (`SECOND`) that can run beside the first job's (`clash`),
-    /// while the Mac is in use only one that mostly waits on the network (`LIGHT`), and that fits
+    /// whoever is at the Mac, and that fits
     /// the memory beside it: the two jobs' within three quarters of the Mac's (the first's as
     /// predicted, or as it is now if more), and the second's free now with 2 GB to spare. Why none
     /// starts, in `beside_why`.
@@ -2648,10 +2634,6 @@ impl Agent {
         for spec in picks {
             let step = step_of(&spec.id).unwrap_or_default();
             if first.as_ref().is_some_and(|f| f.1 == spec.id || clash(&f.0, &step)) {
-                continue;
-            }
-            if c.user_active() && !LIGHT.contains(&step.as_str()) {
-                why.get_or_insert_with(|| "the Mac is in use: beside the first job, only work that mostly waits on the network".into());
                 continue;
             }
             let mb = self.spec_peak(spec);
@@ -3259,11 +3241,9 @@ impl Agent {
     fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         // Half the cores while the user is active, all of them when away (a helper, two fewer:
-        // its Mac has less memory, and its user's work comes first). The second job: four for one
-        // that mostly waits on the network, else half (the two jobs' threads share the cores).
-        let step = step_of(&spec.id).unwrap_or_default();
+        // its Mac has less memory, and its user's work comes first). The second job: half (the two
+        // jobs' threads share the cores).
         let threads = match (k, c.user_active(), self.o.helper) {
-            (1.., _, _) if LIGHT.contains(&step.as_str()) => 4.min(cores),
             (1.., _, _) => (cores / 2).max(1),
             (_, true, _) => (cores / 2).max(1),
             (_, false, true) => cores.saturating_sub(2).max(1),
@@ -3489,8 +3469,7 @@ impl Agent {
                         "--clear".into(),
                         s(&pack_cache),
                     ],
-                    // (It reads the whole planet: at home only.)
-                    needs: steps::needs("osm-pass"),
+                    needs: Needs { nas: true },
                     restart_after_sleep: true,
                     record: None,
                 });
@@ -3506,7 +3485,7 @@ impl Agent {
                 id: "backup".into(),
                 what: "Backing up translations, descriptions and inputs".into(),
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
-                needs: steps::needs("backup"),
+                needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,
             });
@@ -3518,7 +3497,7 @@ impl Agent {
                 id: "gc".into(),
                 what: "Removing replaced files from the NAS".into(),
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
-                needs: steps::needs("gc"),
+                needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,
             });
@@ -3547,10 +3526,9 @@ impl Agent {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
-            // (What it needs: the steps table's. The pass's whole-planet reads, its missing sets and
-            // the units' reach, and the world's buildings, tens of GB onto the NAS, wait for home; a
-            // catalog and a prune only write a little, and need no power.)
-            JobSpec { id, what: what.into(), cmd, needs: steps::needs(step), restart_after_sleep: true, record }
+            // (Every job needs the NAS; none waits for power or home, the owner's choice: the pass's
+            // whole-planet reads go over Tailscale when away, slowly.)
+            JobSpec { id, what: what.into(), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
@@ -3836,7 +3814,7 @@ impl Agent {
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
-                j.needs = steps::needs("catalog-held");
+                j.needs = Needs { nas: true };
                 jobs.push(j);
                 continue;
             }
@@ -3986,14 +3964,13 @@ impl Agent {
         // (A worker that takes tails around: each of this Mac's units the moment its job gives it to
         // take its tail, crate::offload.)
         let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) { crate::offload::LEASE_WAIT.as_secs_f64() } else { 0.0 };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, light_s: 0.0, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s }];
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s }];
         // Its second job: what fits beside the first (a quarter of its memory, say); while the Mac's
         // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
             let mem_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
-            let light_s = if self.last_cond.is_some_and(|c| c.user_active()) { forecast::IN_USE_S } else { 0.0 };
-            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light_s, mem_mb, busy_s: busy(1, speed), unit_extra_s });
+            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, mem_mb, busy_s: busy(1, speed), unit_extra_s });
         }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
@@ -4002,7 +3979,7 @@ impl Agent {
             let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
             let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
             let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, light_s: 0.0, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s, unit_extra_s: 0.0 });
+            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s, unit_extra_s: 0.0 });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -4774,27 +4751,14 @@ fn annotate(list: &mut [build::Step], now: &[String], helpers: &[Status], waitin
 fn stop_for(n: &Needs, c: &Conditions, pause: Option<&crate::control::Pause>) -> Option<(crate::control::Mode, String)> {
     use crate::control::Mode;
     match lapsed(n, c) {
-        Some(why) if (n.nas && !c.nas) || (n.home && !c.home) => Some((Mode::Freeze, why)),
-        _ if pause.is_some() => pause.map(|p| (p.mode, p.why())),
-        Some(why) => Some((Mode::Drain, why)),
-        None => None,
+        Some(why) => Some((Mode::Freeze, why)),
+        None => pause.map(|p| (p.mode, p.why())),
     }
 }
 
 /// Why a job can't run under `c`, if it can't.
 fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
-    if n.nas && !c.nas {
-        return Some("the NAS isn't reachable".into());
-    }
-    if n.home && !c.home {
-        return Some("away from home: it moves the whole planet or world through the NAS, which waits for the home network".into());
-    }
-    // CPU work: on mains power, or on battery down to BATTERY_MIN.
-    if n.cpu && !c.ac && c.battery.is_none_or(|b| b < cond::BATTERY_MIN) {
-        let at = c.battery.map(|b| format!(" at {b}%")).unwrap_or_default();
-        return Some(format!("on battery{at}: waiting for mains power (it builds on battery down to {}%)", cond::BATTERY_MIN));
-    }
-    None
+    (n.nas && !c.nas).then(|| "the NAS isn't reachable".into())
 }
 
 /// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
@@ -5060,7 +5024,7 @@ mod tests {
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         // A 20 GB target, which the disk has (40 GB free): a terrain run's 55 GB and a unit's 30
         // past it don't fit, nor can the (empty) caches make them. Each waits, saying why; a job
@@ -5170,7 +5134,7 @@ mod tests {
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         std::fs::create_dir_all(home.join("cache/base/base")).unwrap();
         std::fs::write(home.join("cache/base/base/6-1-1.0000000000000001.base"), vec![0u8; 1000]).unwrap();
@@ -5247,7 +5211,7 @@ mod tests {
         // fetch beside them; nothing beside the water or the pass.
         assert!(!clash("bldtiles", "bldtiles") && clash("bldprep", "bldprep") && !clash("bldprep", "bldtiles"));
         assert!(!clash("bld-fetch", "bldprep") && clash("water", "bldtiles") && clash("bldprep", "osm-pass"));
-        assert!(LIGHT.contains(&"bld-fetch") && SECOND.ends_with(&["bldprep", "bldtiles"]));
+        assert!(SECOND.contains(&"bld-fetch") && SECOND.ends_with(&["bldprep", "bldtiles"]));
     }
 
     #[test]
@@ -5281,7 +5245,7 @@ mod tests {
             let step = id.split(' ').next().unwrap();
             let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
             let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { nas: false }, restart_after_sleep: false, record }
         };
         // Someone at the Mac: beside the map tiles, the heritage chain (network), not a unit.
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -5324,7 +5288,7 @@ mod tests {
         let job = |id: &str, targets: &[&str]| {
             let step = id.split(' ').next().unwrap();
             let record = Some(build::Work { step: step.into(), targets: targets.iter().map(|t| (t.to_string(), "k".to_string())).collect() });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record }
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         // (A costs file an earlier job left, naming a target begun and never ended: gone as the next
@@ -5435,7 +5399,7 @@ mod tests {
             let step = id.split(' ').next().unwrap();
             let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
             let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { nas: false }, restart_after_sleep: false, record }
         };
         let stop = |a: &mut Agent| {
             for s in a.slots.iter_mut() {
@@ -5446,11 +5410,13 @@ mod tests {
             a.slots = Default::default();
         };
         let in_use = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        // The heritage chain beside: the first takes the map tiles, leaving the items' facts, listed
-        // first, to the second (they'd hold the first slot an hour).
+        // The heritage chain beside: the items' facts, listed first, are the first's next (no step is
+        // left to the second job: batch 3), and they don't run beside it: waited for, not passed over
+        // for the map tiles.
         assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
-        a.start_first(&[job("items items"), job("pack 6/1/1")], &in_use, Some(&root), &mut Vec::new());
-        assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("pack 6/1/1"));
+        let mut w = Vec::new();
+        a.start_first(&[job("items items"), job("pack 6/1/1")], &in_use, Some(&root), &mut w);
+        assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.what == "items items" && x.why.contains("don't run together")), "{w:?}");
         stop(&mut a);
         // A job that runs alone next: waited for, not passed over for the map tiles after it.
         assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
@@ -5458,13 +5424,8 @@ mod tests {
         a.start_first(&[job("gc gc"), job("pack 6/1/2")], &in_use, Some(&root), &mut w);
         assert!(a.slots[0].running.is_none());
         assert!(w.iter().any(|x| x.what == "gc gc" && x.why.contains("don't run together")), "{w:?}");
-        // One that needs room made on the disk: made beside the heritage chain (it reads none of the
-        // caches), and it starts...
-        a.free_set = Some(20 << 30);
-        a.start_first(&[job("pack 6/1/3")], &in_use, Some(&root), &mut Vec::new());
-        assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("pack 6/1/3"));
         stop(&mut a);
-        // ...not beside a job that may read them (the landmarks' candidates, while the Mac's idle):
+        // One that needs room made on the disk: not beside another job (it may read what's deleted):
         // it waits for that one.
         let idle = Conditions { idle_s: 3600, ..in_use };
         a.free_set = Some(40 << 30);
@@ -5519,7 +5480,7 @@ mod tests {
 
     /// A job that waits half a minute, needing nothing.
     fn waiting_job(id: &str) -> JobSpec {
-        JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None }
+        JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None }
     }
 
     fn put(p: &Path, b: &[u8]) {
@@ -6190,19 +6151,17 @@ mod tests {
 
     #[test]
     fn conditions_gate_jobs() {
-        let n = Needs { cpu: true, nas: true, home: false };
+        let n = Needs { nas: true };
         let at = |ac: bool, nas: bool, home: bool, battery: Option<u8>| Conditions { ac, nas, home, idle_s: 0, battery };
         assert!(lapsed(&n, &at(true, true, true, None)).is_none());
-        assert!(lapsed(&n, &at(false, true, true, None)).unwrap().contains("battery"));
         assert!(lapsed(&n, &at(true, false, true, None)).unwrap().contains("NAS"));
-        // On battery: on down to 30 %, then waiting.
-        assert!(lapsed(&n, &at(false, true, true, Some(30))).is_none());
-        assert!(lapsed(&n, &at(false, true, true, Some(29))).unwrap().contains("at 29%"));
-        // Away from home, through Tailscale: on, except the whole-planet reads.
+        // At any charge, at home or away (the owner's choice): only the NAS.
+        assert!(lapsed(&n, &at(false, true, true, None)).is_none());
+        assert!(lapsed(&n, &at(false, true, true, Some(5))).is_none());
         assert!(lapsed(&n, &at(true, true, false, None)).is_none());
-        assert!(lapsed(&Needs { home: true, ..n }, &at(true, true, false, None)).unwrap().contains("away from home"));
-        // A running job stops at once without the NAS (it can't save), as the build's pause says, and
-        // at its next safe point when the battery runs low.
+        assert!(lapsed(&Needs { nas: false }, &at(true, false, true, None)).is_none());
+        // A running job stops at once without the NAS (it can't save), and as the build's pause says;
+        // never for the battery.
         use crate::control::{Mode, Pause};
         let (drain, now) = (Pause::new(Mode::Drain, "the menu bar on m4"), Pause::new(Mode::Freeze, "scenic pause on m4"));
         let mode = |c: Conditions, p: Option<&Pause>| stop_for(&n, &c, p).map(|s| s.0);
@@ -6210,13 +6169,14 @@ mod tests {
         assert_eq!(mode(at(true, true, true, None), Some(&drain)), Some(Mode::Drain));
         assert_eq!(mode(at(true, true, true, None), Some(&now)), Some(Mode::Freeze));
         assert_eq!(mode(at(true, false, true, None), Some(&drain)), Some(Mode::Freeze));
-        assert_eq!(mode(at(false, true, true, Some(25)), None), Some(Mode::Drain));
+        assert_eq!(mode(at(false, true, true, Some(25)), None), None);
         assert!(stop_for(&n, &at(true, true, true, None), Some(&drain)).unwrap().1.contains("the menu bar on m4"));
-        // An older heartbeat without `home` reads as at home; an older job's `ac` is `cpu`.
+        // An older heartbeat without `home` reads as at home; an older job's record, with its power
+        // and home, as its NAS alone.
         let old: Conditions = serde_json::from_str(r#"{"ac": true, "nas": true, "idle_s": 0}"#).unwrap();
         assert!(old.home);
-        let old: Needs = serde_json::from_str(r#"{"ac": true, "nas": true}"#).unwrap();
-        assert!(old.cpu && old.nas);
+        let old: Needs = serde_json::from_str(r#"{"cpu": true, "nas": true, "home": true}"#).unwrap();
+        assert_eq!(old, Needs { nas: true });
     }
 }
 
@@ -6522,7 +6482,7 @@ mod pool_tests {
         let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_, false).unwrap().unwrap();
         a.pool = Some(pool::Run::new(side, pool::Role::Lead, pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() }));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/usr/bin/true".into()], needs: Needs { cpu: false, nas: true, home: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/usr/bin/true".into()], needs: Needs { nas: true }, restart_after_sleep: false, record: None };
         // Not caught up: no catalog; a sweep asks for a re-assertion first.
         let mut w = Vec::new();
         assert!(!a.try_start(0, job("catalog"), &c, Some(&r), &mut w));

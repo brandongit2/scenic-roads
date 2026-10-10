@@ -27,7 +27,7 @@ use super::steps::SHARED;
 
 // The steps the build Mac's second job takes, in its order of preference, and those it takes while
 // the Mac is in use: the agent's.
-use super::{LIGHT, SECOND};
+use super::SECOND;
 
 /// A machine the work is shared among.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,12 +38,8 @@ pub struct Machine {
     pub measured: bool,
     /// A helper: the shared steps alone, what fits its memory.
     pub helper: bool,
-    /// The build Mac's second job: its steps alone (`SECOND`), what fits its memory; while the Mac is
-    /// in use, only those that mostly wait on the network (`LIGHT`): for the first `light_s` seconds
-    /// (in use now: as long as it's likely to stay so, `IN_USE_S`; the forecast is made every
-    /// minute, and taken whole its finish jumped each time the owner came or went).
+    /// The build Mac's second job: its steps alone (`SECOND`), what fits its memory.
     pub second: bool,
-    pub light_s: f64,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
@@ -258,8 +254,6 @@ struct Sim {
 }
 
 const HOUR: f64 = 3600.0;
-/// How long a Mac in use now is taken to stay in use, for its second job's work (`Machine::light_s`).
-pub const IN_USE_S: f64 = 30.0 * 60.0;
 
 /// The share of a region's units reading stale terrain, built as the coverage wants them now, taken
 /// to go stale once that terrain is built (`RegionLeft::expected`; which ones is known only then).
@@ -454,12 +448,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         }
         if mac.second {
             // The first of its steps it can do, in their order (a step's in the plan's).
-            let steps: &[&str] = if t < mac.light_s { &LIGHT } else { &SECOND };
-            let pick = steps.iter().find_map(|s| (0..items.len()).find(|&i| items[i].phase != Phase::Before && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
-            // (With no network work while the Mac's in use, it looks again when that time's up.)
+            let pick = SECOND.iter().find_map(|s| (0..items.len()).find(|&i| items[i].phase != Phase::Before && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
-                None if t < mac.light_s => next_end(&items, &free, m, t).min(mac.light_s),
                 None => next_end(&items, &free, m, t),
             };
             continue;
@@ -752,7 +743,7 @@ mod tests {
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {
-        Machine { name: name.into(), speed, measured: true, helper, second: false, light_s: 0.0, mem_mb: 6000, busy_s: 0.0, unit_extra_s: 0.0 }
+        Machine { name: name.into(), speed, measured: true, helper, second: false, mem_mb: 6000, busy_s: 0.0, unit_extra_s: 0.0 }
     }
 
     fn cost(step: &str, _t: &str) -> Cost {
@@ -1035,25 +1026,18 @@ mod tests {
     }
 
     #[test]
-    fn the_second_job_builds_units_only_while_the_mac_isnt_in_use() {
+    fn the_second_job_builds_units_beside_the_first() {
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let second = |light_s: f64| Machine { second: true, light_s, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
-        let took = |light_s: f64| {
-            let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), second(light_s)], &cost));
-            f.lanes.get("m4 (second job)").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>())
-        };
-        // Away: half the units; in use throughout: none (it waits for network work); in use for the
-        // first unit's time: one fewer.
-        assert_eq!(took(0.0), 4);
-        assert_eq!(took(f64::INFINITY), 0);
-        assert_eq!(took(cost("unit", "6/8/0").secs), 3);
-        // The build Mac's first job two hours from done, the Mac in use for ten minutes: the second
-        // job takes the units from then, not once the first job ends.
-        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, second(600.0)], &cost));
+        let second = Machine { second: true, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
+        // Half the units, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), second.clone()], &cost));
+        assert_eq!(f.lanes.get("m4 (second job)").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()), 4);
+        // The build Mac's first job two hours from done: the second job takes the units from now.
+        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, second], &cost));
         let lane = &f.lanes["m4 (second job)"];
-        assert_eq!((lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()), ("unit", 1_000_000 + 600, 8));
+        assert_eq!((lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()), ("unit", 1_000_000, 8));
     }
 
     #[test]

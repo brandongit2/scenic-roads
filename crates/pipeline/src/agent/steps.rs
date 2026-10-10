@@ -1,10 +1,10 @@
 //! The steps table (docs/pool.md §7.2): a row per step the agent runs as a job, saying what a job of
-//! it needs (memory, disk, power, the home network), how it may share a Mac (alone, beside another,
+//! it needs (memory, disk), how it may share a Mac (alone, beside another,
 //! the steps that never run two at once on one Mac), whether other members take it, how many
 //! targets go in a job, and what it may write (its write-set: the logical names its jobs may add,
 //! change or remove in the build's manifest).
 //!
-//! The step sets the agent and the coordinator test (`SHARED`, `SECOND`, `LIGHT`, `ALONE`, `RAW`,
+//! The step sets the agent and the coordinator test (`SHARED`, `SECOND`, `ALONE`, `RAW`,
 //! `WIKI`, `NAS_READS`, `ANSWERED`) are made from the table at compile time (a set whose size isn't
 //! what the table gives fails the build), and a step's first guess of memory, disk, needs and batch
 //! are read from its row (`row`). (What depends on a target, not its step, stays with the agent: a
@@ -33,18 +33,12 @@ pub struct Step {
     /// OSM pass less the pack cache it clears; a terrain area's whole run more: crate::agent's
     /// `need_of`). Beside another job, one that mostly waits on the network starts with 10 GB.
     pub disk: u64,
-    /// It's CPU work: mains power, or the battery above its floor (crate::agent::jobs::Needs).
-    pub cpu: bool,
-    /// It reads the whole planet (or the world's buildings) through the NAS: at home only.
-    pub home: bool,
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps
     /// wait on first).
     pub shared: Option<u8>,
     /// A Mac's second job may be one of it, at this rank of preference (docs/plan.md §8, Two jobs
     /// at once).
     pub beside: Option<u8>,
-    /// It mostly waits on the network: beside the first job while the Mac is in use too.
-    pub light: bool,
     /// It runs alone on its Mac, never beside another job.
     pub alone: bool,
     /// The groups of steps of which two never run at once on one Mac.
@@ -77,27 +71,27 @@ const RESERVE: u64 = super::room::RESERVE;
 /// A row with what most steps have: CPU work, the reserve on the disk, 1.5 GB until measured, none
 /// of the sets, every target in one job.
 const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
-    Step { name, mem_mb: 1500, disk: RESERVE, cpu: true, home: false, shared: None, beside: None, light: false, alone: false, groups: &[], answered: false, batch: usize::MAX, writes }
+    Step { name, mem_mb: 1500, disk: RESERVE, shared: None, beside: None, alone: false, groups: &[], answered: false, batch: usize::MAX, writes }
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
 pub const TABLE: [Step; 43] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
-    // planet with room to spare, less the pack cache it clears); at home (it reads the planet).
-    Step { disk: super::PASS_SPACE, home: true, alone: true, ..base("osm-pass", w_osm_pass) },
-    Step { home: true, alone: true, ..base("pass-sets", w_pass_sets) },
+    // planet with room to spare, less the pack cache it clears).
+    Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },
+    Step { alone: true, ..base("pass-sets", w_pass_sets) },
     Step { alone: true, ..base("trailends", w_trailends) },
-    Step { home: true, alone: true, ..base("reach", w_reach) },
+    Step { alone: true, ..base("reach", w_reach) },
     Step { alone: true, groups: &[Group::Raw], ..base("terrain-z8", w_terrain_z8) },
-    Step { home: true, alone: true, ..base("buildings", w_buildings) },
+    Step { alone: true, ..base("buildings", w_buildings) },
     Step { alone: true, ..base("summits", w_summits) },
     Step { alone: true, ..base("labels", w_labels) },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
     // 2026-10-08; its tiles' archive, 1.8 GB worldwide, and their packs written here first.)
     Step { mem_mb: 8192, disk: RESERVE + 5 * GB, alone: true, ..base("water", w_water) },
     Step { alone: true, answered: true, ..base("heritage-sites", w_heritage_sites) },
-    Step { alone: true, cpu: false, ..base("gc", w_none) },
-    Step { cpu: false, ..base("backup", w_none) },
+    Step { alone: true, ..base("gc", w_none) },
+    Step { ..base("backup", w_none) },
     Step { ..base("spoken", w_spoken) },
     Step { ..base("names-todo", w_none) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
@@ -124,24 +118,23 @@ pub const TABLE: [Step; 43] = [
     Step { mem_mb: 2500, shared: Some(5), beside: Some(8), groups: &[Group::Raw], batch: 12, ..base("peaks", w_peaks) },
     Step { batch: 16, ..base("pack", w_pack) },
     Step { batch: 2, ..base("lo", w_lo) },
-    Step { mem_mb: 3072, beside: Some(1), light: true, groups: &[Group::Wiki], answered: true, ..base("items", w_items) },
-    Step { mem_mb: 6144, beside: Some(0), light: true, groups: &[Group::Wiki], answered: true, ..base("heritage", w_heritage) },
-    Step { mem_mb: 4096, beside: Some(5), light: true, ..base("marks", w_marks) },
-    Step { mem_mb: 4096, beside: Some(6), light: true, ..base("overlays", w_overlays) },
+    Step { mem_mb: 3072, beside: Some(1), groups: &[Group::Wiki], answered: true, ..base("items", w_items) },
+    Step { mem_mb: 6144, beside: Some(0), groups: &[Group::Wiki], answered: true, ..base("heritage", w_heritage) },
+    Step { mem_mb: 4096, beside: Some(5), ..base("marks", w_marks) },
+    Step { mem_mb: 4096, beside: Some(6), ..base("overlays", w_overlays) },
     Step { ..base("roadunits", w_roadunits) },
     Step { ..base("stations", w_stations) },
     Step { ..base("ferries", w_ferries) },
-    Step { mem_mb: 1024, beside: Some(2), light: true, ..base("rail-feeds", w_rail_feeds) },
-    Step { mem_mb: 6144, beside: Some(3), light: true, ..base("rail", w_rail) },
-    Step { mem_mb: 1024, beside: Some(4), light: true, ..base("bld-fetch", w_none) },
+    Step { mem_mb: 1024, beside: Some(2), ..base("rail-feeds", w_rail_feeds) },
+    Step { mem_mb: 6144, beside: Some(3), ..base("rail", w_rail) },
+    Step { mem_mb: 1024, beside: Some(4), ..base("bld-fetch", w_none) },
     // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
     // 5.1 GB to read its 30.3 M rows, 3.3 GB to raise its tiles. Offered by the rows they read.)
     Step { mem_mb: 5200, shared: Some(6), beside: Some(11), groups: &[Group::NasReads], batch: 8, ..base("bldprep", w_bldprep) },
     Step { mem_mb: 3400, shared: Some(7), beside: Some(12), batch: 16, ..base("bldtiles", w_bldtiles) },
-    // (A catalog and a prune only write a little: no power needed.)
-    Step { cpu: false, ..base("catalog", w_none) },
-    Step { cpu: false, ..base("catalog-held", w_none) },
-    Step { cpu: false, ..base("prune", w_prune) },
+    Step { ..base("catalog", w_none) },
+    Step { ..base("catalog-held", w_none) },
+    Step { ..base("prune", w_prune) },
 ];
 
 /// The row of `step`; None for one the table doesn't know (a task's kind, or a step of a newer
@@ -159,13 +152,6 @@ pub fn mem_mb(step: &str) -> u64 {
 /// Targets per job of `step` (all of them for a step the table doesn't know).
 pub fn batch(step: &str) -> usize {
     row(step).map_or(usize::MAX, |s| s.batch)
-}
-
-/// What a job of `step` needs to run: CPU work unless its row says not, the NAS always, home when
-/// its row says.
-pub fn needs(step: &str) -> super::jobs::Needs {
-    let r = row(step);
-    super::jobs::Needs { cpu: r.is_none_or(|s| s.cpu), nas: true, home: r.is_some_and(|s| s.home) }
 }
 
 /// Whether `step` runs alone on its Mac.
@@ -186,7 +172,6 @@ pub fn grouped(a: &str, b: &str) -> bool {
 enum Set {
     Shared,
     Beside,
-    Light,
     Alone,
     Raw,
     Wiki,
@@ -195,7 +180,7 @@ enum Set {
 }
 
 /// Whether row `s` is in `set`, and its rank there (the shared and second job's steps by their
-/// ranks, the light ones by their second job's rank, the others in the table's order).
+/// ranks, the others in the table's order).
 const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
     const fn has(g: &[Group], want: Group) -> bool {
         let mut k = 0;
@@ -216,12 +201,6 @@ const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
             Some(r) => Some(r as usize),
             None => None,
         },
-        // (The light steps in the second job's order, which the agent and the forecast walk them
-        // by: one a second job doesn't take has no place in it, and fails the build.)
-        Set::Light if s.light => match s.beside {
-            Some(r) => Some(r as usize),
-            None => panic!("a light step that a second job doesn't take"),
-        },
         Set::Alone if s.alone => Some(i),
         Set::Raw if has(s.groups, Group::Raw) => Some(i),
         Set::Wiki if has(s.groups, Group::Wiki) => Some(i),
@@ -232,7 +211,7 @@ const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
 }
 
 /// Whether `set`'s ranks are its own, 0 to N-1 (the shared and second job's steps), not an order
-/// borrowed from another set (the light steps take the second job's) or the table's.
+/// taken from the table's order.
 const fn dense(set: Set) -> bool {
     matches!(set, Set::Shared | Set::Beside)
 }
@@ -293,8 +272,6 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 pub const SHARED: [&str; 8] = set_of(Set::Shared);
 /// The steps a Mac's second job takes, in its order of preference.
 pub const SECOND: [&str; 13] = set_of(Set::Beside);
-/// Those that mostly wait on the network, beside the first job while the Mac is in use too.
-pub const LIGHT: [&str; 7] = set_of(Set::Light);
 /// The steps that run alone, never beside another job.
 pub const ALONE: [&str; 11] = set_of(Set::Alone);
 /// The steps that read AWS's raw terrain tiles here: never two at once.
@@ -603,8 +580,6 @@ mod tests {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
         assert_eq!(SECOND, ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
-        // (In the order the agent and the forecast walk them: the light steps as the second job's.)
-        assert_eq!(LIGHT, ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays"]);
         assert_eq!(ALONE, ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water", "heritage-sites", "gc"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&RAW), set(&["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"]));
@@ -617,7 +592,7 @@ mod tests {
     fn the_rows_are_todays() {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
-        // by the former), the batches, the needs.
+        // by the former), the batches, the disk.
         let mem: [(&str, u64); 19] = [("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", 3400), ("terrain", 1500)];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
@@ -629,13 +604,6 @@ mod tests {
             assert_eq!(batch(s), n, "{s}");
         }
         assert_eq!(batch("catalog"), usize::MAX);
-        for s in ["pass-sets", "reach", "buildings", "osm-pass"] {
-            assert!(needs(s).home, "{s}");
-        }
-        for s in ["catalog", "catalog-held", "prune", "gc", "backup"] {
-            assert!(!needs(s).cpu, "{s}");
-        }
-        assert!(needs("unit").cpu && !needs("unit").home && needs("unit").nas);
         assert_eq!(row("terrain").unwrap().disk, RESERVE + 5 * GB);
         assert_eq!(row("water").unwrap().disk, RESERVE + 5 * GB);
         assert_eq!(row("osm-pass").unwrap().disk, super::super::PASS_SPACE);

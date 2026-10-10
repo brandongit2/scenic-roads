@@ -219,6 +219,29 @@ struct Inner {
     froze: Vec<(u64, String)>,
     /// The swap in use as each sample read it, over the last `SWAP_WINDOW`.
     swap: std::collections::VecDeque<(std::time::Instant, u64)>,
+    /// Where each sample is written (`Live`: the agent's folder's `memory.json`), for the status to
+    /// show the latest whatever the agent's loop waits on.
+    file: Option<PathBuf>,
+}
+
+/// The guard's latest sample, written each time by its thread (`LIVE` in the agent's folder): when
+/// (unix seconds), what each slot's job holds (MB), whether the thread froze it, and the limit and
+/// switch as the agent's loop last set them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Live {
+    pub at: u64,
+    pub on: bool,
+    pub limit_mb: u64,
+    pub held_mb: Vec<Option<u64>>,
+    pub frozen: Vec<bool>,
+}
+
+/// The guard's latest sample's file, in the agent's folder.
+pub const LIVE: &str = "memory.json";
+
+/// The guard's latest sample in the agent's folder `home`, when there's one.
+pub fn live(home: &Path) -> Option<Live> {
+    std::fs::read(home.join(LIVE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 /// The guard's sampler: a thread sampling the watched jobs every `EVERY` (`spawn`; a test calls
@@ -231,6 +254,13 @@ pub struct Sampler {
 impl Sampler {
     pub fn new(slots: usize) -> Sampler {
         Sampler { inner: Arc::new(Mutex::new(Inner { watches: vec![None; slots], ..Default::default() })) }
+    }
+
+    /// Writes each sample to `file` (the agent's folder's `LIVE`).
+    pub fn write_to(&self, file: PathBuf) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.file = Some(file);
+        }
     }
 
     /// Starts its thread (once a process: the agent's).
@@ -347,6 +377,12 @@ impl Sampler {
                 }
             }
             let limit = g.limit_mb;
+            if let Some(f) = g.file.clone() {
+                let live = Live { at: crate::agent::jobs::now_s(), on: g.on, limit_mb: limit, held_mb: g.watches.iter().map(|w| w.as_ref().and_then(|w| w.held)).collect(), frozen: g.watches.iter().map(|w| w.as_ref().is_some_and(|w| w.frozen)).collect() };
+                if let Ok(b) = serde_json::to_vec(&live) {
+                    crate::whole::write(&f, &b).ok();
+                }
+            }
             if !g.on || limit == 0 {
                 return;
             }
@@ -464,12 +500,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Sampler::new(2);
         s.set(true, 12 << 10);
+        s.write_to(d.path().join(LIVE));
         s.watch(0, Watch { pgid: 0, costs: d.path().join("c.jsonl"), done: d.path().join("d.txt"), step: "pack".into(), targets: vec!["6/1/1".into()], ..Default::default() });
         s.set_test(Some(vec![Some(5000), None]), Some(false));
         s.tick();
         s.set_test(Some(vec![Some(3000), None]), Some(false));
         s.tick();
         assert_eq!(s.held(0), Some(3000));
+        // Each sample written for the status, whatever the agent's loop waits on.
+        let l = live(d.path()).unwrap();
+        assert!(l.on && l.limit_mb == 12 << 10 && l.held_mb == [Some(3000), None] && l.frozen == [false, false], "{l:?}");
         // Past the limit alone, the Mac not in trouble: not frozen.
         s.set_test(Some(vec![Some(13 << 10), None]), Some(false));
         s.tick();
