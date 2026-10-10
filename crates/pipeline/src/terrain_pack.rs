@@ -561,6 +561,12 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
+/// The raw tiles' archives' index file's time and size in `store`, when it can be read.
+fn index_stamp(store: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(store.join(crate::rawpack::INDEX)).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
 /// An area's raw tile archives as read (RawTiles): its first tiles straight from the NAS's (each
 /// archive's entries read once, then a ranged read a tile), so a job wanting a tile or two of an
 /// area doesn't copy hundreds of MB; past RANGED of them, copied here whole and opened (one large
@@ -594,6 +600,10 @@ pub struct RawTiles {
     /// The store's archives' index: read when first wanted (tried again a minute after it can't
     /// be), and again when an archive it names is gone from the NAS (a job that outlived it).
     index: Mutex<(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)>,
+    /// The index file's time and size as it was read: one changed since (an archive packed meanwhile,
+    /// by another job here or room-making, of tiles this job's cache held) has an area's archives
+    /// opened again before a tile they lack is fetched from AWS.
+    index_stamp: Mutex<Option<(std::time::SystemTime, u64)>>,
     /// Each area's archives, newest first, opened when first wanted: by the area's own lock, so
     /// reading one from the NAS holds up only the tiles of that area.
     archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<Opened>>>>>,
@@ -602,12 +612,12 @@ pub struct RawTiles {
 impl RawTiles {
     /// A local cache alone (no NAS store).
     pub fn new(dir: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), index: Default::default(), archives: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), index: Default::default(), index_stamp: Default::default(), archives: Default::default() }
     }
 
     /// The local cache `dir`, filled from the NAS's `store` where it has a tile.
     pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), index: Default::default(), archives: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), index: Default::default(), index_stamp: Default::default(), archives: Default::default() }
     }
 
     /// The names in the store's column `z/x`, listed once (none when it isn't there); None when it
@@ -637,8 +647,10 @@ impl RawTiles {
             return s.0.clone();
         }
         for attempt in 0..3 {
+            let stamp = index_stamp(st);
             match crate::rawpack::Index::load(st) {
                 Ok(ix) => {
+                    *self.index_stamp.lock().unwrap() = stamp;
                     *s = (Some(std::sync::Arc::new(ix)), None);
                     return s.0.clone();
                 }
@@ -812,6 +824,21 @@ impl RawTiles {
             if has(format!("{y}.none")) {
                 store::cachefile::put(&none, b"")?;
                 return Ok((None, false));
+            }
+            // Packed into an archive since this job opened its area's (its loose copy here taken by
+            // room-making or another job's packing meanwhile): its area's archives opened again,
+            // the index read afresh, before AWS is asked (docs/pool.md §7.7: two raw-tile jobs at
+            // once on one Mac).
+            let stamp = *self.index_stamp.lock().unwrap();
+            if stamp.is_some() && index_stamp(st) != stamp {
+                let area = crate::rawpack::area(z, x, y);
+                if let Some(cell) = self.archives.lock().unwrap().get(&area).cloned() {
+                    *cell.lock().unwrap() = None;
+                }
+                self.index(st, true);
+                if let Some(b) = self.archived(z, x, y) {
+                    return Ok((b, false));
+                }
             }
         }
         self.fetch(z, x, y).map(|b| (b, true))
@@ -1751,6 +1778,85 @@ pub(crate) mod tests {
         assert!(freed > 0, "the deleter took nothing");
         assert_eq!(calm.len(), ts.len() + 1);
         assert_eq!(busy, calm, "the same packs, byte for byte (their content names)");
+    }
+
+    /// Two raw-tile jobs at once on one Mac (docs/pool.md §7.7, the raw tiles' group's going): two
+    /// terrain pieces of one area reading their raw tiles through one cache at the same time, while
+    /// the tiles waiting there are packed onto the NAS and deleted under them (rawpack::pack_local:
+    /// only tiles no job holds, only once their archive is named) and every file no job holds is
+    /// deleted as fast as it can be: each piece makes the same packs, byte for byte, as when it ran
+    /// alone.
+    #[test]
+    fn two_raw_tile_jobs_at_once_with_packing_between_make_the_same_bytes() {
+        crate::fetch::go_offline();
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        let store = root.join("sources/aws-terrarium");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let staged = d.path().join("staged");
+        let (_q, ts, cov) = north_tiles(d.path(), &staged);
+        // A third of the tiles loose on the NAS, a third in their area's archives there, a third
+        // waiting in this Mac's cache (fetched by an earlier job, not packed yet): in each run's.
+        let mut files = Vec::new();
+        crate::agent::room::walk_for_test(&staged, &mut files);
+        let old = std::time::SystemTime::now() - Duration::from_secs(120);
+        let (shared, calm_cache) = (d.path().join("shared-cache"), d.path().join("calm-cache"));
+        let mut to_pack = 0;
+        for (i, f) in files.iter().enumerate() {
+            let rel = f.strip_prefix(&staged).unwrap();
+            match i % 3 {
+                0 => {
+                    let to = store.join(rel);
+                    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+                    std::fs::rename(f, &to).unwrap();
+                }
+                1 => std::fs::File::options().append(true).open(f).unwrap().set_modified(old).unwrap(),
+                _ => {
+                    for c in [&shared, &calm_cache] {
+                        let to = c.join(rel);
+                        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+                        std::fs::copy(f, &to).unwrap();
+                        std::fs::File::options().append(true).open(&to).unwrap().set_modified(old).unwrap();
+                    }
+                    std::fs::remove_file(f).unwrap();
+                    to_pack += 1;
+                }
+            }
+        }
+        assert!(to_pack > 0 && crate::rawpack::pack_local(&staged, &store, &root, false).unwrap() > 0);
+        let piece = |name: &str, cache: &std::path::Path, t: (u32, u32)| {
+            let raw = RawTiles::with_store(cache, &store);
+            let mut out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            build_piece(&mut out, &raw, t, &cov, &Sources::default(), false, &|_, _, _| {}).unwrap();
+            let out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/") || l.starts_with("work/terrain-mid/")).collect::<Vec<_>>()
+        };
+        let (a, b) = (ts[0], ts[1]);
+        let calm = (piece("calm-a", &calm_cache, a), piece("calm-b", &calm_cache, b));
+        assert!(!calm.0.is_empty() && !calm.1.is_empty() && calm.0 != calm.1);
+        // At once, one cache, its waiting tiles packed and every file no job holds deleted meanwhile.
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (busy, packed, freed) = std::thread::scope(|s| {
+            let packer = s.spawn(|| {
+                let (mut packed, mut freed) = (0, 0);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    packed += crate::rawpack::pack_local(&shared, &store, &root, false).unwrap_or(0);
+                    freed += store::cachefile::remove_tree(&shared).freed;
+                }
+                (packed, freed)
+            });
+            let ja = s.spawn(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| piece("busy-a", &shared, a))));
+            let jb = s.spawn(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| piece("busy-b", &shared, b))));
+            let (ra, rb) = (ja.join().unwrap(), jb.join().unwrap());
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let (packed, freed) = packer.join().unwrap();
+            let ra = ra.unwrap_or_else(|e| std::panic::resume_unwind(e));
+            let rb = rb.unwrap_or_else(|e| std::panic::resume_unwind(e));
+            ((ra, rb), packed, freed)
+        });
+        eprintln!("packed {packed} tiles, freed {freed} bytes under them");
+        assert!(packed > 0 && freed > 0, "nothing packed ({packed}) or deleted ({freed}) under them");
+        assert_eq!(busy, calm, "each piece's packs the same, byte for byte (their content names)");
     }
 
     /// The timed demonstration (docs/plan.md §8, Room on the disk; run by hand: `cargo test

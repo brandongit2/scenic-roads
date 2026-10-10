@@ -49,6 +49,22 @@ pub const SLOTS: &str = "state/pool/slots";
 /// Whether a part changes in its process while the switch is missing.
 pub const SLOTS_DEFAULT: bool = false;
 
+/// The switch that shares a Mac by measure (docs/pool.md §7.7, §12 phase 4's fifth batch): a job
+/// starts beside another only if both jobs' measured memory and disk fit what the Mac has left, a
+/// cold start alone, in place of the steps table's run-alone, second-job and raw-tile lists; and the
+/// disk guard acts (`on` in it, or present; `off` in it, or missing: off). What's learned needs none.
+pub const BY_MEASURE: &str = "state/pool/by-measure";
+
+/// Whether the Mac is shared by measure, as the switch at `root` says (`BY_MEASURE`); None when it
+/// can't be read now.
+pub fn by_measure_on(root: &Path) -> Option<bool> {
+    match std::fs::read_to_string(root.join(BY_MEASURE)) {
+        Ok(s) => Some(s.trim() != "off"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// Whether a member's part changes in its process, as the switch at `root` says (`SLOTS`); None
 /// when it can't be read now.
 pub fn slots_on(root: &Path) -> Option<bool> {

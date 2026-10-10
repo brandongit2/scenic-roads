@@ -172,6 +172,17 @@ pub fn grouped(a: &str, b: &str) -> bool {
     }
 }
 
+/// Whether `a` and `b` are in one of the groups of which two never run at once on one Mac but the
+/// raw tiles' (the Mac shared by measure, docs/pool.md §7.7: two raw-tile readers are safe at
+/// once, a raw tile read under store::cachefile's lock and packing deleting only tiles no job
+/// holds; the Wikidata and heavy NAS reads' groups stay until batch 7's locks at the resource).
+pub fn grouped_but_raw(a: &str, b: &str) -> bool {
+    match (row(a), row(b)) {
+        (Some(x), Some(y)) => x.groups.iter().any(|g| *g != Group::Raw && y.groups.contains(g)),
+        _ => false,
+    }
+}
+
 /// Which of a row's sets a step set is made of.
 #[derive(Clone, Copy)]
 enum Set {
@@ -598,6 +609,13 @@ mod tests {
         assert_eq!(set(&WIKI), set(&["items", "heritage"]));
         assert_eq!(set(&NAS_READS), set(&["bldprep", "inputs"]));
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
+    }
+
+    #[test]
+    fn by_measure_the_raw_tiles_group_goes_and_the_others_stay() {
+        assert!(grouped("terrain", "peaks") && !grouped_but_raw("terrain", "peaks") && !grouped_but_raw("terrain-z8", "terrain"));
+        assert!(grouped_but_raw("items", "heritage") && grouped_but_raw("bldprep", "bldprep"));
+        assert!(!grouped_but_raw("unit", "pack") && !grouped_but_raw("not a step", "items"));
     }
 
     #[test]
