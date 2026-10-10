@@ -157,8 +157,9 @@ struct Slot {
     mem_drain_alone: bool,
     /// Its job is being stopped by the memory guard (its lease ends so: kept from this Mac).
     guard_stopped: bool,
-    /// Its job took claim files as it started (crate::agent::claims: the build Mac's own job with
-    /// the pool off): kept fresh and released by that, whatever part the process plays since.
+    /// Its job took claim files as it started (crate::agent::claims: a job of this Mac's own, planned
+    /// while it wasn't a helper, the lead's with the pool on or the build Mac's with it off): kept
+    /// fresh and released by that, whatever part the process plays since.
     claimed: bool,
     /// Its own job's timings, taken as it ended, for the lead when this Mac no longer leads (the
     /// job's hand-off carries them: `end_lease`).
@@ -1339,6 +1340,8 @@ impl Agent {
         let watch = self.sampler.unwatch(k).unwrap_or_default();
         let floors_of = |costs: &[(String, crate::coord::Cost)]| watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>());
         let guard_stopped = self.slots[k].guard_stopped;
+        // An own job's timings, taken whichever way it ends (none left for the slot's next job).
+        let own_timings = self.slots[k].timings_out.take();
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
@@ -1388,7 +1391,7 @@ impl Agent {
                     let failed = outcome == Outcome::Failed || guard_stopped;
                     let floors = floors_of(&costs);
                     let r = match entry.as_ref().filter(|e| e.handoff.done.is_some()) {
-                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings: if own { self.slots[k].timings_out.take() } else { read_timings(&dir) }, ..Default::default() }).map(|_| ()),
+                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings: if own { own_timings } else { read_timings(&dir) }, ..Default::default() }).map(|_| ()),
                         None if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => c.give_back_with(id, note, &floors),
                         None => c.fail_with(id, note, None, &floors),
                     };
@@ -1770,7 +1773,8 @@ impl Agent {
                 let r = self.slots[k].running.take().unwrap();
                 std::fs::remove_file(self.record_path(k)).ok();
                 // Its claims, free for the other Mac now rather than once stale.
-                if let (Some((step, ts)), Some(root), false) = (shared_targets(&r.spec), &root, self.o.helper) {
+                // (By what the job took, whatever part the process plays since.)
+                if let (Some((step, ts)), Some(root), true) = (shared_targets(&r.spec), &root, std::mem::take(&mut self.slots[k].claimed)) {
                     claims::release(root, &step, &ts, &self.me_of(k));
                 }
             }
@@ -3323,6 +3327,8 @@ impl Agent {
                 }
             }
         }
+        // (No timings left from the slot's last job, for this one's hand-off to carry.)
+        self.slots[k].timings_out = None;
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
         eprintln!("agent: starting {}{} ({threads} threads)", spec.id, if k > 0 { " beside the first job" } else { "" });
         // The build Mac's jobs save the records (crate::out::Out::save trusts them by this, whatever
@@ -6866,6 +6872,26 @@ mod pool_tests {
         assert!(m.coord.is_none() && m.o.helper);
         assert!(m.pool_restart().is_some_and(|w| w.contains("didn't start")), "{:?}", m.pool_restart());
         drop(lead);
+    }
+
+    #[test]
+    fn an_own_jobs_timings_for_the_lead_are_the_slots_job_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("agent"), bin: app(d.path()), dry_run: false, once: true, helper: false }).unwrap();
+        let rec = || Some(crate::timings::RunRec { kind: "unit".into(), ..Default::default() });
+        // (Left from the slot's last job.) A job starting there carries none of them.
+        a.slots[0].timings_out = rec();
+        let spec = JobSpec { id: "x x".into(), what: "x".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        a.start(0, spec, &cond).unwrap();
+        assert_eq!(a.slots[0].timings_out, None);
+        // Taken as its lease ends, whichever way: a stopped job's too.
+        a.slots[0].timings_out = rec();
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.end_lease(0, Outcome::Interrupted, &[], "stopped");
+        assert_eq!(a.slots[0].timings_out, None);
+        a.slots[0].running.take();
     }
 
     #[test]

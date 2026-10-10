@@ -653,7 +653,8 @@ offered through its own Mac's coordinator: one that stopped (the Mac no longer l
 or no longer knows the job's key (the lead taken back, with a new one) answers nothing, and the
 job runs each task out itself (crate::offload: as a task no one took), so it carries on. A job's
 end reaches the new lead whatever ended it, its client made again when the old lead had none;
-what claims a job took (the pool off) are kept and released by the job, whatever part its process
+what claims a job took (a job of the Mac's own, planned while it wasn't a helper: the lead's with the
+pool on, the build Mac's with it off) are kept and released by the job, whatever part its process
 plays since. They use the journal and validation like anyone's (none of the shortcuts
 for the build Mac's own jobs), and the in-process path never holds the coordinator's lock during
 NAS I/O. With the part changing in its process (`state/pool/slots`), a member that takes up a term
