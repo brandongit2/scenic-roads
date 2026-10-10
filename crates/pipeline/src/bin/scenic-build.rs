@@ -2480,7 +2480,8 @@ fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()
     let name = opt(args, "--name").unwrap_or_else(|| "legacy".into());
     std::fs::create_dir_all(scratch)?;
     let (list, tar) = (scratch.join("registers.list"), scratch.join("registers.tar.zst"));
-    let mut c = std::process::Command::new("sh");
+    // (By its path: with the PATH changed, a program looked up is started by fork and exec.)
+    let mut c = std::process::Command::new("/bin/sh");
     c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
     c.arg("-c")
         .arg(r#"set -e; cd "$1"; find . -type f ! -path './osm/*' ! -name .DS_Store | LC_ALL=C sort > "$2"; tar -cf - -T "$2" | zstd -T0 -10 -q -f -o "$3""#)
@@ -2579,7 +2580,7 @@ fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> 
     if !dir.join(".done").exists() {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir)?;
-        let mut c = std::process::Command::new("sh");
+        let mut c = std::process::Command::new("/bin/sh");
         c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
         c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&dir);
         let st = c.status().context("zstd | tar")?;

@@ -120,8 +120,13 @@ pub fn planetiler_room(input_len: u64) -> u64 {
 pub const BUFFER_KM: f64 = 10.0;
 
 pub fn osmium() -> Command {
-    let mut c = Command::new("osmium");
-    c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
+    let path = format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default());
+    // (Found here, by the PATH it's given, and started by its path: a program a Command looks up by
+    // a PATH it changes is started by fork and exec, whose child holds copies of this process's
+    // files, their locks with them, for a moment; by its path, it's spawned whole.)
+    let prog = path.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join("osmium")).find(|p| p.is_file()).unwrap_or_else(|| "osmium".into());
+    let mut c = Command::new(prog);
+    c.env("PATH", path);
     c
 }
 
