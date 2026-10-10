@@ -1,6 +1,8 @@
 import {defineConfig, type ViteUserConfig} from 'vitest/config';
+import {shadersPlugin} from './build/shaders_plugin.ts';
 
 const config: ViteUserConfig = defineConfig({
+    plugins: [shadersPlugin()],
     test: {
         globals: true,
         name: 'integration',

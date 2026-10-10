@@ -58,8 +58,8 @@ its 19.5 (§4.1).
 - Heights are true, not exaggerated: at the default 3× terrain a house looks low beside the hills,
   as in Google Earth. A setting scales them (1–3×) or makes them follow the terrain's exaggeration.
 - The hill-shading, slope tint, tree cover and contours lie on the ground under the buildings.
-- Fog: the extrusions take the terrain's fog (B3: `vite.config.ts` patches MapLibre's fill-extrusion
-  shaders, which drew the colour alone), so the far skyline fades with the ground behind it. MapLibre
+- Fog: the extrusions take the terrain's fog (B3: our MapLibre's fill-extrusion shaders, `web/maplibre/`;
+  upstream's drew the colour alone), so the far skyline fades with the ground behind it. MapLibre
   fogs only the flat map (from zoom 16.5 here) from 60° of pitch: on the globe neither is fogged.
 
 **Beside the roads and rail.** Buildings are drawn after the road and rail layers (§4.2):
@@ -674,8 +674,7 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   and caches each copy: zooming from 16 to 19 at Kyoto, the buildings' tiles grew from 84 to
   147 MB and the other sources' from 23 to 77 MB. For the buildings alone, with one z14 tile for
   every zoom above (`reparseOverscaled` off: an extrusion doesn't change with the zoom), it costs
-  about what slicing did (§4.6). It reaches into MapLibre's tile manager, so `package.json` pins
-  MapLibre at 6.11.2 exactly (as `vite.config.ts`'s shader patches need), and it warns in the
+  about what slicing did (§4.6). It reaches into MapLibre's tile manager (our own, `web/maplibre/`, task #153), and it warns in the
   console when what it hooks is missing, or when a tile deeper than z14 is in view once the map is
   above z15 (sliced again: the hook no longer takes);
 - not picking: its `queryRenderedFeatures` projects extrusions from sea level with the flat map's
@@ -726,8 +725,8 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
 ### 4.3 On the terrain and the globe
 
 - The 3D terrain is the z12 repaired Terrarium, 20–38 m pixels; MapLibre samples it at the
-  centroid. **Walls on the terrain under each corner** (B3, `vite.config.ts`'s building-feet
-  patch): a base of 0 is the ground under each corner (`get_elevation(a_pos)`, the DEM sampling the
+  centroid. **Walls on the terrain under each corner** (B3, our MapLibre's
+  `fill_extrusion.vertex.glsl`): a base of 0 is the ground under each corner (`get_elevation(a_pos)`, the DEM sampling the
   terrain's mesh takes) less 2 m, never above the roof, where MapLibre sank every foot 10 m below
   the centroid's ground (on a slope the uphill walls buried, the downhill ones floating once the
   10 m ran out). The roof stays level at the centroid's ground plus the height, as a building on a
@@ -735,7 +734,7 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   ground, no foot floats and no roof shears. A part with a base of its own (a setback) keeps it
   above its centroid's ground. The hover tests a building's walls down to the lowest foot of its
   outline (sampled at 16 corners at most).
-- **No saw at the feet on the globe** (B3, task #115, `vite.config.ts`'s globe-precision patch).
+- **No saw at the feet on the globe** (B3, task #115, our MapLibre's `_projection_globe.vertex.glsl`).
   The owner's report: where the buildings meet the terrain the edges were "super wobbly", and the
   wobbles changed as the camera moved. Reproduced on Honolulu's St. Louis Heights and Barcelona's El
   Carmel at zoom 15–16.3, tilted 60–70°: the feet a saw of spikes a few pixels across, different in
@@ -975,7 +974,7 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
 - **If over budget**, on touch devices: opacity 1 (one pass, the default there anyway), z14 tiles only
   from zoom 15 (the tall and large only between 13 and 15), a smaller cache still (4 tiles held 41 MB of buffers
   after the Tokyo panning, 8 held 73 MB), and, if it comes to it, the extrusions' centroids freed in the page once
-  uploaded, as MapLibre frees the rest (a patch, as `vite.config.ts` patches its shaders; MapLibre
+  uploaded, as MapLibre frees the rest (a change to our MapLibre, `web/maplibre/`, which
   marks their buffer dynamic, so what updates it to be checked first).
 
 ### 4.7 Later: a layer of our own

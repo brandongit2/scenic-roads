@@ -1,0 +1,13 @@
+/node_modules/
+/dist/
+/coverage/
+/test/integration/render/tests/upstream/
+/test/integration/assets/
+test/integration/**/actual.png
+test/integration/**/diff.png
+test/integration/**/results*.html
+test/integration/**/actual.json
+.eslintcache
+/types/
+/built/*
+!/built/maplibre-gl.css

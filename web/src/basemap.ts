@@ -205,7 +205,7 @@ export const coastInput = () => ({ tiles: basemapTiles(), cov: WATER_TILES ? wat
  * overzooms past it). The tiles are 512 px, a texel a device pixel at 2× when drawn 256 CSS px; told
  * 256/√2, MapLibre (which picks a raster's level as round(zoom + log2(512 / tileSize))) takes the
  * finer level whenever the zoom isn't whole, so a tile is only ever drawn at 0.5–1× its texels
- * (sharp, the mipmaps smoothing it: vite.config.ts maplibreWaterMip), never stretched up to 1.41×
+ * (sharp, the mipmaps smoothing it trilinearly: the layer's `scenic:mipmap`), never stretched up to 1.41×
  * just before each switch (blurrier than 1:1, the owner saw: 8 Oct). About 2.5× the tiles in view. */
 export const WATER_TILE_SIZE = 256 / Math.SQRT2;
 export const WATER_MAXZOOM = 18;
@@ -459,7 +459,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       dem,
       'dem-hs': { ...dem },
       // Terrain slope: four slopes a pixel, the quarters of the ground beneath it (roadcore::slope),
-      // which the colour-relief shader colours and averages (vite.config.ts). The encoding is
+      // which the colour-relief shader colours and averages (web/maplibre's color_relief.fragment.glsl). The encoding is
       // Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as usual, and
       // the shader knows the source by it.
       slope: {
@@ -540,8 +540,11 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       // The water: its exact coverage where the catalog has it (draped and tilted as any raster, its
       // texture mipmapped), else the basemap's polygons.
       waterTiles
-        // (No cross-fade: with 3D terrain a draped texture drawn mid-fade would keep it.)
-        ? ({ id: 'water', type: 'raster', source: 'water', paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 } } as LayerSpecification)
+        // (No cross-fade: with 3D terrain a draped texture drawn mid-fade would keep it. Minified
+        // trilinearly, `scenic:mipmap` (web/maplibre's draw_raster.ts): from the nearer mipmap level
+        // alone, shrunk 1.3× its tiles took their own level and 1.5× the half as fine, so the small
+        // lakes' look jumped at each half zoom, task #123.)
+        ? ({ id: 'water', type: 'raster', source: 'water', metadata: { 'scenic:mipmap': 'linear' }, paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 } } as LayerSpecification)
         : {
           id: 'water',
           type: 'fill',

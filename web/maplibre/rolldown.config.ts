@@ -1,6 +1,7 @@
 import {defineConfig, type RolldownOptions} from 'rolldown';
 import {dts} from 'rolldown-plugin-dts';
 import banner from './build/banner';
+import {shadersPlugin} from './build/shaders_plugin.ts';
 import packageJSON from './package.json' with {type: 'json'};
 
 const production = process.env.BUILD === 'production';
@@ -25,6 +26,7 @@ const config: RolldownOptions[] = defineConfig(typesOnly ? [dtsBundle] : [
         },
         platform: 'browser',
         treeshake: production,
+        plugins: [shadersPlugin()],
         output: {
             dir: 'dist',
             format: 'es',

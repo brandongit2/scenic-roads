@@ -611,7 +611,7 @@ function pointAt(map: MLMap, tr: Tr, px: number, py: number, elev: number): LngL
  * terrain fights itself. While the globe renders, use the flat map's near plane (viewport height
  * ÷ 50), at most half the camera's height above the ground so nothing close is clipped: 28× the
  * precision. (Circles and symbols test themselves against the terrain depth texture with the same
- * perspective depth: see maplibreTerrainVisibility in vite.config.ts.) Call on every camera change;
+ * perspective depth: our MapLibre's circle and symbol vertex shaders.) Call on every camera change;
  * the flat map keeps MapLibre's own planes.
  */
 let depthTuned = false;

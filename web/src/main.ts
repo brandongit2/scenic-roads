@@ -1,8 +1,9 @@
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
-// MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly.
-import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
+import 'maplibre-gl/built/maplibre-gl.css';
+// MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly (its
+// source: our own MapLibre, web/maplibre/, vite.config.ts).
+import mlWorkerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
 import './style.css';
 import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';

@@ -4,8 +4,8 @@
 // with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). A building is whole in
 // its centroid's tile, and the z14 tiles stay whole at every zoom above (keepWhole). Its roof is
 // level, at the terrain under its centroid plus its height (MapLibre's); a base of 0 puts each
-// wall's foot on the terrain under its own corner, 2 m below it (vite.config.ts's building-feet
-// patch, where MapLibre sank every foot 10 m below the centroid's ground).
+// wall's foot on the terrain under its own corner, 2 m below it (our MapLibre's
+// fill_extrusion.vertex.glsl, where upstream sank every foot 10 m below the centroid's ground).
 //
 // A source and three layers: `buildings` (fill-extrusion: the parts, and the buildings without
 // parts), `buildings-flat` (fill, draped: footprints, the flat mode and 2D maps) and
@@ -593,8 +593,8 @@ function groundHit(map: MLMap, p: { x: number; y: number }, ray: Ray): number | 
   return hit ?? ground(0);
 }
 
-/** How far a wall's foot is sunk below the ground under its corner (m): vite.config.ts's
- * building-feet patch. */
+/** How far a wall's foot is sunk below the ground under its corner (m): our MapLibre's
+ * fill_extrusion.vertex.glsl. */
 const FOOT_M = 2;
 
 /** A hit this far (m) below where the ray meets the ground still counts: the terrain's own

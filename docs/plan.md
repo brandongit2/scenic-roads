@@ -1054,9 +1054,9 @@ they treat any raster.
     the finer level whenever the zoom isn't whole and a tile is drawn at 0.5–1× its texels (told
     256, it rounded, and just before each switch stretched the coarser level to 1.41×, softer than
     1:1: the owner saw it, 8 Oct). The coastal shading's tiles take the same levels.
-  - Shrunk, the tiles are sampled between their two nearest mipmap levels (trilinear, a MapLibre
-    patch in `web/vite.config.ts`): from the nearer level alone, the small lakes' look jumped at
-    each half zoom.
+  - Shrunk, the tiles are sampled between their two nearest mipmap levels (trilinear: the layer's
+    `scenic:mipmap` metadata, read by our MapLibre's `draw_raster.ts`): from the nearer level
+    alone, the small lakes' look jumped at each half zoom.
   - The colours are in the tiles' URL (Settings → Map → Water, lakes a shade lighter), with the
     land's (the map's background, which no setting changes): a new colour asks for the tiles
     again, with no rebuild. The water and the land mix as light mixes over the background; over
@@ -1495,6 +1495,8 @@ An output identical to before keeps its content name, so jobs keyed on it stop t
 A layer's zoom range comes from its definition (terrain z0–12, slope z0–11, …).
 
 **Browser:**
+- the map is drawn by our own MapLibre, `web/maplibre/` (MapLibre GL JS 6.11.2's source, changed
+  where it held the map back: `web/maplibre/FORK.md` lists each change), compiled with the app;
 - our layers' tile URLs are as before;
 - the basemap and labels come as tile URLs, the coast worker included;
 - landmarks, stations and overlays come by view;
@@ -2532,9 +2534,10 @@ everything is rebuilt.
 
 **App publishing:** `tools/app/publish.sh`, run by hand on this Mac with the NAS mounted. It:
 1. builds the server and pipeline;
-2. runs the crates' tests, the type check and the web build, and checks every Python step the agent
-   runs loads from a copy of the app's `dem/` (in an environment made from its lock file for the
-   check, then thrown away) and passes pyflakes;
+2. runs the crates' tests, the type check (our MapLibre's declarations written and checked first)
+   and the web build (which compiles our MapLibre's source with the app), and checks every Python
+   step the agent runs loads from a copy of the app's `dem/` (in an environment made from its lock
+   file for the check, then thrown away) and passes pyflakes;
 3. smoke-tests a server on a spare port against the NAS's catalog;
 4. writes `app/<version>/` and `app/current.json` with every file's SHA-256;
 5. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
