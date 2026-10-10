@@ -702,10 +702,12 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Takes it off the NAS (the agent stopping), when it's this one's.
+    /// Takes it off the NAS (the agent stopping, or its Mac no longer leading), when it's this
+    /// one's: its addresses, not only its token (the pool's, the same on every lead: a lead that
+    /// lost its term while frozen would take the new lead's contact off).
     pub fn unpublish(&self, root: &Path) {
         let there = std::fs::read(contact_path(root)).ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
-        if there.is_some_and(|c| c.token == self.contact.token) {
+        if there.is_some_and(|c| c.token == self.contact.token && c.urls == self.contact.urls) {
             std::fs::remove_file(contact_path(root)).ok();
         }
     }
@@ -2272,6 +2274,23 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
 #[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpublish_leaves_another_leads_contact_of_the_same_token() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
+        c.publish(&root).unwrap();
+        // The next lead's contact, the pool's token the same, its addresses its own.
+        let next = Contact { urls: vec!["http://MacBook-Pro-de-Brandon.local:18091".into()], token: c.contact.token.clone(), page: None };
+        std::fs::write(contact_path(&root), serde_json::to_vec(&next).unwrap()).unwrap();
+        c.unpublish(&root);
+        assert!(contact_path(&root).exists(), "the next lead's contact stays");
+        c.publish(&root).unwrap();
+        c.unpublish(&root);
+        assert!(!contact_path(&root).exists(), "its own goes");
+    }
 
     fn start() -> (tempfile::TempDir, Coordinator, client::Client) {
         let d = tempfile::tempdir().unwrap();
