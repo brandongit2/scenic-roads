@@ -882,6 +882,11 @@ struct Gate {
     /// The descriptions' credits' digest as last read (None inside: there are none), for the
     /// catalog's key while they can't be read.
     credits: std::cell::RefCell<Option<Option<String>>>,
+    /// Each unit's last full check's time, by its check's state's content name (crate::inputs::
+    /// Listed: content-named, so read once).
+    full_at: std::cell::RefCell<std::collections::HashMap<String, Option<u64>>>,
+    /// Units off the gate whose records were asked to be forgotten.
+    forget: std::cell::RefCell<BTreeSet<String>>,
 }
 
 /// The caches' sizes as last counted (room::sizes: what room-making can free, what a clear would),
@@ -1548,6 +1553,18 @@ impl Agent {
     }
 
     /// Where slot `k`'s job leaves its timings' record (`SCENIC_TIMINGS`).
+    /// Slot `k`'s running job's own time, from the timings it leaves as it ends (crate::timings:
+    /// its id's), when it has left them.
+    fn run_time(&self, k: usize) -> Option<f64> {
+        let id = &self.slots[k].running.as_ref()?.spec.id;
+        let p = match &self.slots[k].lease {
+            Some(Held::Leased { dir, .. } | Held::Pooled { dir, own: false, .. }) => dir.join(TIMINGS_FILE),
+            _ => self.timings_path(k),
+        };
+        let rec: crate::timings::RunRec = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+        (rec.id == *id || rec.id.is_empty()).then_some(rec.wall_s)
+    }
+
     fn timings_path(&self, k: usize) -> PathBuf {
         self.o.home.join(if k == 0 { "timings-run.json" } else { "timings-run-2.json" })
     }
@@ -2161,9 +2178,13 @@ impl Agent {
     /// lapsed or another Mac took its claims, paused or resumed as its conditions and the build's
     /// pause say. True when it ended.
     fn tend(&mut self, k: usize, c: &Conditions, root: Option<&Path>, slept: u64) -> Result<bool> {
+        let run_time = self.run_time(k);
         let Some(r) = self.slots[k].running.as_mut() else { return Ok(false) };
         if let Some(st) = r.poll()? {
-            let secs = r.elapsed().as_secs();
+            // (Its own run's time as it says, else as seen here: an ended job is seen at the next
+            // loop, up to 20 s later.)
+            let wall = run_time.filter(|w| *w <= r.elapsed().as_secs_f64() + 1.0).unwrap_or_else(|| r.elapsed().as_secs_f64());
+            let secs = wall.round() as u64;
             let ok = st.success();
             // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
             // when it was asked to: a job's own exit 75 for anything else is a failure.)
@@ -2184,7 +2205,7 @@ impl Agent {
                 format!("{st}{}\n{}", if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) }, jobs::tail(&r.log, 20))
             };
             let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
-            eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" });
+            eprintln!("agent: {id} {} after {} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" }, if wall < 10.0 { format!("{wall:.1}") } else { secs.to_string() });
             let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
             self.note_end(k, &step, &done, secs, ok, &how);
             // (What a target of its step takes here, for the forecast: the first job's, and the
@@ -3473,6 +3494,9 @@ impl Agent {
             // (A full check asked for, done.)
             if let Some(unit) = id.strip_prefix("inputs ").and_then(|r| r.strip_suffix(" full")) {
                 self.inputs.full.borrow_mut().remove(unit);
+            }
+            if let Some(unit) = id.strip_prefix("inputs ").and_then(|r| r.strip_suffix(" forget")) {
+                self.inputs.forget.borrow_mut().remove(unit);
             }
         } else {
             let n = self.mem.retry.get(id).map(|r| r.0).unwrap_or(0) + 1;
@@ -4865,7 +4889,22 @@ impl Agent {
             return;
         }
         let member = crate::inputs::member_of(&self.o.home);
+        // (A member's: what changed the lead's check's key, told to the lead's coordinator, so it
+        // lists the drop boxes and the acceptances now rather than at its next listing.)
+        let mut tell: Vec<serde_json::Value> = Vec::new();
         for a in asks {
+            if a.forget {
+                if self.o.helper {
+                    tell.push(serde_json::json!({ "unit": a.unit, "forget": true }));
+                } else {
+                    self.inputs.forget.borrow_mut().insert(a.unit.clone());
+                    eprintln!("agent: {} asked to forget {}'s records", if a.by.is_empty() { "someone" } else { &a.by }, a.unit);
+                }
+                continue;
+            }
+            if self.o.helper {
+                tell.push(serde_json::json!({ "unit": a.unit, "check": true, "full": a.full }));
+            }
             if a.check || a.full {
                 if a.full {
                     self.inputs.full.borrow_mut().insert(a.unit.clone());
@@ -4892,6 +4931,19 @@ impl Agent {
         if let Some((_, w)) = &self.inputs.watch {
             w.ask();
         }
+        if !tell.is_empty() {
+            let mut waiting = Vec::new();
+            match self.client(root, &mut waiting) {
+                Some(c) => {
+                    for t in tell {
+                        if let Err(e) = c.post_json("/work/inputs", &t) {
+                            eprintln!("agent: telling the lead of {t}: {e:#} (it lists the drop boxes within two minutes all the same)");
+                        }
+                    }
+                }
+                None => eprintln!("agent: the lead's coordinator can't be reached ({}); it lists the drop boxes within two minutes all the same", waiting.first().map(|w| w.why.clone()).unwrap_or_default()),
+            }
+        }
     }
 
     /// The gate's checks to run (docs/inputs.md §4.3): each unit on the gate whose check's key
@@ -4915,7 +4967,13 @@ impl Agent {
                     waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its drop box can't be listed now: {why}") });
                 }
                 let Some(l) = watch.get(unit) else { continue };
-                let full = self.inputs.full.borrow().contains(*unit) || self.due(&format!("inputs {unit} full"), Duration::from_secs(86400));
+                // (Daily by the records' last full check, whichever Mac made it: a new lead doesn't
+                // repeat one made less than a day ago.)
+                let full_at = manifest.get(&crate::inputs::listed_logical(unit)).and_then(|n| {
+                    let mut seen = self.inputs.full_at.borrow_mut();
+                    *seen.entry(n.clone()).or_insert_with(|| crate::inputs::read_listed_file(root, n).ok().and_then(|l| l.full_at))
+                });
+                let full = self.inputs.full.borrow().contains(*unit) || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
                 let mut key = crate::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
                 if full {
                     key = build::h(&[&key, "full"]);
@@ -4948,6 +5006,19 @@ impl Agent {
                 }
                 let id = if full { format!("inputs {unit} full") } else { format!("inputs {unit}") };
                 jobs.push(JobSpec { id, what: format!("Checking the inputs dropped in {unit}{}", if full { ", every file" } else { "" }), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "inputs".into(), targets: vec![(target, key)] }) });
+            }
+        }
+        // A unit off the gate whose records were asked to be forgotten (`scenic inputs test off
+        // --forget`): a job that removes them from the records.
+        if !self.o.helper {
+            let s = |p: &Path| p.to_string_lossy().into_owned();
+            for unit in self.inputs.forget.borrow().iter() {
+                let named = [crate::inputs::logical(unit), crate::inputs::held_logical(unit), crate::inputs::listed_logical(unit)].iter().any(|l| manifest.contains_key(l));
+                if units.contains(&unit.as_str()) || !named || !crate::inputs::valid_unit(unit) {
+                    continue;
+                }
+                let cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.clone(), "--forget".into()];
+                jobs.push(JobSpec { id: format!("inputs {unit} forget"), what: format!("Forgetting {unit}'s records"), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "inputs".into(), targets: vec![(format!("inputs/{unit}"), "forget".into())] }) });
             }
         }
         let accepted = self.inputs.watch.as_ref().map(|(_, w)| w.accepted()).unwrap_or_default();
@@ -6441,7 +6512,8 @@ mod tests {
         let mut keys = build::Keys::load_strict(&root).unwrap();
         keys.record("inputs", &work.targets);
         keys.save(&root).unwrap();
-        a.mem.last_ok.insert(format!("inputs {unit} full"), now_s());
+        // (The full check's time is the records', not this agent's: no daily full check due now,
+        // for this agent or a new lead's, `b`.)
         let plan = a.plan(&root, &c, &mut w);
         assert_eq!(plan[0].id, format!("inputs {unit}"));
         let work = plan[0].record.clone().unwrap();
@@ -6468,6 +6540,32 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(a.plan(&root, &c, &mut w)[0].id, format!("inputs {unit}"));
+        drop(a);
+        let mut b = agent(&root, &d.path().join("home-b"));
+        b.step().unwrap();
+        let t = Instant::now();
+        while watch(&b).is_none() {
+            assert!(t.elapsed() < Duration::from_secs(30), "listed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(b.plan(&root, &c, &mut w).iter().filter(|j| j.id.starts_with("inputs ")).all(|j| !j.id.ends_with(" full")), "a new lead doesn't repeat a full check less than a day old");
+        // Off the gate: no longer shown, nor checked; its records forgotten when asked, by a job of
+        // the lead's.
+        std::fs::remove_file(root.join(crate::inputs::TEST_FLAG)).unwrap();
+        b.step().unwrap();
+        assert!(read_status(Some(&root), &d.path().join("home-b")).unwrap().inputs.is_empty());
+        b.o.dry_run = false;
+        crate::inputs::ask(&d.path().join("home-b"), &crate::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() }).unwrap();
+        b.tend_gate(&root);
+        b.o.dry_run = true;
+        let plan = b.plan(&root, &c, &mut w);
+        let f = plan.iter().find(|j| j.id == format!("inputs {unit} forget")).expect("a job forgetting its records");
+        assert!(f.cmd.ends_with(&["--forget".to_string()]));
+        let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+        crate::inputs::gate::forget(&mut out, unit).unwrap();
+        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+        assert!(!m.keys().any(|l| crate::inputs::unit_of(l) == Some(unit)));
+        assert!(!b.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")), "nothing left to forget");
     }
 
     #[test]

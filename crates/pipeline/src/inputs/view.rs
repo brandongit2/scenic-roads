@@ -138,7 +138,9 @@ impl Cache {
 /// acceptances (listed here for one missing).
 pub fn of(root: &Path, manifest: &BTreeMap<String, String>, units: &[&str], checking: &BTreeSet<String>, accepted: &BTreeMap<String, BTreeSet<String>>, cache: &mut Cache) -> Vec<InputView> {
     let mut all: BTreeSet<String> = units.iter().map(|u| u.to_string()).collect();
-    all.extend(manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/")).filter_map(|(l, _)| super::unit_of(l).map(str::to_string)));
+    // (The records' other units too, an older app's say; but a test unit only while it's on the
+    // gate.)
+    all.extend(manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/")).filter_map(|(l, _)| super::unit_of(l)).filter(|u| !super::is_test(u)).map(str::to_string));
     let mut out = Vec::new();
     for unit in all {
         let mut v = InputView { unit: unit.clone(), version: manifest.get(&super::logical(&unit)).cloned(), ..Default::default() };

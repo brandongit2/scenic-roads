@@ -147,7 +147,12 @@ fn a_warning_holds_until_accepted_and_a_removal_too() {
     let r2 = check(GT, &b, Some(&v2.index), &[&rid], &store, false);
     assert!(r2.changed && r2.index.files.is_empty() && r2.report.is_none());
     // The removed file's warnings no longer count: their acceptances are stale.
-    assert!(r2.index.accepted.is_empty());
+    // (The removal's acceptance counts while the version it was taken with is current: not
+    // stale; the next change of version drops it.)
+    assert_eq!(r2.index.accepted.keys().cloned().collect::<Vec<_>>(), [rid.clone()]);
+    b.put("c.jsonl", "{\"k\": \"z\", \"v\": 1}\n", 300);
+    let r3 = check(GT, &b, Some(&r2.index), &[&rid], &store, false);
+    assert!(r3.changed && r3.index.accepted.is_empty());
 }
 
 #[test]

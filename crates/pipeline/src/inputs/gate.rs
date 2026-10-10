@@ -207,7 +207,9 @@ pub fn decide(g: &Given) -> Result<Decision> {
     if files != prev.files {
         for f in findings.iter().chain(&whole_found) {
             let lets_in = f.files.iter().any(|p| lets.contains(p)) || whole_found.iter().any(|w| w.id == f.id);
-            if f.level == Level::Warning && g.accepted.contains(&f.id) && lets_in && f.files.iter().any(|p| files.contains_key(p)) {
+            // (One about files gone with the change, a removal's, counts while this version does;
+            // the next change of version drops it, its files being in it no more.)
+            if f.level == Level::Warning && g.accepted.contains(&f.id) && lets_in {
                 accepted.insert(f.id.clone(), f.files.clone());
             }
         }
@@ -275,6 +277,21 @@ pub fn candidate(root: &std::path::Path, unit: &str, recursive: bool, planned: O
 
 /// The job: unit `unit` checked (`full`: every file read; `planned`: the listing and acceptances
 /// the lead's key was made from), its outcome handed off with `out`.
+/// The records of unit `unit`, off the gate, removed (`scenic inputs test off --forget`); GC sweeps
+/// their files once they're old.
+pub fn forget(out: &mut crate::out::Out, unit: &str) -> Result<String> {
+    anyhow::ensure!(!super::units(out.root()).contains(&unit), "{unit} is on the gate: take it off first");
+    let mut gone = Vec::new();
+    for l in [super::logical(unit), super::held_logical(unit), super::listed_logical(unit)] {
+        if out.get(&l).is_some() {
+            out.set(&l, None);
+            gone.push(l);
+        }
+    }
+    out.save()?;
+    Ok(format!("{unit}: {} record{} forgotten", gone.len(), if gone.len() == 1 { "" } else { "s" }))
+}
+
 pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
     use crate::timings::{phase, Class};
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
@@ -314,8 +331,10 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         out.set(&super::logical(unit), Some(name.clone()));
         said += &format!("; taken in: {name}");
     }
-    if d.listed_changed || replaced != state.replaced {
-        let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone(), replaced };
+    // (A full check's time kept with it: the lead's next is a day after, whichever Mac leads.)
+    let full_at = if full { Some(crate::agent::jobs::now_s()) } else { state.full_at };
+    if d.listed_changed || replaced != state.replaced || full_at != state.full_at {
+        let l = super::Listed { fmt: 1, unit: unit.into(), listed: d.listed.clone(), replaced, full_at };
         let name = out.store_bytes(&super::listed_logical(unit), "json", &serde_json::to_vec_pretty(&l)?)?;
         out.set(&super::listed_logical(unit), Some(name));
     }

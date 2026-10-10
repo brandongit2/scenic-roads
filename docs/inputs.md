@@ -202,7 +202,9 @@ test unit `_gate-test` the only unit on it (§4.10): no real input is on the gat
   file rewritten in place with the same size and time is the one case this misses; `scenic inputs
   check --full <unit>` hashes every file, and the lead runs a unit's check in full once a day as a
   backstop (a job `inputs <unit> full`, its key the normal one's with "full": the normal check runs
-  once after it, reading only what changed).
+  once after it, reading only what changed). The day counts from the last full check's time in the
+  records (the check's state, `full_at`), whichever Mac led then, so a new lead doesn't repeat one
+  less than a day old.
 
 ### 4.3 Checking: a job like any other
 
@@ -303,8 +305,11 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   §2, principle 3: written once, never changed), holding who accepted it (member id, host label),
   when, how it was asked, and the finding's message as it was. The asking member writes it itself
   (`scenic inputs` directly; the menu bar and the map through an ask to their Mac's agent, the
-  build page through the lead's coordinator to the lead's agent); no round trip to the lead. The
-  next listing changes the check's key, the check runs again, and the file is no longer held.
+  build page through the lead's coordinator to the lead's agent); no round trip to the lead before
+  it's written. A member's agent then tells the lead's coordinator (`/work/inputs {unit, check}`),
+  so the lead lists the drop boxes and acceptances at once rather than at its next listing (if it
+  can't be reached, within two minutes all the same); the listing changes the check's key, the
+  check runs again, and the file is no longer held.
 - **Undoing:** `scenic inputs unaccept <unit> <finding id>` removes the file; the finding holds its
   file again from the next check (if the file has moved on since, it holds the new change, never
   the version already in).
@@ -332,7 +337,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   don't, so editing a credit reruns no build step; it reaches the catalog through the credits'
   digest, §4.8); `accepted` maps the warnings the version was taken with to the files they're about,
   each kept while those files are in the version unchanged (a file edited or removed drops its
-  warnings: their acceptances are then stale, §4.5). No file time is in it (§4.2: `listed`), so the
+  warnings: their acceptances are then stale, §4.5); a warning that let a change in counts while
+  the version it was taken with is current, a removal's too, its file gone with it. No file time is in it (§4.2: `listed`), so the
   same contents always have the same version.
 - **The records:** the manifest's `sources/inputs/<unit>/@index` names the index, whose file
   entries root the files for GC (§4.9). It changes only by a check job's hand-off, merged by the
@@ -476,7 +482,9 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   All built.
 - **A test input first:** `inputs/_gate-test/` isn't real data (a name starting with `_` is
   ignored everywhere else; the gate is told of it by a flag, `state/inputs/gate-test`: `scenic
-  inputs test on|off`). Its shape: JSON lines `{"k": "<string>", "v": <number>}` in `.jsonl`
+  inputs test on|off`; off, it's no longer shown, and `test off --forget` removes its acceptances
+  and asks the lead to remove its records, a job of the lead's, `inputs _gate-test forget`, its
+  copies going with GC). Its shape: JSON lines `{"k": "<string>", "v": <number>}` in `.jsonl`
   files; its checks (crate::inputs::gatetest): an error for a line that doesn't parse or isn't
   that shape, a warning for a negative `v`, and a warning for a file removed (naming the version
   removed), so a removal can be held and accepted. No build step reads it; its accepted version

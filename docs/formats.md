@@ -840,11 +840,14 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/build/pause.json` on the NAS mirrors the build Mac's.
   - **The gate's asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5), in each Mac's agent's folder:
     `inputs-asks/<at, 20 digits>-<pid or "menu">-….json`, a file each, `{unit, accept: [finding
-    id], all, unaccept: [finding id], check, full, by, at}`, from its menu bar (Accept), the map's
-    `POST /api/build/inputs {unit, accept} | {unit, all: true}` and `scenic inputs check`; taken up
-    and removed by its agent at its next loop, which writes the acceptances (or lists the drop boxes
-    now). The build page's go to the lead's coordinator, `POST /work/inputs {unit, accept} | {unit,
-    all: true}` (a page's, with no key), which its agent takes up the same way.
+    id], all, unaccept: [finding id], check, full, forget, by, at}`, from its menu bar (Accept), the
+    map's `POST /api/build/inputs {unit, accept} | {unit, all: true}` and `scenic inputs check` and
+    `test off --forget`; taken up and removed by its agent at its next loop, which writes the
+    acceptances (or lists the drop boxes now; or, leading, forgets the unit's records); a member's
+    agent then tells the lead's coordinator, `POST /work/inputs {unit, check, full}` or `{unit,
+    forget}` (with the build's key). The build page's go to the lead's coordinator, `POST
+    /work/inputs {unit, accept} | {unit, all: true}` (a page's, with no key; never `forget`), which
+    its agent takes up the same way.
   - **The pool's lead asks** (`pipeline::control::LeadRequest`, docs/pool.md §6.3), in each Mac's
     agent's folder: `lead-request.json`, `{ask: {kind: "give", to: member id or host name} or
     {kind: "take", force, downgrade}, by, at}`, from its menu, `scenic lead` or the map's `POST
@@ -950,7 +953,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   it: the same contents, the same name); its last check's sizes and times,
   `sources/inputs/<unit>/@listed.<hash16>.json`, named as `sources/inputs/<unit>/@listed`: `{fmt: 1,
   unit, listed: {<path>: [size, mtime]}, replaced (the index the last change of version replaced,
-  kept by GC while this is recent)}`; its report
+  kept by GC while this is recent), full_at (when the last full check ran, unix seconds: the lead's
+  next is a day after)}`; its report
   while a change is held, `sources/inputs/<unit>/@held.<hash16>.json`, named as
   `sources/inputs/<unit>/@held`: `{fmt: 1, unit, checks, held: [paths], findings: [{id
   ("<check>.<hash16>"), level, files, message, at, lines}], together, raised: [every id the check

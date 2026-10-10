@@ -186,9 +186,13 @@ fn main() -> Result<()> {
 /// (pipeline::inputs::gate; docs/inputs.md §4.3): the clean changes taken in, the held ones
 /// reported, both handed off as records changes. `--listing <file>`: the listing and acceptances
 /// the agent's key was made from, so the key recorded is the one of what was checked; by hand, the
-/// drop box listed now.
+/// drop box listed now. `--forget`: a unit off the gate, its records removed.
 fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
     let unit = positional(args).first().map(|u| u.trim_start_matches("inputs/").to_string()).context("inputs <unit>")?;
+    if args.iter().any(|a| a == "--forget") {
+        eprintln!("inputs: {}", pipeline::inputs::gate::forget(out, &unit)?);
+        return Ok(());
+    }
     let planned = opt(args, "--listing").map(|f| -> Result<pipeline::inputs::Planned> { Ok(serde_json::from_slice(&std::fs::read(&f).with_context(|| format!("read {f}"))?)?) }).transpose()?;
     let said = pipeline::inputs::gate::run(out, &unit, args.iter().any(|a| a == "--full"), planned)?;
     eprintln!("inputs: {said}");

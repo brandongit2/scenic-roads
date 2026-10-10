@@ -1389,9 +1389,15 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let unit = b["unit"].as_str().filter(|u| u.len() <= 64 && crate::inputs::valid_unit(u)).ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
             let accept: Vec<String> = b["accept"].as_array().map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| crate::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
             let all = b["all"].as_bool() == Some(true);
-            anyhow::ensure!(all || !accept.is_empty(), "nothing to accept");
-            let by = format!("the build page ({})", caller.from);
-            shared.lock().unwrap().inputs_asks.push(crate::inputs::Ask { unit: unit.to_string(), accept, all, by, at: unix_now(), ..Default::default() });
+            // (And a member's agent's word that the drop boxes or acceptances changed, `check`, so
+            // they're listed now; or its owner's ask to forget a unit's records, `forget`: not a
+            // page's.)
+            let check = b["check"].as_bool() == Some(true);
+            let full = check && b["full"].as_bool() == Some(true);
+            let forget = b["forget"].as_bool() == Some(true) && !caller.page;
+            anyhow::ensure!(all || !accept.is_empty() || check || forget, "nothing to accept");
+            let by = if caller.page { format!("the build page ({})", caller.from) } else { format!("a member ({})", caller.from) };
+            shared.lock().unwrap().inputs_asks.push(crate::inputs::Ask { unit: unit.to_string(), accept, all, check, full, forget, by, at: unix_now(), ..Default::default() });
             Ok((200, ok))
         }
         "/work/done" => {
@@ -2971,6 +2977,13 @@ mod tests {
         let asks = c.take_inputs_asks();
         assert_eq!(asks.iter().map(|a| (a.accept.clone(), a.all)).collect::<Vec<_>>(), [(vec!["gt-neg.0123456789abcdef".to_string()], false), (vec![], true)]);
         assert!(asks.iter().all(|a| a.unit == "some-unit" && a.by.starts_with("the build page")));
+        // A member's agent's word to list now (with the build's key), and its owner's ask to forget
+        // a unit's records: never a page's forget.
+        assert_eq!(send(&addr, "POST", "/work/inputs", Some(&c.contact.token), &[], &serde_json::json!({ "unit": "a/b", "check": true, "full": true })).0, 200);
+        assert_eq!(send(&addr, "POST", "/work/inputs", Some(&c.contact.token), &[], &serde_json::json!({ "unit": "a/b", "forget": true })).0, 200);
+        assert_eq!(page(serde_json::json!({ "unit": "some-unit", "forget": true })) / 100, 4);
+        let asks = c.take_inputs_asks();
+        assert!(asks[0].check && asks[0].full && asks[1].forget && asks.len() == 2);
         assert!(c.take_inputs_asks().is_empty());
     }
 

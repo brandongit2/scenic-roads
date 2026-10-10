@@ -55,6 +55,11 @@ pub const DROP_ROOTS: [&str; 3] = ["inputs", "translations", "descriptions"];
 /// isn't checked half-written.
 pub const QUIET_S: u64 = 10;
 
+/// Whether `unit` is a test unit (shown only while it's on the gate).
+pub fn is_test(unit: &str) -> bool {
+    unit == TEST_UNIT || unit == TEST_NESTED
+}
+
 /// The units on the gate now: `UNITS`, and the test unit while its flag is there.
 pub fn units(root: &Path) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = UNITS.to_vec();
@@ -287,6 +292,10 @@ pub struct Listed {
     pub listed: BTreeMap<String, (u64, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaced: Option<String>,
+    /// When the last full check (every file hashed) ran (seconds since the epoch): the lead runs
+    /// one daily from it, whichever Mac led then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_at: Option<u64>,
 }
 
 /// A unit's check's state, as the records name it (empty before its first check).
@@ -584,6 +593,9 @@ pub struct Ask {
     pub check: bool,
     #[serde(default)]
     pub full: bool,
+    /// Remove the unit's records (a unit off the gate: `scenic inputs test off --forget`).
+    #[serde(default)]
+    pub forget: bool,
     #[serde(default)]
     pub by: String,
     #[serde(default)]

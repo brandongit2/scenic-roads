@@ -46,7 +46,8 @@
 //!   scenic inputs accept <unit> <finding id>|--all  a held warning accepted (or all the unit's),
 //!                                       written from this Mac; errors can't be
 //!   scenic inputs unaccept <unit> <finding id>|--stale  an acceptance undone (or every stale one)
-//!   scenic inputs test on|off           the test unit `_gate-test` on the gate, or off it
+//!   scenic inputs test on|off [--forget]  the test unit `_gate-test` on the gate, or off it
+//!                                       (--forget: its acceptances and records removed)
 //!   scenic timings [<kind>] [--last N] [--host <mac>] [--here | --file <f>] [--json]  the jobs'
 //!                                       timings (pipeline::timings): each kind's phases over its
 //!                                       last N runs (20), with their totals and shares; the
@@ -352,19 +353,34 @@ fn inputs(args: &[String]) -> Result<()> {
                     if let Err(e) = std::fs::remove_file(&p) {
                         anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "{e}");
                     }
-                    println!("off: {} is off the gate (its records and copies stay until removed)", gi::TEST_UNIT);
+                    if flag(args, "--forget") {
+                        // Its acceptances removed here; its records by the lead (a job of the
+                        // lead's: the records are its to write), asked through this Mac's agent.
+                        let acc = r.join(gi::ACCEPTED).join(gi::TEST_UNIT);
+                        if let Err(e) = std::fs::remove_dir_all(&acc) {
+                            anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "remove {}: {e}", acc.display());
+                        }
+                        gi::ask(&home, &gi::Ask { unit: gi::TEST_UNIT.into(), forget: true, by: by.clone(), at: now_s(), ..Default::default() })?;
+                        println!("off: {} is off the gate, its acceptances removed; the lead removes its records from the build's (its copies go with GC's 14 days; its drop box is yours)", gi::TEST_UNIT);
+                    } else {
+                        println!("off: {} is off the gate and no longer shown (its records stay: `scenic inputs test off --forget` removes them)", gi::TEST_UNIT);
+                    }
                 }
                 _ => println!("{}", if p.exists() { "on" } else { "off" }),
             }
             Ok(())
         }
-        Some(x) => bail!("scenic inputs [check [<unit>] [--full] | accept <unit> <id>|--all | unaccept <unit> <id>|--stale | test on|off], not {x}"),
+        Some(x) => bail!("scenic inputs [check [<unit>] [--full] | accept <unit> <id>|--all | unaccept <unit> <id>|--stale | test on|off [--forget]], not {x}"),
     }
 }
 
 fn status(args: &[String]) -> Result<()> {
     let root = root(args, false).ok();
-    let Some(st) = agent::read_status(root.as_deref(), &app_home().join("agent")) else {
+    // (This Mac's own agent's folder, for what its own status adds (its memory, its view of the
+    // pool): `--home`'s; with a `--root` of another build (a scratch one) and no `--home`, none:
+    // that build's status alone, never this Mac's real agent's.)
+    let own_home = opt(args, "--home").map(PathBuf::from).or_else(|| opt(args, "--root").is_none().then(|| app_home().join("agent")));
+    let Some(st) = agent::read_status(root.as_deref(), own_home.as_deref().unwrap_or(Path::new("/nonexistent"))) else {
         bail!("no status yet: the build agent hasn't run (or the NAS isn't mounted)");
     };
     let c = &st.conditions;
@@ -379,7 +395,7 @@ fn status(args: &[String]) -> Result<()> {
         println!("  (not seen for a while: asleep, away or off; work waits for it)");
     }
     // The memory guard as its thread last sampled (every 5 s, whatever the agent's loop waits on).
-    if let Some(m) = agent::memguard::live(&app_home().join("agent")).filter(|m| now_s().saturating_sub(m.at) < 60) {
+    if let Some(m) = own_home.as_deref().and_then(agent::memguard::live).filter(|m| now_s().saturating_sub(m.at) < 60) {
         let held: u64 = m.held_mb.iter().flatten().sum();
         let frozen = if m.frozen.iter().any(|f| *f) { ", a job frozen past it" } else { "" };
         println!("  memory: the jobs hold {:.1} GB of this Mac's limit of {:.1} GB ({}{frozen}, {})", held as f64 / 1024.0, m.limit_mb as f64 / 1024.0, if m.on { "guarded" } else { "not guarded" }, ago(m.at));
@@ -426,7 +442,7 @@ fn status(args: &[String]) -> Result<()> {
     }
     // The pool (docs/pool.md §10): who leads, each member, as this Mac's agent sees it (else as the
     // status read says).
-    let own = agent::lead::own_status(&app_home().join("agent")).and_then(|s| s.pool).and_then(|p| p.lead);
+    let own = own_home.as_deref().and_then(agent::lead::own_status).and_then(|s| s.pool).and_then(|p| p.lead);
     if let Some(v) = own.or_else(|| st.pool.as_ref().and_then(|p| p.lead.clone())) {
         println!("The pool:");
         for l in agent::lead::said(&v, now_s()) {
@@ -449,7 +465,7 @@ fn status(args: &[String]) -> Result<()> {
         println!("Worker: {} — {}{}{}", w.label, w.what, if w.done > 0 { format!(", {} done", w.done) } else { String::new() }, if w.bad { ", stopped: a result differed" } else { "" });
     }
     // (The build Mac's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)
-    let page = std::fs::read_to_string(app_home().join("agent/coord/page")).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    let page = own_home.as_ref().and_then(|h| std::fs::read_to_string(h.join("coord/page")).ok()).map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
     let page = match (page, contact) {
         (Some(p), _) => Some(p),
