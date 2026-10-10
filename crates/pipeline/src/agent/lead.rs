@@ -643,7 +643,7 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
         let heard = if m.out_of_touch && m.beat > 0 { format!(", last heard from {}", ago(now, m.beat)) } else { String::new() };
         let can = match (&m.why_not, m.leads) {
             (_, true) => String::new(),
-            (None, _) => format!(" — can lead{}", if m.away { " (away: its duties would run slowly over Tailscale)" } else { "" }),
+            (None, _) => " — can lead".to_string(),
             (Some(w), _) => format!(" — can't lead: {w}"),
         };
         out.push(format!("  {}{tags}: {}{heard}, app {}{can}", m.host, m.state, if m.app.is_empty() { "?" } else { &m.app }));
@@ -927,6 +927,38 @@ mod tests {
             b.go();
             assert!(b.asked().state == State::Refused && b.asked().said.contains("needs the owner's force"), "{:?}", b.asked());
             assert_eq!(b.run.side.driver().leads(), None);
+        }
+
+        /// A member that can't lead now by its heartbeat's conditions (away from home: its driver
+        /// wouldn't answer an offer) is shown so, and an ask to hand it the lead is refused up
+        /// front, saying why, not offered and given up a minute on.
+        #[test]
+        fn a_member_that_cant_lead_now_is_shown_so_and_refused_up_front() {
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = pool(d.path());
+            let ib = b.id();
+            b.conds = Conds { home: false, ac: true, battery: None, able: false };
+            b.go();
+            a.pass(31);
+            a.go();
+            let mb = a.view().members.into_iter().find(|m| m.member == ib).unwrap();
+            assert!(!mb.can_lead && mb.state == "away" && mb.why_not.as_deref().is_some_and(|w| w.contains("away from home")), "{mb:?}");
+            a.ask(LeadAsk::Give { to: ib.clone() });
+            let o = a.go();
+            assert!(a.asked().state == State::Refused && a.asked().said.contains("away from home"), "{:?}", a.asked());
+            assert!(!o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1));
+            // On battery below the least a lead runs on, the same.
+            b.conds = Conds { home: true, ac: false, battery: Some(12), able: false };
+            b.go();
+            a.ask(LeadAsk::Give { to: ib.clone() });
+            a.go();
+            assert!(a.asked().state == State::Refused && a.asked().said.contains("on battery at 12%"), "{:?}", a.asked());
+            // Home on power again: handed over.
+            b.conds = HOME;
+            b.go();
+            a.ask(LeadAsk::Give { to: ib.clone() });
+            a.go();
+            assert_eq!(a.asked().state, State::Going, "{:?}", a.asked());
         }
 
         #[test]

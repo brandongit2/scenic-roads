@@ -197,6 +197,37 @@ enum Outcome {
     Failed,
 }
 
+/// How a pooled job's end is told to a lead over HTTP (`end_lease`): done (its hand-off in the
+/// journal), given back, or failed, with what its targets took at least.
+#[derive(Clone, Debug)]
+enum Tell {
+    Done(Box<crate::coord::Done>),
+    GiveBack { id: u64, why: String, floors: Vec<(String, memguard::Floor)> },
+    Fail { id: u64, why: String, floors: Vec<(String, memguard::Floor)> },
+}
+
+impl Tell {
+    /// Tells lead `c`: true once it answered (taken, or the lease gone); said when it refused it or
+    /// didn't answer.
+    fn to(&self, c: &crate::coord::client::Client) -> bool {
+        let (id, r) = match self {
+            Tell::Done(d) => (d.lease, c.done(d).map(|h| if let crate::coord::client::Handed::Refused(why) = h { eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease) })),
+            Tell::GiveBack { id, why, floors } => (*id, c.give_back_with(*id, why, floors)),
+            Tell::Fail { id, why, floors } => (*id, c.fail_with(*id, why, None, floors)),
+        };
+        match r {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("agent: telling the lead lease {id} ended: {e:#}");
+                false
+            }
+        }
+    }
+}
+
+/// How long an end owed to the lead is tried (s): as long as its lease lasts unrenewed.
+const OWED_S: u64 = crate::coord::TTL.as_secs();
+
 /// The free space a helper's jobs start with (its Mac has less room than the build Mac), but for
 /// the steps that need more (`helper_need`).
 const HELPER_RESERVE: u64 = 15 << 30;
@@ -807,6 +838,11 @@ pub struct Agent {
     published: Option<Instant>,
     /// A helper's way to the build Mac's coordinator (made once its contact is on the NAS).
     client: Option<crate::coord::client::Client>,
+    /// Its own jobs' ends owed to the lead: ended while this process led a term it had lost without
+    /// its step knowing yet (it froze, a later term made meanwhile), told to the lead through its
+    /// client once its part has changed (`end_lease`, `tell_owed`), each until `OWED_S` after it
+    /// ended (its lease has lapsed by then).
+    owed: Vec<(u64, Tell)>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
     /// The last catalog's folder and number, and its regions' outline entries by id (`on_map`).
@@ -989,7 +1025,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1397,8 +1433,11 @@ impl Agent {
                     },
                     _ => None,
                 };
-                // (Through the lead wherever it is now, as `beat` does.)
-                if self.coord.is_some() {
+                // (Through the lead wherever it is now, as `beat` does: this process's coordinator
+                // only while it still holds its term; one that froze and woke to a later term ends
+                // it through that term's lead, once its part has changed: `owed`.)
+                let local = self.coord.is_some() && !self.lost_term();
+                if local {
                     if let Some(c) = &self.coord {
                         c.finish(id, done);
                         if let Some(p) = pid {
@@ -1408,7 +1447,7 @@ impl Agent {
                         c.add_costs_by(&costs, &self.worker_of(k));
                         std::fs::remove_file(self.costs_path(k)).ok();
                     }
-                } else if let Some(c) = &self.client {
+                } else {
                     // (Its lease ended with the lead: its targets kept out of offers until merged.
                     // Best effort: unanswered, the lease lapses, and the merged records say they're
                     // built.)
@@ -1416,13 +1455,21 @@ impl Agent {
                     // Mac for an hour, doubling.)
                     let failed = outcome == Outcome::Failed || guard_stopped;
                     let floors = floors_of(&costs);
-                    let r = match entry.as_ref().filter(|e| e.handoff.done.is_some()) {
-                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings: if own { own_timings } else { read_timings(&dir) }, ..Default::default() }).map(|_| ()),
-                        None if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => c.give_back_with(id, note, &floors),
-                        None => c.fail_with(id, note, None, &floors),
+                    let timings = if own { own_timings } else { read_timings(&dir) };
+                    // (A job with targets is done by its done record; one of no targets of its own,
+                    // a lead's duty as pass-sets', by having ended so, whatever it handed off.)
+                    let no_targets = kept.as_ref().is_some_and(|w| w.targets.is_empty());
+                    let tell = match entry.as_ref() {
+                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings, ..Default::default() })),
+                        e if no_targets && outcome == Outcome::Done && !guard_stopped => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: e.map(|e| e.handoff.clone()), costs, floors, journaled: true, timings, ..Default::default() })),
+                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => Tell::GiveBack { id, why: note.to_string(), floors },
+                        _ => Tell::Fail { id, why: note.to_string(), floors },
                     };
-                    if let Err(e) = r {
-                        eprintln!("agent: telling the lead lease {id} ended: {e:#} (it lapses)");
+                    if self.coord.is_some() {
+                        eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
+                        self.owed.push((now_s(), tell));
+                    } else if let Some(c) = &self.client {
+                        tell.to(c);
                     }
                 }
                 match (entry, self.pool.as_mut()) {
@@ -1457,6 +1504,31 @@ impl Agent {
             }
             None => {}
         }
+    }
+
+    /// Whether this process leads a term a later one has followed, its step not knowing yet (it
+    /// froze, and a takeover made the next meanwhile): a stat of the next term's file, as the
+    /// driver's step makes. False when it leads none, or the NAS can't say now.
+    fn lost_term(&self) -> bool {
+        let Some(run) = self.pool.as_ref() else { return false };
+        let Some(e) = run.side.driver().leads() else { return false };
+        crate::pool::term::next(run.side.nas(), e).unwrap_or(false)
+    }
+
+    /// The ends owed to the lead (`owed`), told once this process works as a member, through the
+    /// lead's client: each kept until the lead answers, or `OWED_S` after it ended.
+    fn tell_owed(&mut self, root: &Path) {
+        if self.owed.is_empty() || self.coord.is_some() {
+            return;
+        }
+        let now = now_s();
+        let owed = std::mem::take(&mut self.owed);
+        let Some(c) = self.client(root, &mut Vec::new()) else {
+            self.owed = owed.into_iter().filter(|(at, _)| now.saturating_sub(*at) < OWED_S).collect();
+            return;
+        };
+        let left: Vec<(u64, Tell)> = owed.into_iter().filter(|(at, t)| !t.to(c) && now.saturating_sub(*at) < OWED_S).collect();
+        self.owed = left;
     }
 
     /// Beats for slot `k`'s job's lease (each minute it isn't paused); false when it's lost: it
@@ -1897,6 +1969,10 @@ impl Agent {
         // The pool's step, once the jobs that ended handed their work over (docs/pool.md §12):
         // what this Mac may do now, as its lead or a member.
         let gates = self.pool_step(root.as_deref(), &c, &mut waiting);
+        // (Ends owed to the lead, once this process works as a member.)
+        if let Some(r) = root.as_deref() {
+            self.tell_owed(r);
+        }
         self.lead_awake();
         // (Leading, nothing new starts while the driver says it may not: settling a handover, its
         // view not fresh. Restarting into a new part, nothing either.)
@@ -7189,6 +7265,119 @@ mod pool_tests {
         both(&mut lead, &mut m, &|l, m| l.slots[0].running.is_none() && m.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/4/4") == Some("kn")));
         assert!(m.coord.as_ref().unwrap().held("pack").is_empty());
         assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        TEST_ABLE.with(|c| c.set(None));
+    }
+
+    /// The lead's own job of no targets of its own (a duty, as pass-sets'), ending after the lead
+    /// was handed over: told to the new lead as done (it has no done record), not failed.
+    #[test]
+    fn a_job_of_no_targets_ending_through_the_new_lead_is_done() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        TEST_ABLE.with(|c| c.set(Some(true)));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, pool::SLOTS);
+        let bin = app(d.path());
+        let gate = d.path().join("gate");
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pass-sets ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        std::fs::write(bin.join("scenic-build"), script).unwrap();
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mem.last_ok.insert("backup".into(), now_s());
+        m.mem.last_ok.insert("gc".into(), now_s());
+        m.step().unwrap();
+        let im = m.pool.as_ref().unwrap().side.member().id.clone();
+        lead.pool.as_mut().unwrap().side.know(&im);
+        m.host = "the-member".into();
+        let job = JobSpec { id: "pass-sets 2026-09-28".into(), what: "the pass's sets".into(), cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pass-sets".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        let both = |lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool| {
+            let end = Instant::now() + WATCHDOG;
+            loop {
+                lead.step().unwrap();
+                m.step().unwrap();
+                if done(lead, m) {
+                    return;
+                }
+                assert!(Instant::now() < end, "not done in {WATCHDOG:?}");
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        };
+        both(&mut lead, &mut m, &|l, m| m.coord.is_some() && l.coord.is_none());
+        assert_eq!(m.coord.as_ref().unwrap().leases_out(), 1, "the new lead holds its lease");
+        std::fs::write(&gate, b"").unwrap();
+        both(&mut lead, &mut m, &|l, _| l.slots[0].running.is_none());
+        let h = m.coord.as_ref().unwrap().history_since(0);
+        assert!(h.iter().any(|e| e.kind == "done" && e.step.as_deref() == Some("pass-sets") && e.ok == Some(true)), "{h:?}");
+        assert!(!h.iter().any(|e| e.kind == "fail" && e.step.as_deref() == Some("pass-sets")), "{h:?}");
+        assert!(m.coord.as_ref().unwrap().leases_out() == 0, "its lease ended at once");
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        TEST_ABLE.with(|c| c.set(None));
+    }
+
+    /// The lead's own job ending as it wakes from a freeze, a takeover made meanwhile, before its
+    /// step has noticed: its end isn't finished in its own coordinator (about to stop), but told to
+    /// the new lead once its part has changed, so the new lead doesn't hold its lease until it
+    /// lapses.
+    #[test]
+    fn an_own_job_ending_as_the_lead_wakes_to_a_lost_term_ends_with_the_new_lead() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_ABLE.with(|c| c.set(Some(true)));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, pool::SLOTS);
+        let bin = app(d.path());
+        let (gate, ended) = (d.path().join("gate"), d.path().join("ended"));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display())).replace("exit 0\n", &format!("[ \"$step\" = pack ] && touch '{}'\nexit 0\n", ended.display()));
+        std::fs::write(bin.join("scenic-build"), script).unwrap();
+        // (Each coordinator on a port of its own: the frozen lead's still holds its own.)
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mem.last_ok.insert("backup".into(), now_s());
+        m.mem.last_ok.insert("gc".into(), now_s());
+        m.step().unwrap();
+        let im = m.pool.as_ref().unwrap().side.member().id.clone();
+        let il = lead.pool.as_ref().unwrap().side.member().id.clone();
+        lead.pool.as_mut().unwrap().side.know(&im);
+        m.pool.as_mut().unwrap().side.know(&il);
+        m.host = "the-member".into();
+        let job = JobSpec { id: "pack 6/4/4".into(), what: "map tiles".into(), cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pack".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }) };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        // (Its coordinator's state, its job's lease with it, saved for the term: the loop after the grant.)
+        lead.step().unwrap();
+        // The lead "frozen" (not stepped): the member takes over, forced, on a port of its own.
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        crate::control::request_lead(&m.o.home, crate::control::LeadAsk::Take { force: true, downgrade: false }, "scenic lead take on m").unwrap();
+        until(&mut m, |m| m.coord.is_some() && m.published.is_some());
+        assert!(m.coord.as_ref().unwrap().held("pack").contains("6/4/4"), "the new lead holds the frozen lead's lease");
+        // The job ends while the lead is frozen; the lead wakes, its next loop ending it.
+        std::fs::write(&gate, b"").unwrap();
+        let end = Instant::now() + WATCHDOG;
+        while !ended.exists() {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        lead.step().unwrap();
+        assert!(lead.slots[0].running.is_none() && lead.coord.is_none(), "its job ended, its coordinator stopped");
+        until(&mut m, |m| !m.coord.as_ref().unwrap().held("pack").contains("6/4/4"));
+        assert!(lead.owed.is_empty());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));

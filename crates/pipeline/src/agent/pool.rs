@@ -10,8 +10,8 @@
 //!   folder) until a saved state holding it is on disk.
 //! - **The listings** the driver asks for, made on a thread of their own one at a time, every one
 //!   handed back once, a failed one made again a minute later; and a listing of the members'
-//!   heartbeats every ten minutes the same way, a lead's every two (the members whose mail it
-//!   reads: nothing lists a folder in the loop).
+//!   heartbeats the same way, every fifth of the time a heartbeat takes to go out of touch (two
+//!   minutes: nothing lists a folder in the loop).
 //! - **The messages** between members, by mailbox on the NAS (`MAIL`: `<to>/<from>.json`, written
 //!   whole by its sender alone, the last `KEPT` it sent there, each numbered; read by member id,
 //!   never by listing): best effort, as the driver's are (a message lost is told again or made up
@@ -72,10 +72,11 @@ pub const MAIL: &str = "state/pool/mail";
 pub const MEMBERS: &str = "state/pool/members";
 /// The messages a sender keeps in a mailbox: its last.
 const KEPT: usize = 64;
-/// How often the members' heartbeats are listed (off the loop), for the members it knows: a lead
-/// more often (it reads their mail), a member less (the terms name its lead).
-const MEMBERS_EVERY: Duration = Duration::from_secs(600);
-const MEMBERS_EVERY_LEAD: Duration = Duration::from_secs(120);
+/// How often the members' heartbeats are listed (off the loop), for the members it knows (a lead
+/// reads their mail; every member's view says which are out of touch): a fifth of the time a
+/// heartbeat takes to go out of touch (crate::pool::beat::OUT_OF_TOUCH_S), so no view of it lags
+/// that by more.
+const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TOUCH_S / 5);
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -257,6 +258,20 @@ pub struct Conds {
     pub able: bool,
 }
 
+impl Conds {
+    /// Why a member with these conditions can't lead now (`able` false), as the agent decides it
+    /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, the reserve free).
+    pub fn why_unable(&self) -> String {
+        if !self.home {
+            "away from home: it can't lead until it's back".into()
+        } else if !self.ac && self.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN) {
+            format!("on battery at {}%: it can't lead below {}%", self.battery.unwrap_or(0), crate::agent::cond::BATTERY_MIN)
+        } else {
+            format!("short of room on its disk: it can't lead with less than {} GB free", crate::agent::room::RESERVE >> 30)
+        }
+    }
+}
+
 /// A listing made off the loop: its kind, and the thread making it.
 struct Making {
     what: Kind,
@@ -381,9 +396,16 @@ impl Side {
         }
     }
 
-    /// Whether the lead can be handed to member `to` now, and why not (`Driver::hand_to`, §11).
+    /// Whether the lead can be handed to member `to` now, and why not (`Driver::hand_to`, §11), and
+    /// whether it can lead now by its heartbeat's conditions (`Conds::able`): a member that can't
+    /// wouldn't answer the offer (its driver's `ready_for` takes `Give::able`), so the views and the
+    /// asks refuse it up front, saying why, rather than offer and give up a minute on.
     pub fn hand_to(&self, to: &str) -> std::result::Result<(), String> {
-        self.driver().hand_to(&self.io(), to)
+        self.driver().hand_to(&self.io(), to)?;
+        match self.heartbeat(to).and_then(|h| h.conds) {
+            Some(c) if !c.able => Err(c.why_unable()),
+            _ => Ok(()),
+        }
     }
 
     /// What a takeover from this Mac needs now, and why (`Driver::takeover`, §11).
@@ -611,9 +633,9 @@ impl Side {
         }
     }
 
-    /// The members' heartbeats listed every ten minutes (a lead's, two), off the loop.
+    /// The members' heartbeats listed every `MEMBERS_EVERY`, off the loop.
     fn list_members(&mut self) {
-        let every = if self.driver().leads().is_some() { MEMBERS_EVERY_LEAD } else { MEMBERS_EVERY };
+        let every = MEMBERS_EVERY;
         let now = self.clock.now();
         if self.members_listed.is_none_or(|t| now.saturating_duration_since(t) >= every) && !self.members_queued {
             self.members_queued = true;
@@ -1407,6 +1429,13 @@ mod tests {
         let l = format!("base/{}", target.replace('/', "-"));
         let h = Handoff { changes: [(l.clone(), Some(format!("{l}.2222222222222222.base")))].into(), done: Some(("unit".into(), vec![(target.into(), key.into())])), ..Default::default() };
         Entry { member: member.into(), lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
+    }
+
+    #[test]
+    fn the_members_are_listed_by_the_out_of_touch_threshold() {
+        // (Derived, not a figure of its own: no view of a heartbeat lags its going out of touch by
+        // more than a fifth of it, on a lead or a member.)
+        assert_eq!(MEMBERS_EVERY.as_secs() * 5, crate::pool::beat::OUT_OF_TOUCH_S);
     }
 
     #[test]

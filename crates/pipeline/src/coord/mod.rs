@@ -533,7 +533,7 @@ pub struct Beat {
 
 /// Work done: a job's one hand-off (its saves and done record) and what its units cost, or a task's
 /// uploaded outputs, time and peak memory.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Done {
     pub worker: String,
     pub lease: u64,
@@ -1128,6 +1128,18 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
     Ok(())
 }
 
+/// A pooled job's end (its hand-off in the pool's journal, docs/pool.md §7.3, which the lead's
+/// merge checks): what it says it did is its lease's step and some of its targets; any step, the
+/// lead's own as a member's (a job running across a handover ends with the new lead); a job of no
+/// targets of its own (the OSM pass, pass-sets) with no done record.
+fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
+    match &h.done {
+        Some((s, ts)) => anyhow::ensure!(s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)), "its done record isn't its lease's"),
+        None => anyhow::ensure!(targets.is_empty(), "no done record"),
+    }
+    Ok(())
+}
+
 /// The floors `s` keeps, after clearing those of `step` (all, with no step), or of its `target`,
 /// when `clear` (`scenic pool floors --clear`).
 fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Option<&str>) -> BTreeMap<String, Floor> {
@@ -1425,9 +1437,13 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 Work::Job { .. } if caller.page => return not_mine(),
                 Work::Job { step, targets } => {
                     let h = d.handoff.unwrap_or_default();
+                    // (Its member wrote it to the pool's journal itself, which the lead's merge
+                    // checks as any entry: here only that what it says it did is its lease's, its
+                    // step any, a job of no targets of its own done with none.)
+                    let pooled = d.journaled && s.leases.term > 0;
                     // Refused (422): the worker gives the lease back as failed, and drops the work
                     // (but for its raw tiles' archives, as above).
-                    if let Err(e) = check_handoff(&h, step, targets) {
+                    if let Err(e) = if pooled { check_pooled(&h, step, targets) } else { check_handoff(&h, step, targets) } {
                         // (From a worker on a newer app than this Mac's, whose step may save what
                         // this one's doesn't know of: its lease ends, not held against its targets.)
                         if s.workers.get(&d.worker).is_some_and(|w| !s.app.is_empty() && w.app.as_deref() != Some(s.app.as_str())) {
@@ -1458,7 +1474,6 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     // (Its member wrote it to the pool's journal itself: nothing journaled here. Not
                     // while this coordinator's pool is off (switched off with the member's job
                     // under way): journaled, to be merged as any hand-off is.)
-                    let pooled = d.journaled && s.leases.term > 0;
                     drop(s);
                     let wrote = if pooled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
                     if let Err(e) = wrote {
