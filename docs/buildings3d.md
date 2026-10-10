@@ -1281,10 +1281,59 @@ field's cost is the difference of the medians). Budget: 2 ms.
   within the budget, at the dense tilted cities 2–4× over it: a tile's rays are marched though a
   nearer tile in front made the pixel opaque (each tile is its own box), and dense blocks take many
   footprint steps below their roofs.
-- **Next, not built:** one march a pixel through every tile along its ray (the tiles' textures in a
-  texture array, a tile grid to find them), so a ray stops at the first opaque point whatever the
-  tile, and full resolution for short runs with half resolution only for long grazing runs (far away,
-  where a pixel's footprint is large anyway). Expected within the budget; to be measured.
+- **One march a pixel, built and timed (10 Oct): over the budget.** web/src/bldfield.ts now marches
+  each pixel's ray once through every tile along it, near to far, in a full-screen pass:
+  - the tiles' class textures sit in one texture array (a layer a class a tile, RGBA16F with mips,
+    the mips made on the CPU), their ground and 32 × 32 tops in two more;
+  - a lookup grid (a window of cells at each level 4–14: a tile's slot, "finer", or empty) finds the
+    tile under a point;
+  - the ray is a line in mercator's (tile units, metres) frame, or in the sphere's frame on the
+    globe, turned into mercator and altitude where it's read;
+  - it starts where it comes below the highest roof drawn, and stops at the first opaque point, at
+    the frame's depth (exactly, from the depth buffer unprojected) or at the ground;
+  - empty space is skipped by a tile's highest roof and a max pyramid of each cell's buildings'
+    ground plus tallest roof (8 × 8, 4 × 4, 2 × 2 cells, the cell);
+  - the ground is read bilinear in hardware (OES_texture_float_linear);
+  - a class whose tallest possible roof is under the whole step isn't read.
+
+  It draws what the per-tile boxes drew (the same images, checked at Kantō, Manhattan and Chamonix),
+  but it isn't cheaper. The table gives the field's cost (ms), whole frames as above. The pass
+  columns are the field pass's own timer query, the same session for both renderers; it reads
+  ~1 ms high, and its frame copies and last pass alone take 1.5–1.7 ms.
+
+  | View | single march, full resolution | single march, half resolution (for scale) | pass: per-tile boxes | pass: single march |
+  |---|---|---|---|---|
+  | Tokyo z11 straight down | +3.9–4.2 | +1.3–1.5 | 3.2 | 4.5 |
+  | Manhattan z11 straight down | +3.8–4.0 | +1.4 | 3.1 | 4.4 |
+  | Chamonix z12, 65° | +7.4–7.7 | +0.9 | 2.7 | 6.0–9.5 |
+  | CN Tower z10, 80° | +2.9–3.1 | +0.6–0.8 | 3.0 | 3.7 |
+  | Kantō z10, 70° | +8.2–8.3 | +1.5–1.6 | 5.5 | 8.2–8.7 |
+  | Manhattan z11, 70° | +9.7–10.3 | +2.4–3.1 | 10.3 | 9.4–9.5 |
+
+  The whole-frame differences move by ~1 ms between sessions (the frames without the field took
+  1.9–2.3 ms from one session to the next); the pass timer is steadier.
+
+  What the measurements say:
+  - The reads aren't the cost: constant data in place of the class textures times the same.
+  - The cost is the march's control flow and arithmetic over 4.7 million rays. In Manhattan at 70°
+    a ray walks 10–20 cells and up to ~30 footprint steps, and that alone is over 2 ms.
+  - The globe's frame (every view here at z ≤ 12 is on the globe) adds trigonometry at each tile
+    and a derivative at each cell.
+  - Chamonix's ground under its buildings (its terrain exaggerated about 3× in this mode) keeps
+    rays near it for long runs.
+  - Half resolution only for long grazing runs can't close the gap. Leaving out every ray shallower
+    than 5° or 10° below the horizon saves 0.1–0.9 ms; the cost is in the rays 15–25° down, the
+    middle of a 70° view. Even half resolution everywhere is over the budget at Manhattan, 70°.
+
+  Options, the owner's and the PM's call:
+  - a budget the dense tilted views can meet (~4 ms there, ~2 ms elsewhere at half resolution);
+  - half resolution with full-resolution refinement only where the half-resolution image varies
+    (towers, skylines, edges);
+  - a cheaper representation for distant tiles (e.g. a precomputed per-texel height map drawn as
+    a relief instead of marched densities);
+  - the per-tile renderer kept for the straight-down and sloping views, where it meets the budget.
+
+  The pipeline isn't built on this renderer.
 - **The iPad** (the owner's): serve a build of this branch with the field (`?bldfield=` pointing at
   a field server as tools/bldcheck/serve.mjs serves it), open it in Safari on the iPad, and in the
   console run `__bld.frames(120)` at the views above (`#map=` hashes in tools/bldcheck/views): it

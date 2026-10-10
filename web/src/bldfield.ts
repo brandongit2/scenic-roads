@@ -1,324 +1,410 @@
 // PROTOTYPE (task #102, docs/buildings3d.md §4.8, planned): the far buildings' field. Where the
 // buildings are smaller than a pixel, what full detail shows of them is their aggregate. The field
-// tiles (512 × 512 texels, levels 4–14) hold three densities per texel, so a coarser level is the
-// mean of its four children and the GPU's mipmaps stay exact:
+// tiles (512 × 512 texels, levels 4–14) hold, for each of five height classes (by a building's top:
+// < 8, 8–20, 20–40, 40–100, ≥ 100 m), three densities per texel, so a coarser level is the mean of
+// its four children and the GPU's mipmaps stay exact:
 //   f  roof coverage (the share of the texel under a footprint standing on the ground),
 //   w  wall area per ground area (Σ wall length × wall height ÷ texel area),
-//   v  Σ coverage × wall height (m): v ÷ f is the mean roof height.
-// Level ⌊zoom⌋ + 1 is drawn (a texel a device pixel at 2×): level 14, over the z13 meshes (map zoom
-// 13–14), holds only the buildings they leave out, level 13 (over z12's) those under 40 m, level 12
-// and coarser every building; at zoom 14 and above the z14 meshes hold every building and the field
-// isn't drawn.
+//   v  Σ coverage × wall height (m): v ÷ f is the class's mean roof height.
+// Over each mesh tile MapLibre draws, the level its zoom leaves out (level 14 over z13's, 13 over
+// z12's); elsewhere every building, by distance from the camera, to level 12.
 //
-// Drawn as a layer of buildings standing on the terrain, seen through: each tile is a box from the
-// ground (its 33 × 33 elevations sampled from MapLibre's surface) up to its tallest mean roof, and
-// every pixel's view ray is marched through the box (from where it enters), the field read along
-// it. The buildings of a texel are taken as standing at random in it, all of its mean roof height
-// (v ÷ f): a ray below that height enters a building at w ÷ (v/f) ÷ π a metre of horizontal travel
-// (Cauchy–Crofton: a random line crosses walls of length L per area A 2L/(πA) times, entering half
-// of them), and a ray coming down through the roofs' height meets a roof with probability f. So a
-// straight-down view gives f, a tilted one adds the walls between the roofs, and a tower stands up
-// on screen above its foot (its texel's height carries the ray's hits up the screen), where a
-// field painted on the ground smeared it into a slab. Within a tile the hits are composited front
-// to back (the nearest surface wins, as fill-extrusion's depth pass makes it at any opacity); the
-// tiles go far to near into a float target, which a last pass mixes with what's under it in
-// linear light (each building pixel as MapLibre blends a mesh, at the opacity): full detail shrunk
-// as task #123 defines it. Lit with fill-extrusion's own formula.
+// Drawn as a layer of buildings standing on the terrain, seen through, in one pass: each pixel's
+// view ray is marched once through every tile along it, near to far, and stops at the first opaque
+// point. The tiles' class textures sit in one texture array (a layer a class a tile), their ground
+// (33 × 33 elevations sampled from MapLibre's surface) and 32 × 32 tallest tops in two more, and a
+// lookup grid (a window of cells at each level 4–14, each cell a tile, "finer", or empty) finds the
+// tile under any point. The march skips empty cells, and a tile's 1/32 cells where the ray stays
+// above their roofs; below them it steps a pixel's footprint at a time. The buildings of a texel are
+// taken as standing at random in it, all of their class's mean roof height H = v ÷ f: a ray below H
+// enters a building at w ÷ H ÷ π a metre of horizontal travel (Cauchy–Crofton: a random line crosses
+// walls of length L per area A 2L/(πA) times, entering half of them), and a ray coming down through
+// H meets a roof with probability f. The hits are composited front to back (the nearest surface
+// wins, as fill-extrusion's depth pass makes it at any opacity), and the march stops at what the
+// frame has drawn already (the terrain, the meshes: its depth buffer), so a mesh hides the field
+// behind it. A last pass mixes the result with what's under it in linear light (each building pixel
+// as MapLibre blends a mesh, at the opacity): full detail shrunk as task #123 defines it. Lit with
+// fill-extrusion's own formula.
 //
-// `?bldfield=<url>` turns it on: the tiles at <url>/<z>/<x>/<y>.bin (gzip of 3 planes of
-// 512 × 512 u16 LE: f × 65535, log2(1 + w) ÷ 12 × 65535, v × 64) and <url>/index.json.
+// The ray: in mercator, MapLibre's 3D scene is linear in (tile units, metres), so the ray is a line
+// there, in a frame of metres about the camera. On the globe it's a line in the sphere's frame (m,
+// about the camera), turned into mercator and altitude where it's read.
+//
+// Timed over the frame budget (2 ms at 2880 × 1626 on the M4: 3–10 ms full resolution), see
+// docs/buildings3d.md §4.8.1; debug views (`dbg`, compiled in): 2 no march, 3/4/7 counts, 8 constant data.
+//
+// `?bldfield=<url>` turns it on: the tiles at <url>/<z>/<x>/<y>.bin (gzip of 15 planes of
+// 512 × 512 u16 LE: f₀…f₄ × 65535, log2(1 + w₀…w₄) ÷ 12 × 65535, v₀…v₄ × 64) and <url>/index.json.
 
 import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MLMap } from 'maplibre-gl';
-import { link, perspectiveP22 } from './roads/layer';
+import { link } from './roads/layer';
 
 const G = 32;
 const EXTENT = 8192;
-/** The march's steps at most (a pixel's footprint each where the ray starts, fewer where its run is short). */
-const STEPS = 64;
-// (the march stops once this little light gets through: `?ftmin=`)
-/** The march drawn at 1/RES of the frame's width and height, then upsampled. */
-const RES_DEFAULT = 2;
+/** The lookup grid: levels ZMIN … ZMIN + NLEV − 1, a window of at most WIN × WIN cells each. */
+const ZMIN = 4;
+const NLEV = 11;
+const WIN = 128;
+/** Tile slots (their ground and tops), and the class layers' first capacity (it doubles as needed). */
+const SLOTS = 512;
+const LAYERS0 = 128;
+/** A class texture's mip levels (512 … 1). */
+const LEVELS = 10;
+/** The march's fine steps at most, a ray (`?fsteps=`). */
+const STEPS = 96;
+/** The march drawn at 1/RES of the frame's width and height, then upsampled (`?fres=`). */
+const RES_DEFAULT = 1;
 /** Colour by height: the lookup's span (m) and size. */
 const LUT_MAX_M = 700;
 const LUT_N = 2048;
+const EARTH_R = 6371008.8;
+const CIRC = 40075016.686;
 /** MapLibre's transform (its camera's, in v6). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const trOf = (map: MLMap): any => (map as any)._camera?.transform ?? (map as any).transform;
 
-const VS = `
-layout(location=0) in vec2 a_pos;
-layout(location=1) in vec2 a_up;    // 1 on the top, 0 at the ground; the face (0 top, 1–4 the sides: y = 0, y = max, x = 0, x = max)
-layout(location=2) in float a_elev;
-uniform float u_top;       // the box's top above the ground (m)
-uniform float u_p22;
-uniform vec2 u_ztol;
-uniform vec4 u_camTile;    // the camera in this tile's units (xy), its altitude (m), metres per tile unit
-uniform vec3 u_lightpos;
-uniform vec3 u_lightpos_globe;
-out vec3 v_p;
-out vec3 v_lg;             // the globe's light in the local frame (east, south, up)              // tile units, tile units, altitude (m)
-out float v_clip;
-flat out int v_face;
-
-vec4 projAt(vec2 p, float h) {
-#ifdef GLOBE
-  vec3 sp = projectToSphere(p, p);
-  return interpolateProjectionFor3D(p, sp, h);
-#else
-  return projectTileFor3D(p, h);
-#endif
-}
-
-void main() {
-  float alt = a_elev + a_up.x * u_top;
-  v_face = int(a_up.y + 0.5);
-  vec4 c = projAt(a_pos, alt);
-  v_p = vec3(a_pos, alt);
-  v_clip = 0.0;
-  v_lg = u_lightpos;
-#ifdef GLOBE
-  vec3 sp = projectToSphere(a_pos, a_pos);
-  if (u_projection_transition > 0.999) v_clip = globeComputeClippingZ(sp);
-  v_lg = transpose(globeGetRotationMatrix(sp)) * u_lightpos_globe;
-#endif
-  vec3 to = vec3((u_camTile.xy - a_pos) * u_camTile.w, u_camTile.z - alt);
-  float m = clamp(max(u_ztol.x, u_ztol.y / max(length(to), 1.0)), 0.0, 0.5);
-  gl_Position = c;
-}`;
-
-const FS = `#version 300 es
-precision highp float;
-uniform highp sampler2D u_c0;   // each height class present: f, w, v
-uniform highp sampler2D u_c1;
-uniform highp sampler2D u_c2;
-uniform highp sampler2D u_c3;
-uniform highp sampler2D u_c4;
-uniform int u_mask;               // the classes present in the tile (bits)
-uniform int u_res;
-uniform float u_minSteps;
-uniform float u_tmin;
-uniform highp sampler2D u_top32;   // the tallest mean top in each 1/32 of the tile and the cells around it (m)
-uniform highp sampler2D u_elev;    // the tile's ground, 33 × 33 (m)
-uniform highp sampler2D u_scene;   // the frame's depth so far: the terrain and the meshes (window depth)
-uniform float u_p22;
-uniform float u_p23;
-uniform vec2 u_viewport;
-uniform float u_pixAngle;   // radians a device pixel spans
-uniform vec4 u_camTile;
-uniform float u_top;
-uniform float u_gmin;
-uniform float u_wallSign;   // (a test: which way MapLibre's wall normals face)     // the tile's lowest ground (m)
-uniform float u_hk;
-uniform vec4 u_box;
-uniform vec3 u_lightpos;
-uniform float u_lightintensity;
-uniform float u_colorvalue;
-uniform vec3 u_colour;
-uniform vec3 u_lightcolor;
-in vec3 v_p;
-in vec3 v_lg;
-uniform float u_trans;
-uniform vec3 u_fwd;
-uniform int u_byHeight;
-uniform highp sampler2D u_lut;   // colour by height: the scale's colour at 0 … LUT_MAX_M m
-uniform vec2 u_drange;
-uniform int u_dbg;   // the camera's view axis (east, south, up)
-in float v_clip;
-flat in int v_face;
-out vec4 fragColor;
-
-float ground(vec2 p) {
-  // (R32F isn't filtered: bilinear by hand, as the box's vertices interpolate it)
-  vec2 g = clamp(p / ${EXTENT}.0 * ${G}.0, vec2(0.0), vec2(${G}.0 - 0.001));
-  ivec2 i = ivec2(floor(g));
-  vec2 f = g - vec2(i);
-  float a = texelFetch(u_elev, i, 0).r, b = texelFetch(u_elev, i + ivec2(1, 0), 0).r;
-  float c = texelFetch(u_elev, i + ivec2(0, 1), 0).r, d = texelFetch(u_elev, i + ivec2(1, 1), 0).r;
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-// fill-extrusion's directional term, on the globe as it mixes the two (u_trans the hand-off).
-float dirOf(vec3 n) { return mix(clamp(dot(n, u_lightpos), 0.0, 1.0), clamp(dot(n, v_lg), 0.0, 1.0), u_trans); }
-float adjust(float d) { return mix(1.0 - u_lightintensity, max(1.0 - u_colorvalue + u_lightintensity, 1.0), d); }
-bool inside(vec3 q) {
-  if (q.x < 0.0 || q.y < 0.0 || q.x > ${EXTENT}.0 || q.y > ${EXTENT}.0) return false;
-  float g = ground(q.xy);
-  return q.z >= g - 0.5 && q.z <= g + u_top;
-}
-
-void main() {
-  if (v_clip > 1.0) discard;
-  // Where the ray meets what's drawn already (the terrain, the meshes: clip w of the frame's depth,
-  // with the roads' tolerance for the terrain's mesh): the march stops there, so a mesh hides the
-  // field behind it as the meshes' own depth pass hides each other, at any opacity.
-  // (window depth to NDC through the depth range the 3D layers are drawn with)
-  float zs = (texelFetch(u_scene, ivec2(gl_FragCoord.xy) * u_res + u_res / 2, 0).r - u_drange.x) / (u_drange.y - u_drange.x) * 2.0 - 1.0;
-  bool sceneHit = zs < 0.99999;
-  float mpu = u_camTile.w;
-  // The ray in metres (x east, y south, z up), from where it meets this face.
-  vec3 E = vec3(v_p.xy * mpu, v_p.z);
-  vec3 C = vec3(u_camTile.xy * mpu, u_camTile.z);
-  vec3 d = normalize(E - C);
-  // Only where the ray enters the box (the face it leaves by is drawn too).
-  bool enter = v_face == 0 ? d.z < 0.0 : v_face == 1 ? d.y > 0.0 : v_face == 2 ? d.y < 0.0 : v_face == 3 ? d.x > 0.0 : d.x < 0.0;
-  if (!enter) discard;
-  // How far it runs in the box: to the tile's edges and its top (the ground stops it on the way).
-  float tmax = 1e9;
-  vec2 lo = (vec2(0.0) - v_p.xy) * mpu, hi = (vec2(${EXTENT}.0) - v_p.xy) * mpu;
-  if (abs(d.x) > 1e-6) tmax = min(tmax, max((lo.x) / d.x, (hi.x) / d.x));
-  if (abs(d.y) > 1e-6) tmax = min(tmax, max((lo.y) / d.y, (hi.y) / d.y));
-  if (d.z > 1e-6) tmax = min(tmax, (ground(v_p.xy) + u_top + 1.0 - E.z) / d.z);
-  if (d.z < -1e-6) tmax = min(tmax, (E.z - u_gmin + 1.0) / -d.z);
-  // The scene's view depth over this point's (clip w is the view depth: z = -p22 + p23 / w), and the
-  // view depth growing along the ray by d·forward: where the ray reaches what's drawn (a little past
-  // it, for the terrain's mesh against our ground).
-  float depthE = dot(E - C, u_fwd), dfwd = dot(d, u_fwd);
-  if (sceneHit && dfwd > 1e-6) {
-    float ratio = u_p23 / (zs + u_p22) * gl_FragCoord.w;
-    float ts = depthE * (ratio - 1.0) / dfwd;
-    if (u_dbg == 1) { fragColor = vec4(clamp(ratio - 1.0, 0.0, 1.0), clamp(ts / 1000.0, 0.0, 1.0), clamp(depthE / 100000.0, 0.0, 1.0), 1.0); return; }
-    // (behind what's drawn by more than the roads' tolerance: hidden)
-    if (ts < -0.015 * length(E - C) - 2.0) discard;
-    tmax = min(tmax, max(ts, 0.0) + 0.015 * length(E - C) + 2.0);
-  }
-  tmax = clamp(tmax, 0.0, 1e6);
-  if (u_dbg == 2) { fragColor = vec4(0.0, 0.0, 0.0, 0.01); return; }
-  float texel = mpu * ${EXTENT / 512}.0;
-  float dist0 = length(E - C);
-  float hl = length(d.xy);
-  // Lighting: roofs, and the walls facing the camera (8 directions, by how much each faces it); the
-  // directional terms only (fill-extrusion's adjustment is linear in them, its colour per class).
-  float dRoof = dirOf(vec3(0.0, 0.0, 1.0));
-  vec2 back = -normalize(d.xy + vec2(1e-9));
-  float ws = 0.0, wl = 0.0;
-  for (int k = 0; k < 8; k++) {
-    float b = (float(k) + 0.5) * 0.78539816;
-    vec2 n = vec2(cos(b), sin(b));
-    float f = max(dot(n, back), 0.0);
-    ws += f;
-    wl += f * dirOf(vec3(u_wallSign * n, 0.0));
-  }
-  float dWall = ws > 0.0 ? wl / ws : 0.0;
-  vec3 lowc = mix(vec3(0.0), vec3(0.3), 1.0 - u_lightcolor);
-  float gmin = mix(0.7, 0.98, 1.0 - u_lightintensity);
-  // March: T what still gets through, col what the hits so far show. The coarse walk goes through the
-  // tile's 32 × 32 cells along the ray, skipping a cell whole where the ray stays above its tallest
-  // roof; in the others, steps of a pixel's footprint where the ray is (one where it comes nearly
-  // straight down), each step's height over the ground linear between its ends: the share of it
-  // below each class's roofs, and whether it comes down through them (a roof), so no step jumps a layer.
-  float T = 1.0;
-  vec3 col = vec3(0.0);
-  vec2 dT = d.xy / mpu;   // tile units a metre along the ray
-  float t = 0.0;
-  float a0 = E.z - ground(v_p.xy);
-  int fine = 0;
-  bool done = false;
-  for (int k = 0; k < 96; k++) {
-    if (done || t >= tmax) break;
-    vec2 p = (E.xy + d.xy * t) / mpu;
-    ivec2 cell = clamp(ivec2(floor(p / ${EXTENT / 32}.0)), ivec2(0), ivec2(31));
-    float te = tmax;
-    if (abs(dT.x) > 1e-12) te = min(te, t + ((dT.x > 0.0 ? float(cell.x + 1) : float(cell.x)) * ${EXTENT / 32}.0 - p.x) / dT.x);
-    if (abs(dT.y) > 1e-12) te = min(te, t + ((dT.y > 0.0 ? float(cell.y + 1) : float(cell.y)) * ${EXTENT / 32}.0 - p.y) / dT.y);
-    te = clamp(te, t + 0.01, tmax);
-    vec2 tg = texelFetch(u_top32, cell, 0).rg;
-    float topc = tg.r * u_hk;
-    // (above the cell's highest ground plus its tallest roof, at both ends: no ground to look up)
-    if (min(E.z + d.z * t, E.z + d.z * te) > tg.g + topc + 1.0) {
-      t = te;
-      a0 = -1.0;   // (not known: looked up where it's needed)
-      continue;
-    }
-    if (a0 < 0.0 && t > 0.0) { vec3 Pt = E + d * t; a0 = Pt.z - ground(Pt.xy / mpu); }
-    vec3 Pe = E + d * te;
-    float aEnd = Pe.z - ground(Pe.xy / mpu);
-    if (min(a0, aEnd) > topc) {
-      // (above every roof in the cell)
-      t = te;
-      a0 = aEnd;
-      continue;
-    }
-    // The ray's height over the ground taken linear across the cell (its ends sampled): steps only
-    // from where it comes down below the cell's tallest roof, a pixel's footprint each along its run
-    // below it (one or two for a steep ray), at most 8 a cell.
-    float seg = te - t;
-    float tIn = a0 > topc ? t + (a0 - topc) / max(a0 - aEnd, 1e-6) * seg : t;
-    float aIn = a0 + (aEnd - a0) * (tIn - t) / seg;
-    float tOut = aEnd < topc ? te : t + (a0 - topc) / min(a0 - aEnd, -1e-6) * seg;   // (rising out of the roofs)
-    tOut = clamp(tOut, tIn, te);
-    float run = tOut - tIn;
-    float n = clamp(ceil(run * hl / max((dist0 + tIn) * u_pixAngle, 1e-3)), 1.0, 8.0);
-    float step = run / n;
-    float hstep = step * hl;
-    float da = (aEnd - a0) / seg;   // height change a metre along the ray
-    float ac = aIn;
-    for (int i = 0; i < 8; i++) {
-      if (float(i) >= n || fine >= ${STEPS}) { done = done || fine >= ${STEPS}; break; }
-      fine++;
-      float t1 = tIn + float(i + 1) * step;
-      float a1 = ac + da * step;
-      float sg = a1 < 0.0 ? clamp(ac / max(ac - a1, 1e-6), 0.0, 1.0) : 1.0;   // the share before the ground
-      vec2 pt = (E.xy + d.xy * (t1 - step * (1.0 - 0.5 * sg))) / mpu;
-      bool inBox = !(pt.x < u_box.x || pt.y < u_box.y || pt.x > u_box.z || pt.y > u_box.w);
-      vec2 uv = pt / ${EXTENT}.0;
-      // The five height classes present (f, w, v of each), read at the pixel's footprint.
-      float F[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), W[5] = F, V[5] = F;
-      if (inBox) {
-        float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
-        vec4 s;
-        if ((u_mask & 1) != 0) { s = textureLod(u_c0, uv, lod); F[0] = s.r; W[0] = s.g; V[0] = s.b; }
-        if ((u_mask & 2) != 0) { s = textureLod(u_c1, uv, lod); F[1] = s.r; W[1] = s.g; V[1] = s.b; }
-        if ((u_mask & 4) != 0) { s = textureLod(u_c2, uv, lod); F[2] = s.r; W[2] = s.g; V[2] = s.b; }
-        if ((u_mask & 8) != 0) { s = textureLod(u_c3, uv, lod); F[3] = s.r; W[3] = s.g; V[3] = s.b; }
-        if ((u_mask & 16) != 0) { s = textureLod(u_c4, uv, lod); F[4] = s.r; W[4] = s.g; V[4] = s.b; }
-      }
-      float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
-      float tt = 0.0;
-      vec3 hit = vec3(0.0);   // Σ τ × colour over the classes' roofs and walls
-      for (int c = 0; c < 5; c++) {
-        float f = clamp(F[c], 0.0, 0.999);
-        if (f < 1e-5) continue;
-        float H = max(V[c] / F[c], 0.5);
-        float Hs = H * u_hk;
-        float below;
-        if (abs(ae - ac) < 1e-4) below = ac < Hs ? sg : 0.0;
-        else {
-          float sh = clamp((Hs - ac) / (ae - ac), 0.0, 1.0) * sg;   // where it passes H
-          below = ae < ac ? (ac < Hs ? sg : sg - sh) : (ac < Hs ? sh : 0.0);
-        }
-        float tc = max(W[c], 0.0) * u_hk / Hs / 3.14159265 * hstep * below;
-        float tr = (ac >= Hs && ae < Hs) ? -log(1.0 - f) : 0.0;
-        if (tc + tr <= 0.0) continue;
-        // The class's colour: the plain one, or the colour scale's at its mean top (the app's own
-        // scale, palette and fades, read from the lookup the map gives).
-        vec3 base = u_byHeight == 1 ? texture(u_lut, vec2(clamp(H / ${LUT_MAX_M}.0, 0.0, 1.0), 0.5)).rgb : u_colour;
-        float cv = dot(base, vec3(0.2126, 0.7152, 0.0722));
-        vec3 Cc = base + 0.03;
-        float hiD = max(1.0 - cv + u_lightintensity, 1.0);
-        vec3 roof = clamp(Cc * mix(1.0 - u_lightintensity, hiD, dRoof) * u_lightcolor, lowc, vec3(1.0));
-        float gv = 0.5 * (gmin + clamp(sqrt(Hs / 150.0), gmin, 1.0));
-        vec3 wall = clamp(Cc * mix(1.0 - u_lightintensity, hiD, dWall) * gv * u_lightcolor, lowc, vec3(1.0));
-        tt += tc + tr;
-        hit += tr * roof + tc * wall;
-      }
-      if (tt > 0.0) {
-        float a = 1.0 - exp(-tt);
-        col += T * a * hit / tt;
-        T *= 1.0 - a;
-      }
-      if (T < u_tmin || a1 < 0.0) { done = true; break; }
-      ac = a1;
-    }
-    t = te;
-    a0 = aEnd;
-  }
-  if (T > 0.9999) discard;
-  fragColor = vec4(col, 1.0 - T);   // premultiplied, over the tiles behind
-}`;
-
-/** The last pass: the tiles' sum mixed with the frame drawn so far, in linear light. */
-const RESOLVE_VS = `#version 300 es
+const VS = `#version 300 es
 layout(location=0) in vec2 a_xy;
 void main() { gl_Position = vec4(a_xy, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+#define DBG __DBG__
+precision highp float;
+precision highp int;
+#define PI 3.14159265358979
+#define R ${EARTH_R}
+uniform mat4 u_inv;          // clip → the camera's frame (m, the camera at 0)
+uniform int u_globe;         // the frame: 0 mercator (x east, y south, z up), 1 the sphere's axes
+uniform float u_mpuC;        // mercator: metres an R unit across the frame
+uniform float u_hc;          // the camera's altitude (m)
+uniform vec3 u_Cs;           // globe: the camera from the sphere's centre (m)
+uniform float u_hc2;         // globe: |Cs|² − R²
+uniform vec2 u_mc;           // the camera in mercator (0–1)
+uniform float u_zr2;         // R units a mercator unit (R: tile units of the reference zoom)
+uniform int u_zr;
+uniform vec4 u_win[${NLEV}];   // each level's window: its origin (R units from the camera), its size (cells)
+uniform highp usampler2D u_page;   // the windows' cells: 0 empty, 65535 finer, else the tile's slot + 1
+uniform highp sampler2D u_meta;    // a slot's tile: (origin, R units a tile unit, metres a tile unit), its class layers
+uniform highp sampler2DArray u_cls;     // each tile's height classes: f, w, v
+uniform highp sampler2DArray u_top32;   // the tallest top in each 1/32 of a tile and around it (m), the cell's highest ground
+uniform highp sampler2DArray u_elev;    // a tile's ground, 33 × 33 (m)
+uniform highp sampler2D u_scene;   // the frame's depth so far: the terrain and the meshes (window depth)
+uniform vec2 u_drange;
+uniform int u_res;
+uniform vec2 u_viewport;
+uniform float u_pixAngle;   // radians a march pixel spans
+uniform float u_ceil;       // the highest roof over the ground drawn (m)
+uniform float u_floor;      // the lowest ground drawn (m)
+uniform int u_steps;
+uniform float u_graze;
+uniform float u_tmin;
+uniform float u_hk;
+uniform float u_wallSign;
+uniform vec4 u_box;         // only the buildings in it (R units from the camera)
+uniform vec3 u_lightpos;
+uniform vec3 u_lightpos_globe;
+uniform float u_trans;
+uniform float u_lightintensity;
+uniform vec3 u_colour;
+uniform vec3 u_lightcolor;
+uniform int u_byHeight;
+uniform highp sampler2D u_lut;   // colour by height: the scale's colour at 0 … LUT_MAX_M m
+out vec4 fragColor;
+
+// Where the ray is t metres out: mercator (R units from the camera) and its derivative, and altitude.
+vec2 relAt(vec3 d, float t) {
+  if (u_globe == 0) return d.xy * t / u_mpuC;
+  vec3 q = u_Cs + d * t;
+  float mx = atan(q.x, q.z) / (2.0 * PI) + 0.5;
+  float s = clamp(q.y / length(q), -0.9999999, 0.9999999);
+  float my = 0.5 - log((1.0 + s) / (1.0 - s)) / (4.0 * PI);
+  vec2 r = vec2(mx, my) - u_mc;
+  r.x -= floor(r.x + 0.5);
+  return r * u_zr2;
+}
+vec2 drelAt(vec3 d, float t) {
+  if (u_globe == 0) return d.xy / u_mpuC;
+  vec3 q = u_Cs + d * t;
+  float dmx = (q.z * d.x - q.x * d.z) / (q.x * q.x + q.z * q.z) / (2.0 * PI);
+  float L = length(q), s = q.y / L;
+  float ds = (d.y - s * dot(q, d) / L) / L;
+  return vec2(dmx, -ds / (1.0 - s * s) / (2.0 * PI)) * u_zr2;
+}
+float altAt(vec3 d, float t) {
+  if (u_globe == 0) return u_hc + d.z * t;
+  return (u_hc2 + 2.0 * t * dot(u_Cs, d) + t * t) / (length(u_Cs + d * t) + R);
+}
+
+// The tile under a point: its slot (−1: none), and the cell it was found in (origin, size; R units).
+int lookup(vec2 rel, inout int hint, out vec2 lo, out float sz) {
+  // (the level the last tile was found at first: along a ray the levels change slowly)
+  if (hint >= 0) {
+    vec4 w = u_win[hint];
+    float cs = exp2(float(u_zr - ${ZMIN} - hint)) * ${EXTENT}.0;
+    vec2 c = floor((rel - w.xy) / cs);
+    if (c.x >= 0.0 && c.y >= 0.0 && c.x < w.z && c.y < w.w) {
+      uint v = texelFetch(u_page, ivec2(int(c.x), hint * ${WIN} + int(c.y)), 0).r;
+      if (v != 0u && v != 65535u) {
+        lo = w.xy + c * cs;
+        sz = cs;
+        return int(v) - 1;
+      }
+    }
+  }
+  // (every level's cell read at once, independent reads, then the first from the coarsest that
+  // isn't "finer")
+  uint vs[${NLEV}];
+  for (int i = 0; i < ${NLEV}; i++) {
+    vec4 w = u_win[i];
+    float cs = exp2(float(u_zr - ${ZMIN} - i)) * ${EXTENT}.0;
+    vec2 c = floor((rel - w.xy) / cs);
+    bool inW = c.x >= 0.0 && c.y >= 0.0 && c.x < w.z && c.y < w.w;
+    vs[i] = inW ? texelFetch(u_page, ivec2(int(c.x), i * ${WIN} + int(c.y)), 0).r : 0u;
+  }
+  for (int i = 0; i < ${NLEV}; i++) {
+    if (vs[i] == 65535u) continue;
+    vec4 w = u_win[i];
+    float cs = exp2(float(u_zr - ${ZMIN} - i)) * ${EXTENT}.0;
+    lo = w.xy + floor((rel - w.xy) / cs) * cs;
+    sz = cs;
+    if (vs[i] == 0u) return -1;
+    hint = i;
+    return int(vs[i]) - 1;
+  }
+  lo = rel;
+  sz = 1.0;
+  return -1;
+}
+// How far (along t) a point moving at dp leaves the box lo–hi.
+float exitOf(vec2 p, vec2 dp, vec2 lo, vec2 hi) {
+  float e = 1e30;
+  if (abs(dp.x) > 1e-20) e = min(e, ((dp.x > 0.0 ? hi.x : lo.x) - p.x) / dp.x);
+  if (abs(dp.y) > 1e-20) e = min(e, ((dp.y > 0.0 ? hi.y : lo.y) - p.y) / dp.y);
+  return max(e, 0.0);
+}
+float ground(float slot, vec2 p) {
+  // (the grid's points at texel centres: bilinear in hardware, R32F filtered by OES_texture_float_linear)
+  vec2 g = clamp(p / ${EXTENT}.0, vec2(0.0), vec2(1.0)) * ${G}.0;
+  return texture(u_elev, vec3((g + 0.5) / ${G + 1}.0, slot)).r;
+}
+const float CLASS_TOP[5] = float[5](8.0, 20.0, 40.0, 100.0, 1e9);
+void main() {
+  vec2 ndc = gl_FragCoord.xy / u_viewport * 2.0 - 1.0;
+  vec4 pf = u_inv * vec4(ndc, 1.0, 1.0);
+  vec3 d = normalize(pf.xyz / pf.w);
+  // Where the ray is below the highest roof (above it, nothing to meet).
+  float tStart = 0.0, tStop = 1e7;
+  if (u_globe == 0) {
+    if (u_hc > u_ceil) {
+      if (d.z >= 0.0) discard;
+      tStart = (u_hc - u_ceil) / -d.z;
+    } else if (d.z > 0.0) tStop = (u_ceil - u_hc) / d.z;
+  } else {
+    float b = dot(u_Cs, d);
+    float K = (u_hc - u_ceil) * (2.0 * R + u_hc + u_ceil);
+    float disc = b * b - K;
+    if (disc <= 0.0) discard;
+    float sq = sqrt(disc);
+    if (K > 0.0) {
+      if (b >= 0.0) discard;
+      tStart = K / (-b + sq);
+    }
+    tStop = -b + sq;
+  }
+  // Where the ray meets what's drawn already (the terrain, the meshes): the march stops a little past
+  // it (the roads' tolerance for the terrain's mesh against our ground).
+  float zs = (texelFetch(u_scene, ivec2(gl_FragCoord.xy) * u_res + u_res / 2, 0).r - u_drange.x) / (u_drange.y - u_drange.x) * 2.0 - 1.0;
+  float tEnd = min(tStop, 1e7);
+  if (zs < 0.99999) {
+    vec4 ps = u_inv * vec4(ndc, zs, 1.0);
+    float ts = dot(ps.xyz / ps.w, d);
+    tEnd = min(tEnd, ts * 1.015 + 2.0);
+  }
+  if (tEnd <= tStart) discard;
+  {
+    vec3 up = u_globe == 1 ? normalize(u_Cs) : vec3(0.0, 0.0, 1.0);
+    if (-dot(d, up) < u_graze) discard;
+  }
+  if (DBG == 2) { fragColor = vec4(0.0, 0.0, 0.0, 0.01); return; }
+  // Lighting constants (fill-extrusion's adjustment is linear in the directional terms; its colour per class).
+  vec3 lowc = mix(vec3(0.0), vec3(0.3), 1.0 - u_lightcolor);
+  float gmin = mix(0.7, 0.98, 1.0 - u_lightintensity);
+  float T = 1.0;
+  vec3 col = vec3(0.0);
+  float t = tStart;
+  int fine = 0;
+  bool done = false;
+  int nT = 0, nCap = 0, nK = 0, nE = 0, nI = 0, hint = -1;
+  float eps0 = u_globe == 1 ? 0.1 : 0.01, epsk = u_globe == 1 ? 1e-4 : 1e-5;
+  for (int k = 0; k < 160; k++) {
+    if (done || t >= tEnd) break;
+    nK++;
+    vec2 rel = relAt(d, t);
+    vec2 lo;
+    float sz;
+    int slot = lookup(rel, hint, lo, sz);
+    if (DBG == 5) { fragColor = vec4(0.0, 0.0, 0.0, slot >= 0 ? 0.01 : 0.0); return; }
+    vec2 dr = drelAt(d, t);
+    float tOut = min(t + exitOf(rel, dr, lo, lo + sz), tEnd);
+    if (slot < 0) {
+      nE++;
+      // (an empty cell: past it; on the globe a bounded jump, the path curving in mercator)
+      t = min(tOut, u_globe == 1 ? t * 1.25 + 2000.0 : 1e30) + eps0 + epsk * t;
+      continue;
+    }
+    vec4 m0 = texelFetch(u_meta, ivec2(slot, 0), 0);   // origin (R units), R units a tile unit, metres a tile unit
+    vec4 m2 = texelFetch(u_meta, ivec2(slot, 2), 0);   // class layer 4, the tile's highest roof (m, absolute)
+    // (above the tile's highest roof where the ray enters it and leaves it: past it)
+    if (min(altAt(d, t), altAt(d, tOut)) > m2.y) { t = tOut + eps0 + epsk * t; continue; }
+    nT++;
+    vec4 m1 = texelFetch(u_meta, ivec2(slot, 1), 0);   // class layers 0–3 (−1: absent)
+    float Ls[5] = float[5](m1.x, m1.y, m1.z, m1.w, m2.x);
+    float fs = float(slot);
+    // The found cell in the tile's units (a loading tile's ancestor stands in for its cell only).
+    vec2 cLo = clamp((lo - m0.xy) / m0.z, vec2(0.0), vec2(${EXTENT}.0)), cHi = clamp((lo + sz - m0.xy) / m0.z, vec2(0.0), vec2(${EXTENT}.0));
+    // The lighting here, when first wanted (roofs, and the walls facing the camera: the tile's eight
+    // wall directions' terms from the CPU, weighed by how much each faces it).
+    bool lit = false;
+    vec3 roofC = vec3(0.0), wallC = vec3(0.0);
+    float dRoof = 0.0, dWall = 0.0;
+    float texelM = m0.w * ${EXTENT / 512}.0;
+    // The tile's 1/32 cells along the ray: one skipped whole where the ray stays above its highest
+    // ground plus its tallest roof, or above its tallest roof over the ground at both ends; in the
+    // others steps of a pixel's footprint from where it comes down below that roof, each step's
+    // height over the ground linear between the cell's ends: the share of it below each class's
+    // roofs, and whether it comes down through them (a roof), so no step jumps a layer.
+    // (the position carried along the tile, the derivative fresh each cell: on the globe a fresh
+    // position each cell would jitter by its float precision, a few metres, at the cells' edges)
+    vec2 p = (relAt(d, t) - m0.xy) / m0.z;
+    for (int j = 0; j < 72; j++) {
+      if (j == 71) nCap++;
+      if (done || t >= tOut) break;
+      nI++;
+      vec2 dp = drelAt(d, t) / m0.z;
+      // (the cell a little ahead, so a point on an edge takes the cell it's entering)
+      vec2 pa = p + normalize(dp + vec2(1e-20)) * 0.05;
+      // (out of the found cell: the tile's done here, wherever the estimate put its end)
+      if (any(lessThan(pa, cLo)) || any(greaterThan(pa, cHi))) { tOut = t; break; }
+      ivec2 cell = clamp(ivec2(floor(pa / ${EXTENT / 32}.0)), ivec2(0), ivec2(31));
+      // The coarsest node of the tile's pyramid (8 × 8, 4 × 4, 2 × 2 cells, then the cell) the ray
+      // stays above where it enters and leaves it (its buildings' highest ground plus tallest roof):
+      // past it whole.
+      float alt0 = altAt(d, t);
+      bool skipped = false;
+      for (int L = 3; L >= 1; L--) {
+        ivec2 nd = cell >> L;
+        float bnd = texelFetch(u_top32, ivec3(nd, slot), L).g;
+        float ns = float(${EXTENT / 32} << L);
+        vec2 nlo = max(vec2(nd) * ns, cLo), nhi = min(vec2(nd + 1) * ns, cHi);
+        float tb = clamp(t + exitOf(p, dp, nlo, nhi), t + 0.01, tOut);
+        if (min(alt0, altAt(d, tb)) > bnd + 1.0) {
+          p += dp * (tb + 0.001 - t);
+          t = tb + 0.001;
+          skipped = true;
+          break;
+        }
+      }
+      if (skipped) continue;
+      vec2 clo = max(vec2(cell) * ${EXTENT / 32}.0, cLo), chi = min(vec2(cell + 1) * ${EXTENT / 32}.0, cHi);
+      float te = clamp(t + exitOf(p, dp, clo, chi), t + 0.01, tOut);
+      vec2 pe = p + dp * (te - t);
+      vec2 tg = texelFetch(u_top32, ivec3(cell, slot), 0).rg;
+      float topc = tg.r * u_hk;
+      float altE = altAt(d, te);
+      if (min(alt0, altE) > tg.g + 1.0) { t = te + 0.001; p = pe + dp * 0.001; continue; }
+      float a0 = alt0 - ground(fs, p), aEnd = altE - ground(fs, pe);
+      if (min(a0, aEnd) > topc) { t = te + 0.001; p = pe + dp * 0.001; continue; }
+      if (DBG == 6) { t = te + 0.001; p = pe + dp * 0.001; continue; }
+      float seg = te - t;
+      float tIn = a0 > topc ? t + (a0 - topc) / max(a0 - aEnd, 1e-6) * seg : t;
+      float aIn = a0 + (aEnd - a0) * (tIn - t) / seg;
+      float tUp = aEnd < topc ? te : t + (a0 - topc) / min(a0 - aEnd, -1e-6) * seg;   // (rising out of the roofs)
+      tUp = clamp(tUp, tIn, te);
+      float run = tUp - tIn;
+      float hl = length(dp) * m0.w;   // horizontal metres a metre along the ray
+      float n = DBG == 9 ? 1.0 : clamp(ceil(run * hl / max(tIn * u_pixAngle, 1e-3)), 1.0, 8.0);
+      float step = run / n;
+      float hstep = step * hl;
+      float da = (aEnd - a0) / seg;
+      float ac = aIn;
+      for (int i = 0; i < 8; i++) {
+        if (float(i) >= n || fine >= u_steps) { done = done || fine >= u_steps; break; }
+        fine++;
+        float t1 = tIn + float(i + 1) * step;
+        float a1 = ac + da * step;
+        float sg = a1 < 0.0 ? clamp(ac / max(ac - a1, 1e-6), 0.0, 1.0) : 1.0;   // the share before the ground
+        vec2 pt = p + dp * (t1 - step * (1.0 - 0.5 * sg) - t);
+        vec2 rp = m0.xy + pt * m0.z;
+        bool inBox = !(rp.x < u_box.x || rp.y < u_box.y || rp.x > u_box.z || rp.y > u_box.w);
+        vec2 uv = pt / ${EXTENT}.0;
+        float lod = log2(max(t1 * u_pixAngle / texelM, 1.0));
+        float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
+        float tt = 0.0;
+        vec3 hit = vec3(0.0);   // Σ τ × colour over the classes' roofs and walls
+        for (int c = 0; c < 5; c++) {
+          // (a class absent, or whose tallest roof is under the whole step: nothing of it met)
+          if (!inBox || Ls[c] < 0.0 || min(ac, a1) > CLASS_TOP[c] * u_hk) continue;
+          vec4 sm = DBG == 8 ? vec4(0.3 * fract(uv.x * 37.0), 0.5, 3.0, 0.0) : textureLod(u_cls, vec3(uv, Ls[c]), lod);
+          float f = clamp(sm.r, 0.0, 0.999);
+          if (f < 1e-5) continue;
+          float H = max(sm.b / sm.r, 0.5);
+          float Hs = H * u_hk;
+          float below;
+          if (abs(ae - ac) < 1e-4) below = ac < Hs ? sg : 0.0;
+          else {
+            float sh = clamp((Hs - ac) / (ae - ac), 0.0, 1.0) * sg;   // where it passes H
+            below = ae < ac ? (ac < Hs ? sg : sg - sh) : (ac < Hs ? sh : 0.0);
+          }
+          float tc = max(sm.g, 0.0) * u_hk / Hs / PI * hstep * below;
+          float tr = (ac >= Hs && ae < Hs) ? -log(1.0 - f) : 0.0;
+          if (tc + tr <= 0.0) continue;
+          if (!lit) {
+            lit = true;
+            vec4 m3 = texelFetch(u_meta, ivec2(slot, 3), 0), m4 = texelFetch(u_meta, ivec2(slot, 4), 0), m5 = texelFetch(u_meta, ivec2(slot, 5), 0);
+            dRoof = m3.x;
+            vec2 back = -normalize(dp + vec2(1e-20));
+            vec4 fa = max(vec4(dot(back, vec2(0.92388, 0.38268)), dot(back, vec2(0.38268, 0.92388)), dot(back, vec2(-0.38268, 0.92388)), dot(back, vec2(-0.92388, 0.38268))), 0.0);
+            vec4 fb = max(vec4(-dot(back, vec2(0.92388, 0.38268)), -dot(back, vec2(0.38268, 0.92388)), -dot(back, vec2(-0.38268, 0.92388)), -dot(back, vec2(-0.92388, 0.38268))), 0.0);
+            float ws = dot(fa, vec4(1.0)) + dot(fb, vec4(1.0));
+            dWall = ws > 0.0 ? (dot(fa, m4) + dot(fb, m5)) / ws : 0.0;
+            float cv = dot(u_colour, vec3(0.2126, 0.7152, 0.0722));
+            float hiD = max(1.0 - cv + u_lightintensity, 1.0);
+            roofC = clamp((u_colour + 0.03) * mix(1.0 - u_lightintensity, hiD, dRoof) * u_lightcolor, lowc, vec3(1.0));
+            wallC = (u_colour + 0.03) * mix(1.0 - u_lightintensity, hiD, dWall) * u_lightcolor;
+          }
+          float gv = 0.5 * (gmin + clamp(sqrt(Hs / 150.0), gmin, 1.0));
+          vec3 roof = roofC, wall = clamp(wallC * gv, lowc, vec3(1.0));
+          if (u_byHeight == 1) {
+            vec3 base = texture(u_lut, vec2(clamp(H / ${LUT_MAX_M}.0, 0.0, 1.0), 0.5)).rgb;
+            float cv = dot(base, vec3(0.2126, 0.7152, 0.0722));
+            float hiD = max(1.0 - cv + u_lightintensity, 1.0);
+            roof = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dRoof) * u_lightcolor, lowc, vec3(1.0));
+            wall = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dWall) * gv * u_lightcolor, lowc, vec3(1.0));
+          }
+          tt += tc + tr;
+          hit += tr * roof + tc * wall;
+        }
+        if (tt > 0.0) {
+          float a = 1.0 - exp(-tt);
+          col += T * a * hit / tt;
+          T *= 1.0 - a;
+        }
+        if (T < u_tmin || a1 < 0.0) { done = true; break; }
+        ac = a1;
+      }
+      t = te + 0.001;
+      p = pe + dp * 0.001;
+    }
+    t = max(t, tOut) + eps0 + epsk * t;
+  }
+  if (DBG == 3) { fragColor = vec4(float(nT) / 8.0, float(nCap), float(nK) / 40.0, 1.0); return; }
+  if (DBG == 7) { fragColor = vec4(float(nI) / 100.0, float(nK) / 40.0, float(fine) / 96.0, 1.0); return; }
+  if (DBG == 4) { fragColor = vec4(float(nE) / 20.0, float(fine) / 96.0, 1.0 - T, 1.0); return; }
+  if (T > 0.9999) discard;
+  fragColor = vec4(col, 1.0 - T);   // premultiplied
+}`;
+
+/** The last pass: the march's result mixed with the frame drawn so far, in linear light. */
 const RESOLVE_FS = `#version 300 es
 precision highp float;
 uniform highp sampler2D u_acc;
@@ -326,7 +412,7 @@ uniform highp sampler2D u_bg;
 uniform float u_opacity;
 uniform int u_linear;
 uniform int u_dbgR;
-uniform vec2 u_size;   // the frame's size (the tiles' sum is drawn at 1/RES of it, read back bilinear)
+uniform vec2 u_size;   // the frame's size (the march is drawn at 1/RES of it, read back bilinear)
 out vec4 fragColor;
 vec3 toLin(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
 vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
@@ -338,7 +424,7 @@ void main() {
   if (a <= 1e-4) { fragColor = vec4(g, 1.0); return; }
   vec3 b = acc.rgb / acc.a;
   vec3 px = u_opacity * b + (1.0 - u_opacity) * g;   // a building pixel, as MapLibre blends a mesh
-  if (u_dbgR == 1) { fragColor = acc; return; }
+  if (u_dbgR == 1 || u_dbgR >= 3) { fragColor = acc; return; }
   fragColor = vec4(u_linear == 1 ? toSrgb((1.0 - a) * toLin(g) + a * toLin(px)) : (1.0 - a) * g + a * px, 1.0);
 }`;
 
@@ -348,26 +434,53 @@ interface FTile {
   y: number;
   key: string;
   state: 'loading' | 'ready' | 'missing';
-  /** Each height class present: an RGBA16F texture (f, w, v); null where absent. */
-  tex: (WebGLTexture | null)[] | null;
+  /** Decoded, not yet on the GPU: each class present's mip chain (RGBA f, w, v, 0), the tops. */
+  cpu: { cls: (Float32Array[] | null)[]; top32: Float32Array } | null;
+  /** On the GPU: its slot (−1: not resident) and each class's layer (−1: absent). */
+  slot: number;
+  layers: number[];
   /** The classes present (bits). */
   mask: number;
-  /** The tallest mean roof in the tile (m). */
+  /** The tallest mean roof in the tile (m), its lowest and highest ground (m, as drawn). */
   top: number;
-  /** Its lowest ground (m, as drawn). */
   gmin: number;
-  elevTex: WebGLTexture | null;
-  /** The tallest mean top in each 1/32 of the tile and the texel around it (R32F). */
-  top32: WebGLTexture | null;
-  /** The same on the CPU, and the cells' highest ground with it (RG32F: top, ground). */
+  gmax: number;
+  /** Its highest roof (m, absolute: its buildings' ground plus their tops, scaled). */
+  gbmax: number;
   top32cpu: Float32Array | null;
-  elev: WebGLBuffer | null;
-  vao: WebGLVertexArrayObject | null;
   elevFor: string;
   bytes: number;
+  used: number;
 }
 
 type Prog = { p: WebGLProgram; u: Record<string, WebGLUniformLocation | null> };
+
+/** 4 × 4 matrices, column-major, in doubles. */
+function mul4(a: ArrayLike<number>, b: ArrayLike<number>): Float64Array {
+  const o = new Float64Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+    o[c * 4 + r] = s;
+  }
+  return o;
+}
+function inv4(m: ArrayLike<number>): Float64Array {
+  const [a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33] = Array.from(m);
+  const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
+  const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12, b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
+  const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+  const det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  const k = 1 / det;
+  return Float64Array.from([
+    (a11 * b11 - a12 * b10 + a13 * b09) * k, (a02 * b10 - a01 * b11 - a03 * b09) * k, (a31 * b05 - a32 * b04 + a33 * b03) * k, (a22 * b04 - a21 * b05 - a23 * b03) * k,
+    (a12 * b08 - a10 * b11 - a13 * b07) * k, (a00 * b11 - a02 * b08 + a03 * b07) * k, (a32 * b02 - a30 * b05 - a33 * b01) * k, (a20 * b05 - a22 * b02 + a23 * b01) * k,
+    (a10 * b10 - a11 * b08 + a13 * b06) * k, (a01 * b08 - a00 * b10 - a03 * b06) * k, (a30 * b04 - a31 * b02 + a33 * b00) * k, (a21 * b02 - a20 * b04 - a23 * b00) * k,
+    (a11 * b07 - a10 * b09 - a12 * b06) * k, (a00 * b09 - a01 * b07 + a02 * b06) * k, (a31 * b01 - a30 * b03 - a32 * b00) * k, (a20 * b03 - a21 * b01 + a22 * b00) * k,
+  ]);
+}
+const apply4 = (m: ArrayLike<number>, v: number[]) => [0, 1, 2, 3].map((r) => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r] * v[3]);
+const latOfY = (y: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y)));
 
 export class FieldLayer implements CustomLayerInterface {
   id = 'buildings-field';
@@ -398,32 +511,44 @@ export class FieldLayer implements CustomLayerInterface {
   drawn: string[] = [];
   gpuMs: number[] = [];
   timing = false;
-  /** MapLibre's wall normals face inward of the ring as the tiles wind it (checked against the
-   * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
+  /** MapLibre's wall normals face inward of the ring as the tiles wind it. */
   wallSign = -1;
-  /** The march at 1/res of the frame's width and height (`?fres=`, else RES_DEFAULT). */
+  /** The march at 1/res of the frame's width and height (`?fres=`). */
   res = Number(new URLSearchParams(location.search).get('fres')) || RES_DEFAULT;
-  /** The march's steps at least (`?fmin=`). */
-  minSteps = Number(new URLSearchParams(location.search).get('fmin')) || 1;
+  /** The march's fine steps at most (`?fsteps=`), and the light left where it stops (`?ftmin=`). */
+  steps = Number(new URLSearchParams(location.search).get('fsteps')) || STEPS;
+  /** (a timing test: rays shallower than this sine of their angle below the horizon left out; −2 none) */
+  graze = -2;
   tmin = Number(new URLSearchParams(location.search).get('ftmin')) || 0.004;
+  /** The last frame's lookup windows (cells) and slots in use, for checks. */
+  stats = { windows: [] as number[][], slots: 0, layers: 0, layerCap: 0, clipped: 0, globe: false, trans: 0, ceil: 0 };
   private map!: MLMap;
   private gl!: WebGL2RenderingContext;
   private tiles = new Map<string, FTile>();
   private index: Map<number, Set<string>> | null = null;
-  private progs = new Map<string, Prog>();
+  private march: Prog | null = null;
+  private marchDbg = -1;
   private resolve: Prog | null = null;
-  private geo!: WebGLBuffer;
-  private idx!: WebGLBuffer;
   private quad!: WebGLVertexArrayObject;
-  private nidx = 0;
-  private nvert = 0;
-  /** Each vertex's grid point (for its elevation). */
-  private gridOf: Int32Array = new Int32Array(0);
   private elevKey = '';
+  private frame = 0;
   private bg: { tex: WebGLTexture; w: number; h: number } | null = null;
   private acc: { tex: WebGLTexture; fb: WebGLFramebuffer; w: number; h: number } | null = null;
   private depth: { tex: WebGLTexture; fb: WebGLFramebuffer; w: number; h: number } | null = null;
   private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
+  /** The class layers (RGBA16F 512² with mips), the slots' tops and ground, the slots' table, the lookup grid. */
+  private cls: WebGLTexture | null = null;
+  private clsCap = 0;
+  private layerFree: number[] = [];
+  private slotFree: number[] = [];
+  private slotTile: (FTile | null)[] = new Array(SLOTS).fill(null);
+  private top32Arr!: WebGLTexture;
+  private elevArr!: WebGLTexture;
+  private metaTex!: WebGLTexture;
+  private meta = new Float32Array(SLOTS * 6 * 4);
+  private pageTex!: WebGLTexture;
+  private page = new Uint16Array(WIN * WIN * NLEV);
+  private pageKey = '';
 
   constructor(private base: string) {}
 
@@ -433,42 +558,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.getExtension('EXT_color_buffer_float');
     gl.getExtension('EXT_color_buffer_half_float');
     this.timer.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
-    // The box: its top as a grid (each vertex at its ground + the top), and four sides, each a strip
-    // from the ground to the top along an edge. (pos.x, pos.y, up)
-    const verts: number[] = [];
-    const grid: number[] = [];
-    const P = (i: number, j: number, up: number, face = 0) => {
-      verts.push((i / G) * EXTENT, (j / G) * EXTENT, up, face);
-      grid.push(j * (G + 1) + i);
-      return grid.length - 1;
-    };
-    const idx: number[] = [];
-    const top: number[][] = [];
-    for (let j = 0; j <= G; j++) {
-      top.push([]);
-      for (let i = 0; i <= G; i++) top[j].push(P(i, j, 1));
-    }
-    for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) idx.push(top[j][i], top[j + 1][i], top[j][i + 1], top[j][i + 1], top[j + 1][i], top[j + 1][i + 1]);
-    const edges: [number, number][][] = [
-      Array.from({ length: G + 1 }, (_, i) => [i, 0]),
-      Array.from({ length: G + 1 }, (_, i) => [i, G]),
-      Array.from({ length: G + 1 }, (_, j) => [0, j]),
-      Array.from({ length: G + 1 }, (_, j) => [G, j]),
-    ];
-    for (const [fi, e] of edges.entries()) {
-      const lo = e.map(([i, j]) => P(i, j, 0, fi + 1)), hi = e.map(([i, j]) => P(i, j, 1, fi + 1));
-      for (let k = 0; k < G; k++) idx.push(lo[k], hi[k], lo[k + 1], lo[k + 1], hi[k], hi[k + 1]);
-    }
-    this.nvert = grid.length;
-    this.gridOf = Int32Array.from(grid);
-    this.geo = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.geo);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
-    this.idx = gl.createBuffer()!;
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idx);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
-    this.nidx = idx.length;
-    // The full-screen quad of the last pass.
+    // The full-screen triangle.
     this.quad = gl.createVertexArray()!;
     gl.bindVertexArray(this.quad);
     const qb = gl.createBuffer()!;
@@ -477,6 +567,35 @@ export class FieldLayer implements CustomLayerInterface {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
+    const nearest = (target: number) => {
+      gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    };
+    this.top32Arr = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.top32Arr);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 6, gl.RG32F, 32, 32, SLOTS);
+    nearest(gl.TEXTURE_2D_ARRAY);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+    this.elevArr = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.elevArr);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.R32F, G + 1, G + 1, SLOTS);
+    nearest(gl.TEXTURE_2D_ARRAY);
+    gl.getExtension('OES_texture_float_linear');
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    this.metaTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.metaTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, SLOTS, 6);
+    nearest(gl.TEXTURE_2D);
+    this.pageTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.pageTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R16UI, WIN, WIN * NLEV);
+    nearest(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    for (let s = SLOTS - 1; s >= 0; s--) this.slotFree.push(s);
     void fetch(`${this.base}/index.json`).then((r) => r.json()).then((j: Record<string, string[]>) => {
       this.index = new Map(Object.entries(j).map(([z, l]) => [Number(z), new Set(l)]));
       map.triggerRepaint();
@@ -505,32 +624,14 @@ export class FieldLayer implements CustomLayerInterface {
     return n;
   }
 
-  private program(sd: CustomRenderMethodInput['shaderData']): Prog {
-    let pr = this.progs.get(sd.variantName);
-    if (pr) return pr;
+  private prog(fs: string, names: string[]): Prog {
     const gl = this.gl;
-    const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
-    const p = link(gl, head + VS, FS);
+    const p = link(gl, VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
-    pr = { p, u };
-    this.progs.set(sd.variantName, pr);
-    return pr;
+    for (const n of names) u[n] = gl.getUniformLocation(p, n);
+    return { p, u };
   }
 
-  private resolveProg(): Prog {
-    if (this.resolve) return this.resolve;
-    const gl = this.gl;
-    const p = link(gl, RESOLVE_VS, RESOLVE_FS);
-    const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_acc', 'u_bg', 'u_opacity', 'u_linear', 'u_dbgR', 'u_size']) u[n] = gl.getUniformLocation(p, n);
-    this.resolve = { p, u };
-    return this.resolve;
-  }
-
-  /** The tiles to draw: a quadtree from z4, split where a tile is nearer the camera than its
-   * level's distance, down to the map's zoom (as MapLibre's cover takes tiles). */
   /** The meshes' tiles MapLibre draws now (the buildings' source): z12–14. */
   private meshTiles(): { z: number; x: number; y: number }[] {
     const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
@@ -614,7 +715,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (t) return t;
-    t = { z, x, y, key, state: 'loading', tex: null, top32: null, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0 };
+    t = { z, x, y, key, state: 'loading', cpu: null, slot: -1, layers: [-1, -1, -1, -1, -1], mask: 0, top: 0, gmin: 0, gmax: 0, gbmax: -1e9, top32cpu: null, elevFor: '', bytes: 0, used: 0 };
     this.tiles.set(key, t);
     const tt = t;
     void (async () => {
@@ -624,16 +725,15 @@ export class FieldLayer implements CustomLayerInterface {
         const raw = await new Response(r.body!.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
         const u = new Uint16Array(raw);
         const N = 512 * 512;
-        // Planes: f0..f4, w0..w4, v0..v4 (u16): to linear values, four RGBA16F textures.
-        const gl = this.gl;
-        // Each class present: f, w (log-coded), v, as an RGBA16F texture.
-        const tex: (WebGLTexture | null)[] = [];
+        // Each class present: f, w (log-coded), v as linear values, and its mip chain (each level the
+        // mean of four: the densities' own means, as the GPU's would be).
+        const cls: (Float32Array[] | null)[] = [];
         let top = 0, mask = 0;
         for (let c = 0; c < 5; c++) {
           let any = false;
           for (let i = 0; i < N; i++) if (u[c * N + i] || u[(5 + c) * N + i]) { any = true; break; }
           if (!any) {
-            tex.push(null);
+            cls.push(null);
             continue;
           }
           mask |= 1 << c;
@@ -645,18 +745,17 @@ export class FieldLayer implements CustomLayerInterface {
             px[i * 4 + 2] = v;
             if (f > 1e-5) top = Math.max(top, v / f);
           }
-          const tx = gl.createTexture()!;
-          gl.bindTexture(gl.TEXTURE_2D, tx);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 512, 512, 0, gl.RGBA, gl.FLOAT, px);
-          gl.generateMipmap(gl.TEXTURE_2D);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-          tex.push(tx);
+          const chain = [px];
+          for (let s = 256; s >= 1; s >>= 1) {
+            const a = chain[chain.length - 1], o = new Float32Array(s * s * 4), w2 = s * 2;
+            for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) for (let k = 0; k < 4; k++) {
+              const i0 = ((2 * y) * w2 + 2 * x) * 4 + k;
+              o[(y * s + x) * 4 + k] = 0.25 * (a[i0] + a[i0 + 4] + a[i0 + w2 * 4] + a[i0 + w2 * 4 + 4]);
+            }
+            chain.push(o);
+          }
+          cls.push(chain);
         }
-        gl.bindTexture(gl.TEXTURE_2D, null);
         tt.mask = mask;
         // The tallest mean top in each 1/32 of the tile: its 16 × 16 texels and the texel around them
         // (bilinear reads reach across a cell's edge by one).
@@ -677,17 +776,8 @@ export class FieldLayer implements CustomLayerInterface {
           for (let cy = Math.max(0, (y - 1) >> 4); cy <= Math.min(31, (y + 1) >> 4); cy++)
             for (let cx = Math.max(0, (x - 1) >> 4); cx <= Math.min(31, (x + 1) >> 4); cx++) if (h > d32[cy * 32 + cx]) d32[cy * 32 + cx] = h;
         }
-        const t32 = gl.createTexture()!;
-        gl.bindTexture(gl.TEXTURE_2D, t32);
-        const rg = new Float32Array(32 * 32 * 2);
-        for (let i = 0; i < 32 * 32; i++) rg[i * 2] = d32[i];
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
+        tt.cpu = { cls, top32: d32 };
         tt.top32cpu = d32;
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-        tt.top32 = t32;
-        tt.tex = tex;
         tt.top = Math.min(1000, top + 2);
         tt.bytes = r.headers.get('content-length') ? Number(r.headers.get('content-length')) : 0;
         tt.state = 'ready';
@@ -699,10 +789,84 @@ export class FieldLayer implements CustomLayerInterface {
     return t;
   }
 
-  /** The tile's grid elevations, from the terrain as drawn (m, exaggerated): the box's vertices
-   * and the march's ground. */
-  private elevations(t: FTile) {
-    const gl = this.gl;
+  /** The class layers' array, grown (its layers copied over) to hold `cap`. */
+  private growLayers(gl: WebGL2RenderingContext, cap: number) {
+    const nt = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, nt);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, LEVELS, gl.RGBA16F, 512, 512, cap);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (this.cls) {
+      const used = new Set<number>();
+      for (const t of this.slotTile) if (t) for (const l of t.layers) if (l >= 0) used.add(l);
+      const fb = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb);
+      for (const l of used) for (let lv = 0; lv < LEVELS; lv++) {
+        gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.cls, lv, l);
+        gl.copyTexSubImage3D(gl.TEXTURE_2D_ARRAY, lv, 0, 0, l, 0, 0, 512 >> lv, 512 >> lv);
+      }
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fb);
+      gl.deleteTexture(this.cls);
+    }
+    for (let l = cap - 1; l >= this.clsCap; l--) this.layerFree.push(l);
+    this.cls = nt;
+    this.clsCap = cap;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  }
+
+  /** A tile off the GPU (its data fetched again when next wanted). */
+  private evict(t: FTile) {
+    if (t.slot >= 0) {
+      this.slotTile[t.slot] = null;
+      this.slotFree.push(t.slot);
+    }
+    for (const l of t.layers) if (l >= 0) this.layerFree.push(l);
+    this.tiles.delete(t.key);
+    t.slot = -1;
+    t.layers = [-1, -1, -1, -1, -1];
+  }
+
+  /** A decoded tile onto the GPU: a slot, a layer for each class present (the least recently drawn
+   * tiles giving theirs up, the layers' array growing when every resident tile is in use). */
+  private resident(gl: WebGL2RenderingContext, t: FTile): boolean {
+    if (t.slot >= 0) return true;
+    if (!t.cpu) return false;
+    const need = t.cpu.cls.filter((c) => c).length;
+    const victims = () => this.slotTile.filter((x): x is FTile => !!x && x.used < this.frame).sort((a, b) => a.used - b.used);
+    if (!this.slotFree.length) {
+      const v = victims()[0];
+      if (!v) return false;
+      this.evict(v);
+    }
+    if (this.layerFree.length < need) {
+      for (const v of victims()) {
+        if (this.layerFree.length >= need) break;
+        this.evict(v);
+      }
+    }
+    if (this.layerFree.length < need) this.growLayers(gl, Math.max(LAYERS0, this.clsCap * 2));
+    t.slot = this.slotFree.pop()!;
+    this.slotTile[t.slot] = t;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.cls);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    t.layers = t.cpu.cls.map((chain) => {
+      if (!chain) return -1;
+      const l = this.layerFree.pop()!;
+      chain.forEach((px, lv) => gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, lv, 0, 0, l, 512 >> lv, 512 >> lv, 1, gl.RGBA, gl.FLOAT, px));
+      return l;
+    });
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    t.cpu = null;
+    t.elevFor = '';
+    return true;
+  }
+
+  /** The tile's grid elevations, from the terrain as drawn (m, exaggerated), and each 1/32 cell's
+   * highest ground with its tallest top: the march's ground, and its skipping. */
+  private elevations(gl: WebGL2RenderingContext, t: FTile) {
     const terrain = (this.map as unknown as { terrain?: { getElevationForLngLat(ll: LngLat, tr: unknown): number } | null }).terrain;
     const tr = trOf(this.map);
     const e = new Float32Array((G + 1) * (G + 1));
@@ -717,50 +881,37 @@ export class FieldLayer implements CustomLayerInterface {
       }
     }
     t.gmin = e.reduce((m, x) => Math.min(m, x), Infinity);
-    // Each cell's highest ground (the grid's corners around it: G = 32 cells, one a grid square), with
-    // its tallest top: the march skips a cell from its absolute heights alone.
-    if (t.top32 && t.top32cpu) {
-      const rg = new Float32Array(32 * 32 * 2);
-      for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
-        const k = y * 32 + x;
-        rg[k * 2] = t.top32cpu[k];
-        rg[k * 2 + 1] = Math.max(e[y * (G + 1) + x], e[y * (G + 1) + x + 1], e[(y + 1) * (G + 1) + x], e[(y + 1) * (G + 1) + x + 1]);
+    t.gmax = e.reduce((m, x) => Math.max(m, x), -Infinity);
+    const rg = new Float32Array(32 * 32 * 2);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      const k = y * 32 + x;
+      rg[k * 2] = t.top32cpu ? t.top32cpu[k] : 0;
+      // (the highest ground of a cell with buildings only: a block's bound is then its buildings'
+      // ground, not a ridge beside them)
+      rg[k * 2 + 1] = rg[k * 2] > 0 ? Math.max(e[y * (G + 1) + x], e[y * (G + 1) + x + 1], e[(y + 1) * (G + 1) + x], e[(y + 1) * (G + 1) + x + 1]) + rg[k * 2] * this.hk : -1e9;
+    }
+    // (the highest ground under buildings: the tile's ceiling over it)
+    t.gbmax = -1e9;
+    for (let k = 0; k < 32 * 32; k++) t.gbmax = Math.max(t.gbmax, rg[k * 2 + 1]);   // (its highest roof, absolute)
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.top32Arr);
+    // (and its coarser levels, each cell the most of its four: the march's blocks)
+    for (let lv = 0, sz = 32, a = rg; lv < 6; lv++, sz >>= 1) {
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, lv, 0, 0, t.slot, sz, sz, 1, gl.RG, gl.FLOAT, a);
+      if (sz === 1) break;
+      const h = sz >> 1, o = new Float32Array(h * h * 2);
+      for (let y = 0; y < h; y++) for (let x = 0; x < h; x++) for (let k = 0; k < 2; k++) {
+        const i = ((2 * y) * sz + 2 * x) * 2 + k;
+        o[(y * h + x) * 2 + k] = Math.max(a[i], a[i + 2], a[i + sz * 2], a[i + sz * 2 + 2]);
       }
-      gl.bindTexture(gl.TEXTURE_2D, t.top32);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+      a = o;
     }
-    const ev = new Float32Array(this.nvert);
-    for (let i = 0; i < this.nvert; i++) ev[i] = e[this.gridOf[i]];
-    if (!t.elev) t.elev = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, t.elev);
-    gl.bufferData(gl.ARRAY_BUFFER, ev, gl.DYNAMIC_DRAW);
-    if (!t.elevTex) t.elevTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, G + 1, G + 1, 0, gl.RED, gl.FLOAT, e);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindTexture(gl.TEXTURE_2D, null);
-    if (!t.vao) {
-      t.vao = gl.createVertexArray()!;
-      gl.bindVertexArray(t.vao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.geo);
-      gl.enableVertexAttribArray(0);
-      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
-      gl.enableVertexAttribArray(1);
-      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
-      gl.bindBuffer(gl.ARRAY_BUFFER, t.elev);
-      gl.enableVertexAttribArray(2);
-      gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idx);
-      gl.bindVertexArray(null);
-    }
-    t.elevFor = this.elevKey;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.elevArr);
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, t.slot, G + 1, G + 1, 1, gl.RED, gl.FLOAT, e);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    t.elevFor = this.elevKey + '|' + this.hk;
   }
 
-  /** The float target the tiles are drawn into, and the copy of the frame under them. */
+  /** The float target the march is drawn into, the copy of the frame under it, its depth. */
   private targets(gl: WebGL2RenderingContext) {
     const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
     const aw = Math.ceil(w / this.res), ah = Math.ceil(h / this.res);
@@ -811,42 +962,160 @@ export class FieldLayer implements CustomLayerInterface {
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     this.drawn = [];
     if (!this.on) return;
-    const tiles = this.cover();
-    // A tile still loading: its nearest loaded ancestor stands in (drawn once).
-    const draw: FTile[] = [];
-    const seen = new Set<string>();
-    for (const t of tiles) {
-      let d: FTile | undefined = t;
-      while (d && d.state !== 'ready') {
-        if (d.z <= 4) {
-          d = undefined;
-          break;
-        }
-        d = this.tiles.get(`${d.z - 1}/${d.x >> 1}/${d.y >> 1}`);
-      }
-      if (d && !seen.has(d.key)) {
-        seen.add(d.key);
-        draw.push(d);
+    const cover = this.cover();
+    if (!cover.length) return;
+    this.frame++;
+    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    // Each tile of the cover, or (loading) its nearest decoded ancestor standing in for its cell.
+    const entries: { z: number; x: number; y: number; t: FTile }[] = [];
+    for (const c of cover) {
+      let d: FTile | undefined = c;
+      while (d && d.state !== 'ready') d = d.z <= ZMIN ? undefined : this.tiles.get(`${d.z - 1}/${d.x >> 1}/${d.y >> 1}`);
+      if (d) {
+        d.used = this.frame;
+        entries.push({ z: c.z, x: c.x, y: c.y, t: d });
       }
     }
-    if (!draw.length) return;
+    const ready = entries.filter((e) => this.resident(gl, e.t));
+    if (!ready.length) return;
     const map = this.map;
-    const tr = trOf(map);
-    const camM = MercatorCoordinate.fromLngLat(tr.getCameraLngLat());
-    const camAlt = tr.getCameraAltitude();
-    // Far to near: each tile is composited over the ones behind it.
-    const dist = (t: FTile) => {
+    // The reference frame: tile units of the tile under the camera at the map's zoom (R units), and
+    // the frame the ray is marched in (m about the camera: mercator's own axes, or the sphere's).
+    const zr = Math.max(0, Math.min(22, Math.floor(map.getZoom())));
+    const nr = 2 ** zr;
+    const camLL = trOf(map).getCameraLngLat();
+    const cm0 = MercatorCoordinate.fromLngLat(camLL);
+    const xr = Math.max(0, Math.min(nr - 1, Math.floor(cm0.x * nr))), yr = Math.max(0, Math.min(nr - 1, Math.floor(cm0.y * nr)));
+    const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: xr, y: yr, z: zr } } as never, applyGlobeMatrix: true });
+    const trans = pd.projectionTransition;
+    const globeProj = opts.shaderData.define.includes('GLOBE');
+    const globe = globeProj && trans > 0.5;
+    const M = (globeProj && !globe ? pd.fallbackMatrix : pd.mainMatrix) as ArrayLike<number>;
+    const Mi = inv4(M);
+    const eh = apply4(Mi, [0, 0, 1, 0]);
+    const eye = [eh[0] / eh[3], eh[1] / eh[3], eh[2] / eh[3]];
+    const zr2 = nr * EXTENT;
+    let mxc: number, myc: number, hc: number, mpuC = 1, S: number[];
+    let Cs = [0, 0, 0];
+    if (globe) {
+      Cs = eye.map((v) => v * EARTH_R);
+      const L = Math.hypot(Cs[0], Cs[1], Cs[2]);
+      hc = L - EARTH_R;
+      mxc = Math.atan2(Cs[0], Cs[2]) / (2 * Math.PI) + 0.5;
+      myc = 0.5 - Math.atanh(Cs[1] / L) / (2 * Math.PI);
+      S = [1 / EARTH_R, 0, 0, 0, 0, 1 / EARTH_R, 0, 0, 0, 0, 1 / EARTH_R, 0, Cs[0] / EARTH_R, Cs[1] / EARTH_R, Cs[2] / EARTH_R, 1];
+    } else {
+      mxc = (xr + eye[0] / EXTENT) / nr;
+      myc = (yr + eye[1] / EXTENT) / nr;
+      hc = eye[2];
+      mpuC = (CIRC * Math.cos(latOfY(myc))) / zr2;
+      S = [1 / mpuC, 0, 0, 0, 0, 1 / mpuC, 0, 0, 0, 0, 1, 0, eye[0], eye[1], eye[2], 1];
+    }
+    const inv = inv4(mul4(M, S));
+    // Each resident tile drawn: its ground, its row in the slots' table (its origin from the camera).
+    const drawnT = new Set<FTile>();
+    for (const e of ready) drawnT.add(e.t);
+    let ceil = -1e9, floor = 1e9;
+    const rowW = SLOTS * 4;
+    // The light: fill-extrusion's directional term for a roof and each of eight wall directions, at
+    // each tile (on the globe the light turned into the tile's frame at its centre, mixed by the hand-off).
+    const style = (map as unknown as { style: { light: { getCartesianPosition(): number[]; properties: { get(k: string): { r: number; g: number; b: number } & number } } } }).style;
+    const lp = style.light.getCartesianPosition();
+    const lpg = trOf(map).transformLightDirection(lp) as number[];
+    const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+    for (const t of drawnT) {
+      if (t.elevFor !== this.elevKey + '|' + this.hk) this.elevations(gl, t);
       const n = 2 ** t.z;
-      return Math.hypot((t.x + 0.5) / n - camM.x, (t.y + 0.5) / n - camM.y);
-    };
-    draw.sort((a, b) => dist(b) - dist(a));
+      const xu = t.x + n * Math.round(mxc - (t.x + 0.5) / n);
+      const s = t.slot * 4;
+      this.meta[s] = (xu / n - mxc) * zr2;
+      this.meta[s + 1] = (t.y / n - myc) * zr2;
+      this.meta[s + 2] = 2 ** (zr - t.z);
+      this.meta[s + 3] = (CIRC * Math.cos(latOfY((t.y + 0.5) / n))) / n / EXTENT;
+      for (let c = 0; c < 4; c++) this.meta[rowW + s + c] = t.layers[c];
+      this.meta[2 * rowW + s] = t.layers[4];
+      this.meta[2 * rowW + s + 1] = t.gbmax + 1;
+      let LG = lp;
+      if (trans > 0) {
+        const cx = (t.x + 0.5) / n, cy = (t.y + 0.5) / n;
+        const sx = cx * Math.PI * 2 + Math.PI, sy = latOfY(cy);
+        const sp = [Math.sin(sx) * Math.cos(sy), Math.sin(sy), Math.cos(sx) * Math.cos(sy)];
+        const ar0 = [sp[2], 0, -sp[0]];
+        const ad0 = [ar0[1] * sp[2] - ar0[2] * sp[1], ar0[2] * sp[0] - ar0[0] * sp[2], ar0[0] * sp[1] - ar0[1] * sp[0]];
+        const nl = (v: number[]) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return v.map((x) => x / l); };
+        const ar = nl(ar0), ad = nl(ad0);
+        const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        LG = [dot(ar, lpg), dot(ad, lpg), dot(sp, lpg)];
+      }
+      const dirOf = (v: number[]) => (1 - trans) * clamp01(v[0] * lp[0] + v[1] * lp[1] + v[2] * lp[2]) + trans * clamp01(v[0] * LG[0] + v[1] * LG[1] + v[2] * LG[2]);
+      this.meta[3 * rowW + s] = dirOf([0, 0, 1]);
+      for (let qd = 0; qd < 8; qd++) {
+        const b = (qd + 0.5) * (Math.PI / 4);
+        this.meta[(4 + (qd >> 2)) * rowW + s + (qd & 3)] = dirOf([this.wallSign * Math.cos(b), this.wallSign * Math.sin(b), 0]);
+      }
+      ceil = Math.max(ceil, t.gbmax);
+      floor = Math.min(floor, t.gmin);
+      this.drawn.push(t.key);
+    }
+    // The lookup grid: each entry's cell at its level, "finer" at every coarser level over it; a
+    // window per level, the box of its marked cells.
+    const lev: Map<string, number>[] = Array.from({ length: NLEV }, () => new Map());
+    for (const e of ready) {
+      const n = 2 ** e.z;
+      const xu = e.x + n * Math.round(mxc - (e.x + 0.5) / n);
+      const i = e.z - ZMIN;
+      if (i < 0 || i >= NLEV) continue;
+      if (lev[i].get(`${xu}/${e.y}`) !== 65535) lev[i].set(`${xu}/${e.y}`, e.t.slot + 1);
+      for (let z = e.z - 1; z >= ZMIN; z--) lev[z - ZMIN].set(`${Math.floor(xu / 2 ** (e.z - z))}/${e.y >> (e.z - z)}`, 65535);
+    }
+    const win = new Float32Array(NLEV * 4);
+    const wins: number[][] = [];
+    let clipped = 0;
+    const keyParts: string[] = [];
+    for (let i = 0; i < NLEV; i++) {
+      const cells = [...lev[i].entries()].map(([k, v]) => {
+        const [x, y] = k.split('/').map(Number);
+        return { x, y, v };
+      });
+      if (!cells.length) {
+        wins.push([0, 0, 0, 0]);
+        continue;
+      }
+      const x0 = Math.min(...cells.map((c) => c.x)), y0 = Math.min(...cells.map((c) => c.y));
+      const w = Math.min(WIN, Math.max(...cells.map((c) => c.x)) - x0 + 1), h = Math.min(WIN, Math.max(...cells.map((c) => c.y)) - y0 + 1);
+      const z = ZMIN + i, n = 2 ** z;
+      win.set([(x0 / n - mxc) * zr2, (y0 / n - myc) * zr2, w, h], i * 4);
+      wins.push([x0, y0, w, h]);
+      keyParts.push(`${i}:${x0},${y0},${w},${h}:` + cells.map((c) => `${c.x - x0},${c.y - y0},${c.v}`).join(';'));
+      for (const c of cells) if (c.x - x0 >= w || c.y - y0 >= h) clipped++;
+    }
+    const pageKey = keyParts.join('|');
+    if (pageKey !== this.pageKey) {
+      this.pageKey = pageKey;
+      this.page.fill(0);
+      for (let i = 0; i < NLEV; i++) {
+        const [x0, y0, w, h] = wins[i];
+        for (const [k, v] of lev[i]) {
+          const [x, y] = k.split('/').map(Number);
+          if (x - x0 < w && y - y0 < h) this.page[(i * WIN + (y - y0)) * WIN + (x - x0)] = v;
+        }
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.pageTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, WIN, WIN * NLEV, gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.page);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this.metaTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SLOTS, 6, gl.RGBA, gl.FLOAT, this.meta);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.stats = { windows: wins, slots: drawnT.size, layers: this.clsCap - this.layerFree.length, layerCap: this.clsCap, clipped, globe, trans, ceil };
+
     const timed = this.timing && this.timer.ext;
     let q: WebGLQuery | null = null;
     if (timed) {
       q = gl.createQuery()!;
       gl.beginQuery(this.timer.ext!.TIME_ELAPSED_EXT, q);
     }
-    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
     const drange = gl.getParameter(gl.DEPTH_RANGE) as Float32Array;
     const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
     const { acc, bg, depth } = this.targets(gl);
@@ -865,18 +1134,49 @@ export class FieldLayer implements CustomLayerInterface {
     gl.viewport(0, 0, acc.w, acc.h);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const pr = this.program(opts.shaderData);
-    const u = pr.u;
-    gl.useProgram(pr.p);
+    if (!this.march || this.marchDbg !== this.dbg) {
+      this.marchDbg = this.dbg;
+      this.march = this.prog(FS.replace('__DBG__', String(this.dbg)), ['u_inv', 'u_globe', 'u_mpuC', 'u_hc', 'u_Cs', 'u_hc2', 'u_mc', 'u_zr2', 'u_zr', 'u_win', 'u_page', 'u_meta', 'u_cls', 'u_top32', 'u_elev', 'u_scene', 'u_drange', 'u_res', 'u_viewport', 'u_pixAngle', 'u_ceil', 'u_floor', 'u_steps', 'u_tmin', 'u_hk', 'u_wallSign', 'u_box', 'u_lightpos', 'u_lightpos_globe', 'u_trans', 'u_lightintensity', 'u_colour', 'u_lightcolor', 'u_byHeight', 'u_lut', 'u_graze']);
+    }
+    const u = this.march.u;
+    gl.useProgram(this.march.p);
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.STENCIL_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.disable(gl.BLEND);
+    gl.uniformMatrix4fv(u.u_inv, false, Float32Array.from(inv));
+    gl.uniform1i(u.u_globe, globe ? 1 : 0);
+    gl.uniform1f(u.u_mpuC, mpuC);
+    gl.uniform1f(u.u_hc, hc);
+    gl.uniform3f(u.u_Cs, Cs[0], Cs[1], Cs[2]);
+    gl.uniform1f(u.u_hc2, hc * (2 * EARTH_R + hc));
+    gl.uniform2f(u.u_mc, mxc, myc);
+    gl.uniform1f(u.u_zr2, zr2);
+    gl.uniform1i(u.u_zr, zr);
+    gl.uniform4fv(u.u_win, win);
     gl.uniform2f(u.u_viewport, acc.w, acc.h);
     gl.uniform1f(u.u_pixAngle, opts.fov / acc.h);
-    gl.uniform1i(u.u_dbg, this.dbg);
+    gl.uniform1f(u.u_ceil, ceil + 2);
+    gl.uniform1f(u.u_floor, floor - 10);
+    gl.uniform1i(u.u_steps, this.steps);
+    gl.uniform1f(u.u_graze, this.graze);
+    gl.uniform1f(u.u_tmin, this.tmin);
+    gl.uniform1f(u.u_hk, this.hk);
+    gl.uniform1f(u.u_wallSign, this.wallSign);
+    gl.uniform1i(u.u_res, this.res);
+    gl.uniform2f(u.u_drange, drange[0], drange[1]);
+    this.lastRange = [drange[0], drange[1]];
+    if (this.box) {
+      const [w, s, e, nn] = this.box;
+      const a = MercatorCoordinate.fromLngLat([w, nn]), c = MercatorCoordinate.fromLngLat([e, s]);
+      gl.uniform4f(u.u_box, (a.x - mxc) * zr2, (a.y - myc) * zr2, (c.x - mxc) * zr2, (c.y - myc) * zr2);
+    } else gl.uniform4f(u.u_box, -1e30, -1e30, 1e30, 1e30);
+    gl.uniform1f(u.u_lightintensity, style.light.properties.get('intensity') as unknown as number);
+    const lc = style.light.properties.get('color');
+    gl.uniform3f(u.u_lightcolor, lc.r, lc.g, lc.b);
+    const [r, g, b] = this.colour;
+    gl.uniform3f(u.u_colour, r, g, b);
     gl.uniform1i(u.u_byHeight, this.heightLut ? 1 : 0);
     if (this.heightLut && this.lutFor !== this.heightLut) {
       if (!this.lutTex) this.lutTex = gl.createTexture()!;
@@ -891,83 +1191,26 @@ export class FieldLayer implements CustomLayerInterface {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this.lutFor = this.heightLut;
     }
-    gl.activeTexture(gl.TEXTURE9);
-    gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
-    gl.uniform1i(u.u_lut, 9);
-    gl.uniform2f(u.u_drange, drange[0], drange[1]);
-    this.lastRange = [drange[0], drange[1]];
-    {
-      const p = (map.getPitch() * Math.PI) / 180, br = (map.getBearing() * Math.PI) / 180;
-      gl.uniform3f(u.u_fwd, Math.sin(br) * Math.sin(p), -Math.cos(br) * Math.sin(p), -Math.cos(p));
-    }
-    const exag = map.getTerrain()?.exaggeration ?? 0;
-    gl.uniform2f(u.u_ztol, 0.015, 75 * Math.max(exag, 1));
-    gl.uniform1i(u.u_scene, 2);
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, depth.tex);
-    const style = (map as unknown as { style: { light: { getCartesianPosition(): number[]; properties: { get(k: string): { r: number; g: number; b: number } & number } } } }).style;
-    const lp = style.light.getCartesianPosition();
-    gl.uniform3fv(u.u_lightpos, lp);
-    gl.uniform3fv(u.u_lightpos_globe, tr.transformLightDirection(lp));
-    gl.uniform1f(u.u_lightintensity, style.light.properties.get('intensity') as unknown as number);
-    const lc = style.light.properties.get('color');
-    gl.uniform3f(u.u_lightcolor, lc.r, lc.g, lc.b);
-    const [r, g, b] = this.colour;
-    gl.uniform1f(u.u_colorvalue, r * 0.2126 + g * 0.7152 + b * 0.0722);
-    gl.uniform3f(u.u_colour, r, g, b);
-    gl.uniform1f(u.u_hk, this.hk);
-    gl.uniform1f(u.u_wallSign, this.wallSign);
-    for (let k = 0; k < 5; k++) gl.uniform1i(u[`u_c${k}`], 4 + k);
-    gl.uniform1i(u.u_top32, 10);
-    gl.uniform1i(u.u_res, this.res);
-    gl.uniform1f(u.u_minSteps, this.minSteps);
-    gl.uniform1f(u.u_tmin, this.tmin);
-    gl.uniform1i(u.u_elev, 1);
-    for (const t of draw) {
-      if (t.elevFor !== this.elevKey || !t.vao) this.elevations(t);
-      const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
-      gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
-      const mc = pd.tileMercatorCoords as ArrayLike<number>;
-      gl.uniform4f(u.u_projection_tile_mercator_coords, mc[0], mc[1], mc[2], mc[3]);
-      const cp = pd.clippingPlane as ArrayLike<number>;
-      gl.uniform4f(u.u_projection_clipping_plane, cp[0], cp[1], cp[2], cp[3]);
-      gl.uniform1f(u.u_projection_transition, pd.projectionTransition);
-      gl.uniform1f(u.u_trans, pd.projectionTransition);
-      gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
-      const mm = pd.mainMatrix as ArrayLike<number>;
-      const p22 = perspectiveP22(mm);
-      gl.uniform1f(u.u_p22, p22);
-      gl.uniform1f(u.u_p23, mm[14] + p22 * mm[15]);
-      const n = 2 ** t.z;
-      const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (t.y + 0.5)) / n)));
-      gl.uniform4f(u.u_camTile, (camM.x * n - t.x) * EXTENT, (camM.y * n - t.y) * EXTENT, camAlt, (40075016.686 * Math.cos(lat)) / n / EXTENT);
-      gl.uniform1f(u.u_top, t.top * this.hk);
-      gl.uniform1f(u.u_gmin, t.gmin);
-      if (this.box) {
-        const [w, s, e, nn] = this.box;
-        const a = MercatorCoordinate.fromLngLat([w, nn]), c = MercatorCoordinate.fromLngLat([e, s]);
-        gl.uniform4f(u.u_box, (a.x * n - t.x) * EXTENT, (a.y * n - t.y) * EXTENT, (c.x * n - t.x) * EXTENT, (c.y * n - t.y) * EXTENT);
-      } else gl.uniform4f(u.u_box, -1e9, -1e9, 1e9, 1e9);
-      for (let k = 0; k < 5; k++) {
-        gl.activeTexture(gl.TEXTURE4 + k);
-        gl.bindTexture(gl.TEXTURE_2D, t.tex![k]);
-      }
-      gl.uniform1i(u.u_mask, t.mask);
-      gl.activeTexture(gl.TEXTURE10);
-      gl.bindTexture(gl.TEXTURE_2D, t.top32);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
-      gl.bindVertexArray(t.vao);
-      gl.drawElements(gl.TRIANGLES, this.nidx, gl.UNSIGNED_SHORT, 0);
-      this.drawn.push(t.key);
-    }
-    gl.bindVertexArray(null);
+    const bind = (unit: number, target: number, tex: WebGLTexture | null, name: string) => {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(target, tex);
+      gl.uniform1i(u[name], unit);
+    };
+    bind(1, gl.TEXTURE_2D_ARRAY, this.elevArr, 'u_elev');
+    bind(2, gl.TEXTURE_2D, depth.tex, 'u_scene');
+    bind(4, gl.TEXTURE_2D_ARRAY, this.cls, 'u_cls');
+    bind(5, gl.TEXTURE_2D_ARRAY, this.top32Arr, 'u_top32');
+    bind(6, gl.TEXTURE_2D, this.metaTex, 'u_meta');
+    bind(7, gl.TEXTURE_2D, this.pageTex, 'u_page');
+    bind(9, gl.TEXTURE_2D, this.lutTex, 'u_lut');
+    gl.bindVertexArray(this.quad);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     // The last pass, onto the frame.
     gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
     gl.viewport(vp[0], vp[1], vp[2], vp[3]);
-    const rp = this.resolveProg();
+    if (!this.resolve) this.resolve = this.prog(RESOLVE_FS, ['u_acc', 'u_bg', 'u_opacity', 'u_linear', 'u_dbgR', 'u_size']);
+    const rp = this.resolve;
     gl.useProgram(rp.p);
-    gl.disable(gl.BLEND);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, acc.tex);
     gl.uniform1i(rp.u.u_acc, 0);
@@ -978,12 +1221,12 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1i(rp.u.u_linear, this.linear ? 1 : 0);
     gl.uniform1i(rp.u.u_dbgR, this.dbg);
     gl.uniform2f(rp.u.u_size, bg.w, bg.h);
-    gl.bindVertexArray(this.quad);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
-    for (const k of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+    for (const k of [0, 1, 2, 3, 4, 5, 6, 7, 9]) {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.enable(gl.BLEND);
@@ -1003,11 +1246,15 @@ export class FieldLayer implements CustomLayerInterface {
     }
   }
 
-  /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (RGBA16F with
-   * mipmaps, MB). */
+  /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (the class
+   * layers in use, RGBA16F with mips, MB). */
   drawnSize(): { tiles: number; bytes: number; textureMB: number } {
-    let bytes = 0;
-    for (const k of this.drawn) bytes += this.tiles.get(k)?.bytes ?? 0;
-    return { tiles: this.drawn.length, bytes, textureMB: (this.drawn.length * 4 * 512 * 512 * 8 * 4) / 3 / 1e6 };
+    let bytes = 0, layers = 0;
+    for (const k of this.drawn) {
+      const t = this.tiles.get(k);
+      bytes += t?.bytes ?? 0;
+      layers += t?.layers.filter((l) => l >= 0).length ?? 0;
+    }
+    return { tiles: this.drawn.length, bytes, textureMB: (layers * 512 * 512 * 8 * 4) / 3 / 1e6 };
   }
 }
