@@ -8,7 +8,7 @@ import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './t
 import type { BuildingColour, BuildingState } from './buildings';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
-import type { FitUnit } from './autofit';
+import { unitsField, unitsOfField, unitsOfSaved, type FitUnits } from './autofit';
 import { STOP_CONTRAST } from './raildraw';
 
 export type { Mode };
@@ -171,12 +171,6 @@ export interface Stretch {
 const THR_CODE: Record<ThresholdDir, string> = { above: 'a', below: 'b', low: 'l' };
 const THR_OF: Record<string, ThresholdDir> = { a: 'above', b: 'below', l: 'low' };
 
-/** An auto-fit unit in a link: 'p' percentiles; screen widths otherwise (and in older links). A
- * last field (rail, ferries) only for percentiles, so screen widths' links stay as they were. */
-const FIT_UNIT_CODE: Record<FitUnit, string> = { widths: '', pct: 'p' };
-const fitUnitField = (u: FitUnit): string[] => (u === 'pct' ? ['p'] : []);
-const fitUnitOf = (v: string | null | undefined): FitUnit => (v === 'p' ? 'pct' : 'widths');
-
 /** fit lo, fit hi, equalise, fade span, highlight on, direction, value (hash fields). */
 /** A screen-widths auto-fit from a link (more, then fewer; else `d`). */
 function fitLenOf(a: string | undefined, b: string | undefined, d: [number, number]): [number, number] {
@@ -242,6 +236,18 @@ export const topRanks = (lo: number, hi: number): [number, number] => {
 export type ModeGroup = 'elev' | 'grade' | 'relief' | 'scenic' | 'map';
 const MODE_GROUPS: ModeGroup[] = ['elev', 'grade', 'relief', 'scenic', 'map'];
 export const modeGroup = (m: Mode): ModeGroup => (m === 'elev' || m === 'grade' || m === 'relief' || m === 'map' ? m : 'scenic');
+
+/** The metrics that auto-fit by screen widths or percentiles of line length, each with its own
+ * unit (fitUnits): the roads' scenic modes, rail's and ferries' ranked metrics (byLen). */
+export const ROAD_FIT_KEYS: Mode[] = MODES.filter((m) => modeGroup(m.key) === 'scenic').map((m) => m.key);
+export const RAIL_FIT_KEYS: RailMetric[] = RAIL_METRICS.filter((m) => m.byLen).map((m) => m.key);
+export const FERRY_FIT_KEYS: FerryMetric[] = FERRY_METRICS.filter((m) => m.byLen).map((m) => m.key);
+/** A layer's units as the last field of its link value (rail, ferries): none while all are screen
+ * widths, so those links stay as they were. */
+const unitsTail = <K extends string>(u: FitUnits<K>, keys: readonly K[]): string[] => {
+  const f = unitsField(u, keys);
+  return f ? [f] : [];
+};
 
 /** A metric colour scale's settings (rail and ferries), as kept per metric. */
 export interface MetricLook {
@@ -325,8 +331,8 @@ export interface RailState extends ScaleFields {
   /** The ranked metrics' auto-fit (rail.ts byLen): the best this much rail in view, in screen
    * widths, to the best this much (as the roads' fitLen). */
   fitLen: [number, number];
-  /** What those metrics auto-fit in: screen widths (fitLen) or percentiles (fit), as the roads' fitUnit. */
-  fitUnit: FitUnit;
+  /** What each of those metrics auto-fits in, screen widths (fitLen) or percentiles (its fit), as the roads' fitUnits. */
+  fitUnits: FitUnits<RailMetric>;
   /** The cross-ties' length, × the core line's thickness (raildraw.ts; none below zoom 9). */
   ties: number;
   /** Stop dots: base size (× the size by stop spacing, the zoom's and the line weight), size
@@ -368,8 +374,8 @@ export interface FerryState extends ScaleFields {
   /** Sailings a day's auto-fit (ferry.ts byLen): the busiest this much ferry line in view, in
    * screen widths, to the busiest this much (as the roads' fitLen). */
   fitLen: [number, number];
-  /** What sailings a day auto-fits in: screen widths (fitLen) or percentiles (fit), as the roads' fitUnit. */
-  fitUnit: FitUnit;
+  /** What sailings a day auto-fits in, screen widths (fitLen) or percentiles (its fit), as the roads' fitUnits. */
+  fitUnits: FitUnits<FerryMetric>;
 }
 const FERRY_COLOURS: FerryColour[] = ['service', 'freq', 'season', 'operator', 'single'];
 /** A display type's colour settings (free of units). */
@@ -405,9 +411,9 @@ export interface AppState {
    * second. A fixed amount of road, not a share of it, so a view of mostly bland streets doesn't
    * pull the scale down to them (as the landmarks' top ranks). */
   fitLen: [number, number];
-  /** What the scenic metrics auto-fit in: screen widths (fitLen, the default) or percentiles of
-   * road length in view (fit, as the other display types). */
-  fitUnit: FitUnit;
+  /** What each scenic metric (mode) auto-fits in: screen widths (fitLen, the default) or
+   * percentiles of road length in view (fit, the display type's, as the other display types). */
+  fitUnits: FitUnits<Mode>;
   /** Histogram-equalised colours. */
   equalize: boolean;
   /** Scenic-score weights (see scenic.ts COMPONENTS). */
@@ -522,7 +528,7 @@ export const defaults: AppState = {
   range: [0, 100],
   fit: [80, 99.9],
   fitLen: [15, 1],
-  fitUnit: 'widths',
+  fitUnits: {},
   equalize: false,
   weights: [...DEFAULT_WEIGHTS],
   preset: DEFAULT_PRESET,
@@ -535,7 +541,7 @@ export const defaults: AppState = {
     on: true, groups: new Array(NRAIL).fill(true), colour: 'metric', metric: 'rscore', looks: {},
     ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
     weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnit: 'widths',
+    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnits: {},
     ties: 2.5, stopSize: 1, stopContrast: STOP_CONTRAST, stopOutline: '#0b0e13', stopOutlineOpacity: 1,
   },
   trees: {
@@ -551,7 +557,7 @@ export const defaults: AppState = {
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnit: 'widths' },
+    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1], fitUnits: {} },
   surface: { paved: true, unpaved: true },
   toll: { free: true, toll: true },
   lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
@@ -741,7 +747,8 @@ export function toHash(s: AppState, buildings: boolean): string {
     p.set('r', s.auto ? 'auto' : `${+s.range[0].toFixed(2)},${+s.range[1].toFixed(2)}`);
   if (s.fit[0] !== defaults.fit[0] || s.fit[1] !== defaults.fit[1]) p.set('fp', `${s.fit[0]},${s.fit[1]}`);
   if (s.fitLen[0] !== defaults.fitLen[0] || s.fitLen[1] !== defaults.fitLen[1]) p.set('fl', `${s.fitLen[0]},${s.fitLen[1]}`);
-  if (s.fitUnit !== defaults.fitUnit) p.set('fu', FIT_UNIT_CODE[s.fitUnit]);
+  const fu = unitsField(s.fitUnits, ROAD_FIT_KEYS);
+  if (fu) p.set('fu', fu);
   if (s.equalize) p.set('eq', '1');
   // Presets are per browser, so a link carries the weights themselves whenever they aren't the default.
   if (s.preset !== DEFAULT_PRESET) p.set('pr', s.preset || 'custom');
@@ -758,14 +765,14 @@ export function toHash(s: AppState, buildings: boolean): string {
     +r.range[0].toFixed(2), +r.range[1].toFixed(2), '', '', '', r.single.replace('#', ''), +r.lowFade.toFixed(2),
     r.freqOn ? 1 : 0, +r.freqMin.toFixed(2), +r.freqMax.toFixed(2), r.freqUnknown ? 1 : 0,
     r.fit[0], r.fit[1], r.equalize ? 1 : 0, +r.lowSpan.toFixed(2), r.threshold.on ? 1 : 0, THR_CODE[r.threshold.dir], +r.threshold.value.toFixed(3),
-    +r.opacity.toFixed(2), r.fitLen[0], r.fitLen[1], ...fitUnitField(r.fitUnit),
+    +r.opacity.toFixed(2), r.fitLen[0], r.fitLen[1], ...unitsTail(r.fitUnits, RAIL_FIT_KEYS),
   ].join(',');
   const rsd = [
     dr.on ? 1 : 0, dr.groups.map((g) => (g ? 1 : 0)).join(''), dr.colour, dr.metric, dr.palette, dr.auto ? 1 : 0,
     dr.range[0], dr.range[1], '', '', '', dr.single.replace('#', ''), dr.lowFade,
     dr.freqOn ? 1 : 0, dr.freqMin, dr.freqMax, dr.freqUnknown ? 1 : 0,
     dr.fit[0], dr.fit[1], dr.equalize ? 1 : 0, dr.lowSpan, dr.threshold.on ? 1 : 0, THR_CODE[dr.threshold.dir], dr.threshold.value,
-    dr.opacity, dr.fitLen[0], dr.fitLen[1], ...fitUnitField(dr.fitUnit),
+    dr.opacity, dr.fitLen[0], dr.fitLen[1], ...unitsTail(dr.fitUnits, RAIL_FIT_KEYS),
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
   // Ties, then the stop dots' size, contrast, outline colour and opacity.
@@ -777,7 +784,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
-    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), f.fitLen[0], f.fitLen[1], ...fitUnitField(f.fitUnit)].join(',');
+    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), f.fitLen[0], f.fitLen[1], ...unitsTail(f.fitUnits, FERRY_FIT_KEYS)].join(',');
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
@@ -871,7 +878,8 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (fp && fp.length === 2 && fp.every(Number.isFinite) && fp[0] >= 0 && fp[1] <= 100 && fp[1] > fp[0]) s.fit = [fp[0], fp[1]];
   const fl = p.get('fl')?.split(',').map(Number);
   if (fl && fl.length === 2 && fl.every(Number.isFinite) && fl[1] > 0 && fl[0] > fl[1]) s.fitLen = [fl[0], fl[1]];
-  s.fitUnit = fitUnitOf(p.get('fu'));
+  // ('p': every scenic metric, as links from before the unit per metric have it.)
+  s.fitUnits = unitsOfField(p.get('fu'), ROAD_FIT_KEYS);
   s.equalize = p.get('eq') === '1';
   const pr = p.get('pr');
   const wt = migrateWeights(p.get('wt')?.split(',').map(Number));
@@ -910,7 +918,7 @@ export function fromHash(hash: string, buildings = true): AppState {
       ...(rs.length >= 24 ? parseScaleTail(rs.slice(17), r) : {}),
       opacity: rs[24] ? Math.min(1, Math.max(0.1, num(rs[24], r.opacity))) : r.opacity,
       fitLen: fitLenOf(rs[25], rs[26], r.fitLen),
-      fitUnit: fitUnitOf(rs[27]),
+      fitUnits: unitsOfField(rs[27], RAIL_FIT_KEYS),
     };
     // Older links: the rail card's line weight.
     if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
@@ -951,7 +959,7 @@ export function fromHash(hash: string, buildings = true): AppState {
       ...(fy.length >= 24 ? parseScaleTail([fy[16], fy[17], fy[18], fy[20], fy[21], fy[22], fy[23]], f) : {
         fit: f.fit, equalize: f.equalize, lowSpan: f.lowSpan, threshold: f.threshold, palette: fy[3] || f.palette }),
       fitLen: fitLenOf(fy[24], fy[25], f.fitLen),
-      fitUnit: fitUnitOf(fy[26]),
+      fitUnits: unitsOfField(fy[26], FERRY_FIT_KEYS),
     };
   }
   const tcv = p.get('tc')?.split(',');
@@ -1161,7 +1169,11 @@ export function fromSaved(o: unknown): AppState {
   const rs = rest.rail as { weights?: unknown } | undefined;
   if (rs && Array.isArray(rs.weights) && rs.weights.length === RNCOMP - 1) rs.weights = [...rs.weights, FREQ_WEIGHT_ADDED];
   merge(s as unknown as Record<string, unknown>, rest);
-  for (const x of [s, s.rail, s.ferry]) x.fitUnit = fitUnitOf(x.fitUnit === 'pct' ? 'p' : '');
+  // Each metric's auto-fit unit (merge() only keeps keys the defaults have); saved before the unit
+  // per metric, the layer's (fitUnit) for each of its metrics.
+  s.fitUnits = unitsOfSaved(src, ROAD_FIT_KEYS);
+  s.rail.fitUnits = unitsOfSaved(src.rail as Record<string, unknown> | undefined, RAIL_FIT_KEYS);
+  s.ferry.fitUnits = unitsOfSaved(src.ferry as Record<string, unknown> | undefined, FERRY_FIT_KEYS);
   const oldT = rest.terrain as Record<string, unknown> | undefined;
   if (oldT && 'tintPalette' in oldT && !('tintScales' in oldT)) s.terrain = migrateTint(s.terrain, oldT);
   if (!rest.lineWeights) {

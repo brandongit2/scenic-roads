@@ -5,6 +5,56 @@
 /** The unit a colour range auto-fits in: screen widths of line, or percentiles of its length. */
 export type FitUnit = 'widths' | 'pct';
 
+/** Each metric's unit, by its key (roads' scenic modes, rail's and ferries' ranked metrics);
+ * a metric not in it fits in screen widths. Only percentiles are kept. */
+export type FitUnits<K extends string = string> = Partial<Record<K, 'pct'>>;
+
+/** A metric's unit. */
+export const unitOf = <K extends string>(u: FitUnits<K>, key: K): FitUnit => (u[key] === 'pct' ? 'pct' : 'widths');
+
+/** The units with one metric's set. */
+export function withUnit<K extends string>(u: FitUnits<K>, key: K, unit: FitUnit): FitUnits<K> {
+  const out = { ...u };
+  if (unit === 'pct') out[key] = 'pct';
+  else delete out[key];
+  return out;
+}
+
+/** Every one of `keys` in percentiles (an older link's or saved setting's unit for the layer). */
+export const allPct = <K extends string>(keys: readonly K[]): FitUnits<K> => Object.fromEntries(keys.map((k) => [k, 'pct'])) as FitUnits<K>;
+
+/** A layer's units in a link, `keys` being its metrics that can fit either way: '' all screen
+ * widths; 'p' all percentiles (as the per-layer unit's links had it); else the keys in
+ * percentiles, in `keys`' order, joined by '.' ("score.view"), or, when that is shorter, '-' and
+ * the keys in screen widths ("-drama": all but terrain drama). */
+export function unitsField<K extends string>(u: FitUnits<K>, keys: readonly K[]): string {
+  const on = keys.filter((k) => u[k] === 'pct'), off = keys.filter((k) => u[k] !== 'pct');
+  if (!on.length) return '';
+  if (!off.length) return 'p';
+  const a = on.join('.'), b = `-${off.join('.')}`;
+  return b.length < a.length ? b : a;
+}
+
+/** A layer's units from a link's field (unitsField; keys not among `keys` are dropped). */
+export function unitsOfField<K extends string>(v: string | null | undefined, keys: readonly K[]): FitUnits<K> {
+  if (!v) return {};
+  if (v === 'p') return allPct(keys);
+  const but = v.startsWith('-');
+  const named = new Set((but ? v.slice(1) : v).split('.'));
+  return Object.fromEntries(keys.filter((k) => named.has(k) !== but).map((k) => [k, 'pct'])) as FitUnits<K>;
+}
+
+/** A layer's units from saved settings: its `fitUnits` (keys among `keys`, values 'pct'), else
+ * the per-layer `fitUnit` they replaced ('pct': every metric). */
+export function unitsOfSaved<K extends string>(o: { fitUnits?: unknown; fitUnit?: unknown } | null | undefined, keys: readonly K[]): FitUnits<K> {
+  const u = o?.fitUnits;
+  if (u && typeof u === 'object' && !Array.isArray(u)) {
+    const r = u as Record<string, unknown>;
+    return Object.fromEntries(keys.filter((k) => r[k] === 'pct').map((k) => [k, 'pct'])) as FitUnits<K>;
+  }
+  return o?.fitUnit === 'pct' ? allPct(keys) : {};
+}
+
 /** A distribution of line length over a metric (roads/stats.ts Dist). */
 export interface LengthDist {
   /** Total length (any unit). */

@@ -1,4 +1,5 @@
 // How rail lines are coloured (the settings panel's Passenger rail section, ui/layers.ts).
+import { unitOf, withUnit } from '../autofit';
 import { RAIL_GROUPS } from '../config';
 import { railPresets } from '../presets';
 import { RAIL_COMPONENTS, RAIL_GROUP_COLOURS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from '../rail';
@@ -65,7 +66,7 @@ export class RailCard {
       noun: 'rail',
       len: {
         active: () => !!railMetricDef(store.s.rail.metric).byLen, get: () => store.s.rail.fitLen, set: (fitLen) => R({ fitLen }),
-        unit: () => store.s.rail.fitUnit, setUnit: (fitUnit) => R({ fitUnit }),
+        unit: () => unitOf(store.s.rail.fitUnits, store.s.rail.metric), setUnit: (u) => R({ fitUnits: withUnit(store.s.rail.fitUnits, store.s.rail.metric, u) }),
         best: () => ({ freq: 'busiest', viaduct: 'highest', drama: 'highest', curvy: 'twistiest' } as Partial<Record<string, string>>)[store.s.rail.metric] ?? 'best',
       },
       measure: 'rail length',

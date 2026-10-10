@@ -1,4 +1,5 @@
 // How ferry lines are coloured (the settings panel's Ferries section, ui/layers.ts).
+import { unitOf, withUnit } from '../autofit';
 import { FERRY_GROUP_COLOURS, FERRY_GROUPS, FERRY_METRICS, HEADWAY_ONLY, SEASONS, UNKNOWN, ferryMetricDef, type FerryColour, type FerryMetric } from '../ferry';
 import type { FerryCoverage } from '../ferries';
 import type { Dist } from '../roads/stats';
@@ -61,7 +62,7 @@ export class FerryCard {
       },
       noun: 'ferry lines',
       len: { active: () => !!ferryMetricDef(store.s.ferry.metric).byLen, get: () => store.s.ferry.fitLen, set: (fitLen) => F({ fitLen }),
-        unit: () => store.s.ferry.fitUnit, setUnit: (fitUnit) => F({ fitUnit }), best: () => 'busiest' },
+        unit: () => unitOf(store.s.ferry.fitUnits, store.s.ferry.metric), setUnit: (u) => F({ fitUnits: withUnit(store.s.ferry.fitUnits, store.s.ferry.metric, u) }), best: () => 'busiest' },
       measure: 'ferry route length',
       fadeDefault: 0,
       spanDefault: 0.6,

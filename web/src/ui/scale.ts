@@ -49,7 +49,7 @@ export interface ScaleOpts {
   rank?: { get: () => [number, number]; set: (v: [number, number]) => void };
   /** While `active` (the roads' scenic metrics, rail's and ferries' ranked ones): auto-fit to the
    * best so much of the line in view, the low end at the first amount, full colour from the second,
-   * in the owner's `unit` (picked in the caption): screen widths (`get`/`set`), or percent of the
+   * in the active metric's `unit` (picked in the caption, kept per metric): screen widths (`get`/`set`), or percent of the
    * length in view (the best 20 % = the fit's 80th percentile). `best`: the word for the top of the
    * scale (default "best"; "busiest" for frequencies). */
   len?: {
