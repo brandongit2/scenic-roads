@@ -230,7 +230,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   others, `coord::PAGE_TASKS`), the
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
   a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an
-  older app than the build Mac's gets nothing (409, why in words) until it runs that one or a newer.
+  app other than the lead's, older or newer, gets nothing (409, why in words) until the two run the
+  same (docs/plan.md §8, The same app); its jobs under way go on.
 - **Pausing** (`docs/plan.md` §8, Pausing): the coordinator holds the build's pause (`pause.json`)
   and says it in its answers: an agent's ask is refused (409) with the pause, a page's gets nothing,
   and a beat carries it, so a running job stops at its next safe point (or freezes, as the pause
@@ -267,8 +268,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 6. Fitting the work to the worker (built)
 
-- **Predicted peaks:** a unit's is what it took last time (each unit job notes its units' peaks,
-  `SCENIC_COSTS`), else about ten times its piece, never under 3.7 GB. A tail's is its files three
+- **Predicted peaks:** a unit's is what its job's processes held while it was built last time (each
+  unit job notes its units' peaks, `SCENIC_COSTS`), else about ten times its piece, never under 3.7
+  GB, and never below its floor (docs/pool.md §7.2). A tail's is its files three
   times over and 300 MB (a web worker holds them, a program reads them in, and what its steps
   write), or what a worker measured for that unit's last time, a tenth more, in its place.
 - **Ceilings, enforced:** the programs are linked to import their memory, and the page gives each a

@@ -437,10 +437,11 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   not used for a quarter of an hour) it spares five eighths (10 GB) for a job that doesn't fit its
   usual memory, if the job's targets' last runs say it ends within twenty minutes (twice the build
   Mac's time where only the build Mac ran it; never one not yet measured), once no step's work fits
-  its usual memory. A unit's predicted peak is the most memory one of its steps'
-  programs took last time (each unit job notes it; scenic-build's own isn't counted), else about ten
-  times its piece, never under 3.7 GB: over the M1's first 205 units, pieces up to 150 MB, 3.7 GB at
-  most, no more for the bigger pieces.
+  its usual memory. A unit's predicted peak is the most memory its job's processes held together
+  while it was built last time (each unit job notes it, sampled, as the memory guard measures a job:
+  `cost_version` 1; a measure of its programs' most, one at a time, counting for nothing now), else
+  about ten times its piece, never under 3.7 GB (over the M1's first 205 units, pieces up to 150 MB,
+  their programs took 3.7 GB at most), and never below its floor (docs/pool.md §7.2).
 - **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
   is at it, all but two otherwise; each job started with its step's room free (15 GB, terrain's
   pieces too, a task 5), from the caches the NAS keeps; only work it can make that for is asked
@@ -2176,11 +2177,13 @@ and, when none fits it, units' last steps.
 - **The same app** (with the pool on, its app rule: docs/pool.md §6.1; an app from before the 3D
   buildings drops their records and refuses their hand-offs, so both Macs run one with them before
   the lead may move; from it on, the records keep the steps' they don't know, `build::Keys::other`):
-  a helper says which app it runs; on an older one than the build Mac's agent
-  (its updater hasn't run yet) it gets nothing (409, why in words: its status shows it), since its
-  work would be recorded under keys newer code made; on a newer one (the build Mac's agent finishing
-  a job on the last) it builds, since a step the newer app changed is built again once the build
-  Mac's keys say so.
+  a helper says which app it runs; on any other than the lead's (older: its updater hasn't run yet;
+  newer: the lead's hasn't) it gets nothing (409, why in words: its status shows it), since its work
+  would be recorded under keys another app's code made, which may say a result is current that its
+  code didn't make (a step changed with its key or without it); no list of what changed. Its jobs
+  under way go on. It builds once the two run the same: its updater, the lead's (an agent switches
+  between jobs), or the lead handed to a Mac on the newer (the term's app rule lets a newer app
+  lead: docs/pool.md §6.1), so a lead on an older app holds no member up for good.
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
   name) and the token (kept on the build Mac) the agents' requests carry (a page helps with no key:
   docs/workers.md §7); taken off the NAS when the agent stops. A worker reads it again when it can't reach the coordinator or its token is refused.
@@ -2638,10 +2641,11 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
-   - the memory guard (`agent::memguard`) samples each job's memory once a loop (every 20 s): a job
-     growing faster can swap its Mac for a loop before it's stopped; and a helper's job with the
-     pool off sends its targets' floors nowhere (its result has none: the pool-off path goes,
-     pool.md §12);
+   - the memory guard (`agent::memguard`) samples each job's memory every 5 s: a job growing faster
+     can swap its Mac that long before it's frozen; a unit's measure is taken while it's built
+     here, so a tail it runs here later is counted against the unit under way then; and a helper's
+     job with the pool off sends its targets' floors nowhere (its result has none: the pool-off path
+     goes, pool.md §12);
    - the steps' write-sets (`agent::steps`, phase 4's first batch) are checked at merge and what lies
      outside them reported, not refused: an entry a step's bug sends outside its write-set is merged
      all the same until a later batch derives them from the code that writes and enforces them
@@ -2830,6 +2834,12 @@ The batches after the memory guard were reordered around it.
   archives) against 12,965 s making tiles, and a z6 tile's whole z12 fetched new (3,716 tiles, 107
   MB of archives) packs in 1.7 s to a local store, about a second more to the NAS at its LAN's
   speed: about 1 % of a piece's four minutes.
+- **A member builds only on the lead's own app,** older and newer alike refused (a newer member was
+  let build before, on the reasoning that a step a newer app changed is built again once the lead's
+  keys say so): a change made without a key change (#103's pieces of tiles the coverage has left,
+  removing their packs) would leave an old or new result under a key that calls it current, and no
+  rule by a list of what changed can be kept right. A lead on the older app holds members only until
+  its updater runs or the lead is handed to the newer.
 - **The weighted draw that places work** (the owner's idea: by how crucial a job is, and a worker's
   speed as a weight, not a rule) is a function of the target, the worker and the time, so a
   decision repeats for the same inputs, as every other decision of the agent's does (§8,

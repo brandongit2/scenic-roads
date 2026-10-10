@@ -802,8 +802,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     another shared step's job, and `"<kind> <unit>"` for a task: `"tail 6/x/y"` a unit's last
     steps, `"bldtile 8/x/y"` a 3D buildings' z8 area, `"treeblock 8/x/y"` a row of tree cover blocks,
     by its first, `"terrainsub 8/x/y"` a terrain piece's group of z8 subtrees, by its first),
-    `floors.json` (`{<cost key>: MB}`: what a target takes at least, as a run that didn't measure
-    it saw it hold, crate::agent::memguard; a measure in `costs.json` takes its place),
+    `floors.json` (`{<cost key>: {mb, alone, v}}`: what a target takes at least, as a run that
+    didn't measure it saw it hold, whether its job held it alone, the way its step ran,
+    crate::agent::memguard::Floor; a measure in `costs.json` takes its place; `scenic pool floors`
+    lists and clears them through the coordinator's `/work/floors`),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when
