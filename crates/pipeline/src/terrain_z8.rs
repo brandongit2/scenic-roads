@@ -149,3 +149,44 @@ impl Z8 {
         Ok(t)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `process` makes of a raw tile with no sources, as the z8 here and the peaks' z12
+    /// outside the packs read it (crate::peaks::unit::UnitZ12): a slope with a tower, a pit, a
+    /// void and bathymetry, at z8 and z12.
+    fn raw_path() -> Vec<u64> {
+        let mut e: Vec<f32> = (0..256 * 256).map(|i| 200.0 + 0.5 * (i % 256) as f32 + 0.3 * (i / 256) as f32).collect();
+        for y in 100..104 {
+            for x in 100..104 {
+                e[y * 256 + x] += 900.0;
+            }
+        }
+        e[50 * 256 + 50] -= 800.0;
+        e[70 * 256 + 180] = -10000.0;
+        for v in e[230 * 256..].iter_mut() {
+            *v = -50.0;
+        }
+        let png = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
+        [(Z, 40, 90), (12, 640, 1440)]
+            .iter()
+            .map(|&(z, x, y)| {
+                let (out, _, _) = process(png.clone(), z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+                // (The repair changes it: the values below see its rules.)
+                assert_ne!(roadcore::grid::decode_terrain_png(&out).unwrap(), roadcore::grid::decode_terrain_png(&png).unwrap());
+                store::naming::xxh3(&out)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_raw_path_is_versioned() {
+        // A change here is a change to the z8 (bump `V`: a new logical name, so the summits and
+        // every unit's peaks again) and to the peaks' z12 outside the packs (bump
+        // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
+        assert_eq!((V, crate::agent::build::TERRAIN_V), (3, 3), "the raw path's versions changed: update the values below");
+        assert_eq!(raw_path(), vec![3732127099477634275, 5080787860211985803], "terrain_pack::process's raw path makes other bytes: bump terrain_z8::V and TERRAIN_V");
+    }
+}

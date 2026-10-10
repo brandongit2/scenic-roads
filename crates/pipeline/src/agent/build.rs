@@ -640,15 +640,21 @@ fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 }
 
 /// The coverage's units with candidates, each with its peaks' key: the candidates, the summits,
-/// the z8, and the terrain hi packs within 30 km of it, across the antimeridian too (its peaks'
-/// z12: the packs', else AWS's raw tiles, which don't change).
+/// the z8, the terrain hi packs within 30 km of it, across the antimeridian too, and the terrain's
+/// version (its peaks' z12: the packs', else AWS's raw tiles, which don't change, processed by the
+/// terrain's code as it is now: `terrain_pack::process`, which `TERRAIN_V` versions).
 pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
+    peaks_keys_at(cov, date, m, TERRAIN_V)
+}
+
+/// `peaks_keys` with the terrain's version given (tests).
+fn peaks_keys_at(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, terrain_v: u32) -> Vec<(Unit, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let common = [get(&format!("work/summits/{date}")), get(&crate::terrain_z8::logical()), get(&crate::terrain_z8::max_logical())].join(",");
     let mut out = Vec::new();
     for (u, _) in pois_keys(cov, date, m) {
         let Some(c) = m.get(&format!("work/pois/{}", u.dash())) else { continue };
-        let mut inputs = vec![format!("peaks {PEAKS_V}"), c.clone(), common.clone()];
+        let mut inputs = vec![format!("peaks {PEAKS_V}"), format!("terrain {terrain_v}"), c.clone(), common.clone()];
         for (x, y) in tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
             inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
         }
@@ -4059,6 +4065,28 @@ pub(crate) mod tests {
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks", "items"]);
+    }
+
+    #[test]
+    fn the_peaks_key_names_the_terrains_version() {
+        // (Its peaks' z12 outside the packs are AWS's raw tiles processed by the terrain's code:
+        // a new version of it runs them again, the packs and all else the same.)
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
+        m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
+        m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
+        m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.bbbbbbbbbbbbbbbb.pack".into());
+        let now = peaks_keys(&c, "d", &m);
+        assert_eq!(now.len(), 1);
+        assert_eq!(now, peaks_keys_at(&c, "d", &m, TERRAIN_V));
+        let next = peaks_keys_at(&c, "d", &m, TERRAIN_V + 1);
+        assert_eq!(next[0].0, now[0].0);
+        assert_ne!(next[0].1, now[0].1);
+        // A hi pack within 30 km changing changes it too.
+        m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.cccccccccccccccc.pack".into());
+        assert_ne!(peaks_keys(&c, "d", &m)[0].1, now[0].1);
     }
 
     #[test]

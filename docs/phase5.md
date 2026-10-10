@@ -253,7 +253,7 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 | `heritage-sites` (before the units) | the registers snapshot, the pass's `areas` set, the coverage | `work/heritage/<d>/base/…`, and per z6 tile the sites' positions and the designated areas' polygons ("Heritage and area flags") |
 | `unit`, base(U) | as plan §6, with the heritage slices within U + 30 km | the base pack |
 | `pois` (per unit) | U's piece, `work/trailends/<d>`, the coverage near U | `work/pois/<u>`: U's candidates (below) |
-| `peaks` (per unit; network) | `work/pois/<u>`'s peaks, `work/summits/<d>`, z12 within 30 km of each peak (the terrain packs, else the same tile from the raw-tile cache, processed alike), `terrain-z8` | `work/peaks/<u>`: prominence and isolation by candidate key |
+| `peaks` (per unit; network) | `work/pois/<u>`'s peaks, `work/summits/<d>`, z12 within 30 km of each peak (the terrain packs, else AWS's raw tile from the raw-tile cache, repaired), `terrain-z8` | `work/peaks/<u>`: prominence and isolation by candidate key |
 | `items` (per pass; network) | the QIDs of every current unit's candidates | `sources/items/<d>/{facts,views,meta}` |
 | `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the seeds | `work/heritage/<d>/…`: the chain's outputs ("Heritage and area flags") |
 | `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the items job's facts and views, the heritage points (the pass's heritage job's outputs; without them, the converted build's `global/legacy`, a fallback to go: plan §10) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
@@ -268,10 +268,11 @@ The jobs form a chain without cycles: every input exists before its reader runs.
   digest (they're made worldwide, whatever is built);
 - `pass-sets` and `terrain-z8` have no keys: they run when their versioned outputs are missing.
 - peaks (`agent::build::peaks_keys`) name the unit's candidates, the pass's summits, `terrain-z8`
-  and its max, and the terrain hi packs of the z6 tiles within U + 30 km, by content name: a
-  change anywhere in one of those packs runs the unit's peaks again. Not the z12 tiles its peaks
-  read, by content, as a unit's key names its terrain tiles (plan §6, Job keys; plan §12 says
-  why).
+  and its max, the terrain hi packs of the z6 tiles within U + 30 km, by content name, and the
+  terrain's version (`TERRAIN_V`: the raw tiles outside the packs are processed by its code, which
+  no content name pins): a change anywhere in one of those packs runs the unit's peaks again. Not
+  the z12 tiles its peaks read, by content, as a unit's key names its terrain tiles (plan §6, Job
+  keys; plan §12 says why).
 
 **Network jobs** (terrain, terrain-z8, peaks, items, heritage): a tile or answer that can't be
 fetched fails the job (retried later), never counts as "none".
@@ -281,8 +282,11 @@ fetched fails the job (retried later), never counts as "none".
 **Determinism across units:**
 - **Peaks:**
   - **The inputs are the same everywhere.** A peak's result reads only z12 within 28 km of it and the
-    worldwide z8, the same whichever unit computes it and whatever the coverage. z12 is the packs'
-    tiles or the same raw tile processed alike; z8 is one artifact.
+    worldwide z8, the same whichever unit computes it. z12 is the packs' tile where the manifest
+    has one, else AWS's raw tile repaired (`process` with no sources: not GLO-30, the water nor
+    the coarse data's repair, which the packs' tiles have), the same for every unit; z8 is one
+    artifact. The coverage grown near a peak can change its result (a tile now the pack's): the
+    hi packs in its key change then.
   - **Neighbouring summits** count at their own heights, worked out the same way wherever they are.
     Ties go by tagged height, distance, then OSM id.
   - **A z12 tile AWS doesn't have** (404: open sea) is sea level in every unit, never an upsampled
@@ -357,11 +361,12 @@ lies near it.
       fixed margin lets through below ~1,100 m.
 - **`peaks`** (per unit, network): `pipeline::peaks`, on U's peak candidates.
   - **z12:** a tile is the terrain pack's when the manifest has it, else AWS's raw tile from the build
-    Mac's cache, processed the same way.
+    Mac's cache, repaired by `terrain_pack::process` with no sources (the repair alone: not GLO-30
+    north of 59.5°, the water flattened nor the coarse data's repair, which the packs' tiles have:
+    plan §10).
     - The tile is read back from the PNG `process` returns (quantised as stored), never from its
       floats.
     - A tile not cached is fetched; a failed fetch fails the job.
-    - Packs the terrain job made from raw are the same bytes.
   - **Summits near a peak:** each summit within 28 km + 2 × (150 m + 2 pixels) gets, all from z12 the
     same way for every unit:
     - its summit pixel: the highest within 150 m;

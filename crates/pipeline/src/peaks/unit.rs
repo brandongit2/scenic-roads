@@ -1,8 +1,10 @@
 //! Prominence and isolation for a unit's peaks (docs/phase5.md "peaks"), so that a peak's result
-//! doesn't depend on which unit computes it nor on the coverage:
+//! doesn't depend on which unit computes it (the coverage decides which z12 tiles are the packs'):
 //!
-//! - z12 is the terrain pack's tile where the manifest has it, else AWS's raw tile processed the
-//!   same way (`UnitZ12`; the open sea, which AWS has no tile for, at 0 m).
+//! - z12 is the terrain pack's tile where the manifest has it, else AWS's raw tile repaired
+//!   (`UnitZ12`: `terrain_pack::process` with no sources, so not GLO-30, the water nor the coarse
+//!   data's repair the packs' tiles have; the open sea, which AWS has no tile for, at 0 m). Either
+//!   is the same whichever unit reads it.
 //! - The summits near a peak count at their own heights, each worked out from z12 the same way
 //!   whichever peak asks: its summit pixel (highest within 150 m), its claim of that pixel (several
 //!   on one: the highest tagged, then the nearest to it, then the lowest OSM id), its height.

@@ -2642,7 +2642,14 @@ At each phase's end an Opus agent reviews the work against this plan.
      piece reads: a new pass makes again where its water changed, §6, Job keys). Gaps: a
      lake across two z6 tiles may take two levels a metre or two apart; the worldwide z8 and the
      peaks' z12 outside the packs take the new rules but not GLO-30 nor the water; rivers are left
-     as AWS has them.
+     as AWS has them. The z8 has no key but its version (`terrain_z8::V`, in its logical name),
+     though it's made by the terrain's code (`terrain_pack::process` with no sources), which
+     `TERRAIN_V` versions for the packs and the peaks' key: not tied to `TERRAIN_V`, which also
+     bumps for what the z8 doesn't read (GLO-30, the water, the coarse data), so that each such
+     bump doesn't make the z8, the summits and every unit's peaks again. What keeps it safe is a
+     test (`terrain_z8::tests::the_raw_path_is_versioned`): the bytes `process` makes of a raw tile
+     with no sources, at z8 and z12, are pinned with both versions, and a change to them fails it,
+     saying to bump both.
    - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
      DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
@@ -2957,18 +2964,22 @@ pausing, which with the pool on would hold an owner's download off for hours.
   not the terrain hi packs within 30 km. A terrain run that changed part of a z6 tile rebuilt every
   unit within 30 km of it, while the hi packs' names couldn't see the zoomed-out tiles a long way
   reads, nor a stale hi pack's z6 tile made again from the raw tiles alone.
-- **The peaks' key names the terrain hi packs within 30 km, not the z12 tiles its peaks read**
-  (`docs/phase5.md`, Keys; measured 2026-10-10). In the terrain fix's rebuild (2026-10-08/09) 388
-  units' peaks ran again (2.7 h of job time by their logs) and 184 came out the same, 68 of them
-  without peaks. Keyed on the tiles read, none would have been spared: the same fix made
-  `terrain-z8` (v1 to v3) and so the summits again, which every peaks key names, as it must (the
-  coarse stage reads the z8 worldwide). Counting the hi tiles alone, 150 would have been (1.4 h):
-  the 68 and 82 whose every z12 tile comes from AWS's raw tiles, processed by the terrain's code.
-  Those raw tiles' processing isn't in a tile's content name, so a finer key would have to name the
-  terrain's version for them, and a terrain code change, the one change that leaves the summits as
-  they are, would run them all again anyway. What a finer key spares is a hi pack changed beside a
-  unit without the summits or the z8: the coverage grown next to it, a few units of seconds to
-  minutes each; a new pass makes the summits again.
+- **The peaks' key names the terrain hi packs within 30 km and the terrain's version, not the z12
+  tiles its peaks read** (`docs/phase5.md`, Keys; measured 2026-10-10). In the terrain fix's
+  rebuild (the areas' runs, 2026-10-08/09) 388 units' peaks ran again (2.7 h of job time) and 179
+  came out with the content name they had before it (the pool's first manifest,
+  `state/build/term/1/first.json`; 181 of the 395 runs, counting each), 68 of the 388 without
+  peaks. Keyed on the tiles read, only those 68 would have been spared (a unit without peak
+  candidates reads nothing, about half a second each): the same fix made `terrain-z8` (v1 to v3)
+  and so the summits again, which every peaks key with peaks names, as it must (the coarse stage
+  reads the z8 worldwide). Counting the hi tiles alone, 82 more would have been (1.4 h with the
+  68): those whose every z12 tile is AWS's raw tile, which no content name pins, as it's processed
+  by the terrain's code; so the key names `TERRAIN_V`, and a terrain code change, the one change
+  that leaves the summits as they are, runs them again anyway. The terrain made again as pieces on
+  2026-10-09 (from 06:47 EDT) wrote 406 hi packs' names, each the one already there, so no peaks ran
+  for it. What a finer key would spare is a hi pack changed beside a unit without the summits, the
+  z8 or the terrain's version: the coverage grown next to it, a few units of seconds to minutes
+  each; a new pass makes the summits again.
 - **A change of key scheme re-keys the records** (§8, A new key scheme): a change of keys
   mustn't build again what would come out the same, and the units' alone would have rebuilt all
   284 (some seven hours of the build Mac).
