@@ -438,6 +438,15 @@ pub struct Coordinator {
     /// The NAS's project folder while the agent has it, for tasks' reads where the data lies
     /// (`/work/net/…/nas/…`).
     root: Arc<Mutex<Option<PathBuf>>>,
+    /// Set when it stops (`stop`, or dropped): its listener closed within a second, its port free
+    /// (a member that took the lead in its process starts one; one that lost it stops it).
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Coordinator {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// The data servers whose files a task may read through the coordinator (`/work/net/…/web/…`): the
@@ -617,10 +626,37 @@ impl Coordinator {
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
         let job_token = http::random()?;
         let root = Arc::new(Mutex::new(None));
-        let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default() })?;
-        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root };
+        let stopped: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        // (The port of a coordinator this process stopped a moment ago may be free only once its
+        // listener has closed: a few tries.)
+        let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default() };
+        let mut tries = 0;
+        let urls = loop {
+            match http::serve(port, ctx.clone(), stopped.clone()) {
+                Ok(u) => break u,
+                Err(e) if tries < 10 && e.chain().any(|x| x.downcast_ref::<std::io::Error>().is_some_and(|x| x.kind() == std::io::ErrorKind::AddrInUse)) => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped };
         c.write_page();
         Ok(c)
+    }
+
+    /// How many leases are out now (jobs' and tasks').
+    pub fn leases_out(&self) -> usize {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.leases.all(now).len()
+    }
+
+    /// Stops answering (this process no longer leads): its listener closes within a second, its port
+    /// free for the next coordinator. Its state stays on disk.
+    pub fn stop(&self) {
+        self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Writes the build page's address for this Mac's status bar (tools/status): over HTTPS when
@@ -902,9 +938,9 @@ impl Coordinator {
 
     /// Ends the leases of `workers` (this Mac's own, whose jobs ended with the process before);
     /// those ended.
-    pub fn drop_workers(&self, workers: &[String]) -> Vec<Lease> {
+    pub fn drop_workers(&self, workers: &[String], keep: &[u64]) -> Vec<Lease> {
         let mut s = self.shared.lock().unwrap();
-        let gone = s.leases.drop_where(|l| workers.contains(&l.worker));
+        let gone = s.leases.drop_where(|l| workers.contains(&l.worker) && !keep.contains(&l.id));
         if !gone.is_empty() {
             s.save_leases();
         }
@@ -1806,7 +1842,7 @@ mod http {
     }
 
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
-    pub fn serve(port: u16, ctx: Ctx) -> Result<Vec<String>> {
+    pub fn serve(port: u16, ctx: Ctx, stopped: Arc<std::sync::atomic::AtomicBool>) -> Result<Vec<String>> {
         let listener = std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listen on port {port}"))?;
         listener.set_nonblocking(true)?;
         let app = Router::new()
@@ -1839,7 +1875,7 @@ mod http {
         std::thread::Builder::new().name("coordinator".into()).spawn(move || {
             rt.block_on(async move {
                 match tokio::net::TcpListener::from_std(listener) {
-                    Ok(l) => accept(l, app).await,
+                    Ok(l) => accept(l, app, stopped).await,
                     Err(e) => eprintln!("coordinator: its socket: {e}"),
                 }
             });
@@ -1856,13 +1892,18 @@ mod http {
     /// Takes connections: one from elsewhere, or past the cap, is closed before a byte is read;
     /// each is kept alive by TCP (a device gone without a word is noticed), its headers bounded in
     /// time (which closes idle ones too), and its whole life bounded.
-    async fn accept(listener: tokio::net::TcpListener, app: Router) {
+    async fn accept(listener: tokio::net::TcpListener, app: Router, stopped: Arc<std::sync::atomic::AtomicBool>) {
         use tower::ServiceExt;
         let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
         loop {
-            let (stream, peer) = match listener.accept().await {
-                Ok(x) => x,
-                Err(e) => {
+            // (Stopped: the listener closed, the runtime and its connections ended with it.)
+            if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            let (stream, peer) = match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
+                Err(_) => continue,
+                Ok(Ok(x)) => x,
+                Ok(Err(e)) => {
                     eprintln!("coordinator: taking a connection: {e}");
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;

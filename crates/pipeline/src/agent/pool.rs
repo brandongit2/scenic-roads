@@ -41,6 +41,27 @@ use std::time::{Duration, Instant};
 
 /// The switch that turns the pool on, on the NAS (§12): while it's missing, the agent is as it was.
 pub const ENABLED: &str = "state/pool/enabled";
+/// The switch that has a member's part change in its process (docs/pool.md §12, phase 4's fourth
+/// batch): its coordinator started as it takes the lead, stopped as it loses it, its jobs going on
+/// through the lead wherever it is (`on` in it; missing, as `SLOTS_DEFAULT` says). Off, a process
+/// whose part changes restarts into it once its first job's slot is free.
+pub const SLOTS: &str = "state/pool/slots";
+/// Whether a part changes in its process while the switch is missing.
+pub const SLOTS_DEFAULT: bool = false;
+
+/// Whether a member's part changes in its process, as the switch at `root` says (`SLOTS`); None
+/// when it can't be read now.
+pub fn slots_on(root: &Path) -> Option<bool> {
+    match std::fs::read_to_string(root.join(SLOTS)) {
+        Ok(s) => Some(match s.trim() {
+            "off" => false,
+            _ => true,
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(SLOTS_DEFAULT),
+        Err(_) => None,
+    }
+}
+
 /// The switch that runs the pool beside today's coordination, acting on nothing (`Overlay`).
 pub const SHADOW: &str = "state/pool/shadow";
 /// Where a shadow run writes, under the NAS's project folder: the pool's files as they'd be.
@@ -823,6 +844,9 @@ pub struct Run {
     pub conds: Option<Conds>,
     /// The owner's controls: their asks, where each stands, the view (crate::agent::lead).
     pub controls: super::lead::Controls,
+    /// Its part changes in this process (`SLOTS`): a step that takes up a term or loses one doesn't
+    /// ask for a restart; the agent changes its part (crate::agent's `change_part`).
+    pub in_process: bool,
     /// The entries it merged with a change outside their step's write-set (crate::agent::steps::
     /// outside: reported, not refused, until the write-sets are enforced), the last `OUTSIDE_KEPT`
     /// of them, and how many in all since this process started (each entry once).
@@ -846,7 +870,7 @@ pub const OUTSIDE_KEPT: usize = 20;
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, outside: VecDeque::new(), outside_n: 0, outside_seen: BTreeSet::new() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, outside: VecDeque::new(), outside_n: 0, outside_seen: BTreeSet::new() }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -904,11 +928,12 @@ impl Run {
         if let Some(e) = out.leads {
             self.led.insert(e);
         }
-        match (self.role, out.leads) {
-            (Role::Lead, None) if out.stop.is_none() => {
+        match (self.role, out.leads, self.in_process) {
+            (_, _, true) => {}
+            (Role::Lead, None, _) if out.stop.is_none() => {
                 self.restart.get_or_insert_with(|| "it no longer leads".into());
             }
-            (Role::Member, Some(e)) => {
+            (Role::Member, Some(e), _) => {
                 self.restart.get_or_insert_with(|| format!("it leads term {e}"));
             }
             _ => {}
@@ -1002,8 +1027,9 @@ impl Run {
 /// A term taken up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
 /// grants from now in that term; the state handed over with it (a handover's), else the newest a
 /// term before has (a takeover's, or its own before a restart), loaded; its own host's leases from
-/// before dropped (its jobs ended with the process that ran them).
-pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &Out, host: &str) {
+/// before dropped (its jobs ended with the process that ran them), but those of the jobs this
+/// process runs (`keep`: a member that took the lead in its process, its job going on).
+pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &Out, host: &str, keep: &[u64]) {
     let Some(c) = coord else { return };
     for e in &out.events {
         let Event::TookUp { term, handed, .. } = e else { continue };
@@ -1023,7 +1049,7 @@ pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &O
                 Ok(n) => eprintln!("pool: term {term}'s coordinator took up {n} lease{} {}", if n == 1 { "" } else { "s" }, if handed.is_some() { "handed over" } else { "from the term before" }),
                 Err(e) => eprintln!("pool: the coordinator's state for term {term}: {e:#}"),
             }
-            for l in c.drop_workers(&[host.to_string(), crate::agent::second_worker(host)]) {
+            for l in c.drop_workers(&[host.to_string(), crate::agent::second_worker(host)], keep) {
                 eprintln!("pool: {}'s lease ended with the process before this one", l.what());
             }
         }

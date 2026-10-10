@@ -2281,7 +2281,9 @@ between jobs into the other way. On:
   1, and leads it as the build Mac did (it plans, its coordinator grants); any other Mac's agent works
   as a helper did, `--helper` or not. A lead restarting, waking from a sleep, or before GC makes the
   next term naming itself; one on an app older than its term's stands down, and another member able
-  to lead takes over after two minutes. A process whose part changes restarts into it between jobs.
+  to lead takes over after two minutes. A process whose part changes restarts into it between jobs,
+  or, with `state/pool/slots` on, changes it in place, its coordinator started or stopped and its
+  jobs going on through the lead wherever it is (docs/pool.md §7.6).
 - **Every job hands off**, the lead's too: under a lease `<term>-<id>` of the lead's coordinator, its
   saves into `agent/pool/jobs/<term>-<id>/` (`SCENIC_HANDOFF`), then, as an entry, to the journal on
   the NAS (`state/journal/<day>/<term>-<id>.json`), which the lead merges into its term's records
@@ -2680,7 +2682,8 @@ At each phase's end an Opus agent reviews the work against this plan.
      do;
    - members joining, leaving and coming back aren't in the history (the terms are);
    - a process whose member takes a term up, or steps down, restarts into its new part between
-     jobs: the lead's own jobs run in its process until phase 2;
+     jobs while `state/pool/slots` is off (it is until the both-Macs scratch run of phase 4's
+     fourth batch: pool.md §12); on, the part changes in the process, its jobs going on;
    - the records' readers read today's three files, which the lead writes from its records after
      each save; the snapshot itself is read by no reader yet;
    - with the pool on, nothing re-keys the records (`agent::rekey`): a new key scheme builds its

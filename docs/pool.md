@@ -3,8 +3,9 @@
 Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its driver and phase
 2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls built**
 (crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); **phase 4's
-first two batches built** (the steps table, crate::agent::steps, its write-sets checked and reported
-at merge; the memory guard, crate::agent::memguard: §7.2, §7.3, §12); the rest is planned. It replaces the fixed
+first four batches built** (the steps table, crate::agent::steps, its write-sets checked and
+reported at merge; the memory guard, crate::agent::memguard; power, home and the in-use rule gone;
+the lead's slots as any member's, behind its switch: §7.2, §7.3, §7.6, §12); the rest is planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -314,8 +315,10 @@ what the lead's step saw, driven by crate::pool::driver.
   the snapshot the term's `seq` names: crate::pool::records::Records::handed), so every job, A's
   included, renews with B and hands back to the journal as before.
 - **A job that can't move** (the OSM pass, whose stages are on its Mac's disk) doesn't stop a
-  handover: it's a member's job like any other, wherever it runs. The one exception is a job running
-  in the lead's own process (none, once phase 2 is done: §12).
+  handover: it's a member's job like any other, wherever it runs, the lead's own among them: with
+  the part changing in its process (`state/pool/slots`, §12, phase 4's fourth batch), a lead handing
+  over mid-job keeps its job running and works on as a member, the job's lease renewed with the new
+  lead; without it, it restarts into a member once its job's slot is free.
 - **A lead restarting** (a new app) is a re-assertion (§6.6): it makes the next term naming itself
   and keeps the leases of the jobs it relaunches.
 - **"No lead"** is a state the views show (a term whose lead is out of touch, or a pass not taken up
@@ -402,9 +405,10 @@ nobody reads: invariant 5.
   ahead is shown as "clock wrong". The Macs keep time by NTP to well under a second.
 - **Nothing persisted as an `Instant`:** lease deadlines, failures' waits and workers' last-seen
   times are wall-clock times on the NAS, so they mean the same on the next lead.
-- **The lead stays awake** (planned, §12) while it leads with leases out on mains power (an
-  idle-sleep assertion, as jobs hold now), so no member stalls behind a lead that dozed off with no
-  job of its own.
+- **The lead stays awake** while it leads with leases out, at any charge (an idle-sleep assertion,
+  `caffeinate -i` held for the agent, as jobs hold one), so no member stalls behind a lead that
+  dozed off with no job of its own (with the part changing in its process: §12, phase 4's fourth
+  batch).
 
 ## 7. The work: slots on every member
 
@@ -636,10 +640,23 @@ measure alone: no prediction, and nothing from the steps table, decides it.
 
 ### 7.6 The lead's own slots
 
-They call the lead through one interface, re-resolved on every call: in process while this Mac
-leads, over HTTP after a handover, so a job running across a handover just carries on. They use the
-journal and validation like anyone's (none of today's shortcuts for the build Mac's own jobs), and
-the in-process path never holds the coordinator's lock during NAS I/O.
+They call the lead through one interface, re-resolved on every call (crate::agent's `beat` and
+`end_lease`, built: phase 4's fourth batch): in process while this Mac leads, over HTTP while it's a
+member, whoever granted the lease, so a job running across a handover just carries on. A lease's
+worker is its Mac's name whichever coordinator granted it, so the next lead's coordinator, holding
+the leases handed over with the term, takes the old lead's renewals and hand-offs as any member's;
+one it doesn't know (a takeover, its state older) is held again under a new id, its hand-off keeping
+the lease it began under. They use the journal and validation like anyone's (none of the shortcuts
+for the build Mac's own jobs), and the in-process path never holds the coordinator's lock during
+NAS I/O. With the part changing in its process (`state/pool/slots`), a member that takes up a term
+starts its coordinator (its port free a moment after the last lead in that process stopped one),
+keeping the leases of the jobs it runs (a take-up drops its own host's leases from before only for
+jobs no longer running), and a lead that loses its term stops its coordinator and takes its contact
+off the NAS; neither restarts. A coordinator that can't start leaves the part to a restart, as
+without the switch. A lead whose update waits on one of its jobs (a newer app installed: it starts
+nothing new and restarts once its slots are free) hands the lead, once per app, to a member already
+on that app that can lead, as the owner's ask would (the same-app rule otherwise leaves that member
+idle meanwhile: plan.md §8).
 
 ### 7.7 What a step needs, by structure (planned)
 
@@ -861,8 +878,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      - **A process's part** is the terms', decided as it starts (its member's first step): the lead
        plans and grants through its coordinator as the build Mac did; any other member works as a
        helper did, `--helper` or not. A member whose part changes (it took a term up, or stepped
-       down) restarts into its new part once its first job's slot is free: phase 1's lead runs its
-       own jobs in its process (phase 2 moves them out). A process whose member's lock another
+       down) changes it in its process with `state/pool/slots` on (§7.6), else restarts into its
+       new part once its first job's slot is free. A process whose member's lock another
        holds starts nothing, tries the lock each loop, and restarts into the pool once it's free;
        one the driver stops (its lock taken since) saves that step's state, starts nothing, and
        exits between jobs. A saved state naming terms when the NAS has none (an earlier time the
@@ -950,11 +967,11 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      terms, take-ups, merges, gates against the catalogs and GC the agent ran, and its records
      against the build's.
 2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core, built);
-   the owner's asks reach the agent (phase 3); the agent's part, planned (phase 4's fourth batch,
-   below): staying awake, the lead's own jobs moved out of its process into its slots (so nothing
-   pins the lead: in phase 1 a lead
-   handing over mid-job keeps running its job, which hands off to the journal under its lease, and
-   restarts into a member once its slot is free).
+   the owner's asks reach the agent (phase 3); the agent's part, built with phase 4's fourth batch
+   (below), behind its switch: staying awake while leading, and a part changing in its process,
+   its jobs going on through the lead wherever it is (without the switch, a lead handing over
+   mid-job keeps running its job, which hands off to the journal under its lease, and restarts
+   into a member once its slot is free).
 3. **Controls: built** (crate::agent::lead; §6.3, §10, §11). The owner's asks reaching the agent
    and the driver (an ask file in the agent's folder; the build page's through its coordinator; a
    member's passed on to the lead by mail), checked as the driver would; where each stands; the
@@ -1031,16 +1048,22 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       taking the map tiles rather than wait for the Wikidata facts, which start once it ends; one
       passed over half an hour waited for, the second starting nothing but it; one started in the
       second slot and ended past the half hour holding nothing up.
-   4. **The lead's slots as any member's** (§7.6, phase 2's part of the agent): its jobs ask, beat
-      and end through one client, in process while it leads and over HTTP after a handover, so a
-      change of part restarts nothing (only its coordinator starts or stops), and the lead stays
-      awake while it leads with leases out (§6.7). A lead whose own update is pending (a newer app
-      installed, its slot busy, a member on the newer app idle by the same-app rule: plan.md §8)
-      hands the lead to such a member by itself, rather than leave the members idle while its job
-      runs (hours, during an OSM pass). Behind `state/pool/slots`. Tests: the
-      simulator's runs with a handover while the lead's own job runs (its entry reaching the new
-      lead's records, its lease renewed with it); two agents in one process, then as processes
-      with SIGSTOP and the fault points of §13. **Scratch state (§13): both Macs.**
+   4. **The lead's slots as any member's: built** (§7.6, phase 2's part of the agent): its jobs'
+      leases renewed and ended through the lead wherever it is, in process while it leads and over
+      HTTP while it's a member, so a change of part restarts nothing (its coordinator starts or
+      stops: a coordinator stopped frees its port within a second), and the lead stays awake while
+      it leads with leases out (§6.7). A lead whose own update is pending (a newer app installed,
+      its slot busy, a member on the newer app idle by the same-app rule: plan.md §8) hands the lead
+      to such a member by itself, rather than leave the members idle while its job runs (hours,
+      during an OSM pass). Behind `state/pool/slots` (`on`, or present; off while missing, until
+      the both-Macs scratch run). Tests: two agents in one process (a member's job granted in term
+      1 running while the lead is handed to its Mac, neither restarting, the new lead's coordinator
+      up and the old one's stopped, the job's entry reaching the new lead's records and its lease
+      ended there, then the old lead, a member, given a job by the new lead over HTTP and its entry
+      merged); a lead on an older app whose job holds its update handing the lead to the member on
+      the newer; a coordinator stopped freeing its port for the next. The simulator is unchanged
+      (the driver is: the agent's part isn't the simulator's). **Scratch state (§13): both Macs**
+      (with `state/pool/slots` made in the scratch folder), and as processes with SIGSTOP.
    5. **Disk measured, and the Mac shared by measure** (§7.7): first GC reading the journal (every
       entry not yet in the lead's records keeps the files it names), so it can run beside other
       jobs; each job's disk use counted by the accessors that write its files and learned per

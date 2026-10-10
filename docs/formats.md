@@ -872,6 +872,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     able}}`, what isn't so left out (`conds`: apps from phase 3's controls on; older ones ignore it).
   - `state/pool/auto-handover`: the owner's switch for the proactive offer to be taken by itself
     (`scenic lead auto on|off`; a line saying who turned it on), off while missing.
+  - `state/pool/slots`: the switch for a member's part changing in its process (docs/pool.md §7.6):
+    present (or `on` in it) on, `off` in it or missing off.
   - `state/pool/memory-guard`: the memory guard's switch (crate::agent::memguard: docs/pool.md
     §7.2), `off` or `on` in it; missing, on. Read by every agent, the pool on or off.
   - `state/pool/mail/<to>/<from>.json`: the messages `from` sent `to`, its last 64, `{msgs: [[n,
