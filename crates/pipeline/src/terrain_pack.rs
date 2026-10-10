@@ -1791,9 +1791,10 @@ pub(crate) mod tests {
     /// Two raw-tile jobs at once on one Mac (docs/pool.md §7.7, the raw tiles' group's going): two
     /// terrain pieces of one area reading their raw tiles through one cache at the same time, while
     /// the tiles waiting there are packed onto the NAS and deleted under them (rawpack::pack_local:
-    /// only tiles no job holds, only once their archive is named) and every file no job holds is
-    /// deleted as fast as it can be: each piece makes the same packs, byte for byte, as when it ran
-    /// alone.
+    /// only tiles no job holds, only once their archive is named) and every copy of the NAS's
+    /// archives no job holds is deleted as fast as it can be (as room-making takes them: a loose
+    /// tile the NAS lacks it never takes, so neither does this): each piece makes the same packs,
+    /// byte for byte, as when it ran alone.
     #[test]
     fn two_raw_tile_jobs_at_once_with_packing_between_make_the_same_bytes() {
         crate::fetch::go_offline();
@@ -1842,14 +1843,15 @@ pub(crate) mod tests {
         let (a, b) = (ts[0], ts[1]);
         let calm = (piece("calm-a", &calm_cache, a), piece("calm-b", &calm_cache, b));
         assert!(!calm.0.is_empty() && !calm.1.is_empty() && calm.0 != calm.1);
-        // At once, one cache, its waiting tiles packed and every file no job holds deleted meanwhile.
+        // At once, one cache, its waiting tiles packed and every archive copy no job holds deleted
+        // meanwhile.
         let stop = std::sync::atomic::AtomicBool::new(false);
         let (busy, packed, freed) = std::thread::scope(|s| {
             let packer = s.spawn(|| {
                 let (mut packed, mut freed) = (0, 0);
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     packed += crate::rawpack::pack_local(&shared, &store, &root, false).unwrap_or(0);
-                    freed += store::cachefile::remove_tree(&shared).freed;
+                    freed += store::cachefile::remove_tree(&shared.join("packs")).freed;
                 }
                 (packed, freed)
             });
