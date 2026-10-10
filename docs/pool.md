@@ -1016,10 +1016,16 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       it (the first slot leaving network work to the second, a network second job's four threads
       and 10 GB, room made beside a network job, the forecast's half hour in use); the table's
       columns for them. A Mac's charge and home stay in its conditions for the status and for
-      whether it may lead (`BATTERY_MIN`, the proactive offer: §6.5), not for any job. No switch
-      (each is a rule gone, the owner's). Tests: a job's conditions the NAS alone, at any charge,
+      whether it may lead (`BATTERY_MIN`, the proactive offer: §6.5), not for any job. In place of
+      the first slot leaving network work to the second, a general rule with no list: a slot whose
+      next job only can't share the Mac with the other's (a group of the table; later, a lock at the
+      resource) takes the next job in plan order that can start, the one passed over starting as
+      soon as the clash ends, and waited for once passed over half an hour. No switch (each is a
+      rule gone, the owner's). Tests: a job's conditions the NAS alone, at any charge,
       away or home; a record of an older app's job read as its NAS alone; a second job beside the
-      first whoever is at the Mac, in the forecast too.
+      first whoever is at the Mac, in the forecast too; the heritage chain beside, the first slot
+      taking the map tiles rather than wait for the Wikidata facts, which start once it ends; one
+      passed over half an hour waited for, the second starting nothing but it.
    4. **The lead's slots as any member's** (§7.6, phase 2's part of the agent): its jobs ask, beat
       and end through one client, in process while it leads and over HTTP after a handover, so a
       change of part restarts nothing (only its coordinator starts or stops), and the lead stays

@@ -1832,10 +1832,15 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     (docs/pool.md §7.2, crate::agent::memguard);
   - starts only with the reserve free: room on the disk is made only while no other job runs (a job
     beside may read what's deleted, and the loop that looks after it waits meanwhile);
-  - doesn't starve the first: when the first's next job can't start beside the second's (it runs
-    alone, it needs room made, or the two wouldn't fit the memory), the first waits for it rather
+  - doesn't starve the first: when the first's next job can't start beside the second's because it
+    runs alone, needs room made, or the two wouldn't fit the memory, the first waits for it rather
     than start later work, and the second starts nothing new meanwhile, nor while one that runs
-    alone or needs room made is the first's next;
+    alone or needs room made is the first's next; when it only can't share the Mac with the second's
+    (one of the steps table's groups: two Wikidata steps, two raw-tile readers, two heavy NAS
+    readers), the first takes the next job in plan order that can start, and the job passed over
+    starts as soon as the clash ends (in whichever slot frees: the second takes it too); one passed
+    over for half an hour is waited for, the second starting nothing new but it (the forecast,
+    which doesn't model these clashes, is the nearer for it);
   - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
     claims its own, and half the cores;
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
@@ -2672,10 +2677,6 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
-   - with no step left to the second job (the light steps' list gone: pool.md §12, batch 3), a
-     first job that can't run beside the second's (two Wikidata steps, the heritage chain and the
-     items' facts) waits for it to end, an hour or more, rather than start the map tiles after it;
-     the Mac shared by measure (batch 5) and placement (batch 11) take this up;
    - the memory guard (`agent::memguard`) samples each job's memory every 5 s: a job growing faster
      can swap its Mac that long before it's frozen; a unit's measure is taken while it's built
      here, so a tail it runs here later is counted against the unit under way then; and a helper's
