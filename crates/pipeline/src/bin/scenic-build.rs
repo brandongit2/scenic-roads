@@ -3542,9 +3542,10 @@ fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Resul
     Ok(by_q)
 }
 
-/// The z6 tiles named (pieces: `terrain` and `slope` of z6 tiles), each near the coverage; None when
-/// none is (an area's whole run, of z3 tiles or of all); an error when z6 tiles are named with
-/// others, or one isn't near the coverage. `--expect-same`'s, those of them made again as they are.
+/// The z6 tiles named (pieces: `terrain` and `slope` of z6 tiles; one not near the coverage is a
+/// "none" piece, whose run drops its hi pack and mid, if any); None when none is (an area's whole
+/// run, of z3 tiles or of all); an error when z6 tiles are named with others. `--expect-same`'s,
+/// those of them made again as they are (each near the coverage).
 fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<Option<(Vec<Unit>, BTreeSet<String>)>> {
     let _p = phase("the pieces near the coverage worked out", Class::Compute);
     let mut named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
@@ -3565,7 +3566,10 @@ fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<O
     anyhow::ensure!(named.iter().all(|u| u.z == 6), "z6 tiles (pieces) or z3 tiles (areas' whole runs), not both");
     let near = pipeline::agent::build::coverage_tiles(cov);
     for u in &named {
-        anyhow::ensure!(near.get(&(u.x >> 3, u.y >> 3)).is_some_and(|ts| ts.contains(&(u.x, u.y))), "{}: not near the coverage (no piece)", u.slash());
+        if near.get(&(u.x >> 3, u.y >> 3)).is_some_and(|ts| ts.contains(&(u.x, u.y))) {
+            continue;
+        }
+        anyhow::ensure!(!same.contains(&u.slash()), "{}: not near the coverage, so it can't be made as it is", u.slash());
     }
     let slashes: BTreeSet<String> = named.iter().map(Unit::slash).collect();
     anyhow::ensure!(same.is_subset(&slashes), "--expect-same names z6 tiles not given: {:?}", same.difference(&slashes).collect::<Vec<_>>());
@@ -3681,13 +3685,21 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// slope <6/x/y …> [--expect-same T,…]: slope's pieces (pipeline::slope_pack::build_piece).
-fn slope_pieces(out: &mut Out, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
+/// slope <6/x/y …> [--expect-same T,…]: slope's pieces (pipeline::slope_pack::build_piece); of a z6
+/// tile the coverage has left, its hi pack and mid dropped (pipeline::slope_pack::drop_piece).
+fn slope_pieces(out: &mut Out, cov: &pipeline::coverage::Coverage, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     for (k, t) in ts.iter().enumerate() {
         pipeline::control::safe_point("slope");
         pipeline::agent::jobs::part(k, &names);
+        // (A "none" piece first: nothing read, neither a `started` nor a cost line.)
+        if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0) {
+            let n = pipeline::slope_pack::drop_piece(out, (t.x, t.y))?;
+            eprintln!("slope {}: the coverage has left it; {n} files dropped", t.slash());
+            pipeline::control::done("slope", &t.slash());
+            continue;
+        }
         let c = cost_start("slope", &t.slash());
         let r = pipeline::slope_pack::build_piece(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
         eprintln!("slope {}: {r:?} ({:.0?})", t.slash(), c.elapsed());
@@ -3767,7 +3779,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
 fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     if let Some((ts, same)) = pieces_named(&cov, args)? {
-        return slope_pieces(out, &ts, &same);
+        return slope_pieces(out, &cov, &ts, &same);
     }
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());

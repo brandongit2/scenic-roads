@@ -263,6 +263,19 @@ pub struct Report {
 /// A tile as made: zoom, column, row, its bytes.
 type Made = (u8, u32, u32, Vec<u8>);
 
+/// Z6 tile (`x`, `y`)'s slope hi pack in the manifest (z9–11).
+pub fn hi_logical(x: u32, y: u32) -> String {
+    format!("layers/slope/hi/6-{x}-{y}")
+}
+
+/// Drops z6 tile `t`'s slope hi pack and mid from the manifest (a piece the coverage has left:
+/// docs/plan.md §5, Shrinking), saving it; how many it had.
+pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
+    let n = crate::terrain_pack::drop_named(out, &[hi_logical(t.0, t.1), mid_logical(t.0, t.1)]);
+    out.save()?;
+    Ok(n)
+}
+
 /// Z6 tile (`x`, `y`)'s slope mid in the manifest: its z6–8 tiles as made (`build_piece`), which its
 /// area's assembly reads (`build_lo`).
 pub fn mid_logical(x: u32, y: u32) -> String {
@@ -454,7 +467,10 @@ fn terrain_reads(terr: &ManifestTiles) -> (impl Fn(u8, u32, u32) -> Option<Vec<u
 /// (z9–11), written as soon as it's worked out (an area holds a z6 tile's tiles at a time, under a
 /// GB, where all of them took up to 20 GB), and `q`'s lo pack (z3–8), the other z6 tiles of `q`
 /// taken from the slope lo pack as it is: its pieces (`build_piece`'s runs) and its assembly
-/// (`build_lo`'s, from the pieces' z6–8 tiles held here), the same bytes as their jobs make.
+/// (`build_lo`'s, from the pieces' z6–8 tiles held here), the same bytes as their jobs make, a
+/// piece's hi pack dropped when it makes no hi tile, as its job drops it. (A z6 tile of `q` the
+/// coverage has left, not among `ts`, is left as it is: its "none" piece's job drops its hi pack and
+/// mid, `drop_piece`.)
 pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report> {
     build_q_with(out, q, ts, &|_, _, _| {})
 }
@@ -483,7 +499,9 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
         rep.hi_tiles += hi.len();
         let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
         let p = sub("hi packs uploaded", Class::NasWrite);
-        crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, t.0, t.1), &mut it)?;
+        if crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, t.0, t.1), &mut it)?.is_none() {
+            crate::terrain_pack::drop_named(out, &[hi_logical(t.0, t.1)]);
+        }
         drop(p);
         count.one();
         mids.insert(t, lo);
@@ -497,7 +515,9 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
     on("packs written", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
-    crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    if crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
+        crate::terrain_pack::drop_named(out, &[format!("layers/slope/lo/3-{}-{}", q.0, q.1)]);
+    }
     drop(up);
     out.save()?;
     on("packs written", 1, 1);
@@ -505,10 +525,11 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
 }
 
 /// Makes z6 tile `t`'s slope (a piece) from the build's terrain packs and uploads it: its hi pack
-/// (z9–11; none when it made no tile: an earlier one stays, as an area's run leaves it) and its mid
-/// (`mid_logical`: its z6–8 tiles), which its area's assembly reads. `expect_same`: a piece made
-/// again as it is (its mid made), whose hi pack must come out as the manifest has it, else an error
-/// and nothing uploaded.
+/// (z9–11; none when it made no tile, its terrain having no hi tile: the manifest's then dropped)
+/// and its mid (`mid_logical`: its z6–8 tiles), which its area's assembly reads. `expect_same`: a
+/// piece made again as it is (its mid made), whose hi pack must come out as the manifest has it
+/// (none where it has none), else an error and nothing uploaded. A z6 tile the coverage has left
+/// isn't made: its hi pack and mid are dropped (`drop_piece`).
 pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
@@ -540,20 +561,26 @@ pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn
     let ml = mid_logical(t.0, t.1);
     let mid = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid, t, &lo)?;
+    let hl = hi_logical(t.0, t.1);
     if expect_same {
-        if let Some(p) = &pack {
-            let made = p.content_name()?;
-            if out.get(&p.logical) != Some(made.as_str()) {
+        let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
+        if out.get(&hl) != made.as_deref() {
+            if let Some(p) = &pack {
                 std::fs::remove_file(&p.local).ok();
-                std::fs::remove_file(&mid).ok();
-                anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {}: made {made}, the manifest has {}", t.0, t.1, p.logical, out.get(&p.logical).unwrap_or("none"));
             }
+            std::fs::remove_file(&mid).ok();
+            anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {hl}: made {}, the manifest has {}", t.0, t.1, made.as_deref().unwrap_or("none"), out.get(&hl).unwrap_or("none"));
         }
     }
     drop(p);
     let up = phase("uploaded", Class::NasWrite);
-    if let Some(p) = pack {
-        out.put_file(&p.logical, "pack", &p.local)?;
+    match pack {
+        Some(p) => {
+            out.put_file(&p.logical, "pack", &p.local)?;
+        }
+        None => {
+            crate::terrain_pack::drop_named(out, &[hl]);
+        }
     }
     out.put_file(&ml, "sect", &mid)?;
     drop(up);
@@ -592,7 +619,9 @@ pub fn build_lo(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&s
     on("packs written", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
-    crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    if crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
+        crate::terrain_pack::drop_named(out, &[format!("layers/slope/lo/3-{}-{}", q.0, q.1)]);
+    }
     drop(up);
     out.save()?;
     on("packs written", 1, 1);
@@ -993,6 +1022,51 @@ mod tests {
         out.save()?;
         on("packs written", 1, 1);
         Ok(rep)
+    }
+
+    /// A piece whose terrain has no hi tile makes no hi tile, and drops the hi pack an earlier run
+    /// left (expected the same, it isn't: refused, nothing uploaded); a z6 tile the coverage has
+    /// left drops its hi pack and mid (`drop_piece`); an area's whole run drops the first the same.
+    #[test]
+    fn a_piece_making_no_hi_tile_or_left_by_the_coverage_drops_its_hi_pack() {
+        let d = tempfile::tempdir().unwrap();
+        // (Files an earlier run left: their bytes don't matter here.)
+        let fake = |out: &mut Out, l: &str| {
+            let ext = if l.starts_with("work/") { "sect" } else { "pack" };
+            let c = out.put_bytes(l, ext, l.as_bytes()).unwrap();
+            out.save().unwrap();
+            c
+        };
+        let (hi, mid, other) = (hi_logical(28, 16), mid_logical(28, 16), hi_logical(29, 16));
+        let (lhi, lmid) = (hi_logical(24, 23), mid_logical(24, 23));
+        let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        fake(&mut out, &hi);
+        let kept = fake(&mut out, &other);
+        let e = build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap_err().to_string();
+        assert!(e.contains(&hi) && e.contains("made none") && e.contains("nothing uploaded"), "{e}");
+        assert!(out.get(&hi).is_some() && out.get(&mid).is_none());
+        let r = build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
+        assert_eq!(r.hi_tiles, 0);
+        assert!(out.get(&hi).is_none() && out.get(&mid).is_some());
+        let before = out.manifest.clone();
+        out.remove(&mid);
+        build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap();
+        assert_eq!(out.manifest, before, "made again as it is: the same");
+        fake(&mut out, &lhi);
+        fake(&mut out, &lmid);
+        assert_eq!(drop_piece(&mut out, (24, 23)).unwrap(), 2);
+        assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none());
+        assert_eq!(out.get(&other), Some(kept.as_str()), "another tile's hi pack stays");
+        let again = Out::open(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
+        assert!(again.get(&hi).is_none() && again.get(&lhi).is_none() && again.get(&lmid).is_none() && again.get(&mid).is_some());
+        // An area's whole run (3/3/2, its one piece 6/28/16): its piece's hi pack dropped the same;
+        // a z6 tile not among its pieces left as it is (its "none" piece drops it).
+        let mut area = Out::open(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
+        for l in [&hi, &lhi] {
+            fake(&mut area, l);
+        }
+        build_q(&mut area, (3, 2), &[(28, 16)]).unwrap();
+        assert!(area.get(&hi).is_none() && area.get(&lhi).is_some());
     }
 
     /// Two areas' slope (3/3/1 and 3/4/1: a coverage on lon 0° at 70.5°N, their border pieces reading

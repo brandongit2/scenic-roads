@@ -1179,6 +1179,33 @@ pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)>
         .collect()
 }
 
+/// Whether z6 tile `t`'s piece makes any hi tile (`piece_levels` not all empty): one near the
+/// coverage at z6 can still have none of its z9–12 tiles near it (6/21/18).
+pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
+    let (tx, ty) = t;
+    (9..=12u8).any(|z| {
+        let s = 1u32 << (z - 6);
+        (tx * s..(tx + 1) * s).any(|x| (ty * s..(ty + 1) * s).any(|y| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)))
+    })
+}
+
+/// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a piece the coverage has left:
+/// docs/plan.md §5, Shrinking), saving it; how many it had.
+pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
+    let n = drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)]);
+    out.save()?;
+    Ok(n)
+}
+
+/// Drops those of `logicals` the manifest names (not saved); how many.
+pub(crate) fn drop_named(out: &mut Out, logicals: &[String]) -> usize {
+    let gone: Vec<&String> = logicals.iter().filter(|l| out.get(l).is_some()).collect();
+    for l in &gone {
+        out.remove(l);
+    }
+    gone.len()
+}
+
 /// An area's levels (z3 tile `q`'s), z8 → z3, the whole of it.
 fn upper_levels(q: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
     (3..=8u8)
@@ -1226,8 +1253,10 @@ fn saying<T>(mk: &Maker, total: u64, progress: crate::rawpack::Progress, run: im
 ///
 /// Its pieces, a z6 tile at a time (`build_piece`'s run: its levels z12 → z9 made, then its hi pack
 /// written, so only its tiles are held), then its assembly (`build_lo`'s, from the pieces' mids held
-/// here): the same bytes as the pieces' jobs and the assembly's. A tile's making reads only its own
-/// raw tile and its children's (`process`): the same bytes in any order.
+/// here): the same bytes as the pieces' jobs and the assembly's, and the same names dropped (a
+/// piece's hi pack when it makes no hi tile; the hi pack and mid of each z6 tile of `q` the coverage
+/// has left, as its piece's run drops them: `drop_piece`). A tile's making reads only its own raw
+/// tile and its children's (`process`): the same bytes in any order.
 pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     let mut rep = PackReport::default();
     let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&t| piece_levels(cov, t)).collect();
@@ -1244,8 +1273,18 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
                 (z, x, y, b, n)
             });
             let _p = crate::timings::sub("hi packs uploaded", crate::timings::Class::NasWrite);
-            crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?;
+            if crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?.is_none() {
+                drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1)]);
+            }
             mids.push((t, mid));
+        }
+        // (The area's z6 tiles the coverage has left: their hi packs and mids go.)
+        for x in q.0 * 8..(q.0 + 1) * 8 {
+            for y in q.1 * 8..(q.1 + 1) * 8 {
+                if !near_coverage(cov, 6, x, y, 20.0) {
+                    drop_named(out, &[format!("layers/terrain/hi/6-{x}-{y}"), mid_logical(x, y)]);
+                }
+            }
         }
         let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
         mk.lo(q, &refs)
@@ -1260,7 +1299,9 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    if crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
+        drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
+    }
     drop(up);
     out.save()?;
     progress("packs", 1, 1);
@@ -1268,10 +1309,12 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
 }
 
 /// Makes z6 tile `t`'s terrain (a piece: its levels z12 → z9, `piece_levels`) and uploads it: its hi
-/// pack (none when it made no tile: an earlier one stays, as an area's run leaves it) and its mid
-/// (`Mid`, `mid_logical`), which its area's assembly reads (`build_lo`). `expect_same`: a piece made
-/// again as it is (its mid made), whose hi pack must come out as the manifest has it, else an error
-/// and nothing uploaded. Says how far it is as `build_q_with` does.
+/// pack (none when it made no tile: the manifest's then dropped, so no earlier run's hi tiles stay
+/// above the z8–z6 its assembly makes from the raw tiles alone) and its mid (`Mid`, `mid_logical`),
+/// which its area's assembly reads (`build_lo`). A z6 tile the coverage has left (not near it: no
+/// piece) has its hi pack and mid dropped instead (`drop_piece`). `expect_same`: a piece made again
+/// as it is (its mid made), whose hi pack must come out as the manifest has it (none where it has
+/// none), else an error and nothing uploaded. Says how far it is as `build_q_with` does.
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     build_piece_with(out, raw, t, cov, src, expect_same, progress, None)
@@ -1292,6 +1335,12 @@ pub fn build_piece_with(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Cove
 pub fn build_piece_offered(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress, offers: crate::terrain_task::Offers) -> anyhow::Result<PackReport> {
     anyhow::ensure!(offers.piece() == t, "offers for 6/{}/{}, not 6/{}/{}", offers.piece().0, offers.piece().1, t.0, t.1);
     let mut rep = PackReport::default();
+    if !near_coverage(cov, 6, t.0, t.1, 20.0) {
+        anyhow::ensure!(!expect_same, "6/{}/{}: the coverage has left it, so it can't be made as it is", t.0, t.1);
+        let n = drop_piece(out, t)?;
+        eprintln!("terrain 6/{}/{}: the coverage has left it; {n} files dropped", t.0, t.1);
+        return Ok(rep);
+    }
     let levels = piece_levels(cov, t);
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
@@ -1320,20 +1369,26 @@ pub fn build_piece_offered(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &C
     let ml = mid_logical(t.0, t.1);
     let mid_path = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid_path, t, &mid)?;
+    let hl = format!("layers/terrain/hi/6-{}-{}", t.0, t.1);
     if expect_same {
-        if let Some(p) = &pack {
-            let made = p.content_name()?;
-            if out.get(&p.logical) != Some(made.as_str()) {
+        let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
+        if out.get(&hl) != made.as_deref() {
+            if let Some(p) = &pack {
                 std::fs::remove_file(&p.local).ok();
-                std::fs::remove_file(&mid_path).ok();
-                anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {}: made {made}, the manifest has {}", t.0, t.1, p.logical, out.get(&p.logical).unwrap_or("none"));
             }
+            std::fs::remove_file(&mid_path).ok();
+            anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {hl}: made {}, the manifest has {}", t.0, t.1, made.as_deref().unwrap_or("none"), out.get(&hl).unwrap_or("none"));
         }
     }
     drop(p);
     let up = crate::timings::phase("uploaded", crate::timings::Class::NasWrite);
-    if let Some(p) = pack {
-        out.put_file(&p.logical, "pack", &p.local)?;
+    match pack {
+        Some(p) => {
+            out.put_file(&p.logical, "pack", &p.local)?;
+        }
+        None => {
+            drop_named(out, &[hl]);
+        }
     }
     out.put_file(&ml, "sect", &mid_path)?;
     drop(up);
@@ -1344,7 +1399,8 @@ pub fn build_piece_offered(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &C
 
 /// Makes z3 tile `q`'s zoomed-out terrain (an assembly: its levels z8 → z3, the whole of it) from
 /// its pieces' mids (`ts`: its z6 tiles near the coverage, in column then row order, each with its
-/// mid in the manifest), and uploads its lo pack. Says how far it is as `build_q_with` does.
+/// mid in the manifest), and uploads its lo pack (none when it made no tile: the manifest's then
+/// dropped). Says how far it is as `build_q_with` does.
 pub fn build_lo(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     use anyhow::Context;
     let mut rep = PackReport::default();
@@ -1372,7 +1428,9 @@ pub fn build_lo(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)],
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    if crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
+        drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
+    }
     drop(up);
     out.save()?;
     progress("packs", 1, 1);
@@ -2163,6 +2221,82 @@ pub(crate) mod tests {
             }
         }
         assert!(!failed);
+    }
+
+    /// A coverage near z6 tile 6/21/18 (its grown box meets it) whose z9–12 tiles none come near
+    /// (each grown by less in longitude, at its own latitude): a small circle east of the tile's
+    /// south-east corner, as the build's coverage left 6/21/18.
+    pub(crate) fn near_without_hi(d: &std::path::Path) -> Coverage {
+        let b = crate::stage::tile_box_grown(6, 21, 18, 0.0);
+        let dx = |lat: f64| 20.0 / (111.320 * lat.to_radians().cos());
+        let (lat, lon) = (b[1] + 0.05, b[2] + (dx(b[3]) + dx(b[1] + 0.5)) / 2.0);
+        let c = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{lon},{lat},0.5")] }], None, d).unwrap();
+        assert!(near_coverage(&c, 6, 21, 18, 20.0) && !makes_hi(&c, (21, 18)) && piece_levels(&c, (21, 18)).iter().all(|(_, t)| t.is_empty()));
+        c
+    }
+
+    /// A piece that makes no hi tile drops the hi pack an earlier run left (expected the same, it
+    /// isn't: refused, nothing uploaded); a z6 tile the coverage has left drops its hi pack and mid
+    /// (it can't be expected the same); neither touches another tile's.
+    #[test]
+    fn a_piece_making_no_hi_tile_or_left_by_the_coverage_drops_its_hi_pack() {
+        let d = tempfile::tempdir().unwrap();
+        let cov = near_without_hi(d.path());
+        let raw = RawTiles::new(&d.path().join("raw"));
+        let src = Sources { north: None, water: None, coarse: None };
+        let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        // (Files an earlier run left: their bytes don't matter here.)
+        let fake = |out: &mut Out, l: &str| {
+            let ext = if l.starts_with("work/") { "sect" } else { "pack" };
+            let c = out.put_bytes(l, ext, l.as_bytes()).unwrap();
+            out.save().unwrap();
+            c
+        };
+        let (hi, mid) = ("layers/terrain/hi/6-21-18".to_string(), mid_logical(21, 18));
+        let other = "layers/terrain/hi/6-22-18".to_string();
+        fake(&mut out, &hi);
+        let kept = fake(&mut out, &other);
+        let e = build_piece(&mut out, &raw, (21, 18), &cov, &src, true, &|_, _, _| {}).unwrap_err().to_string();
+        assert!(e.contains(&hi) && e.contains("made none") && e.contains("nothing uploaded"), "{e}");
+        assert!(out.get(&hi).is_some() && out.get(&mid).is_none());
+        let r = build_piece(&mut out, &raw, (21, 18), &cov, &src, false, &|_, _, _| {}).unwrap();
+        assert_eq!(r.hi_tiles, 0);
+        assert!(out.get(&hi).is_none(), "the earlier run's hi pack dropped");
+        assert!(out.get(&mid).is_some(), "its mid made");
+        // Made again as it is: the same (no hi pack, the same mid).
+        let before = out.manifest.clone();
+        out.remove(&mid);
+        build_piece(&mut out, &raw, (21, 18), &cov, &src, true, &|_, _, _| {}).unwrap();
+        assert_eq!(out.manifest, before);
+        // A z6 tile the coverage has left (far from it): its hi pack and mid go.
+        let (lhi, lmid) = ("layers/terrain/hi/6-10-10".to_string(), mid_logical(10, 10));
+        fake(&mut out, &lhi);
+        fake(&mut out, &lmid);
+        let e = build_piece(&mut out, &raw, (10, 10), &cov, &src, true, &|_, _, _| {}).unwrap_err().to_string();
+        assert!(e.contains("the coverage has left it"), "{e}");
+        build_piece(&mut out, &raw, (10, 10), &cov, &src, false, &|_, _, _| {}).unwrap();
+        assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none());
+        assert_eq!(out.get(&other), Some(kept.as_str()), "another tile's hi pack stays");
+        // Saved: the manifest on disk says the same.
+        let again = Out::open(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
+        assert!(again.get(&hi).is_none() && again.get(&lhi).is_none() && again.get(&lmid).is_none() && again.get(&mid).is_some());
+        assert_eq!(drop_piece(&mut out, (10, 10)).unwrap(), 0, "nothing left to drop");
+        // An area's whole run drops the same: the hi pack of its piece making no hi tile, and the
+        // hi pack and mid of its z6 tile the coverage has left; its other pieces' it writes.
+        let by_q = crate::agent::build::coverage_tiles(&cov);
+        let ts = by_q.get(&(2, 2)).unwrap().clone();
+        assert!(ts.contains(&(21, 18)) && ts.contains(&(22, 18)), "{ts:?}");
+        let local = d.path().join("area-raw");
+        synthetic_raw(&local, &cov, (2, 2), &ts);
+        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let mut area = Out::open(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
+        let (ahi, alhi, almid) = ("layers/terrain/hi/6-21-18".to_string(), "layers/terrain/hi/6-16-17".to_string(), mid_logical(16, 17));
+        for l in [&ahi, &alhi, &almid] {
+            fake(&mut area, l);
+        }
+        build_q(&mut area, &raw, (2, 2), &ts, &cov, &src).unwrap();
+        assert!(area.get(&ahi).is_none() && area.get(&alhi).is_none() && area.get(&almid).is_none());
+        assert!(area.get("layers/terrain/hi/6-22-18").is_some() && area.get("layers/terrain/lo/3-2-2").is_some());
     }
 
     #[test]

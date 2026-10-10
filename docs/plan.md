@@ -687,9 +687,12 @@ the region. Each entry is one of these:
 - **Shrinking:** what only the removed part built leaves the manifest once the units are built (a
   prune): the outputs of units no longer built, their candidates and peaks, and map tiles no unit's
   ways reach any more; pack and lo also drop what a tile no longer has (a tile without ways, a
-  layer without tiles). The next catalog drops them, and GC frees their files. Terrain, slope and
-  grid tiles stay, which is harmless; a z6 tile the coverage has left loses its tree cover (its hi
-  packs and mid), and a z3 tile its zoomed-out tree cover.
+  layer without tiles). The next catalog drops them, and GC frees their files. Grid tiles stay,
+  which is harmless. A z6 tile the coverage has left loses its terrain's and slope's hi packs and
+  mids (its "none" pieces' runs: §6, Global-source layers) and its tree cover (its hi packs and
+  mid), and a z3 tile its zoomed-out tree cover. A z3 tile's terrain and slope lo packs stay (the
+  map's zoomed-out terrain, the whole z3 tile's z8 → z3), and a slope lo pack keeps the z6–8 tiles
+  it has of a z6 tile the coverage has left.
 
 **Today's set** (since 2026-10-05): 88 recipes in `inputs/regions/`, by political unit, every one
 of them OpenStreetMap boundaries (`osm:` relations from the pass's outline set).
@@ -808,7 +811,12 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     its z9–12, within the coverage plus 20 km (viewsheds see 15 km), zoom capped by latitude so
     pixels stay ≥ 15 m (z12 to 67°, z11 to 79°, z10 beyond): its hi pack; and its mid
     (`work/terrain-mid/6-x-y`, a sectioned file, never served: its z9 tiles' 2×2 means, as f32,
-    which the stored tiles can't give back, and its lakes' levels).
+    which the stored tiles can't give back, and its lakes' levels). A piece that makes no hi tile
+    (its z6 tile near the coverage, none of its z9–12 tiles: 6/21/18) drops the hi pack it had, and
+    a z6 tile the coverage has left is a "none" piece, whose run drops its hi pack and mid; so no
+    earlier run's hi tiles stay above the z8–z6 its area's assembly makes from the raw tiles alone.
+    Where a hi pack goes, the map's server makes those tiles from the z8 ones over them, and a
+    unit stages none there, as beyond 20 km of the coverage.
   - **terrain-lo**, an assembly per z3 tile with a piece (`build_lo`, the build Mac's): the whole z3
     tile's z8 → z3, z8 and coarser made again from their children where those exist (a piece's z9
     tiles' means, from its mid), since AWS's coarse levels come from coarser sources: its lo pack.
@@ -896,9 +904,11 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   tile it took thousands of round trips to the share; the others' few tiles read where they are):
   Horn's method reads a pixel's border from the tiles west, east, north and south of each tile at
   its zoom (a missing one is its nearest ancestor's, up to eight levels up), so a piece's edge tiles
-  read its neighbours' edge strips, in other areas' packs and the root too; and **slope-lo**, an
-  assembly per z3 tile (its z6–8 tiles from its pieces' mids, or the lo pack's for a piece current
-  without one; the area's other z6 tiles as the lo pack has them; z5–z3 from them). Together the
+  read its neighbours' edge strips, in other areas' packs and the root too (a piece whose terrain
+  has no hi tile makes none, and drops the hi pack it had; a z6 tile the coverage has left is a
+  "none" piece, its hi pack and mid dropped, as terrain's); and **slope-lo**, an assembly per z3
+  tile (its z6–8 tiles from its pieces' mids, or the lo pack's for a piece current without one;
+  the area's other z6 tiles as the lo pack has them; z5–z3 from them). Together the
   area's whole run's packs, byte for byte (`slope_pack` tests: two areas whose border pieces read
   each other's terrain).
 - **Worldwide z8 terrain** (`sources/terrain-z8-v3`, once, not served): every z8 tile, repaired, with
@@ -1360,7 +1370,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   its area waits, units and all;
 - **terrain (a piece, per z6 tile):** the coverage within 20 km of its tile (which decides its
   tiles), GLO-30 (`NORTH_PIN`) and the digest of the water it reads (`agent::build::water_key`:
-  `TERRAIN_WATER_V`; "-" without a basemap);
+  `TERRAIN_WATER_V`; "-" without a basemap); and "no hi tiles" for a piece that makes none
+  (`agent::build::piece_key_made`: its run drops the hi pack it had, so a record from before isn't
+  current). A z6 tile the coverage has left with a hi pack or a mid is a "none" piece, keyed on
+  the version and the tile (`none_piece_key`): its run drops them. No assembly waits for one, but
+  its area counts as left until it has run, so the units reading its tiles wait (their keys see
+  the tiles go) and are built once;
 - **terrain-lo (an assembly, per z3 tile):** its pieces' mids by content ("-" for a piece without
   one: it can't be assembled until each has, but its key with every mid "-" is what the records of
   an area's whole run are read as: §8, A new key scheme) and the digest of its z6–8 water;
@@ -1369,7 +1384,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   terrain tile it can read, by content, from the packs' indexes (`agent::build::slope_piece_reads`):
   each tile it works out from its terrain (a z12 one, or one its children don't all cover) and the
   tiles west, east, north and south of it, each resolved as the job resolves it. A change in a
-  neighbour's interior changes nothing here, one along its edge does;
+  neighbour's interior changes nothing here, one along its edge does. A "none" slope piece as
+  terrain's, run whenever (it reads no terrain);
 - **slope-lo (an assembly, per z3 tile):** its pieces' mids by content and the area's terrain lo
   pack; `SLOPE_LO_V`;
 - **trees (a tree cover piece, per z6 tile):** the coverage inside the tile ("none" once it has left
@@ -1703,11 +1719,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     z9–12 tiles are pinned by the hi packs the old keys named, and z8–z6 tiles by the hi pack of a
     z6 tile near the coverage in an area whose terrain is current (a z8 tile is made from its raw
     tile and its z9 children alone). Not z5 and z4 tiles (made from z6 tiles the old keys mostly
-    didn't name: the far reaches of long ways), nor z8–z6 tiles of a stale hi pack's z6 tile
-    (gap 4, §10): the coverage left the z6 tile, or the hi pack is over an hour older than its
-    area's lo pack by the files' times (a run writes its pieces' hi packs, then its lo pack, so an
-    older one was left by an earlier run: the last made no hi tiles for the piece, and its z8–z6
-    from the raw tiles alone). A unit reading those is built again, unless it has no outputs (the
+    didn't name: the far reaches of long ways), nor z8–z6 tiles of a stale hi pack's z6 tile: the
+    coverage left the z6 tile, or the hi pack is over an hour older than its area's lo pack by the
+    files' times (the area runs the old keys were made with wrote their pieces' hi packs, then the
+    lo pack, and kept a piece's earlier hi pack when they made it no hi tiles, its z8–z6 from the
+    raw tiles alone). A unit reading those is built again, unless it has no outputs (the
     terrain doesn't decide which ways it keeps); one whose packs' times can't be read now waits
     for the next pass. The z8–z6 tiles of a z6 tile without a hi pack are pinned unchecked, on an
     assumption: that the unit was built after its area's first lo pack the build made (the
@@ -2208,7 +2224,7 @@ and, when none fits it, units' last steps.
   (else 410: the work was offered again, and a late save could put an older build in the manifest)
   and only for the files its step saves for the lease's targets (a unit's base pack, road values,
   English and grids; candidates' and peaks' own; a tree cover, terrain or slope piece's hi packs
-  and mid; an area's lo pack and its z6 tiles' hi packs of terrain or slope, or of the tree layers for a z3 tile's
+  and mid, written or dropped; an area's lo pack and its z6 tiles' hi packs of terrain or slope, or of the tree layers for a z3 tile's
   whole run, a lease of the scheme before pieces), and journals it whole on the build Mac
   (`coord/journal/<worker>/`); the agent merges the journal before it plans, under its own lock (not
   while a paused job holds it), all of a hand-off or none, as it merged the NAS's hand-off files.
@@ -2703,14 +2719,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    far as it's here (marked as cut), and keep the owners of the ways the area's hi data list (their
    `here` records say).
 
-4. **Stale terrain hi packs** (§5, Shrinking): a z6 tile the coverage has left keeps its hi pack
-   (98 of the 496 on 2026-10-06), and so does a piece that made no hi tiles
-   (`terrain_pack::build_piece` writes none and keeps the earlier pack; 6/21/18 on 2026-10-06),
-   while the area's assembly makes those z6 tiles' z8–z6 from the raw tiles alone: the map serves, and
-   the units near them stage, hi tiles from an earlier run above zoomed-out ones made otherwise
-   (the units' keys see any change there).
-
-5. **Meta's canopy squares on the equator row, kept as "none"** (§6, Global-source layers): Meta
+4. **Meta's canopy squares on the equator row, kept as "none"** (§6, Global-source layers): Meta
    names most of that row's files `lat=-0.0`, which the canopy downloads ask for since 2026-10-06
    (`trees::chm_urls`), but before, under `lat=0.0` alone, two squares were found missing and kept
    as empty files, Meta's "none", which is remembered for good: `sources/canopy/` holds
@@ -2720,30 +2729,30 @@ At each phase's end an Opus agent reviews the work against this plan.
    the canopy, so no road's values differ. Fix: remove the six files, on the NAS and in both Macs'
    caches, before any region reaches south of the equator.
 
-6. **The water's deeper zooms need the basemap** (§6, Water): z10 and deeper are drawn by the
+5. **The water's deeper zooms need the basemap** (§6, Water): z10 and deeper are drawn by the
    server from the basemap's z14 tiles, so a Mac away from the NAS draws them only where it has
    the basemap's pieces of zooms 11–14 (a downloaded area's z6 tiles, §4 Mirror). Elsewhere, the
    server answers with the nearest stored zoom's water over the tile, scaled up (z8 from the
    World's lo packs, z9 where a downloaded area's hi packs are), not to be cached, so nothing fails and nothing is asked for again;
    the coastal shading leaves out a neighbouring tile it can't have. The shores are then z8's or
    z9's, blurred close up. Fix, if it's wanted: keep the basemap's water polygons where it's away.
-7. **The pass's `water` set serves only the shoreline check** (§6, Water): about 6 GB on the NAS a
+6. **The pass's `water` set serves only the shoreline check** (§6, Water): about 6 GB on the NAS a
    pass and its share of `pass-sets` (65 min over the LAN for this set), for a reference read apart
    from the basemap. Dropping it from `osmpass::SETS` would leave the check to build its store from
    the basemap's own z14 tiles (then not an independent reference).
-8. **The water near the camera in steep 3D terrain, before the view first moves** (§6, Water):
+7. **The water near the camera in steep 3D terrain, before the view first moves** (§6, Water):
    MapLibre works out a source's tiles as the camera moves, culling with the elevations it has
    then; tilted at z14–15 over the Highlands with 3D terrain, the water's tiles on the slopes
    nearest the camera were left out and not asked for until the camera moved (a no-op `jumpTo`
    brings them) (a loch at the bottom of the view missing: 1.9 % of the pixels in the
    shoreline check's Scotland z15 view; the basemap's coarser polygon tiles covered it). Fix:
    have the sources' tiles worked out again once the terrain under the camera has loaded.
-9. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
+8. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
    mirror's reserve (50 GB on the M1, 150 GB on the build Mac) can be filled by a download's copies
    once the agent frees toward it, leaving the agent short of it with nothing of its own to free
    (it says so). Fix: the server reads the agent's `room-target.json` and keeps its mirror's
    reserve at the larger of the two while one is set.
-10. **Names by language** (§7), what's short of the design:
+9. **Names by language** (§7), what's short of the design:
    - **The area tables are still on the NAS** (`translations/<area>/`, 342 MB): each server copies
      them and leaves their lines out. Fix: delete the nine folders once a published server shows
      the converted lines (`translations/0-converted/`).
@@ -2767,7 +2776,7 @@ At each phase's end an Opus agent reviews the work against this plan.
      two overlap the smaller wins, so a thing within about a kilometre of a border may take its
      neighbour's languages (the ruins of Wasigenstein, in Alsace 300 m from the border, read German).
      Fix, if it matters: the outlines' full rings near borders.
-11. **A worker's tail in a one-unit job only frees the build Mac's cores** (docs/workers.md §3):
+10. **A worker's tail in a one-unit job only frees the build Mac's cores** (docs/workers.md §3):
    the job waits on a worker holding its tail only while its measured pace says it'll be back
    before the build Mac's own run would end, so a worker slower than the build Mac is raced at once
    (and kept to finish only to measure it), and the build Mac runs the tail anyway. The paces live

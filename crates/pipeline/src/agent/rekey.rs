@@ -27,11 +27,12 @@
 //! Not pinned: z5 and z4 tiles (each made from z6 tiles the old key mostly didn't name: the far
 //! reaches of a long way), and z8–z6 tiles of a z6 tile whose hi pack is stale or whose area's
 //! terrain is to be made again. A hi pack is stale when the coverage left its z6 tile, or when an
-//! earlier run left it: a run that makes no hi tiles for a piece keeps its earlier pack
-//! (terrain_pack::build_q_with), and makes the piece's z8–z6 from the raw tiles alone, which the old
-//! key couldn't see; such a pack is older than its area's lo pack by the files' times
-//! (`FileTimes::hi_older`). A unit without outputs (none of its ways in the coverage) is re-keyed
-//! whatever it reads: the terrain doesn't decide which ways it keeps.
+//! earlier run left it: the area runs the old keys were made with kept a piece's earlier pack when
+//! they made it no hi tiles, and made its z8–z6 from the raw tiles alone, which the old key couldn't
+//! see; such a pack is older than its area's lo pack by the files' times (`FileTimes::hi_older`).
+//! (The pieces' runs drop both: crate::terrain_pack::build_piece,
+//! agent::build::TerrainTargets::terrain_none.) A unit without outputs (none of its ways in the
+//! coverage) is re-keyed whatever it reads: the terrain doesn't decide which ways it keeps.
 //!
 //! Tree cover (2026-10-06): a z3 tile's whole run ("3/x/y", `v1::trees_targets`, keyed on the
 //! coverage in the z3 tile) became a piece per z6 tile (keyed on the coverage in it) and an
