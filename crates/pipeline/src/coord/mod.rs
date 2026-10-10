@@ -2529,6 +2529,20 @@ mod tests {
     }
 
     #[test]
+    fn a_take_up_holds_the_terms_leases_alone() {
+        let (_d, c, _w) = start();
+        // A lease this coordinator's folder kept from a term its Mac led before, ended since under
+        // another lead; the term taken up holds another.
+        let old = c.hold("trees", &[("6/33/22".into(), "k".into())]).unwrap();
+        let p = PoolState { leases: serde_json::json!({ "next": old + 5, "leases": [{ "id": old + 3, "term": 3, "granted_at": 0, "worker": "m1", "work": { "Job": { "step": "terrain", "targets": [["6/33/22", "k2"]] } }, "progress": null }] }), ..Default::default() };
+        assert_eq!(c.load_pool_state(&p).unwrap(), 1);
+        assert!(c.held("trees").is_empty(), "the old lease is gone");
+        assert!(c.held("terrain").contains("6/33/22"));
+        // (Ids go on past both.)
+        assert!(c.hold("slope", &[("3/1/1".into(), "k".into())]).unwrap() >= old + 5);
+    }
+
+    #[test]
     fn a_take_up_keeps_the_newer_of_a_floor_and_a_measure() {
         let (_d, c, _w) = start();
         let f = |mb: u64| Floor { mb, alone: true, v: 0 };

@@ -126,10 +126,13 @@ impl Leases {
     }
 
     /// Takes the jobs' leases of `snapshot` (another lead's, or this one's own earlier term's), each
-    /// live for a whole `ttl` from `now` (its worker beats again once it reaches this one), over
-    /// any it has of the same id; ids go on from the highest given.
+    /// live for a whole `ttl` from `now` (its worker beats again once it reaches this one), in
+    /// place of those it had: the term's state is the leases out (one this coordinator's folder
+    /// kept from a term it led before, ended since under another lead, would hold its targets out
+    /// of offers until it lapsed); ids go on from the highest it knew or is given.
     pub fn restore(&mut self, v: &serde_json::Value, now: Instant) -> anyhow::Result<usize> {
         let s: Saved = serde_json::from_value(v.clone())?;
+        self.by_id.clear();
         self.next = self.next.max(s.next);
         let n = s.leases.len();
         for mut x in s.leases {
