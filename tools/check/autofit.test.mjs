@@ -462,7 +462,7 @@ test('every rail and ferry metric\'s palette and percentiles through a link, tho
   s.rail.metric = 'freq'; // the shown one's in the fields it always had
   s.rail.palette = 'magma';
   s.rail.looks = {
-    rscore: { ...st.railFreshLook('rscore'), palette: 'rocket', fit: [70, 99.8] }, // the defaults' ride score
+    rscore: { ...st.railFreshLook('rscore'), palette: 'magma', fit: [60, 99] }, // the ride score changed from the defaults'
     curvy: { ...st.railFreshLook('curvy'), fit: [5, 95] }, // the palette as first picked
     view: { ...st.railFreshLook('view'), palette: 'plasma_r' }, // a reversed ramp
     elev: st.railFreshLook('elev'), // as first picked: not listed
@@ -470,7 +470,7 @@ test('every rail and ferry metric\'s palette and percentiles through a link, tho
   };
   s.ferry.looks = { months: { ...st.ferryFreshLook('months'), palette: 'greens-cb', fit: [10, 90] } };
   const h = st.toHash(s, true);
-  assert.match(h, /rs=[^&]*,15,1,,,rscore_rocket_70_99\.8\/view_plasma_r\/curvy__5_95(&|$)/);
+  assert.match(h, /rs=[^&]*,15,1,,,rscore_magma_60_99\/view_plasma_r\/curvy__5_95(&|$)/);
   assert.match(h, /fy=[^&]*,15,1,,,months_greens-cb_10_90(&|$)/);
   const b = st.fromHash(h);
   assert.equal(b.rail.palette, 'magma');
@@ -496,4 +496,40 @@ test('links from before every metric\'s look travelled: the shown one\'s as befo
   assert.deepEqual([b.rail.looks, b.ferry.looks], [{}, {}]);
   assert.equal(b.ferry.metric, 'months');
   assert.equal(st.toHash(b, true), h);
+});
+
+test('each layer\'s default metric: its first look is the defaults\'', () => {
+  assert.deepEqual(st.railFreshLook('rscore'), st.lookOfScale(st.defaults.rail));
+  assert.deepEqual(st.ferryFreshLook('freq'), st.lookOfScale(st.defaults.ferry));
+  // Untouched and not shown: not in the link.
+  const s = structuredClone(st.defaults);
+  s.rail.looks = { rscore: st.lookOfScale(st.defaults.rail) };
+  s.rail.metric = 'freq';
+  Object.assign(s.rail, st.scaleOfLook(st.railFreshLook('freq')));
+  s.ferry.looks = { freq: st.lookOfScale(st.defaults.ferry) };
+  s.ferry.metric = 'months';
+  Object.assign(s.ferry, st.scaleOfLook(st.ferryFreshLook('months')));
+  const h = st.toHash(s, true);
+  assert.match(h, /rs=[^&]*,freq,[^&]*,15,1(&|$)/);
+  assert.match(h, /fy=[^&]*,months,[^&]*,15,1(&|$)/);
+  // Changed: its palette and percentiles listed, its fades the defaults' after the round trip.
+  s.ferry.looks = { freq: { ...st.lookOfScale(st.defaults.ferry), palette: 'magma', fit: [5, 95] } };
+  s.rail.looks = { rscore: { ...st.lookOfScale(st.defaults.rail), palette: 'turbo' } };
+  const b = st.fromHash(st.toHash(s, true));
+  assert.deepEqual(b.ferry.looks.freq, s.ferry.looks.freq);
+  assert.deepEqual([b.ferry.looks.freq.lowFade, b.ferry.looks.freq.lowSpan], [0.45, 0.5]);
+  assert.deepEqual(b.rail.looks.rscore, s.rail.looks.rscore);
+  assert.equal(b.rail.looks.rscore.lowFade, 0.6);
+});
+
+test('an older link showing rail frequency, then the ride score picked: the defaults\' ride score', () => {
+  const h = '#un=11101&rl=0.5,&rs=1,11111,metric,freq,magma,1,0,2.5,,,,e8ecf2,0.4,0,0,0,1,10,90,0,0.6,0,a,1.25,1,15,1&sqx=waterfall';
+  const b = st.fromHash(h);
+  assert.deepEqual(b.rail.looks, {});
+  // As the rail card's metric menu does.
+  const r = b.rail, looks = { ...r.looks, [r.metric]: st.lookOfScale(r) };
+  const next = { ...r, metric: 'rscore', looks, ...st.scaleOfLook(looks.rscore ?? st.railFreshLook('rscore')) };
+  assert.equal(next.palette, 'rocket');
+  assert.deepEqual(next.fit, [70, 99.8]);
+  assert.equal(next.lowFade, 0.6);
 });

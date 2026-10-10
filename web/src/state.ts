@@ -307,9 +307,12 @@ export function scaleOfLook(l: MetricLook): ScaleFields {
   };
 }
 
-/** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts). */
-export const railFreshLook = (m: RailMetric): MetricLook => freshLook(railMetricDef(m).range, 0.4);
-export const ferryFreshLook = (m: FerryMetric): MetricLook => ({ ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] });
+/** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts): the
+ * defaults' for the layer's default metric (the ride score, sailings a day), else a fresh one. */
+export const railFreshLook = (m: RailMetric): MetricLook =>
+  m === defaults.rail.metric ? lookOfScale(defaults.rail) : freshLook(railMetricDef(m).range, 0.4);
+export const ferryFreshLook = (m: FerryMetric): MetricLook =>
+  m === defaults.ferry.metric ? lookOfScale(defaults.ferry) : { ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] };
 
 /** The metrics but the one shown, their palettes and percentiles in a link value (rail,
  * ferries): `key_palette_lo_hi` for each whose differ from its look when first picked, the palette
