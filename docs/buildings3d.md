@@ -1361,8 +1361,61 @@ field's cost is the difference of the medians). Budget: 2 ms.
   cost left is those texels' work: stopping each ray after its first texel takes Manhattan at 70°
   from 10.9 ms to 4.9 by the pass timer. Each texel reads up to five classes and does each one's
   box test and lighting, over 4.7 million pixels. The per-tile renderer stays cheaper: its shader
-  has no lookup and no globe arithmetic. Next proposed (option 3): temporal amortization. Not
-  started; numbers first.
+  has no lookup and no globe arithmetic.
+- **The per-tile renderer cut down (10 Oct, the owner's decision; web/src/bldfield.ts now).** Full
+  resolution, deterministic, no temporal amortization:
+  - **Into MapLibre's own frame:** no copy of the frame's colour or depth and no last pass. The tile's
+    boxes are depth-tested in hardware against the frame's depth (pulled a little toward the camera
+    with a polygon offset, so the faces at the ground pass); a box face behind the terrain or a mesh
+    isn't drawn. The march no longer reads the depth: it stops at its own ground, and the boxes
+    under the meshes hold only the buildings the meshes leave out (under 40 m), so a mesh in front
+    hides them by the hardware test alone (the hand-over seam measured as before: +0.52 L* against
+    +0.54).
+  - **Linear light without the frame:** the hardware blends stored values. The field's alpha is set
+    so the stored-value blend gives the mix full detail shrunk makes, over the map's land colour
+    (the background layer's): the opacity's mix in stored values as MapLibre blends a mesh, then
+    the coverage in linear light. Exact over the land colour; over water and hill-shading the
+    measured views stay within the earlier numbers.
+  - **Boxes a block:** each tile drawn as instanced boxes, one per block of 8 × 8 cells holding
+    buildings (its buildings' lowest ground to highest roof; widened and raised for the globe's
+    chords), sorted far to near each frame; a ray meets each box once, and each fragment marches
+    its own block from where the ray enters it. Empty blocks draw nothing, and Manhattan's 500 m
+    tile boxes over 20 m streets became boxes of their own blocks. (2 × 2 and 4 × 4 cells were
+    slower: their sides overlap more.)
+  - **A class mask a texel:** an R8UI pyramid of the classes each texel and its neighbours hold
+    (each level the four's, dilated by a texel); each step reads only those, and not a class whose
+    tallest possible roof (8, 20, 40, 100 m) is under the whole step.
+  - **Lighting once a tile a frame** on the CPU (the roof's term and eight wall directions'), the
+    plain colour's roof and wall once a fragment.
+
+  Timed in one session, both renderers at full resolution: the field's cost (ms), whole frames as
+  above (on − off, two runs), and the pass's own timer.
+
+  | View | into the frame | per-tile with copies | pass: into the frame | pass: with copies |
+  |---|---|---|---|---|
+  | Tokyo z11 straight down | +1.6–2.2 | +1.8 | 2.9 | 3.2 |
+  | Manhattan z11 straight down | +1.6 | +1.8–1.9 | 2.8 | 3.2–3.3 |
+  | Chamonix z12, 65° | +1.5 | +0.8–1.2 | 2.8–2.9 | 2.7 |
+  | CN Tower z10, 80° | +1.2–1.6 | +1.4–1.7 | 2.1–2.3 | 2.9–3.0 |
+  | Kantō z10, 70° | +1.9–2.1 | +2.8–3.0 | 3.8–4.0 | 4.5 |
+  | Manhattan z11, 70° | +4.3–4.9 (+3.4–3.5 in an earlier run) | +6.2–6.7 | 5.3 | 8.2–8.3 |
+
+  Within the budget, or at it within the runs' ±0.5 ms, everywhere but Manhattan at 70°.
+
+  Quality against full detail shrunk (σ8 |ΔL*|, σ1 in brackets), the same references for both:
+
+  | Check | into the frame | per-tile with copies |
+  |---|---|---|
+  | A, CN Tower z12–z8 and 70° | 0.01–0.29 | 0.01–0.37 |
+  | B, Chamonix/Annecy tilted, z15 | 0.01–1.84 | 0.01–1.78 |
+  | C, opacity 0.5/0.3 at 0/45/70° | 0.46–1.92 | 0.49–2.02 |
+  | Straight down, Tokyo z9–13, Annecy z11–12, Chamonix z11–12 | 0.32–2.21 (σ1 0.55–2.67) | 0.29–2.42 (σ1 0.72–4.48) |
+
+  The CN Tower stands as a spike to z9 as before. The darkening straight down stays: Tokyo −2.2 L*
+  at z11, −1.5 at z12, −1.1 at z9 (the copies' renderer −2.4, −1.8, −1.2). It's the field's model,
+  not the blending: the random-overlap model's view of streets of buildings in rows, and the
+  hand-over levels' sets. (The earlier straight-down references were shot before the harness framed
+  views as the app does; they were shot again.)
 - **The iPad** (the owner's): serve a build of this branch with the field (`?bldfield=` pointing at
   a field server as tools/bldcheck/serve.mjs serves it), open it in Safari on the iPad, and in the
   console run `__bld.frames(120)` at the views above (`#map=` hashes in tools/bldcheck/views): it
