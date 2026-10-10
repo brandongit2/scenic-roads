@@ -26,6 +26,14 @@
 #                                                   newer's copy), its current: an update to take
 #   pool-two-macs.sh jobs <dir> <seconds>           how long each fake job runs from now on (5 s
 #                                                   until set): long enough to span a handover
+#   pool-two-macs.sh measure <folder> [off]         state/pool/by-measure in the scratch folder:
+#                                                   the Mac shared by measure and its disk guard
+#                                                   (`off`: the switch removed)
+#   pool-two-macs.sh fill <dir> <MB>                each fake job writes a file of <MB> at the top
+#                                                   of its scratch folder (0: none), for the disk
+#                                                   it's measured to take; size it against the
+#                                                   Mac's free space less 30 GB to have the disk
+#                                                   guard freeze one
 #   pool-two-macs.sh stop <dir>                     the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -56,8 +64,19 @@
 # stands down to a member in its process, its coordinator stopped and port free, the new lead's
 # contact left alone, nothing granted; a lead killed (-9) mid-job relaunched, re-asserting, its
 # coordinator up, the job its process left stopped and started again.
+#
+# For phase 4's fifth batch (planned: before `state/pool/by-measure` goes on for real): `measure`,
+# `region`, `jobs … 120`, `fill … 512`, both Macs. What to see: every job's disk floor in the lead's
+# `scenic pool floors` (its `disk` lines, the member's too, by its done), with the switch off and
+# on; the switch on, the lead's first job of a step alone (a cold start: the status's `beside_why`
+# says so), then a second job beside it once its step has run, whatever the steps table's lists
+# (a terrain piece beside a slope piece; GC beside a job); a fill past the free space less 30 GB
+# freezing the job growing fastest (the log's "disk guard froze"), room made, and the job going on
+# or given back (its lease ended at the lead, not failed, kept from that Mac an hour); a handover
+# mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
+# kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, measure, fill or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -95,7 +114,16 @@ case "$1" in
 esac
 step="$1"
 env | sort > "$d/env-$step-$$"
+# (Its scratch folder, as its arguments name it: a file of the size asked for at its top.)
+scratch=""; prev=""
+for a in "$@"; do [ "$prev" = "--scratch" ] && scratch="$a"; prev="$a"; done
+fill=$(cat "$d/../job-fill-mb" 2>/dev/null || echo 0)
+if [ -n "$scratch" ] && [ "$fill" -gt 0 ]; then
+  mkdir -p "$scratch"
+  dd if=/dev/zero of="$scratch/fill-$$.bin" bs=1048576 count="$fill" 2>/dev/null
+fi
 sleep "$(cat "$d/../job-seconds" 2>/dev/null || echo 5)"
+[ -n "$scratch" ] && rm -f "$scratch/fill-$$.bin"
 if [ -n "$SCENIC_HANDOFF" ]; then
   mkdir -p "$SCENIC_HANDOFF"
   printf '{"changes":{"work/test-%s":"work/test-%s.0123456789abcdef.json"}}' "$step" "$step" > "$SCENIC_HANDOFF/00000000000000000001-$$.json"
@@ -126,6 +154,12 @@ EOF
     done
     ;;
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
+  fill) print -n ${3:?MB} > ${2:?its folder}/v/app/job-fill-mb ;;
+  measure)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/by-measure; else mkdir -p $r/state/pool; : > $r/state/pool/by-measure; fi
+    ;;
   newest)
     d=${2:?its folder}
     [[ -e $d/v/app/20261010-0000-ccccccc ]] || cp -R $d/v/app/20261009-0000-bbbbbbb $d/v/app/20261010-0000-ccccccc
@@ -139,5 +173,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, measure, fill or stop"; exit 2 ;;
 esac

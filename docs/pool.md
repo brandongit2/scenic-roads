@@ -5,7 +5,10 @@ Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its 
 (crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); **phase 4's
 first four batches built** (the steps table, crate::agent::steps, its write-sets checked and
 reported at merge; the memory guard, crate::agent::memguard; power, home and the in-use rule gone;
-the lead's slots as any member's, behind its switch: §7.2, §7.3, §7.6, §12); the rest is planned. It replaces the fixed
+the lead's slots as any member's, behind its switch: §7.2, §7.3, §7.6, §12) and its fifth (disk
+measured and learned per target, GC reading the journal, the OSM pass's clear through the caches'
+accessor, and the Mac shared by measure with its disk guard, behind its switch: §7.7, §12); the
+rest is planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -51,7 +54,7 @@ a lead that vanishes loses no work.
    included: it uploads its files to the store and writes its record changes to the journal on the
    NAS; the lead's merger alone applies them. A job runs the same wherever it runs.
 5. **Work goes where it fits.** What a step needs (memory, disk) and what it writes are measured or
-   made by the code that does the work (§7.7: memory built, the rest planned); any member with that may run it, the lead included. The few
+   made by the code that does the work (§7.7: memory and disk built, the rest planned); any member with that may run it, the lead included. The few
    duties that must be the lead's (publishing a catalog, removing replaced files) are its duties,
    not jobs.
 6. **Handing over is a protocol, not a restart:** asked for, agreed by both Macs, carried out in
@@ -285,8 +288,10 @@ driver hands over (§6.4); on another member it passes the ask on to the lead by
 (`Msg::HandTo`, §9: the pool's HTTP API, `POST /pool/lead`, is planned), and the lead checks it
 again. A member that can't reach the lead can't hand anything over; it can only take over (§6.5).
 An ask naming a Mac that isn't a live member (heartbeat beat within ten minutes, app new enough:
-`Driver::hand_to`; the NAS reachable, planned, the heartbeat saying nothing of it yet) is refused,
-saying why. Where an ask stands (refused, passed on, under way, done, came to nothing, with why)
+`Driver::hand_to`; the NAS reachable, planned, the heartbeat saying nothing of it yet), or one whose
+heartbeat's conditions say it can't lead now (away from home, on battery under 30 %, short of the
+reserve on its disk: `Conds::able`, which its own driver answers an offer by; crate::agent::pool's
+`Side::hand_to`), is refused, saying why. Where an ask stands (refused, passed on, under way, done, came to nothing, with why)
 is in the asking Mac's status, kept across its agent's restarts (`agent/pool/lead.json`), and every
 control shows it.
 
@@ -438,7 +443,7 @@ Its columns:
 
 | Column | Meaning |
 | --- | --- |
-| memory, disk | memory: a first guess per step until a target's own run says (predicted per target from its last run, crate::coord::Cost; units and candidates by their piece's size, terrain by its area's, the 3D buildings by their rows); disk: what a job starts with free on its Mac (the reserve, 30 GB; terrain's pieces and assemblies and the water 35; the OSM pass 80, less the pack cache it clears; an area's whole terrain run 55; a member's jobs 15, crate::agent's `helper_need`). No column for power or home: no job waits on them (§7.7) |
+| memory, disk | memory: a first guess per step until a target's own run says (predicted per target from its last run, crate::coord::Cost; units and candidates by their piece's size, terrain by its area's, the 3D buildings by their rows); disk: what a job starts with free on its Mac (the reserve, 30 GB; terrain's pieces and assemblies and the water 35; the OSM pass 80, less the pack cache it clears; an area's whole terrain run 55; a member's jobs 15, crate::agent's `helper_need`; with `state/pool/by-measure` on, the reserve and the job's measured disk on a Mac's own slots instead, §7.7). No column for power or home: no job waits on them (§7.7) |
 | shared | whether other members take its jobs, and its rank of preference among those that are (what later steps wait on first) |
 | alone / beside | whether it runs alone on its Mac; whether a Mac's second job may be one of it, and its rank there; the groups of which two never run at once on one Mac (they read the raw terrain tiles here; they ask Wikidata, each paced as if alone; they read gigabytes of the NAS's sources a target) |
 | answered | it keeps the pass's Wikidata and Wikipedia answers (none starts while the agent sends them) |
@@ -490,9 +495,11 @@ What's planned of placement (phase 4, §12):
   work on a sliding scale of their measured speed, as a weighted draw (a function of the target, the
   worker and the time, so a decision repeats), not by a rule singling out the fastest or slowest;
   no rule names a Mac or a kind of job.
-- **A Mac shared by measure:** a job starts beside another only if both jobs' measured memory and
-  disk fit what the Mac has left; a cold start runs alone (§7.7). The run-alone and second-job
-  lists go (the rule of only network work while the Mac is in use went with batch 3).
+- **A Mac shared by measure** (built: phase 4's fifth batch, behind `state/pool/by-measure`, §12):
+  a job starts beside another only if both jobs' measured memory and disk fit what the Mac has
+  left; a cold start runs alone (§7.7). The run-alone and second-job lists and the raw tiles' group
+  go with the switch on (the rule of only network work while the Mac is in use went with batch 3);
+  the Wikidata and heavy NAS reads' groups stay until batch 7.
 - **Resuming.** A job interrupted with progress on its Mac's disk (the OSM pass's stages, a terrain
   area's raw tiles) is offered to that Mac only until the owner releases it, or for 24 hours.
   Which Mac holds which progress is on the NAS (`state/pool/progress/<step>.json`, written by that
@@ -660,8 +667,12 @@ job's tasks (a unit's tail, the 3D buildings' areas, terrain's subtrees, tree co
 offered through its own Mac's coordinator: one that stopped (the Mac no longer leading), crashed,
 or no longer knows the job's key (the lead taken back, with a new one) answers nothing, and the
 job runs each task out itself (crate::offload: as a task no one took), so it carries on. A job's
-end reaches the new lead whatever ended it, its client made again when the old lead had none;
-what claims a job took (a job of the Mac's own, planned while it wasn't a helper: the lead's with the
+end reaches the new lead whatever ended it, its client made again when the old lead had none; an
+own job ending as its lead wakes from a freeze to a later term, before its step knows, isn't
+finished in its own coordinator (a stat of the next term's file first): its end is owed to the lead
+and told through its client once the part has changed, for as long as a lease lasts; a job of no
+targets of its own (a duty, as pass-sets') ends as done, and the coordinator checks a pooled end only
+for being its lease's (its entry is the merge's to check); what claims a job took (a job of the Mac's own, planned while it wasn't a helper: the lead's with the
 pool on, the build Mac's with it off) are kept and released by the job, whatever part its process
 plays since. They use the journal and validation like anyone's (none of the shortcuts
 for the build Mac's own jobs), and the in-process path never holds the coordinator's lock during
@@ -676,7 +687,7 @@ nothing new and restarts once its slots are free) hands the lead, once per app, 
 on that app that can lead, as the owner's ask would (the same-app rule otherwise leaves that member
 idle meanwhile: plan.md §8).
 
-### 7.7 What a step needs, by structure (planned)
+### 7.7 What a step needs, by structure (memory and disk built, the rest planned)
 
 The owner's rule for the rest of phase 4: nothing may depend on a figure kept by hand that can go
 stale. A step's needs are **measured** on every run and learned per target, or **enforced where the
@@ -694,9 +705,9 @@ Each of its columns, and what replaces it:
 | power (`cpu`) | nothing: removed (the owner's choice; batch 3, built) | jobs run at any charge; `BATTERY_MIN` is left only for whether a Mac may lead |
 | home | nothing: removed (the owner's choice; batch 3, built) | the OSM pass, its sets, the reach and the world's buildings run over Tailscale away from home, slower; mounting the share (the LAN name at home, the bare name through Tailscale away) stays |
 | memory | measured per target (the jobs' `peak_mb`; the memory guard's floors, §7.2): built | a target never run is a **cold start**: placed only where it can't hurt (below); the guard is the backstop |
-| disk | measured per target, as memory is, without walking a job's folders (millions of raw tiles; Planetiler's sparse files): the bytes written through the accessors that write a job's files (`store::cachefile`'s, the scratch writers'), counted per job and target; the biggest writers, outside programs the accessors never see (Planetiler's temporary files, osmium's and extract's outputs, the Python steps'), by a cheap look every minute at the allocated sizes of the few largest files at the top of each slot's scratch folder (no walk of its tree); and the disk's free space falling while one job runs alone; kept as the target's disk floor; a **disk guard** at the point of use: when the Mac's free space falls below the reserve, the job growing fastest by those counts is frozen (not failed: its work kept), room is made from the caches no job holds (`store::cachefile`'s exclusive locks), and it goes on; if none can be made, it's given back, its disk floor learned | today's figure (30, 35, 55, 80 GB) goes; the reserve stays a policy of the Mac, not of a step; a write that bypasses the accessors is caught by their lint, as the caches' reads are |
-| alone, beside and its ranks, light (in use) | removed (the owner's choice): a job starts beside another only if both jobs' **measured** memory and disk fit what the Mac has left; a cold start runs alone | what they protected besides memory and disk, each covered at the point of use: the OSM pass clearing the pack cache (`--clear`, a `remove_dir_all` today) goes through `store::cachefile`'s clear, which passes over files another job holds; GC beside other jobs: it removes only what no catalog or the manifest names and is older than two weeks (abandoned temporary files after two days), but a hand-off not merged yet (a member away more than two weeks, its entry unwritten or untold) names files neither reads, so GC reads the journal's entries too (every entry not yet in the lead's records keeps the files it names) before batch 5 lets it run beside other jobs; scratch folders are per slot already (`scratch-2/`); two jobs of one step on one Mac share no state but the caches (accessor) and the records (hand-offs per lease); Planetiler's thread pool beside another job only slows both (cores, not correctness). The "only network work while the Mac is in use" rule went first, without a replacement (the owner's choice; batch 3, built), the light steps' list and what read it with it; `idle_s` stays for a member sparing more memory while its owner is away |
-| groups: raw tiles | `store::cachefile`, already: a raw tile is read whole under the accessor's lock, packing deletes only tiles no job holds (`try_remove`) and only once their archive is named on the NAS, and a tile gone is filled again from the archives: two jobs reading raw tiles at once are safe, at worst fetching a tile twice | to check by a chaos test (two terrain pieces of one area at once, packing between: the same bytes) before the group goes |
+| disk | **built** (phase 4's fifth batch: learning whatever the switch; the guard and the placement by measure behind `state/pool/by-measure`): measured per target, as memory is, without walking a job's folders (millions of raw tiles; Planetiler's sparse files): the bytes written through the accessors that write a job's files (`store::cachefile`'s, the scratch writers'), counted per job and target; the biggest writers, outside programs the accessors never see (Planetiler's temporary files, osmium's and extract's outputs, the Python steps'), by a cheap look every minute at the allocated sizes of the few largest files at the top of each slot's scratch folder (no walk of its tree); and the disk's free space falling while one job runs alone; kept as the target's disk floor; a **disk guard** at the point of use: when the Mac's free space falls below the reserve, the job growing fastest by those counts is frozen (not failed: its work kept), room is made from the caches no job holds (`store::cachefile`'s exclusive locks), and it goes on; if none can be made, it's given back, its disk floor learned | as built: store::cachefile counts the bytes a process adds to the caches (each file it names), a step's cost line notes its target's (`disk_mb`), and a running job's total is kept in a small file every 64 MB (`SCENIC_WRITTEN`) for the agent's sampler, which looks at the top of its scratch folder every minute and keeps the most per target with the disk's fall while it runs alone (crate::agent::memguard); the floors go to the lead with the lease's end, rising only (`disks.json`, the pool's state); the disk guard freezes in the sampler, at once, and the agent's loop makes room through room::toward (store::cachefile's exclusive locks) on a thread, then lets the job go on or gives it back, kept from that Mac an hour as the memory guard's; with the switch on, a job's disk room is the reserve and its measured disk, today's figures (30, 35, 55, 80 GB) unread; the reserve stays a policy of the Mac, not of a step; a write that bypasses the accessors is caught by their lint, as the caches' reads are. Not counted by the accessors: the Python steps' cache writes (dem/cachefile.py), which the scratch folder's look and the disk's fall cover where they're large |
+| alone, beside and its ranks, light (in use) | removed (the owner's choice; built, behind `state/pool/by-measure`: phase 4's fifth batch): a job starts beside another only if both jobs' **measured** memory and disk fit what the Mac has left; a cold start runs alone | what they protected besides memory and disk, each covered at the point of use: the OSM pass clearing the pack cache (`--clear`) goes through `store::cachefile`'s `remove_tree`, which passes over files another job holds (built); GC beside other jobs: it removes only what no catalog or the manifest names and is older than two weeks (abandoned temporary files after two days), but a hand-off not merged yet (a member away more than two weeks, its entry unwritten or untold) names files neither reads, so GC reads the journal's entries too (every entry not yet in the lead's records keeps the files it names, its changes and uploads; built: agent::gc::unmerged, an entry not whole yet or a journal unreadable removing nothing) before batch 5 lets it run beside other jobs; scratch folders are per slot already (`scratch-2/`); two jobs of one step on one Mac share no state but the caches (accessor) and the records (hand-offs per lease); Planetiler's thread pool beside another job only slows both (cores, not correctness). The "only network work while the Mac is in use" rule went first, without a replacement (the owner's choice; batch 3, built), the light steps' list and what read it with it; `idle_s` stays for a member sparing more memory while its owner is away |
+| groups: raw tiles | `store::cachefile`, already: a raw tile is read whole under the accessor's lock, packing deletes only tiles no job holds (`try_remove`) and only once their archive is named on the NAS, and a tile gone is filled again from the archives: two jobs reading raw tiles at once are safe, at worst fetching a tile twice | checked by a chaos test (two terrain pieces of one area at once through one cache, its waiting tiles packed and every file no job holds deleted between: each piece's bytes as alone; `terrain_pack`'s `two_raw_tile_jobs_at_once_with_packing_between_make_the_same_bytes`); it found a job whose area's archives were opened before a tile it held loose was packed fetching that tile from AWS again (offline, failing): a job now opens its area's archives again, the index read afresh, when the index changed since it read it, before asking AWS (`RawTiles::get`); the group goes with `state/pool/by-measure` on |
 | groups: Wikidata | **one budget for the whole pool, always**, its proxy enforced by the Mac: each job run under a `sandbox-exec` profile that denies it every outbound connection but to the Mac itself (so a step that forgets the proxy fails at once, in the tests before publish, never reaches Wikimedia unmetered), (a Mac can't reliably know the address its requests leave from: a Tailscale exit node, IPv4 or IPv6; so stricter than one per address, and than the owner's "shared whenever unsure"), enforced at egress: every Wikimedia request, the Python steps' (several by `curl` in a subprocess: heritagewd.py, pageviews.py) and any Rust one's, goes through a proxy on the Mac (`HTTPS_PROXY` set for every job; metered per host on `CONNECT`) that takes its requests from a token bucket on the NAS (`state/pool/wiki.json`), leasing tokens in batches (the share takes 20 to 55 creates a second, fewer over Tailscale), the query service (WDQS) budgeted by query time as well as count; a `Retry-After` or a 429 seen by any process holds every process and Mac (written beside the bucket); with the NAS out of reach, each Mac takes the rate divided by the members it knows. The profile allows the NAS and the build's other hosts through the proxy too, metered only for Wikimedia | a missing budget can only make requests wait, never exceed the polite rate |
 | groups: heavy NAS reads | an accessor for large reads of the NAS's sources with a concurrency budget across a Mac's processes (flock slots in the app's folder), with its lint; or, if measuring two `bldprep` at once shows they only slow each other, nothing (the group dropped) | to measure first: two at once against one, their read rates and wall time |
 | answered | a lease at the point of use, across the Macs: sending the pass's answers to the NAS (`crate::answers`) takes a lease on the NAS (`state/pool/answers.lease`, create-new, renewed, lapsing as a job's does) with writer preference (a reader that starts while a sender waits waits for it; readers run for hours, so a sender never waits on new readers), the steps that read them a shared one | no list of the steps that keep answers; a lapsed lease costs a wait, never a torn answers file (the answers are written whole by temporary name) |
@@ -710,7 +721,9 @@ Each of its columns, and what replaces it:
 can't hurt, by what's known of the Macs, never by a guess: alone, on the member with the most memory
 and disk free now, the guard on; once a target of a step has run, the step's other targets are
 offered by the largest measured of the step's targets until their own run says (a prior learned, not
-kept by hand).
+kept by hand). Built for a Mac's own slots (crate::coord::Coordinator::measured: a run's measure or
+floor of the way its step runs now; a job of no targets of its own by its id); the member with the
+most room is batch 9's.
 
 **Where a job's inputs lie:** the pass's later steps (its sets, the reach, the route ends) read its
 outputs from the NAS (`pass-sets` copies the filtered planet into its own scratch first); a Mac holding
@@ -822,7 +835,8 @@ Built (crate::agent::lead, `tools/status/main.swift`, `web/work/pool.js`, `web/s
 - **The menu bar's menu** (a right-click on its icon, or its panel's "⋯"), on every Mac:
   - on the lead: "Hand the Build To ▸", the other members, each with its state (home on power, on
     battery, away, out of touch, app too old); those that can't lead now greyed with why. Handing to
-    a Mac that's away warns that its duties run slowly over Tailscale;
+    a Mac that can't lead now (away from home, on battery under 30 %, short of disk) is greyed with
+    why, as its heartbeat's conditions say;
   - on any other member: "Make This Mac Lead" (an ask to the lead), greyed with why when the lead
     can't be handed to it; when there's no lead in touch, "Take Over the Build…", confirming: it says
     why there's no lead, and what the takeover forces or downgrades when `Driver::takeover` says it
@@ -908,8 +922,9 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        written does nothing of it, its duties held); a job's folder stays until a saved state holds
        its hand-off.
      - **The listings** it asks for are made on a thread, one at a time, each handed back, a failed
-       one made again a minute on; the members' heartbeats are listed the same way, every two
-       minutes on the lead (whose mail it reads), ten on a member.
+       one made again a minute on; the members' heartbeats are listed the same way, every fifth
+       of the time a heartbeat takes to go out of touch (two minutes), on the lead (whose mail it
+       reads) and a member alike.
      - **Messages** by mailbox on the NAS (§9: the pool's API is planned).
      - **The heartbeat**, `state/pool/members/<id>.json`: the driver's fields and the members it
        knows, written when it changes and every two minutes; the agent's status says the member,
@@ -1082,7 +1097,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       the newer; a coordinator stopped freeing its port for the next. The simulator is unchanged
       (the driver is: the agent's part isn't the simulator's). **Scratch state (§13): both Macs**
       (with `state/pool/slots` made in the scratch folder), and as processes with SIGSTOP.
-   5. **Disk measured, and the Mac shared by measure** (§7.7): first GC reading the journal (every
+   5. **Disk measured, and the Mac shared by measure: built** (§7.7): first GC reading the journal (every
       entry not yet in the lead's records keeps the files it names), so it can run beside other
       jobs; each job's disk use counted by the accessors that write its files and learned per
       target as its disk floor; the disk guard (the job growing fastest frozen when the Mac runs
@@ -1093,7 +1108,17 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       alone. Learning needs no switch; the lists' removal is behind `state/pool/by-measure`. Tests:
       a disk floor learned; a job frozen short of room and going on once it's made; a second job
       started or held by the measures alone; the chaos test's same bytes; GC keeping an unmerged
-      entry's files.
+      entry's files. As built: GC reads the newest records and every journal entry they don't
+      reflect (agent::gc::unmerged); the caches' accessor counts what a process adds, a step's cost
+      line notes it per target, the sampler counts each job's disk (those bytes, the top of its
+      scratch folder each minute, the disk's fall while it runs alone) and the floors reach the
+      lead with the lease's end (`disks`), whatever the switch; the disk guard freezes the job
+      growing fastest in the sampler, the loop makes room (room::toward) and lets it go on or gives
+      it back, kept from that Mac an hour; with the switch, the second job is the plan's first in
+      plan order that fits, the first slot waits for one that doesn't, a job's disk room is the
+      reserve and its measured disk, and a cold start runs alone, nothing beside it; a job of no
+      targets of its own (GC, a catalog, the OSM pass) is measured by its id. **Scratch state (§13):
+      both Macs** (`state/pool/by-measure` made in the scratch folder) before the switch goes on.
    6. **Write-sets from the code that writes** (§7.3, §7.7): one outputs function per step, `Out`
       refusing any other name in the job, the merge checking every entry against the same
       function, the lint gating publish; entries outside refused as it lands (the owner's choice:
@@ -1290,7 +1315,7 @@ on a scratch state where marked above, then the live switch.
   hands off. Run on 2026-10-08: term 1 the build Mac's, both Macs' hand-offs from before the pool
   drained, the lead's jobs and a sweep, the member's entry merged and acknowledged by mail, the lead
   restarted re-asserting, then standing down on an older app and the member taking over by itself
-  and leading. Planned: the ◻ checks of §3 (create-new between two Macs contended, exclusive
+  and leading. Planned: phase 4's fifth batch with `state/pool/by-measure` (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
   rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it; run on
   one Mac with two scratch agents: §13, the controls) and load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
   reads between clients.)

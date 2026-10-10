@@ -1869,6 +1869,18 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
     measured as a helper's is (four fifths of the build Mac's until it is). The status has it as
     `beside`, or why there's none (`beside_why`).
+  - **By measure** (`state/pool/by-measure`, off while missing: docs/pool.md §7.7, phase 4's fifth
+    batch): the list of the second job's steps, the jobs that run alone and the raw tiles' readers'
+    rule go. The second job is the plan's first, in plan order, whose measured memory and disk fit
+    beside the first's (crate::coord::Coordinator::measured: a target's run's measure or floor, or
+    its step's largest once any target of it ran; a job of no targets of its own, GC or a catalog,
+    by its id): the two's memory within the Mac's limit (the first's as measured, or as it holds now
+    if more), and the second's disk with what the first has still to take and the reserve within
+    the disk's free space. A cold start (a step none of whose targets has run) runs alone, and
+    nothing starts beside it; the first slot waits for its next job that doesn't fit beside the
+    second's, as above. Two Wikidata steps, two heavy NAS readers and two jobs of one step that
+    isn't shared still never run at once (batch 7). A job's room on the disk is the reserve and its
+    measured disk.
 - **A newly installed app:** the first job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one; a second job still running stops then (what it
   finished kept) and goes on under the new one.
@@ -1940,6 +1952,17 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       costs a fetch.
     - Not while a job an earlier agent left runs on the Mac (its programs may be an app's from
       before the locks): until it ends, nothing of the caches is deleted while it runs.
+  - **Disk measured** (docs/pool.md §7.7, whatever the switch): what each job writes is counted by
+    the accessor that writes its cache files (store::cachefile: each file a process names, at its
+    size; a step's cost line notes its target's, `disk_mb`), and by the agent's sampler every minute
+    at the top of the job's scratch folder (the allocated sizes of the files there: the outside
+    programs' outputs) and, while it runs alone, by the disk's free space falling; the most each
+    target took is its **disk floor**, kept by the lead's coordinator (`disks.json`) and sent with a
+    member's lease's end. With `state/pool/by-measure` on, the **disk guard**: when the disk's free
+    space falls below the reserve, the sampler freezes the job growing fastest at once, the agent
+    makes room from what no job holds (room::toward, on a thread), and the job goes on once the
+    reserve is free again, or is given back (not failed, kept from the Mac an hour, as the memory
+    guard's) when no more room can be made.
   - Canopy squares and copies not read in the last hour go first, each by its own use, the least
     recently used first: one listing of the NAS's canopy folder answers for every square (hundreds
     of MB a file), and a copy of a recorded file needs no listing at all (the records name only
@@ -2303,7 +2326,9 @@ between jobs into the other way. On:
   save outside a job's hand-off is refused.
 - **A catalog** goes out only once the lead's records reflect the journal (a listing of every day,
   under a day old, merged, nothing told or listed waiting); **GC** only on a step that re-asserted
-  the lead's term, so caught up.
+  the lead's term, so caught up; it keeps every file the newest records, or a journal entry they
+  don't reflect yet, names (agent::gc::unmerged: an entry not merged keeps its changes and uploads,
+  however old), so it may run beside other jobs.
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
   (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
   devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
@@ -2752,12 +2777,19 @@ At each phase's end an Opus agent reviews the work against this plan.
      to be read (pool.md §7.3), kept so until the share's lag is measured;
    - a refusal's note whose write fails isn't tried again: only the owner's loss, the records naming
      the refusal (`journal::note_refusal`);
-   - GC (removing the journal's old days, forgetting them) isn't built: the forget horizon is
-     checked by the modules' tests alone. It must respect `caught_up`'s bound too: caught up, the
-     records reflect what a listing under a day old found (`Out::listed_at`), and an entry written
-     since by a member gone before telling, which may name uploads made days before (its Mac away),
-     is merged only by the next daily listing. GC must check the journal's entries itself before it
-     removes an upload, or keep uploads longer than an entry can wait unwritten, and a day more;
+   - GC of the journal itself (removing its old days, forgetting them) isn't built: the forget
+     horizon is checked by the modules' tests alone. It must respect `caught_up`'s bound too:
+     caught up, the records reflect what a listing under a day old found (`Out::listed_at`), and an
+     entry written since by a member gone before telling, which may name uploads made days before
+     (its Mac away), is merged only by the next daily listing. GC of the content-named files reads
+     the journal's entries itself (every entry the newest records don't reflect keeps the files it
+     names: agent::gc::unmerged); an entry still unwritten on its member's disk names files no one
+     reads, kept only while they're younger than GC's two weeks, and one written in the minutes
+     between GC's read of the journal and its sweep isn't seen by that sweep;
+   - the disk a job takes is counted by the caches' accessor in Rust alone: dem/cachefile.py's
+     writes (the pageview months) count only through the scratch folder's look and the disk's
+     fall while a job runs alone; a member's job's disk is learned, but members are offered work by
+     `helper_need`'s figures until batch 9 places every step by measured room (pool.md §12);
    - a records snapshot, saved whole after each merge, holds the lease that last set each target
      (one per step and target, as the job keys are: about as large as the keys again) and every
      entry's key since the pool began: until GC is built nothing moves the forget horizon, so the

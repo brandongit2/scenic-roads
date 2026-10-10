@@ -811,15 +811,20 @@ class, id) within a tile. The client sends the id with the clicked point.
     `floors.json` (`{<cost key>: {mb, alone, v}}`: what a target takes at least, as a run that
     didn't measure it saw it hold, whether its job held it alone, the way its step ran,
     crate::agent::memguard::Floor; a measure in `costs.json` takes its place; `scenic pool floors`
-    lists and clears them through the coordinator's `/work/floors`),
+    lists and clears them through the coordinator's `/work/floors`), `disks.json` (`{<cost key>:
+    MB}`: the most disk a target was seen to take, its disk floor, rising only, the OSM pass's
+    latest pass's alone: docs/pool.md §7.7; listed and cleared with the floors),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when
     it last changed);
     `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line as each target begins,
     `{unit, started}` (unix seconds: which target is under way, for the memory guard), and one as it
-    ends, `{unit, peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb`
-    the most the job's processes held together during that target, sampled); `timings.jsonl` (every worker's
+    ends, `{unit, peak_mb, secs, v, disk_mb}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb`
+    the most the job's processes held together during that target, sampled; `disk_mb` what the
+    caches' accessor added to the disk meanwhile, store::cachefile); `written`, `written-2` (each
+    slot's job's bytes added to the caches so far, a decimal number, `SCENIC_WRITTEN`, rewritten
+    every 64 MB, for the disk guard's sampler); `timings.jsonl` (every worker's
     jobs' and tasks' timings: Timings, below).
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
     `costs.jsonl`, `timings.json` (its timings: Timings), `spec.json` (a task's), `task.json`
@@ -892,17 +897,23 @@ class, id) within a tile. The client sends the id with the clicked point.
     present (or `on` in it) on, `off` in it or missing off.
   - `state/pool/memory-guard`: the memory guard's switch (crate::agent::memguard: docs/pool.md
     §7.2), `off` or `on` in it; missing, on. Read by every agent, the pool on or off.
+  - `state/pool/by-measure`: the switch for the Mac shared by measure and its disk guard
+    (docs/pool.md §7.7): present (or `on` in it) on, `off` in it or missing off. Read by every
+    agent, the pool on or off.
   - `state/pool/mail/<to>/<from>.json`: the messages `from` sent `to`, its last 64, `{msgs: [[n,
     msg], …]}`, `n` rising (the sender's clock in ms, and on), `msg` one of `{"Tell": [keys]}`,
     `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`, `{"HandTo": member}`.
   - `state/coord/term/<E>/state.json`: term E's coordinator, `{leases: {next, leases: [{id, term,
-    granted_at, worker, work, progress}]}, costs, failed: [[worker, cost key, unix seconds, times]],
-    pause, pause_at}`; `state/coord/token`: the workers' token, the pool's (copied to each lead's
+    granted_at, worker, work, progress}]}, costs, floors, disks, failed: [[worker, cost key, unix
+    seconds, times]], pause, pause_at}`; `state/coord/token`: the workers' token, the pool's (copied to each lead's
     `coord/`); `state/coord/history/<day>/
     <member>.jsonl`: a member's history events (as `history.jsonl`'s), its own file: a lead's
     coordinator's, and the terms' events (`kind: term`, `note` in words), every member's as they come.
   - The coordinator's leases (`leases.json`) say their `term` and `granted_at` (unix seconds); a
-    grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already.
+    grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already
+    (the coordinator checks only that its done record is its lease's, a job of no targets of its own
+    done with none); `/work/done` and `/work/fail` carry `floors` and `disks` (`[[cost key, MB],
+    …]`), what the job saw its lease's targets take at least.
   - `state/pool-off/<day>-<unix seconds>/`: the pool's files above, moved aside by `scenic pool off`
     once its agents left it, by their paths.
   - `state/pool-shadow/`: a shadow run's files, as the pool's above under it (its terms, records,
