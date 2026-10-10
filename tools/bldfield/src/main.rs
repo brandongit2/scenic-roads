@@ -1,15 +1,17 @@
 //! Prototype of the far buildings' field (task #102): a z6 tile's buildings pack (z14 tiles, every
-//! building) reduced to per-texel aggregates, z13..z4, 512 x 512 texels a tile:
-//!   f  roof coverage: the share of the texel under a footprint standing on the ground (exact area,
-//!      as font renderers rasterize; overlapping footprints summed, then clamped to 1)
+//! building) reduced to per-texel aggregates, levels 14..4, 512 x 512 texels a tile, for each of five
+//! height classes (by a building's or part's top: under 8 m, 8-20, 20-40, 40-100, 100 m and up):
+//!   f  roof coverage: the share of the texel under the class's roofs (exact area, as font renderers
+//!      rasterize; overlapping footprints summed, then clamped to 1)
 //!   w  wall area per ground area: sum over walls of length x (top - base) / texel area
-//!   v  roof height x coverage: sum of share x (top - base) (m), so v / f is the mean roof height
-//! All three are densities, so a coarser level is the mean of its 4 children (exact).
-//! z13 holds only the buildings the z13 mesh tiles leave out (under 20 m and under 2,000 m2), z12
-//! those the z12 tiles leave out (under 40 m), z11 and coarser every building.
+//!   v  sum of roof share x top (m), so v / f is the class's mean roof height
+//! All are densities, so a coarser level is the mean of its 4 children (exact).
+//! Level 14 (drawn at map zoom 13-14 over the z13 mesh tiles) holds only the buildings those leave
+//! out (under 20 m and under 2,000 m2), level 13 (over the z12 tiles) those under 40 m, level 12
+//! and coarser every building.
 //!
-//! Output: <out>/<z>/<x>/<y>.bin: gzip of 3 planes of 512 x 512 u16 LE (f x 65535, w x 2048,
-//! v x 128), all-zero tiles left out; <out>/stats.json.
+//! Output: <out>/<z>/<x>/<y>.bin: gzip of 15 planes of 512 x 512 u16 LE (f of each class x 65535,
+//! log2(1 + w) / 12 x 65535 of each, v x 64 of each), all-zero tiles left out; <out>/stats.json.
 
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use rayon::prelude::*;
@@ -18,11 +20,12 @@ use std::io::{Read, Write};
 use std::sync::Mutex;
 
 const T: usize = 512; // texels a tile side
-const B: usize = 4096; // texels a z10 block side, at z13's texel size (8 x 512)
+const B: usize = 4096; // texels a z11 block side, at level 14's texel size (8 x 512)
 const STRIDE: usize = B + 2;
 const QF: f32 = 65535.0;
-const QW: f32 = 2048.0;
-const QV: f32 = 128.0;
+const QV: f32 = 64.0;
+/// w is stored as log2(1 + w) / WLOG x 65535 (a tower's edge texel holds walls 100 times its area).
+const WLOG: f32 = 12.0;
 
 fn tile_key(z: u64, x: u64, y: u64) -> u64 {
     (z << 58) | (x << 29) | y
@@ -329,40 +332,48 @@ fn side_m(y: f64, n: f64) -> f64 {
     40075016.686 * lat.cos() / n
 }
 
-/// A level's arrays: f, w, v, `n` x `n`.
+/// Height classes (by a building's or part's top, dm): under 8 m, 8–20, 20–40, 40–100, 100 m and up.
+const K: usize = 5;
+const CLASS_TOP: [u32; 4] = [80, 200, 400, 1000];
+/// Planes: f of each class, then w, then v.
+const P: usize = 3 * K;
+
+/// A level's arrays: P planes, `n` x `n`.
 struct Lv {
     n: usize,
-    f: Vec<f32>,
-    w: Vec<f32>,
-    v: Vec<f32>,
+    p: Vec<Vec<f32>>,
 }
 impl Lv {
     fn zero(n: usize) -> Lv {
-        Lv { n, f: vec![0.0; n * n], w: vec![0.0; n * n], v: vec![0.0; n * n] }
+        Lv { n, p: (0..P).map(|_| vec![0.0; n * n]).collect() }
     }
     fn half(&self) -> Lv {
         let n = self.n / 2;
         let mut o = Lv::zero(n);
-        for y in 0..n {
-            for x in 0..n {
-                let i = |dx: usize, dy: usize| (2 * y + dy) * self.n + 2 * x + dx;
-                let m = |a: &Vec<f32>| 0.25 * (a[i(0, 0)] + a[i(1, 0)] + a[i(0, 1)] + a[i(1, 1)]);
-                o.f[y * n + x] = m(&self.f);
-                o.w[y * n + x] = m(&self.w);
-                o.v[y * n + x] = m(&self.v);
+        for (a, b) in self.p.iter().zip(o.p.iter_mut()) {
+            for y in 0..n {
+                for x in 0..n {
+                    let i = |dx: usize, dy: usize| (2 * y + dy) * self.n + 2 * x + dx;
+                    b[y * n + x] = 0.25 * (a[i(0, 0)] + a[i(1, 0)] + a[i(0, 1)] + a[i(1, 1)]);
+                }
             }
         }
         o
     }
     /// The 512 x 512 tile at (tx, ty) of this level's array, encoded; None if empty.
     fn tile(&self, tx: usize, ty: usize) -> Option<Vec<u8>> {
-        let mut raw = vec![0u8; T * T * 6];
+        let mut raw = vec![0u8; T * T * 2 * P];
         let mut any = false;
-        for (c, (arr, q)) in [(&self.f, QF), (&self.w, QW), (&self.v, QV)].into_iter().enumerate() {
+        for (c, arr) in self.p.iter().enumerate() {
+            let kind = c / K; // 0 f, 1 w, 2 v
             for y in 0..T {
                 for x in 0..T {
                     let val = arr[(ty * T + y) * self.n + tx * T + x];
-                    let u = (val * q).round().clamp(0.0, 65535.0) as u16;
+                    let u = match kind {
+                        0 => (val * QF).round().clamp(0.0, 65535.0) as u16,
+                        1 => ((1.0 + val.max(0.0)).log2() / WLOG * 65535.0).round().clamp(0.0, 65535.0) as u16,
+                        _ => (val * QV).round().clamp(0.0, 65535.0) as u16,
+                    };
                     if u != 0 {
                         any = true;
                     }
@@ -398,153 +409,177 @@ impl Out {
     }
 }
 
+/// Accumulation groups: the classes, and classes 0 and 1 again for footprints of 2,000 m2 or more
+/// (which z13's meshes draw).
+const NG: usize = 7;
+/// Group -> class.
+const GCLASS: [usize; NG] = [0, 1, 0, 1, 2, 3, 4];
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let pack = read_pack(&args[1]);
     let out = Out { dir: args[2].clone(), stats: Mutex::new(BTreeMap::new()) };
+    let threads: usize = std::env::var("BLDFIELD_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let (rz, rx, ry) = pack.root;
     assert_eq!(rz, 6);
     let t0 = std::time::Instant::now();
-    // z10 blocks of the z6 tile.
-    let blocks: Vec<(u32, u32)> = (0..16).flat_map(|j| (0..16).map(move |i| (rx * 16 + i, ry * 16 + j))).collect();
+    // z11 blocks of the z6 tile.
+    let blocks: Vec<(u32, u32)> = (0..32).flat_map(|j| (0..32).map(move |i| (rx * 32 + i, ry * 32 + j))).collect();
     let nb = Mutex::new(0u64);
-    let z10: Vec<((u32, u32), Lv)> = blocks
-        .par_iter()
-        .filter_map(|&(bx, by)| {
-            // z14 tiles of the block and one around it (buildings reach past their tile).
-            let mut tiles = Vec::new();
-            let mut own = false;
-            for y14 in (by * 16).saturating_sub(1)..=by * 16 + 16 {
-                for x14 in (bx * 16).saturating_sub(1)..=bx * 16 + 16 {
-                    if let Some(&(o, l)) = pack.index.get(&tile_key(14, x14 as u64, y14 as u64)) {
-                        own |= x14 / 16 == bx && y14 / 16 == by;
-                        tiles.push((x14, y14, o, l));
+    let l11: Vec<((u32, u32), Lv)> = pool.install(|| {
+        blocks
+            .par_iter()
+            .filter_map(|&(bx, by)| {
+                // z14 tiles of the block and one around it (buildings reach past their tile).
+                let mut tiles = Vec::new();
+                let mut own = false;
+                for y14 in (by * 8).saturating_sub(1)..=by * 8 + 8 {
+                    for x14 in (bx * 8).saturating_sub(1)..=bx * 8 + 8 {
+                        if let Some(&(o, l)) = pack.index.get(&tile_key(14, x14 as u64, y14 as u64)) {
+                            own |= x14 / 8 == bx && y14 / 8 == by;
+                            tiles.push((x14, y14, o, l));
+                        }
                     }
                 }
-            }
-            if !own {
-                return None;
-            }
-            let ny = (1u64 << 22) as f64;
-            let mut accf = vec![vec![0f32; STRIDE * B]; 3];
-            let mut accv = vec![vec![0f32; STRIDE * B]; 3];
-            let mut wd = vec![vec![0f32; B * B]; 3];
-            let mut nfeat = 0u64;
-            for (x14, y14, o, l) in tiles {
-                for f in decode_tile(&pack.data[o..o + l]) {
-                    if f.k == 2 || f.o || f.h == 0 {
-                        continue;
-                    }
-                    // Texel coordinates in the block: z14 units are 2^-26 of the world, texels 2^-22.
-                    let ox = (x14 as f64 * 4096.0 - bx as f64 * 65536.0) / 16.0;
-                    let oy = (y14 as f64 * 4096.0 - by as f64 * 65536.0) / 16.0;
-                    let rings: Vec<Vec<(f64, f64)>> = f.rings.iter().map(|r| r.iter().map(|p| (ox + p[0] as f64 / 16.0, oy + p[1] as f64 / 16.0)).collect()).collect();
-                    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-                    for r in &rings {
-                        for p in r {
-                            x0 = x0.min(p.0);
-                            y0 = y0.min(p.1);
-                            x1 = x1.max(p.0);
-                            y1 = y1.max(p.1);
+                if !own {
+                    return None;
+                }
+                let ny = (1u64 << 23) as f64;
+                let mut accf: Vec<Vec<f32>> = (0..NG).map(|_| Vec::new()).collect();
+                let mut accv: Vec<Vec<f32>> = (0..NG).map(|_| Vec::new()).collect();
+                let mut wd: Vec<Vec<f32>> = (0..NG).map(|_| Vec::new()).collect();
+                let mut nfeat = 0u64;
+                for (x14, y14, o, l) in tiles {
+                    for f in decode_tile(&pack.data[o..o + l]) {
+                        if f.k == 2 || f.o || f.h == 0 {
+                            continue;
                         }
-                    }
-                    if x1 < 0.0 || y1 < 0.0 || x0 >= B as f64 || y0 >= B as f64 {
-                        continue;
-                    }
-                    nfeat += 1;
-                    let cy = 0.5 * (y0 + y1);
-                    let side = side_m(by as f64 * B as f64 + cy, ny);
-                    // Footprint area (m2): the exteriors less the holes (shoelace).
-                    let mut a2 = 0.0;
-                    for r in &rings {
-                        for i in 0..r.len() {
-                            let (p, q) = (r[i], r[(i + 1) % r.len()]);
-                            a2 += p.0 * q.1 - q.0 * p.1;
-                        }
-                    }
-                    let area = 0.5 * a2.abs() * side * side;
-                    let s = if f.h >= 400 { 2 } else if f.h >= 200 || area >= 2000.0 { 1 } else { 0 };
-                    let wh = (f.h.saturating_sub(f.m)) as f64 / 10.0;
-                    for r in &rings {
-                        for i in 0..r.len() {
-                            let (p, q) = (r[i], r[(i + 1) % r.len()]);
-                            if f.m == 0 {
-                                edge(&mut accf[s], p, q, 1.0);
+                        // Texel coordinates in the block: z14 units are 2^-26 of the world, texels 2^-23.
+                        let ox = (x14 as f64 * 4096.0 - bx as f64 * 32768.0) / 8.0;
+                        let oy = (y14 as f64 * 4096.0 - by as f64 * 32768.0) / 8.0;
+                        let rings: Vec<Vec<(f64, f64)>> = f.rings.iter().map(|r| r.iter().map(|p| (ox + p[0] as f64 / 8.0, oy + p[1] as f64 / 8.0)).collect()).collect();
+                        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                        for r in &rings {
+                            for p in r {
+                                x0 = x0.min(p.0);
+                                y0 = y0.min(p.1);
+                                x1 = x1.max(p.0);
+                                y1 = y1.max(p.1);
                             }
-                            edge(&mut accv[s], p, q, wh);
-                            let len = ((q.0 - p.0).powi(2) + (q.1 - p.1).powi(2)).sqrt() * side;
-                            wall(&mut wd[s], p, q, len, wh);
+                        }
+                        if x1 < 0.0 || y1 < 0.0 || x0 >= B as f64 || y0 >= B as f64 {
+                            continue;
+                        }
+                        nfeat += 1;
+                        let cy = 0.5 * (y0 + y1);
+                        let side = side_m(by as f64 * B as f64 + cy, ny);
+                        let mut a2 = 0.0;
+                        for r in &rings {
+                            for i in 0..r.len() {
+                                let (p, q) = (r[i], r[(i + 1) % r.len()]);
+                                a2 += p.0 * q.1 - q.0 * p.1;
+                            }
+                        }
+                        let area = 0.5 * a2.abs() * side * side;
+                        let class = CLASS_TOP.iter().filter(|&&t| f.h >= t).count();
+                        let g = if class <= 1 && area >= 2000.0 { 2 + class } else if class <= 1 { class } else { 2 + class };
+                        if accf[g].is_empty() {
+                            accf[g] = vec![0f32; STRIDE * B];
+                            accv[g] = vec![0f32; STRIDE * B];
+                            wd[g] = vec![0f32; B * B];
+                        }
+                        // Each roof at its top (a part's above the podium it stands on), its walls from
+                        // its base.
+                        let top = f.h as f64 / 10.0;
+                        let wh = (f.h.saturating_sub(f.m)) as f64 / 10.0;
+                        for r in &rings {
+                            for i in 0..r.len() {
+                                let (p, q) = (r[i], r[(i + 1) % r.len()]);
+                                edge(&mut accf[g], p, q, 1.0);
+                                edge(&mut accv[g], p, q, top);
+                                let len = ((q.0 - p.0).powi(2) + (q.1 - p.1).powi(2)).sqrt() * side;
+                                wall(&mut wd[g], p, q, len, wh);
+                            }
                         }
                     }
                 }
-            }
-            *nb.lock().unwrap() += nfeat;
-            // Prefix sums: coverage and share x height per texel, each set.
-            let mut sets: Vec<Lv> = Vec::new();
-            for s in 0..3 {
-                let mut lv = Lv::zero(B);
-                for y in 0..B {
-                    let a = side_m(by as f64 * B as f64 + y as f64 + 0.5, ny);
-                    let ta = a * a;
-                    let (mut cf, mut cv) = (0f64, 0f64);
-                    for x in 0..B {
-                        cf += accf[s][y * STRIDE + x] as f64;
-                        cv += accv[s][y * STRIDE + x] as f64;
-                        // (exteriors wind positive with y down: font-rs's sums come out negative)
-                        lv.f[y * B + x] = (cf.abs() as f32).min(1.0);
-                        lv.v[y * B + x] = cv.abs() as f32;
-                        lv.w[y * B + x] = (wd[s][y * B + x] as f64 / ta) as f32;
+                *nb.lock().unwrap() += nfeat;
+                // Prefix sums per group: coverage (clamped to 1), share x top, walls per area.
+                let mut groups: Vec<Option<[Vec<f32>; 3]>> = (0..NG).map(|_| None).collect();
+                for g in 0..NG {
+                    if accf[g].is_empty() {
+                        continue;
+                    }
+                    let (mut fa, mut wa, mut va) = (vec![0f32; B * B], vec![0f32; B * B], vec![0f32; B * B]);
+                    for y in 0..B {
+                        let a = side_m(by as f64 * B as f64 + y as f64 + 0.5, ny);
+                        let ta = a * a;
+                        let (mut cf, mut cv) = (0f64, 0f64);
+                        for x in 0..B {
+                            cf += accf[g][y * STRIDE + x] as f64;
+                            cv += accv[g][y * STRIDE + x] as f64;
+                            // (overlapping roofs: the share clamped to 1, their tops' sum scaled with it,
+                            // so v / f stays their mean top)
+                            let (fr, vr) = (cf.abs() as f32, cv.abs() as f32);
+                            fa[y * B + x] = fr.min(1.0);
+                            va[y * B + x] = if fr > 1.0 { vr / fr } else { vr };
+                            wa[y * B + x] = (wd[g][y * B + x] as f64 / ta) as f32;
+                        }
+                    }
+                    accf[g] = Vec::new();
+                    accv[g] = Vec::new();
+                    wd[g] = Vec::new();
+                    groups[g] = Some([fa, wa, va]);
+                }
+                // A level of the block from a set of groups (each class's f clamped to 1).
+                let comb = |gs: &[usize]| {
+                    let mut lv = Lv::zero(B);
+                    for &g in gs {
+                        let Some([fa, wa, va]) = &groups[g] else { continue };
+                        let c = GCLASS[g];
+                        for i in 0..B * B {
+                            let (f0, v0) = (lv.p[c][i] + fa[i], lv.p[2 * K + c][i] + va[i]);
+                            lv.p[c][i] = f0.min(1.0);
+                            lv.p[K + c][i] += wa[i];
+                            lv.p[2 * K + c][i] = if f0 > 1.0 { v0 / f0 } else { v0 };
+                        }
+                    }
+                    lv
+                };
+                // Level 14: what z13's meshes leave out (under 20 m and under 2,000 m2).
+                let l14 = comb(&[0, 1]);
+                for ty in 0..8 {
+                    for tx in 0..8 {
+                        out.put(14, bx * 8 + tx as u32, by * 8 + ty as u32, l14.tile(tx, ty));
                     }
                 }
-                sets.push(lv);
-            }
-            drop(accf);
-            drop(accv);
-            drop(wd);
-            let comb = |ss: &[usize]| {
-                let mut lv = Lv::zero(B);
-                for i in 0..B * B {
-                    let mut f = 0.0;
-                    for &s in ss {
-                        f += sets[s].f[i];
-                        lv.w[i] += sets[s].w[i];
-                        lv.v[i] += sets[s].v[i];
+                drop(l14);
+                // Level 13: what z12's meshes leave out (under 40 m).
+                let l13 = comb(&[0, 1, 2, 3, 4]).half();
+                for ty in 0..4 {
+                    for tx in 0..4 {
+                        out.put(13, bx * 4 + tx as u32, by * 4 + ty as u32, l13.tile(tx, ty));
                     }
-                    lv.f[i] = f.min(1.0);
                 }
-                lv
-            };
-            // z13: the small ones (what z13's meshes leave out).
-            for ty in 0..8 {
-                for tx in 0..8 {
-                    out.put(13, bx * 8 + tx as u32, by * 8 + ty as u32, sets[0].tile(tx, ty));
+                drop(l13);
+                let l12 = comb(&[0, 1, 2, 3, 4, 5, 6]).half().half();
+                drop(groups);
+                for ty in 0..2 {
+                    for tx in 0..2 {
+                        out.put(12, bx * 2 + tx as u32, by * 2 + ty as u32, l12.tile(tx, ty));
+                    }
                 }
-            }
-            // z12: those under 40 m.
-            let z12 = comb(&[0, 1]).half();
-            for ty in 0..4 {
-                for tx in 0..4 {
-                    out.put(12, bx * 4 + tx as u32, by * 4 + ty as u32, z12.tile(tx, ty));
-                }
-            }
-            drop(z12);
-            let all = comb(&[0, 1, 2]);
-            drop(sets);
-            let z11 = all.half().half();
-            for ty in 0..2 {
-                for tx in 0..2 {
-                    out.put(11, bx * 2 + tx as u32, by * 2 + ty as u32, z11.tile(tx, ty));
-                }
-            }
-            let z10 = z11.half();
-            out.put(10, bx, by, z10.tile(0, 0));
-            Some(((bx, by), z10))
-        })
-        .collect();
+                let l11 = l12.half();
+                out.put(11, bx, by, l11.tile(0, 0));
+                Some(((bx, by), l11))
+            })
+            .collect()
+    });
     eprintln!("blocks done: {} features rasterized, {:.1} s", nb.lock().unwrap(), t0.elapsed().as_secs_f64());
-    // z9..z4 from the z10 tiles: each level's tiles as 1024 x 1024 mosaics of 4 children, halved.
-    let mut cur: BTreeMap<(u32, u32), Lv> = z10.into_iter().collect();
-    for z in (4..10).rev() {
+    // Levels 10..4: each tile from a 1024 x 1024 mosaic of its 4 children, halved.
+    let mut cur: BTreeMap<(u32, u32), Lv> = l11.into_iter().collect();
+    for z in (4..11).rev() {
         let mut next: BTreeMap<(u32, u32), Lv> = BTreeMap::new();
         let parents: std::collections::BTreeSet<(u32, u32)> = cur.keys().map(|&(x, y)| (x / 2, y / 2)).collect();
         for (px, py) in parents {
@@ -552,12 +587,11 @@ fn main() {
             for dy in 0..2 {
                 for dx in 0..2 {
                     if let Some(c) = cur.get(&(px * 2 + dx, py * 2 + dy)) {
-                        for y in 0..T {
-                            for x in 0..T {
-                                let o = (dy as usize * T + y) * 2 * T + dx as usize * T + x;
-                                m.f[o] = c.f[y * T + x];
-                                m.w[o] = c.w[y * T + x];
-                                m.v[o] = c.v[y * T + x];
+                        for (a, b) in c.p.iter().zip(m.p.iter_mut()) {
+                            for y in 0..T {
+                                for x in 0..T {
+                                    b[(dy as usize * T + y) * 2 * T + dx as usize * T + x] = a[y * T + x];
+                                }
                             }
                         }
                     }

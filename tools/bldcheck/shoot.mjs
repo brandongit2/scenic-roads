@@ -101,7 +101,7 @@ const summary = fs.existsSync(path.join(OUT, 'shots.json')) ? JSON.parse(fs.read
 for (const v of views) {
   const t0 = Date.now();
   const tab = await openTab();
-  const url = `${APP}/?bldcmp&dpr=2&bldfield=${encodeURIComponent(FIELD)}&bldtiles=${encodeURIComponent(BLD)}${v.flat ? '' : ''}#map=${v.z}/${v.lat}/${v.lon}/${v.bearing ?? 0}/${v.pitch ?? 0}${v.elev ? `/${v.elev}` : ''}${v.flat ? '&gb=0' : ''}`;
+  const url = `${APP}/?bldcmp&dpr=2${v.bcol ? `&bcol=${v.bcol}` : ""}&bldfield=${encodeURIComponent(FIELD)}&bldtiles=${encodeURIComponent(BLD)}${v.flat ? '' : ''}#map=${v.z}/${v.lat}/${v.lon}/${v.bearing ?? 0}/${v.pitch ?? 0}${v.flat ? '&gb=0' : ''}`;
   await tab.send('Page.navigate', { url });
   for (let i = 0; i < 600; i++) {
     if (await tab.evaluate('return !!window.__bld', 10).catch(() => false)) break;
@@ -110,43 +110,85 @@ for (const v of views) {
   const rec = { url, ...(summary[v.id] ?? {}) };
   try {
     await tab.evaluate('await window.__bld.ready(); return 1');
-    // The view's pivot on the ground (the camera above the terrain, as the app levels it).
-    rec.elev = await tab.evaluate(`const m = window.__bld.map; const e = m.queryTerrainElevation(m.getCenter()) ?? 0; m.jumpTo({ elevation: e }); m.jumpTo({ zoom: ${v.z} }); await window.__bld.ready(); return e`);
+    // Framed as the app frames a place, the camera kept 300 m above the terrain under it.
+    rec.place = await tab.evaluate(`return await window.__bld.place(${JSON.stringify({ z: v.z + 0.03, lat: v.lat, lon: v.lon, pitch: v.pitch ?? 0, bearing: v.bearing ?? 0, margin: 300 })})`);
+    if (v.light !== undefined) await tab.evaluate(`window.__app.map.setLight({ anchor: 'map', position: [1.5, ${v.light}, 40], intensity: 0.35, color: '#ffffff' }); await window.__bld.ready(); return 1`);
     rec.camera = await tab.evaluate('return window.__bld.camera()');
-    const zf = Math.floor(v.z);
+    const z = rec.place.z, zf = Math.floor(rec.place.mapZoom + 1e-6);
+    // The comparison's box: the buildings within it alone, in every mode (a tilted view's full
+    // detail to the horizon is more tiles than a GPU holds).
+    let box = v.box ?? null;
+    if (!box && v.boxKm) {
+      const dlat = v.boxKm / 111.32, dlon = dlat / Math.cos((v.lat * Math.PI) / 180);
+      box = [v.lon - dlon, v.lat - dlat, v.lon + dlon, v.lat + dlat];
+      // Snapped out to whole z14 tiles: the meshes' source takes whole tiles, the field clips there too.
+      // (to whole z12 tiles: the coarsest meshes' tiles, which MapLibre draws whole)
+      const n = 2 ** 12;
+      const X = (lon) => ((lon + 180) / 360) * n, Y = (lat) => ((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * n;
+      const lonOf = (x) => (x / n) * 360 - 180, latOf = (y) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
+      const e = 1e-7;
+      box = [lonOf(Math.floor(X(box[0]))) + e, latOf(Math.floor(Y(box[1])) + 1) + e, lonOf(Math.floor(X(box[2])) + 1) - e, latOf(Math.floor(Y(box[3]))) - e];
+    }
+    const common = { ...(box ? { box } : {}), ...(v.opacity !== undefined ? { opacity: v.opacity } : {}) };
+    const tilesIn = (k) => {
+      const n = 2 ** 14;
+      if (box) {
+        const X = (lon) => ((lon + 180) / 360) * n, Y = (lat) => ((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * n;
+        return (Math.floor(X(box[2])) - Math.floor(X(box[0])) + 1) * (Math.floor(Y(box[1])) - Math.floor(Y(box[3])) + 1);
+      }
+      return ((W * 2 ** k) / 512 + 1) * ((H * 2 ** k) / 512 + 1);
+    };
     for (const mode of MODES) {
       const t1 = Date.now();
       let o = null;
-      if (mode === 'app') o = { field: true, k: 1, ss: 1, fieldMax: 13 };
-      else if (mode === 'cur') o = { field: false, k: 0, ss: 1 };
+      if (mode === 'app') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
+      else if (mode === 'appneg') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, wallSign: -1, ...common };
+      else if (mode === 'flat') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, linear: false, ...common };
+      else if (mode === 'cur') o = { field: false, k: 0, ss: 1, ...common };
       else if (mode === 'ref') {
         // Full detail: the z14 meshes, at 4 x the pixel ratio, point-sampled, shrunk.
         const k = Math.max(0, 14 - zf);
-        if (v.maxRefK !== undefined && k > v.maxRefK) continue;
-        const tiles = ((W * 2 ** k) / 512 + 1) * ((H * 2 ** k) / 512 + 1);
-        const strips = v.strips ?? Math.max(1, Math.ceil(tiles / 120));
-        o = { field: false, k, ss: 4, strips };
+        if (k > (v.maxRefK ?? 7)) continue;
+        const strips = v.strips ?? Math.max(1, Math.ceil(tilesIn(k) / 120));
+        o = { field: false, k, ss: 4, strips, ...common };
       } else if (mode === 'chain') {
         // The app as at 3 zooms closer (its field and meshes), shrunk: what the closer zooms show.
-        if (zf >= 10) continue;
-        o = { field: true, k: 4, ss: 4, fieldMax: 10 };
+        if (zf >= 11) continue;
+        o = { field: true, k: 3, fbias: 4, ss: 4, fieldMax: 11, ...common };
       }
       if (!o) continue;
       const r = await tab.fetchBig(`return await window.__bld.shot(${JSON.stringify(o)})`);
       save(`${v.id}.${mode}`, r);
       rec[mode] = { ...o, secs: (Date.now() - t1) / 1000, tiles: r.tiles };
       await tab.evaluate('await window.__bld.reset(); return 1');
-      console.log(`${v.id} ${mode} ${JSON.stringify(o)} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+      console.log(`${v.id} ${mode} ${JSON.stringify({ ...o, box: undefined })} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+    }
+    if (MODES.includes('seq')) {
+      // A slow pan (v.seq.dx CSS px a frame) or a zoom sweep (v.seq.dz a frame), frame by frame: the
+      // prototype and full detail at each, for flicker (tools/bldcheck: seq.py).
+      const sq = v.seq ?? { n: 12, dx: 0.125, dz: 0 };
+      const k = Math.max(0, 14 - zf);
+      for (let i = 0; i < sq.n; i++) {
+        if (i > 0) await tab.evaluate(`const m = window.__bld.map; ${sq.dx ? `m.panBy([${sq.dx}, 0], { duration: 0 });` : ''} ${sq.dz ? `m.jumpTo({ zoom: m.getZoom() + ${sq.dz} });` : ''} await window.__bld.ready(); return 1`);
+        const ra = await tab.fetchBig(`return await window.__bld.shot(${JSON.stringify({ field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common })})`);
+        save(`${v.id}.seq${String(i).padStart(2, '0')}.app`, ra);
+        await tab.evaluate('await window.__bld.reset(); return 1');
+        if (k <= (v.maxRefK ?? 7)) {
+          const strips = v.strips ?? Math.max(1, Math.ceil(tilesIn(k) / 120));
+          const rr = await tab.fetchBig(`return await window.__bld.shot(${JSON.stringify({ field: false, k, ss: 4, strips, ...common })})`);
+          save(`${v.id}.seq${String(i).padStart(2, '0')}.ref`, rr);
+          await tab.evaluate('await window.__bld.reset(); return 1');
+        }
+      }
+      console.log(`${v.id} seq ${sq.n} frames`);
     }
     if (MODES.includes('frames')) {
-      // Frames drawn back to back (each waited for: gl.finish), the field on and off, three rounds.
       rec.frames = [];
       for (let i = 0; i < 3; i++) {
-        const on = await tab.evaluate('await window.__bld.shot({ field: true, k: 1, ss: 1, fieldMax: 13 }); return await window.__bld.frames(60)');
+        const on = await tab.evaluate(`await window.__bld.shot(${JSON.stringify({ field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14 })}); return await window.__bld.frames(60)`);
         const off = await tab.evaluate('window.__bld.field.on = false; return await window.__bld.frames(60)');
         rec.frames.push({ on, off });
       }
-      console.log(v.id, 'frames', JSON.stringify(rec.frames.map((r) => [r.on.frameMs, r.off.frameMs])), JSON.stringify(rec.frames[0].on));
     }
   } catch (e) {
     rec.error = String(e.message ?? e);

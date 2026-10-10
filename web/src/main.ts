@@ -2131,7 +2131,7 @@ async function main() {
     if (meta.layers?.buildings) {
       addBuildings(map, 'water-name-line', 'boundary-county');
       heritageChanged(map, store.s.overlays.heritage);
-      if (field) map.addLayer(field, 'buildings');
+      if (field) map.addLayer(field, 'buildings-heritage');
     }
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).

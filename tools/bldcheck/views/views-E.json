@@ -1,0 +1,18 @@
+[
+{"id": "light-tokyo-l90", "z": 11, "lat": 35.68, "lon": 139.75, "pitch": 50, "bearing": 120, "light": 90, "boxKm": 3},
+{"id": "light-tokyo-l225", "z": 11, "lat": 35.68, "lon": 139.75, "pitch": 50, "bearing": 120, "light": 225, "boxKm": 3},
+{"id": "light-annecy-l180", "z": 12, "lat": 45.899, "lon": 6.129, "pitch": 60, "bearing": 200, "light": 180, "boxKm": 1.5},
+{"id": "lat-fairbanks-z11", "z": 11, "lat": 64.84, "lon": -147.72},
+{"id": "lat-fairbanks-z9", "z": 9, "lat": 64.84, "lon": -147.72},
+{"id": "lat-fairbanks-t11", "z": 11, "lat": 64.84, "lon": -147.72, "pitch": 60, "bearing": 0, "boxKm": 3},
+{"id": "lat-kirkwall-z11", "z": 11, "lat": 58.98, "lon": -2.96},
+{"id": "lat-iqaluit-z12", "z": 12, "lat": 63.75, "lon": -68.52},
+{"id": "anti-adak-z9", "z": 9, "lat": 51.88, "lon": -176.66},
+{"id": "anti-aleutians-z4", "z": 4, "lat": 52.5, "lon": -179.9},
+{"id": "globe-tokyo-z4", "z": 4, "lat": 35.68, "lon": 139.75},
+{"id": "dense-manhattan-z11", "z": 11, "lat": 40.758, "lon": -73.985},
+{"id": "dense-manhattan-z9", "z": 9, "lat": 40.758, "lon": -73.985},
+{"id": "dense-manhattan-t11", "z": 11, "lat": 40.74, "lon": -73.99, "pitch": 70, "bearing": 30, "boxKm": 4},
+{"id": "sparse-gunma-z9", "z": 9, "lat": 36.45, "lon": 138.5},
+{"id": "sparse-annecy-rural-z10", "z": 10, "lat": 45.75, "lon": 6.35}
+]

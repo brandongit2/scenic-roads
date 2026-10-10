@@ -1018,33 +1018,28 @@ is as bright at every level of detail. The water does the same with coverage til
 `tools/coastcheck`). The field is the buildings' version: their area (and their walls' area) summed
 per texel, every building at every level.
 
-**The bands.** By the zoom of the tiles drawn (with MapLibre's tile size of 256 for the buildings'
-source, so each zoom's tiles one zoom earlier than today):
+**The bands** (as decided, 10 Oct: the meshes' tiles as today):
 
 | Map zoom | Meshes (fill-extrusion) | Field |
 |---|---|---|
-| 13 and up | z14 tiles: every building | none |
-| 12–13 | z13 tiles: 20 m or more, or 2,000 m² or more | level 13: every other building |
-| 11–12 | z12 tiles: 40 m or more | level 12: every other building |
-| under 11 | none | level ⌊zoom⌋ + 1 (down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
+| 14 and up | z14 tiles: every building | none |
+| 13–14 | z13 tiles: 20 m or more, or 2,000 m² or more | level 14: every other building |
+| 12–13 | z12 tiles: 40 m or more | level 13: every other building |
+| under 12 | none | level ⌊zoom⌋ + 1 (down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
 
 - A field level's texel is half a CSS pixel where it's first drawn (one device pixel on a 2× screen,
   as the roads' finest cells: `LOD_CELL_PX`), a full one where it hands over to the next.
 - The field of a level holds the buildings that level's meshes leave out, so no building is drawn
-  twice nor missed: in a tilted view, where MapLibre takes coarser tiles toward the horizon, each
-  mesh tile gets the field tile of its own zoom over it (the field's layer reads which tiles the
-  meshes' source draws), and past the meshes' least zoom the field alone, by the same distance rule.
-  (The prototype takes its tiles by the map's zoom alone: right for the straight-down views below,
-  not yet for tilted ones above zoom 11.)
-- Every building from zoom 13, not 14: at 13 a house is 2–3 device pixels, and the field's texels
-  there would blur them (the prototype's first try took level ⌊zoom⌋ at every zoom: σ1 differences
-  of 3.3 L* against full detail at z11, where level ⌊zoom⌋ + 1 has 1.6). It costs the meshes four
-  times the buildings at 13 that a view had at 14 (measured below).
+  twice nor missed: over each mesh tile MapLibre draws, the field level of that tile's zoom (the
+  layer reads the meshes' source's tiles: matched in a tilted view too, as the second prototype
+  does), and past the meshes' least zoom the field alone, split by distance as MapLibre's cover is.
+- (The first prototype drew every building from zoom 13 with the meshes' tiles a zoom earlier; the
+  owner chose 14, which with one-device-pixel texels needs a level 14: §4.8.1, storage.)
 - No pop at the hand-overs: two levels' aggregates are equal by construction (only the texels'
   sharpness changes), and a building passing from the field to a mesh does so where it is one or two
   device pixels, its texel's light becoming its pixel's.
 
-**The look.** Drawn as fill-extrusion draws a building, so field and meshes are one material:
+**The look** (the first prototype's; the second ray-marches the field instead: §4.8.1). Drawn as fill-extrusion draws a building, so field and meshes are one material:
 - each pixel: the roofs cover `f`; the walls facing the camera add `w × g`, where `g` is the
   projected area of a square metre of wall per square metre of ground, from the screen-space
   Jacobian of the ground and the vertical at the point, averaged over eight wall directions, those
@@ -1084,7 +1079,7 @@ source, so each zoom's tiles one zoom earlier than today):
   files) made Kantō's 6/56/25 (30.3 M buildings) in 22 s on the build Mac's 14 threads (13 GB at
   most; ~0.6 GB a z10 block in flight), Annecy's 6/33/22 (4.5 M) in 9–21 s.
 
-**Sizes, measured on the prototype's fields** (every tile encoded as above):
+**Sizes, measured on the first prototype's fields** (one class, levels 4–13; the second's: §4.8.1) (every tile encoded as above):
 
 | | Annecy and the Alps, 6/33/22 | Kantō, 6/56/25 |
 |---|---|---|
@@ -1102,7 +1097,7 @@ without level 13. A view's field: 1–9 tiles, 0.1–2 MB to download (Tokyo's d
 the largest tiles (550 KB) are over the 300 KB the meshes keep to. Before building, the owner
 chooses among the three rows (and the 8-bit coding can be tuned: the prototype stores 16 bits).
 
-**Frame time and memory.** On the build Mac (M4, headless Chrome on Metal, the 500 × 360 CSS view at
+**Frame time and memory** (the first prototype's). On the build Mac (M4, headless Chrome on Metal, the 500 × 360 CSS view at
 2×, the comparison mode's few layers): the field's draw took 0.15–0.3 ms of GPU a frame (its timer
 query, which on Metal also counts work queued before it, so an upper bound; a few rounds up to
 1.5 ms), drawing 1–9 tiles; whole frames, each waited for, 1–2.5 ms with it and 0.9–2.4 without,
@@ -1112,7 +1107,7 @@ Tokyo at z13 drew 0.80 M vertices (12 MB of buffers) in this view, at z12 (the z
 app's 1200 × 736 views hold ~5× that, Tokyo near B1's 2.9 M at z13.9 (§4.6). Not yet measured: the
 owner's Mac in a window at 120 Hz, and the iPad (task #114's budget).
 
-**Checked against full detail** (the prototype in `?bldcmp`: nothing but the buildings, the 3D
+**Checked against full detail, the first prototype** (in `?bldcmp`: nothing but the buildings, the 3D
 terrain, land, water and the hill-shading; buildings #b9c4d4 for contrast; 500 × 360 CSS px at 2×, on
 the globe, straight down, in a headless Chrome on the build Mac's GPU, `tools/bldcheck`). The
 reference is the same page and camera drawing the z14 meshes (every building) at 4 × the pixel
@@ -1173,11 +1168,96 @@ Contact sheets per place (reference, prototype, today's map, difference) are in 
 - The prototype's own shortcuts: tiles by the map's zoom (not matched to the meshes' tiles), no
   tile cache bound, plain colour only, 16-bit tiles, CPU terrain sampling on the idle.
 
-**Open for the owner:** the hand-over to full meshes at zoom 13 (crisp houses, 4× the buildings at 13)
-or 14 (cheaper, softer); the texel at one device pixel or two (4× less data, visibly softer at 2×);
-skyline meshes below zoom 11 (towers standing up in tilted far views) or the field alone; mixing in
-linear light (task #123's definition; a frame copy) or as stored values (darker than full detail
-shrunk).
+**The owner's decisions (10 Oct):** every building as a mesh from **zoom 14**; field texels of **one
+device pixel**; **the field alone** below zoom 11 (no skyline meshes); mixing in **linear light**;
+storage **as designed** (every level). Then three checks and nine cases before building (below),
+which changed the design: **the second prototype** replaces the first's look and storage.
+
+#### 4.8.1 The second prototype (10 Oct): checks A–C and the nine cases
+
+What the first prototype got wrong, and what replaced it:
+- **A, the CN Tower at a glancing angle** (Toronto's 6/17/23, pitch 80°, looking north from the
+  lake, z12 down to z8). The first field painted every building's walls on the ground at its foot,
+  with one mean height a texel: the tower and the downtown towers smeared into a bright slab and a
+  cone. Full detail shows the tower as a thin spike to about **z9** (its shaft, 20–40 m across, about
+  half a device pixel there at 2×; at z8 a quarter). *Fix:* the field is now a **layer of buildings
+  the view looks through**, ray-marched per pixel (each tile a box from the ground to its tallest
+  roof, the ray marched from where it enters, as in bldfield.ts's header: walls entered at
+  w ÷ H ÷ π a metre of travel below the roofs' height H, a roof met with probability f where the
+  ray comes down through H, the nearest surface winning); and the field keeps **five height
+  classes** a texel (tops under 8 m, 8–20, 20–40, 40–100, 100 m and up: f, w and v of each), so a
+  tower keeps its own height in a texel of houses instead of being averaged into them. Read at the
+  pixel's own footprint (not a step's length, which smeared a tower into a translucent cone). The
+  tower now stands as a spike at z9–12 as in full detail, the downtown skyline with it; decision 3
+  stands with this field. (A bug found on the way: overlapping parts summed their tops into v while
+  f was clamped, so a class's mean top came out 898 m at the tower; v is now scaled with the clamp.)
+- **B, the camera in the terrain** (`chamonix-t12`): the harness framed views at a sea-level pivot,
+  so over 3× terrain the camera sat in the hill (MapLibre's rescue left it at the ground: the grey
+  slab, the stretched texels). The harness now frames as the app does (`camera3d.frame`) and keeps
+  the camera 300 m over the ground under it. With the camera placed, the remaining slab in glancing
+  views over steep ground was the first field's (walls painted at their foot); the ray-marched one
+  matches full detail on Chamonix's and Annecy's slopes (σ8 |ΔL*| 0.6–1.2).
+  **Found, for the owner:** on the globe the map's zoom is measured from a sea-level pivot, and
+  MapLibre takes the meshes' tiles by it. Over high ground the view is much closer than its zoom:
+  Chamonix framed at a visual z15 has map zoom 12.8, so **today's map draws its z12 tiles there (the
+  towers only), nearly no buildings in a mountain town until two zooms further in**; Annecy (450 m)
+  loses about one zoom. The field follows the meshes' tiles, so it is magnified there too. A fix in
+  the tile cover (zoom from the distance to the ground, as camera3d's cover samples do for tilted
+  views) is its own task.
+- **C, translucent buildings at a tilt** (opacity 0.5 and 0.3, pitch 0/45/70°, Tokyo and Annecy,
+  z11–13). MapLibre draws translucent extrusions in two passes, depth then colour with the depth
+  equal: a pixel shows the nearest surface alone, blended once at the opacity, never one building
+  through another. The field's model is the same (the nearest hit, blended once), so no
+  multi-surface transmittance is wanted: σ8 |ΔL*| 0.1–1.8 against full detail at those opacities.
+  The seam at the hand-over (z13, a mesh in front of field buildings showed them through at 1 − α:
+  first +5 L*) is gone: the field is drawn after the meshes and its march stops at the frame's depth
+  (the terrain's and the meshes', copied once a frame), so a mesh hides the field behind it (+0.5).
+
+The nine cases:
+1. **Colour modes:** colour by height from each class's mean top through a lookup the app fills from
+   its own scale (range, palette, equalise, fades, highlight): against full detail coloured the same
+   way, ΔE (σ8, CIELAB) 0.5–1.9 (Tokyo, Manhattan, Annecy; straight down and 60°). Five classes are
+   enough for a smooth scale; a highlight's threshold falls at a class's mean, not at each building.
+   Colour by *where the height comes from* needs the area of each source class (6 more f planes, or
+   the dominant source a texel); not prototyped.
+2. **Highlight, heritage tint:** the highlight is colour by height (above). The heritage tint is
+   decided at runtime (the overlay's points and filters), so the field can't bake it: proposed, a
+   short list a tile of the buildings holding a heritage site (site id, its texel, f, w, H) drawn
+   tinted when the site shows; not prototyped. Far out the sites' dots already mark them.
+3. **Height scale, flat:** the scale multiplies H and w at render time (u_hk), as the meshes'; flat
+   mode is the march with no walls (f alone); not checked against images.
+4. **8-bit storage:** f as √f (a hamlet's 0.002 is 11 of 255, not 0), w as log2(1 + w) to 4096 (a
+   tower's edge texel holds 100× its area in walls; the first coding clipped at 32), each class's
+   mean top linearly within its class's range: rendered from 8-bit tiles against 16-bit ones, ΔE
+   ≤ 0.05 (sparse rural Annecy, dense Annecy, colour by height). Dense Manhattan and sparse Gunma
+   match full detail within σ8 0.5–1.0 L*.
+5. **High latitudes:** densities per ground area (each texel's area at its own latitude): Fairbanks
+   (64.8° N) z9/z11/tilted, Kirkwall (59°), Iqaluit (63.8°): σ8 |ΔL*| 0.05–0.65.
+6. **Lighting:** the light's azimuth moved 90° → 225° and the bearing turned: full detail darkens by
+   1.16 L*, the field by 1.16 L*. (A sign error found: MapLibre's wall normals face into the ring as
+   the tiles wind it; the field lit its walls from the wrong side, a gradient across the view.)
+7. **Temporal stability** (10-frame pans of 1/8 CSS px a frame, and zoom sweeps across the hand-overs;
+   frame-to-frame |ΔL*| after a σ 1 px blur): the field flickers less than full detail at z9–10
+   (0.4–0.6 against 0.8), as much at z12 (1.1, the z12 towers' specks the same in both). The
+   hand-overs step: +0.5 L* at zoom 12.0 and +0.8 at 13.0 in the view's mean, where full detail
+   changes smoothly — left for the build (the complement levels' sets against MapLibre's tiles).
+8. **The globe at z3–5 and the antimeridian:** the globe at z4 matches the field three zooms closer;
+   the cover now takes tiles on both sides of ±180° (MapLibre gives longitudes past 180 there); the
+   Aleutians' few buildings show on either side. The fields are per z6 tile, so nothing crosses it.
+9. **Steep terrain:** as B.
+
+**What this changes, for the owner** (before the build):
+- **Storage, materially.** Five classes instead of one and level 14 (decisions 1 and 2 together: the
+  field over the z13 meshes at zoom 13–14 needs a level finer than 13 for one-device-pixel texels).
+  Encoded per class present (an RGB WebP each: f, w, H), Annecy's 6/33/22 measures ~290 MB (its
+  meshes 79 MB; the first design 110 MB), level 14 alone ~160 MB of it; Kantō estimated ~1.1 GB
+  (meshes 413 MB). For the coverage, after the meshes' 4.6–6.9 GB: **~13–25 GB more as decided**,
+  ~6–11 GB without level 14 (its texels two device pixels at zoom 13–14, softer there), less again
+  without each class's H at the finest levels (its class's middle instead: −15–30 %).
+- **Rendering:** a ray march a pixel (160 steps, four texture reads each, the depth copy and a frame
+  copy): to be measured on the iPad; the first field's 0.15–0.3 ms isn't this one's.
+- Known: the field is 1–2 L* darker than full detail in tilted dense views (the random-overlap model
+  against streets of buildings in rows), 0.5–1.5 at z11–13 straight down.
 
 ## 5. Phases, risks, questions, decisions
 

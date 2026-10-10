@@ -1,0 +1,77 @@
+[
+{
+"id": "chamonix-t12",
+"z": 12,
+"lat": 45.915,
+"lon": 6.86,
+"pitch": 65,
+"bearing": 60,
+"boxKm": 1.5
+},
+{
+"id": "chamonix-t12-wide",
+"z": 12,
+"lat": 45.915,
+"lon": 6.86,
+"pitch": 65,
+"bearing": 60,
+"maxRefK": 0
+},
+{
+"id": "chamonix-t13",
+"z": 13,
+"lat": 45.9237,
+"lon": 6.8694,
+"pitch": 75,
+"bearing": 150,
+"boxKm": 1.2
+},
+{
+"id": "chamonix-t13-wide",
+"z": 13,
+"lat": 45.9237,
+"lon": 6.8694,
+"pitch": 75,
+"bearing": 150,
+"maxRefK": 0
+},
+{
+"id": "annecy-t12",
+"z": 12,
+"lat": 45.899,
+"lon": 6.129,
+"pitch": 70,
+"bearing": 0,
+"boxKm": 1.5
+},
+{
+"id": "annecy-t13",
+"z": 13,
+"lat": 45.899,
+"lon": 6.129,
+"pitch": 75,
+"bearing": 300,
+"boxKm": 1.2
+},
+{
+"id": "annecy-t11",
+"z": 11,
+"lat": 45.87,
+"lon": 6.13,
+"pitch": 55,
+"bearing": 0,
+"boxKm": 2.5
+},
+{
+"id": "annecy-z15",
+"z": 15,
+"lat": 45.899,
+"lon": 6.129
+},
+{
+"id": "chamonix-z15",
+"z": 15,
+"lat": 45.9237,
+"lon": 6.8694
+}
+]

@@ -1,0 +1,9 @@
+[
+{"id": "hcol-tokyo-z11", "z": 11, "lat": 35.68, "lon": 139.75, "bcol": "height"},
+{"id": "hcol-tokyo-z9", "z": 9, "lat": 35.68, "lon": 139.75, "bcol": "height"},
+{"id": "hcol-tokyo-p60", "z": 11, "lat": 35.68, "lon": 139.75, "pitch": 60, "bearing": 30, "bcol": "height", "boxKm": 3},
+{"id": "hcol-tokyo-z12-p45", "z": 12, "lat": 35.68, "lon": 139.75, "pitch": 45, "bearing": 30, "bcol": "height", "boxKm": 1.5},
+{"id": "hcol-annecy-z11", "z": 11, "lat": 45.899, "lon": 6.129, "bcol": "height"},
+{"id": "hcol-manhattan-z11", "z": 11, "lat": 40.758, "lon": -73.985, "bcol": "height"},
+{"id": "hcol-manhattan-p60", "z": 11, "lat": 40.74, "lon": -73.99, "pitch": 60, "bearing": 30, "bcol": "height", "boxKm": 4}
+]

@@ -53,3 +53,16 @@ if __name__ == '__main__':
     print(f'{vid:16s} {ma:>10s} vs {mb:<10s}', ' '.join(f'{k} {v:.2f}' for k, v in s.items()))
     if len(sys.argv) > 5:
         diffimg(ims[0], ims[1], sys.argv[5])
+
+def lab(rgb_lin):
+    M = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
+    xyz = rgb_lin @ M.T / np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > 216 / 24389, np.cbrt(xyz), (24389 / 27 * xyz + 16) / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], -1)
+
+def delta_e(a, b, s=8.0, margin=16):
+    lin = lambda x: np.where(x / 255 <= 0.04045, x / 255 / 12.92, ((x / 255 + 0.055) / 1.055) ** 2.4)
+    A = np.stack([blur(lin(a[..., c].astype(float)), s) for c in range(3)], -1)
+    B = np.stack([blur(lin(b[..., c].astype(float)), s) for c in range(3)], -1)
+    d = np.linalg.norm(lab(A) - lab(B), axis=-1)[margin:-margin, margin:-margin]
+    return d.mean(), np.percentile(d, 95)

@@ -1,0 +1,8 @@
+[
+{"id": "seq-tokyo-z9-pan", "z": 9, "lat": 35.68, "lon": 139.75, "seq": {"n": 10, "dx": 0.125, "dz": 0}, "maxRefK": 5},
+{"id": "seq-tokyo-z10-pan", "z": 10, "lat": 35.68, "lon": 139.75, "seq": {"n": 10, "dx": 0.125, "dz": 0}},
+{"id": "seq-tokyo-z12-pan", "z": 12, "lat": 35.68, "lon": 139.75, "seq": {"n": 10, "dx": 0.125, "dz": 0}},
+{"id": "seq-tokyo-handover-12", "z": 11.8, "lat": 35.68, "lon": 139.75, "seq": {"n": 11, "dx": 0, "dz": 0.04}},
+{"id": "seq-tokyo-handover-13", "z": 12.8, "lat": 35.68, "lon": 139.75, "seq": {"n": 11, "dx": 0, "dz": 0.04}},
+{"id": "seq-cn-z10-pan", "z": 10, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "boxKm": 1.0, "seq": {"n": 10, "dx": 0.125, "dz": 0}}
+]

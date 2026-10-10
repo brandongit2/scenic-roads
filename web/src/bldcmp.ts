@@ -11,9 +11,24 @@
 import type { Map as MLMap, LayerSpecification, SourceSpecification } from 'maplibre-gl';
 import type { AppState } from './state';
 import type { FieldLayer } from './bldfield';
+import { paletteFn } from './palettes';
 
 const q = new URLSearchParams(location.search);
-export const CMP = q.has('bldcmp') ? { dpr: Number(q.get('dpr')) || 0, colour: q.get('bc') ?? '#b9c4d4' } : null;
+export const CMP = q.has('bldcmp') ? { dpr: Number(q.get('dpr')) || 0, colour: q.get('bc') ?? '#b9c4d4', byHeight: q.get('bcol') === 'height' } : null;
+
+/** Colour by height in the comparison (`bcol=height`): viridis over 0–60 m, the same for the meshes
+ * (an expression on their height) and the field (its lookup), standing in for the app's scale. */
+const HMAX = 60;
+const heightRgb = (h: number) => paletteFn('viridis')(Math.max(0, Math.min(1, h / HMAX))).map((c) => Math.round(Math.max(0, Math.min(1, c)) * 255));
+const heightExpr = () => ['interpolate', ['linear'], ['/', ['coalesce', ['get', 'h'], 0], 10], ...Array.from({ length: 33 }, (_, i) => {
+  const h = (HMAX * i) / 32;
+  return [h, `rgb(${heightRgb(h).join(',')})`];
+}).flat()];
+export function heightLut(n: number, maxM: number): Uint8Array {
+  const a = new Uint8Array(n * 3);
+  for (let i = 0; i < n; i++) a.set(heightRgb((maxM * i) / (n - 1)), i * 3);
+  return a;
+}
 
 const KEEP = new Set(['bg', 'water', 'hillshade', 'buildings', 'buildings-field']);
 /** The meshes hidden (a reference's ground). */
@@ -47,7 +62,8 @@ function enforce(map: MLMap) {
     const keep = KEEP.has(l.id) && !(hideMeshes && l.id === 'buildings');
     if ((map.getLayoutProperty(l.id, 'visibility') ?? 'visible') !== (keep ? 'visible' : 'none')) map.setLayoutProperty(l.id, 'visibility', keep ? 'visible' : 'none');
   }
-  if (map.getLayer('buildings') && map.getPaintProperty('buildings', 'fill-extrusion-color') !== CMP!.colour) map.setPaintProperty('buildings', 'fill-extrusion-color', CMP!.colour);
+  const want = CMP!.byHeight ? heightExpr() : CMP!.colour;
+  if (map.getLayer('buildings') && JSON.stringify(map.getPaintProperty('buildings', 'fill-extrusion-color')) !== JSON.stringify(want)) map.setPaintProperty('buildings', 'fill-extrusion-color', want as never);
   if (map.getSky()) map.setSky(undefined as never);
 }
 
@@ -111,6 +127,7 @@ function shrink(w: number, h: number, px: Uint8Array | Float32Array, ss: number)
 }
 
 export function installCmp(map: MLMap, field: FieldLayer | null) {
+  if (field && CMP?.byHeight) field.heightLut = heightLut(2048, 700);
   map.on('styledata', () => enforce(map));
   const dpr = map.getPixelRatio();
   /** The buildings' source and layers as the app added them. */
@@ -130,12 +147,18 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
     }
     for (const l of orig.layers) if (map.getLayer(l.spec.id)) map.removeLayer(l.spec.id);
     map.removeSource('bld');
-    const src = { ...(orig.src as object), ...(bounds ? { bounds } : {}) } as SourceSpecification;
+    // (A reference's source holds z14 alone: MapLibre otherwise fills a tile it doesn't load, out of
+    // the bounds, from its z12–13 parent, the tall buildings drawn again.)
+    const src = { ...(orig.src as object), ...(bounds ? { bounds } : {}), ...(k > 0 ? { minzoom: 14 } : {}) } as SourceSpecification;
     map.addSource('bld', src);
     // (MapLibre refuses a vector source's tileSize other than 512 when made; its cover takes it after.)
     (map.getSource('bld') as unknown as { tileSize: number }).tileSize = 512 >> k;
     // (A reference's tiles all at one zoom: MapLibre otherwise takes coarser ones away from the centre.)
-    if (k > 0) (map as unknown as { setSourceTileLodParams(a: number, b: number, id: string): void }).setSourceTileLodParams(1, 1, 'bld');
+    if (k > 0) {
+      // (the app's covers.ts and MapLibre's own would take coarser tiles away from the centre, which
+      // a reference's z14-only source doesn't have: one zoom everywhere)
+      (map.getSource('bld') as unknown as { calculateTileZoom: (z: number) => number }).calculateTileZoom = (z: number) => z;
+    }
     // (the layers' least zoom as much lower: their tiles are for zooms k closer)
     for (const l of orig.layers) map.addLayer({ ...l.spec, minzoom: Math.max(0, (l.spec.minzoom ?? 0) - k) } as LayerSpecification, l.before && map.getLayer(l.before) ? l.before : undefined);
     cur = sig;
@@ -160,20 +183,25 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
     },
     camera: () => ({ ...map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch(), pixelRatio: map.getPixelRatio() }),
     /** The view drawn (see the top). */
-    shot: async (o: { field: boolean; k: number; ss: number; strips?: number; buildings?: boolean; fieldMax?: number; linear?: boolean }) => {
+    shot: async (o: { field: boolean; k: number; ss: number; strips?: number; buildings?: boolean; fieldMax?: number; linear?: boolean; box?: [number, number, number, number]; fbias?: number; opacity?: number; wallSign?: number }) => {
       const strips = o.strips ?? 1;
       if (field) {
         field.on = o.field;
-        field.levelBias = o.k;
+        field.levelBias = o.fbias ?? o.k;
         field.maxZoom = o.fieldMax ?? 14;
         field.linear = o.linear ?? true;
+        field.box = o.box ?? null;
+        field.wallSign = o.wallSign ?? -1;
       }
       map.setPixelRatio(dpr * o.ss);
+      const op = o.opacity ?? 0.85;
+      if (field) field.opacity = op;
       const vis = (on: boolean) => {
         hideMeshes = !on;
         enforce(map);
       };
-      resource(o.k, null);
+      resource(o.k, o.box ?? null);
+      map.setPaintProperty('buildings', 'fill-extrusion-opacity', op);
       vis(o.buildings !== false && strips === 1);
       if (field && strips > 1) field.on = false;
       await api.ready();
@@ -186,21 +214,23 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
       const ground = pixels(map);
       const acc = new Float32Array(ground.px.length);
       for (let i = 0; i < acc.length; i++) acc[i] = ground.px[i];
-      const b = map.getBounds();
+      const vb = map.getBounds();
+      const b = o.box ? { getWest: () => o.box![0], getSouth: () => o.box![1], getEast: () => o.box![2], getNorth: () => o.box![3] } : vb;
       // Strips of whole z14 columns (a tile meeting two strips' bounds would be drawn in both).
       const n14 = 2 ** 14;
       const lon2x = (lon: number) => ((lon + 180) / 360) * n14;
       const x2lon = (x: number) => (x / n14) * 360 - 180;
-      const m = (b.getEast() - b.getWest()) * 0.05;
+      const m = o.box ? 0 : (b.getEast() - b.getWest()) * 0.05;
       const xa = Math.floor(lon2x(b.getWest() - m)), xb = Math.floor(lon2x(b.getEast() + m));
       const per = Math.ceil((xb - xa + 1) / strips);
-      const dy = 0.05 * (b.getNorth() - b.getSouth());
+      const dy = o.box ? 0 : 0.05 * (b.getNorth() - b.getSouth());
       for (let s = 0; s < strips; s++) {
         const t0 = xa + s * per, t1 = Math.min(xb, t0 + per - 1);
         if (t0 > t1) break;
         const eps = 1e-7;
         resource(o.k, [x2lon(t0) + eps, Math.max(-85, b.getSouth() - dy), x2lon(t1 + 1) - eps, Math.min(85, b.getNorth() + dy)]);
         vis(true);
+        map.setPaintProperty('buildings', 'fill-extrusion-opacity', op);
         await api.ready();
         const p = pixels(map);
         for (let i = 0; i < acc.length; i++) acc[i] += p.px[i] - ground.px[i];
@@ -208,11 +238,36 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
       resource(0, null);
       return { ...shrink(ground.w, ground.h, acc, o.ss), tiles: 0 };
     },
+    /** The view framed as the app frames a place (camera3d.frame: the target at the centre from the
+     * distance the zoom gives over flat ground), the camera kept at least `margin` m above the
+     * terrain under it (farther out by quarter zooms while it isn't). */
+    place: async (v: { z: number; lat: number; lon: number; pitch?: number; bearing?: number; margin?: number }) => {
+      const cam3d = (window as unknown as { __app?: { cam3d: { frame(m: MLMap, ll: unknown, e: number, z: number, p: number, b: number): Parameters<MLMap['jumpTo']>[0] } } }).__app?.cam3d;
+      if (!cam3d) throw new Error('no camera3d');
+      const ll = { lng: v.lon, lat: v.lat } as unknown as Parameters<typeof cam3d.frame>[1];
+      const tr = (map as unknown as { _camera: { transform: { getCameraAltitude(): number; getCameraLngLat(): { lng: number; lat: number } } } })._camera.transform;
+      let z = v.z, elev = 0, clear = 0;
+      for (let i = 0; i < 24; i++) {
+        elev = map.queryTerrainElevation([v.lon, v.lat]) ?? 0;
+        map.jumpTo(cam3d.frame(map, ll, elev, z, v.pitch ?? 0, v.bearing ?? 0));
+        await api.ready();
+        const ground = map.queryTerrainElevation(tr.getCameraLngLat()) ?? 0;
+        clear = tr.getCameraAltitude() - ground;
+        if (clear >= (v.margin ?? 300) && Math.abs((map.queryTerrainElevation([v.lon, v.lat]) ?? 0) - elev) < 1) break;
+        if (clear < (v.margin ?? 300)) z -= 0.25;
+      }
+      return { z, elev, clear, mapZoom: map.getZoom(), camAlt: tr.getCameraAltitude() };
+    },
     /** Back to the app's own: its source, the field as drawn, the pixel ratio. */
     reset: async () => {
       resource(0, null);
       hideMeshes = false;
       enforce(map);
+      map.setPaintProperty('buildings', 'fill-extrusion-opacity', 0.85);
+      if (field) {
+        field.opacity = 0.85;
+        field.box = null;
+      }
       if (field) {
         field.on = true;
         field.levelBias = 0;
