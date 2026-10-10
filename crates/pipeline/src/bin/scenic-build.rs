@@ -253,11 +253,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let extract = PathBuf::from(opt(&args, "--extract").unwrap_or_else(|| "target/release/extract".into()));
             let planetiler = PathBuf::from(opt(&args, "--planetiler").unwrap_or_else(|| "tools/planetiler.jar".into()));
             pipeline::osmpass::check_tools(&extract, &planetiler)?;
-            // Room first: caches the pass makes worthless or can refill (the pack cache).
+            // Room first: caches the pass makes worthless or can refill (the pack cache), through
+            // their accessor, which passes over every file another job holds (store::cachefile).
             for dir in args.windows(2).filter(|w| w[0] == "--clear").map(|w| PathBuf::from(&w[1])) {
                 if dir.exists() {
-                    eprintln!("osm-pass: clearing {}", dir.display());
-                    std::fs::remove_dir_all(&dir)?;
+                    let t = store::cachefile::remove_tree(&dir);
+                    eprintln!("osm-pass: cleared {}: {} MB freed, {} MB left (held by another job)", dir.display(), t.freed >> 20, t.left >> 20);
                 }
             }
             pipeline::osmpass::run_pass(&mut out, &planet, &date, &scratch, &extract, &planetiler)?

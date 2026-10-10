@@ -1,6 +1,8 @@
 //! Removing replaced files from the NAS (docs/plan.md §3, GC): every content-named file that
 //! neither the newest catalog, nor a catalog of the last `keep_days`, nor the build's manifest
+//! nor (with the pool) its newest records or a journal entry they don't reflect yet (`unmerged`)
 //! references, and that is itself older than `keep_days`; abandoned `.tmp` files; old catalogs.
+//! So it runs beside other jobs: a job's files are young, or named by its entry once it's written.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
 //! 2026-10-02), and the build Mac can't use SSH unattended (1Password asks each session).
@@ -40,12 +42,85 @@ pub struct Report {
     pub inputs_removed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs_skipped: Option<String>,
+    /// The pool's journal entries its records don't reflect yet, whose files were kept.
+    pub unmerged: usize,
+    /// What it passed over and why (the agent's status says them as the job's note).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     pub dry_run: bool,
 }
 
 /// Folders never swept, whatever a catalog says (`sources/` but its retired passes and the gate's
 /// checked copies, `sources/inputs/`, swept on their own rules).
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
+
+/// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
+/// newest records' manifest and pending uploads (today's files may lag them a save), and every
+/// journal entry those records don't reflect yet, refused ones aside: a hand-off not merged yet
+/// (its member away for weeks, its entry written but untold) keeps the files it names, its changes
+/// and its uploads, so GC may run beside other jobs. Empty with the pool never on (no journal); an
+/// error when any of them can't be read now, an entry not whole yet among them: GC removes nothing
+/// then.
+#[derive(Debug, Default)]
+pub struct Unmerged {
+    /// Content names, of the records and of the entries not merged.
+    pub files: BTreeSet<String>,
+    /// The (logical, content) names of those entries' changes, for the sweeps that read what a
+    /// file names (the gate's indexes).
+    pub changes: Vec<(String, String)>,
+    /// The newest records' manifest (logical, content), which today's file may lag a save.
+    pub records: Vec<(String, String)>,
+    /// How many entries weren't merged.
+    pub entries: usize,
+    /// Entries of a day before yesterday that still don't read whole (cut short on the share for
+    /// good: their lead refuses them, their work done again), passed over, said as warnings.
+    pub short: Vec<String>,
+}
+
+/// An entry not whole yet of yesterday or today holds GC back (it may be being written); one of an
+/// earlier day is passed over with a warning (its lead refuses one never whole after an hour).
+const SHORT_DAYS: u64 = 1;
+
+pub fn unmerged(root: &Path) -> Result<Unmerged> {
+    use crate::pool::{journal, records::Records, term};
+    let mut u = Unmerged::default();
+    match std::fs::metadata(root.join(journal::DIR)) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(u),
+        Err(e) => return Err(e).context("the journal"),
+    }
+    let nas = crate::pool::nas::Share::new(root);
+    let cur = term::current(&nas).context("the current term")?;
+    let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
+    u.files.extend(r.manifest.values().cloned());
+    u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
+    u.files.extend(r.pending.keys().cloned());
+    // (The days before the records' horizon are forgotten, every entry of them merged: not listed.)
+    let since = (!r.horizon.is_empty()).then_some(r.horizon.as_str());
+    let recent = journal::day(crate::agent::jobs::now_s().saturating_sub(SHORT_DAYS * 86400)).unwrap_or_default();
+    for key in journal::list(&nas, since).context("the journal")? {
+        if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
+            continue;
+        }
+        match journal::read(&nas, &key).with_context(|| format!("journal entry {key}"))? {
+            journal::Read::Entry(e) => {
+                u.entries += 1;
+                u.files.extend(e.handoff.pending.keys().cloned());
+                for (l, c) in e.handoff.changes {
+                    if let Some(c) = c {
+                        u.files.insert(c.clone());
+                        u.changes.push((l, c));
+                    }
+                }
+            }
+            journal::Read::Short if key.as_str() < recent.as_str() => u.short.push(key),
+            journal::Read::Short => anyhow::bail!("journal entry {key} isn't whole yet"),
+            // (Gone, or damaged: its lead refuses it, its work done again.)
+            journal::Read::Missing | journal::Read::Damaged(_) => {}
+        }
+    }
+    Ok(u)
+}
 
 /// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records name (`manifest`,
 /// today's file, and with the pool on the newest records' own manifest, which today's may lag:
@@ -58,31 +133,14 @@ const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "ap
 /// stays restorable for `within` and a step reading the version it planned with finds its files.
 /// Units' names may be nested (`timetables/gtfs`): every folder under `sources/inputs/` is walked.
 /// An error when any of them can't be read now: nothing there is swept then.
-pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>, within: Duration, now: SystemTime) -> Result<BTreeSet<String>> {
-    use crate::pool::{journal, records::Records, term};
+pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>, um: &Unmerged, within: Duration, now: SystemTime) -> Result<BTreeSet<String>> {
     let mut keep: BTreeSet<String> = BTreeSet::new();
-    let mut named: Vec<(String, String)> = manifest.iter().filter(|(_, c)| c.starts_with("sources/inputs/")).map(|(l, c)| (l.clone(), c.clone())).collect();
-    // The journal's entries not merged yet (with the pool on).
-    match std::fs::metadata(root.join(journal::DIR)) {
-        Ok(_) => {
-            let nas = crate::pool::nas::Share::new(root);
-            let cur = term::current(&nas).context("the current term")?;
-            let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
-            named.extend(r.manifest.iter().filter(|(_, c)| c.starts_with("sources/inputs/")).map(|(l, c)| (l.clone(), c.clone())));
-            for key in journal::list(&nas, None).context("the journal")? {
-                if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
-                    continue;
-                }
-                match journal::read(&nas, &key)? {
-                    journal::Read::Entry(e) => named.extend(e.handoff.changes.into_iter().filter_map(|(l, c)| c.filter(|c| c.starts_with("sources/inputs/")).map(|c| (l, c)))),
-                    journal::Read::Short => anyhow::bail!("journal entry {key} isn't whole yet"),
-                    journal::Read::Missing | journal::Read::Damaged(_) => {}
-                }
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("the journal"),
-    }
+    let ours = |(l, c): &(String, String)| c.starts_with("sources/inputs/").then(|| (l.clone(), c.clone()));
+    // Today's manifest, the newest records' and the journal's entries not merged yet (with the
+    // pool on: `unmerged`, read once for the whole sweep).
+    let mut named: Vec<(String, String)> = manifest.iter().map(|(l, c)| (l.clone(), c.clone())).filter_map(|p| ours(&p)).collect();
+    named.extend(um.records.iter().filter_map(ours));
+    named.extend(um.changes.iter().filter_map(ours));
     let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
         keep.extend(crate::inputs::read_index(root, c)?.files.into_values().map(|f| f.file));
         keep.insert(c.to_string());
@@ -168,8 +226,20 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let _p = phase("build manifest read", Class::NasRead);
         crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
     };
+    // The pool's newest records and its journal's entries not merged yet (unreadable: nothing
+    // removed).
+    let um = {
+        let _p = phase("the journal read", Class::NasRead);
+        unmerged(root).context("the pool's records and journal")?
+    };
+    rep.unmerged = um.entries;
+    for k in &um.short {
+        let w = format!("journal entry {k} still isn't whole a day on (cut short on the share): passed over, its lead refuses it and its work is done again");
+        eprintln!("gc: warning: {w}");
+        rep.warnings.push(w);
+    }
     // (What the gate's copies are kept by, read before the manifest is given up.)
-    let inputs_keep = match inputs_kept(root, &m, keep, now) {
+    let inputs_keep = match inputs_kept(root, &m, &um, keep, now) {
         Ok(k) => Some(k),
         Err(e) => {
             rep.inputs_skipped = Some(format!("{e:#}"));
@@ -177,6 +247,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         }
     };
     referenced.extend(m.into_values());
+    referenced.extend(um.files);
     rep.referenced = referenced.len();
     let tops: BTreeSet<String> = referenced.iter().filter_map(|f| f.split('/').next()).filter(|t| !NEVER.contains(t)).map(str::to_string).collect();
 
@@ -210,7 +281,9 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 if store::naming::parse_content_name(&rel).is_none() || referenced.contains(&rel) {
                     continue;
                 }
-                if !old(mtime) {
+                // (Its time looked at again right before it goes: a job reusing it by name touches
+                // it, out::Out::put_file.)
+                if !old(mtime) || !still_old(&p, &old) {
                     rep.young += 1;
                     continue;
                 }
@@ -248,7 +321,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 if store::naming::parse_content_name(&rel).is_none() || keep.contains(&rel) || referenced.contains(&rel) {
                     continue;
                 }
-                if !old(mtime) {
+                if !old(mtime) || !still_old(&p, &old) {
                     rep.young += 1;
                     continue;
                 }
@@ -306,7 +379,7 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
             rep.files_seen += 1;
             let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
             let named = store::naming::parse_content_name(&rel).is_some();
-            let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) } else { plain_due };
+            let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) && still_old(&p, old) } else { plain_due };
             if due {
                 remove(&p, dry_run)?;
                 crate::timings::count(md.len(), 1);
@@ -328,6 +401,13 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
     }
     Ok(())
 }
+
+/// Whether file `p` is still old by a fresh look at its time (not the listing's: a job reusing a
+/// content-named file touches it, and GC's listing may be minutes old by the time it gets there).
+fn still_old(p: &Path, old: &dyn Fn(SystemTime) -> bool) -> bool {
+    std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(old)
+}
+
 
 fn remove(p: &Path, dry_run: bool) -> Result<()> {
     if dry_run {
@@ -535,6 +615,66 @@ mod tests {
         let r = run(root, 14, false).unwrap();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
+    }
+
+    /// A journal entry the newest records don't reflect yet keeps the files it names (its changes
+    /// and its uploads), however old; once merged (or refused) it keeps nothing of its own; an
+    /// entry not whole yet keeps GC from removing anything.
+    #[test]
+    fn an_unmerged_entry_keeps_its_files() {
+        use crate::pool::journal::{self, Entry, LeaseId};
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let put = |rel: &str, days: u64| {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            age(&p, days);
+        };
+        let (a, b, c) = ("layers/roads/hi/6-1-2.1111111111111111.pack", "layers/roads/hi/6-1-3.2222222222222222.pack", "layers/roads/hi/6-1-4.3333333333333333.pack");
+        for f in [a, b, c] {
+            put(f, 60);
+        }
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.files.insert("layers/roads/hi/6-9-9".into(), store::catalog::FileRef { file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(), ..Default::default() });
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
+        // An entry of a member away three weeks, written, never merged: its change and its upload.
+        let nas = crate::pool::nas::Share::new(root);
+        let mut h = crate::handoff::Handoff::default();
+        h.changes.insert("layers/roads/hi/6-1-2".into(), Some(a.into()));
+        h.pending.insert(b.into(), "0".repeat(64));
+        let e = Entry { member: "m-0000000000000002".into(), lease: LeaseId { term: 1, n: 4 }, step: "pack".into(), handoff: h, at: 1_791_500_000 };
+        journal::write(&nas, &e).unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert_eq!((r.unmerged, r.removed), (1, 1), "{r:?}");
+        assert!(root.join(a).exists() && root.join(b).exists() && !root.join(c).exists());
+        // Merged (term 1's records reflect it, naming nothing of it: replaced since): its files go.
+        let me = crate::pool::Member { id: "m-0000000000000001".into(), host: "a".into(), app: "development".into() };
+        fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
+        fs::write(root.join("state/build/pending.json"), "{}").unwrap();
+        crate::pool::term::bootstrap(&nas, &me, 1_791_500_000, false).unwrap().unwrap();
+        let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
+        rec.reflected.insert(e.key().unwrap());
+        rec.save(&nas).unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
+        // An entry not whole yet, of today: nothing removed.
+        put(c, 60);
+        let now = crate::agent::jobs::now_s();
+        let short = root.join(journal::DIR).join(journal::day(now).unwrap()).join("1-5.json");
+        fs::create_dir_all(short.parent().unwrap()).unwrap();
+        fs::write(&short, b"{\"member\": ").unwrap();
+        assert!(run(root, 14, false).is_err());
+        assert!(root.join(c).exists());
+        // One of three days ago, still not whole (cut short for good): passed over, said.
+        fs::remove_file(&short).unwrap();
+        let old = root.join(journal::DIR).join(journal::day(now - 3 * 86400).unwrap()).join("1-6.json");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, b"{\"member\": ").unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert!(r.warnings.len() == 1 && r.warnings[0].contains("isn't whole a day on") && r.removed == 1, "{r:?}");
     }
 
     #[test]
