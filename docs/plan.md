@@ -2644,7 +2644,8 @@ At each phase's end an Opus agent reviews the work against this plan.
      pool.md §12);
    - the steps' write-sets (`agent::steps`, phase 4's first batch) are checked at merge and what lies
      outside them reported, not refused: an entry a step's bug sends outside its write-set is merged
-     all the same until the fifth batch enforces them (pool.md §7.3, §12);
+     all the same until a later batch derives them from the code that writes and enforces them
+     (pool.md §7.3, §7.7, §12);
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents
@@ -2791,11 +2792,24 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 ## 12. Changes
 
+**What a step needs, by structure (2026-10-10, the owner's):** docs/pool.md §7.7. Nothing may rest
+on a figure kept by hand that can go stale: a step's needs are measured on every run and learned per
+target, enforced where the resource is used (a lock or accessor, as `store::cachefile` does for the
+caches), or derived from the code that does the work, each with a lint that nothing goes around it;
+a declaration wrong or missing may cost speed, never correctness, politeness to a third party, lost
+work or a refused good result. So the steps table gains no columns and goes; and, the owner's
+choices: power (the battery's pause of CPU work) and home (the wait for home of the whole-planet
+jobs) go with no replacement, as does the rule of only network work beside the first job while the
+Mac is in use; the run-alone and second-job lists go once disk is measured like memory (a job beside
+another only if both jobs' measures fit); the groups go to accessors (the raw tiles' safety is
+`store::cachefile`'s already; Wikidata's politeness a budget per public address shared on the NAS).
+The batches after the memory guard were reordered around it.
+
 **The pool's phase 4 in batches (2026-10-10):** docs/pool.md §12, item 4. Why the plan is so:
 - **The parts that can lose work come first,** each soaking on the real build, reported or behind its
   switch, while the rest is built on them: refusing entries (the write-sets are reported from the
-  first batch, enforced in the fifth), stopping a job over its memory (second), a job across a
-  handover (third), resuming on one Mac (fourth).
+  first batch, enforced in the sixth), stopping a job over its memory (second), a job across a
+  handover (fourth), resuming on one Mac (eighth, behind the measures it needs).
 - **One table for the per-step rules** (crate::agent::steps): the step sets, memory, disk, needs and
   batches were constants spread over the agent, the coordinator and the claims, and the agent kept
   two first guesses of a step's memory that disagreed for the network steps (the forecast's 1.5 GB,
