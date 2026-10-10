@@ -694,7 +694,7 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
             return Err(format!("{} isn't an archive of {area}", p.name));
         }
     }
-    if crate::agent::claims::SHARED.contains(&e.step.as_str()) {
+    if crate::agent::steps::SHARED.contains(&e.step.as_str()) {
         let did: &[(String, String)] = h.done.as_ref().map_or(&[], |d| &d.1);
         for l in h.changes.keys() {
             if !did.iter().any(|(t, _)| crate::coord::saves(&e.step, t, l)) {
@@ -823,12 +823,30 @@ pub struct Run {
     pub conds: Option<Conds>,
     /// The owner's controls: their asks, where each stands, the view (crate::agent::lead).
     pub controls: super::lead::Controls,
+    /// The entries it merged with a change outside their step's write-set (crate::agent::steps::
+    /// outside: reported, not refused, until the write-sets are enforced), the last `OUTSIDE_KEPT`
+    /// of them, and how many in all since this process started (each entry once).
+    pub outside: VecDeque<Outside>,
+    pub outside_n: u64,
+    outside_seen: BTreeSet<String>,
 }
+
+/// An entry merged with a change outside its step's write-set: its key, its step, and what lies
+/// outside.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outside {
+    pub key: String,
+    pub step: String,
+    pub why: String,
+}
+
+/// The entries outside their write-sets the status keeps (the newest).
+pub const OUTSIDE_KEPT: usize = 20;
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, outside: VecDeque::new(), outside_n: 0, outside_seen: BTreeSet::new() }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -846,7 +864,20 @@ impl Run {
     pub fn step(&mut self, able: bool) -> Out {
         let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: std::mem::take(&mut self.asks), conds: self.conds };
         let marks = std::mem::take(&mut self.marks);
-        let out = self.side.step(give, &check);
+        // (The merge's checks, phase 1's; and each entry they pass checked against its step's
+        // write-set, what lies outside it reported: docs/pool.md §7.3.)
+        let found = std::cell::RefCell::new(Vec::new());
+        let checked = |e: &Entry, r: &Records| {
+            let ok = check(e, r);
+            if ok.is_ok() {
+                if let (Some(why), Some(key)) = (super::steps::outside(e), e.key()) {
+                    found.borrow_mut().push(Outside { key, step: e.step.clone(), why });
+                }
+            }
+            ok
+        };
+        let out = self.side.step(give, &checked);
+        self.note_outside(found.into_inner());
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
         // removal failed isn't drained again by a later process.)
         let kept = out.stop.is_none() && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
@@ -886,6 +917,23 @@ impl Run {
             eprintln!("pool: {}", said(e));
         }
         out
+    }
+
+    /// Entries merged outside their step's write-set, as the last step's checks found them: each
+    /// new one logged and kept for the status (an entry checked again, read again or by a later
+    /// take-up, counted once).
+    fn note_outside(&mut self, found: Vec<Outside>) {
+        for o in found {
+            if !self.outside_seen.insert(o.key.clone()) {
+                continue;
+            }
+            eprintln!("pool: entry {} ({}) {}; merged all the same (the write-sets aren't enforced yet)", o.key, o.step, o.why);
+            self.outside_n += 1;
+            self.outside.push_back(o);
+            while self.outside.len() > OUTSIDE_KEPT {
+                self.outside.pop_front();
+            }
+        }
     }
 
     /// The jobs an earlier process left in the agent's folder `home` (`left_jobs`), handed to the
@@ -1002,7 +1050,7 @@ pub fn entry_of(dir: &Path, member: &str, lease: journal::LeaseId, step: &str, d
     for x in saves {
         h.absorb(x);
     }
-    if crate::agent::claims::SHARED.contains(&step) {
+    if crate::agent::steps::SHARED.contains(&step) {
         h.changes.retain(|l, _| done.iter().any(|(t, _)| crate::coord::saves(step, t, l)));
         let kept: BTreeSet<String> = h.changes.values().flatten().cloned().collect();
         h.pending.retain(|c, _| kept.contains(c));
@@ -1272,7 +1320,7 @@ pub fn status(root: &Path) -> String {
     }
     let now = crate::agent::jobs::now_s();
     for (f, st) in statuses(root) {
-        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
+        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, if p.outside_n > 0 { format!(", {} entries merged outside their write-sets (the last: {})", p.outside_n, p.outside.last().map_or(String::new(), |o| format!("{} {}", o.key, o.why))) } else { String::new() }, p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
         out.push(format!("{} ({f}, app {}, beat {} s ago, job {}): {p}", st.host, st.app, now.saturating_sub(st.beat), st.job.as_ref().map_or("none", |j| j.id.as_str())));
     }
     let left = pool_files(root);
@@ -1607,6 +1655,38 @@ mod tests {
         assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
         assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));
+    }
+
+    #[test]
+    fn entries_outside_their_write_sets_are_reported_and_merged() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut run = Run::new(side(&r, &home), Role::Lead, Gates::default());
+        let me = run.side.member().id.clone();
+        let pack = |n: u64, t: &str, names: &[&str]| {
+            let dash = t.replace('/', "-");
+            let changes = names.iter().map(|l| (format!("{l}/{dash}"), Some(format!("{l}/{dash}.{n:016x}.pack")))).collect();
+            Entry { member: me.clone(), lease: LeaseId { term: 1, n }, step: "pack".into(), handoff: Handoff { changes, done: Some(("pack".into(), vec![(t.into(), format!("k{n}"))])), ..Default::default() }, at: crate::agent::jobs::now_s() }
+        };
+        // A map tile's own files, and one that also writes a terrain pack (another step's).
+        let within = pack(1, "6/1/2", &["hidata", "layers/roads/hi"]);
+        let outside = pack(2, "6/1/3", &["hidata", "layers/terrain/hi"]);
+        let key = outside.key().unwrap();
+        run.entries.extend([(within, None), (outside, None)]);
+        let out = run.step(true);
+        assert_eq!(out.leads, Some(1));
+        // Both merged (the write-sets aren't enforced yet), the one outside reported.
+        let rec = run.side.driver().records().unwrap();
+        assert_eq!((rec.keys.recorded("pack", "6/1/2"), rec.keys.recorded("pack", "6/1/3")), (Some("k1"), Some("k2")));
+        assert!(rec.manifest.contains_key("layers/terrain/hi/6-1-3"));
+        assert_eq!(run.outside_n, 1);
+        let o = run.outside.back().unwrap();
+        assert_eq!((o.key.as_str(), o.step.as_str()), (key.as_str(), "pack"));
+        assert!(o.why.contains("layers/terrain/hi/6-1-3"), "{}", o.why);
+        // Counted once, however often it's checked again.
+        run.note_outside(vec![o.clone()]);
+        assert_eq!((run.outside_n, run.outside.len()), (1, 1));
     }
 
     #[test]

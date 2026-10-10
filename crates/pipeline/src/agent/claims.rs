@@ -2,15 +2,13 @@
 //! it starts the job (`state/build/claims/<step> <target>` on the NAS, made with create-new, which
 //! the share does atomically), keeps its claims fresh while the job runs, and drops them when it
 //! ends. A claim not kept fresh for `STALE` (its Mac asleep, away from the NAS, or gone) is free
-//! again. Only the steps both Macs run are claimed (`SHARED`).
+//! again. Only the steps both Macs run are claimed (the steps table's shared steps,
+//! crate::agent::steps::SHARED).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// The steps both Macs run: a helper's agent does their jobs as the build Mac's coordinator leases
-/// them (crate::coord), in this order of preference (what later steps wait on first).
-pub const SHARED: [&str; 8] = ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"];
 /// How long a claim lasts without being kept fresh.
 pub const STALE: Duration = Duration::from_secs(15 * 60);
 

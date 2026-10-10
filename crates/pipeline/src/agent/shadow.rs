@@ -330,7 +330,7 @@ impl Shadow {
 
     /// The manifest's entries for the files a job of `step` saves for `targets` (crate::coord::saves).
     fn files_of(&self, step: &str, targets: &[(String, String)]) -> BTreeMap<String, String> {
-        if !crate::agent::claims::SHARED.contains(&step) {
+        if !crate::agent::steps::SHARED.contains(&step) {
             return BTreeMap::new();
         }
         let m: BTreeMap<String, String> = crate::out::read_record(&self.root.join("state/build/manifest.json")).unwrap_or_default();

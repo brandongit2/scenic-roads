@@ -2194,7 +2194,7 @@ pub struct Step {
     /// for the home network or out a failure, for the steps above).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// Which of its jobs a helper may do (crate::agent::claims::SHARED, `mark_shared`): "all", or
+    /// Which of its jobs a helper may do (crate::agent::steps::SHARED, `mark_shared`): "all", or
     /// the parts by name ("candidates and peaks"); none, the build Mac's alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
@@ -2286,7 +2286,7 @@ pub fn mark_shared(steps: &mut [Step]) {
         }
     }
     for st in steps {
-        let shared: Vec<&str> = st.steps.iter().map(String::as_str).filter(|s| super::claims::SHARED.contains(s)).collect();
+        let shared: Vec<&str> = st.steps.iter().map(String::as_str).filter(|s| super::steps::SHARED.contains(s)).collect();
         st.shared = match shared.len() {
             0 => None,
             n if n == st.steps.len() => Some("all".into()),

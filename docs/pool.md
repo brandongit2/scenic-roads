@@ -2,8 +2,9 @@
 
 Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its driver and phase
 2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls built**
-(crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); the rest is
-planned. It replaces the fixed
+(crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); **phase 4's
+first batch built** (the steps table, crate::agent::steps, its write-sets checked and reported at
+merge: §7.2, §7.3, §12); the rest is planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -410,7 +411,7 @@ nobody reads: invariant 5.
 ### 7.1 Slots and asks
 
 - **Slots.** Each member runs as many job slots as its resources allow (two on a Mac with 32 GB or
-  more, one on less; the second only beside jobs it can run with: crate::agent::SECOND), and a slot
+  more, one on less; the second only beside jobs it can run with: the steps table's, §7.2), and a slot
   takes tasks (§8) when no job fits it.
 - **An ask says what the slot can take now:** the memory it spares (its Mac's free memory less what
   its other slots' jobs are predicted to take), its disk's free space, its cores, whether its Mac is
@@ -419,39 +420,57 @@ nobody reads: invariant 5.
 
 ### 7.2 Placement: the steps table
 
-One table, the steps table (planned, phase 4: crate::agent::build has `AS_OF_STEPS` alone today),
-has a row per step with:
+One table, the steps table (crate::agent::steps, built: phase 4's first batch, §12), has a row per
+step the agent runs as a job. The step sets the agent and the coordinator test (the shared steps,
+the second job's, the light, alone, raw-tile, Wikidata and NAS-reading ones, those keeping the pass's
+answers) are made from it when the app is built, and a step's first guess of memory, disk, needs and
+batch are read from its row; what depends on a target rather than its step (a terrain area's whole
+run's disk, the memory a unit's piece or a 3D buildings tile is offered with) stays with the agent.
+Its columns:
 
 | Column | Meaning |
 | --- | --- |
-| needs | memory (predicted per target from its last run, crate::coord::Cost), a **floor** whatever the measurement (the OSM pass runs Planetiler with 24 GB of heap: 32 GB Macs only), disk (the OSM pass 80 GB, a terrain run 55, others 15), home (whole-planet reads), power |
-| write-set | the names it may add, change or remove, as patterns by target and pass date (§7.3) |
-| moves | whether a job of it can run anywhere (most), or resumes on the Mac holding its progress |
-| alone / beside | what may run with it on one Mac (today's SECOND, LIGHT, ALONE, RAW and WIKI sets) and across the pool (one Wikidata step at a time: one address at home) |
-| batch | how much a job takes (about fifteen minutes) |
+| needs | memory: a first guess per step until a target's own run says (predicted per target from its last run, crate::coord::Cost; units and candidates by their piece's size, terrain by its area's, the 3D buildings by their rows); disk: what a job starts with free on its Mac (the reserve, 30 GB; terrain's pieces and assemblies and the water 35; the OSM pass 80, less the pack cache it clears; an area's whole terrain run 55; a member's jobs 15, crate::agent's `helper_need`); home (whole-planet reads: the OSM pass, its missing sets, the reach, the world's buildings); power (CPU work: all but a catalog, a prune, GC and the backups) |
+| shared | whether other members take its jobs, and its rank of preference among those that are (what later steps wait on first) |
+| alone / beside | whether it runs alone on its Mac; whether a Mac's second job may be one of it, and its rank there; whether it mostly waits on the network (beside the first job while the Mac is in use too); the groups of which two never run at once on one Mac (they read the raw terrain tiles here; they ask Wikidata, each paced as if alone; they read gigabytes of the NAS's sources a target) |
+| answered | it keeps the pass's Wikidata and Wikipedia answers (none starts while the agent sends them) |
+| batch | how many targets a job takes (a few minutes to a quarter of an hour of work) |
+| write-set | the logical names its jobs may add, change or remove in the manifest, as patterns of its targets' tiles and the pass's date, removals apart (the OSM pass removes older passes' entries; a prune only removes); a shared step's files for each target it did are kept apart too (`saves`: what its hand-off may change) |
+
+Planned columns (phase 4, §12): a **floor** of memory whatever the measurement (the OSM pass runs
+Planetiler with 24 GB of heap: 32 GB Macs only); **moves**: whether a job of it can run anywhere
+(most), or resumes on the Mac holding its progress; the groups across the pool (one Wikidata step at
+a time: one address at home).
 
 Tree cover's rows (plan.md §6, Trees): `trees`, a piece per z6 tile (it may add, change or remove
 that tile's hi packs of the three tree layers and its mid, `work/trees-mid/6-x-y`; a lease of the
 scheme before pieces, a z3 tile's whole run, its lo pack and its z6 tiles' hi packs, for one
 release), any member, four a job; `trees-lo`, an assembly per z3 tile (its lo packs of the three),
-seconds, kept to one Mac as the build Mac keeps it now. Terrain's and slope's likewise (plan.md §6,
-Global-source layers): `terrain` and `slope`, a piece per z6 tile (its layer's hi pack and its mid,
-`work/terrain-mid/6-x-y` or `work/slope-mid/6-x-y`; a lease of the scheme before, an area's whole
-run, its lo pack and its z6 tiles' hi packs, for one release), any member, eight a job, disk 15 GB;
-`terrain-lo` and `slope-lo`, an assembly per z3 tile (its lo pack), kept to one Mac, terrain-lo
-apart from the other steps reading raw tiles (RAW).
+seconds, kept to the lead. Terrain's and slope's likewise (plan.md §6, Global-source layers):
+`terrain` and `slope`, a piece per z6 tile (its layer's hi pack and its mid, `work/terrain-mid/6-x-y`
+or `work/slope-mid/6-x-y`; a lease of the scheme before, an area's whole run, its lo pack and its z6
+tiles' hi packs, for one release), any member, eight a job; `terrain-lo` and `slope-lo`, an assembly
+per z3 tile (its lo pack), kept to the lead, terrain-lo apart from the other steps reading raw tiles.
 
 The 3D buildings' rows (docs/buildings3d.md §3.6): `bldprep`, per z6 tile (it may add, change or
-remove `work/bld/6-x-y`), memory learned (0.3 GB and 160 B a row read until then), disk 15 GB, the
-NAS (up to ~3 GB of parquet read a tile), power, any member, eight a job, never two on one Mac;
-`bldtiles`, per z6 tile (`layers/buildings/hi/6-x-y`), memory learned, disk 15 GB, power, any
-member, sixteen a job. Neither needs home. `bld-fetch` (the sources, onto the NAS) is network work,
-the build Mac's today. Phase 1 takes both shared steps as it takes the others (their write-sets
-are `coord::saves`'), with no row of its own.
+remove `work/bld/6-x-y`), memory learned (0.3 GB and 160 B a row read until then), the NAS (up to
+~3 GB of parquet read a tile), power, any member, eight a job, never two on one Mac; `bldtiles`, per
+z6 tile (`layers/buildings/hi/6-x-y`), memory learned, power, any member, sixteen a job. Neither
+needs home. `bld-fetch` (the sources, onto the NAS, outside the manifest: its write-set is empty) is
+network work, the lead's.
 
-- **Order and locality.** A slot gets the first work in plan order that fits it, as a contiguous run
-  of targets (a slot walks a region in spatial order, as one Mac does now, so what one unit fetches
-  serves the next), with a preference for work next to its Mac's last.
+What's planned of placement (phase 4, §12):
+
+- **Every step offered to every member's slots** whose Mac meets its row (today a member takes the
+  shared steps alone, and the lead the rest: the map tiles, `pack` and `lo`, among them).
+- **Order and locality.** A slot gets work as a contiguous run of targets (a slot walks a region in
+  spatial order, as one Mac does now, so what one unit fetches serves the next), with a preference
+  for work next to its Mac's last.
+- **How crucial a job is** decides who takes it first, not plan order alone: each target scores by
+  its slack in the forecast (the long poles highest), and the members' slots and the pages take the
+  work on a sliding scale of their measured speed, as a weighted draw (a function of the target, the
+  worker and the time, so a decision repeats), not by a rule singling out the fastest or slowest;
+  no rule names a Mac or a kind of job.
 - **A job that runs alone** reserves one Mac, the first eligible to come free; only that Mac drains
   for it. Others carry on.
 - **Per-Mac rules kept:** network work goes to the second slot; only light work runs while the Mac
@@ -462,6 +481,28 @@ are `coord::saves`'), with no row of its own.
   member), so a new lead knows.
 - **The forecast** is rewritten for equal machines (each member's slots as lanes, the pages as one):
   a large piece of phase 4, not a detail.
+
+**A job far over its memory** (planned, phase 4's second batch: §12). macOS swaps rather than kills,
+so a job far past what it was predicted to take (terrain's whole-area run on the Alaska coast held
+32.9 GB against a prediction of a few) leaves its Mac swapping for as long as it runs, every other
+job and the owner's own work with it. The agent already samples each running job's memory, its
+processes' footprints summed (crate::sys::footprint_of_group, for the status); it will act on it:
+
+- **A limit per Mac:** its memory less a reserve for macOS and the owner (an eighth, 4 GB at least).
+  A job's footprint passing it, while it's over its own prediction (the job that caused it, not
+  one beside it that's within its own), is stopped: first the job beside it, if it has one and
+  stopping that (at its next safe point, as a pause does) brings the Mac under; else the job itself,
+  at once (its group terminated, then killed after a grace), its targets not finished given back,
+  not held against them as a failure (the targets it noted done kept, as any stop keeps them).
+- **Learning:** what it held when stopped is kept as the least its target takes (its cost marked
+  so: a floor, not a measure, raised by any later run), so the coordinator offers that target only
+  to a slot that spares that much, the next time on a Mac with room. A job that ends on its own
+  keeps its measured peak as now, over its prediction or not.
+- **More than any member has:** a target whose floor passes every member's limit isn't offered
+  again; the status says so ("needs about N GB, more than any Mac in the pool has"), for the owner:
+  a step whose memory grows with its target is a fault to fix in the step, not in placement.
+- **Behind its own switch** (`state/pool/memory-guard`, off while missing, §12): stopping a job
+  costs its current target's work.
 
 ### 7.3 Results: the journal
 
@@ -475,8 +516,13 @@ are `coord::saves`'), with no row of its own.
   key, `<day>/<term>-<n>`, is what records name it by. That removes the outbox and its retry loop
   and the HTTP body limit; a takeover finds every result on the NAS; GC sees them all.
 - **The lead validates at merge time:** every change in the step's write-set (the steps table's,
-  planned), every content name matching its logical name, the lease's targets and keys (the merge is
-  given the check: `records::Check`). A refused entry is named in the records with why; once they're
+  §7.2), every content name matching its logical name, the lease's targets and keys (the merge is
+  given the check: `records::Check`). The write-sets are checked and reported, not yet enforced: an
+  entry the other checks pass with a change outside its step's write-set is merged, logged and kept
+  in its lead's status (`pool.outside`, the newest twenty, and `outside_n`; `scenic pool status`
+  says them), until a later batch of phase 4 refuses such entries (§12), once the reports have
+  shown the write-sets right on the real build (every entry in the journal from the pool's first
+  two days is within them). A refused entry is named in the records with why; once they're
   saved its why is noted beside the journal, `state/journal/rejected/<key>.why`
   (`journal::note_refusal`), for the owner. The entry stays in its day: a refusal may be a lead's
   that's no longer current (its check depends on its state), and a lead whose records don't name the
@@ -750,8 +796,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      - **The merge's checks** (`agent::pool::check`): a done record of the entry's step naming
        targets, content names of their logical names, raw archives of their areas, and for a
        shared step the coordinator's check of a helper's hand-off (its done targets' files, its own
-       uploads); not the lease's targets (a later lead may not know the lease), nor write-sets
-       (phase 4).
+       uploads); not the lease's targets (a later lead may not know the lease). The steps'
+       write-sets are checked beside them, and what lies outside reported, not refused (§7.3).
      - **The lead's coordinator:** leases granted in its term (`Lease::term`, `granted_at`), its
        state per term (`state/coord/term/<E>/state.json`: the jobs' leases, costs, failures by the
        wall clock, the pause) written each loop it changed, on the NAS; "the lead is moving" while
@@ -808,8 +854,9 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      terms, take-ups, merges, gates against the catalogs and GC the agent ran, and its records
      against the build's.
 2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core, built);
-   the owner's asks reach the agent (phase 3); the agent's part, planned: staying awake, the lead's
-   own jobs moved out of its process into its slots (so nothing pins the lead: in phase 1 a lead
+   the owner's asks reach the agent (phase 3); the agent's part, planned (phase 4's third batch,
+   below): staying awake, the lead's own jobs moved out of its process into its slots (so nothing
+   pins the lead: in phase 1 a lead
    handing over mid-job keeps running its job, which hands off to the journal under its lease, and
    restarts into a member once its slot is free).
 3. **Controls: built** (crate::agent::lead; §6.3, §10, §11). The owner's asks reaching the agent
@@ -817,15 +864,84 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    member's passed on to the lead by mail), checked as the driver would; where each stands; the
    view in the agent's status; the menu bar, the worker page, the map's panel, `scenic lead` and
    `status`; the history's terms; the proactive offer, and its switch (off).
-4. **Every job hands off, placement and pages: planned.** The steps table with floors and
-   write-sets, every step offered to every member's slots, contiguous runs, the alone reservation,
-   sticky resuming, the resume overlay and records-only planning; tasks brokered by every member,
-   "where is work", pages direct with CORS; claims retired; the forecast for equal machines; the
-   docs (plan.md §8, workers.md, formats.md) rewritten around the pool; `install.sh` without
-   `--agent`/`--helper`.
+4. **Every job hands off, placement and pages: under way, in batches.** Each batch ships on its
+   own, with its tests, and changes nothing the agent does until its switch is made: a file under
+   `state/pool/` (off while missing, read as `auto-handover` is), made once every member's
+   heartbeat shows the app that has it, so a batch can soak on the real build behind it. A batch
+   that only reports, or only learns, needs none. They're ordered so the parts that can lose work
+   (refusing entries, stopping jobs, a job across a handover, resuming on one Mac) come early, and
+   run longest, reported or switched, before what builds on them.
+   1. **The steps table, its write-sets reported: built** (crate::agent::steps; §7.2, §7.3). A row
+      per step: memory's first guess, disk, power, home, shared and its rank, alone, beside and its
+      rank, light, the groups never two on one Mac, the answers kept, the batch, the write-set. The
+      step sets the agent and the coordinator test are made from it as the app is built, a set of
+      the wrong size failing the build, and its tests check them, the rows' memory, disk, needs and
+      batches, and a shared step's saves within its write-set. The lead checks every entry it merges against
+      its step's write-set and reports what lies outside, refusing nothing for it; every one of the
+      574 entries in the journal of 8–9 Oct 2026 is within (`real_journal_entries_are_within_their_
+      write_sets`, run on a copy of the journal). Needs no switch.
+   2. **A job far over its memory** (§7.2): the limit per Mac, the job over its prediction stopped
+      (the one beside it first, when that suffices), what it held kept as its target's floor so the
+      next offer goes to a slot that spares it, a target over every member's limit held with why.
+      Learning (any job's peak kept, a stopped job's as a floor) needs no switch; stopping is behind
+      `state/pool/memory-guard`. Tests: a job that grows past a test limit stopped and given back,
+      not failed; its floor kept and offered only to a larger slot; one beside stopped first; the
+      floor over every member's held, the status saying why.
+   3. **The lead's slots as any member's** (§7.6, phase 2's part of the agent): its jobs ask, beat
+      and end through one client, in process while it leads and over HTTP after a handover, so a
+      change of part restarts nothing (only its coordinator starts or stops), and the lead stays
+      awake while it leads with leases out (§6.7). Behind `state/pool/slots`. Tests: the
+      simulator's runs with a handover while the lead's own job runs (its entry reaching the new
+      lead's records, its lease renewed with it); two agents in one process, then as processes
+      with SIGSTOP and the fault points of §13.
+   4. **Resuming, and planning from the records alone** (§7.2 Resuming, §7.4): a job's progress on
+      its Mac's disk named on the NAS (`state/pool/progress/<step>.json`), offered to that Mac only
+      for 24 hours or until the owner releases it; `Out::open` laying the Mac's unmerged hand-offs
+      for its step over the snapshot; a pass complete when its records say so, not by
+      `pass.*.json`. Behind `state/pool/resume`. Tests: an OSM pass stopped mid-stage resumed by its
+      Mac from its stages, offered to no other, released after a day; plans the same from the
+      records as from today's files.
+   5. **Every step to every member, write-sets enforced** (§7.2, §7.3): the lead's coordinator
+      offers every step whose row a member's Mac meets (memory and the new floor column, disk,
+      home, power, in use, network work to the second slot), the map tiles' `pack` and `lo` among
+      them (each Mac's saves already reach the records only through the journal, so what a member
+      makes is merged as the lead's is); work in contiguous runs from the front of the plan, near
+      the Mac's last; the alone reservation (one Mac drains, the first eligible to come free); the
+      groups across the pool (one Wikidata step at a time); claims no longer read with the pool on;
+      and entries outside their write-sets refused. Behind `state/pool/every-step` and
+      `state/pool/write-sets`, the latter once the first batch's reports have shown none outside
+      for a fortnight of the real build. Tests: a member offered `pack` and its entry merged; a
+      member short of a row's needs offered none of it; runs contiguous; the reservation draining
+      one Mac only; an entry outside refused, its why noted; the simulator's runs with entries
+      outside refused by every lead.
+   6. **Placement by how crucial a job is, and work offered ahead** (§7.2, workers.md §3): each
+      target's score from the forecast's slack, the long poles highest; members' slots and pages
+      chosen on a sliding scale of measured speed, as a weighted draw that repeats for the same
+      inputs; no rule naming a Mac or a kind of job (it takes in the rule that gives a page only the
+      tasks it would finish sooner); a job's tasks offered as it begins a piece (`OFFER_AHEAD`), a
+      worker waited for while its pace times this Mac's time is less than its head start, for
+      terrain's subtrees, tree cover's rows and slope alike. Behind `state/pool/placement`. Tests:
+      the draws' shares by speed over many targets; the long poles first; a worker slower than this
+      Mac given a piece's tasks only with a head start that covers it.
+   7. **Tasks brokered by every member, pages talking to members directly** (§8, §9): each member's
+      coordinator brokers its own jobs' tasks, its heartbeat saying how many wait; the lead answers
+      "where is work"; every member serves the page and the pool's API with CORS; a page finds the
+      members from the pool and reloads from the next when its own goes. Behind `state/pool/brokers`
+      (and each member's `tailscale serve`, the owner's: §14). Tests: a member's job's task taken by
+      a page from that member; a handover dropping no task; the preflight and the headers.
+   8. **The forecast for equal machines** (§7.2): each member's slots as lanes, the pages as one,
+      from the steps table and the placement. Reports only: no switch.
+   9. **What goes:** the claims (crate::agent::claims, `state/build/claims/`), once no app that
+      reads them runs; `install.sh` without `--agent` and `--helper` (a launch file passing them
+      still accepted and ignored); the docs (plan.md §8, workers.md, formats.md) rewritten around
+      the pool.
 
-Phases 1–2 are the ones that can lose work if they're wrong; each is tested as §13 says before it's
-switched on.
+   Packing the raw terrain tiles a job fetched onto the NAS (`pack_raw_with`) stays a step of
+   each terrain piece's job, its own tiles only, with no job of its own: it takes about 1 % of a
+   piece's time (measured: plan.md §12).
+
+Phases 1–2 are the ones that can lose work if they're wrong, and phase 4's batches 2 to 5; each is
+tested as §13 says before it's switched on.
 
 ## 13. Testing
 

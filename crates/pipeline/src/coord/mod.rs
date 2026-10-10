@@ -3,7 +3,7 @@
 //! which it alone writes; a worker only asks for work that fits it, does it, and hands it back.
 //!
 //! Two kinds of work, by what a worker can reach (§2):
-//! - **Jobs** of the plan (crate::agent::claims::SHARED: units, terrain, slope, tree cover,
+//! - **Jobs** of the plan (crate::agent::steps::SHARED: units, terrain, slope, tree cover,
 //!   landmark candidates and peaks), for workers that mount the NAS (the M1's agent, `--helper`). A
 //!   worker's job saves through the coordinator: its hand-off (its manifest changes and done record,
 //!   one per job) is journaled on this Mac's disk, written whole, then merged into the records by the
@@ -171,7 +171,7 @@ pub struct Worker {
     /// "native" (an agent) or "web" (a page).
     pub kind: String,
     pub label: String,
-    /// The work it does (the shared steps it builds: crate::agent::claims::SHARED; "tail", "bldtile": tasks),
+    /// The work it does (the shared steps it builds: crate::agent::steps::SHARED; "tail", "bldtile": tasks),
     /// the memory it spares (MB) and its cores.
     pub can: Vec<String>,
     pub mem_mb: u64,
@@ -397,7 +397,7 @@ pub struct Ask {
     pub kind: String,
     #[serde(default)]
     pub label: Option<String>,
-    /// The kinds of work it does: a shared step's jobs (crate::agent::claims::SHARED: it mounts
+    /// The kinds of work it does: a shared step's jobs (crate::agent::steps::SHARED: it mounts
     /// the NAS), "tail", "bldtile", "treeblock" or "terrainsub" (tasks: a unit's tail, a 3D
     /// buildings' z8 area, a row of tree cover's z8 blocks, a terrain piece's z8 subtrees).
     pub can: Vec<String>,
@@ -915,42 +915,10 @@ pub fn folder(w: &str) -> String {
     w.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
-/// Whether `l` is a file a job of `step` saves for `target`: a unit's base pack, road values, roads'
-/// English and the grids its packs lacked; candidates' and peaks' own files; a tree cover piece's (a
-/// z6 tile's) hi packs of the tree layers and its mid, an assembly's (a z3 tile's) lo packs of them;
-/// terrain's and slope's pieces (a z6 tile's) hi pack of their layer and its mid, an assembly's (a
-/// z3 tile's) lo pack; an area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain,
-/// slope, or the tree layers (a z3 tile's whole run: a lease of the scheme before pieces); a z6
-/// tile's normalized buildings
-/// (`bldprep`) or 3D buildings' hi pack (`bldtiles`).
+/// Whether `l` is a file a job of `step` saves for `target` (the steps table's:
+/// crate::agent::steps::saves).
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
-    let dash = target.replace('/', "-");
-    let tile = crate::legacy::Unit::parse(target);
-    match step {
-        "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
-        "pois" | "peaks" => l == format!("work/{step}/{dash}"),
-        // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
-        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::work_logical(t.x, t.y)),
-        "bldtiles" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::pack_logical(t.x, t.y)),
-        "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
-        "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
-        "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")),
-        "slope" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
-        "terrain-lo" | "slope-lo" => tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo")),
-        "terrain" | "slope" | "trees" => {
-            let Some(q) = tile.filter(|u| u.z == 3) else { return false };
-            let layers: &[&str] = match step {
-                "terrain" => &["terrain"],
-                "slope" => &["slope"],
-                _ => &crate::treepacks::LAYERS,
-            };
-            layers.iter().any(|layer| {
-                l == format!("layers/{layer}/lo/{dash}")
-                    || l.strip_prefix(&format!("layers/{layer}/hi/6-")).and_then(|r| r.split_once('-')).and_then(|(x, y)| Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))).is_some_and(|(x, y)| (x >> 3, y >> 3) == (q.x, q.y))
-            })
-        }
-        _ => false,
-    }
+    crate::agent::steps::saves(step, target, l)
 }
 
 /// A job's hand-off, when it's its lease's: its done record is the lease's, every change is to one
@@ -966,7 +934,7 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         Some((s, ts)) => anyhow::ensure!(s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)), "its done record isn't its lease's"),
         None => anyhow::bail!("no done record"),
     }
-    anyhow::ensure!(crate::agent::claims::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
+    anyhow::ensure!(crate::agent::steps::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
     for (area, p) in &h.raw {
         anyhow::ensure!(crate::rawpack::is_area(area), "{area} isn't an area of raw tiles");
         anyhow::ensure!(crate::rawpack::named_for(&p.name, area), "{} isn't an archive of {area}", p.name);

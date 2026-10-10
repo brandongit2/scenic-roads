@@ -1785,7 +1785,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   13–64 s for the build's 529 on 2026-10-06, and a unit's terrain worked out again only when a pack
   it reads or its reach changes); other workers' hand-offs are merged each loop while it waits, every
   two minutes while a job runs.
-- **Two jobs at once** (`agent::SECOND`): beside the first job, the build Mac runs a second, the
+- **Two jobs at once** (`agent::steps::SECOND`, the steps table's: docs/pool.md §7.2): beside the first job, the build Mac runs a second, the
   plan's first job of these steps, in this order: the trains', the landmarks' and the 3D buildings'
   steps that mostly wait on the internet (the heritage chain, the items' facts, the rail feeds and
   trains a day, the 3D buildings' sources, the landmark points and overlays), then the candidates
@@ -2138,7 +2138,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.
 The M1's agent (`--helper`) plans nothing: it asks for the shared steps' jobs (it mounts the NAS)
 and, when none fits it, units' last steps.
-- **Shared steps** (`agent::claims::SHARED`, in this order of preference: what later steps wait on
+- **Shared steps** (`agent::steps::SHARED`, the steps table's, in this order of preference: what later steps wait on
   first): terrain's and slope's pieces (eight z6 tiles a job), tree cover's pieces (four), units, the
   landmarks' candidates and peaks, and the 3D buildings' bldprep and bldtiles (8 and 16 z6 tiles a
   job; bldprep reads the NAS, which every helper mounts). The rest stays the build Mac's: the
@@ -2634,6 +2634,9 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
+   - the steps' write-sets (`agent::steps`, phase 4's first batch) are checked at merge and what lies
+     outside them reported, not refused: an entry a step's bug sends outside its write-set is merged
+     all the same until the fifth batch enforces them (pool.md §7.3, §12);
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents
@@ -2779,6 +2782,31 @@ At each phase's end an Opus agent reviews the work against this plan.
 - **Disk:** for 14 days after a pass completes, the NAS holds two passes' sources (~400 GB).
 
 ## 12. Changes
+
+**The pool's phase 4 in batches (2026-10-10):** docs/pool.md §12, item 4. Why the plan is so:
+- **The parts that can lose work come first,** each soaking on the real build, reported or behind its
+  switch, while the rest is built on them: refusing entries (the write-sets are reported from the
+  first batch, enforced in the fifth), stopping a job over its memory (second), a job across a
+  handover (third), resuming on one Mac (fourth).
+- **One table for every per-step rule** (crate::agent::steps): the step sets, memory, disk, needs and
+  batches were constants spread over the agent, the coordinator and the claims, and the agent kept
+  two first guesses of a step's memory that disagreed for the network steps (the forecast's 1.5 GB,
+  a job beside another's 1 to 6 GB): one now, the latter's, which was measured.
+- **A job far over its memory is stopped, not frozen** (pool.md §7.2): a frozen job keeps what it
+  holds, swapped out or compressed, so the Mac stays short; stopped, it frees it, losing its current
+  target's work, and what it held is kept as its target's floor so the next offer goes where it
+  fits. A step whose memory grows past every Mac is a fault in the step: the target waits, saying
+  so, rather than being placed anywhere.
+- **The raw tiles' packing stays in the terrain piece's job** (it was to be a job of its own, when an
+  area's whole run held its slot packing for about 2.1 of 4.75 hours on 5 Oct): measured again, the
+  53 piece jobs of 9 Oct spent 15 s on it in all (0.1 to 6.2 s each, their tiles already in the
+  archives) against 12,965 s making tiles, and a z6 tile's whole z12 fetched new (3,716 tiles, 107
+  MB of archives) packs in 1.7 s to a local store, about a second more to the NAS at its LAN's
+  speed: about 1 % of a piece's four minutes.
+- **The weighted draw that places work** (the owner's idea: by how crucial a job is, and a worker's
+  speed as a weight, not a rule) is a function of the target, the worker and the time, so a
+  decision repeats for the same inputs, as every other decision of the agent's does (§8,
+  Determinism).
 
 **Downloads (2026-10-08):** the mirror copies only what the owner downloads (§1, §4 Mirror),
 by the owner's ask: the World, zoomed out (the essentials and the basemap's zooms 0–10), and each

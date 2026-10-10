@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 // The shared steps a helper takes, in its order of preference.
-use super::claims::SHARED;
+use super::steps::SHARED;
 
 // The steps the build Mac's second job takes, in its order of preference, and those it takes while
 // the Mac is in use: the agent's.

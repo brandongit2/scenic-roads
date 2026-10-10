@@ -33,6 +33,7 @@ pub mod recipes;
 pub mod rekey;
 pub mod room;
 pub mod shadow;
+pub mod steps;
 pub mod tiles;
 
 use anyhow::{Context, Result};
@@ -94,16 +95,12 @@ const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 /// can run, and a second beside it (`SECOND`). A helper runs one, as the build Mac leases them.
 const SLOTS: usize = 2;
 
-/// The steps the second job takes, in its order of preference: the trains', the landmarks' and the
-/// 3D buildings' steps that mostly wait on the internet first, then the candidates and peaks (the
-/// landmarks wait for them), then units and slope, then the 3D buildings (they hold up neither the
-/// roads nor the terrain). A unit spent 380 of its 860 s writing to the NAS and reading the caches,
-/// not computing (6/17/25, 2026-10-05): two at once build more.
-const SECOND: [&str; 13] = ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"];
-
-/// Those of them that mostly wait on the network, and run beside the first job while the Mac is in
-/// use too (the others only while it isn't).
-const LIGHT: [&str; 7] = ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays"];
+/// The steps the second job takes, in its order of preference (the steps table's: crate::agent::
+/// steps), and those of them that mostly wait on the network, which run beside the first job while
+/// the Mac is in use too (the others only while it isn't); the steps that run alone; those that keep
+/// the pass's Wikidata and Wikipedia answers here and on the NAS (crate::answers: none starts while
+/// the agent sends them as it starts, `Agent::seed_answers`).
+use steps::{ALONE, ANSWERED, LIGHT, SECOND};
 
 /// The last round of publishing, in the agent's folder (build::Round): its jobs read the units of
 /// the one under way there (crate::out::UNITS_AS_OF_ENV).
@@ -115,52 +112,18 @@ const ROUND_FILE: &str = "round.json";
 /// cover's pieces needs no copy: it drops the assemblies' records and makes the tree cover again).
 pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
-/// Steps that run alone, never beside another job: the pass's worldwide jobs (the planet, the
-/// world's buildings, a whole set at a time) and removing replaced files from the NAS.
-const ALONE: [&str; 11] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water", "heritage-sites", "gc"];
-
 /// The pass's worldwide jobs, as the checklist says them.
 const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, water";
 const WORLDWIDE_STEPS: [&str; 8] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water"];
 
-/// Steps that read AWS's raw terrain tiles here, which a terrain run packs onto the NAS and
-/// deletes here: never two at once.
-const RAW: [&str; 5] = ["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"];
-
-/// Steps that ask Wikidata and Wikipedia a great deal from this Mac's address, each pacing itself
-/// as if it were alone (heritagedetails: under ten a minute): never two at once.
-const WIKI: [&str; 2] = ["items", "heritage"];
-
-/// Steps that keep the pass's Wikidata and Wikipedia answers here and on the NAS (crate::answers):
-/// none starts while the agent sends them as it starts (`Agent::seed_answers`).
-const ANSWERED: [&str; 3] = ["items", "heritage-sites", "heritage"];
-
-/// Steps that read gigabytes of the NAS's sources a target (the 3D buildings' parquet: up to ~3 GB
-/// a z6 tile): never two at once on one Mac, the NAS being the build's bottleneck.
-const NAS_READS: [&str; 1] = ["bldprep"];
-
-/// Whether jobs of steps `a` and `b` can't run at once: either runs alone, both read the raw tiles,
-/// both ask Wikidata, both read the NAS's sources in bulk, or they're the same step and it isn't a
-/// shared one (one job's work: its targets held by nothing else). A shared step's targets are held
-/// apart (crate::coord), and each slot has a scratch folder of its own.
+/// Whether jobs of steps `a` and `b` can't run at once: either runs alone; both are in one of the
+/// steps table's groups of which two never run at once on one Mac (they read the raw tiles here,
+/// which a terrain run packs onto the NAS and deletes; they ask Wikidata, each pacing itself as if
+/// it were alone; they read gigabytes of the NAS's sources a target); or they're the same step and
+/// it isn't a shared one (one job's work: its targets held by nothing else). A shared step's targets
+/// are held apart (crate::coord), and each slot has a scratch folder of its own.
 fn clash(a: &str, b: &str) -> bool {
-    let both = |set: &[&str]| set.contains(&a) && set.contains(&b);
-    ALONE.contains(&a) || ALONE.contains(&b) || both(&RAW) || both(&WIKI) || both(&NAS_READS) || (a == b && !claims::SHARED.contains(&a))
-}
-
-/// The memory a job of `step` is expected to take beside another (MB) before its own run has said:
-/// the network steps' Python and osmium; the shared steps' first guesses (`first_peak`), a unit's
-/// the most its batches took here (8.4 GB, 2026-10-05).
-fn second_peak(step: &str) -> u64 {
-    match step {
-        "heritage" | "rail" => 6144,
-        "items" => 3072,
-        "rail-feeds" | "bld-fetch" => 1024,
-        "marks" | "overlays" => 4096,
-        "unit" => 8600,
-        "pois" => 2048,
-        s => first_peak(s),
-    }
+    steps::alone(a) || steps::alone(b) || steps::grouped(a, b) || (a == b && !steps::SHARED.contains(&a))
 }
 
 /// The free space the second job starts with (it makes no room: `reads_caches`): the network steps'
@@ -230,7 +193,7 @@ fn helper_need(step: &str) -> u64 {
 /// still can't have its room once the caches are emptied is given back (`run_once`). With the
 /// owner's disk room target (`floor`, room::Target), that much more stays free.
 fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
-    claims::SHARED.iter().copied().chain(["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND]).filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s)))).map(str::to_string).collect()
+    steps::SHARED.iter().copied().chain(["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND]).filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s)))).map(str::to_string).collect()
 }
 
 /// What a terrain run needs past the others' room: its area's raw tiles held twice while they're
@@ -239,15 +202,6 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
 /// Mac from 34 GB free to 14 GB (2026-10-05). The area's own archive copies, which the run reads at
 /// once, are spared (`terrain_reads`).
 const TERRAIN_SPACE: u64 = 25 << 30;
-
-/// What a job of terrain's pieces (or assemblies) needs past the others' room: each z6 tile's raw
-/// tiles' archive copied here (up to ~0.3 GB) and the raw tiles AWS gives it held twice while
-/// they're packed onto the NAS, eight a job (`batch_size`); an assembly its z3 tile's archive.
-const PIECES_SPACE: u64 = 5 << 30;
-
-/// What the water layer's job needs past the others' room: its tiles' archive (1.8 GB worldwide,
-/// measured 2026-10-08) and their packs, written here before they're uploaded, and a margin.
-const WATER_SPACE: u64 = 5 << 30;
 
 /// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", an area's whole
 /// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: an area's run its
@@ -275,35 +229,11 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 }
 
 /// The memory a step's job is expected to take (MB) before one has run for its target and said
-/// (`SCENIC_COSTS`): tree cover's program holds a band of a block's rows on each thread and the
-/// blocks made but not yet written (crate::trees: 1.05 GB on 14 threads for 3/2/2's 792 blocks and
-/// for 3/4/2's 79, 2026-10-05), a piece's at most 16 of them, 1 GB with the job's own; an
-/// assembly its z3 tile's blocks' zoom-8 values, compressed, 0.5 GB; slope holds a z6 tile's tiles
-/// at a time (crate::slope_pack: under a GB, where holding its whole area's took up to 20 GB), 2 GB;
-/// peaks, room to spare; a step shared later, 1.5 GB until it's measured. (Units and candidates are
-/// offered by their piece's size, crate::coord::job_peak; terrain by its area's size,
-/// `terrain_peak`.)
+/// (`SCENIC_COSTS`): its row's in the steps table. (Units and candidates are offered by their
+/// piece's size, crate::coord::job_peak; terrain by its area's size, `terrain_peak`; the 3D
+/// buildings by their rows, `bld_peak`.)
 fn first_peak(step: &str) -> u64 {
-    match step {
-        "trees" => 1000,
-        "trees-lo" => 500,
-        // (Terrain's assembly: its z3 tile's 1,365 zoomed-out tiles (~270 KB each made), its pieces'
-        // z9 means (up to 4 MB a piece) and half a GB besides. Slope's piece a z6 tile's tiles,
-        // under a GB; its assembly the area's lo tiles.)
-        "terrain-lo" => 1200,
-        "slope" => 1500,
-        "slope-lo" => 1000,
-        "peaks" => 2500,
-        // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
-        // 2026-10-08.)
-        "water" => 8192,
-        // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
-        // 5.1 GB to read its 30.3 M rows, 3.3 GB to raise its tiles. Offered by the rows they read:
-        // `bld_peak`.)
-        "bldprep" => 5200,
-        "bldtiles" => 3400,
-        _ => 1500,
-    }
+    steps::mem_mb(step)
 }
 
 /// The memory a 3D buildings job of a z6 tile is expected to take (MB), before one has said, by the
@@ -468,6 +398,17 @@ pub struct PoolView {
     /// The pool as the controls show it (crate::agent::lead: docs/pool.md §10, §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<lead::View>,
+    /// Leading: the entries it merged with a change outside their step's write-set (the newest,
+    /// `pool::OUTSIDE_KEPT`), and how many since its agent started (crate::agent::steps: reported,
+    /// not refused, until the write-sets are enforced).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<pool::Outside>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub outside_n: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1225,7 +1166,7 @@ impl Agent {
             self.know_pause(None);
         }
         match asked {
-            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if claims::SHARED.contains(&step.as_str()) => {
+            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if steps::SHARED.contains(&step.as_str()) => {
                 // (In the pool, its folder is its lease's, `<term>-<lease>`, handed to the journal.)
                 let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { term, n: lease });
                 let dir = match pooled {
@@ -2065,7 +2006,7 @@ impl Agent {
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
-            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone() }),
+            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone(), outside: p.outside.iter().cloned().collect(), outside_n: p.outside_n }),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if let Some(sh) = self.shadow.as_mut() {
@@ -2367,12 +2308,8 @@ impl Agent {
             PASS_SPACE.saturating_sub(dir_bytes(&self.o.home.join("cache").join("base"))).max(room::RESERVE)
         } else if spec.id.starts_with("terrain 3/") {
             room::RESERVE + TERRAIN_SPACE
-        } else if spec.id.starts_with("terrain ") || spec.id.starts_with("terrain-lo ") {
-            room::RESERVE + PIECES_SPACE
-        } else if spec.id.starts_with("water ") {
-            room::RESERVE + WATER_SPACE
         } else {
-            room::RESERVE
+            steps::row(&step).map_or(room::RESERVE, |s| s.disk)
         }
     }
 
@@ -2632,14 +2569,14 @@ impl Agent {
     }
 
     /// The memory a job of `spec` is expected to take (MB): its targets' largest, as measured or
-    /// offered (crate::coord::Coordinator::peak), else its step's first guess (`second_peak`).
+    /// offered (crate::coord::Coordinator::peak), else its step's first guess (`first_peak`).
     fn spec_peak(&self, spec: &JobSpec) -> u64 {
         let step = step_of(&spec.id).unwrap_or_default();
         // (A unit's measure is its programs' most, one at a time: its job holds a GB besides.)
         let own = if step == "unit" { 1024 } else { 0 };
         match (&self.coord, spec.record.as_ref()) {
-            (Some(c), Some(w)) => own + w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| second_peak(&w.step))).max().unwrap_or(0),
-            _ => second_peak(&step),
+            (Some(c), Some(w)) => own + w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| first_peak(&w.step))).max().unwrap_or(0),
+            _ => first_peak(&step),
         }
     }
 
@@ -3261,7 +3198,7 @@ impl Agent {
                         s(&pack_cache),
                     ],
                     // (It reads the whole planet: at home only.)
-                    needs: Needs { cpu: true, nas: true, home: true },
+                    needs: steps::needs("osm-pass"),
                     restart_after_sleep: true,
                     record: None,
                 });
@@ -3277,7 +3214,7 @@ impl Agent {
                 id: "backup".into(),
                 what: "Backing up translations, descriptions and inputs".into(),
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
-                needs: Needs { cpu: false, nas: true, home: false },
+                needs: steps::needs("backup"),
                 restart_after_sleep: true,
                 record: None,
             });
@@ -3289,7 +3226,7 @@ impl Agent {
                 id: "gc".into(),
                 what: "Removing replaced files from the NAS".into(),
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
-                needs: Needs { cpu: false, nas: true, home: false },
+                needs: steps::needs("gc"),
                 restart_after_sleep: true,
                 record: None,
             });
@@ -3318,10 +3255,10 @@ impl Agent {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
-            // The pass's whole-planet reads (its missing sets, the units' reach), and the world's
-            // buildings (tens of GB onto the NAS), wait for home.
-            let home = matches!(step, "pass-sets" | "reach" | "buildings");
-            JobSpec { id, what: what.into(), cmd, needs: Needs { cpu: true, nas: true, home }, restart_after_sleep: true, record }
+            // (What it needs: the steps table's. The pass's whole-planet reads, its missing sets and
+            // the units' reach, and the world's buildings, tens of GB onto the NAS, wait for home; a
+            // catalog and a prune only write a little, and need no power.)
+            JobSpec { id, what: what.into(), cmd, needs: steps::needs(step), restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
@@ -3514,7 +3451,7 @@ impl Agent {
         } else {
             BTreeMap::new()
         };
-        for w in plan.iter_mut().filter(|w| claims::SHARED.contains(&w.step.as_str())) {
+        for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str())) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator, or claimed (a helper on an app from before it).
             let mut others = claims::others(root, &w.step, &self.me);
@@ -3543,7 +3480,7 @@ impl Agent {
             }
         }
         let mut offers = merged;
-        offers.sort_by_key(|o| claims::SHARED.iter().position(|s| *s == o.step));
+        offers.sort_by_key(|o| steps::SHARED.iter().position(|s| *s == o.step));
         if let Some(c) = &self.coord {
             c.offer(date, offers);
         }
@@ -3590,7 +3527,7 @@ impl Agent {
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
-                j.needs = Needs { cpu: false, nas: true, home: false };
+                j.needs = steps::needs("catalog-held");
                 jobs.push(j);
                 continue;
             }
@@ -3620,10 +3557,7 @@ impl Agent {
             };
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
             let step = w.step.clone();
-            let mut j = job(id, &what, &step, extra, Some(w));
-            // (A catalog and a prune only write a little: no power needed.)
-            j.needs = Needs { cpu: !matches!(step.as_str(), "catalog" | "prune"), nas: true, home: false };
-            jobs.push(j);
+            jobs.push(job(id, &what, &step, extra, Some(w)));
         }
         jobs
     }
@@ -3700,7 +3634,7 @@ impl Agent {
         // less what the round under way still does (the roads' chain counts its work too, which
         // goes out with it).
         let [roads, rail, landmarks, buildings] = chains;
-        let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if claims::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
+        let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if steps::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
         let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
         let ahead = under_way.as_ref().map_or(0.0, |u| chain_s(&u.2));
         let last_round_s = if roads.is_empty() { 0.0 } else { round_s.max(chain_s(&roads) - ahead) };
@@ -3709,7 +3643,7 @@ impl Agent {
         // round; and a catalog after it with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()) {
-            let jobs: Vec<forecast::Job> = if claims::SHARED.contains(&w.step.as_str()) {
+            let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
                 vec![(w.step.clone(), w.targets.first().map(|t| t.0.clone()).unwrap_or_default(), mine(&w.step, w.targets.len()))]
@@ -4625,9 +4559,9 @@ fn helpers(root: &Path) -> Vec<Status> {
     out
 }
 
-/// A job's step and targets when both Macs run its step (crate::agent::claims::SHARED).
+/// A job's step and targets when both Macs run its step (crate::agent::steps::SHARED).
 fn shared_targets(spec: &JobSpec) -> Option<(String, Vec<String>)> {
-    spec.record.as_ref().filter(|w| claims::SHARED.contains(&w.step.as_str())).map(|w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()))
+    spec.record.as_ref().filter(|w| steps::SHARED.contains(&w.step.as_str())).map(|w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()))
 }
 
 /// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
@@ -4725,22 +4659,9 @@ fn job_size(step: &str, regions: bool) -> usize {
 /// Targets per job for the steps whose work is per area or tile (each z3 pack of terrain or slope
 /// takes tens of minutes; an area's roads and scenery minutes; a z6 tile's tree cover, a z3 tile's
 /// assembly of it, candidates, peaks and map tiles less: a job of a few minutes, for leases and
-/// pausing).
+/// pausing): the steps table's.
 fn batch_size(step: &str) -> usize {
-    match step {
-        "terrain" | "slope" => 8,
-        "terrain-lo" | "slope-lo" | "trees" | "trees-lo" => 4,
-        // (A dense z6 tile's bldprep about a minute, its bldtiles about 10 s: a job of a few
-        // minutes at most.)
-        "bldprep" => 8,
-        "bldtiles" => 16,
-        "lo" => 2,
-        "unit" => 6,
-        "peaks" => 12,
-        "pack" => 16,
-        "pois" => 24,
-        _ => usize::MAX,
-    }
+    steps::batch(step)
 }
 
 /// An agent for a test: it reads the test's fixed Mac (cond::Mac::TEST), not the one running it.
@@ -4811,7 +4732,7 @@ mod tests {
         // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
         // pieces, terrain's and slope's, and the 3D buildings' among them) and tasks.
         assert_eq!(helper_steps(gb(20), gb(10), 0), ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail", "bldtile", "treeblock", "terrainsub"]);
-        assert_eq!(helper_steps(gb(70), 0, 0), [claims::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock", "terrainsub"]].concat());
+        assert_eq!(helper_steps(gb(70), 0, 0), [steps::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock", "terrainsub"]].concat());
         assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail", "bldtile", "treeblock", "terrainsub"]);
         // (Tree cover's rows and terrain's subtrees need 1 GB.)
         assert_eq!(helper_steps(gb(3), gb(2), 0), ["treeblock", "terrainsub"]);
@@ -6208,7 +6129,7 @@ mod pool_tests {
         // On, in the pool: off waits for the lead to be caught up and the job to end.
         std::fs::create_dir_all(r.join("state/build/terms")).unwrap();
         std::fs::write(r.join("state/build/terms/1.json"), "{}").unwrap();
-        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None, lead: None };
+        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None, lead: None, outside: Vec::new(), outside_n: 0 };
         write(&st(Some(lead.clone()), true));
         assert!(pool::status(&r).contains("the pool: on"));
         let e = pool::switch_off(&r, false).unwrap_err().to_string();

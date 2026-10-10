@@ -382,7 +382,7 @@ three (§3.2–3.3).
 - **`bld-fetch`** is `dem/bldfetch.py` (§2.6), run by `scenic-build bld-fetch` with the coverage
   written as GeoJSON (`--coverage`, from the pass's outlines, as the rail feeds have it). The agent
   runs it as a network job (one of the second slot's, with the heritage chain and the rail feeds:
-  `agent::LIGHT`) when its key changes (§3.2). It skips what's there, so a run is a listing of S3
+  `agent::steps::LIGHT`) when its key changes (§3.2). It skips what's there, so a run is a listing of S3
   and of JRC's tiles. Once the release has left S3 (§5.2), it goes by the footers read before: what
   the coverage needs and is here passes, a file it needs and lacks fails the job (the tiles it
   would have fed wait for the next pinned release).
@@ -469,11 +469,11 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   first region in the order they're built whose coverage meets the tile, then `spatial_order`), so
   the buildings of the region being built come first. With no "bld-release" in the plan's inputs
   (a caller that didn't read the sources) or "?" (unreadable now), no buildings work at all.
-- **The second job** (`agent::SECOND`) takes `bld-fetch` with the network steps (`agent::LIGHT`:
+- **The second job** (`agent::steps::SECOND`) takes `bld-fetch` with the network steps (`agent::steps::LIGHT`:
   while the Mac is in use too), and `bldprep` and `bldtiles` last, after units and slope, as CPU
-  work (not while the Mac is in use). Never `bldprep` beside another `bldprep` (`agent::NAS_READS`:
+  work (not while the Mac is in use). Never `bldprep` beside another `bldprep` (`agent::steps::NAS_READS`:
   each reads up to ~3 GB of the NAS's parquet), nor anything beside a job that runs alone (the OSM
-  pass, the pass's worldwide jobs, the water, GC: `agent::ALONE`), so never beside the planet's
+  pass, the pass's worldwide jobs, the water, GC: `agent::steps::ALONE`), so never beside the planet's
   reads.
 - **Rounds:** buildings don't hold a round, and a region's readiness (`ready`) doesn't wait for
   them: their packs go out with the next round's catalog, as the trains' and landmarks' outputs do.
@@ -499,7 +499,7 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   with the others (`chains_left`: bldtiles after bldprep, `forecast::chain_deps`); first guesses
   6 s a `bldprep`, 2 s a `bldtiles` (a tile on average: most are sparse; §5.1's estimate), 5 min a
   fetch until timed. A helper is counted on for both (the forecast's shared steps are
-  `claims::SHARED`, no longer a copy of its list). The worker page names the steps.
+  `steps::SHARED`, no longer a copy of its list). The worker page names the steps.
 
 ### 3.4 Formats
 
@@ -587,7 +587,7 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   refuses a hand-off of them: both Macs run B2's app before the pool's lead may move (pool.md
   §6.1). From B2 on, `Keys` keeps records it doesn't know (`other`).
 - **Helper Macs** (today's M1; any member in `docs/pool.md`): both steps are shared steps (B2,
-  `agent::claims::SHARED`, last in its order), offered from the far end as terrain and units are;
+  `agent::steps::SHARED`, last in its order), offered from the far end as terrain and units are;
   a hand-off may save only its tiles' files (`coord::saves`: `work/bld/6-x-y` for `bldprep`,
   `layers/buildings/hi/6-x-y` for `bldtiles`). `bldprep` needs the
   NAS (it reads up to ~3 GB of row groups a tile) and, in B1's pilot, 5.1 GB of memory at most for
