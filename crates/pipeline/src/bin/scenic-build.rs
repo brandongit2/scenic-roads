@@ -1207,8 +1207,19 @@ fn cost_start(step: &str, target: &str) -> std::time::Instant {
     std::time::Instant::now()
 }
 
+/// The bytes this process had added to the caches as its last target began (store::cachefile::
+/// written), for the disk its next cost line notes.
+static WRITTEN_AT_START: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The disk the target under way has taken so far (MB): the bytes this process added to the caches
+/// since it began (store::cachefile counts what its accessors write: docs/pool.md §7.7).
+fn disk_since_start() -> u64 {
+    store::cachefile::written().saturating_sub(WRITTEN_AT_START.load(std::sync::atomic::Ordering::Relaxed)) >> 20
+}
+
 /// Notes that the target whose cost key is `key` begins (`SCENIC_COSTS`).
 fn note_started(key: &str) {
+    WRITTEN_AT_START.store(store::cachefile::written(), std::sync::atomic::Ordering::Relaxed);
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
@@ -1223,7 +1234,7 @@ fn note_started(key: &str) {
 /// work that fits its memory (crate::coord::job_peak).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::coord::cost_version(step) });
+    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::coord::cost_version(step), "disk_mb": disk_since_start() });
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
     if let Err(e) = r {
         eprintln!("{step} {target}: noting what it cost: {e}");
@@ -3262,7 +3273,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let peak = peak.max(pipeline::unit::take_peak());
     eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), peak as f64 / 1e9);
     if let Some(p) = std::env::var_os("SCENIC_COSTS") {
-        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::coord::cost_version("unit") });
+        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::coord::cost_version("unit"), "disk_mb": disk_since_start() });
         let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
         if let Err(e) = r {
             eprintln!("unit {}: noting what it cost: {e}", u.slash());

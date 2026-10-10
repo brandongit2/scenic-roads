@@ -703,6 +703,11 @@ fn main() -> Result<()> {
                     for (k, f) in floors {
                         println!("{k}: {:.1} GB{}{}", f.mb as f64 / 1024.0, if f.alone { ", held alone" } else { ", in a batch" }, if f.v > 0 { format!(", v{}", f.v) } else { String::new() });
                     }
+                    // (The disk floors: what each target was seen to take on the disk at least.)
+                    let disks: std::collections::BTreeMap<String, u64> = serde_json::from_value(v["disks"].clone()).unwrap_or_default();
+                    for (k, mb) in disks {
+                        println!("{k}: disk {:.1} GB", mb as f64 / 1024.0);
+                    }
                 }
                 Some(x) => bail!("scenic pool on|off|status [--force] | floors [--clear [<step> [<target>]]], not {x}"),
             }

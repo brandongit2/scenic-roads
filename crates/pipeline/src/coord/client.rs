@@ -185,7 +185,7 @@ impl Client {
     /// `fail`, with what the job saw its targets hold at least (crate::agent::memguard: cost key,
     /// MB), for the lease's floors.
     pub fn fail_with(&self, lease: u64, error: &str, oom_mb: Option<u64>, floors: &[(String, crate::agent::memguard::Floor)]) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb, interrupted: false, floors: floors.to_vec() };
+        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb, interrupted: false, floors: floors.to_vec(), disks: Vec::new() };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }
@@ -199,7 +199,15 @@ impl Client {
     /// `give_back`, with what the job saw its targets hold at least (crate::agent::memguard: cost
     /// key, MB), for the lease's floors.
     pub fn give_back_with(&self, lease: u64, why: &str, floors: &[(String, crate::agent::memguard::Floor)]) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted: true, floors: floors.to_vec() };
+        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted: true, floors: floors.to_vec(), disks: Vec::new() };
+        self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
+        Ok(())
+    }
+
+    /// Ends lease `lease` unfinished: given back (`interrupted`) or failed, with what the job saw its
+    /// targets take at least, in memory (`floors`) and on the disk (`disks`: cost key, MB).
+    pub fn end_with(&self, lease: u64, why: &str, interrupted: bool, floors: &[(String, crate::agent::memguard::Floor)], disks: &[(String, u64)]) -> Result<()> {
+        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted, floors: floors.to_vec(), disks: disks.to_vec() };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }

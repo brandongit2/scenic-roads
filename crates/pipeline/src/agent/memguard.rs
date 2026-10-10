@@ -31,6 +31,11 @@ pub const DEFAULT: bool = true;
 /// How often the jobs' memory is sampled.
 pub const EVERY: Duration = Duration::from_secs(5);
 
+/// How often the top of each job's scratch folder is looked at for the disk it takes (docs/pool.md
+/// §7.7: the allocated sizes of the files there, no walk of its tree), and the window a job's disk
+/// growth is judged over.
+pub const DISK_EVERY: Duration = Duration::from_secs(60);
+
 /// The swap that, grown within `SWAP_WINDOW`, takes the Mac to be in trouble.
 const SWAP_GROWTH: u64 = 1 << 30;
 /// The window swap growth is judged over: recent, so the owner's own use growing swap hours ago
@@ -181,6 +186,62 @@ pub struct Watch {
     /// Whether the guard froze it (the Mac in trouble with it past the limit alone: the agent's loop
     /// stops it).
     pub frozen: bool,
+    /// Where its accessors keep the bytes they've added to the caches (store::cachefile's
+    /// `WRITTEN_ENV`), and its scratch folder (its top looked at every `DISK_EVERY`).
+    pub written: PathBuf,
+    pub scratch: Option<PathBuf>,
+    /// The disk it takes now, by those counts (bytes): what its accessors wrote, and the files at
+    /// the top of its scratch folder as last looked at.
+    pub disk_now: u64,
+    /// The most it took on the disk while each target was under way (bytes, by cost key): its
+    /// scratch folder's top and what its accessors wrote since that target began, or (while it ran
+    /// alone) the disk's free space fallen since it began, the larger.
+    pub disk_seen: BTreeMap<String, u64>,
+    /// The disk's free space as it began (bytes; None: unknown), and whether it has run alone so far.
+    pub free_start: Option<u64>,
+    pub alone: bool,
+    /// The disk guard froze it (the Mac short of room, it growing fastest: the agent's loop makes
+    /// room, then lets it go on or gives it back).
+    pub disk_frozen: bool,
+    /// Its disk counts over the last `DISK_EVERY` (when, bytes), for how fast it grows.
+    pub disk_hist: std::collections::VecDeque<(std::time::Instant, u64)>,
+    /// The target under way as its disk was last counted, and what its accessors had written and the
+    /// disk had free as it began.
+    pub disk_key: Option<(String, u64, Option<u64>)>,
+    /// The top of its scratch folder as last looked at (bytes), and when.
+    pub scratch_top: u64,
+    pub looked: Option<std::time::Instant>,
+}
+
+/// The allocated bytes of the files at the top of folder `dir` (not its subfolders': no walk of its
+/// tree; Planetiler's and osmium's outputs, the largest a job makes, are there).
+pub fn top_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                m.blocks() * 512
+            }
+            #[cfg(not(unix))]
+            m.len()
+        })
+        .sum()
+}
+
+/// The disk each target of a job took, as its costs file notes it (`disk_mb` on a target's end:
+/// what its accessors wrote meanwhile), by cost key (MB).
+pub fn noted_disks(costs: &Path) -> Vec<(String, u64)> {
+    let Ok(s) = std::fs::read_to_string(costs) else { return Vec::new() };
+    s.lines()
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            Some((v["unit"].as_str()?.to_string(), v["disk_mb"].as_u64()?))
+        })
+        .collect()
 }
 
 impl Watch {
@@ -204,6 +265,27 @@ impl Watch {
         let v = crate::coord::cost_version(&self.step);
         self.seen.iter().filter(|(k, mb)| !measured.contains(k) && **mb > 0).map(|(k, mb)| (k.clone(), Floor { mb: *mb, alone, v })).collect()
     }
+
+    /// The disk floors its run teaches (cost key → MB): the most it was seen to take while each
+    /// target was under way (`disk_seen`), or what its costs file notes its accessors wrote for it,
+    /// the larger.
+    pub fn disk_floors(&self) -> Vec<(String, u64)> {
+        let mut d: BTreeMap<String, u64> = self.disk_seen.iter().map(|(k, b)| (k.clone(), b >> 20)).collect();
+        for (k, mb) in noted_disks(&self.costs) {
+            let e = d.entry(k).or_insert(0);
+            *e = (*e).max(mb);
+        }
+        d.into_iter().filter(|(_, mb)| *mb > 0).collect()
+    }
+
+    /// How fast it grows on the disk: its count now less its count `DISK_EVERY` ago (or at the first
+    /// count within that).
+    pub fn disk_growth(&self) -> u64 {
+        match (self.disk_hist.front(), self.disk_hist.back()) {
+            (Some((_, a)), Some((_, b))) => b.saturating_sub(*a),
+            _ => 0,
+        }
+    }
 }
 
 /// What the sampler's thread and the agent's loop share.
@@ -222,6 +304,16 @@ struct Inner {
     /// Where each sample is written (`Live`: the agent's folder's `memory.json`), for the status to
     /// show the latest whatever the agent's loop waits on.
     file: Option<PathBuf>,
+    /// The disk guard: whether it freezes a job when the Mac runs short (the agent's switch), the
+    /// free space short of which it does (`room::RESERVE`), and the folder whose disk it watches.
+    disk_on: bool,
+    reserve: u64,
+    disk_at: Option<PathBuf>,
+    /// As a test sets them: the disk's free space, and what each slot's job's disk counts (bytes).
+    free_set: Option<u64>,
+    disk_set: Option<Vec<Option<u64>>>,
+    /// The disk's free space as last read (bytes).
+    free: Option<u64>,
 }
 
 /// The guard's latest sample, written each time by its thread (`LIVE` in the agent's folder): when
@@ -276,8 +368,11 @@ impl Sampler {
     }
 
     /// Watches slot `k`'s job, from its start.
-    pub fn watch(&self, k: usize, w: Watch) {
+    pub fn watch(&self, k: usize, mut w: Watch) {
         if let Ok(mut g) = self.inner.lock() {
+            // (Alone so far when no other job runs; the disk's free space as it begins.)
+            w.alone = g.watches.iter().enumerate().all(|(j, o)| j == k || o.is_none());
+            w.free_start = g.free_set.or_else(|| g.disk_at.as_ref().and_then(|d| crate::agent::room::disk_free(d).ok())).or(w.free_start);
             if let Some(s) = g.watches.get_mut(k) {
                 *s = Some(w);
             }
@@ -287,6 +382,51 @@ impl Sampler {
     /// Stops watching slot `k`'s job (it ended): what it saw.
     pub fn unwatch(&self, k: usize) -> Option<Watch> {
         self.inner.lock().ok()?.watches.get_mut(k)?.take()
+    }
+
+    /// The disk guard: on or off (the agent's switch), the free space short of which it freezes the
+    /// job growing fastest (bytes), and the folder on the disk it watches (the agent's).
+    pub fn set_disk(&self, on: bool, reserve: u64, at: &Path) {
+        if let Ok(mut g) = self.inner.lock() {
+            (g.disk_on, g.reserve, g.disk_at) = (on, reserve, Some(at.to_path_buf()));
+        }
+    }
+
+    /// A test's disk: its free space, and what each slot's job's disk counts (bytes).
+    pub fn set_test_disk(&self, free: Option<u64>, counts: Option<Vec<Option<u64>>>) {
+        if let Ok(mut g) = self.inner.lock() {
+            (g.free_set, g.disk_set) = (free, counts);
+        }
+    }
+
+    /// The disk's free space as the last sample read it (bytes).
+    pub fn free(&self) -> Option<u64> {
+        self.inner.lock().ok()?.free
+    }
+
+    /// Whether the disk guard froze slot `k`'s job.
+    pub fn disk_frozen(&self, k: usize) -> bool {
+        self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.as_ref().map(|w| w.disk_frozen))).unwrap_or(false)
+    }
+
+    /// What slot `k`'s job takes on the disk now, by its counts (bytes).
+    pub fn disk_now(&self, k: usize) -> Option<u64> {
+        self.inner.lock().ok()?.watches.get(k)?.as_ref().map(|w| w.disk_now)
+    }
+
+    /// Lets slot `k`'s job go on, if the disk guard froze it (room made, or the guard off); true when
+    /// it did.
+    pub fn thaw_disk(&self, k: usize) -> bool {
+        let Ok(mut g) = self.inner.lock() else { return false };
+        let real = g.held_set.is_none() && g.disk_set.is_none();
+        let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| w.disk_frozen) else { return false };
+        w.disk_frozen = false;
+        w.disk_hist.clear();
+        // (Still frozen for its memory: it stays so.)
+        if w.frozen || !real {
+            return true;
+        }
+        crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
     }
 
     /// Whether it guards (the switch, as the agent read it) and this Mac's limit (MB; 0: unknown).
@@ -318,6 +458,10 @@ impl Sampler {
         let Ok(mut g) = self.inner.lock() else { return false };
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| w.frozen) else { return false };
         w.frozen = false;
+        // (Still frozen for the disk: it stays so.)
+        if w.disk_frozen {
+            return true;
+        }
         crate::sys::signal_group(w.pgid, crate::sys::Signal::Cont)
     }
 
@@ -391,6 +535,7 @@ impl Sampler {
                 crate::whole::write(&f, &b).ok();
             }
         }
+        self.tick_disk();
         for k in over {
             if !self.in_trouble() {
                 continue;
@@ -406,6 +551,88 @@ impl Sampler {
             eprintln!("agent: memory guard {what}");
             g.froze.push((crate::agent::jobs::now_s(), what));
         }
+    }
+}
+
+impl Sampler {
+    /// The disk's part of a sample (docs/pool.md §7.7): each job's disk counted (what its accessors
+    /// wrote, `WRITTEN_ENV`'s file; the top of its scratch folder, every `DISK_EVERY`), kept against
+    /// its target under way, with the disk's fall while it runs alone; and, the disk guard on and the
+    /// disk's free space short of the reserve, the job growing fastest frozen at once (the agent's
+    /// loop makes room from what no job holds, then lets it go on, or gives it back).
+    pub fn tick_disk(&self) {
+        let (at, free_set, set) = match self.inner.lock() {
+            Ok(g) => (g.disk_at.clone(), g.free_set, g.disk_set.clone()),
+            Err(_) => return,
+        };
+        let free = free_set.or_else(|| at.as_ref().and_then(|d| crate::agent::room::disk_free(d).ok()));
+        let now = std::time::Instant::now();
+        // (Read outside the lock: the files take time.)
+        let jobs: Vec<(usize, i32, PathBuf, Option<PathBuf>, bool)> = match self.inner.lock() {
+            Ok(g) => g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().map(|w| (k, w.pgid, w.written.clone(), w.scratch.clone(), w.looked.is_none_or(|t| now.duration_since(t) >= DISK_EVERY)))).collect(),
+            Err(_) => return,
+        };
+        let mut got: Vec<(usize, i32, u64, Option<u64>, Option<String>)> = Vec::new();
+        for (k, pgid, written, scratch, look) in jobs {
+            let w = match &set {
+                Some(v) => v.get(k).copied().flatten().unwrap_or(0),
+                None => store::cachefile::read_written(&written),
+            };
+            let top = if set.is_some() { Some(0) } else { scratch.filter(|_| look).map(|d| top_bytes(&d)) };
+            let key = self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
+            got.push((k, pgid, w, top, key));
+        }
+        let Ok(mut g) = self.inner.lock() else { return };
+        g.free = free;
+        let n = g.watches.iter().filter(|w| w.is_some()).count();
+        for (k, pgid, written, top, key) in got {
+            let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| w.pgid == pgid) else { continue };
+            if let Some(t) = top {
+                (w.scratch_top, w.looked) = (t, Some(now));
+            }
+            w.alone &= n <= 1;
+            w.disk_now = written + w.scratch_top;
+            w.disk_hist.push_back((now, w.disk_now));
+            while w.disk_hist.len() > 1 && w.disk_hist.front().is_some_and(|(t, _)| now.duration_since(*t) > DISK_EVERY) {
+                w.disk_hist.pop_front();
+            }
+            let Some(key) = key else { continue };
+            // (What its accessors had written, and the disk's free space, as the target began: the
+            // first as the job did.)
+            let (since, free_then) = match &w.disk_key {
+                Some((k2, at, f)) if *k2 == key => (*at, *f),
+                last => {
+                    let (at, f) = if last.is_none() { (0, w.free_start) } else { (written, free) };
+                    w.disk_key = Some((key.clone(), at, f));
+                    (at, f)
+                }
+            };
+            let fell = match (w.alone, free_then, free) {
+                (true, Some(a), Some(b)) => a.saturating_sub(b),
+                _ => 0,
+            };
+            let took = (w.scratch_top + written.saturating_sub(since)).max(fell);
+            let e = w.disk_seen.entry(key).or_insert(0);
+            *e = (*e).max(took);
+        }
+        // The disk guard: short of the reserve, none frozen for it yet: the job growing fastest
+        // (else the largest) frozen at once.
+        let short = g.disk_on && free.is_some_and(|f| f < g.reserve);
+        if !short || g.watches.iter().flatten().any(|w| w.disk_frozen) {
+            return;
+        }
+        let Some(k) = g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().map(|w| (k, w.disk_growth(), w.disk_now))).max_by_key(|&(k, grew, now)| (grew, now, std::cmp::Reverse(k))).map(|(k, _, _)| k) else { return };
+        let real = g.held_set.is_none() && g.disk_set.is_none();
+        let reserve = g.reserve;
+        let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { return };
+        if real && !w.frozen {
+            crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+        }
+        w.disk_frozen = true;
+        let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+        let what = format!("froze slot {k}'s job: the disk has {:.1} GB free, short of the {} GB kept free, and it grew fastest ({:.1} GB in the last minute, {:.1} GB in all)", gb(free.unwrap_or(0)), reserve >> 30, gb(w.disk_growth()), gb(w.disk_now));
+        eprintln!("agent: disk guard {what}");
+        g.froze.push((crate::agent::jobs::now_s(), what));
     }
 }
 
@@ -535,6 +762,61 @@ mod tests {
         s.set_test(Some(vec![None, Some(50 << 10)]), Some(true));
         s.tick();
         assert!(!s.frozen(1) && s.unwatch(1).unwrap().seen.get("pack 6/2/2") == Some(&(50 << 10)));
+    }
+
+    /// A job's disk counted by its accessors' bytes and the top of its scratch folder, kept per
+    /// target under way as its disk floor (with what its costs file notes), the disk's fall counting
+    /// only while it runs alone; the disk guard, short of the reserve, freezes the job growing
+    /// fastest, once, and lets it go on when told.
+    #[test]
+    fn a_jobs_disk_is_counted_per_target_and_the_fastest_frozen_short_of_room() {
+        let d = tempfile::tempdir().unwrap();
+        let g: u64 = 1 << 30;
+        let s = Sampler::new(2);
+        s.set_disk(true, 30 * g, d.path());
+        s.set_test(Some(vec![None, None]), Some(false));
+        let costs = d.path().join("c.jsonl");
+        std::fs::write(&costs, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n").unwrap();
+        s.set_test_disk(Some(100 * g), None);
+        s.watch(0, Watch { pgid: 0, costs: costs.clone(), done: d.path().join("d.txt"), step: "terrain".into(), targets: vec!["6/1/1".into(), "6/1/2".into()], ..Default::default() });
+        // Alone: its accessors wrote 2 GB, the disk fell 5 GB (outside programs'): 5 GB its target's.
+        s.set_test_disk(Some(95 * g), Some(vec![Some(2 * g), None]));
+        s.tick();
+        // The next target: what its accessors wrote since it began.
+        std::fs::write(&costs, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3,\"disk_mb\":6144}\n{\"unit\":\"terrain 6/1/2\",\"started\":4}\n").unwrap();
+        s.set_test_disk(Some(95 * g), Some(vec![Some(2 * g), None]));
+        s.tick();
+        // A second job beside: the fall no longer counts for either.
+        s.watch(1, Watch { pgid: 1, costs: d.path().join("c2.jsonl"), done: d.path().join("d2.txt"), step: "pack".into(), targets: vec!["6/2/2".into()], ..Default::default() });
+        s.set_test_disk(Some(60 * g), Some(vec![Some(3 * g), Some(g / 2)]));
+        s.tick();
+        assert_eq!(s.disk_now(0), Some(3 * g));
+        assert!(!s.disk_frozen(0) && !s.disk_frozen(1));
+        // Short of the reserve: the job growing fastest frozen (slot 0, 1 GB against half a GB).
+        s.set_test_disk(Some(20 * g), Some(vec![Some(4 * g), Some(g)]));
+        s.tick();
+        assert!(s.disk_frozen(0) && !s.disk_frozen(1));
+        assert!(s.take_froze().iter().any(|(_, w)| w.contains("grew fastest")));
+        // Once: none other frozen while it is.
+        s.set_test_disk(Some(10 * g), Some(vec![Some(4 * g), Some(3 * g)]));
+        s.tick();
+        assert!(!s.disk_frozen(1));
+        assert!(s.thaw_disk(0) && !s.disk_frozen(0));
+        let w = s.unwatch(0).unwrap();
+        let floors: BTreeMap<String, u64> = w.disk_floors().into_iter().collect();
+        assert_eq!(floors.get("terrain 6/1/1"), Some(&6144), "its costs file's, past the 5 GB fall: {floors:?}");
+        assert_eq!(floors.get("terrain 6/1/2"), Some(&2048), "what its accessors wrote since it began: {floors:?}");
+        // The guard off: nothing frozen, the counts learned all the same.
+        s.set_disk(false, 30 * g, d.path());
+        s.set_test_disk(Some(g), Some(vec![None, Some(5 * g)]));
+        s.tick();
+        assert!(!s.disk_frozen(1) && s.unwatch(1).unwrap().disk_floors() == [("pack 6/2/2".to_string(), 5120)]);
+        // The allocated bytes at the top of a folder, not its subfolders'.
+        std::fs::write(d.path().join("top.bin"), vec![1u8; 1 << 20]).unwrap();
+        std::fs::create_dir_all(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/deep.bin"), vec![1u8; 4 << 20]).unwrap();
+        let top = top_bytes(d.path());
+        assert!(top >= 1 << 20 && top < 4 << 20, "{top}");
     }
 
     #[test]

@@ -224,6 +224,11 @@ pub struct Shared {
     /// target, a run's own (the same kind of figure: its job's processes together, sampled), takes
     /// its place. Kept in `floors.json`.
     pub floors: BTreeMap<String, Floor>,
+    /// The disk a target takes at least (MB, by cost key): the most a run of it was seen to take
+    /// (counted by the accessors that write a job's files, the largest at the top of its scratch
+    /// folder, the disk's fall while it ran alone: crate::agent::memguard). Only rises. Kept in
+    /// `disks.json`.
+    pub disks: BTreeMap<String, u64>,
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
@@ -272,6 +277,27 @@ impl Shared {
         if let Err(e) = r {
             eprintln!("coordinator: saving the floors: {e:#}");
         }
+        let r = serde_json::to_vec(&self.disks).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.dir.join("disks.json"), &b));
+        if let Err(e) = r {
+            eprintln!("coordinator: saving the disk floors: {e:#}");
+        }
+    }
+
+    /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept. One of the
+    /// OSM pass (`osm-pass <date>`) puts the earlier passes' away. True when any changed.
+    fn add_disks(&mut self, disks: &[(String, u64)]) -> bool {
+        let mut any = false;
+        for (u, mb) in disks {
+            if *mb == 0 || self.disks.get(u).is_some_and(|old| old >= mb) {
+                continue;
+            }
+            if u.starts_with("osm-pass ") {
+                self.disks.retain(|k, _| !k.starts_with("osm-pass ") || k == u);
+            }
+            self.disks.insert(u.clone(), *mb);
+            any = true;
+        }
+        any
     }
 
     /// Costs measured (by `worker`): each in place of what was kept, and of its target's floor.
@@ -548,6 +574,9 @@ pub struct Done {
     /// What its targets took at least, as it saw them (crate::agent::memguard: cost key, floor).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub floors: Vec<(String, Floor)>,
+    /// The disk its targets took at least, as it saw them (cost key, MB).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<(String, u64)>,
     #[serde(default)]
     pub outputs: Vec<task::Output>,
     /// Inputs a task's programs removed.
@@ -583,6 +612,9 @@ pub struct Fail {
     /// a job stopped past its Mac's limit says what it held.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub floors: Vec<(String, Floor)>,
+    /// The disk its targets took at least, as it saw them (cost key, MB).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<(String, u64)>,
 }
 
 impl Coordinator {
@@ -606,6 +638,7 @@ impl Coordinator {
         }
         let costs = std::fs::read(dir.join("costs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let floors = std::fs::read(dir.join("floors.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let disks = std::fs::read(dir.join("disks.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
         // agent's, the pause alone).
         let kept: serde_json::Value = std::fs::read(dir.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
@@ -623,7 +656,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -874,6 +907,37 @@ impl Coordinator {
         floors_cleared(&mut self.shared.lock().unwrap(), clear, step, target)
     }
 
+    /// What this Mac's job saw its targets take on the disk at least (cost key, MB).
+    pub fn add_disks(&self, disks: &[(String, u64)]) {
+        let mut s = self.shared.lock().unwrap();
+        if s.add_disks(disks) {
+            s.save_costs();
+        }
+    }
+
+    /// The disk floors kept (cost key → MB).
+    pub fn disks(&self) -> BTreeMap<String, u64> {
+        self.shared.lock().unwrap().disks.clone()
+    }
+
+    /// What a job's target is measured to take (docs/pool.md §7.7): its memory (MB: its run's
+    /// measure the way its step runs now, or its floor, the larger) and disk (MB: its disk floor),
+    /// each its own when a run of it said, else the largest of its step's other targets' (a prior
+    /// learned, not kept by hand: what's offered or guessed counts for nothing); None for a cold
+    /// start, a target of a step none of whose targets has been measured.
+    pub fn measured(&self, step: &str, target: &str) -> Option<Measured> {
+        let s = self.shared.lock().unwrap();
+        let v = cost_version(step);
+        let key = cost_key(step, target);
+        let mem_of = |k: &str| s.costs.get(k).filter(|c| c.v >= v).map(|c| c.peak_mb).into_iter().chain(s.floors.get(k).filter(|f| f.v >= v).map(|f| f.mb)).max();
+        let of_step = |k: &String| crate::agent::memguard::step_of_key(k) == step;
+        let own_mem = mem_of(&key);
+        let prior_mem = s.costs.keys().chain(s.floors.keys()).filter(|k| of_step(k)).filter_map(|k| mem_of(k)).max();
+        let mem = own_mem.or(prior_mem)?;
+        let disk = s.disks.get(&key).copied().or_else(|| s.disks.iter().filter(|(k, _)| of_step(k)).map(|(_, d)| *d).max()).unwrap_or(0);
+        Some(Measured { mem_mb: mem, disk_mb: disk, own: own_mem.is_some() })
+    }
+
     /// The largest memory limit a worker around says its Mac has (crate::agent::memguard::limit_mb:
     /// an agent asking in the last ten minutes), when any says one.
     pub fn largest_limit(&self) -> Option<u64> {
@@ -975,7 +1039,7 @@ impl Coordinator {
         let s = self.shared.lock().unwrap();
         let (now, unix) = (s.now(), unix_now());
         let failed = s.failed.iter().map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n)).collect();
-        PoolState { leases: s.leases.snapshot(), costs: s.costs.clone(), floors: s.floors.clone(), failed, pause: s.paused.clone(), pause_at: s.pause_at }
+        PoolState { leases: s.leases.snapshot(), costs: s.costs.clone(), floors: s.floors.clone(), disks: s.disks.clone(), failed, pause: s.paused.clone(), pause_at: s.pause_at }
     }
 
     /// Takes up `p`, another lead's state (a handover's, or the term before's): its leases over
@@ -994,6 +1058,8 @@ impl Coordinator {
         s.costs.extend(p.costs.clone());
         let floors: Vec<(String, Floor)> = p.floors.iter().map(|(k, v)| (k.clone(), *v)).collect();
         s.add_floors(&floors);
+        let disks: Vec<(String, u64)> = p.disks.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        s.add_disks(&disks);
         for (w, k, at, n) in &p.failed {
             let at = now.checked_sub(Duration::from_secs(unix.saturating_sub(*at))).unwrap_or(now);
             s.failed.insert((w.clone(), k.clone()), (at, *n));
@@ -1019,6 +1085,15 @@ impl Coordinator {
     }
 }
 
+/// What a target is measured to take (`Coordinator::measured`): memory and disk (MB), and whether
+/// its own run measured its memory (else its step's largest: a prior).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Measured {
+    pub mem_mb: u64,
+    pub disk_mb: u64,
+    pub own: bool,
+}
+
 /// The coordinator's state as the pool keeps it per term (`Coordinator::pool_state`):
 /// `state/coord/term/<E>/state.json`, and what a lead settling a handover hands over.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1030,6 +1105,9 @@ pub struct PoolState {
     /// The targets' floors (crate::agent::memguard: cost key → floor).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub floors: BTreeMap<String, Floor>,
+    /// The targets' disk floors (cost key → MB).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub disks: BTreeMap<String, u64>,
     /// (worker, cost key, when it last failed: unix seconds, how many times).
     #[serde(default)]
     pub failed: Vec<(String, String, u64, u32)>,
@@ -1145,11 +1223,18 @@ fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result
 fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Option<&str>) -> BTreeMap<String, Floor> {
     if clear {
         let n = s.floors.len();
-        s.floors.retain(|k, _| match (step, target) {
+        let keep = |k: &String| match (step, target) {
             (None, _) => false,
             (Some(st), None) => crate::agent::memguard::step_of_key(k) != st,
             (Some(st), Some(t)) => *k != cost_key(st, t),
-        });
+        };
+        s.floors.retain(|k, _| keep(k));
+        // (Their disk floors with them.)
+        let d = s.disks.len();
+        s.disks.retain(|k, _| keep(k));
+        if s.disks.len() != d && s.floors.len() == n {
+            s.save_costs();
+        }
         if s.floors.len() != n {
             eprintln!("coordinator: {} floor{} cleared", n - s.floors.len(), if n - s.floors.len() == 1 { "" } else { "s" });
             s.save_costs();
@@ -1490,6 +1575,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     // (What the lease's targets took at least, those it didn't finish too.)
                     let floors: Vec<(String, Floor)> = d.floors.into_iter().filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0))).collect();
                     s.add_floors(&floors);
+                    let disks: Vec<(String, u64)> = d.disks.into_iter().filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0)) || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)).collect();
+                    s.add_disks(&disks);
                     s.save_leases();
                     s.save_costs();
                     let secs = now.duration_since(l.granted).as_secs_f64();
@@ -1544,7 +1631,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     }
                     // (What its targets took at least: a job stopped past its Mac's limit.)
                     let floors: Vec<(String, Floor)> = f.floors.iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))).cloned().collect();
-                    if s.add_floors(&floors) {
+                    let disks: Vec<(String, u64)> = f.disks.iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0)) || (targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)).cloned().collect();
+                    if s.add_floors(&floors) | s.add_disks(&disks) {
                         s.save_costs();
                     }
                     s.save_leases();
@@ -1655,8 +1743,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // The targets' floors (crate::agent::memguard), cleared (`{"clear": true}`, of a `step`,
             // of its `target`) first when asked: `scenic pool floors`.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-            let floors = floors_cleared(&mut shared.lock().unwrap(), b["clear"].as_bool() == Some(true), b["step"].as_str(), b["target"].as_str());
-            Ok((200, serde_json::json!({ "floors": floors })))
+            let mut s = shared.lock().unwrap();
+            let floors = floors_cleared(&mut s, b["clear"].as_bool() == Some(true), b["step"].as_str(), b["target"].as_str());
+            Ok((200, serde_json::json!({ "floors": floors, "disks": s.disks })))
         }
         "/work/timings" => {
             // The runs' timings kept (crate::timings), the last `last` of each kind (or of `kind`):
@@ -2514,6 +2603,31 @@ mod tests {
         assert!(app_ok(None, ""));
         // Never a panic, whatever a worker says.
         assert!(!app_ok(Some("20261005-150é-x"), "20261005-1508-84142d3") && !app_ok(Some("é"), "20261005-1508-84142d3") && !app_ok(Some(""), "x"));
+    }
+
+    #[test]
+    fn a_disk_floor_is_learned_rises_and_moves_and_a_step_measured_once_has_a_prior() {
+        let (_d, c, w) = start();
+        c.offer("p", vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 2500)], batch: 1 }]);
+        let g = w.ask(&Ask { can: vec!["peaks".into()], ..ask(8192) }).unwrap().unwrap();
+        // A cold start: no target of its step measured.
+        assert_eq!(c.measured("peaks", "6/1/1"), None);
+        // Given back with what it took on the disk (its lease's targets' alone).
+        w.end_with(g.lease, "the build paused", true, &[], &[(cost_key("peaks", "6/1/1"), 7000), (cost_key("peaks", "6/9/9"), 1)]).unwrap();
+        assert_eq!(c.disks(), [(cost_key("peaks", "6/1/1"), 7000)].into());
+        // Only rises; it moves with the pool's state.
+        c.add_disks(&[(cost_key("peaks", "6/1/1"), 3000)]);
+        assert_eq!(c.disks().get(&cost_key("peaks", "6/1/1")), Some(&7000));
+        assert_eq!(c.pool_state().disks.get(&cost_key("peaks", "6/1/1")), Some(&7000));
+        // Measured once: its own memory and disk; another target of its step, the step's largest
+        // (a prior learned), until its own run says.
+        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0 })]);
+        assert_eq!(c.measured("peaks", "6/1/1"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: true }));
+        assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
+        assert_eq!(c.measured("pois", "6/2/2"), None);
+        // Cleared with the floors.
+        c.floors(true, Some("peaks"), None);
+        assert!(c.disks().is_empty());
     }
 
     #[test]

@@ -62,6 +62,40 @@ fn held() -> &'static Mutex<Held> {
 static GEN: AtomicU64 = AtomicU64::new(1);
 static TMP: AtomicU64 = AtomicU64::new(0);
 
+/// The bytes this process has added to the caches (each file it made, `publish`, at its size):
+/// what a job's disk use is counted by (docs/pool.md §7.7: the accessors that write a job's files
+/// count it; its step notes it per target, `written`).
+static WRITTEN: AtomicU64 = AtomicU64::new(0);
+
+/// The environment variable naming a file this process keeps its `written` bytes in, rewritten as
+/// they pass each `WRITTEN_STEP` (a few small local writes a job): the agent's sampler reads it, to
+/// see a job's disk growing while it runs.
+pub const WRITTEN_ENV: &str = "SCENIC_WRITTEN";
+/// How far the bytes written go between rewrites of `WRITTEN_ENV`'s file.
+const WRITTEN_STEP: u64 = 64 << 20;
+
+/// The bytes this process has added to the caches so far (`WRITTEN`).
+pub fn written() -> u64 {
+    WRITTEN.load(Ordering::Relaxed)
+}
+
+/// Counts `n` bytes added to the caches; their total kept in `WRITTEN_ENV`'s file as it passes each
+/// step.
+fn count_written(n: u64) {
+    let before = WRITTEN.fetch_add(n, Ordering::Relaxed);
+    let after = before + n;
+    if before / WRITTEN_STEP != after / WRITTEN_STEP {
+        if let Some(p) = std::env::var_os(WRITTEN_ENV) {
+            std::fs::write(p, after.to_string()).ok();
+        }
+    }
+}
+
+/// The bytes written as a file named by `WRITTEN_ENV` says (0: none, or unreadable).
+pub fn read_written(p: &Path) -> u64 {
+    std::fs::read_to_string(p).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+}
+
 /// The open files this process allows itself (RLIMIT_NOFILE, raised once to what the system allows).
 static LIMIT: AtomicU64 = AtomicU64::new(256);
 
@@ -321,7 +355,10 @@ pub fn publish(f: File, tmp: &Path, path: &Path) -> io::Result<()> {
             Err(e) => return Err(e),
         };
         match std::fs::hard_link(tmp, path) {
-            Ok(()) => keep(f, path),
+            Ok(()) => {
+                count_written(f.metadata().map(|m| m.len()).unwrap_or(0));
+                keep(f, path)
+            }
             // (Another copy made meanwhile: that one's used.)
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
             Err(e) => Err(with(e, "name", path)),
@@ -551,6 +588,21 @@ mod tests {
         release(&p);
         // (No temporary files left.)
         assert_eq!(std::fs::read_dir(d.path().join("a")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn the_bytes_a_process_adds_to_the_caches_are_counted() {
+        let d = tempfile::tempdir().unwrap();
+        let before = written();
+        create_bytes(&d.path().join("w"), &vec![7u8; 5000]).unwrap();
+        // (A copy that loses to one made first adds nothing.)
+        create_bytes(&d.path().join("w"), &vec![7u8; 5000]).unwrap();
+        // (Other tests count theirs meanwhile: at least this one's.)
+        assert!(written() - before >= 5000);
+        release(&d.path().join("w"));
+        let f = d.path().join("written");
+        std::fs::write(&f, "123\n").unwrap();
+        assert_eq!((read_written(&f), read_written(&d.path().join("none"))), (123, 0));
     }
 
     #[test]

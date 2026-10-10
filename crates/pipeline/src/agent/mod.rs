@@ -131,6 +131,13 @@ fn second_need(_step: &str) -> u64 {
     room::RESERVE
 }
 
+/// The cost key a job of no targets of its own is measured by (the OSM pass's `osm-pass <date>`, GC's
+/// `gc gc`): its id's step and the rest of its id, or its id again.
+fn own_cost_key(id: &str) -> String {
+    let (s, t) = id.split_once(' ').unwrap_or((id, id));
+    crate::coord::cost_key(s, t)
+}
+
 /// The build Mac's second job as a worker (the build's history, the forecast's machines, the worker
 /// page): the Mac's name, marked.
 pub fn second_worker(host: &str) -> String {
@@ -202,8 +209,8 @@ enum Outcome {
 #[derive(Clone, Debug)]
 enum Tell {
     Done(Box<crate::coord::Done>),
-    GiveBack { id: u64, why: String, floors: Vec<(String, memguard::Floor)> },
-    Fail { id: u64, why: String, floors: Vec<(String, memguard::Floor)> },
+    GiveBack { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)> },
+    Fail { id: u64, why: String, floors: Vec<(String, memguard::Floor)>, disks: Vec<(String, u64)> },
 }
 
 impl Tell {
@@ -212,8 +219,8 @@ impl Tell {
     fn to(&self, c: &crate::coord::client::Client) -> bool {
         let (id, r) = match self {
             Tell::Done(d) => (d.lease, c.done(d).map(|h| if let crate::coord::client::Handed::Refused(why) = h { eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease) })),
-            Tell::GiveBack { id, why, floors } => (*id, c.give_back_with(*id, why, floors)),
-            Tell::Fail { id, why, floors } => (*id, c.fail_with(*id, why, None, floors)),
+            Tell::GiveBack { id, why, floors, disks } => (*id, c.end_with(*id, why, true, floors, disks)),
+            Tell::Fail { id, why, floors, disks } => (*id, c.end_with(*id, why, false, floors, disks)),
         };
         match r {
             Ok(()) => true,
@@ -1401,6 +1408,8 @@ impl Agent {
         }
         let watch = self.sampler.unwatch(k).unwrap_or_default();
         let floors_of = |costs: &[(String, crate::coord::Cost)]| watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>());
+        // (And what they took on the disk at least: learned whatever the switch, docs/pool.md §7.7.)
+        let disks = watch.disk_floors();
         let guard_stopped = self.slots[k].guard_stopped;
         // An own job's timings, taken whichever way it ends (none left for the slot's next job).
         let own_timings = self.slots[k].timings_out.take();
@@ -1414,6 +1423,7 @@ impl Agent {
                     let costs = self.costs_path(k);
                     let measured = read_costs(&costs);
                     c.add_floors(&floors_of(&measured));
+                    c.add_disks(&disks);
                     c.add_costs_by(&measured, &self.worker_of(k));
                     std::fs::remove_file(costs).ok();
                 }
@@ -1444,6 +1454,7 @@ impl Agent {
                             c.close_tasks(p);
                         }
                         c.add_floors(&floors_of(&costs));
+                        c.add_disks(&disks);
                         c.add_costs_by(&costs, &self.worker_of(k));
                         std::fs::remove_file(self.costs_path(k)).ok();
                     }
@@ -1460,10 +1471,10 @@ impl Agent {
                     // a lead's duty as pass-sets', by having ended so, whatever it handed off.)
                     let no_targets = kept.as_ref().is_some_and(|w| w.targets.is_empty());
                     let tell = match entry.as_ref() {
-                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, failed, journaled: true, timings, ..Default::default() })),
-                        e if no_targets && outcome == Outcome::Done && !guard_stopped => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: e.map(|e| e.handoff.clone()), costs, floors, journaled: true, timings, ..Default::default() })),
-                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => Tell::GiveBack { id, why: note.to_string(), floors },
-                        _ => Tell::Fail { id, why: note.to_string(), floors },
+                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, disks, failed, journaled: true, timings, ..Default::default() })),
+                        e if no_targets && outcome == Outcome::Done && !guard_stopped => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: e.map(|e| e.handoff.clone()), costs, floors, disks, journaled: true, timings, ..Default::default() })),
+                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => Tell::GiveBack { id, why: note.to_string(), floors, disks },
+                        _ => Tell::Fail { id, why: note.to_string(), floors, disks },
                     };
                     if self.coord.is_some() {
                         eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
@@ -1672,6 +1683,12 @@ impl Agent {
     /// Where slot `k`'s job notes what its units cost (`SCENIC_COSTS`).
     fn costs_path(&self, k: usize) -> PathBuf {
         self.o.home.join(if k == 0 { "costs.jsonl" } else { "costs-2.jsonl" })
+    }
+
+    /// Where slot `k`'s job's accessors keep the bytes they've added to the caches
+    /// (store::cachefile::WRITTEN_ENV), for the disk guard's sampler.
+    fn written_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(if k == 0 { "written" } else { "written-2" })
     }
 
     /// Who slot `k`'s job is in claims: the second's apart from the first's, so neither takes the
@@ -3495,6 +3512,11 @@ impl Agent {
         std::fs::remove_file(&timings).ok();
         env.push((crate::timings::TIMINGS_ENV.into(), timings.to_string_lossy().into_owned()));
         env.push((crate::timings::JOB_ID_ENV.into(), spec.id.clone()));
+        // Where its accessors count the bytes they add to the caches, afresh (docs/pool.md §7.7).
+        let written = self.written_path(k);
+        std::fs::remove_file(&written).ok();
+        env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
+        let scratch = spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
@@ -3504,15 +3526,17 @@ impl Agent {
         // name a target under way that isn't, crate::agent::memguard.)
         let costs = self.slot_costs(k);
         std::fs::remove_file(&costs).ok();
+        // (A job of no targets of its own, the OSM pass, GC, a catalog: measured by its id, so it's
+        // placed by measure as any, docs/pool.md §7.7.)
         let own_key = match spec.record.as_ref() {
-            None if spec.id.starts_with("osm-pass ") => spec.id.split_once(' ').map(|(s, t)| crate::coord::cost_key(s, t)),
+            None => Some(own_cost_key(&spec.id)),
             _ => None,
         };
         let (w_step, w_targets) = (step.clone().unwrap_or_default(), targets.clone());
         self.slots[k].running = Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done))?);
         self.slots[k].beaten = None;
         if let Some(pgid) = self.slots[k].running.as_ref().map(|r| r.pgid) {
-            self.sampler.watch(k, memguard::Watch { pgid, costs, done: done.clone(), step: w_step, targets: w_targets, own_key, ..Default::default() });
+            self.sampler.watch(k, memguard::Watch { pgid, costs, done: done.clone(), step: w_step, targets: w_targets, own_key, written, scratch, ..Default::default() });
         }
         self.note(crate::coord::history::Event { worker: Some(self.worker_of(k)), step, targets, what, ..crate::coord::history::Event::new("start") });
         Ok(())
