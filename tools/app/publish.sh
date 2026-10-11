@@ -47,7 +47,7 @@ zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # Built into its own folder: web/dist may be what a development server is serving. (The type check
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
 # the app: web/maplibre/FORK.md.)
-(cd web && npm run typecheck >/dev/null && npx vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
+(cd web && npm run typecheck && npx vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
 fonts=data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
