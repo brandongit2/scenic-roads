@@ -7536,7 +7536,7 @@ mod pool_tests {
         // (Its slope job runs until the test opens its gate: the ask comes while it runs, however
         // slowly a busy Mac takes the handover.)
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -7601,7 +7601,7 @@ mod pool_tests {
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -7662,7 +7662,7 @@ mod pool_tests {
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -7728,7 +7728,7 @@ mod pool_tests {
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pass-sets ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pass-sets ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -7784,7 +7784,7 @@ mod pool_tests {
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         // (Each coordinator on a port of its own: the frozen lead's still holds its own.)
         TEST_PORT.with(|p| p.set(Some(free_port())));
