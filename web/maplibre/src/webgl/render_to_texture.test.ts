@@ -292,6 +292,29 @@ describe('render to texture', () => {
         expect(tile.getRTT(0).texture.bind).toHaveBeenCalledWith(gl.LINEAR, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_LINEAR);
     });
 
+    // Scenic Roads (third review B2): the drape pass's stencil IDs are its own, so an overflow there
+    // (clearStencil resets the counter) doesn't drop a later lifted layer's GEQUAL references below
+    // values an earlier lifted layer wrote in the main framebuffer.
+    test('the drape pass starts each tile\'s stencil IDs at 1 and restores the main framebuffer\'s counter', () => {
+        style._order = ['maine-fill', 'maine-symbol'];
+        rtt.prepareForRender(style, 0);
+        tile.rttObjects = [];
+        painter.nextStencilID = 250;
+        const seen: number[] = [];
+        vi.mocked(painter.renderLayer).mockImplementation(() => {
+            seen.push(painter.nextStencilID);
+            painter.nextStencilID = 7; // the drape masks overflowed and clearStencil reset the counter
+        });
+
+        const renderContext = createRenderContext(painter.transform, undefined, terrain);
+        rtt.renderLayer(fillLayer, renderContext);
+        rtt.renderLayer(symbolLayer, renderContext);
+
+        expect(seen).toEqual([1]);
+        expect(painter.nextStencilID).toBe(250);
+        vi.mocked(painter.renderLayer).mockReset();
+    });
+
     test('cache hit reuses cached RTT and skips acquireRTT', () => {
         style._order = ['maine-fill', 'maine-symbol'];
         rtt.prepareForRender(style, 0);

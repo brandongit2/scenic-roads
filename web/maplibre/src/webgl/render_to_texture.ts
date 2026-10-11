@@ -242,6 +242,11 @@ export class RenderToTexture {
             this._prevDraped = draped;
             const stack = this._stacks.length - 1, layers = this._stacks[stack] || [];
             renderContext.isRenderingToTexture = true;
+            // Scenic Roads: each tile's texture has its own stencil, cleared below, so its IDs start
+            // at 1; the main framebuffer's counter is kept and restored after (a clearStencil here
+            // on overflow reset it, so a later lifted layer's GEQUAL references fell below values an
+            // earlier one wrote in the main framebuffer).
+            const mainStencilID = painter.nextStencilID;
             for (const tile of this._renderableTiles) {
                 this._rttTiles.push(tile);
                 // Cache hit: this tile already has a RTT object for this stack from a previous frame.
@@ -250,6 +255,7 @@ export class RenderToTexture {
                 painter.bindRTT(obj);
                 painter.context.clear({color: Color.transparent, stencil: 0});
                 painter.currentStencilSource = undefined;
+                painter.nextStencilID = 1;
                 for (const layerId of layers) {
                     const layer = painter.style._layers[layerId];
                     const coords = layer.source ? this._coordsAscending[layer.source][tile.tileID.key] : [tile.tileID];
@@ -261,6 +267,8 @@ export class RenderToTexture {
                 }
                 obj.texture.generateMipmap();
             }
+            painter.nextStencilID = mainStencilID;
+            painter.currentStencilSource = undefined;
             renderContext.isRenderingToTexture = false;
             drawTerrain(this.painter, this.terrain, this._rttTiles, renderContext);
             this._rttTiles = [];

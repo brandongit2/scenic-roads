@@ -12,6 +12,8 @@ import type {OverscaledTileID} from '../../tile/tile_id.ts';
 export type PrepareDrawLayerOpacityResult = {
     compositeTarget: WebGLFramebuffer;
     compositeViewport: [number, number, number, number];
+    /** Scenic Roads: the composite target's stencil ID counter, restored by drawLayerOpacity. */
+    compositeStencilID: number;
 };
 
 /**
@@ -30,12 +32,18 @@ export function prepareDrawLayerOpacity(painter: Painter, layer: LineStyleLayer 
     context.viewport.set([0, 0, width, height]);
     context.clear({color: Color.transparent, depth: 1, stencil: 0});
 
+    // Scenic Roads: the scratch FBO's stencil is cleared, so its IDs start at 1; the composite
+    // target's counter is restored after (an overflow here would otherwise reset it below values
+    // already written there).
+    const compositeStencilID = painter.nextStencilID;
+    painter.nextStencilID = 1;
     painter.currentStencilSource = undefined;
     painter.renderTileClippingMasks(layer, coords);
 
     return {
         compositeTarget,
-        compositeViewport
+        compositeViewport,
+        compositeStencilID
     };
 }
 
@@ -91,4 +99,5 @@ export function drawLayerOpacity(painter: Painter, opacity: number, prepareDrawL
     // Clipping masks were drawn into the scratch FBO's stencil buffer, not the composite target's.
     // Reset currentStencilSource so a later layer on the same source redraws its masks into the composite target instead of reusing stale ones.
     painter.currentStencilSource = undefined;
+    painter.nextStencilID = prepareDrawLayerOpacityResult.compositeStencilID;
 }
