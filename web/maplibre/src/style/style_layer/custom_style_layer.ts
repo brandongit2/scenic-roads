@@ -160,6 +160,80 @@ export type CustomRenderMethodInput = {
      * @param params - Parameters for the projection data generation.
      */
     getProjectionData: (params: CustomLayerProjectionDataParams) => RendererProjectionData;
+
+    /**
+     * Scenic Roads: the framebuffer this call draws into (`null`: the canvas). A layer that binds
+     * framebuffers of its own binds this one again before it returns, never `null` blindly.
+     */
+    framebuffer: WebGLFramebuffer | null;
+
+    /**
+     * Scenic Roads: the depth range MapLibre's 3D layers draw in (what `gl.depthRange` is set to for
+     * a `"3d"` layer's `render`): the frame's 3D window depths lie in it.
+     */
+    depthRangeFor3D: [number, number];
+
+    /**
+     * Scenic Roads: the terrain's depth, while 3D terrain is on (else `null`): MapLibre draws the
+     * terrain's mesh into this texture whenever the camera moves or terrain tiles arrive, for the
+     * symbols' and circles' visibility. It is read in place (no copy is made for the layer). The
+     * depth is packed into RGBA8; `unpack` is a GLSL function that reads it at a point of the
+     * frame (`uv` 0..1 across the frame, `gl_FragCoord.xy / viewport size`), giving the terrain's
+     * normalized device depth there (`gl_Position.z / gl_Position.w` of `projectTileFor3D`), about
+     * 1 where there's no terrain.
+     */
+    terrainDepth: CustomTerrainDepth | null;
+
+    /**
+     * Scenic Roads: the frame's depth so far, a `DEPTH24_STENCIL8` texture of the drawing buffer's
+     * size: in `render`, for a layer whose `readsSceneDepth` is true (else `null`). Everything drawn
+     * before the layer wrote its depth here (the terrain's mesh, the extrusions, earlier 3D layers).
+     * The layer draws into `framebuffer`, which has the frame's colour but no depth attached
+     * (sampling a texture attached to the framebuffer drawn into is an error in WebGL), so it tests
+     * depth in its shader: `if (gl_FragCoord.z > texelFetch(depth, ivec2(gl_FragCoord.xy), 0).r) discard;`.
+     */
+    sceneDepth: CustomSceneDepth | null;
+};
+
+/**
+ * Scenic Roads: the terrain's depth texture, see {@link CustomRenderMethodInput.terrainDepth}.
+ */
+export type CustomTerrainDepth = {
+    texture: WebGLTexture;
+    /** Its size in pixels (the frame's size in CSS pixels). */
+    width: number;
+    height: number;
+    /** Changes whenever the texture is drawn again. */
+    revision: number;
+    /** GLSL: `highp float unpackTerrainDepth(highp sampler2D depth, vec2 uv)`. */
+    unpack: string;
+};
+
+/**
+ * Scenic Roads: the frame's depth so far, see {@link CustomRenderMethodInput.sceneDepth}.
+ */
+export type CustomSceneDepth = {
+    texture: WebGLTexture;
+    /** Its size in pixels (the drawing buffer's). */
+    width: number;
+    height: number;
+};
+
+/**
+ * Scenic Roads: the input of {@link CustomLayerInterface.drape}: the frame's, and the terrain tile
+ * whose texture is being drawn.
+ */
+export type CustomDrapeMethodInput = CustomRenderMethodInput & {
+    /** The terrain tile whose texture is drawn into. */
+    tileID: {z: number; x: number; y: number; wrap: number};
+    /** The texture's size in pixels (the viewport is set to it). */
+    size: number;
+    /**
+     * The matrix that takes a tile's coordinates (0..8192 across, any zoom) to clip space in this
+     * texture: `gl_Position = matrix * vec4(posInTile, 0.0, 1.0)`. `null` for a tile that doesn't
+     * meet this terrain tile.
+     */
+    getDrapeMatrix: (tile: {z: number; x: number; y: number}) => Float32Array | null;
 };
 
 /**
@@ -167,6 +241,11 @@ export type CustomRenderMethodInput = {
  * @param options - Argument object with render inputs like camera properties.
  */
 export type CustomRenderMethod = (gl: WebGL2RenderingContext, options: CustomRenderMethodInput) => void;
+
+/**
+ * Scenic Roads: see {@link CustomLayerInterface.drape}.
+ */
+export type CustomDrapeMethod = (gl: WebGL2RenderingContext, options: CustomDrapeMethodInput) => void;
 
 /**
  * Interface for custom style layers. This is a specification for
@@ -277,6 +356,31 @@ export interface CustomLayerInterface {
      */
     prerender?: CustomRenderMethod;
     /**
+     * Scenic Roads: optional method that draws the layer onto the 3D terrain, as MapLibre drapes its
+     * fills and lines: while 3D terrain is on, it's called during the terrain's pass, once for each
+     * terrain tile whose texture is drawn, into that texture (the viewport set to it, blending as
+     * for `render`, no depth), in the layer's order among the draped layers. The textures are kept
+     * from frame to frame: they're drawn again when the tiles in view or the zoom change, or when
+     * `drapeRevision` does. Without 3D terrain it isn't called.
+     *
+     * With 3D terrain `render` is still called, in the main pass right after the terrain carrying
+     * this layer's drape is drawn (and before the layers above it), for whatever the layer draws
+     * above the ground; a layer with nothing more to draw there returns from it at once.
+     */
+    drape?: CustomDrapeMethod;
+    /**
+     * Scenic Roads: what the layer's drape shows: a new value has the terrain's textures holding it
+     * drawn again (`drape` called for every tile) in the next frame.
+     */
+    drapeRevision?: number;
+    /**
+     * Scenic Roads: the layer reads the frame's depth in `render` ({@link CustomRenderMethodInput.sceneDepth}).
+     * While a visible layer asks, MapLibre draws the frame into textures and copies its colour to the
+     * canvas at the end (a blit of the frame's colour, once a frame); while none asks, it draws
+     * straight to the canvas.
+     */
+    readsSceneDepth?: boolean;
+    /**
      * Optional method called when the layer has been added to the Map with {@link Map.addLayer}. This
      * gives the layer a chance to initialize gl resources and register event listeners.
      *
@@ -304,6 +408,10 @@ export function validateCustomStyleLayer(layerObject: CustomLayerInterface): Val
 
     if (layerObject.render === undefined) {
         errors.push(new ValidationError(`layers.${id}`, null, 'missing required method "render"'));
+    }
+
+    if (layerObject.drape !== undefined && typeof layerObject.drape !== 'function') {
+        errors.push(new ValidationError(`layers.${id}`, null, 'property "drape" must be a function'));
     }
 
     if (layerObject.renderingMode &&

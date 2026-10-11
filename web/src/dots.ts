@@ -314,7 +314,6 @@ interface TerrainLike {
     texture: WebGLTexture;
     tile?: { tileID: { key: string }; dem?: unknown };
   };
-  _fboDepthTexture?: { texture: WebGLTexture };
 }
 interface TileIDLike {
   key: string;
@@ -748,7 +747,8 @@ export class LandmarkDots implements CustomLayerInterface {
     gl.useProgram(prog);
     const dpr = window.devicePixelRatio || 1;
     const tr = (map as unknown as { _camera?: { transform?: { cameraToCenterDistance?: number; getCameraLngLat?: () => { lng: number; lat: number }; getCameraAltitude?: () => number } } })._camera?.transform;
-    const depthTex = three ? terrain!._fboDepthTexture?.texture ?? null : null;
+    // (Our MapLibre's terrain depth texture: CustomRenderMethodInput.terrainDepth.)
+    const depthTex = three ? opts.terrainDepth?.texture ?? null : null;
     const c = map.getCenter();
     const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
     const world = zoom < WORLD_MAX_Z;

@@ -413,6 +413,14 @@ export class Terrain {
     }
 
     /**
+     * Scenic Roads: the texture the terrain's depth is drawn into (packed into RGBA8, the frame's
+     * size in CSS pixels), or null before it's first drawn: `CustomRenderMethodInput.terrainDepth`.
+     */
+    getDepthTexture(): WebGLTexture | null {
+        return this._fboDepthTexture?.texture ?? null;
+    }
+
+    /**
      * get a framebuffer as big as the map-div, which will be used to render depth into a texture
      * @returns the frame buffer
      */

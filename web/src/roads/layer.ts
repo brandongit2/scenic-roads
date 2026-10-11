@@ -2461,11 +2461,11 @@ export class RoadLayer implements CustomLayerInterface {
     const s = this.style;
     const map = this.map;
     const c = map.getCenter();
-    // MapLibre's terrain depth texture (redrawn when the camera moves or terrain tiles arrive).
-    const m = map as unknown as { terrain?: { _fboDepthTexture?: { texture: WebGLTexture } }; painter?: { terrainFacilitator?: { renderTime: number } } };
-    const depthTex = three ? m.terrain?._fboDepthTexture?.texture ?? null : null;
+    // MapLibre's terrain depth texture (redrawn when the camera moves or terrain tiles arrive: its
+    // revision; our MapLibre's CustomRenderMethodInput.terrainDepth).
+    const depthTex = three ? opts.terrainDepth?.texture ?? null : null;
     const p = map.getPadding();
-    const key = `${opts.shaderData.variantName}|${gl.drawingBufferWidth}x${gl.drawingBufferHeight}|${zoom}|${c.lng},${c.lat}|${map.getBearing()}|${map.getPitch()}|${p.top},${p.bottom},${p.left},${p.right}|${map.getCenterElevation()}|${three ? s.exaggeration : 0}|${depthTex ? m.painter?.terrainFacilitator?.renderTime : ''}|${this.bridgesApart}`;
+    const key = `${opts.shaderData.variantName}|${gl.drawingBufferWidth}x${gl.drawingBufferHeight}|${zoom}|${c.lng},${c.lat}|${map.getBearing()}|${map.getPitch()}|${p.top},${p.bottom},${p.left},${p.right}|${map.getCenterElevation()}|${three ? s.exaggeration : 0}|${depthTex ? opts.terrainDepth?.revision : ''}|${this.bridgesApart}`;
     const tr = (map as unknown as { _camera?: { transform?: { cameraToCenterDistance?: number; getCameraLngLat?: () => LngLat; getCameraAltitude?: () => number } } })._camera?.transform;
     const camLL = tr?.getCameraLngLat?.();
     return {

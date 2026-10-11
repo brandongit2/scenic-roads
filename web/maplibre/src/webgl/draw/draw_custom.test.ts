@@ -4,7 +4,7 @@ import {TileManager} from '../../tile/tile_manager.ts';
 import {Tile} from '../../tile/tile.ts';
 import {Painter} from '../../render/painter.ts';
 import {createRenderContext} from '../../render/render_context.ts';
-import {drawCustom} from './draw_custom.ts';
+import {drawCustom, drapeMatrix} from './draw_custom.ts';
 import {CustomStyleLayer} from '../../style/style_layer/custom_style_layer.ts';
 import {MercatorTransform} from '../../geo/projection/mercator_transform.ts';
 import {MercatorProjection} from '../../geo/projection/mercator_projection.ts';
@@ -108,5 +108,76 @@ describe('drawCustom', () => {
         expect(tileProjectionData.mainMatrix[15]).toBeCloseTo(794.4539184570312, 6);
         expect(tileProjectionData.projectionTransition).toBe(0);
         expect(tileProjectionData.mainMatrix).toEqual(tileProjectionData.fallbackMatrix);
+    });
+});
+
+describe('drapeMatrix (Scenic Roads)', () => {
+    const apply = (m: Float32Array, x: number, y: number) => [m[0] * x + m[4] * y + m[12], m[1] * x + m[5] * y + m[13]];
+    const target = new OverscaledTileID(10, 0, 10, 100, 200);
+
+    test('the terrain tile itself spans the texture', () => {
+        const m = drapeMatrix(target, {z: 10, x: 100, y: 200});
+        expectToBeCloseToArray(apply(m, 0, 0), [-1, 1]);
+        expectToBeCloseToArray(apply(m, 8192, 8192), [1, -1]);
+    });
+
+    test('a child tile covers its quarter', () => {
+        const m = drapeMatrix(target, {z: 11, x: 201, y: 400});
+        expectToBeCloseToArray(apply(m, 0, 0), [0, 1]);
+        expectToBeCloseToArray(apply(m, 8192, 8192), [1, 0]);
+    });
+
+    test('a parent tile reaches past the texture', () => {
+        const m = drapeMatrix(target, {z: 9, x: 50, y: 100});
+        expectToBeCloseToArray(apply(m, 0, 0), [-1, 1]);
+        expectToBeCloseToArray(apply(m, 4096, 4096), [1, -1]);
+        expectToBeCloseToArray(apply(m, 8192, 8192), [3, -3]);
+    });
+
+    test('a tile elsewhere: none', () => {
+        expect(drapeMatrix(target, {z: 10, x: 101, y: 200})).toBeNull();
+        expect(drapeMatrix(target, {z: 12, x: 0, y: 0})).toBeNull();
+    });
+});
+
+describe('drawCustom reading the frame\'s depth (Scenic Roads)', () => {
+    const setup = (readsSceneDepth: boolean, sceneTarget: any) => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: true});
+        transform.resize(500, 500);
+        const painter = new Painter(null, null);
+        painter.style = {projection: new MercatorProjection()} as any;
+        painter.transform = transform;
+        painter.sceneTarget = sceneTarget;
+        vi.mocked(painter.mainFramebuffer).mockReturnValue(sceneTarget?.framebuffer ?? null);
+        const renderContext = createRenderContext(transform, painter.style.projection, null);
+        renderContext.currentPass = 'translucent';
+        const bound: unknown[] = [];
+        painter.context = {
+            gl: {},
+            setColorMode: () => {},
+            setStencilMode: () => {},
+            setDepthMode: () => {},
+            setDirty: () => {},
+            bindFramebuffer: {set: (fb: unknown) => bound.push(fb), get: () => null},
+        } as any;
+        let args: CustomRenderMethodInput;
+        const layer = new CustomStyleLayer({id: 'c', type: 'custom', readsSceneDepth, render(_gl, a) { args = a; }}, {});
+        drawCustom(painter, null, layer, renderContext);
+        return {args, bound};
+    };
+    const target = {framebuffer: 'frame', colorOnly: 'colour', depthStencil: 'depth', width: 10, height: 20};
+
+    test('a layer that reads it draws into the colour alone, the depth given', () => {
+        const {args, bound} = setup(true, target);
+        expect(args.sceneDepth).toEqual({texture: 'depth', width: 10, height: 20});
+        expect(args.framebuffer).toBe('colour');
+        expect(bound).toEqual(['colour', 'frame']);
+    });
+
+    test('a layer that doesn\'t: the frame\'s framebuffer, no depth', () => {
+        const {args} = setup(false, target);
+        expect(args.sceneDepth).toBeNull();
+        expect(args.framebuffer).toBe('frame');
+        expect(args.terrainDepth).toBeNull();
     });
 });

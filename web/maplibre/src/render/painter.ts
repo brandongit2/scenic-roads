@@ -16,6 +16,7 @@ import {StencilMode} from '../webgl/stencil_mode.ts';
 import {ColorMode} from '../webgl/color_mode.ts';
 import {CullFaceMode} from '../webgl/cull_face_mode.ts';
 import {Texture} from '../webgl/texture.ts';
+import {SceneTarget} from '../webgl/scene_target.ts';
 import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {selectDebugSource, webglDrawFunctions, type DrawFunctions} from '../webgl/draw/index.ts';
 import {Mesh} from './mesh.ts';
@@ -152,6 +153,11 @@ export class Painter {
     // of the terrain depth framebuffer.
     // every time the camera-matrix changes the depth framebuffer will be redrawn.
     terrainFacilitator: {depthDirty: boolean; matrix: mat4; renderTime: number};
+    /**
+     * Scenic Roads: the frame's colour and depth as textures, while a visible custom layer reads the
+     * frame's depth (`CustomLayerInterface.readsSceneDepth`); null while none does.
+     */
+    sceneTarget: SceneTarget | null = null;
 
     constructor(gl: WebGL2RenderingContext, transform: IReadonlyTransform) {
         this.drawFunctions = webglDrawFunctions;
@@ -515,6 +521,7 @@ export class Painter {
 
         this.symbolFadeChange = style.placement.symbolFadeChange(now());
         updateFrameUniformBuffer(this.context.frameUniformBuffer, this);
+        this._prepareSceneTarget(style);
 
         this.imageManager.beginFrame();
         releaseProjectionUniformBuffers(this.context);
@@ -572,7 +579,7 @@ export class Painter {
 
         // Rebind the main framebuffer now that all offscreen layers have been rendered:
         this.context.viewport.set([0, 0, this.width, this.height]);
-        this.context.bindFramebuffer.set(null);
+        this.context.bindFramebuffer.set(this.mainFramebuffer());
 
         // Clear buffers in preparation for drawing to the main framebuffer
         this.context.clear({color: options.showOverdrawInspector ? Color.black : Color.transparent, depth: 1});
@@ -650,9 +657,40 @@ export class Painter {
         // a frame at rest has reused every pooled drape it needs; the rest stay resident until freed here
         if (this.renderToTexture && !this.options.moving) this.clearRTTPool();
 
+        // Scenic Roads: the frame drawn into the scene target goes to the canvas.
+        this.sceneTarget?.present();
+
         // Set defaults for most GL values so that anyone using the state after the render
         // encounters more expected values.
         this.context.setDefault();
+    }
+
+    /**
+     * Scenic Roads: the framebuffer the frame's main pass draws into: the canvas (`null`), or the
+     * scene target while a layer reads the frame's depth.
+     */
+    mainFramebuffer(): WebGLFramebuffer | null {
+        return this.sceneTarget?.framebuffer ?? null;
+    }
+
+    /**
+     * Scenic Roads: makes the scene target (or frees it) for this frame: kept while a visible custom
+     * layer reads the frame's depth, at the drawing buffer's size.
+     */
+    _prepareSceneTarget(style: Style): void {
+        let wanted = false;
+        for (const id of style._order) {
+            const layer = style._layers[id];
+            if (isCustomStyleLayer(layer) && layer.implementation.readsSceneDepth && !layer.isHidden(this.transform.zoom)) {
+                wanted = true;
+                break;
+            }
+        }
+        if (this.sceneTarget && (!wanted || this.sceneTarget.width !== this.width || this.sceneTarget.height !== this.height)) {
+            this.sceneTarget.destroy();
+            this.sceneTarget = null;
+        }
+        if (wanted && !this.sceneTarget) this.sceneTarget = new SceneTarget(this.context, this.width, this.height);
     }
 
     /**
@@ -716,7 +754,7 @@ export class Painter {
         } else if (isBackgroundStyleLayer(layer)) {
             draw.background(painter, tileManager, layer, coords, renderContext);
         } else if (isCustomStyleLayer(layer)) {
-            draw.custom(painter, tileManager, layer, renderContext);
+            draw.custom(painter, tileManager, layer, renderContext, coords);
         }
     }
 
@@ -919,6 +957,9 @@ export class Painter {
         }
 
         this.destroyRTTResources();
+
+        this.sceneTarget?.destroy();
+        this.sceneTarget = null;
 
         this.layerOpacityFbo?.destroy();
         this.layerOpacityFbo = null;

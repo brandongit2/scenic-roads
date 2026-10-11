@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  Our MapLibre's own features on the app's terrain (FORK.md), opened through the app's dev server
+  (`npm run dev` in web/, the backend on :8080 for the terrain tiles):
+    /maplibre/test/scenic/demo.html?case=custom   a custom layer draped on the terrain, and a column
+                                                  drawn after it that reads the frame's depth
+  `#map=zoom/lat/lng/bearing/pitch` sets the view; `&flat` the flat map in place of the globe.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Our MapLibre's demos</title>
+  <style>
+    html, body, #map { margin: 0; height: 100%; background: #0b0f14; }
+    #note { position: absolute; left: 8px; top: 8px; padding: 6px 8px; font: 12px system-ui; color: #cfd8e3; background: #0b0f14cc; border-radius: 4px; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="note"></div>
+<script type="module">
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/built/maplibre-gl.css';
+import workerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
+import {cases} from './demo_cases.js';
+
+maplibregl.setWorkerUrl(workerUrl);
+const q = new URLSearchParams(location.search);
+const which = q.get('case') ?? 'custom';
+const c = cases[which];
+const v = (location.hash.match(/map=([^&]+)/)?.[1] ?? c.view).split('/').map(Number);
+const map = new maplibregl.Map({
+  container: 'map',
+  center: [v[2], v[1]],
+  zoom: v[0],
+  bearing: v[3] ?? 0,
+  pitch: v[4] ?? 0,
+  maxPitch: 85,
+  centerClampedToGround: false,
+  canvasContextAttributes: {preserveDrawingBuffer: true},
+  style: {
+    version: 8,
+    projection: {type: q.has('flat') ? 'mercator' : 'globe'},
+    sources: {
+      dem: {type: 'raster-dem', tiles: [`${location.origin}/tiles/terrain/{z}/{x}/{y}`], encoding: 'terrarium', tileSize: 256, maxzoom: 12},
+    },
+    terrain: {source: 'dem', exaggeration: Number(q.get('ex') ?? 3)},
+    layers: [
+      {id: 'bg', type: 'background', paint: {'background-color': '#1b232c'}},
+      {id: 'shade', type: 'hillshade', source: 'dem', paint: {'hillshade-exaggeration': 0.6, 'hillshade-shadow-color': '#05080b', 'hillshade-highlight-color': '#8c9aab'}},
+    ],
+  },
+});
+window.__map = map;
+document.getElementById('note').textContent = c.note;
+map.on('load', () => c.add(map, maplibregl));
+</script>
+</body>
+</html>

@@ -84,6 +84,7 @@ describe('render to texture', () => {
         renderLayer: vi.fn(),
         acquireRTT: (size: number) => createMockRTTObject(size),
         bindRTT: vi.fn(),
+        mainFramebuffer: () => null,
         releaseRTT: vi.fn(),
         drawFunctions: {
             terrainDepth: vi.fn(),
@@ -496,5 +497,49 @@ describe('render to texture', () => {
         expect(symbolTileManager.getVisibleCoordinates).not.toHaveBeenCalled();
         expect(terrain.tileManager.getTerrainCoords).toHaveBeenCalledTimes(1);
         expect(Object.keys(rtt._coordsAscending)).toStrictEqual(['maine']);
+    });
+
+    describe('custom layers draped (Scenic Roads)', () => {
+        const drapeLayer = {
+            id: 'custom-drape',
+            type: 'custom',
+            implementation: {id: 'custom-drape', type: 'custom', render: vi.fn(), drape: vi.fn(), drapeRevision: 0},
+            isHidden: () => false
+        } as any;
+
+        beforeEach(() => {
+            style._layers['custom-drape'] = drapeLayer;
+            style._order = ['maine-fill', 'custom-drape', 'maine-symbol'];
+        });
+
+        test('a custom layer with drape joins the stack, and draws in the main pass after its terrain', () => {
+            const calls: {id: string; rtt: boolean; coords: number}[] = [];
+            const renderLayerSpy = vi.spyOn(painter, 'renderLayer').mockImplementation((_p, _tm, layer, coords, ctx) => {
+                calls.push({id: layer.id, rtt: ctx.isRenderingToTexture, coords: coords.length});
+            });
+            rtt.prepareForRender(style, 0);
+            const renderContext = createRenderContext(painter.transform, undefined, terrain);
+            const skipped = style._order.map((id) => rtt.renderLayer(style._layers[id], renderContext));
+            // The fill and the custom layer stacked, the symbol drawn by the painter.
+            expect(skipped).toEqual([true, true, false]);
+            expect(calls).toEqual([
+                {id: 'maine-fill', rtt: true, coords: 1},
+                {id: 'custom-drape', rtt: true, coords: 1},
+                {id: 'custom-drape', rtt: false, coords: 0},
+            ]);
+            renderLayerSpy.mockReset();
+        });
+
+        test('a new drape revision draws the terrain textures again', () => {
+            rtt.prepareForRender(style, 0);
+            const renderContext = createRenderContext(painter.transform, undefined, terrain);
+            for (const id of style._order) rtt.renderLayer(style._layers[id], renderContext);
+            expect(tile.getRTT(0)).toBeTruthy();
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeTruthy();
+            drapeLayer.implementation.drapeRevision = 1;
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeUndefined();
+        });
     });
 });

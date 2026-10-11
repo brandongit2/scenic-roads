@@ -3,6 +3,8 @@ import {drawTerrain} from './draw/draw_terrain.ts';
 import {ImageSource} from '../source/image_source.ts';
 import {RTT_DIFFERENCES, RTTFingerprint, type RTTDifference} from './rtt_fingerprint.ts';
 
+import {isCustomStyleLayer} from '../style/style_layer/custom_style_layer.ts';
+
 import type {Tile} from '../tile/tile.ts';
 import type {OverscaledTileID} from '../tile/tile_id.ts';
 import type {Style} from '../style/style.ts';
@@ -23,6 +25,18 @@ const LAYERS_TO_TEXTURES: { [keyof in StyleLayer['type']]?: boolean } = {
     hillshade: true,
     'color-relief': true
 };
+
+/**
+ * Scenic Roads: whether a layer is drawn into the terrain's textures: the types above, and a custom
+ * layer with a `drape` method.
+ */
+export function drapes(layer: StyleLayer): boolean {
+    if (LAYERS_TO_TEXTURES[layer.type]) return true;
+    return isCustomStyleLayer(layer) && typeof layer.implementation.drape === 'function';
+}
+
+/** Scenic Roads: the key of a custom layer's drape among the sources' fingerprints. */
+const customDrapeKey = (layer: StyleLayer) => `custom:${layer.id}`;
 
 /**
  * @internal
@@ -56,7 +70,7 @@ export class RenderToTexture {
     /**
      * remember the previous processed layer to check if a new stack is needed
      */
-    _prevType: string;
+    _prevDraped: boolean;
     /**
      * a list of tiles that can potentially rendered
      */
@@ -101,7 +115,7 @@ export class RenderToTexture {
         const zoomChanged = zoom !== this._lastPrepareZoom;
         this._lastPrepareZoom = zoom;
         this._stacks = [];
-        this._prevType = null;
+        this._prevDraped = false;
         this._rttTiles = [];
         this._renderableTiles = this.terrain.tileManager.getRenderableTiles();
         this._renderableLayerIds = style._order.filter(id => !style._layers[id].isHidden(zoom));
@@ -137,6 +151,17 @@ export class RenderToTexture {
             const revision = tileManager.getState().revision;
             for (const key in coordsAscending)
                 fingerprints[key] = new RTTFingerprint(coordsAscending[key], revision, zoom, visibleLayerIds);
+        }
+
+        // Scenic Roads: a custom layer's drape is drawn again when its revision changes (and, as the
+        // sources' are, when the zoom or the visible layers do).
+        for (const layerId of this._renderableLayerIds) {
+            const layer = style._layers[layerId];
+            if (!isCustomStyleLayer(layer) || !drapes(layer)) continue;
+            const fingerprints = this._rttFingerprints[customDrapeKey(layer)] = {};
+            const revision = layer.implementation.drapeRevision ?? 0;
+            for (const tile of this._renderableTiles)
+                fingerprints[tile.tileID.key] = new RTTFingerprint([tile.tileID], revision, zoom, visibleLayerIds);
         }
 
         // check tiles to render
@@ -187,24 +212,25 @@ export class RenderToTexture {
     renderLayer(layer: StyleLayer, renderContext: RenderContext): boolean {
         if (layer.isHidden(this.painter.transform.zoom)) return false;
 
-        const type = layer.type;
+        const draped = drapes(layer);
         const painter = this.painter;
         const isLastLayer = this._renderableLayerIds[this._renderableLayerIds.length - 1] === layer.id;
 
         // remember background, fill, line & raster layer to render into a stack
-        if (LAYERS_TO_TEXTURES[type]) {
+        if (draped) {
             // create a new stack if previous layer was not rendered to texture (f.e. symbols)
-            if (!this._prevType || !LAYERS_TO_TEXTURES[this._prevType]) this._stacks.push([]);
+            if (!this._prevDraped) this._stacks.push([]);
             // push current render-to-texture layer to render-stack
-            this._prevType = type;
+            this._prevDraped = true;
             this._stacks[this._stacks.length - 1].push(layer.id);
             // rendering is done later, all in once
             if (!isLastLayer) return true;
         }
 
         // in case a stack is finished render all collected stack-layers into a texture
-        if (LAYERS_TO_TEXTURES[this._prevType] || (LAYERS_TO_TEXTURES[type] && isLastLayer)) {
-            this._prevType = type;
+        // (a draped last layer has set _prevDraped too)
+        if (this._prevDraped) {
+            this._prevDraped = draped;
             const stack = this._stacks.length - 1, layers = this._stacks[stack] || [];
             renderContext.isRenderingToTexture = true;
             for (const tile of this._renderableTiles) {
@@ -222,6 +248,7 @@ export class RenderToTexture {
                     painter.renderTileClippingMasks(layer, coords);
                     painter.renderLayer(painter, painter.style.tileManagers[layer.source], layer, coords, renderContext);
                     if (layer.source) tile.rttFingerprint[layer.source] = this._rttFingerprints[layer.source][tile.tileID.key];
+                    else if (isCustomStyleLayer(layer)) tile.rttFingerprint[customDrapeKey(layer)] = this._rttFingerprints[customDrapeKey(layer)][tile.tileID.key];
                 }
                 obj.texture.generateMipmap();
             }
@@ -229,7 +256,14 @@ export class RenderToTexture {
             drawTerrain(this.painter, this.terrain, this._rttTiles, renderContext);
             this._rttTiles = [];
 
-            return LAYERS_TO_TEXTURES[type];
+            // Scenic Roads: the custom layers draped here draw in the main pass right after the
+            // terrain carrying their drape, before the next layer.
+            for (const layerId of layers) {
+                const stacked = painter.style._layers[layerId];
+                if (isCustomStyleLayer(stacked)) painter.renderLayer(painter, undefined, stacked, [], renderContext);
+            }
+
+            return draped;
         }
 
         return false;

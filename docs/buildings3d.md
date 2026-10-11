@@ -983,7 +983,9 @@ A custom WebGL2 layer, as the roads, contours and dots have, only if B1–B3's m
 artefacts call for it (B4):
 - exact occlusion with the roads: the buildings' depth drawn into a texture the road, rail and dot
   shaders read beside the terrain's, so a road behind a building fades as one behind a hill does
-  (today hidden or faint by the opacity), and the roads' tolerance stays for the terrain alone;
+  (today hidden or faint by the opacity), and the roads' tolerance stays for the terrain alone (our
+  MapLibre gives a custom layer the frame's depth so far, the extrusions' included, without a copy:
+  `readsSceneDepth`, web/maplibre/FORK.md);
 - pitched roofs: tagged shapes (0.6 %), and gabled roofs inferred for small residential footprints
   (four corners, a ridge along the long side), which villages would show;
 - distance-based detail like the roads' (perspective), and the iPad's memory under our control.

@@ -98,6 +98,55 @@ now source changes:
   levels, made with its own min and max in the worker, and a tile's range is read from at most
   5 × 5 cells. Tighter culling volumes too.
 
+### Custom layers: their place in the passes, and the frame's depth
+
+Upstream gave a custom layer `prerender` (offscreen) and `render` (the main pass, at its place in
+the layer order, a `"3d"` one depth-tested in hardware) and nothing else: no way onto the 3D terrain
+but projecting with elevations itself, the terrain's depth only through internals
+(`terrain._fboDepthTexture`), and the frame's depth not at all (the app's #102 field prototype
+copied it). Now (`custom_style_layer.ts`, `draw_custom.ts`, `render_to_texture.ts`, `painter.ts`,
+`scene_target.ts`):
+
+| Pass | Hook | When, and into what |
+|---|---|---|
+| offscreen | `prerender(gl, args)` | first, any framebuffer of its own (as upstream) |
+| the terrain's | `drape(gl, args)` | 3D terrain on: once per terrain tile drawn, into its texture, in the layer's order among the draped layers (fills, lines, rasters, hillshade…); kept between frames, drawn again when the tiles in view, the zoom or `drapeRevision` change |
+| main | `render(gl, args)` | at its place in the order; for a layer with `drape`, right after the terrain carrying its drape (before the next layer) |
+
+The arguments (`CustomRenderMethodInput`) gain:
+
+- `framebuffer`: the one the call draws into (`null`: the canvas), to bind again after binding
+  others;
+- `depthRangeFor3D`: the depth range the 3D layers draw in;
+- `terrainDepth` (`{texture, width, height, revision, unpack}`, null without terrain): the terrain's
+  depth texture MapLibre already draws for the symbols (packed RGBA8, CSS pixels), read in place,
+  `unpack` a GLSL function reading it;
+- `sceneDepth` (`{texture, width, height}`), for a layer with `readsSceneDepth: true`: the frame's
+  depth so far, a `DEPTH24_STENCIL8` texture (the terrain's mesh, the extrusions, the 3D layers
+  before it), with `framebuffer` the frame's colour without the depth attached (sampling a texture
+  attached to the framebuffer drawn into is an error in WebGL), so the layer tests depth in its
+  shader (`gl_FragCoord.z` against `texelFetch(depth, ivec2(gl_FragCoord.xy), 0).r`).
+- `drape`'s also `tileID`, `size` and `getDrapeMatrix(tile)` (a tile's 0..8192 coordinates to clip
+  space in the texture).
+
+No copies of the frame are made for a layer. While a visible layer has `readsSceneDepth`, the main
+pass draws into a colour renderbuffer and a depth-stencil texture (`SceneTarget`) and the colour is
+blitted to the canvas once at the end of the frame; while none has, the frame goes straight to the
+canvas as upstream's, and the only cost is a check of the layers each frame.
+`test/scenic/demo.html?case=custom` shows each hook.
+
+**The #102 field (`web/src/bldfield.ts`) on these hooks.** It draws its boxes far to near into
+MapLibre's frame in `render`, hardware depth-tested, and wants the frame's depth so far (`u_scene`),
+which it copies. Moved over: `readsSceneDepth: true`; `u_scene` becomes `args.sceneDepth.texture`
+(the same window depth: drawn in `args.depthRangeFor3D`), with no copy; its hardware depth test
+(`gl.enable(gl.DEPTH_TEST)`, `LEQUAL`, polygon offset −2/−8) becomes a test in the fragment
+shader, `gl_FragCoord.z - bias > scene` discarding (`args.framebuffer` has no depth attached);
+anything it binds of its own is followed by binding `args.framebuffer` again. The terrain under its
+tiles can come from `args.terrainDepth` where it now reads `terrain._fboDepthTexture`. Its copy of
+the frame's colour (`bg`, for the land colour under the buildings) has no counterpart: sampling the
+frame's colour while drawing into it is the same feedback loop, so that needs its own target or a
+copy still.
+
 ### Known render-test differences
 
 `test/integration/render/expected/` holds this fork's expected image where it draws differently on
