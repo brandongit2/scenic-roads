@@ -2869,7 +2869,8 @@ impl Agent {
         let first = self.slots[0].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone(), crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20), self.spec_peak(&r.spec)));
         if self.slots[0].running.as_ref().is_some_and(|r| self.runs_alone(&r.spec)) {
             let f = first.unwrap().0;
-            self.beside_why = Some(if self.by_measure { format!("{} is a cold start (no run of its step measured yet): it runs alone", build::label(&f)) } else { format!("{} runs alone", build::label(&f)) });
+            let what = self.slots[0].running.as_ref().map_or_else(|| build::label(&f).to_string(), |r| r.spec.what.clone());
+            self.beside_why = Some(if self.by_measure { format!("{what} is a cold start (no run of its step measured yet): it runs alone") } else { format!("{what} runs alone") });
             return;
         }
         // What the first slot starts next: one that runs alone, or needs room made on the disk
@@ -2877,11 +2878,11 @@ impl Agent {
         if let Some(h) = self.head(plan, c) {
             let hs = step_of(&h.id).unwrap_or_default();
             if self.runs_alone(h) {
-                self.beside_why = Some(format!("{} runs alone, next{}: nothing starts beside the first job until it has", build::label(&hs), if self.by_measure { " (a cold start)" } else { "" }));
+                self.beside_why = Some(format!("{} runs alone, next{}: nothing starts beside the first job until it has", h.what, if self.by_measure { " (a cold start)" } else { "" }));
                 return;
             }
             if self.disk_free() < self.need_of(0, h).saturating_add(self.floor_for(&hs)) {
-                self.beside_why = Some(format!("{} needs room made on the disk next, which waits for one job alone: nothing starts beside the first job until it has", build::label(&hs)));
+                self.beside_why = Some(format!("{} needs room made on the disk next, which waits for one job alone: nothing starts beside the first job until it has", h.what));
                 return;
             }
         }
