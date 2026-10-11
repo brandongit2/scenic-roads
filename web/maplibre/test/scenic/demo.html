@@ -8,6 +8,8 @@
                                                   line-elevation-reference)
     /maplibre/test/scenic/demo.html?case=water    a fill drawn as a surface at an elevation
                                                   (fill-z-offset, fill-elevation-reference)
+    /maplibre/test/scenic/demo.html?case=rasterwater   the app's water raster as a surface at an
+                                                  elevation (raster-z-offset, -elevation-reference)
   `#map=zoom/lat/lng/bearing/pitch` sets the view; `&flat` the flat map in place of the globe.
 -->
 <html>
@@ -46,6 +48,7 @@ const map = new maplibregl.Map({
   style: {
     version: 8,
     projection: {type: q.has('flat') ? 'mercator' : 'globe'},
+    glyphs: `${location.origin}/fonts/{fontstack}/{range}.pbf`,
     sources: {
       dem: {type: 'raster-dem', tiles: [`${location.origin}/tiles/terrain/{z}/{x}/{y}`], encoding: 'terrarium', tileSize: 256, maxzoom: 12},
     },

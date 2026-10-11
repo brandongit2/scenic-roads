@@ -19,6 +19,8 @@ export type RasterUniformsType = {
     'u_tl_parent': Uniform2f;
     'u_scale_parent': Uniform1f;
     'u_buffer_scale': Uniform1f;
+    'u_elevation_reference': Uniform1f;
+    'u_z_offset': Uniform1f;
     'u_image_warp': Uniform3f;
     'u_fade_t': Uniform1f;
     'u_opacity': Uniform1f;
@@ -37,6 +39,8 @@ const rasterUniforms = (context: Context, locations: UniformLocations): RasterUn
     'u_tl_parent': new Uniform2f(context, locations.u_tl_parent),
     'u_scale_parent': new Uniform1f(context, locations.u_scale_parent),
     'u_buffer_scale': new Uniform1f(context, locations.u_buffer_scale),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
+    'u_z_offset': new Uniform1f(context, locations.u_z_offset),
     'u_image_warp': new Uniform3f(context, locations.u_image_warp),
     'u_fade_t': new Uniform1f(context, locations.u_fade_t),
     'u_opacity': new Uniform1f(context, locations.u_opacity),
@@ -69,6 +73,9 @@ const rasterUniformValues = (
     // so that the texture coordinares for poles always lie beyond the edge of the texture.
     // Right now the coordinates are placed right at the texture border.
     'u_buffer_scale': 1,
+    // Scenic Roads: RasterStyleLayer.elevationReference, and the height.
+    'u_elevation_reference': layer.elevationReference(),
+    'u_z_offset': layer.paint.get('raster-z-offset'),
     'u_image_warp': imageWarp,
     'u_fade_t': fade.mix,
     'u_opacity': fade.opacity * layer.paint.get('raster-opacity'),

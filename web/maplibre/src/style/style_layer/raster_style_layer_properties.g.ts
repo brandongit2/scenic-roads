@@ -28,6 +28,8 @@ export type RasterPaintProps = {
     "resampling": DataConstantProperty<"linear" | "nearest">,
     "raster-resampling": DataConstantProperty<"linear" | "nearest">,
     "raster-fade-duration": DataConstantProperty<number>,
+    "raster-z-offset": DataConstantProperty<number>,
+    "raster-elevation-reference": DataConstantProperty<"ground" | "sea">,
 };
 
 export type RasterPaintPropsPossiblyEvaluated = {
@@ -40,6 +42,8 @@ export type RasterPaintPropsPossiblyEvaluated = {
     "resampling": "linear" | "nearest",
     "raster-resampling": "linear" | "nearest",
     "raster-fade-duration": number,
+    "raster-z-offset": number,
+    "raster-elevation-reference": "ground" | "sea",
 };
 
 let paint: Properties<RasterPaintProps>;
@@ -53,6 +57,8 @@ const getPaint = (): Properties<RasterPaintProps> => paint = paint || new Proper
     "resampling": new DataConstantProperty(styleSpec["paint_raster"]["resampling"] as any as StylePropertySpecification, "resampling"),
     "raster-resampling": new DataConstantProperty(styleSpec["paint_raster"]["raster-resampling"] as any as StylePropertySpecification, "raster-resampling"),
     "raster-fade-duration": new DataConstantProperty(styleSpec["paint_raster"]["raster-fade-duration"] as any as StylePropertySpecification, "raster-fade-duration"),
+    "raster-z-offset": new DataConstantProperty(styleSpec["paint_raster"]["raster-z-offset"] as any as StylePropertySpecification, "raster-z-offset"),
+    "raster-elevation-reference": new DataConstantProperty(styleSpec["paint_raster"]["raster-elevation-reference"] as any as StylePropertySpecification, "raster-elevation-reference"),
 });
 
 export default ({ get paint(): Properties<RasterPaintProps> { return getPaint() } });

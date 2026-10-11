@@ -21,6 +21,7 @@ import type {SymbolBucket, CollisionArrays, SingleCollisionBox, SymbolBuffers} f
 import type {CollisionBoxArray, CollisionVertexArray, SymbolInstance, TextAnchorOffset} from '../data/array_types.g.ts';
 import type {FeatureIndex} from '../data/feature_index.ts';
 import type {OverscaledTileID, UnwrappedTileID} from '../tile/tile_id.ts';
+import {symbolHeightScale} from '../style/style_spec_extensions.ts';
 import type {Terrain} from '../render/terrain.ts';
 
 class OpacityState {
@@ -440,6 +441,8 @@ export class Placement {
         const hasIconTextFit = layout.get('icon-text-fit') !== 'none';
         const zOrderByViewportY = layout.get('symbol-z-order') === 'viewport-y';
         const heightAnchorGround = layout.get('symbol-height-anchor') === 'ground';
+        // Scenic Roads: the anchor `sea` scales the offsets by the terrain's exaggeration (style_spec_extensions.ts).
+        const heightScale = symbolHeightScale(layout.get('symbol-height-anchor'), this.terrain?.exaggeration);
 
         // This logic is similar to the "defaultOpacityState" logic below in updateBucketOpacities
         // If we know a symbol is always supposed to show, force it to be marked visible even if
@@ -475,7 +478,7 @@ export class Placement {
                 return;
             }
 
-            const symbolHeightOffset = symbolInstance.heightOffset;
+            const symbolHeightOffset = symbolInstance.heightOffset * heightScale;
 
             let placeText = false;
             let placeIcon = false;

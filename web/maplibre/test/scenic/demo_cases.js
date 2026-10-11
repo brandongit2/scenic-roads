@@ -170,13 +170,27 @@ export const cases = {
         paint: {'line-color': '#ff9a3c', 'line-width': 4, 'line-dasharray': [2, 1], 'line-z-offset': ['get', 'z']}});
     },
   },
+  rasterwater: {
+    view: '11.6/45.855/6.19/20/62',
+    note: 'raster-elevation-reference sea: the app\'s water raster (the backend\'s /tiles/water) as a level surface at 600 m (raster-z-offset), over the terrain, the hills cutting it',
+    add(map) {
+      map.addSource('water', {type: 'raster', tiles: [`${location.origin}/tiles/water/{z}/{x}/{y}?c=1b5fa8,2a7fd4`], tileSize: 256 / Math.SQRT2, maxzoom: 18});
+      map.addLayer({id: 'water', type: 'raster', source: 'water',
+        paint: {'raster-opacity': 0.85, 'raster-fade-duration': 0, 'raster-elevation-reference': 'sea', 'raster-z-offset': 600}});
+    },
+  },
   water: {
     view: '11.8/45.80/6.10/60/72',
-    note: 'fill-elevation-reference sea: the lake as a see-through surface at 600 m (fill-z-offset, data-driven), over the terrain, the hills cutting it; outlined',
+    note: 'fill-elevation-reference sea: the lake as a see-through surface at 600 m (fill-z-offset, data-driven), over the terrain, the hills cutting it; outlined; its name on the surface (symbol-height-anchor sea)',
     add(map) {
       map.addSource('lake', {type: 'geojson', data: {type: 'Feature', properties: {level: 600}, geometry: {type: 'Polygon', coordinates: [LAKE]}}});
       map.addLayer({id: 'lake', type: 'fill', source: 'lake',
         paint: {'fill-color': '#2a7fd4', 'fill-opacity': 0.55, 'fill-outline-color': '#bfe3ff', 'fill-elevation-reference': 'sea', 'fill-z-offset': ['get', 'level']}});
+      // The lake's name on its surface: symbol-height-anchor sea, the same 600 m (exaggerated as the terrain is).
+      map.addSource('lake-name', {type: 'geojson', data: {type: 'Feature', properties: {name: 'Lac d\'Annecy (600 m, sea)', level: 600}, geometry: {type: 'Point', coordinates: [6.19, 45.855]}}});
+      map.addLayer({id: 'lake-name', type: 'symbol', source: 'lake-name',
+        layout: {'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 15, 'symbol-height-anchor': 'sea', 'symbol-height-offset': ['get', 'level']},
+        paint: {'text-color': '#fff', 'text-halo-color': '#0b2a4a', 'text-halo-width': 1.5}});
     },
   },
 };

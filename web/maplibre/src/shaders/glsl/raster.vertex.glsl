@@ -4,6 +4,9 @@ uniform float u_buffer_scale;
 uniform vec3 u_image_warp;
 uniform vec4 u_coords_top; // xy = left, zw = right
 uniform vec4 u_coords_bottom;
+// Scenic Roads: 0 draped (or flat), 1 u_z_offset above the ground, 2 above sea level.
+uniform float u_elevation_reference;
+uniform float u_z_offset;
 
 layout(location = 0) in vec2 a_pos;
 
@@ -30,7 +33,13 @@ void main() {
     vec2 projectivePos = (acrossTop * fractionalPos.x + downLeft * fractionalPos.y + topLeft) / denominator;
 
     vec2 position = mix(projectivePos, bilinearPos, u_image_warp.z);
-    gl_Position = projectTile(position, position);
+    // Scenic Roads: a lifted raster (raster-z-offset, raster-elevation-reference) is drawn in 3D at its
+    // elevation, with the perspective depth the terrain's is drawn with; else as upstream.
+    if (u_elevation_reference > 0.5) {
+        gl_Position = projectTileFor3D(position, elevationOf(position, u_z_offset, u_elevation_reference));
+    } else {
+        gl_Position = projectTile(position, position);
+    }
 
     // We are using Int16 for texture position coordinates to give us enough precision for
     // fractional coordinates. We use 8192 to scale the texture coordinates in the buffer

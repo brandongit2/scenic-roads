@@ -104,6 +104,7 @@ function drawTiles(
     const textureFilter = useNearest ?  gl.NEAREST : gl.LINEAR;
     const fadeDuration = layer.paint.get('raster-fade-duration');
     const isTerrain = !!painter.style.map.terrain;
+    const elevated = layer.elevationReference() > 0;
     // Scenic Roads: a layer whose metadata sets `scenic:mipmap` to `linear` is minified between its two
     // nearest mipmap levels (trilinear), not from the nearer one alone, so its look doesn't jump at
     // each half zoom (the app's water raster, task #123).
@@ -114,8 +115,12 @@ function drawTiles(
     for (const coord of coords) {
         // Set the lower zoom level to sublayer 0, and higher zoom levels to higher sublayers
         // Use gl.LESS to prevent double drawing in areas where tiles overlap.
-        const depthMode = painter.getDepthModeForSublayer(coord.overscaledZ - minTileZ,
-            rasterOpacity === 1 ? DepthMode.ReadWrite : DepthMode.ReadOnly, gl.LESS);
+        // Scenic Roads: a lifted raster is drawn in 3D, depth-tested against the terrain and the 3D
+        // layers, not draped (render_to_texture.ts's drapes).
+        const depthMode = elevated ?
+            new DepthMode(gl.LEQUAL, rasterOpacity === 1 ? DepthMode.ReadWrite : DepthMode.ReadOnly, renderContext.depthRangeFor3D) :
+            painter.getDepthModeForSublayer(coord.overscaledZ - minTileZ,
+                rasterOpacity === 1 ? DepthMode.ReadWrite : DepthMode.ReadOnly, gl.LESS);
 
         const tile = tileManager.getTile(coord);
 

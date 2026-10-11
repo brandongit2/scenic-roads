@@ -5,6 +5,7 @@ import {pixelsToTileUnits} from '../../source/pixels_to_tile_units.ts';
 import {type EvaluatedZoomSize, evaluateSizeForFeature, evaluateSizeForZoom} from '../../symbol/symbol_size.ts';
 import {mat4} from 'gl-matrix';
 import {StencilMode} from '../stencil_mode.ts';
+import {symbolHeightScale} from '../../style/style_spec_extensions.ts';
 import {DepthMode} from '../depth_mode.ts';
 import {CullFaceMode} from '../cull_face_mode.ts';
 import {addDynamicAttributes} from '../../data/bucket/symbol_bucket.ts';
@@ -155,7 +156,7 @@ function updateVariableAnchors(coords: OverscaledTileID[],
             const translation = translatePosition(transform, tile, translate, translateAnchor);
             updateVariableAnchorsForBucket(bucket, rotateWithMap, pitchWithMap, variableOffsets,
                 transform, pitchedLabelPlaneMatrix, tileScale, size, updateTextFitIcon, translation, coord.toUnwrapped(), getElevation,
-                layer.layout.get('symbol-height-anchor') === 'ground');
+                layer.layout.get('symbol-height-anchor') === 'ground', symbolHeightScale(layer.layout.get('symbol-height-anchor'), terrain?.exaggeration));
         }
     }
 }
@@ -200,7 +201,8 @@ function updateVariableAnchorsForBucket(
     translation: [number, number],
     unwrappedTileID: UnwrappedTileID,
     getElevation: GetElevation | undefined,
-    heightAnchorGround: boolean) {
+    heightAnchorGround: boolean,
+    heightScale: number = 1) {
     const placedSymbols = bucket.text.placedSymbolArray;
     const dynamicTextLayoutVertexArray = bucket.text.dynamicLayoutVertexArray;
     const dynamicIconLayoutVertexArray = bucket.icon.dynamicLayoutVertexArray;
@@ -220,7 +222,7 @@ function updateVariableAnchorsForBucket(
             const tileAnchor = new Point(symbol.anchorX, symbol.anchorY);
             const projectionContext: SymbolProjectionContext = {
                 getElevation,
-                heightOffset: symbol.heightOffset,
+                heightOffset: symbol.heightOffset * heightScale,
                 heightAnchorGround,
                 width: transform.width,
                 height: transform.height,
@@ -388,6 +390,7 @@ function drawLayerSymbols(
             bucket.hasIconData();
         const isOffset = layer._unevaluatedLayout.hasValue('icon-offset');
         const heightAnchorGround = layer.layout.get('symbol-height-anchor') === 'ground';
+        const heightScale = symbolHeightScale(layer.layout.get('symbol-height-anchor'), painter.style.map?.terrain?.exaggeration);
 
         if (alongLine) {
             const pitchedLabelPlaneMatrixInverse = mat4.create();
@@ -413,16 +416,16 @@ function drawLayerSymbols(
             if (!bucket.iconsInText) {
                 uniformValues = symbolSDFUniformValues(sizeData.kind,
                     size, rotateInShader, pitchWithMap, alongLine, shaderVariableAnchor, painter,
-                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, hasHalo, pitchedTextRescaling, isOffset, heightAnchorGround);
+                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, hasHalo, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale);
             } else {
                 uniformValues = symbolTextAndIconUniformValues(sizeData.kind,
                     size, rotateInShader, pitchWithMap, alongLine, shaderVariableAnchor, painter,
-                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, texSize, texSizeIcon, pitchedTextRescaling, isOffset, heightAnchorGround);
+                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, texSize, texSizeIcon, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale);
             }
         } else {
             uniformValues = symbolIconUniformValues(sizeData.kind,
                 size, rotateInShader, pitchWithMap, alongLine, shaderVariableAnchor, painter,
-                uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, pitchedTextRescaling, isOffset, heightAnchorGround);
+                uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale);
         }
 
         const state = {

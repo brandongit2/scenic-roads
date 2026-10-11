@@ -21,6 +21,8 @@ uniform vec2 u_translation;
 uniform float u_pitched_scale;
 uniform bool u_is_offset;
 uniform bool u_height_anchor_ground;
+// Scenic Roads: symbol-height-offset times this (the terrain's exaggeration for the anchor `sea`).
+uniform float u_height_scale;
 
 out vec2 v_tex;
 flat out float v_total_opacity;
@@ -40,7 +42,7 @@ void main() {
     vec2 a_pxoffset = a_pixeloffset.xy;
     vec2 a_minFontScale = a_pixeloffset.zw / 256.0;
 
-    float ele = a_height_offset + (u_height_anchor_ground ? get_elevation(a_pos) : 0.0);
+    float ele = a_height_offset * u_height_scale + (u_height_anchor_ground ? get_elevation(a_pos) : 0.0);
     highp float segment_angle = -a_projected_pos[2];
     float size;
 

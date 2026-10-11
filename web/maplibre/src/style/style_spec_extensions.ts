@@ -27,6 +27,17 @@ const elevationReference = (prefix: string) => ({
     'property-type': 'data-constant',
 });
 
+/** A raster's (one per layer: data-constant). */
+const rasterZOffset = {
+    type: 'number',
+    default: 0,
+    units: 'meters',
+    transition: false,
+    doc: 'The raster\'s height above `raster-elevation-reference`: with it other than 0, or the reference `sea`, drawn in 3D over the terrain rather than draped (Scenic Roads).',
+    expression: {interpolated: true, parameters: ['zoom']},
+    'property-type': 'data-constant',
+};
+
 const zOffset = (prefix: string) => ({
     type: 'number',
     default: 0,
@@ -40,7 +51,21 @@ const zOffset = (prefix: string) => ({
 export const SCENIC_PROPERTIES: Record<string, Record<string, unknown>> = {
     paint_line: {'line-z-offset': zOffset('line'), 'line-elevation-reference': elevationReference('line')},
     paint_fill: {'fill-z-offset': zOffset('fill'), 'fill-elevation-reference': elevationReference('fill')},
+    paint_raster: {'raster-z-offset': rasterZOffset, 'raster-elevation-reference': elevationReference('raster')},
 };
+
+// Point labels on the same terms: `symbol-height-anchor` `sea`, its `symbol-height-offset` an
+// elevation above sea level on the terrain's scale (times its exaggeration), where upstream's
+// `absolute` isn't exaggerated (a label at a lake's level sank into exaggerated terrain).
+const heightAnchor = (latest as unknown as {layout_symbol: Record<string, {values: Record<string, unknown>; doc?: string}>}).layout_symbol['symbol-height-anchor'];
+if (heightAnchor && !heightAnchor.values.sea) {
+    heightAnchor.values.sea = {doc: 'The offset is an elevation above sea level, on the terrain\'s exaggerated scale (Scenic Roads).'};
+}
+
+/** Scenic Roads: what a symbol's `symbol-height-offset` is multiplied by: the terrain's exaggeration for the anchor `sea`. */
+export function symbolHeightScale(anchor: string, exaggeration: number | undefined): number {
+    return anchor === 'sea' ? (exaggeration ?? 1) : 1;
+}
 
 for (const group in SCENIC_PROPERTIES) {
     const target = latest[group as keyof typeof latest] as unknown as Record<string, unknown>;

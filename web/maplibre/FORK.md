@@ -147,11 +147,11 @@ the frame's colour (`bg`, for the land colour under the buildings) has no counte
 frame's colour while drawing into it is the same feedback loop, so that needs its own target or a
 copy still.
 
-### Lines and fills lifted off the terrain
+### Lines, fills, rasters and labels lifted off the terrain
 
 Upstream drapes every line and fill on the 3D terrain (drawn into the terrain's textures), so a
 ferry route or a bridge follows the ground under it, and a lake's surface is wherever the DEM puts
-it. Four paint properties change that (`style_spec_extensions.ts`, added to the style spec's own
+it. Paint properties change that (`style_spec_extensions.ts`, added to the style spec's own
 object, so validation and expressions know them; the API after Mapbox GL v3's `line-z-offset` and
 `line-elevation-reference`):
 
@@ -159,6 +159,8 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
 |---|---|---|
 | `line-z-offset`, `fill-z-offset` | number, metres, data-driven (`zoom`, `feature`, `feature-state`), default 0 | the height |
 | `line-elevation-reference`, `fill-elevation-reference` | `ground` (default), `sea` | what it's measured from |
+| `raster-z-offset`, `raster-elevation-reference` | as above, the height one per layer | rasters, below |
+| `symbol-height-anchor` | upstream's `ground`, `absolute`, and `sea` | point labels, below |
 
 - `ground`: above the terrain under each vertex, in metres, not exaggerated (as an extrusion's
   height). With an offset of 0 the layer is draped exactly as upstream draws it.
@@ -177,24 +179,34 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
 - Without 3D terrain the ground is at 0: both are a height above the map.
 - Not in the TypeScript types: the style objects' types are the style-spec package's, so a layer
   using them is cast.
-- Labels: point labels already rise off the terrain upstream (`symbol-height-offset`, and
-  `symbol-height-anchor` `ground` or `absolute`; `absolute` isn't exaggerated, so a label at the
-  water's surface over exaggerated terrain takes the surface's elevation times the exaggeration).
-  Line-placed labels (a ferry's name along its route) don't: planned, as a `symbol-height-offset`
-  for line placement with an anchor `sea` on the same terms as above (the placement's collision
-  boxes projected with the lifted elevation, `symbol/projection.ts`, as the point labels' are).
-- `test/scenic/demo.html?case=lines` and `?case=water` show them; the unit tests are in
-  `style_spec_extensions.test.ts`.
+- Rasters: `raster-z-offset` (metres, one per layer: data-constant) and
+  `raster-elevation-reference`, on the same terms (`raster_style_layer.ts`, `raster.vertex.glsl`,
+  `draw_raster.ts`): the app's water raster (basemap.ts's `water`) as a level surface. A raster's
+  tiles' meshes are coarse (a quad, subdivided on the globe), so `ground` follows the terrain only
+  at their vertices; `sea` is exact. Overlapping parent and child tiles (while one loads) both draw
+  at the same depth: harmless opaque, doubled where see-through.
+- Point labels: upstream lifts them (`symbol-height-offset`, `symbol-height-anchor` `ground` or
+  `absolute`, where `absolute` isn't exaggerated, so a label at a lake's level sank into exaggerated
+  terrain); the anchor `sea` is added, its offset times the terrain's exaggeration, in the shaders
+  (`u_height_scale`) and in placement and collision (`symbolHeightScale`).
+- Line-placed labels (a ferry's name along its route) aren't lifted: upstream's
+  `symbol-height-offset` requires point placement. Planned, not built: lifting the label line's
+  vertices (`symbol/projection.ts`, which projects each glyph along the line through
+  `getSymbolElevation` already) with the same offset and anchor, and the line labels' collision
+  circles with them; until then a ferry's name lies draped on the ground under its route.
+- `test/scenic/demo.html?case=lines`, `?case=water` (with the lake's name on its surface) and
+  `?case=rasterwater` show them; the unit tests are in `style_spec_extensions.test.ts`.
 
 **The 3D sea floor (#99) on them.** With a terrain whose DEM goes below 0 under the sea (the sea
 floor), the basemap's water fill gets `fill-elevation-reference: sea` and `fill-z-offset` 0 (a
 lake's surface: its level, a feature property, as `['get', …]`) and a `fill-opacity` below 1, so
 the surface lies level at the sea's elevation with the floor showing through; the ferry routes get
-`line-elevation-reference: sea` and `line-z-offset` 0 to lie on that surface. Nothing else is
-needed of this fork; the floor itself (the DEM below 0) is #99's. One gap: where the catalog has
-the water's own tiles the app draws the water as a raster (basemap.ts's `water` layer), and rasters
-have no elevation reference yet (the same for `raster` layers, drawn as a level quad per tile at the
-elevation, isn't built); the basemap's water polygons, the fill it falls back to, take it as is.
+`line-elevation-reference: sea` and `line-z-offset` 0 to lie on that surface. Where the catalog
+has the water's own tiles the app draws the water as a raster (basemap.ts's `water` layer): it gets
+`raster-elevation-reference: sea` and `raster-z-offset` 0 alike. A raster has one height, so lakes
+above sea level would come from a second layer (or tiles) of their own, or stay draped on the floor
+DEM, which holds their surfaces. Labels on the water: `symbol-height-anchor: sea`. Nothing else is
+needed of this fork; the floor itself (the DEM below 0) is #99's.
 
 ### Known render-test differences
 
