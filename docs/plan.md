@@ -1965,7 +1965,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     space falls below the reserve, the sampler freezes the job growing fastest at once, the agent
     makes room from what no job holds (room::toward, on a thread), and the job goes on once the
     reserve is free again, or is given back (not failed, kept from the Mac an hour, as the memory
-    guard's) when no more room can be made.
+    guard's) when no more room can be made. A job given back keeps its scratch folder while there's
+    room; room-making short of the reserve, the caches freed, deletes the given-back jobs' scratch
+    folders last, the oldest given back first, never one a job running or frozen here uses.
   - Canopy squares and copies not read in the last hour go first, each by its own use, the least
     recently used first: one listing of the NAS's canopy folder answers for every square (hundreds
     of MB a file), and a copy of a recorded file needs no listing at all (the records name only

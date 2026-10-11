@@ -778,6 +778,74 @@ fn loose_bytes(tiles: &Path) -> u64 {
     files.iter().map(|f| f.1).sum()
 }
 
+/// The scratch folders of the jobs given back here, in the agent's folder: (folder, when given
+/// back). Kept, their work with them, while there's room; short of the room asked for once the
+/// caches are freed, room-making deletes them, the oldest given back first (`free_given_back`;
+/// docs/pool.md §7.7). One a job starts in again is taken off (its own again).
+pub const GIVEN_BACK: &str = "given-back.json";
+
+fn given_back(home: &Path) -> Vec<(PathBuf, u64)> {
+    std::fs::read(home.join(GIVEN_BACK)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn keep_given_back(home: &Path, list: &[(PathBuf, u64)]) {
+    if let Err(e) = serde_json::to_vec(list).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&home.join(GIVEN_BACK), &b)) {
+        eprintln!("agent: keeping the given-back jobs' scratch folders: {e:#}");
+    }
+}
+
+/// Scratch folder `dir`, of a job given back at `at` (unix seconds): noted, kept for now.
+pub fn given_back_add(home: &Path, dir: &Path, at: u64) {
+    let mut list = given_back(home);
+    list.retain(|(d, _)| d != dir);
+    list.push((dir.to_path_buf(), at));
+    keep_given_back(home, &list);
+}
+
+/// Scratch folder `dir`, a job's again (it starts in it): no longer the given-back's.
+pub fn given_back_drop(home: &Path, dir: &Path) {
+    let mut list = given_back(home);
+    let n = list.len();
+    list.retain(|(d, _)| d != dir);
+    if list.len() != n {
+        keep_given_back(home, &list);
+    }
+}
+
+/// Deletes the given-back jobs' scratch folders, the oldest given back first, until the disk has
+/// `need` free (`free_space`) or none is left; never one in `busy` (a job running or frozen here
+/// uses it, or a folder inside it or holding it). The bytes freed.
+pub fn free_given_back(home: &Path, need: u64, busy: &[PathBuf], free_space: &dyn Fn() -> u64) -> u64 {
+    let mut list = given_back(home);
+    if list.is_empty() {
+        return 0;
+    }
+    list.sort_by_key(|(d, at)| (*at, d.clone()));
+    let mut freed = 0;
+    let mut kept = Vec::new();
+    for (d, at) in list {
+        let used = busy.iter().any(|b| b.starts_with(&d) || d.starts_with(b));
+        if used || free_space() >= need {
+            kept.push((d, at));
+            continue;
+        }
+        let n = bytes_under(&d);
+        match std::fs::remove_dir_all(&d) {
+            Ok(()) => {
+                freed += n;
+                eprintln!("agent: a given-back job's scratch deleted for room ({}, given back at {at}): {}", d.display(), size(n));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!("agent: deleting a given-back job's scratch {}: {e}", d.display());
+                kept.push((d, at));
+            }
+        }
+    }
+    keep_given_back(home, &kept);
+    freed
+}
+
 /// The bytes of file `p`, or of the files under folder `p` (0 when it isn't there).
 fn bytes_under(p: &Path) -> u64 {
     match std::fs::symlink_metadata(p) {
@@ -1094,6 +1162,43 @@ mod tests {
     }
     use std::cell::Cell;
     use std::time::Duration;
+
+    /// A given-back job's scratch: kept while there's room; short of it, deleted, the oldest given
+    /// back first and only as far as needed; never one a running or frozen job uses; a scratch a
+    /// job starts in again no longer the given-back's.
+    #[test]
+    fn a_given_back_jobs_scratch_goes_only_when_room_is_short() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        let (a, b, c, e) = (home.join("scratch/pass-sets"), home.join("scratch-2/terrain-z8"), home.join("scratch/buildings"), home.join("scratch/water"));
+        for (dir, n) in [(&a, 1000), (&b, 2000), (&c, 4000), (&e, 8000)] {
+            file(&dir.join("work.bin"), n, 0);
+        }
+        given_back_add(home, &b, 20);
+        given_back_add(home, &a, 10);
+        given_back_add(home, &c, 30);
+        given_back_add(home, &e, 40);
+        // (The disk's free space: `start` before the call, and what its deletions freed since.)
+        let dirs = [a.clone(), b.clone(), c.clone(), e.clone()];
+        let remaining = || dirs.iter().map(|p| bytes_under(p)).sum::<u64>();
+        let room = |start: u64, need: u64, busy: &[PathBuf]| {
+            let before = remaining();
+            free_given_back(home, need, busy, &|| start + (before - remaining()))
+        };
+        // Room enough: all kept.
+        assert_eq!(room(10_000, 10_000, &[]), 0);
+        assert!(a.exists() && b.exists() && c.exists() && e.exists());
+        // Short by 2500: the oldest first (pass-sets, then terrain-z8), no further.
+        assert_eq!(room(7_500, 10_000, &[]), 3000);
+        assert!(!a.exists() && !b.exists() && c.exists() && e.exists());
+        // Short again, buildings' running (or frozen) here: passed over, water goes.
+        assert_eq!(room(0, 5_000, std::slice::from_ref(&c)), 8000);
+        assert!(c.exists() && !e.exists());
+        // Buildings started in it again: its own, never room-making's.
+        given_back_drop(home, &c);
+        assert_eq!(room(0, 5_000, &[]), 0);
+        assert!(c.exists() && given_back(home).is_empty());
+    }
 
     fn file(p: &Path, len: usize, age_s: u64) {
         bytes(p, &vec![0u8; len], age_s);

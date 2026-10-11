@@ -53,6 +53,11 @@ use std::time::{Duration, Instant};
 /// time, so the pass's peak stays near the filtered file's size.
 pub const PASS_SPACE: u64 = 80 << 30;
 
+/// A job's scratch folder (its `--scratch`), when it has one.
+fn scratch_of(spec: &JobSpec) -> Option<PathBuf> {
+    spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from)
+}
+
 /// Bytes of the files under `dir` (0 when it isn't there).
 fn dir_bytes(dir: &Path) -> u64 {
     let mut n = 0;
@@ -2725,6 +2730,10 @@ impl Agent {
                 }
                 Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
             }
+            // (Still short, the caches freed: the scratch of jobs given back here, the oldest first.)
+            if self.disk_free() < room.saturating_add(margin) {
+                self.free_given_back(room.saturating_add(margin));
+            }
             // Still short of the target past its room: the job waits (it would fill what the owner
             // keeps free), as do the jobs after it; the caches' others are freed toward the target
             // between jobs (`tend_caches`).
@@ -3051,12 +3060,18 @@ impl Agent {
         self.sampler.thaw_disk(k);
         let Some(r) = self.slots[k].running.as_mut() else { return false };
         let id = r.spec.id.clone();
+        let scratch = scratch_of(&r.spec);
         eprintln!("agent: {what}: {id} {why}");
         r.stop(Duration::from_secs(30));
         self.guard_last = Some((now_s(), format!("{id} {why}")));
         self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
         self.slots[k].guard_stopped = true;
         self.stopped(k, root, &why);
+        // (Its lease ended, given back: its scratch kept, its work with it, until room-making is
+        // short of the reserve, `room::free_given_back`.)
+        if let Some(d) = &scratch {
+            room::given_back_add(&self.o.home, d, now_s());
+        }
         self.release_claims(k, root);
         self.slots[k].running = None;
         self.slots[k].drain_since = None;
@@ -3096,8 +3111,12 @@ impl Agent {
         let ours = self.caches_task.as_ref().is_some_and(|t| t.disk);
         match self.disk_room {
             Some(_) if ours => false,
-            // (Made, and still short: given back.)
+            // (Made, and still short: the scratch of jobs given back here, the oldest first; still
+            // short, given back.)
             Some(_) if self.caches_task.is_none() => {
+                if self.free_given_back(room::RESERVE) > 0 && self.disk_free() >= room::RESERVE {
+                    return false;
+                }
                 self.disk_room = None;
                 let why = format!("given back by the disk guard: the disk had {} free, short of the {} kept free, with no more room to be made from the caches no job holds (what it took on the disk is kept as the least its target takes)", room::size(self.disk_free()), room::size(room::RESERVE));
                 self.guard_stop(k, root, "disk guard", &why)
@@ -3125,6 +3144,13 @@ impl Agent {
                 false
             }
         }
+    }
+
+    /// Room-making's last resort: the scratch of jobs given back here deleted, the oldest first,
+    /// until the disk has `need` free; never one a job running or frozen here uses. The bytes freed.
+    fn free_given_back(&self, need: u64) -> u64 {
+        let busy: Vec<PathBuf> = self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| scratch_of(&r.spec))).collect();
+        room::free_given_back(&self.o.home, need, &busy, &|| self.disk_free())
     }
 
     /// What a job of `spec` is measured to take (docs/pool.md §7.7, crate::coord::Coordinator::
@@ -3704,6 +3730,10 @@ impl Agent {
                     }
                 }
             }
+        }
+        // (Its scratch its own again, if a job given back left it: not room-making's.)
+        if let Some(d) = scratch_of(&spec) {
+            room::given_back_drop(&self.o.home, &d);
         }
         // (No timings left from the slot's last job, for this one's hand-off to carry.)
         self.slots[k].timings_out = None;
