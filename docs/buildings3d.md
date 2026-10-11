@@ -1426,6 +1426,43 @@ field's cost is the difference of the medians). Budget: 2 ms.
 Known: the field is 1–2 L* darker than full detail in tilted dense views (the random-overlap model
 against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 
+**Timed on a quiet Mac (11 Oct, 01:00–02:20, the window the owner held for it).**
+- **Method:** tools/bldcheck/retest.mjs, gated by tools/bldcheck/quiet.mjs:
+  - the gate's conditions: no build or test jobs, other work under 2.5 cores, the load average
+    under 3 before each view (5 by the owner's decision when the desktop's own load kept it at
+    3.5–4.5), pmset's thermal record clear;
+  - six repetitions a view, the variants switched in one tab, interleaved and rotated, each
+    difference paired within its repetition;
+  - every repetition's load and processes kept in the logs.
+- **The sub-cell walk** (a 128 × 128 grid of the tallest roofs inside the march) was the cost the
+  work after 7e46ba2 had added: 3.3 ms at Manhattan, 70° (paired), 1.4 at Kantō, for nothing it
+  skipped. It's now off (`?fsub=1` turns it on). The model's per-step terms (the roofs'
+  correlation, the walls' open-share rate) cost nothing measurable.
+- **The field's cost now** (whole frames, on − off; median ± SD of six):
+
+  | View | ms | 1-minute load |
+  |---|---|---|
+  | Tokyo z11 straight down | +1.75 ± 0.27 | 3.7 |
+  | Manhattan z11 straight down | +1.67 ± 0.29 | 4.0 |
+  | Chamonix z12, 65° | +0.93 ± 0.26 | 4.0 |
+  | CN Tower z10, 80° | +1.52 ± 0.21 | 4.4 |
+  | Kantō z10, 70° | +0.94 ± 0.11 | 4.3 |
+  | Manhattan z11, 70° | +1.57 ± 0.09 | 2.9 |
+
+  All six within the 2 ms budget.
+- **Also measured:**
+  - the hull's columns (paired, at Manhattan, 70°): 8 × 8 cells best; 4 × 4 +0.11, 2 × 2 +0.49,
+    one a cell +1.12; level elsewhere;
+  - stopping early (0.1 or 0.3 of the light left): −0.2 to −0.3 at Manhattan, nothing elsewhere,
+    so not taken;
+  - steps no shorter than 2 texels instead of 1: −2.25 at Manhattan, −0.79 at Kantō, nothing
+    straight down. It isn't needed now, and it darkens straight-down views by a further
+    0.15–0.35 L*.
+- **Quality with these settings:** A 0.01–0.28; B ≤ 1.3 (Annecy z15, where the field isn't drawn,
+  −1.16: to recheck); C σ8 0.43–1.68 (biases −0.93 to +0.01); the hand-over seam +0.63. Straight
+  down: Tokyo −1.6 L* at z11 and −1.5 at z12 (the open darkening), −0.6 at z9; Annecy and Chamonix
+  within ±0.5.
+
 ## 5. Phases, risks, questions, decisions
 
 ### 5.1 Phases

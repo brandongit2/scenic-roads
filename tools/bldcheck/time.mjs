@@ -111,7 +111,7 @@ for (const v of views) {
       tiles: f.drawn.length, canvas: [m.painter.context.gl.drawingBufferWidth, m.painter.context.gl.drawingBufferHeight] };`);
   const rec = { place, runs: [] };
   for (let k = 0; k < 2; k++) rec.runs.push({ on: await run(true), off: await run(false) });
-  const after = snapshot();
+  const after = snapshot('during');
   rec.quiet = { before, after, busy: !(before.ok && after.ok) };
   if (rec.quiet.busy && !ALLOW_BUSY) {
     t.close();

@@ -98,7 +98,8 @@ uniform float u_gmin;
 uniform float u_gmax;   // the tile's highest ground (m)
 uniform highp sampler2D u_top128;   // the tallest roof over each 4 × 4 texels and the texel around them (m)
 uniform highp sampler2D u_tb;
-uniform float u_stepTexel;   // the steps' least length (texels)   // each cell's hull column's top (m; −1e9: none)
+uniform float u_stepTexel;
+uniform int u_sub;   // the sub-cell walk (0: the cell's run in one go, as before it)   // the steps' least length (texels)   // each cell's hull column's top (m; −1e9: none)
 uniform float u_wallSign;   // (a test: which way MapLibre's wall normals face)     // the tile's lowest ground (m)
 uniform float u_hk;
 uniform vec4 u_box;
@@ -261,16 +262,16 @@ void main() {
     float s1 = tOut;
     if (abs(dT.x) > 1e-12) s1 = min(s1, s0 + ((dT.x > 0.0 ? float(sc.x + 1) : float(sc.x)) * ${EXTENT / 128}.0 - q0.x) / dT.x);
     if (abs(dT.y) > 1e-12) s1 = min(s1, s0 + ((dT.y > 0.0 ? float(sc.y + 1) : float(sc.y)) * ${EXTENT / 128}.0 - q0.y) / dT.y);
-    s1 = oneStep ? tOut : clamp(s1, s0 + 0.01, tOut);
+    s1 = (oneStep || u_sub == 0) ? tOut : clamp(s1, s0 + 0.01, tOut);
     float as0 = a0 + da * (s0 - t), as1 = a0 + da * (s1 - t);   // its heights over the ground
-    if (u_dbg != 22 && !oneStep && min(as0, as1) > texelFetch(u_top128, sc, 0).r * u_hk) { covE *= exp(-(s1 - s0) * hl / covL); s0 = s1; continue; }
+    if (u_dbg != 22 && u_sub != 0 && !oneStep && min(as0, as1) > texelFetch(u_top128, sc, 0).r * u_hk) { covE *= exp(-(s1 - s0) * hl / covL); s0 = s1; continue; }
     float run = s1 - s0;
-    float n = u_dbg == 21 ? 1.0 : clamp(ceil(run * hl / max(max((dist0 + s0) * u_pixAngle, stepMin), 1e-3)), 1.0, 4.0);
+    float n = u_dbg == 21 ? 1.0 : clamp(ceil(run * hl / max(max((dist0 + s0) * u_pixAngle, stepMin), 1e-3)), 1.0, u_sub == 0 ? 8.0 : 4.0);
     float step = run / n;
     float hstep = step * hl;
     float ac = as0;
     float tB = s0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 8; i++) {
       if (float(i) >= n || fine >= ${STEPS}) { done = done || fine >= ${STEPS}; break; }
       fine++;
       float t1 = tB + float(i + 1) * step;
@@ -478,6 +479,8 @@ export class FieldLayer implements CustomLayerInterface {
    * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
   wallSign = -1;
   /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone). */
+  /** The march's sub-cell walk (`?fsub=1`; off: it cost 3.3 ms at Manhattan 70° on the quiet Mac for nothing it skipped). */
+  subWalk = new URLSearchParams(location.search).get('fsub') === '1';
   stepTexel = Number(new URLSearchParams(location.search).get('fstx') ?? 1);
   lastTrans = -1;
   /** The hulls' blocks: cells a side (`?fblk=`; 1, 2, 4, 8). */
@@ -594,7 +597,7 @@ export class FieldLayer implements CustomLayerInterface {
     const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
     const p = link(gl, head + VS, FS);
     const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
+    for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
       'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(sd.variantName, pr);
@@ -1051,6 +1054,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1f(u.u_pixAngle, opts.fov / vp[3]);
     gl.uniform1f(u.u_opacity, this.opacity);
     gl.uniform1f(u.u_stepTexel, this.stepTexel);
+    gl.uniform1i(u.u_sub, this.subWalk ? 1 : 0);
     gl.uniform1i(u.u_linear, this.linear ? 1 : 0);
     {
       // (the land colour under the buildings: the background layer's)

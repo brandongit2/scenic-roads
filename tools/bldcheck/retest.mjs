@@ -5,12 +5,16 @@
 //   H  the six views' headline numbers: the field's whole-frame cost (frames on − off, medians of
 //      `--frames` frames turning slowly) and its pass timer, `--reps` times each;
 //   B  the hull's columns: 8 × 8, 4 × 4, 2 × 2 cells and one a cell (blockCells 8, 4, 2, 1);
-//   S  stopping early: the light left where the march stops, 0.004, 0.1, 0.3 (field.tmin).
+//   S  stopping early: the light left where the march stops, 0.004, 0.1, 0.3 (field.tmin);
+//   X  the steps' least length: 1 and 2 texels (field.stepTexel);
+//   P  what the march's later pieces cost: the sub-cell walk off, and with it the walls' open-share
+//      rate or the roofs' correlation off (field.subWalk, field.dbg 23 / 24).
 // B and S on Manhattan and Kantō at 70° and Tokyo straight down. Variants are switched in the same
 // tab, interleaved, each repetition in a rotated order (A B C, B C A, C A B, …), with the frames
 // without the field measured in every repetition too, so drift and the variants' order cancel; each
 // difference is taken within its repetition (paired).
-// The quiet-Mac gate (quiet.mjs) runs before each view and after each repetition: a repetition
+// The quiet-Mac gate (quiet.mjs) runs before each view (with the load average) and before and after
+// each repetition (the processes and the thermal state): a repetition
 // with the Mac busy at either end is measured again (3 tries), and the gate's findings are kept with
 // every repetition. No result is recorded from a busy Mac.
 import fs from 'node:fs';
@@ -23,8 +27,8 @@ const REPS = Number(opt('reps', 6)), N = Number(opt('frames', 300));
 const PHASES = opt('phases', 'H,B,S').split(',');
 const CDP = 5293, APP = 'http://127.0.0.1:5291', FIELD = 'http://127.0.0.1:5290/field', BLD = 'http://127.0.0.1:5290/bld';
 const views = JSON.parse(fs.readFileSync(viewsFile, 'utf8'));
-const VAR_VIEWS = ['t-manhattan-p70', 't-kanto-p70', 't-tokyo-z11'];
-const BASE = { blockCells: 8, tmin: 0.004 };
+const VAR_VIEWS = opt('var-views', 't-manhattan-p70,t-kanto-p70,t-tokyo-z11').split(',');
+const BASE = { blockCells: 8, tmin: 0.004, stepTexel: 1 };
 
 const closeAll = async () => {
   for (const t of await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json()) if (t.type === 'page') await fetch(`http://127.0.0.1:${CDP}/json/close/${t.id}`);
@@ -99,7 +103,7 @@ const RUN = (mode, n) => `
   return { med: q(0.5), p90: q(0.9), n: a.length, dtMed: dts[Math.floor(dts.length / 2)], slow: dts.filter((d) => d > 12.5).length };`;
 const SET = (v) => `
   const b = window.__bld, f = b.field;
-  f.blockCells = ${v.blockCells}; f.tmin = ${v.tmin};
+  f.blockCells = ${v.blockCells}; f.tmin = ${v.tmin}; f.stepTexel = ${v.stepTexel}; f.subWalk = ${v.subWalk ?? false}; f.dbg = ${v.dbg ?? 0};
   b.map.triggerRepaint();
   await b.ready();
   await new Promise((r) => { let i = 0; const s = () => (++i < 30 ? requestAnimationFrame(s) : r()); requestAnimationFrame(s); });
@@ -121,18 +125,18 @@ async function openView(v) {
  * with it (whole frames, then the pass); measured again while the Mac was busy at either end. */
 async function repetition(t, variants, label) {
   for (let attempt = 1; ; attempt++) {
-    const before = snapshot();
+    const before = snapshot('during');
     const rec = { off: await t.ev(RUN('off', N)), variants: {} };
     for (const v of variants) {
       await t.ev(SET(v));
       rec.variants[v.name] = { on: await t.ev(RUN('on', N)), pass: await t.ev(RUN('pass', Math.round(N * 2 / 3))) };
     }
-    const after = snapshot();
+    const after = snapshot('during');
     rec.quiet = { before, after };
     if (before.ok && after.ok) return rec;
     console.log(`${label}: busy (${[...before.reasons, ...after.reasons].join('; ')}): measured again`);
     if (attempt >= 3) throw new Error(`${label}: the Mac busy in 3 tries, stopping`);
-    await waitQuiet();
+    await waitQuiet({ phase: 'during' });
   }
 }
 
@@ -177,6 +181,13 @@ async function phase(key, viewIds, variants) {
 }
 if (PHASES.includes('H')) await phase('H', views.map((v) => v.id), [{ name: 'default', ...BASE }]);
 if (PHASES.includes('B')) await phase('B', VAR_VIEWS, [8, 4, 2, 1].map((c) => ({ name: `blocks${c}`, ...BASE, blockCells: c })));
+if (PHASES.includes('X')) await phase('X', VAR_VIEWS, [1, 2].map((x) => ({ name: `steps${x}`, ...BASE, stepTexel: x })));
+if (PHASES.includes('P')) await phase('P', VAR_VIEWS, [
+  { name: 'now', ...BASE },
+  { name: 'noSub', ...BASE, subWalk: false },
+  { name: 'noSubNoOpen', ...BASE, subWalk: false, dbg: 23 },
+  { name: 'noSubNoCov', ...BASE, subWalk: false, dbg: 24 },
+]);
 if (PHASES.includes('S')) await phase('S', VAR_VIEWS, [0.004, 0.1, 0.3].map((x) => ({ name: `tmin${x}`, ...BASE, tmin: x })));
 out.finished = new Date().toISOString();
 save();
