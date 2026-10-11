@@ -45,7 +45,10 @@ function distanceToTileWrapX(pointX: number, pointY: number, tileCornerX: number
 
 export class GlobeCoveringTilesDetailsProvider implements CoveringTilesDetailsProvider {
     private _boundingVolumeCache: BoundingVolumeCache<ConvexVolume> = new BoundingVolumeCache(this._computeTileBoundingVolume);
-    private _elevationKey: string = '';
+    // Scenic Roads: the elevations the cached volumes were made with (see getTileBoundingVolume).
+    private _keyTerrain: object | undefined = undefined;
+    private _keyExaggeration: number = NaN;
+    private _keyDemVersion: number = NaN;
 
     /**
      * Prepares the internal bounding volume cache for the next frame.
@@ -112,10 +115,13 @@ export class GlobeCoveringTilesDetailsProvider implements CoveringTilesDetailsPr
         // cache keeps a volume for as long as each frame asks for it. A volume made before its DEM
         // tile loaded (at sea level, then) culled the tiles on slopes near the camera and kept them
         // culled until the camera moved: the cache is cleared whenever a DEM tile loads, the
-        // exaggeration changes or the terrain's source does (Terrain.elevationKey).
-        const elevationKey = options?.terrain?.elevationKey;
-        if (elevationKey !== undefined && elevationKey !== this._elevationKey) {
-            this._elevationKey = elevationKey;
+        // exaggeration changes or the terrain does (map.setTerrain makes a new Terrain for any source).
+        // Compared as numbers and a reference: this runs for every tile the cover traverses.
+        const terrain = options?.terrain;
+        if (terrain && (terrain !== this._keyTerrain || terrain.exaggeration !== this._keyExaggeration || terrain.demVersion !== this._keyDemVersion)) {
+            this._keyTerrain = terrain;
+            this._keyExaggeration = terrain.exaggeration;
+            this._keyDemVersion = terrain.demVersion;
             this._boundingVolumeCache.clear();
         }
         return this._boundingVolumeCache.getTileBoundingVolume(tileID, wrap, elevation, options);

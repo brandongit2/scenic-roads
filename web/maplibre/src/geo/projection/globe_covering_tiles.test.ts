@@ -155,8 +155,9 @@ describe('elevated content tile retention', () => {
 });
 
 describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => {
-    const terrainOf = (state: {demVersion: number; max: number | null; exaggeration?: number; source?: string}) => ({
-        get elevationKey() { return `${state.source ?? 'dem'}|${state.exaggeration ?? 1}|${state.demVersion}`; },
+    const terrainOf = (state: {demVersion: number; max: number | null; exaggeration?: number}) => ({
+        get demVersion() { return state.demVersion; },
+        get exaggeration() { return state.exaggeration ?? 1; },
         getMinMaxElevation: () => ({minElevation: state.max === null ? null : 0, maxElevation: state.max}),
     }) as any;
     const reach = (volume: ConvexVolume) => Math.max(...volume.points.map((p) => Math.hypot(p[0], p[1], p[2])));
@@ -180,9 +181,9 @@ describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => 
         expect(reach(after)).toBeGreaterThan(1 + 800 / earthRadius);
     });
 
-    test('a new exaggeration or terrain source makes the volumes again, the DEM tiles\' count the same', () => {
+    test('a new exaggeration or terrain (map.setTerrain makes one for any source) makes the volumes again, the DEM tiles\' count the same', () => {
         const detailsProvider = new GlobeCoveringTilesDetailsProvider();
-        const state = {demVersion: 3, max: 900, exaggeration: 1, source: 'a'};
+        const state = {demVersion: 3, max: 900, exaggeration: 1};
         const options = {tileSize: 512, terrain: terrainOf(state)};
         const tile = {x: 2100, y: 1300, z: 12};
         const first = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
@@ -190,7 +191,10 @@ describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => 
         detailsProvider.prepareNextFrame();
         const second = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
         expect(second).not.toBe(first);
-        state.source = 'b';
+        detailsProvider.prepareNextFrame();
+        expect(detailsProvider.getTileBoundingVolume(tile, 0, 0, options)).toBe(second);
+        // another source: a new Terrain, its DEM tiles' count and exaggeration the same
+        options.terrain = terrainOf(state);
         detailsProvider.prepareNextFrame();
         expect(detailsProvider.getTileBoundingVolume(tile, 0, 0, options)).not.toBe(second);
     });
@@ -215,7 +219,7 @@ describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => 
         expect(withGround.filter((k) => !atSeaLevel.includes(k)).length).toBeGreaterThan(0);
         // ... as a transform that never saw the elevations unknown covers them.
         const fresh = new GlobeTransform();
-        fresh.apply(transform);
+        fresh.apply(transform, false);
         expect(coveringTiles(fresh, options).map(key)).toEqual(withGround);
     });
 });
