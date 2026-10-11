@@ -27,13 +27,18 @@ const LAYERS_TO_TEXTURES: { [keyof in StyleLayer['type']]?: boolean } = {
 };
 
 /**
- * Scenic Roads: whether a layer is drawn into the terrain's textures: the types above, and a custom
- * layer with a `drape` method.
+ * Scenic Roads: whether a layer is drawn into the terrain's textures: the types above but elevated
+ * lines and fills (`*-z-offset`, `*-elevation-reference`: drawn in 3D over the terrain), and a
+ * custom layer with a `drape` method.
  */
 export function drapes(layer: StyleLayer): boolean {
-    if (LAYERS_TO_TEXTURES[layer.type]) return true;
+    if (LAYERS_TO_TEXTURES[layer.type]) return !isElevated(layer);
     return isCustomStyleLayer(layer) && typeof layer.implementation.drape === 'function';
 }
+
+const isElevated = (layer: StyleLayer): boolean =>
+    typeof (layer as {elevationReference?: () => number}).elevationReference === 'function' &&
+    (layer as unknown as {elevationReference: () => number}).elevationReference() > 0;
 
 /** Scenic Roads: the key of a custom layer's drape among the sources' fingerprints. */
 const customDrapeKey = (layer: StyleLayer) => `custom:${layer.id}`;

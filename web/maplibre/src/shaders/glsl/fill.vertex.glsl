@@ -1,13 +1,17 @@
 uniform vec2 u_fill_translate;
+// Scenic Roads: 0 draped (or flat), 1 z_offset above the ground, 2 above sea level.
+uniform float u_elevation_reference;
 
 layout(location = 0) in vec2 a_pos;
 
 #pragma maplibre: define highp vec4 color
 #pragma maplibre: define lowp float opacity
+#pragma maplibre: define highp float z_offset
 
 void main() {
     #pragma maplibre: initialize highp vec4 color
     #pragma maplibre: initialize lowp float opacity
+    #pragma maplibre: initialize highp float z_offset
 
     // Move vertex outside clip space to discard triangle when opacity is negligible
     if (opacity < 0.01) {
@@ -15,5 +19,13 @@ void main() {
         return;
     }
 
-    gl_Position = projectTile(a_pos + u_fill_translate, a_pos);
+    // Scenic Roads: an elevated fill (fill-z-offset, fill-elevation-reference) is drawn in 3D at its
+    // elevation, with the perspective depth the terrain's is drawn with; else as upstream.
+    float ele = 0.0;
+    if (u_elevation_reference > 0.5) {
+        ele = elevationOf(a_pos, z_offset, u_elevation_reference);
+        gl_Position = projectTileFor3D(a_pos + u_fill_translate, ele);
+    } else {
+        gl_Position = projectTile(a_pos + u_fill_translate, a_pos);
+    }
 }

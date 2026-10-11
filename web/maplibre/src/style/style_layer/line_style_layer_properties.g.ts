@@ -1,7 +1,7 @@
 // This file is generated. Edit build/generate-style-code.ts, then run 'npm run codegen'.
 /* eslint-disable */
 
-import {latest as styleSpec} from '@maplibre/maplibre-gl-style-spec';
+import {styleSpec} from '../style_spec_extensions.ts';
 
 import {
     Properties,
@@ -56,6 +56,8 @@ export type LinePaintProps = {
     "line-dasharray": CrossFadedDataDrivenProperty<number[]>,
     "line-pattern": CrossFadedDataDrivenProperty<ResolvedImage>,
     "line-gradient": ColorRampProperty,
+    "line-z-offset": DataDrivenProperty<number>,
+    "line-elevation-reference": DataConstantProperty<"ground" | "sea">,
 };
 
 export type LinePaintPropsPossiblyEvaluated = {
@@ -71,6 +73,8 @@ export type LinePaintPropsPossiblyEvaluated = {
     "line-dasharray": PossiblyEvaluatedPropertyValue<CrossFaded<number[]>>,
     "line-pattern": PossiblyEvaluatedPropertyValue<CrossFaded<ResolvedImage>>,
     "line-gradient": ColorRampProperty,
+    "line-z-offset": PossiblyEvaluatedPropertyValue<number>,
+    "line-elevation-reference": "ground" | "sea",
 };
 
 let paint: Properties<LinePaintProps>;
@@ -87,6 +91,8 @@ const getPaint = (): Properties<LinePaintProps> => paint = paint || new Properti
     "line-dasharray": new CrossFadedDataDrivenProperty(styleSpec["paint_line"]["line-dasharray"] as any as StylePropertySpecification, "line-dasharray"),
     "line-pattern": new CrossFadedDataDrivenProperty(styleSpec["paint_line"]["line-pattern"] as any as StylePropertySpecification, "line-pattern"),
     "line-gradient": new ColorRampProperty(styleSpec["paint_line"]["line-gradient"] as any as StylePropertySpecification, "line-gradient"),
+    "line-z-offset": new DataDrivenProperty(styleSpec["paint_line"]["line-z-offset"] as any as StylePropertySpecification, "line-z-offset"),
+    "line-elevation-reference": new DataConstantProperty(styleSpec["paint_line"]["line-elevation-reference"] as any as StylePropertySpecification, "line-elevation-reference"),
 });
 
 export default ({ get paint(): Properties<LinePaintProps> { return getPaint() }, get layout(): Properties<LineLayoutProps> { return getLayout() } });

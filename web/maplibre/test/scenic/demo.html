@@ -4,6 +4,10 @@
   (`npm run dev` in web/, the backend on :8080 for the terrain tiles):
     /maplibre/test/scenic/demo.html?case=custom   a custom layer draped on the terrain, and a column
                                                   drawn after it that reads the frame's depth
+    /maplibre/test/scenic/demo.html?case=lines    lines lifted off the terrain (line-z-offset,
+                                                  line-elevation-reference)
+    /maplibre/test/scenic/demo.html?case=water    a fill drawn as a surface at an elevation
+                                                  (fill-z-offset, fill-elevation-reference)
   `#map=zoom/lat/lng/bearing/pitch` sets the view; `&flat` the flat map in place of the globe.
 -->
 <html>

@@ -1,7 +1,7 @@
 // This file is generated. Edit build/generate-style-code.ts, then run 'npm run codegen'.
 /* eslint-disable */
 
-import {latest as styleSpec} from '@maplibre/maplibre-gl-style-spec';
+import {styleSpec} from '../style_spec_extensions.ts';
 
 import {
     Properties,
@@ -40,6 +40,8 @@ export type FillPaintProps = {
     "fill-translate": DataConstantProperty<[number, number]>,
     "fill-translate-anchor": DataConstantProperty<"map" | "viewport">,
     "fill-pattern": CrossFadedDataDrivenProperty<ResolvedImage>,
+    "fill-z-offset": DataDrivenProperty<number>,
+    "fill-elevation-reference": DataConstantProperty<"ground" | "sea">,
 };
 
 export type FillPaintPropsPossiblyEvaluated = {
@@ -51,6 +53,8 @@ export type FillPaintPropsPossiblyEvaluated = {
     "fill-translate": [number, number],
     "fill-translate-anchor": "map" | "viewport",
     "fill-pattern": PossiblyEvaluatedPropertyValue<CrossFaded<ResolvedImage>>,
+    "fill-z-offset": PossiblyEvaluatedPropertyValue<number>,
+    "fill-elevation-reference": "ground" | "sea",
 };
 
 let paint: Properties<FillPaintProps>;
@@ -63,6 +67,8 @@ const getPaint = (): Properties<FillPaintProps> => paint = paint || new Properti
     "fill-translate": new DataConstantProperty(styleSpec["paint_fill"]["fill-translate"] as any as StylePropertySpecification, "fill-translate"),
     "fill-translate-anchor": new DataConstantProperty(styleSpec["paint_fill"]["fill-translate-anchor"] as any as StylePropertySpecification, "fill-translate-anchor"),
     "fill-pattern": new CrossFadedDataDrivenProperty(styleSpec["paint_fill"]["fill-pattern"] as any as StylePropertySpecification, "fill-pattern"),
+    "fill-z-offset": new DataDrivenProperty(styleSpec["paint_fill"]["fill-z-offset"] as any as StylePropertySpecification, "fill-z-offset"),
+    "fill-elevation-reference": new DataConstantProperty(styleSpec["paint_fill"]["fill-elevation-reference"] as any as StylePropertySpecification, "fill-elevation-reference"),
 });
 
 export default ({ get paint(): Properties<FillPaintProps> { return getPaint() }, get layout(): Properties<FillLayoutProps> { return getLayout() } });

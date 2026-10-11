@@ -165,7 +165,11 @@ function drawLineTiles(
     coords: OverscaledTileID[],
     renderContext: RenderContext
 ) {
-    const depthMode = painter.getDepthModeForSublayer(0, DepthMode.ReadOnly);
+    // Scenic Roads: an elevated line (line-z-offset, line-elevation-reference) is drawn in 3D,
+    // depth-tested against the terrain and the 3D layers, not draped (render_to_texture.ts's drapes).
+    const depthMode = layer.elevationReference() > 0 ?
+        new DepthMode(painter.context.gl.LEQUAL, DepthMode.ReadOnly, renderContext.depthRangeFor3D) :
+        painter.getDepthModeForSublayer(0, DepthMode.ReadOnly);
     const colorMode = painter.colorModeForRenderPass();
 
     const dasharrayProperty = layer.paint.get('line-dasharray');

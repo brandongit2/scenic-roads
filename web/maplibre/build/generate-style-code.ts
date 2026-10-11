@@ -1,7 +1,9 @@
 'use strict';
 
 import * as fs from 'fs';
-import {latest, type StylePropertySpecification} from '@maplibre/maplibre-gl-style-spec';
+import {type StylePropertySpecification} from '@maplibre/maplibre-gl-style-spec';
+// (The spec with this fork's own properties: src/style/style_spec_extensions.ts.)
+import {styleSpec as latest} from '../src/style/style_spec_extensions.ts';
 
 /**
  * Which kind of value a property holds, and so which `Property` class implements it.
@@ -265,7 +267,7 @@ function emitHeader(propertiesPath: string): string {
     return `// This file is generated. Edit build/generate-style-code.ts, then run 'npm run codegen'.
 /* eslint-disable */
 
-import {latest as styleSpec} from '@maplibre/maplibre-gl-style-spec';
+import {styleSpec} from '${propertiesPath.replace('properties.ts', 'style_spec_extensions.ts')}';
 
 import {
     Properties,

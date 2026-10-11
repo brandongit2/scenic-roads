@@ -147,6 +147,55 @@ the frame's colour (`bg`, for the land colour under the buildings) has no counte
 frame's colour while drawing into it is the same feedback loop, so that needs its own target or a
 copy still.
 
+### Lines and fills lifted off the terrain
+
+Upstream drapes every line and fill on the 3D terrain (drawn into the terrain's textures), so a
+ferry route or a bridge follows the ground under it, and a lake's surface is wherever the DEM puts
+it. Four paint properties change that (`style_spec_extensions.ts`, added to the style spec's own
+object, so validation and expressions know them; the API after Mapbox GL v3's `line-z-offset` and
+`line-elevation-reference`):
+
+| Property | Values | |
+|---|---|---|
+| `line-z-offset`, `fill-z-offset` | number, metres, data-driven (`zoom`, `feature`, `feature-state`), default 0 | the height |
+| `line-elevation-reference`, `fill-elevation-reference` | `ground` (default), `sea` | what it's measured from |
+
+- `ground`: above the terrain under each vertex, in metres, not exaggerated (as an extrusion's
+  height). With an offset of 0 the layer is draped exactly as upstream draws it.
+- `sea`: above sea level, on the terrain's scale (times its exaggeration, as the terrain's own
+  heights are): 0 is the sea's surface, a lake's level its surface. A ferry route or the basemap's
+  water at the water's surface over a 3D sea floor is `sea` with the surface's elevation.
+- With either other than the default, the layer isn't draped (`render_to_texture.ts`'s `drapes`)
+  but drawn in the main pass in 3D (`is3D()`), at its elevation, with the terrain's perspective
+  depth, depth-tested against the terrain and the 3D layers (`draw_line.ts`, `draw_fill.ts`, the
+  `line*` and `fill*` vertex shaders' `elevationOf` in `_prelude.vertex.glsl`). An opaque elevated
+  fill writes depth (it hides what lies below it); a see-through one doesn't (the terrain below
+  shows through).
+- A vertex takes the elevation of its own point: a long segment between two vertices is straight
+  in 3D, so a `ground` line or fill follows the terrain only as finely as its vertices do (the globe
+  subdivides fills; lines are as their data is). A `sea` surface is level, so that's exact for it.
+- Without 3D terrain the ground is at 0: both are a height above the map.
+- Not in the TypeScript types: the style objects' types are the style-spec package's, so a layer
+  using them is cast.
+- Labels: point labels already rise off the terrain upstream (`symbol-height-offset`, and
+  `symbol-height-anchor` `ground` or `absolute`; `absolute` isn't exaggerated, so a label at the
+  water's surface over exaggerated terrain takes the surface's elevation times the exaggeration).
+  Line-placed labels (a ferry's name along its route) don't: planned, as a `symbol-height-offset`
+  for line placement with an anchor `sea` on the same terms as above (the placement's collision
+  boxes projected with the lifted elevation, `symbol/projection.ts`, as the point labels' are).
+- `test/scenic/demo.html?case=lines` and `?case=water` show them; the unit tests are in
+  `style_spec_extensions.test.ts`.
+
+**The 3D sea floor (#99) on them.** With a terrain whose DEM goes below 0 under the sea (the sea
+floor), the basemap's water fill gets `fill-elevation-reference: sea` and `fill-z-offset` 0 (a
+lake's surface: its level, a feature property, as `['get', …]`) and a `fill-opacity` below 1, so
+the surface lies level at the sea's elevation with the floor showing through; the ferry routes get
+`line-elevation-reference: sea` and `line-z-offset` 0 to lie on that surface. Nothing else is
+needed of this fork; the floor itself (the DEM below 0) is #99's. One gap: where the catalog has
+the water's own tiles the app draws the water as a raster (basemap.ts's `water` layer), and rasters
+have no elevation reference yet (the same for `raster` layers, drawn as a level quad per tile at the
+elevation, isn't built); the basemap's water polygons, the fill it falls back to, take it as is.
+
 ### Known render-test differences
 
 `test/integration/render/expected/` holds this fork's expected image where it draws differently on

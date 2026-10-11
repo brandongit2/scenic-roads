@@ -20,6 +20,21 @@ export class FillStyleLayer extends StyleLayer {
     _transitioningPaint: Transitioning<FillPaintProps>;
     paint: PossiblyEvaluated<FillPaintProps, FillPaintPropsPossiblyEvaluated>;
 
+    /**
+     * Scenic Roads: how the fill is drawn: 0 draped on the terrain (or flat on the map), as
+     * upstream; 1 in 3D, `fill-z-offset` above the ground under each vertex; 2 in 3D,
+     * `fill-z-offset` above sea level (style_spec_extensions.ts): the water's surface at 0 m or a
+     * lake's level over a sea floor.
+     */
+    elevationReference(): number {
+        if (this.paint.get('fill-elevation-reference') === 'sea') return 2;
+        return this.paint.get('fill-z-offset').constantOr(1) !== 0 ? 1 : 0;
+    }
+
+    is3D(): boolean {
+        return this.elevationReference() > 0;
+    }
+
     constructor(layer: LayerSpecification, globalState: Record<string, any>) {
         super(layer, properties, globalState);
     }

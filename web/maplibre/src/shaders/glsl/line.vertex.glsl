@@ -10,6 +10,8 @@ layout(location = 0) in ivec2 a_pos_normal;
 layout(location = 1) in uvec4 a_data;
 
 uniform vec2 u_translation;
+// Scenic Roads: 0 draped (or flat), 1 z_offset above the ground, 2 above sea level.
+uniform float u_elevation_reference;
 uniform mediump float u_ratio;
 out vec2 v_normal;
 flat out vec2 v_width2;
@@ -25,6 +27,7 @@ out float v_depth;
 #pragma maplibre: define mediump float gapwidth
 #pragma maplibre: define lowp float offset
 #pragma maplibre: define mediump float width
+#pragma maplibre: define highp float z_offset
 
 void main() {
     #pragma maplibre: initialize highp vec4 color
@@ -33,6 +36,7 @@ void main() {
     #pragma maplibre: initialize mediump float gapwidth
     #pragma maplibre: initialize lowp float offset
     #pragma maplibre: initialize mediump float width
+    #pragma maplibre: initialize highp float z_offset
 
     // Move vertex outside clip space to discard triangle when opacity is negligible
     if (opacity < 0.01) {
@@ -80,21 +84,43 @@ void main() {
     mediump vec2 offset2 = offset * a_extrude * scale * normal.y * mat2(t, -u, u, t);
 
     float adjustedThickness = projectLineThickness(pos.y);
-    vec4 projected_no_extrude = projectTile(pos + offset2 / u_ratio * adjustedThickness + u_translation);
-    vec4 projected_with_extrude = projectTile(pos + offset2 / u_ratio * adjustedThickness + u_translation + dist / u_ratio * adjustedThickness);
+    vec2 pos_no_extrude = pos + offset2 / u_ratio * adjustedThickness + u_translation;
+    vec2 pos_with_extrude = pos_no_extrude + dist / u_ratio * adjustedThickness;
+    vec4 projected_no_extrude;
+    vec4 projected_with_extrude;
+    // Scenic Roads: an elevated line (line-z-offset, line-elevation-reference) is drawn in 3D at its
+    // elevation, with the perspective depth the terrain's is drawn with; else as upstream.
+    bool elevated = u_elevation_reference > 0.5;
+    if (elevated) {
+        float ele = elevationOf(pos, z_offset, u_elevation_reference);
+        projected_no_extrude = projectTileFor3D(pos_no_extrude, ele);
+        projected_with_extrude = projectTileFor3D(pos_with_extrude, ele);
+    } else {
+        projected_no_extrude = projectTile(pos_no_extrude);
+        projected_with_extrude = projectTile(pos_with_extrude);
+    }
     gl_Position = projected_with_extrude;
     #ifdef GLOBE
-    v_depth = gl_Position.z / gl_Position.w;
+    if (elevated) {
+        // (the horizon's clipping depth, for the fragment shader's back-of-the-globe test)
+        vec4 clip = projectTileWithElevation(pos_with_extrude, elevationOf(pos, z_offset, u_elevation_reference));
+        v_depth = clip.z / clip.w;
+    } else {
+        v_depth = gl_Position.z / gl_Position.w;
+    }
     #endif
 
     // calculate how much the perspective view squishes or stretches the extrude
     #ifdef TERRAIN3D
+    if (!elevated) {
         v_gamma_scale = 1.0; // not needed, because this is done automatically via the mesh
-    #else
+    } else
+    #endif
+    {
         float extrude_length_without_perspective = length(dist);
         float extrude_length_with_perspective = length((projected_with_extrude.xy - projected_no_extrude.xy) / projected_with_extrude.w * u_units_to_pixels);
         v_gamma_scale = extrude_length_without_perspective / extrude_length_with_perspective;
-    #endif
+    }
 
     v_width2 = vec2(outset, inset);
 }

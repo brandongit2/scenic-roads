@@ -168,6 +168,17 @@ float get_elevation(vec2 pos) {
     #endif
 }
 
+// Scenic Roads: the elevation of an elevated line's or fill's vertex (style_spec_extensions.ts):
+// reference 1, z_offset metres above the terrain under it; 2, z_offset above sea level on the
+// terrain's scale (times its exaggeration). Without 3D terrain the ground is at 0.
+float elevationOf(vec2 pos, float z_offset, float reference) {
+    #ifdef TERRAIN3D
+        return reference > 1.5 ? z_offset * u_terrain_exaggeration : get_elevation(pos) + z_offset;
+    #else
+        return z_offset;
+    #endif
+}
+
 
 const float PI = 3.141592653589793;
 

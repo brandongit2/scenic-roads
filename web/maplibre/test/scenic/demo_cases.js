@@ -139,6 +139,11 @@ class DrapeAndColumn {
   }
 }
 
+// Lake Annecy, roughly (447 m), and lines over it.
+const LAKE = [[6.14, 45.905], [6.17, 45.89], [6.19, 45.86], [6.215, 45.84], [6.235, 45.81], [6.24, 45.79], [6.225, 45.795],
+  [6.205, 45.82], [6.18, 45.85], [6.16, 45.87], [6.135, 45.885], [6.13, 45.895], [6.14, 45.905]];
+const line = (coords, props) => ({type: 'Feature', properties: props, geometry: {type: 'LineString', coordinates: coords}});
+
 export const cases = {
   custom: {
     view: '11.6/45.80/6.80/60/72',
@@ -147,6 +152,31 @@ export const cases = {
       const layer = new DrapeAndColumn(6.8652, 45.8326);
       map.addLayer(layer);
       window.__layer = layer;
+    },
+  },
+  lines: {
+    view: '12.3/45.83/6.13/75/70',
+    note: 'line-z-offset: white draped (as upstream); cyan the "ferry", line-elevation-reference sea at the feature\'s 600 m (floating over the lake, cut by the hills in front); orange a "bridge", ground +300 m, data-driven',
+    add(map) {
+      map.addSource('lines', {type: 'geojson', data: {type: 'FeatureCollection', features: [
+        line([[6.15, 45.895], [6.21, 45.835], [6.232, 45.80]], {kind: 'ferry', z: 600}),
+        line([[6.10, 45.86], [6.16, 45.86], [6.26, 45.86]], {kind: 'bridge', z: 300}),
+        line([[6.10, 45.84], [6.26, 45.84]], {kind: 'draped'}),
+      ]}});
+      map.addLayer({id: 'draped', type: 'line', source: 'lines', filter: ['==', ['get', 'kind'], 'draped'], paint: {'line-color': '#fff', 'line-width': 3}});
+      map.addLayer({id: 'ferry', type: 'line', source: 'lines', filter: ['==', ['get', 'kind'], 'ferry'],
+        paint: {'line-color': '#4fd8ff', 'line-width': 4, 'line-elevation-reference': 'sea', 'line-z-offset': ['get', 'z']}});
+      map.addLayer({id: 'bridge', type: 'line', source: 'lines', filter: ['==', ['get', 'kind'], 'bridge'],
+        paint: {'line-color': '#ff9a3c', 'line-width': 4, 'line-dasharray': [2, 1], 'line-z-offset': ['get', 'z']}});
+    },
+  },
+  water: {
+    view: '11.8/45.80/6.10/60/72',
+    note: 'fill-elevation-reference sea: the lake as a see-through surface at 600 m (fill-z-offset, data-driven), over the terrain, the hills cutting it; outlined',
+    add(map) {
+      map.addSource('lake', {type: 'geojson', data: {type: 'Feature', properties: {level: 600}, geometry: {type: 'Polygon', coordinates: [LAKE]}}});
+      map.addLayer({id: 'lake', type: 'fill', source: 'lake',
+        paint: {'fill-color': '#2a7fd4', 'fill-opacity': 0.55, 'fill-outline-color': '#bfe3ff', 'fill-elevation-reference': 'sea', 'fill-z-offset': ['get', 'level']}});
     },
   },
 };

@@ -15,10 +15,12 @@ import type {Tile} from '../../tile/tile.ts';
 
 export type FillUniformsType = {
     'u_fill_translate': Uniform2f;
+    'u_elevation_reference': Uniform1f;
 };
 
 export type FillOutlineUniformsType = {
     'u_fill_translate': Uniform2f;
+    'u_elevation_reference': Uniform1f;
 };
 
 export type FillPatternUniformsType = {
@@ -31,6 +33,7 @@ export type FillPatternUniformsType = {
     'u_fade': Uniform1f;
     'u_sdf_pattern': Uniform1i;
     'u_fill_translate': Uniform2f;
+    'u_elevation_reference': Uniform1f;
 };
 
 export type FillOutlinePatternUniformsType = {
@@ -43,9 +46,11 @@ export type FillOutlinePatternUniformsType = {
     'u_fade': Uniform1f;
     'u_sdf_pattern': Uniform1i;
     'u_fill_translate': Uniform2f;
+    'u_elevation_reference': Uniform1f;
 };
 
 const fillUniforms = (context: Context, locations: UniformLocations): FillUniformsType => ({
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_fill_translate': new Uniform2f(context, locations.u_fill_translate)
 });
 
@@ -57,10 +62,12 @@ const fillPatternUniforms = (context: Context, locations: UniformLocations): Fil
     'u_scale': new Uniform3f(context, locations.u_scale),
     'u_fade': new Uniform1f(context, locations.u_fade),
     'u_sdf_pattern': new Uniform1i(context, locations.u_sdf_pattern),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_fill_translate': new Uniform2f(context, locations.u_fill_translate)
 });
 
 const fillOutlineUniforms = (context: Context, locations: UniformLocations): FillOutlineUniformsType => ({
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_fill_translate': new Uniform2f(context, locations.u_fill_translate)
 });
 
@@ -72,6 +79,7 @@ const fillOutlinePatternUniforms = (context: Context, locations: UniformLocation
     'u_scale': new Uniform3f(context, locations.u_scale),
     'u_fade': new Uniform1f(context, locations.u_fade),
     'u_sdf_pattern': new Uniform1i(context, locations.u_sdf_pattern),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_fill_translate': new Uniform2f(context, locations.u_fill_translate)
 });
 
@@ -80,21 +88,27 @@ const fillPatternUniformValues = (
     crossfade: CrossfadeParameters,
     tile: Tile,
     translate: [number, number],
-    isSdfPattern: boolean
+    isSdfPattern: boolean,
+    elevationReference: number = 0
 ): UniformValues<FillPatternUniformsType> => extend(
     patternUniformValues(crossfade, painter, tile),
     {
         'u_fill_translate': translate,
+        'u_elevation_reference': elevationReference,
         'u_sdf_pattern': isSdfPattern ? 1 : 0,
     }
 );
 
-const fillUniformValues = (translate: [number, number]): UniformValues<FillUniformsType> => ({
+// (Scenic Roads: elevationReference 0 draped or flat, 1 above the ground, 2 above sea level:
+// FillStyleLayer.elevationReference.)
+const fillUniformValues = (translate: [number, number], elevationReference: number = 0): UniformValues<FillUniformsType> => ({
     'u_fill_translate': translate,
+    'u_elevation_reference': elevationReference,
 });
 
-const fillOutlineUniformValues = (translate: [number, number]): UniformValues<FillOutlineUniformsType> => ({
+const fillOutlineUniformValues = (translate: [number, number], elevationReference: number = 0): UniformValues<FillOutlineUniformsType> => ({
     'u_fill_translate': translate,
+    'u_elevation_reference': elevationReference,
 });
 
 const fillOutlinePatternUniformValues = (
@@ -102,8 +116,9 @@ const fillOutlinePatternUniformValues = (
     crossfade: CrossfadeParameters,
     tile: Tile,
     translate: [number, number],
-    isSdfPattern: boolean
-): UniformValues<FillOutlinePatternUniformsType> => fillPatternUniformValues(painter, crossfade, tile, translate, isSdfPattern);
+    isSdfPattern: boolean,
+    elevationReference: number = 0
+): UniformValues<FillOutlinePatternUniformsType> => fillPatternUniformValues(painter, crossfade, tile, translate, isSdfPattern, elevationReference);
 
 export {
     fillUniforms,

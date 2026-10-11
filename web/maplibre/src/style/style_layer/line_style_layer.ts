@@ -46,6 +46,20 @@ export class LineStyleLayer extends StyleLayer {
     _transitioningPaint: Transitioning<LinePaintProps>;
     paint: PossiblyEvaluated<LinePaintProps, LinePaintPropsPossiblyEvaluated>;
 
+    /**
+     * Scenic Roads: how the line is drawn: 0 draped on the terrain (or flat on the map), as
+     * upstream; 1 in 3D, `line-z-offset` above the ground under it; 2 in 3D, `line-z-offset` above
+     * sea level (style_spec_extensions.ts).
+     */
+    elevationReference(): number {
+        if (this.paint.get('line-elevation-reference') === 'sea') return 2;
+        return this.paint.get('line-z-offset').constantOr(1) !== 0 ? 1 : 0;
+    }
+
+    is3D(): boolean {
+        return this.elevationReference() > 0;
+    }
+
     constructor(layer: LayerSpecification, globalState: Record<string, any>) {
         super(layer, properties, globalState);
         this.gradientVersion = 0;

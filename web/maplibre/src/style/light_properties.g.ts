@@ -1,7 +1,7 @@
 // This file is generated. Edit build/generate-style-code.ts, then run 'npm run codegen'.
 /* eslint-disable */
 
-import {latest as styleSpec} from '@maplibre/maplibre-gl-style-spec';
+import {styleSpec} from './style_spec_extensions.ts';
 
 import {
     Properties,

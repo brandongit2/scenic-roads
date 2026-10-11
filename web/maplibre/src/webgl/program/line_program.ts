@@ -12,11 +12,13 @@ import type {CrossfadeParameters} from '../../style/evaluation_parameters.ts';
 
 export type LineUniformsType = {
     'u_translation': Uniform2f;
+    'u_elevation_reference': Uniform1f;
     'u_ratio': Uniform1f;
 };
 
 export type LineGradientUniformsType = {
     'u_translation': Uniform2f;
+    'u_elevation_reference': Uniform1f;
     'u_ratio': Uniform1f;
     'u_image': Uniform1i;
     'u_image_height': Uniform1f;
@@ -24,6 +26,7 @@ export type LineGradientUniformsType = {
 
 export type LinePatternUniformsType = {
     'u_translation': Uniform2f;
+    'u_elevation_reference': Uniform1f;
     'u_texsize': Uniform2f;
     'u_ratio': Uniform1f;
     'u_image': Uniform1i;
@@ -33,6 +36,7 @@ export type LinePatternUniformsType = {
 
 export type LineSDFUniformsType = {
     'u_translation': Uniform2f;
+    'u_elevation_reference': Uniform1f;
     'u_ratio': Uniform1f;
     'u_tileratio': Uniform1f;
     'u_crossfade_from': Uniform1f;
@@ -45,6 +49,7 @@ export type LineSDFUniformsType = {
 
 export type LineGradientSDFUniformsType = {
     'u_translation': Uniform2f;
+    'u_elevation_reference': Uniform1f;
     'u_ratio': Uniform1f;
     'u_image': Uniform1i;
     'u_image_height': Uniform1f;
@@ -59,11 +64,13 @@ export type LineGradientSDFUniformsType = {
 
 const lineUniforms = (context: Context, locations: UniformLocations): LineUniformsType => ({
     'u_translation': new Uniform2f(context, locations.u_translation),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_ratio': new Uniform1f(context, locations.u_ratio),
 });
 
 const lineGradientUniforms = (context: Context, locations: UniformLocations): LineGradientUniformsType => ({
     'u_translation': new Uniform2f(context, locations.u_translation),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_ratio': new Uniform1f(context, locations.u_ratio),
     'u_image': new Uniform1i(context, locations.u_image),
     'u_image_height': new Uniform1f(context, locations.u_image_height)
@@ -71,6 +78,7 @@ const lineGradientUniforms = (context: Context, locations: UniformLocations): Li
 
 const linePatternUniforms = (context: Context, locations: UniformLocations): LinePatternUniformsType => ({
     'u_translation': new Uniform2f(context, locations.u_translation),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_texsize': new Uniform2f(context, locations.u_texsize),
     'u_ratio': new Uniform1f(context, locations.u_ratio),
     'u_image': new Uniform1i(context, locations.u_image),
@@ -80,6 +88,7 @@ const linePatternUniforms = (context: Context, locations: UniformLocations): Lin
 
 const lineSDFUniforms = (context: Context, locations: UniformLocations): LineSDFUniformsType => ({
     'u_translation': new Uniform2f(context, locations.u_translation),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_ratio': new Uniform1f(context, locations.u_ratio),
     'u_image': new Uniform1i(context, locations.u_image),
     'u_mix': new Uniform1f(context, locations.u_mix),
@@ -92,6 +101,7 @@ const lineSDFUniforms = (context: Context, locations: UniformLocations): LineSDF
 
 const lineGradientSDFUniforms = (context: Context, locations: UniformLocations): LineGradientSDFUniformsType => ({
     'u_translation': new Uniform2f(context, locations.u_translation),
+    'u_elevation_reference': new Uniform1f(context, locations.u_elevation_reference),
     'u_ratio': new Uniform1f(context, locations.u_ratio),
     'u_image': new Uniform1i(context, locations.u_image),
     'u_image_height': new Uniform1f(context, locations.u_image_height),
@@ -114,6 +124,8 @@ const lineUniformValues = (
 
     return {
         'u_translation': calculateTranslation(painter, tile, layer),
+        // Scenic Roads: 0 draped (or flat), 1 above the ground, 2 above sea level (LineStyleLayer.elevationReference).
+        'u_elevation_reference': layer.elevationReference(),
         'u_ratio': ratioScale / pixelsToTileUnits(tile, 1, transform.zoom),
     };
 };
@@ -142,6 +154,8 @@ const linePatternUniformValues = (
     const tileZoomRatio = calculateTileRatio(tile, transform);
     return {
         'u_translation': calculateTranslation(painter, tile, layer),
+        // Scenic Roads: 0 draped (or flat), 1 above the ground, 2 above sea level (LineStyleLayer.elevationReference).
+        'u_elevation_reference': layer.elevationReference(),
         'u_texsize': tile.imageAtlasTexture.size,
         // camera zoom ratio
         'u_ratio': ratioScale / pixelsToTileUnits(tile, 1, transform.zoom),

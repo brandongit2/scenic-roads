@@ -34,6 +34,24 @@ export function drawFill(painter: Painter, tileManager: TileManager, layer: Fill
     }
 
     const pattern = layer.paint.get('fill-pattern');
+
+    // Scenic Roads: an elevated fill (fill-z-offset, fill-elevation-reference) is drawn in 3D,
+    // depth-tested against the terrain and the 3D layers, not draped (render_to_texture.ts's
+    // drapes): opaque, it hides what lies below it; see-through, what's below shows.
+    if (layer.elevationReference() > 0) {
+        if (renderContext.currentPass !== 'translucent') return;
+        const gl = painter.context.gl;
+        const opaque = !pattern.constantOr(1 as any) && color.constantOr(Color.transparent).a === 1 && opacity.constantOr(0) === 1;
+        const colorMode = painter.colorModeForRenderPass();
+        drawFillTiles(painter, tileManager, layer, coords,
+            new DepthMode(gl.LEQUAL, opaque ? DepthMode.ReadWrite : DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, false, renderContext);
+        if (layer.paint.get('fill-antialias')) {
+            drawFillTiles(painter, tileManager, layer, coords,
+                new DepthMode(gl.LEQUAL, DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, true, renderContext);
+        }
+        return;
+    }
+
     const fillEligibleForOpaque = painter.opaquePassEnabledForLayer() &&
         !pattern.constantOr(1 as any) &&
         color.constantOr(Color.transparent).a === 1 &&
@@ -117,6 +135,7 @@ function drawFillTiles(
     let drawMode, programName, uniformValues, indexBuffer, segments;
 
     const transform = painter.transform;
+    const elevationReference = layer.elevationReference();
 
     const propertyFillTranslate = layer.paint.get('fill-translate');
     const propertyFillTranslateAnchor = layer.paint.get('fill-translate-anchor');
@@ -158,13 +177,13 @@ function drawFillTiles(
         if (!isOutline) {
             indexBuffer = bucket.indexBuffer;
             segments = bucket.segments;
-            uniformValues = image ? fillPatternUniformValues(painter, crossfade, tile, translateForUniforms, isSdfPattern) : fillUniformValues(translateForUniforms);
+            uniformValues = image ? fillPatternUniformValues(painter, crossfade, tile, translateForUniforms, isSdfPattern, elevationReference) : fillUniformValues(translateForUniforms, elevationReference);
         } else {
             indexBuffer = bucket.indexBuffer2;
             segments = bucket.segments2;
             uniformValues = (programName === 'fillOutlinePattern' && image) ?
-                fillOutlinePatternUniformValues(painter, crossfade, tile, translateForUniforms, isSdfPattern) :
-                fillOutlineUniformValues(translateForUniforms);
+                fillOutlinePatternUniformValues(painter, crossfade, tile, translateForUniforms, isSdfPattern, elevationReference) :
+                fillOutlineUniformValues(translateForUniforms, elevationReference);
         }
 
         const stencil = painter.stencilModeForClipping(coord);
