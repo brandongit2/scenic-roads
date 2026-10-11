@@ -77,11 +77,12 @@ now source changes:
 
 - **Covers worked out again when the terrain's elevations arrive**
   (`globe_covering_tiles_details_provider.ts`, `bounding_volume_cache.ts`, `TileManager.demVersion`,
-  `Terrain.demVersion`): the globe keeps each tile's bounding volume for as long as each frame asks
+  `Terrain.demVersion`, `Terrain.elevationKey`): the globe keeps each tile's bounding volume for as long as each frame asks
   for it, with the terrain's elevations as they were when it was made. One made before its DEM tile
   loaded lay at sea level, so tilted over steep ground the tiles on the slopes nearest the camera
   were culled and not asked for until the camera moved (lochs missing in the Highlands until a
-  no-op `jumpTo`). The cache is now cleared whenever a DEM tile loads.
+  no-op `jumpTo`). The cache is now cleared whenever a DEM tile loads, the exaggeration
+  changes or the terrain's source does (`Terrain.elevationKey`).
 - **A tile's zoom by its distance over the terrain** (`covering_tiles.ts`): the zoom function
   measures a tile's distance from the camera as if the tile lay at the center's elevation (sea
   level on the app's globe, where its camera pivots), so with 3D terrain the tiles near the camera

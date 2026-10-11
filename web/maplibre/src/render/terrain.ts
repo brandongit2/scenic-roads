@@ -543,6 +543,14 @@ export class Terrain {
         return this.tileManager.tileManager.demVersion;
     }
 
+    /**
+     * Scenic Roads: what the elevations at hand are: the DEM tiles loaded, the exaggeration and the
+     * terrain's source. Anything worked out from them is out of date once it changes.
+     */
+    get elevationKey(): string {
+        return `${this.tileManager.tileManager.id}|${this.exaggeration}|${this.demVersion}`;
+    }
+
     _getOverscaledTileIDFromLngLatZoom(lnglat: LngLat, zoom: number): { tileID: OverscaledTileID; mercatorX: number; mercatorY: number} {
         const mercatorCoordinate = MercatorCoordinate.fromLngLat(lnglat.wrap());
         const worldSize = (1 << zoom) * EXTENT;

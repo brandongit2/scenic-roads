@@ -155,8 +155,8 @@ describe('elevated content tile retention', () => {
 });
 
 describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => {
-    const terrainOf = (state: {demVersion: number; max: number | null}) => ({
-        get demVersion() { return state.demVersion; },
+    const terrainOf = (state: {demVersion: number; max: number | null; exaggeration?: number; source?: string}) => ({
+        get elevationKey() { return `${state.source ?? 'dem'}|${state.exaggeration ?? 1}|${state.demVersion}`; },
         getMinMaxElevation: () => ({minElevation: state.max === null ? null : 0, maxElevation: state.max}),
     }) as any;
     const reach = (volume: ConvexVolume) => Math.max(...volume.points.map((p) => Math.hypot(p[0], p[1], p[2])));
@@ -178,6 +178,21 @@ describe('bounding volumes and the terrain\'s elevations (Scenic Roads)', () => 
         const after = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
         expect(after).not.toBe(before);
         expect(reach(after)).toBeGreaterThan(1 + 800 / earthRadius);
+    });
+
+    test('a new exaggeration or terrain source makes the volumes again, the DEM tiles\' count the same', () => {
+        const detailsProvider = new GlobeCoveringTilesDetailsProvider();
+        const state = {demVersion: 3, max: 900, exaggeration: 1, source: 'a'};
+        const options = {tileSize: 512, terrain: terrainOf(state)};
+        const tile = {x: 2100, y: 1300, z: 12};
+        const first = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
+        state.exaggeration = 3;
+        detailsProvider.prepareNextFrame();
+        const second = detailsProvider.getTileBoundingVolume(tile, 0, 0, options);
+        expect(second).not.toBe(first);
+        state.source = 'b';
+        detailsProvider.prepareNextFrame();
+        expect(detailsProvider.getTileBoundingVolume(tile, 0, 0, options)).not.toBe(second);
     });
 
     test('tiles on a slope near the camera, culled at sea level, are covered once their DEM tile loads', () => {
