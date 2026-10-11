@@ -2339,6 +2339,19 @@ pub fn label(step: &str) -> &'static str {
         "terrain-root" | "slope-root" => "Building the world-level terrain and slope",
         "prune" => "Removing what the regions no longer cover",
         "inputs" => "Checking the inputs dropped",
+        // (The worldwide jobs and the daily ones, as their jobs say them: crate::agent's plan.)
+        "osm-pass" => "Reading the newest OpenStreetMap planet",
+        "pass-sets" => "Cutting the OpenStreetMap sets the newest pass lacks",
+        "trailends" => "Finding the ends of the world's hiking routes",
+        "reach" => "Working out how far each area's roads reach, worldwide",
+        "terrain-z8" => "Building coarse terrain for the whole world",
+        "buildings" => "Collecting the world's roadside buildings (Overture)",
+        "summits" => "Finding the world's summits",
+        "labels" => "Ranking the world's place labels",
+        "spoken" => "Mapping the languages spoken where, for names",
+        "water" => "Drawing the world's water at every zoom",
+        "backup" => "Backing up translations, descriptions, inputs and the acceptances",
+        "gc" => "Removing replaced files from the NAS",
         _ => "Publishing the new map data",
     }
 }
