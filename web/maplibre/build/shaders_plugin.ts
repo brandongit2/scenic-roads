@@ -17,7 +17,7 @@ export function glslToJs(code: string): string {
         .replace(/\n+/g, '\n') // collapse multi line breaks
         .replace(/\n\s+/g, '\n') // strip indentation
         .replace(/\s?([+-\/*=,])\s?/g, '$1') // strip whitespace around operators
-        .replace(/([;\(\),\{\}])\n(?=[^#])/g, '$1'); // strip more line breaks
+        .replace(/^([^#\n][^\n]*[;\(\),\{\}])\n(?=[^#])/gm, '$1'); // strip more line breaks (Scenic Roads: never after a directive)
     return `export default ${JSON.stringify(code)};\n`;
 }
 
