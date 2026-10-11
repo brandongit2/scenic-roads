@@ -541,7 +541,9 @@ agent/shadow/           a shadow run beside the agent (`state/pool/shadow`; crat
                         kind: start, observed, handed, event, sent, list, gate, compare, restarted,
                         …}); `scenic pool-shadow --home <dir>` keeps the same in <dir>/pool-shadow/
 pool-<id>.lock          (in the app's folder) the lock of this Mac's member `<id>`: one process runs
-                        it (crate::pool::MemberLock)
+                        it (crate::pool::MemberLock); like `agent.lock` and the build manifest's
+                        `scenic-build-<hash16>.lock` in the temporary folder, removed as it's let go
+                        (crate::sys::PathLock) and made again by the next taker
 agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build manifest names
                         (RDPKIDX1, as idx/), by each pack's content name, which the units' keys read
                         (agent::tiles): each read once from its pack on the NAS, and never stale.
