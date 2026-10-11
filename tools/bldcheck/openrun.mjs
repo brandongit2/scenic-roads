@@ -6,7 +6,7 @@
 // open runs exponential with mean π (1 − F) ÷ L (F the coverage, L the walls' length a m²: from the
 // field tile's f, w, v, as the shader takes them).
 import zlib from 'node:zlib';
-const NM = '/Users/brandontsang/repos/scenic-roads/web/node_modules';
+const NM = new URL('../../web/node_modules', import.meta.url).pathname;
 const { VectorTile } = await import(`${NM}/@mapbox/vector-tile/index.js`);
 const Pbf = (await import(`${NM}/pbf/index.js`)).PbfReader;
 const M = 8192;

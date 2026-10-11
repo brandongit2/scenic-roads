@@ -42,7 +42,7 @@ its 19.5 (§4.1).
 - z12: buildings 40 m tall or more: the skyline.
 - So the layer shows the towers from zoom 12, the large buildings from 13 and every building from 14.
   Planned (§4.8): every building at every zoom, the ones under a pixel as a field of their summed
-  roofs and walls, and every building as a mesh from zoom 13.
+  roofs and walls, and every building as a mesh from zoom 14 (the meshes' tiles as today).
   A tilted view takes coarser tiles toward the horizon (MapLibre's cover), so every building near the
   camera, only the tall ones farther out, and none beyond the z12 tiles.
 - The tiles' sizes (B0, §2.5), against ~300 KB a tile: the thresholds keep z12 and z13 under it (the
@@ -1023,7 +1023,7 @@ per texel, every building at every level.
 | Map zoom | Meshes (fill-extrusion) | Field |
 |---|---|---|
 | 14 and up | z14 tiles: every building | none |
-| 13–14 | z13 tiles: 20 m or more, or 2,000 m² or more | level 14: every other building |
+| 13–14 | z13 tiles: 20 m or more, or 2,000 m² or more | level 14: every other building (not built for now: §4.8.1, storage) |
 | 12–13 | z12 tiles: 40 m or more | level 13: every other building |
 | under 12 | none | level ⌊zoom⌋ + 1 (down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
 
@@ -1249,8 +1249,11 @@ The nine cases:
 **Storage: the choice made (10 Oct, the PM for the owner):** **no level 14 for now.** Five classes
 at levels 4–13, each class's mean top kept at every level. For the coverage, after the meshes'
 4.6–6.9 GB: ~6–11 GB more (Annecy's 6/33/22 ~130 MB against its meshes' 79 MB; the first design's one
-class 110 MB). The cost: the field's texels are two device pixels at zoom 13–14 (level 13 over the
-z13 meshes, magnified), so the small buildings left to the field there are softer than the rest.
+class 110 MB). The cost, as the renderer stands: over a z13 mesh tile it draws the level-14 tiles
+under it, so with no level 14 nothing is drawn there, and at zoom 13–14 the buildings z13's meshes
+leave out (under 20 m and under 2,000 m²) are missing. Level 13 can't simply stand in, magnified: it
+holds every building under 40 m, so the 20–40 m ones z13's meshes draw would be drawn twice. B5
+decides (§5.1): level 14, or a level-13 set of what z13's meshes leave out.
 **Later, an option:** level 14 (~+7–14 GB for the coverage; Annecy's ~160 MB) gives one-device-pixel
 texels there; the format doesn't change (a level more in the hi packs), so it can be added alone.
 Not taken either, for now: each class's mean top left out at the finest levels (its class's middle
@@ -1549,7 +1552,7 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   against two-texel steps):** 1, the switches as constants: −0.76 ± 0.02 ms at Manhattan 70°, −0.30
   Tokyo straight down, −0.16 Manhattan z11, −0.15 Kantō, ~0 elsewhere; 2, the shown colour from the
   mean: −0.30 ± 0.04 at Manhattan 70°, −0.11 Kantō, 0 elsewhere; 4, 8 and 16: nothing beyond the
-  noise (≤ 0.09). **1 and 2 are the default** (`?fopt=3`; 4, 8, 16 stay as switches, off).
+  noise (≤ 0.09). **1 and 2 are the default** (`?fopt=3`); 4, 8 and 16 were taken out.
 - **The field's cost now** (phase H, the defaults: two-texel steps, options 1 and 2; six paired
   repetitions):
 
@@ -1563,6 +1566,15 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   | Manhattan z11 straight down | +1.57 ± 0.23 | 4.7 |
 
   All six within the 2 ms budget (straight down the tightest: 0.3–0.4 ms to spare).
+- **Light to stored values made the cubic's own inverse** (the review, 11 Oct): the hits went to
+  light by the cubic fit and back by the exact curve, so stored → light → stored wasn't the identity
+  in dark colours (the land colour #0b0e13: the alpha biased by ~0.019, coverage under ~1.5 % lost).
+  Now three Newton steps on the same cubic (within 4e-6), once or twice a fragment. The images are
+  within 0.02 L* of the exact curve both ways (`?fdbg=31`). Straight down with the default colours
+  (buildings #566173 over #0b0e13): Tokyo −0.06 / −0.53 / −0.43 L* at z9 / 11 / 12; with the
+  comparison's light colour −0.20 / −0.91 / −0.69; A ≤ 0.25, B ≤ 1.14, C −0.52 to +0.44, the seam
+  +0.64. Not timed (the Mac was busy): the next quiet window should confirm its cost, expected small
+  (per fragment, not per hit).
 
 **The hand-overs' cross-fade (zoom 12 and 13): not cheap, not built.**
 - MapLibre swaps the meshes' tile zoom at the integer. A fade needs both representations drawn
@@ -1591,7 +1603,18 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (planned; prototyped 2026-10-10) | The field (§4.8): built in `bldtiles` with the meshes, its mids and a `bldfield-lo` step per z3 tile, the catalog's layer, mirror and offline; the custom layer matched to the meshes' tiles, colour by height, fog; the buildings' source at tile size 256 (every building from zoom 13); the comparison (`tools/bldcheck`) over a set of views, tilted ones too; measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (planned; prototyped 2026-10-10) | The field (§4.8): built in `bldtiles` with the meshes, its mids and a `bldfield-lo` step per z3 tile, the catalog's layer, mirror and offline; the custom layer matched to the meshes' tiles, colour by height, fog; every building a mesh from zoom 14 (the meshes' tiles as today); the field at zoom 13–14 (level 14, or a level-13 set of what z13's meshes leave out: §4.8.1, storage); the renderer's work before the field is on by default (below); the comparison (`tools/bldcheck`) over a set of views, tilted ones too; measured on the iPad. | 1–2 weeks |
+
+**B5: the renderer's work before the field is on by default** (from the review of the prototype,
+11 Oct; it runs only behind `?bldfield=` until then):
+- GPU memory: the tiles' textures and buffers kept under a budget (least recently drawn freed),
+  freed in `onRemove`, rebuilt after a lost context; one `idle` listener, not one an `onAdd`.
+- Decoding in a worker, with a cap on fetches in flight and the ones the view has left cancelled.
+- A loading tile's ancestor drawn only over the missing child's area (today it is drawn whole, over
+  its loaded siblings too); a tile that failed retried.
+- The scene's depth along the march (a mesh or the terrain inside a column stops the ray), from
+  #153's `sceneDepth`, not only the faces' hardware depth test.
+- The layer's code loaded by `import()` only when its parameters are set.
 
 B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the build
 Mac's pace in B1 over the 380 tiles' ~440 M rows): `bldprep` 2.2–4.7 s a million rows (Kantō's

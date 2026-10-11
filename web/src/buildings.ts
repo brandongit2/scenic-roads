@@ -79,8 +79,10 @@ export const HEIGHT_DOMAIN: [number, number] = [0, 400];
 
 /** The tiles' URL (versioned: the catalog's `buildings.tiles`). */
 export const buildingTiles = (): string => {
-  // PROTOTYPE (task #102): `?bldtiles=<url>` takes the tiles from another server (bldcmp.ts).
-  const other = new URLSearchParams(location.search).get('bldtiles');
+  // PROTOTYPE (task #102): `?bldtiles=<url>` takes the tiles from another server, in the comparison
+  // mode only (`?bldcmp`, bldcmp.ts).
+  const q = new URLSearchParams(location.search);
+  const other = q.has('bldcmp') ? q.get('bldtiles') : null;
   return other ? `${other}/{z}/{x}/{y}` : `${hostFor('buildings')}/tiles/buildings/{z}/{x}/{y}${ver('buildings.tiles')}`;
 };
 
