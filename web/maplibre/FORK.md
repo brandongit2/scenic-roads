@@ -219,12 +219,19 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   where it stands above another tile on screen): its fragment shaders discard what lies outside
   its tile (`v_tile_pos`), and its layer reports `isTileClipped()` false. The lifted code is a
   program variant (`painter.useProgram`'s `LIFTED` define, `render/lifted.ts`), so a layer that
-  isn't lifted runs upstream's programs unchanged. On the globe a fill's polar caps, whose vertices
+  isn't lifted runs upstream's projection, clip and gamma unchanged; only an unused `z_offset`
+  binder is added to the line and fill programs. On the globe a fill's polar caps, whose vertices
   lie beyond the tile's y, are kept inside the clip (`v_tile_pos` at the tile's edge).
 - Where a retained parent tile and a loaded child overlap (while one loads), the parent's part
   under the child would draw again: lifted lines and fills take the overlap stencil upstream's
   rasters use (tiles drawn z-descending, each zoom a higher `GEQUAL` reference that `REPLACE`s), so
-  only the child draws there; a fill's outline shares its fill's references.
+  the parent draws nowhere the child drew; a fill's outline shares its fill's references (with
+  `fill-layer-opacity` too, inside its scratch pass). The stencil masks by the pixels the child
+  drew, not by the child's tile: where the parent has features the child lacks (generalised away
+  or dropped at the child's zoom), the parent's still show there until it's let go. A known gap.
+  The drape pass and the layer-opacity scratch pass clear their own stencil and start their IDs at
+  1, restoring the main framebuffer's counter after, so an overflow there can't bring a later lifted
+  layer's references below values an earlier one wrote.
 - Without 3D terrain the ground is at 0: both are a height above the map. On the globe without
   terrain the 3D layers are depth-tested against upstream's depth pre-pass of the sphere
   (`_renderTilesDepthBuffer`, for the far side), which is tessellated unlike a fill: a lifted
