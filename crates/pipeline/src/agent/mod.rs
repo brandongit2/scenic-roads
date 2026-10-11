@@ -1775,6 +1775,10 @@ impl Agent {
 
     /// Why a job that needs `need` free waits for the owner's disk room target.
     fn floor_why(&self, need: u64) -> String {
+        // (No target: by measure, the reserve alone.)
+        if self.floor() == 0 {
+            return format!("waits for room on the disk: it needs {} free ({} free now), more than this Mac's caches can free now; it starts once the disk has room", room::size(need), room::size(self.disk_free()));
+        }
         format!(
             "waits for the disk room target: it needs {} free past the target's {} ({} free now), more than this Mac's caches can free now; it starts once the target is lowered or off (`scenic room`), or the disk has room",
             room::size(need),
@@ -2683,7 +2687,11 @@ impl Agent {
         // (Room-making fell short of the target lately: not tried again until a job ends, the
         // target changes or ten minutes pass; the job waits.)
         let short = self.floor_short.is_some_and(|(t, n, at)| t == floor && room >= n && at.elapsed() < Duration::from_secs(600));
-        if !(k > 0 || other) && floor > 0 && !self.o.helper && short && self.disk_free() < room {
+        // (By measure, the first slot alone waits for the reserve too, the target none: started
+        // short of it, the disk guard would freeze it at once and give it back, and the next job
+        // likewise, each kept from this Mac an hour.)
+        let held = floor > 0 || self.by_measure;
+        if !(k > 0 || other) && held && !self.o.helper && short && self.disk_free() < room {
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
             self.floor_held = Some(room);
             return false;
@@ -2722,13 +2730,13 @@ impl Agent {
             // between jobs (`tend_caches`).
             // The caches' others are then freed toward it between jobs (`tend_caches`, `goal`: the
             // least room a job held needs), and room-making tried again once that's done.
-            if floor > 0 && !self.o.helper && self.disk_free() < room {
+            if held && !self.o.helper && self.disk_free() < room {
                 waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
                 self.floor_held = Some(room);
                 self.floor_short = Some((floor, self.floor_short.filter(|f| f.0 == floor).map_or(room, |f| f.1.min(room)), Instant::now()));
                 return false;
             }
-        } else if floor > 0 && !self.o.helper && self.disk_free() < room {
+        } else if held && !self.o.helper && self.disk_free() < room {
             // (Without the NAS no room is made, nor while a freeing runs: it waits for it.)
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
             self.floor_held = Some(room);
@@ -6251,6 +6259,13 @@ mod tests {
         a.end_lease(0, Outcome::Interrupted, &[], "stopped");
         a.release_claims(0, Some(&root));
         a.slots[0].running = None;
+        // Short of the reserve itself, no target: it waits, said why (started, the disk guard would
+        // freeze it at once and give it back, and the next job likewise: the two-Mac run's loop).
+        a.free_set = Some(room::RESERVE - g);
+        let mut w = Vec::new();
+        assert!(!a.try_start(0, unit.clone(), &cond, Some(&root), &mut w));
+        assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for room on the disk")), "{w:?}");
+        a.floor_short = None;
         // So too with the owner's room target set: alone, the reserve and the target are what it
         // starts with, not its floor past them.
         a.room_target = Some(room::Target { bytes: 20 * g, by: "a test".into(), at: now_s() });
