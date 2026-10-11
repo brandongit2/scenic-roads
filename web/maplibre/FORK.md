@@ -202,7 +202,15 @@ elevation, isn't built); the basemap's water polygons, the fill it falls back to
 purpose (`tools/fetch-upstream-tests.sh` puts them in place):
 
 - `terrain/fill-extrusion`, `-vertical-gradient`, `-vertical-gradient-pattern`: the walls' feet on
-  the terrain under each corner.
+  the terrain under each corner (the last also the finer DEM tiles near the camera, below).
+- `terrain/fill-extrusion-multipolygon`: a few ridge pixels, the terrain's render-to-texture tiles
+  finer near the camera (the tile zoom over the terrain).
+
+Run on this Mac on 2026-10-11 (the last full run under other agents' load, the failures it showed
+run again quiet): every other upstream case passes. Under heavy load a handful of terrain cases
+(`terrain/symbol*`, `skirts-*`, `tile-transparency-overlap-*`, `line-opacity/terrain`) fail with
+differences of 0 pixels at threshold 0.1, or a blank frame, and pass when run again: timing, not
+drawing.
 
 On this Mac (Apple silicon, SwiftShader in headless Chrome) upstream's own build fails four render
 tests, `text-local-glyphs/{cjk,missing,no-glyphs}` and `text-local-ideographs/cjk-symbols` (the
