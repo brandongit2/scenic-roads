@@ -4,7 +4,7 @@
     "test": {
       "width": 512,
       "height": 256,
-      "description": "A lifted line across tile seams over high terrain: red 250 m above the ground (densely sampled, following it), blue at 1,300 m above sea level times the exaggeration (level); whole across the seams, not cut where the tiles' sea-level stencil masks fall"
+      "description": "A lifted line across tile seams over high terrain (a z13 seam at lon 11.0742): red 250 m above the ground, densely sampled to follow it (the GeoJSON source's tolerance 0, as geojson-vt would otherwise simplify this level line to its tile-clip vertices, which take the ground only there and step at the seam), blue at 1,300 m above sea level times the exaggeration (level); both whole across the seams, not cut where the tiles' sea-level stencil masks fall"
     }
   },
   "center": [
@@ -272,7 +272,8 @@
             }
           }
         ]
-      }
+      },
+      "tolerance": 0
     }
   },
   "terrain": {

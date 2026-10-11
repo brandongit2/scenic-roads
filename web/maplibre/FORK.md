@@ -47,8 +47,10 @@ install chrome`, or an existing one in `~/.cache/puppeteer`).
   `test/integration/render/tests/scenic/` and are committed (the harness's report templates too,
   and its `scenic-depth-column` custom layer, `render.test.ts`), over the upstream assets'
   `terrain-shading` DEM (the Wetterstein):
-  - `line-z-offset/across-seams`: a densely sampled line 250 m above the ground and a level one at
-    a sea-referenced 1,300 m, across tile seams over high terrain (whole: no stencil cuts);
+  - `line-z-offset/across-seams`: a densely sampled line 250 m above the ground (its source's
+    `tolerance` 0) and a level one at a sea-referenced 1,300 m, across a z13 seam over high terrain:
+    both whole (no stencil cuts; the build before the fix lost the level line and drew the other
+    elsewhere);
   - `fill-z-offset/sea-surface`: a see-through level surface at a sea-referenced 1,500 m, the hills
     through it;
   - `fill-z-offset/globe-pole`: upstream's `fill-planet-pole` near the pole, the water lifted
@@ -207,7 +209,9 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
 - A vertex takes the elevation of its own point: a long segment between two vertices is straight
   in 3D, so a `ground` line or fill follows the terrain only as finely as its vertices do (the globe
   subdivides fills; lines are as their data is). Each tile's clip adds vertices at its edges, which
-  take the ground there, so a sparse `ground` line can step at tile seams; give it dense vertices.
+  take the ground there, so a sparse `ground` line can step at tile seams; give it dense vertices,
+  and a GeoJSON source `tolerance: 0`, or geojson-vt simplifies away the vertices of a stretch
+  that's straight on the map (a line along a parallel keeps only its ends and tile-clip vertices).
   It can step too where neighbouring tiles read the ground from DEM tiles of different zooms (a
   z12 tile's from z11's, a z13's from z12's), as an extrusion's base does upstream.
   A `sea` surface is level, so that's exact for it.
