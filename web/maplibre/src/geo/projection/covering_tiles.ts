@@ -67,6 +67,13 @@ export type CoveringTilesOptionsInternal = CoveringTilesOptions & {
      * content are not dropped while that content is still visible.
      */
     maxContentElevation?: number;
+    /**
+     * Scenic Roads: whether a tile's zoom counts the terrain's elevations (default true; see
+     * coveringTiles). The terrain's own render-to-texture tiles keep upstream's zoom: each redraws
+     * every draped layer, and finer ones near the camera cost the GPU about 3x as much a moving
+     * frame in a tilted Chamonix view, for drapes no one asked to sharpen.
+     */
+    terrainAwareZoom?: boolean;
 };
 
 /**
@@ -320,7 +327,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     // near). Ground below the center's elevation (on the flat map, whose camera pivots on the
     // ground) leaves the zoom as it was: never coarser than upstream's. Capped at the map's
     // highest zoom.
-    const terrainLod = allowVariableZoom && !!options.terrain;
+    const terrainLod = allowVariableZoom && !!options.terrain && options.terrainAwareZoom !== false;
     const mercatorPerMeter = terrainLod ? mercatorZfromAltitude(1, transform.center.lat) : 0;
     const maxTerrainLodZoom = transform.maxZoom + scaleZoom(transform.tileSize / options.tileSize);
 

@@ -912,6 +912,11 @@ describe('coveringTiles over 3D terrain (Scenic Roads)', () => {
                     .toBeLessThan(maxZ(coveringTiles(view(make()), {...options, terrain: ground(4000)})));
             });
 
+            test('terrainAwareZoom false: upstream\'s zoom (the terrain\'s render-to-texture tiles)', () => {
+                expect(maxZ(coveringTiles(view(make()), {...options, terrain: ground(3000), terrainAwareZoom: false})))
+                    .toBe(maxZ(coveringTiles(view(make()), {...options, terrain: ground(0)})));
+            });
+
             test('ground above the camera stops at the map\'s highest zoom', () => {
                 const transform = view(make());
                 transform.setMaxZoom(16);

@@ -90,8 +90,10 @@ now source changes:
   gains log2 of how much closer the middle of its elevation range is than the function assumed,
   capped at the map's highest zoom; ground below the center's elevation (the flat map pivots on the
   ground) leaves it as it was, never coarser than upstream's. The middle, not the top: the top
-  over-fetched where a tile spans a valley and a ridge. Every source's cover, the terrain's own
-  render-to-texture tiles included.
+  over-fetched where a tile spans a valley and a ridge. Every source's cover but the terrain's own
+  render-to-texture tiles (`terrainAwareZoom: false`): each redraws every draped layer, and finer
+  ones near the camera tripled the GPU time of a moving frame in a tilted Chamonix view (1.8 to
+  6.9 ms, under load), for drapes no one asked to sharpen; at upstream's zoom it's 1.7 to 2.0 ms.
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser
@@ -214,9 +216,8 @@ needed of this fork; the floor itself (the DEM below 0) is #99's.
 purpose (`tools/fetch-upstream-tests.sh` puts them in place):
 
 - `terrain/fill-extrusion`, `-vertical-gradient`, `-vertical-gradient-pattern`: the walls' feet on
-  the terrain under each corner (the last also the finer DEM tiles near the camera, below).
-- `terrain/fill-extrusion-multipolygon`: a few ridge pixels, the terrain's render-to-texture tiles
-  finer near the camera (the tile zoom over the terrain).
+  the terrain under each corner (the last also its wall pattern, the DEM tiles finer near the
+  camera with the tile zoom over the terrain).
 
 Run on this Mac on 2026-10-11 (the last full run under other agents' load, the failures it showed
 run again quiet): every other upstream case passes. Under heavy load a handful of terrain cases

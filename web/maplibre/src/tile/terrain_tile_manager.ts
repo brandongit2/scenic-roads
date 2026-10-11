@@ -103,7 +103,9 @@ export class TerrainTileManager extends Evented {
             minzoom: this.minzoom,
             maxzoom: this.maxzoom,
             reparseOverscaled: false,
-            terrain
+            terrain,
+            // (Scenic Roads: the drapes' tiles at upstream's zoom: covering_tiles.ts.)
+            terrainAwareZoom: false
         })) {
             keys[tileID.key] = true;
             this._renderableTilesKeys.push(tileID.key);
