@@ -412,6 +412,9 @@ pub struct Status {
     pub beside: Option<JobView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beside_why: Option<String>,
+    /// SCENIC_TEST_DISK_EXTRA_MB when set (MB counted free past what the disk has): a test's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_disk_extra_mb: Option<u64>,
     /// Work that can't run yet, and why, in plain words.
     pub waiting: Vec<Waiting>,
     /// The last jobs to finish, newest first.
@@ -2249,6 +2252,7 @@ impl Agent {
             job,
             beside,
             beside_why: if self.second_allowed() && self.slots[1].running.is_none() { self.beside_why.clone() } else { None },
+            test_disk_extra_mb: Some(cond::test_disk_extra_mb()).filter(|&m| m > 0),
             waiting,
             recent: self.mem.recent.clone(),
             regions,
@@ -2718,6 +2722,11 @@ impl Agent {
             if let Some(t) = id.strip_prefix("terrain ") {
                 hints.add("terrain", &[t.to_string()]);
             }
+            // (Its own scratch, kept from a give-back, its own again before room is made: never
+            // room-making's, the OSM pass's above all.)
+            if let Some(d) = scratch_of(&spec) {
+                room::given_back_drop(&self.o.home, &d);
+            }
             // (By measure, alone: room is made, as it can, for its measured disk too, though it
             // waits only on the reserve and the target, `need_of`: the disk guard its backstop.)
             let measured = if self.by_measure && !self.o.helper { self.measured_job(&spec).map_or(0, |m| m.disk_mb << 20) } else { 0 };
@@ -3114,7 +3123,7 @@ impl Agent {
             // (Made, and still short: the scratch of jobs given back here, the oldest first; still
             // short, given back.)
             Some(_) if self.caches_task.is_none() => {
-                if self.free_given_back(room::RESERVE) > 0 && self.disk_free() >= room::RESERVE {
+                if self.free_given_back(room::RESERVE + room::margin(room::RESERVE)) > 0 && self.disk_free() >= room::RESERVE {
                     return false;
                 }
                 self.disk_room = None;
@@ -6293,9 +6302,20 @@ mod tests {
         // Short of the reserve itself, no target: it waits, said why (started, the disk guard would
         // freeze it at once and give it back, and the next job likewise: the two-Mac run's loop).
         a.free_set = Some(room::RESERVE - g);
+        // (Its scratch kept from a give-back of its own, and another's: room-making takes only the
+        // other's, the job's own its again before room is made.)
+        let (mine, other) = (a.o.home.join("scratch/unit"), a.o.home.join("scratch/pack"));
+        for p in [&mine, &other] {
+            std::fs::create_dir_all(p).unwrap();
+            std::fs::write(p.join("work.bin"), b"kept").unwrap();
+            room::given_back_add(&a.o.home, p, 1);
+        }
+        let mut scratched = unit.clone();
+        scratched.cmd.extend(["--scratch".into(), mine.to_string_lossy().into_owned()]);
         let mut w = Vec::new();
-        assert!(!a.try_start(0, unit.clone(), &cond, Some(&root), &mut w));
+        assert!(!a.try_start(0, scratched, &cond, Some(&root), &mut w));
         assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for room on the disk")), "{w:?}");
+        assert!(mine.exists() && !other.exists(), "its own scratch kept, the other's freed for room");
         a.floor_short = None;
         // So too with the owner's room target set: alone, the reserve and the target are what it
         // starts with, not its floor past them.

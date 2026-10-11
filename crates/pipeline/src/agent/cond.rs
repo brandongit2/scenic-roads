@@ -154,9 +154,14 @@ impl SleepWatch {
 /// so a small disk image the test's agent home is on stands for a disk past the reserve
 /// (`room::RESERVE`), its fills landing in the image, never filling the Mac's own disk.
 pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
+    store::sys::disk_free(path).ok().map(|f| f.saturating_add(test_disk_extra_mb() << 20))
+}
+
+/// `SCENIC_TEST_DISK_EXTRA_MB` (0 unset), at most 1 TB: said at the agent's start and in its
+/// status, never silent.
+pub fn test_disk_extra_mb() -> u64 {
     static EXTRA: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    let extra = *EXTRA.get_or_init(|| std::env::var("SCENIC_TEST_DISK_EXTRA_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) << 20);
-    store::sys::disk_free(path).ok().map(|f| f + extra)
+    *EXTRA.get_or_init(|| std::env::var("SCENIC_TEST_DISK_EXTRA_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).min(1 << 20))
 }
 
 /// This Mac's resources, for the status (the worker page's machines): its memory and the share of

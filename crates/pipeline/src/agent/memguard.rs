@@ -339,6 +339,14 @@ pub struct Live {
     pub frozen: Vec<bool>,
 }
 
+/// How far below the reserve the disk guard freezes (its hysteresis): a thirtieth of it, 1 GB of
+/// the 30 GB. A job starts with the reserve free (and the owner's target), so at the reserve it may
+/// be one just let in: frozen there, it would be given back before it ran. The thaw is at the
+/// reserve, so a frozen job doesn't flap; a thirtieth is small beside the room kept.
+pub fn disk_slack(reserve: u64) -> u64 {
+    reserve / 30
+}
+
 /// The guard's latest sample's file, in the agent's folder.
 pub const LIVE: &str = "memory.json";
 
@@ -632,7 +640,9 @@ impl Sampler {
         }
         // The disk guard: short of the reserve, none frozen for it yet: the job growing fastest
         // (else the largest) frozen at once.
-        let short = g.disk_on && free.is_some_and(|f| f < g.reserve);
+        // (Below the reserve by `disk_slack` at least: a job let in at the reserve, its first
+        // bytes written, isn't frozen at once; the agent lets one go on at the reserve again.)
+        let short = g.disk_on && free.is_some_and(|f| f < g.reserve.saturating_sub(disk_slack(g.reserve)));
         if !short {
             return;
         }
@@ -827,6 +837,10 @@ mod tests {
         s.set_test_disk(Some(60 * g), Some(vec![Some(3 * g), Some(g / 2)]));
         s.tick();
         assert_eq!(s.disk_now(0), Some(3 * g));
+        assert!(!s.disk_frozen(0) && !s.disk_frozen(1));
+        // Short of the reserve by less than its slack (a job just let in at it): none frozen.
+        s.set_test_disk(Some(30 * g - disk_slack(30 * g) / 2), Some(vec![Some(3 * g), Some(g / 2)]));
+        s.tick();
         assert!(!s.disk_frozen(0) && !s.disk_frozen(1));
         // Short of the reserve: the job growing fastest frozen (slot 0, 1 GB against half a GB).
         s.set_test_disk(Some(20 * g), Some(vec![Some(4 * g), Some(g)]));
