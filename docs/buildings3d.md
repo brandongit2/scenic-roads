@@ -1456,8 +1456,7 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   - stopping early (0.1 or 0.3 of the light left): −0.2 to −0.3 at Manhattan, nothing elsewhere,
     so not taken;
   - steps no shorter than 2 texels instead of 1: −2.25 at Manhattan, −0.79 at Kantō, nothing
-    straight down. It isn't needed now, and it darkens straight-down views by a further
-    0.15–0.35 L*.
+    straight down. Not taken then; the default since the re-timing below.
 - **Quality with these settings:** A 0.01–0.28; B ≤ 1.3 (Annecy z15, where the field isn't drawn,
   −1.16: to recheck); C σ8 0.43–1.68 (biases −0.93 to +0.01); the hand-over seam +0.63. Straight
   down: Tokyo −1.6 L* at z11 and −1.5 at z12 (the open darkening), −0.6 at z9; Annecy and Chamonix
@@ -1509,6 +1508,44 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   - Left on the synthetic town: −2 to −3.6 at its corners in normal light. Its walls all face the
     four compass points, which the field's walls, spread evenly, don't; real towns' measure within
     1 L*.
+
+**Timed again after the darkening's fixes (11 Oct, quiet windows at 04:00 and 15:00).**
+- **What the fixes cost:** the step ordering and the linear-light sums had taken the march's
+  arrays of colour vectors and its raw reads beyond the GPU's registers (spilled to slow memory):
+  Manhattan 70° +6.9 ms against 5bd771c's +1.7–2.2 in the same session (tools/bldcheck/abcode.sh),
+  though the two features' own work was 0.75 ms (paired switches). The classes now read straight
+  into their figures, the colours made where used, one linear sum, the stored-value-to-light curve
+  a cubic fit (0f04c54).
+- **The field's cost then** (one-texel steps; whole frames, on − off, six paired repetitions, load
+  3.3–4.8):
+
+  | View | 1-texel steps | 2-texel steps |
+  |---|---|---|
+  | Manhattan z11, 70° | +3.5–3.7 | +2.28 |
+  | Kantō z10, 70° | +2.1–2.3 | +1.68 |
+  | Tokyo z11 straight down | +2.1–2.3 | +2.18 |
+  | Manhattan z11 straight down | +2.00 | not timed |
+  | CN Tower z10, 80° | +1.28 | not timed |
+  | Chamonix z12, 65° | +1.21 | not timed |
+
+- **Two-texel steps by default** (the owner's decision, with more cuts: lower resolution, a raised
+  budget and shelving ruled out). Their images match one-texel steps' within 0.05 L* everywhere:
+  straight down Tokyo −0.87 / −0.67 / −0.20 / −0.03 L* at z11 / 12 / 9 / 13, Annecy +0.12 /
+  +0.61, Chamonix +0.27 / +0.49; A ≤ 0.26, B ≤ 1.12 (Chamonix t12), C biases −0.82 to +0.33, the
+  hand-over seam +0.59. `?fstx=1` for one-texel steps.
+- **Candidates for the next quiet window** (compiled in, `?fopt=` bits; retest.mjs phase O times
+  each alone and all together, paired):
+  1. the switches (debug views, the sub-cell walk, colour by height, linear mixing, the steps' least
+     length) as constants, their other ways compiled out;
+  2. the hits as MapLibre shows them (mixed with the ground at the opacity) from their mean colour
+     at the end, not summed a hit;
+  4. light to stored values by square roots (within 0.001), not powers;
+  8. the ground read by the hardware's bilinear filter (one read, not four), with the float-linear
+     extension;
+  16. the hits' colours at half precision.
+
+  All five together change no view by more than 0.06 L* (sets R, A, B, C). 1, 4 and 8 are the ones
+  that can help straight down, where steps don't.
 
 **The hand-overs' cross-fade (zoom 12 and 13): not cheap, not built.**
 - MapLibre swaps the meshes' tile zoom at the integer. A fade needs both representations drawn

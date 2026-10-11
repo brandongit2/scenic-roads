@@ -8,6 +8,9 @@
 //   S  stopping early: the light left where the march stops, 0.004, 0.1, 0.3 (field.tmin);
 //   X  the steps' least length: 1 and 2 texels (field.stepTexel);
 //   Q  the step ordering and the hits summed in linear light, each off and both (field.dbg 26, field.linAcc);
+//   O  the cost candidates compiled in (field.opt bits): 1 the switches as constants, 2 the hits as
+//      shown from their mean colour, 4 light to stored values by square roots, 8 the ground by the
+//      hardware's filter, 16 the hits' colours at half precision; each alone, and all;
 //   P  what the march's later pieces cost: the sub-cell walk off, and with it the walls' open-share
 //      rate or the roofs' correlation off (field.subWalk, field.dbg 23 / 24).
 // B and S on Manhattan and Kantō at 70° and Tokyo straight down. Variants are switched in the same
@@ -29,7 +32,7 @@ const PHASES = opt('phases', 'H,B,S').split(',');
 const CDP = 5293, APP = 'http://127.0.0.1:5291', FIELD = 'http://127.0.0.1:5290/field', BLD = 'http://127.0.0.1:5290/bld';
 const views = JSON.parse(fs.readFileSync(viewsFile, 'utf8'));
 const VAR_VIEWS = opt('var-views', 't-manhattan-p70,t-kanto-p70,t-tokyo-z11').split(',');
-const BASE = { blockCells: 8, tmin: 0.004, stepTexel: 1 };
+const BASE = { blockCells: 8, tmin: 0.004, stepTexel: 2, opt: 0 };
 
 const closeAll = async () => {
   for (const t of await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json()) if (t.type === 'page') await fetch(`http://127.0.0.1:${CDP}/json/close/${t.id}`);
@@ -104,7 +107,7 @@ const RUN = (mode, n) => `
   return { med: q(0.5), p90: q(0.9), n: a.length, dtMed: dts[Math.floor(dts.length / 2)], slow: dts.filter((d) => d > 12.5).length };`;
 const SET = (v) => `
   const b = window.__bld, f = b.field;
-  f.blockCells = ${v.blockCells}; f.tmin = ${v.tmin}; f.stepTexel = ${v.stepTexel}; f.subWalk = ${v.subWalk ?? false}; f.dbg = ${v.dbg ?? 0}; f.linAcc = ${v.linAcc ?? true};
+  f.blockCells = ${v.blockCells}; f.tmin = ${v.tmin}; f.stepTexel = ${v.stepTexel}; f.subWalk = ${v.subWalk ?? false}; f.dbg = ${v.dbg ?? 0}; f.linAcc = ${v.linAcc ?? true}; f.opt = ${v.opt ?? 0};
   b.map.triggerRepaint();
   await b.ready();
   await new Promise((r) => { let i = 0; const s = () => (++i < 30 ? requestAnimationFrame(s) : r()); requestAnimationFrame(s); });
@@ -195,6 +198,7 @@ if (PHASES.includes('Q')) await phase('Q', VAR_VIEWS, [
   { name: 'oldOrder', ...BASE, dbg: 26 },
   { name: 'neither', ...BASE, linAcc: false, dbg: 26 },
 ]);
+if (PHASES.includes('O')) await phase('O', VAR_VIEWS, [0, 1, 2, 4, 8, 16, 31].map((o) => ({ name: `opt${o}`, ...BASE, opt: o })));
 if (PHASES.includes('S')) await phase('S', VAR_VIEWS, [0.004, 0.1, 0.3].map((x) => ({ name: `tmin${x}`, ...BASE, tmin: x })));
 out.finished = new Date().toISOString();
 save();

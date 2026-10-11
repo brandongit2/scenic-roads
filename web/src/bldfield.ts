@@ -134,13 +134,28 @@ float classF(int c, vec2 uv, float lod) {
   if (c == 3) return textureLod(u_c3, uv, lod).r;
   return textureLod(u_c4, uv, lod).r;
 }
+// (the hits' colours held at half precision by option 16, where the GPU has it: fewer registers)
+#ifdef OPT_HALF
+#define CP mediump
+#else
+#define CP highp
+#endif
 // (stored values to light: the sRGB curve's cubic fit, within ~0.001; no powers in the march's loop)
-vec3 toLin(vec3 c) { return u_dbg == 31 ? mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)) : c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
+CP vec3 toLin(CP vec3 c) { return u_dbg == 31 ? mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)) : c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
+#ifdef OPT_SRGBFIT
+// (light to stored values by square roots, within 0.001 above the curve's straight foot: no powers)
+vec3 toSrgb(vec3 c) { c = max(c, 0.0); vec3 s1 = sqrt(c), s2 = sqrt(s1), s3 = sqrt(s2); return mix(c * 12.92, 0.662002687 * s1 + 0.684122060 * s2 - 0.323583601 * s3 - 0.0225411470 * c, step(0.0031308, c)); }
+#else
 vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+#endif
 
 float ground(vec2 p) {
-  // (R32F isn't filtered: bilinear by hand, as the box's vertices interpolate it)
   vec2 g = clamp(p / ${EXTENT}.0 * ${G}.0, vec2(0.0), vec2(${G}.0 - 0.001));
+#ifdef OPT_GLIN
+  // (the hardware's bilinear filter, one read: the float-linear extension)
+  return textureLod(u_elev, (g + 0.5) / ${G + 1}.0, 0.0).r;
+#endif
+  // (R32F isn't filtered without the float-linear extension: bilinear by hand, as the box's vertices interpolate it)
   ivec2 i = ivec2(floor(g));
   vec2 f = g - vec2(i);
   float a = texelFetch(u_elev, i, 0).r, b = texelFetch(u_elev, i + ivec2(1, 0), 0).r;
@@ -225,7 +240,7 @@ void main() {
   // own (cLin), and as MapLibre shows it, mixed with the ground at the opacity in stored values
   // (pLin). (Summed as stored values, a pixel's roofs and walls together came out darker than
   // their light's sum, the more so the more walls: tilted views, and straight down at the edges.)
-  vec3 cLin = vec3(0.0), pLin = vec3(0.0);
+  CP vec3 cLin = vec3(0.0), pLin = vec3(0.0);
   float prevBound = 1e9;
   for (int k = 0; k < 96; k++) {
     if (done || t >= tmax) break;
@@ -338,12 +353,16 @@ void main() {
         // on down, their walls now too); … to the step's end. (Taken together in a step, a building's
         // walls below its roof took a share of the colour though the roof is met first.)
         float cur = ac, rateA = 0.0;
-        vec3 wcol = vec3(0.0);
+        CP vec3 wcol = vec3(0.0);
         for (int c = 4; c >= 0; c--) if (Fc[c] > 0.0 && Hc[c] >= ac) { rateA += Rc[c]; wcol += Rc[c] * WALLC(c); }
         for (int c = 4; c >= 0; c--) {
           if (Fc[c] <= 0.0 || Hc[c] >= ac || Hc[c] < ae) continue;
           float tw = rateA * (cur - Hc[c]) / (ac - ae) * hlen;
-          if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
+          if (tw > 0.0) { float a = 1.0 - exp(-tw); CP vec3 wc = wcol / rateA; cLin += T * a * toLin(wc);
+#ifndef OPT_PMEAN
+            pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); 
+#endif
+            dWallA += T * a; T *= 1.0 - a; }
           // (the roofs' share where the ray comes down through them, not at the step's middle: a step
           // of a steep ray spans the whole layer, its roofs met at their own heights' points)
           float fRoof = Fc[c];
@@ -354,7 +373,9 @@ void main() {
           }
           float pr = clamp(fRoof / max(1.0 - covE, 1e-3), 0.0, 0.999);
           cLin += T * pr * toLin(ROOFC(c));
+#ifndef OPT_PMEAN
           pLin += T * pr * toLin(u_opacity * ROOFC(c) + (1.0 - u_opacity) * u_bg);
+#endif
           dRoofA += T * pr;
           T *= 1.0 - pr;
           covE = min(covE + Fc[c], 0.999);
@@ -364,12 +385,16 @@ void main() {
           cur = Hc[c];
         }
         float tw = rateA * (cur - ae) / (ac - ae) * hlen;
-        if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
+        if (tw > 0.0) { float a = 1.0 - exp(-tw); CP vec3 wc = wcol / rateA; cLin += T * a * toLin(wc);
+#ifndef OPT_PMEAN
+            pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); 
+#endif
+            dWallA += T * a; T *= 1.0 - a; }
       } else {
         // Level or rising: the walls of the classes above it, over its share of the step below them
         // (no roof comes down on).
         float tt = 0.0;
-        vec3 hit = vec3(0.0);
+        CP vec3 hit = vec3(0.0);
         for (int c = 0; c < 5; c++) {
           if (Fc[c] <= 0.0) continue;
           float below;
@@ -391,9 +416,11 @@ void main() {
         }
         if (tt > 0.0) {
           float a = 1.0 - exp(-tt);
-          vec3 hc = hit / tt;
+          CP vec3 hc = hit / tt;
           cLin += T * a * toLin(hc);
+#ifndef OPT_PMEAN
           pLin += T * a * toLin(u_opacity * hc + (1.0 - u_opacity) * u_bg);
+#endif
           T *= 1.0 - a;
         }
       }
@@ -418,6 +445,10 @@ void main() {
   float al = a * u_opacity;
   if (u_linear == 1) {
     vec3 g0 = u_bg;
+#ifdef OPT_PMEAN
+    // (as MapLibre shows the hits, from their mean colour: one conversion a fragment, not two a hit)
+    pLin = a * toLin(u_opacity * b + (1.0 - u_opacity) * g0);
+#endif
     float tl = dot(toSrgb((1.0 - a) * toLin(g0) + pLin), vec3(0.2126, 0.7152, 0.0722));
     float gl = dot(g0, vec3(0.2126, 0.7152, 0.0722)), bl = dot(b, vec3(0.2126, 0.7152, 0.0722));
     al = abs(bl - gl) > 0.02 ? clamp((tl - gl) / (bl - gl), 0.0, 1.0) : a * u_opacity;
@@ -532,6 +563,13 @@ export class FieldLayer implements CustomLayerInterface {
    * 2 by default: one-texel steps cost 1.2 ms more at Manhattan 70° on the quiet Mac). */
   stepTexel = Number(new URLSearchParams(location.search).get('fstx') ?? 2);
   lastTrans = -1;
+  /** Candidates for the march's cost, compiled in (`?fopt=`, bits): 1 the switches (debug views, the
+   * sub-cell walk, colour by height, linear mixing, the steps' least length) as constants; 2 the hits
+   * as MapLibre shows them from their mean colour, not summed a hit; 4 light to stored values by
+   * square roots; 8 the ground by the hardware's bilinear filter (with the float-linear extension); 16 the
+   * hits' colours at half precision (mediump). */
+  opt = Number(new URLSearchParams(location.search).get('fopt')) || 0;
+  floatLinear = false;
   /** The hulls' blocks: cells a side (`?fblk=`; 1, 2, 4, 8). */
   blockCells = Number(new URLSearchParams(location.search).get('fblk')) || 8;
   /** The land colour the buildings are mixed over in linear light (stored values), or the map's background layer's. */
@@ -566,6 +604,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.getExtension('EXT_color_buffer_float');
     gl.getExtension('EXT_color_buffer_half_float');
     this.timer.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+    this.floatLinear = !!gl.getExtension('OES_texture_float_linear');
     // The unit box, each face its own four corners (its face id with them), and a buffer of the
     // blocks drawn (instanced, far to near).
     {
@@ -640,16 +679,32 @@ export class FieldLayer implements CustomLayerInterface {
   }
 
   private program(sd: CustomRenderMethodInput['shaderData']): Prog {
-    let pr = this.progs.get(sd.variantName);
+    const o = this.opt & (this.floatLinear ? 31 : 23);
+    const spec = o & 1 ? `|${this.dbg}|${this.subWalk}|${!!this.heightLut}|${this.linear}|${this.linAcc}|${this.stepTexel}` : '';
+    const key = `${sd.variantName}|${o}${spec}`;
+    let pr = this.progs.get(key);
     if (pr) return pr;
     const gl = this.gl;
     const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
-    const p = link(gl, head + VS, FS);
+    let fs = FS;
+    if (o & 1) {
+      // (the switches as constants: their other ways compiled out)
+      const c: [string, string][] = [['uniform int u_dbg;', `#define u_dbg ${this.dbg | 0}`], ['uniform int u_sub;', `#define u_sub ${this.subWalk ? 1 : 0}`],
+        ['uniform int u_byHeight;', `#define u_byHeight ${this.heightLut ? 1 : 0}`], ['uniform int u_linear;', `#define u_linear ${this.linear ? 1 : 0}`],
+        ['uniform int u_linacc;', `#define u_linacc ${this.linAcc ? 1 : 0}`], ['uniform float u_stepTexel;', `#define u_stepTexel ${Number(this.stepTexel).toFixed(4)}`]];
+      for (const [a, b] of c) {
+        if (!fs.includes(a)) throw new Error(`bldfield: ${a} not in the shader`);
+        fs = fs.replace(a, b);
+      }
+    }
+    const defs = [o & 2 ? '#define OPT_PMEAN' : '', o & 4 ? '#define OPT_SRGBFIT' : '', o & 8 ? '#define OPT_GLIN' : '', o & 16 ? '#define OPT_HALF' : ''].filter(Boolean).join('\n');
+    if (defs) fs = fs.replace('#version 300 es\n', `#version 300 es\n${defs}\n`);
+    const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
     for (const n of ['u_linacc', 'u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
       'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
-    this.progs.set(sd.variantName, pr);
+    this.progs.set(key, pr);
     return pr;
   }
 
@@ -917,8 +972,9 @@ export class FieldLayer implements CustomLayerInterface {
     if (!t.elevTex) t.elevTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, G + 1, G + 1, 0, gl.RED, gl.FLOAT, e);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    // (filtered where the float-linear extension allows: read by texelFetch either way, or filtered by option 8)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, this.floatLinear ? gl.LINEAR : gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, this.floatLinear ? gl.LINEAR : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.bindTexture(gl.TEXTURE_2D, null);
