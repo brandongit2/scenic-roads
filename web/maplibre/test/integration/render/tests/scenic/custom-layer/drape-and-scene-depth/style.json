@@ -1,0 +1,66 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 256,
+      "height": 256,
+      "description": "A custom layer draping stripes on the terrain (drape) and standing a column at the center after it (render), testing the frame's depth itself (sceneDepth): green in front of the terrain, red behind",
+      "operations": [
+        [
+          "addCustomLayer",
+          "scenic-depth-column"
+        ],
+        [
+          "wait"
+        ]
+      ]
+    }
+  },
+  "center": [
+    11.03,
+    47.49
+  ],
+  "zoom": 11.6,
+  "pitch": 60,
+  "bearing": 180,
+  "sources": {
+    "terrain": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "hillshade": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    }
+  },
+  "terrain": {
+    "source": "terrain",
+    "exaggeration": 1.5
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "hills",
+      "type": "hillshade",
+      "source": "hillshade",
+      "paint": {
+        "hillshade-shadow-color": "#473B24",
+        "hillshade-illumination-anchor": "map"
+      }
+    }
+  ]
+}

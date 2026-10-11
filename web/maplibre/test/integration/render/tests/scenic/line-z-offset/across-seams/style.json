@@ -1,0 +1,340 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 512,
+      "height": 256,
+      "description": "A lifted line across tile seams over high terrain: red 250 m above the ground (densely sampled, following it), blue at 1,300 m above sea level times the exaggeration (level); whole across the seams, not cut where the tiles' sea-level stencil masks fall"
+    }
+  },
+  "center": [
+    11.08,
+    47.49
+  ],
+  "zoom": 12.0,
+  "pitch": 60,
+  "bearing": 0,
+  "sources": {
+    "terrain": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "hillshade": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "lines": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {
+              "k": "g"
+            },
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [
+                  11.05,
+                  47.495
+                ],
+                [
+                  11.051200000000001,
+                  47.495
+                ],
+                [
+                  11.0524,
+                  47.495
+                ],
+                [
+                  11.053600000000001,
+                  47.495
+                ],
+                [
+                  11.0548,
+                  47.495
+                ],
+                [
+                  11.056000000000001,
+                  47.495
+                ],
+                [
+                  11.0572,
+                  47.495
+                ],
+                [
+                  11.0584,
+                  47.495
+                ],
+                [
+                  11.059600000000001,
+                  47.495
+                ],
+                [
+                  11.0608,
+                  47.495
+                ],
+                [
+                  11.062000000000001,
+                  47.495
+                ],
+                [
+                  11.0632,
+                  47.495
+                ],
+                [
+                  11.064400000000001,
+                  47.495
+                ],
+                [
+                  11.0656,
+                  47.495
+                ],
+                [
+                  11.0668,
+                  47.495
+                ],
+                [
+                  11.068000000000001,
+                  47.495
+                ],
+                [
+                  11.0692,
+                  47.495
+                ],
+                [
+                  11.070400000000001,
+                  47.495
+                ],
+                [
+                  11.0716,
+                  47.495
+                ],
+                [
+                  11.0728,
+                  47.495
+                ],
+                [
+                  11.074,
+                  47.495
+                ],
+                [
+                  11.0752,
+                  47.495
+                ],
+                [
+                  11.076400000000001,
+                  47.495
+                ],
+                [
+                  11.0776,
+                  47.495
+                ],
+                [
+                  11.078800000000001,
+                  47.495
+                ],
+                [
+                  11.08,
+                  47.495
+                ],
+                [
+                  11.0812,
+                  47.495
+                ],
+                [
+                  11.082400000000002,
+                  47.495
+                ],
+                [
+                  11.0836,
+                  47.495
+                ],
+                [
+                  11.084800000000001,
+                  47.495
+                ],
+                [
+                  11.086,
+                  47.495
+                ],
+                [
+                  11.087200000000001,
+                  47.495
+                ],
+                [
+                  11.0884,
+                  47.495
+                ],
+                [
+                  11.0896,
+                  47.495
+                ],
+                [
+                  11.090800000000002,
+                  47.495
+                ],
+                [
+                  11.092,
+                  47.495
+                ],
+                [
+                  11.093200000000001,
+                  47.495
+                ],
+                [
+                  11.0944,
+                  47.495
+                ],
+                [
+                  11.095600000000001,
+                  47.495
+                ],
+                [
+                  11.0968,
+                  47.495
+                ],
+                [
+                  11.098,
+                  47.495
+                ],
+                [
+                  11.099200000000002,
+                  47.495
+                ],
+                [
+                  11.1004,
+                  47.495
+                ],
+                [
+                  11.101600000000001,
+                  47.495
+                ],
+                [
+                  11.1028,
+                  47.495
+                ],
+                [
+                  11.104000000000001,
+                  47.495
+                ],
+                [
+                  11.1052,
+                  47.495
+                ],
+                [
+                  11.1064,
+                  47.495
+                ],
+                [
+                  11.107600000000001,
+                  47.495
+                ],
+                [
+                  11.1088,
+                  47.495
+                ],
+                [
+                  11.110000000000001,
+                  47.495
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "properties": {
+              "k": "s",
+              "z": 1300
+            },
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [
+                  11.05,
+                  47.475
+                ],
+                [
+                  11.11,
+                  47.475
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "terrain": {
+    "source": "terrain",
+    "exaggeration": 1.5
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "hills",
+      "type": "hillshade",
+      "source": "hillshade",
+      "paint": {
+        "hillshade-shadow-color": "#473B24",
+        "hillshade-illumination-anchor": "map"
+      }
+    },
+    {
+      "id": "ground",
+      "type": "line",
+      "source": "lines",
+      "filter": [
+        "==",
+        [
+          "get",
+          "k"
+        ],
+        "g"
+      ],
+      "paint": {
+        "line-color": "#e00",
+        "line-width": 4,
+        "line-z-offset": 250
+      }
+    },
+    {
+      "id": "sea",
+      "type": "line",
+      "source": "lines",
+      "filter": [
+        "==",
+        [
+          "get",
+          "k"
+        ],
+        "s"
+      ],
+      "paint": {
+        "line-color": "#05f",
+        "line-width": 4,
+        "line-elevation-reference": "sea",
+        "line-z-offset": [
+          "get",
+          "z"
+        ]
+      }
+    }
+  ]
+}

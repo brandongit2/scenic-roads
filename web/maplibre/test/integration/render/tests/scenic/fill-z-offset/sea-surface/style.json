@@ -1,0 +1,98 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 256,
+      "height": 256,
+      "description": "A fill drawn as a see-through level surface at 1,500 m above sea level (fill-elevation-reference sea, times the exaggeration), the hills rising through it"
+    }
+  },
+  "center": [
+    11.03,
+    47.49
+  ],
+  "zoom": 12.3,
+  "pitch": 60,
+  "bearing": 0,
+  "sources": {
+    "terrain": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "hillshade": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "water": {
+      "type": "geojson",
+      "data": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              10.99,
+              47.46
+            ],
+            [
+              11.07,
+              47.46
+            ],
+            [
+              11.07,
+              47.52
+            ],
+            [
+              10.99,
+              47.52
+            ],
+            [
+              10.99,
+              47.46
+            ]
+          ]
+        ]
+      }
+    }
+  },
+  "terrain": {
+    "source": "terrain",
+    "exaggeration": 1.5
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "hills",
+      "type": "hillshade",
+      "source": "hillshade",
+      "paint": {
+        "hillshade-shadow-color": "#473B24",
+        "hillshade-illumination-anchor": "map"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "water",
+      "paint": {
+        "fill-color": "#2a7fd4",
+        "fill-opacity": 0.6,
+        "fill-elevation-reference": "sea",
+        "fill-z-offset": 1500
+      }
+    }
+  ]
+}

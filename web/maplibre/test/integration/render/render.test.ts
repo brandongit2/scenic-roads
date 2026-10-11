@@ -527,7 +527,100 @@ async function getImageFromStyle(styleForTest: StyleWithTestData, page: Page): P
             }
         }
 
+        /**
+         * Scenic Roads (FORK.md): the custom-layer hooks. Stripes draped on the terrain (drape), and a
+         * column at the map's center drawn after the terrain, testing the frame's depth in its
+         * shader (sceneDepth): green in front of the terrain, red where it hides it.
+         */
+        class ScenicDepthColumn {
+            id = 'scenic-depth-column';
+            type = 'custom';
+            renderingMode = '3d';
+            readsSceneDepth = true;
+            map: MapLibreMap;
+            drapeProgram: WebGLProgram;
+            columnProgram: WebGLProgram;
+            quad: WebGLBuffer;
+            column: WebGLBuffer;
+
+            compile(gl: WebGL2RenderingContext, vs: string, fs: string) {
+                const p = gl.createProgram();
+                for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]] as const) {
+                    const sh = gl.createShader(type);
+                    gl.shaderSource(sh, src);
+                    gl.compileShader(sh);
+                    gl.attachShader(p, sh);
+                }
+                gl.linkProgram(p);
+                return p;
+            }
+
+            onAdd(map: MapLibreMap, gl: WebGL2RenderingContext) {
+                this.map = map;
+                this.drapeProgram = this.compile(gl, `#version 300 es
+                    uniform mat4 u_matrix;
+                    layout(location = 0) in vec2 a_pos;
+                    out vec2 v_pos;
+                    void main() { v_pos = a_pos; gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0); }`, `#version 300 es
+                    precision highp float;
+                    in vec2 v_pos;
+                    out vec4 fragColor;
+                    void main() { float s = step(0.5, fract((v_pos.x + v_pos.y) / 1024.0)); fragColor = vec4(0.0, 0.0, 0.6, 0.6) * s; }`);
+                this.columnProgram = this.compile(gl, `#version 300 es
+                    uniform mat4 u_matrix;
+                    layout(location = 0) in vec3 a_pos;
+                    void main() { gl_Position = u_matrix * vec4(a_pos, 1.0); }`, `#version 300 es
+                    precision highp float;
+                    uniform highp sampler2D u_scene;
+                    out vec4 fragColor;
+                    void main() {
+                        bool hidden = gl_FragCoord.z > texelFetch(u_scene, ivec2(gl_FragCoord.xy), 0).r;
+                        fragColor = hidden ? vec4(0.8, 0.0, 0.0, 1.0) : vec4(0.0, 0.8, 0.0, 1.0);
+                    }`);
+                this.quad = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 8192, 0, 0, 8192, 8192, 8192]), gl.STATIC_DRAW);
+                const c = map.getCenter();
+                const lo = (window as any).maplibregl.MercatorCoordinate.fromLngLat(c, 0);
+                const hi = (window as any).maplibregl.MercatorCoordinate.fromLngLat(c, 6000);
+                const r = lo.meterInMercatorCoordinateUnits() * 60;
+                const v = [];
+                for (const [dx, dy] of [[-r, 0], [r, 0], [0, -r], [0, r]]) {
+                    const ax = lo.x + dx, ay = lo.y + dy, bx = lo.x - dy, by = lo.y + dx;
+                    v.push(ax, ay, lo.z, bx, by, lo.z, ax, ay, hi.z, ax, ay, hi.z, bx, by, lo.z, bx, by, hi.z);
+                }
+                this.column = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.column);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+            }
+
+            drape(gl: WebGL2RenderingContext, args) {
+                gl.useProgram(this.drapeProgram);
+                gl.uniformMatrix4fv(gl.getUniformLocation(this.drapeProgram, 'u_matrix'), false, args.getDrapeMatrix(args.tileID));
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+
+            render(gl: WebGL2RenderingContext, args) {
+                if (!args.sceneDepth) return;
+                gl.useProgram(this.columnProgram);
+                gl.uniformMatrix4fv(gl.getUniformLocation(this.columnProgram, 'u_matrix'), false, args.defaultProjectionData.mainMatrix);
+                gl.activeTexture(gl.TEXTURE5);
+                gl.bindTexture(gl.TEXTURE_2D, args.sceneDepth.texture);
+                gl.uniform1i(gl.getUniformLocation(this.columnProgram, 'u_scene'), 5);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.column);
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+                gl.disable(gl.CULL_FACE);
+                gl.drawArrays(gl.TRIANGLES, 0, 24);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+            }
+        }
+
         const customLayerImplementations = {
+            'scenic-depth-column': ScenicDepthColumn,
             'tent-3d': Tent3D,
             'tent-3d-globe': Tent3DGlobe,
             'null-island': NullIsland,

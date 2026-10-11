@@ -44,7 +44,19 @@ install chrome`, or an existing one in `~/.cache/puppeteer`).
 - Render tests: `tools/fetch-upstream-tests.sh` (upstream's cases and assets, ignored), then
   `npm run build-dev` (the `dist/` the harness loads) and `npx vitest run
   test/integration/render/render.test.ts -t <filter>`. Our own cases live in
-  `test/integration/render/tests/scenic/` and are committed.
+  `test/integration/render/tests/scenic/` and are committed (the harness's report templates too,
+  and its `scenic-depth-column` custom layer, `render.test.ts`), over the upstream assets'
+  `terrain-shading` DEM (the Wetterstein):
+  - `line-z-offset/across-seams`: a densely sampled line 250 m above the ground and a level one at
+    a sea-referenced 1,300 m, across tile seams over high terrain (whole: no stencil cuts);
+  - `fill-z-offset/sea-surface`: a see-through level surface at a sea-referenced 1,500 m, the hills
+    through it;
+  - `symbol-height-anchor/sea`: point labels at 1,300 m, `sea` (times the exaggeration) against
+    `absolute`;
+  - `custom-layer/drape-and-scene-depth`: the `drape` hook's stripes and a column testing
+    `sceneDepth` itself (green in front of the terrain, red behind);
+  - `terrain/culling-after-dem-load`: on the globe, terrain added after the raster has loaded,
+    the tiles near the camera on the slopes covered once the DEM tiles arrive.
 - The type check: `npm run typecheck` in `web/`; this package's own `npm run typecheck` also checks
   its tests.
 
@@ -189,6 +201,8 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   in 3D, so a `ground` line or fill follows the terrain only as finely as its vertices do (the globe
   subdivides fills; lines are as their data is). Each tile's clip adds vertices at its edges, which
   take the ground there, so a sparse `ground` line can step at tile seams; give it dense vertices.
+  It can step too where neighbouring tiles read the ground from DEM tiles of different zooms (a
+  z12 tile's from z11's, a z13's from z12's), as an extrusion's base does upstream.
   A `sea` surface is level, so that's exact for it.
 - A lifted layer isn't clipped by the tiles' stencil masks (drawn flat at sea level, they'd cut it
   where it stands above another tile on screen): its fragment shaders discard what lies outside

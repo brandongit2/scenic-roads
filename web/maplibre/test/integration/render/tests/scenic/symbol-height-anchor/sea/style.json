@@ -1,0 +1,136 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 512,
+      "height": 256,
+      "description": "Point labels lifted 1,300 m: 'sea' times the exaggeration (1,950 m, well above the valley), 'absolute' unexaggerated (1,300 m, just above its ground)"
+    }
+  },
+  "center": [
+    11.03,
+    47.49
+  ],
+  "zoom": 12.0,
+  "pitch": 60,
+  "bearing": 0,
+  "sources": {
+    "terrain": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "hillshade": {
+      "type": "raster-dem",
+      "tiles": [
+        "local://tiles/terrain-shading/{z}-{x}-{y}.terrain.png"
+      ],
+      "minzoom": 0,
+      "maxzoom": 12
+    },
+    "points": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {
+              "k": "sea"
+            },
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                11.022,
+                47.475
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "properties": {
+              "k": "absolute"
+            },
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                11.038,
+                47.475
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "terrain": {
+    "source": "terrain",
+    "exaggeration": 1.5
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "hills",
+      "type": "hillshade",
+      "source": "hillshade",
+      "paint": {
+        "hillshade-shadow-color": "#473B24",
+        "hillshade-illumination-anchor": "map"
+      }
+    },
+    {
+      "id": "sea",
+      "type": "symbol",
+      "source": "points",
+      "filter": [
+        "==",
+        [
+          "get",
+          "k"
+        ],
+        "sea"
+      ],
+      "layout": {
+        "text-field": "sea",
+        "text-font": [
+          "Open Sans Semibold",
+          "Arial Unicode MS Bold"
+        ],
+        "symbol-height-anchor": "sea",
+        "symbol-height-offset": 1300
+      }
+    },
+    {
+      "id": "absolute",
+      "type": "symbol",
+      "source": "points",
+      "filter": [
+        "==",
+        [
+          "get",
+          "k"
+        ],
+        "absolute"
+      ],
+      "layout": {
+        "text-field": "absolute",
+        "text-font": [
+          "Open Sans Semibold",
+          "Arial Unicode MS Bold"
+        ],
+        "symbol-height-anchor": "absolute",
+        "symbol-height-offset": 1300
+      }
+    }
+  ],
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf"
+}
