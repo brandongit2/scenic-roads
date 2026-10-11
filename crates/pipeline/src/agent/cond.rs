@@ -149,9 +149,14 @@ impl SleepWatch {
     }
 }
 
-/// Free bytes on the volume holding `path`.
+/// Free bytes on the volume holding `path`; with `SCENIC_TEST_DISK_EXTRA_MB` set (the two-Mac
+/// test's alone, tools/check/pool-two-macs.sh `extra`: never the real agent's), that many MB more,
+/// so a small disk image the test's agent home is on stands for a disk past the reserve
+/// (`room::RESERVE`), its fills landing in the image, never filling the Mac's own disk.
 pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
-    store::sys::disk_free(path).ok()
+    static EXTRA: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let extra = *EXTRA.get_or_init(|| std::env::var("SCENIC_TEST_DISK_EXTRA_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) << 20);
+    store::sys::disk_free(path).ok().map(|f| f + extra)
 }
 
 /// This Mac's resources, for the status (the worker page's machines): its memory and the share of

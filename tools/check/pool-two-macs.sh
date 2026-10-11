@@ -34,6 +34,12 @@
 #                                                   it's measured to take; size it against the
 #                                                   Mac's free space less 30 GB to have the disk
 #                                                   guard freeze one
+#   pool-two-macs.sh extra <dir> <MB>               the agent, from its next start, counts <MB>
+#                                                   more free on its disk than there is
+#                                                   (SCENIC_TEST_DISK_EXTRA_MB; 0: none): with <dir>
+#                                                   on a small disk image (hdiutil, never the Mac's
+#                                                   own volume), the image stands for a disk past
+#                                                   the 30 GB reserve, and a fill lands in it
 #   pool-two-macs.sh stop <dir>                     the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -76,7 +82,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, measure, fill or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, measure, fill, extra or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -146,7 +152,7 @@ EOF
     rm -f $d/v/app/stop
     while [[ ! -e $d/v/app/stop ]]; do
       print "launcher: $(date '+%H:%M:%S') starting $(readlink $d/v/app/current)" >> $d/agent.log
-      SCENIC_COORD_PORT=18091 nice -n 19 $d/v/app/current/scenic agent --root $r --home $d/agent >> $d/agent.log 2>&1 < /dev/null &
+      SCENIC_TEST_DISK_EXTRA_MB=$(cat $d/disk-extra-mb 2>/dev/null || echo 0) SCENIC_COORD_PORT=18091 nice -n 19 $d/v/app/current/scenic agent --root $r --home $d/agent >> $d/agent.log 2>&1 < /dev/null &
       print $! > $d/agent.pid
       print "launcher: $(date '+%H:%M:%S') agent pid $!" >> $d/agent.log
       wait $! || true
@@ -154,6 +160,7 @@ EOF
     done
     ;;
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
+  extra) print -n ${3:?MB} > ${2:?its folder}/disk-extra-mb ;;
   fill) print -n ${3:?MB} > ${2:?its folder}/v/app/job-fill-mb ;;
   measure)
     r=${2:?the scratch folder}
@@ -173,5 +180,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, measure, fill or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, measure, fill, extra or stop"; exit 2 ;;
 esac
