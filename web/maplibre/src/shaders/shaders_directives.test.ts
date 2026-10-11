@@ -16,4 +16,16 @@ describe('the minified shaders\' preprocessor directives', () => {
             }
         });
     }
+
+    // The lifted layers' program variant (painter.useProgram's LIFTED define): the flat programs
+    // as upstream's, the lifted ones clipping to their tile, the globe's polar caps inside it.
+    test('the fill programs map the polar caps\' vertices onto their tile\'s edge in the LIFTED variant', () => {
+        for (const name of ['fill', 'fillOutline', 'fillPattern', 'fillOutlinePattern']) {
+            const v = shaders[name].vertexSource;
+            const start = v.indexOf('#ifdef LIFTED\nfloat ele');
+            const lifted = v.slice(start, v.indexOf('#else', start)).replace(/ /g, '');
+            expect(lifted, name).toContain('if(a_pos.y<-32767.5)v_tile_pos.y=0.0;');
+            expect(lifted, name).toContain('if(a_pos.y>32766.5)v_tile_pos.y=8192.0;');
+        }
+    });
 });

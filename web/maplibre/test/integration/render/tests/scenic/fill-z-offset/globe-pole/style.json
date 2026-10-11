@@ -1,0 +1,48 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "description": "Upstream's projection/globe/fill-planet-pole near the pole with the water lifted (fill-elevation-reference sea, 50 km up): the polar cap, whose vertices lie beyond the tile's y, is drawn, not cut away by the lifted fill's clip to its tile (second review 2). The height keeps it clear of the globe's depth pre-pass, which a lifted surface near sea level z-fights at low zooms (FORK.md); the pinholes in the cap are upstream's (its flat fill draws them alike)"
+    }
+  },
+  "sky": {
+    "atmosphere-blend": 0.0
+  },
+  "center": [
+    0.0,
+    82.0
+  ],
+  "zoom": 2,
+  "projection": {
+    "type": "globe"
+  },
+  "sources": {
+    "vector_tiles": {
+      "type": "vector",
+      "maxzoom": 0,
+      "tiles": [
+        "local://tiles/{z}-{x}-{y}.mvt"
+      ]
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "land",
+      "type": "fill",
+      "source": "vector_tiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "blue",
+        "fill-elevation-reference": "sea",
+        "fill-z-offset": 50000
+      }
+    }
+  ]
+}

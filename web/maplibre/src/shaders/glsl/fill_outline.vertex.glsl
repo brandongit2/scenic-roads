@@ -34,6 +34,9 @@ void main() {
     float ele = elevationOf(a_pos, z_offset, u_elevation_reference);
     gl_Position = projectTileFor3D(a_pos + u_fill_translate, ele);
     v_tile_pos = a_pos + u_fill_translate;
+    // (the globe's polar caps' vertices, beyond the tile's y, inside the clip: at its edge)
+    if (a_pos.y < -32767.5) v_tile_pos.y = 0.0;
+    if (a_pos.y > 32766.5) v_tile_pos.y = 8192.0;
     #ifndef GLOBE
     // (pole vertices killed, as projectTile kills them on mercator)
     if (a_pos.y < -32767.5 || a_pos.y > 32766.5) gl_Position.z = -10000000.0;

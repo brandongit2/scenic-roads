@@ -51,6 +51,8 @@ install chrome`, or an existing one in `~/.cache/puppeteer`).
     a sea-referenced 1,300 m, across tile seams over high terrain (whole: no stencil cuts);
   - `fill-z-offset/sea-surface`: a see-through level surface at a sea-referenced 1,500 m, the hills
     through it;
+  - `fill-z-offset/globe-pole`: upstream's `fill-planet-pole` near the pole, the water lifted
+    (50 km up, clear of the z-fighting below): its polar cap drawn, not clipped away;
   - `symbol-height-anchor/sea`: point labels at 1,300 m, `sea` (times the exaggeration) against
     `absolute`;
   - `custom-layer/drape-and-scene-depth`: the `drape` hook's stripes and a column testing
@@ -213,8 +215,13 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   where it stands above another tile on screen): its fragment shaders discard what lies outside
   its tile (`v_tile_pos`), and its layer reports `isTileClipped()` false. The lifted code is a
   program variant (`painter.useProgram`'s `LIFTED` define, `render/lifted.ts`), so a layer that
-  isn't lifted runs upstream's programs unchanged.
-- Without 3D terrain the ground is at 0: both are a height above the map.
+  isn't lifted runs upstream's programs unchanged. On the globe a fill's polar caps, whose vertices
+  lie beyond the tile's y, are kept inside the clip (`v_tile_pos` at the tile's edge).
+- Without 3D terrain the ground is at 0: both are a height above the map. On the globe without
+  terrain the 3D layers are depth-tested against upstream's depth pre-pass of the sphere
+  (`_renderTilesDepthBuffer`, for the far side), which is tessellated unlike a fill: a lifted
+  surface at or near sea level z-fights with it at low zooms (speckled at zoom −0.5 even at
+  1,000 m; clean at 1,000 m from about zoom 3). Not fixed.
 - A source's tiles are culled with room for its lifted layers' heights (`TileManager`'s content
   elevation: the offsets, data-driven ones by their tiles' largest, times the exaggeration for
   `sea`), as for upstream's lifted symbols.
