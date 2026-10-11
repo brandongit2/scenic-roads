@@ -664,7 +664,7 @@ impl Coordinator {
         // (Listening first: a port in use writes nothing of its state. A coordinator this process
         // stopped has let its port go as its `stop` returned; another process's is no reason to
         // wait, and isn't waited for.)
-        let listener = std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listen on port {port}"))?;
+        let listener = anyhow::Context::with_context(std::net::TcpListener::bind(("0.0.0.0", port)), || format!("listen on port {port}"))?;
         Coordinator::start_on(dir, wasm, listener, me, app)
     }
 
@@ -1939,7 +1939,6 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
 #[cfg(not(target_os = "wasi"))]
 mod http {
     use super::*;
-    use anyhow::Context;
     use axum::body::Body;
     use axum::extract::{ConnectInfo, Path as Url, Request, State};
     use axum::http::{header, HeaderMap, Method, StatusCode};
