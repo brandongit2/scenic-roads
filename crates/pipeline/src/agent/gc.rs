@@ -59,8 +59,10 @@ const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "ap
 /// journal entry those records don't reflect yet, refused ones aside: a hand-off not merged yet
 /// (its member away for weeks, its entry written but untold) keeps the files it names, its changes
 /// and its uploads, so GC may run beside other jobs. Empty with the pool never on (no journal); an
-/// error when any of them can't be read now, an entry not whole yet among them: GC removes nothing
-/// then.
+/// error when any of them can't be read now, or an entry the records don't name doesn't read whole
+/// (short, damaged, or not there as listed: a read cut short says nothing of the entry): GC removes
+/// nothing then, until its lead has refused it (one unreadable for `driver::UNREADABLE_S` awake),
+/// which the records then name, so the hold is bounded.
 #[derive(Debug, Default)]
 pub struct Unmerged {
     /// Content names, of the records and of the entries not merged.
@@ -72,14 +74,7 @@ pub struct Unmerged {
     pub records: Vec<(String, String)>,
     /// How many entries weren't merged.
     pub entries: usize,
-    /// Entries of a day before yesterday that still don't read whole (cut short on the share for
-    /// good: their lead refuses them, their work done again), passed over, said as warnings.
-    pub short: Vec<String>,
 }
-
-/// An entry not whole yet of yesterday or today holds GC back (it may be being written); one of an
-/// earlier day is passed over with a warning (its lead refuses one never whole after an hour).
-const SHORT_DAYS: u64 = 1;
 
 pub fn unmerged(root: &Path) -> Result<Unmerged> {
     use crate::pool::{journal, records::Records, term};
@@ -97,7 +92,6 @@ pub fn unmerged(root: &Path) -> Result<Unmerged> {
     u.files.extend(r.pending.keys().cloned());
     // (The days before the records' horizon are forgotten, every entry of them merged: not listed.)
     let since = (!r.horizon.is_empty()).then_some(r.horizon.as_str());
-    let recent = journal::day(crate::agent::jobs::now_s().saturating_sub(SHORT_DAYS * 86400)).unwrap_or_default();
     for key in journal::list(&nas, since).context("the journal")? {
         if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
             continue;
@@ -113,10 +107,11 @@ pub fn unmerged(root: &Path) -> Result<Unmerged> {
                     }
                 }
             }
-            journal::Read::Short if key.as_str() < recent.as_str() => u.short.push(key),
-            journal::Read::Short => anyhow::bail!("journal entry {key} isn't whole yet"),
-            // (Gone, or damaged: its lead refuses it, its work done again.)
-            journal::Read::Missing | journal::Read::Damaged(_) => {}
+            // (Only the lead decides an entry is lost: it refuses one it can't read whole for an
+            // hour awake, and the records then name it.)
+            journal::Read::Short => anyhow::bail!("journal entry {key} doesn't read whole yet (its lead hasn't refused it)"),
+            journal::Read::Damaged(why) => anyhow::bail!("journal entry {key} reads damaged ({why}; its lead hasn't refused it)"),
+            journal::Read::Missing => anyhow::bail!("journal entry {key}, listed, isn't there as read (its lead hasn't refused it)"),
         }
     }
     Ok(u)
@@ -226,18 +221,21 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let _p = phase("build manifest read", Class::NasRead);
         crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
     };
-    // The pool's newest records and its journal's entries not merged yet (unreadable: nothing
-    // removed).
+    // The pool's newest records and its journal's entries not merged yet: unreadable, nothing
+    // removed, and said, loud, as a warning (the job's note in the status) every run it stays so.
     let um = {
         let _p = phase("the journal read", Class::NasRead);
-        unmerged(root).context("the pool's records and journal")?
+        match unmerged(root) {
+            Ok(u) => u,
+            Err(e) => {
+                let w = format!("nothing removed: the pool's records or journal can't be read whole ({e:#})");
+                eprintln!("gc: warning: {w}");
+                rep.warnings.push(w);
+                return Ok(rep);
+            }
+        }
     };
     rep.unmerged = um.entries;
-    for k in &um.short {
-        let w = format!("journal entry {k} still isn't whole a day on (cut short on the share): passed over, its lead refuses it and its work is done again");
-        eprintln!("gc: warning: {w}");
-        rep.warnings.push(w);
-    }
     // (What the gate's copies are kept by, read before the manifest is given up.)
     let inputs_keep = match inputs_kept(root, &m, &um, keep, now) {
         Ok(k) => Some(k),
@@ -270,7 +268,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
                 let name = e.file_name().to_string_lossy().into_owned();
                 let mtime = md.modified().unwrap_or(now);
-                if name.ends_with(".tmp") {
+                if name.ends_with(".tmp") || name.ends_with(TOMB) {
                     // A write that never finished (two days: no write takes that long).
                     if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
                         remove(&p, dry_run)?;
@@ -283,11 +281,11 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 }
                 // (Its time looked at again right before it goes: a job reusing it by name touches
                 // it, out::Out::put_file.)
-                if !old(mtime) || !still_old(&p, &old) {
+                // (Gone only if no job reused it by name meanwhile: `remove_unless_touched`.)
+                if !old(mtime) || !remove_unless_touched(&p, &old, dry_run)? {
                     rep.young += 1;
                     continue;
                 }
-                remove(&p, dry_run)?;
                 rep.removed += 1;
                 rep.removed_bytes += md.len();
                 sweep.count(md.len(), 1);
@@ -311,7 +309,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 rep.files_seen += 1;
                 let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
                 let mtime = md.modified().unwrap_or(now);
-                if e.file_name().to_string_lossy().ends_with(".tmp") {
+                if e.file_name().to_string_lossy().ends_with(".tmp") || e.file_name().to_string_lossy().ends_with(TOMB) {
                     if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
                         remove(&p, dry_run)?;
                         rep.tmp_removed += 1;
@@ -321,11 +319,10 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 if store::naming::parse_content_name(&rel).is_none() || keep.contains(&rel) || referenced.contains(&rel) {
                     continue;
                 }
-                if !old(mtime) || !still_old(&p, &old) {
+                if !old(mtime) || !remove_unless_touched(&p, &old, dry_run)? {
                     rep.young += 1;
                     continue;
                 }
-                remove(&p, dry_run)?;
                 crate::timings::count(md.len(), 1);
                 rep.removed += 1;
                 rep.removed_bytes += md.len();
@@ -379,9 +376,13 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
             rep.files_seen += 1;
             let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
             let named = store::naming::parse_content_name(&rel).is_some();
-            let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) && still_old(&p, old) } else { plain_due };
-            if due {
+            let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) && remove_unless_touched(&p, old, dry_run)? } else if plain_due {
                 remove(&p, dry_run)?;
+                true
+            } else {
+                false
+            };
+            if due {
                 crate::timings::count(md.len(), 1);
                 rep.removed += 1;
                 rep.removed_bytes += md.len();
@@ -406,6 +407,37 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
 /// content-named file touches it, and GC's listing may be minutes old by the time it gets there).
 fn still_old(p: &Path, old: &dyn Fn(SystemTime) -> bool) -> bool {
     std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(old)
+}
+
+/// What a file GC is about to remove is renamed to first (`remove_unless_touched`); one left by a
+/// GC stopped between is removed as an abandoned temporary file is, two days on.
+const TOMB: &str = ".gc-tomb";
+
+/// Removes content-named file `p`, unless a job reused it by name meanwhile: renamed to a tombstone
+/// first (a job reusing it now finds no file of its name, and uploads it again: out::Out::put_file),
+/// its time then looked at again, the tombstone's: touched since GC listed it (a job had it open
+/// before the rename), put back; else removed. True when it went.
+fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bool) -> Result<bool> {
+    if dry_run {
+        eprintln!("gc: would remove {}", p.display());
+        return Ok(still_old(p, old));
+    }
+    let mut tomb = p.as_os_str().to_owned();
+    tomb.push(TOMB);
+    let tomb = PathBuf::from(tomb);
+    match std::fs::rename(p, &tomb) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("rename {} aside", p.display())),
+    }
+    if still_old(&tomb, old) {
+        std::fs::remove_file(&tomb).with_context(|| format!("remove {}", tomb.display()))?;
+        return Ok(true);
+    }
+    // (Touched: back under its name; one uploaded again meanwhile is the same bytes, its name its
+    // content's.)
+    std::fs::rename(&tomb, p).with_context(|| format!("put {} back", p.display()))?;
+    Ok(false)
 }
 
 
@@ -660,21 +692,57 @@ mod tests {
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
-        // An entry not whole yet, of today: nothing removed.
+        // An entry that doesn't read whole (short, of whatever day: a read cut short says nothing
+        // of it), or reads damaged: nothing removed, said loud (the job's note), every run, until
+        // its lead refuses it.
         put(c, 60);
         let now = crate::agent::jobs::now_s();
-        let short = root.join(journal::DIR).join(journal::day(now).unwrap()).join("1-5.json");
+        let short_key = format!("{}/1-5", journal::day(now - 3 * 86400).unwrap());
+        let short = root.join(journal::DIR).join(format!("{short_key}.json"));
         fs::create_dir_all(short.parent().unwrap()).unwrap();
         fs::write(&short, b"{\"member\": ").unwrap();
-        assert!(run(root, 14, false).is_err());
-        assert!(root.join(c).exists());
-        // One of three days ago, still not whole (cut short for good): passed over, said.
-        fs::remove_file(&short).unwrap();
-        let old = root.join(journal::DIR).join(journal::day(now - 3 * 86400).unwrap()).join("1-6.json");
-        fs::create_dir_all(old.parent().unwrap()).unwrap();
-        fs::write(&old, b"{\"member\": ").unwrap();
+        for _ in 0..2 {
+            let r = run(root, 14, false).unwrap();
+            assert!(r.removed == 0 && r.warnings.len() == 1 && r.warnings[0].contains("nothing removed") && r.warnings[0].contains("1-5"), "{r:?}");
+            assert!(root.join(c).exists());
+        }
+        let damaged_key = format!("{}/1-6", journal::day(now).unwrap());
+        let damaged = root.join(journal::DIR).join(format!("{damaged_key}.json"));
+        fs::create_dir_all(damaged.parent().unwrap()).unwrap();
+        fs::write(&damaged, b"{\"not\": \"an entry\"}").unwrap();
+        rec.rejected.insert(short_key, "never whole".into());
+        rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
-        assert!(r.warnings.len() == 1 && r.warnings[0].contains("isn't whole a day on") && r.removed == 1, "{r:?}");
+        assert!(r.removed == 0 && r.warnings[0].contains("damaged"), "{r:?}");
+        // Both refused by the lead: passed over, the sweep goes on.
+        rec.rejected.insert(damaged_key, "damaged".into());
+        rec.save(&nas).unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
+    }
+
+    /// A file reused by name as GC removes it: renamed to a tombstone first, its time looked at
+    /// again there; touched since GC listed it, put back.
+    #[test]
+    fn a_file_touched_as_gc_removes_it_is_put_back() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("layers/roads/hi/6-1-2.0123456789abcdef.pack");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, b"x").unwrap();
+        let keep = Duration::from_secs(14 * 86400);
+        let now = SystemTime::now();
+        let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
+        // (Listed old; touched by a job before GC got to it.)
+        age(&p, 30);
+        fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
+        assert!(!remove_unless_touched(&p, &old, false).unwrap());
+        assert!(p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 1, "back under its name, no tombstone left");
+        // Not touched: gone, no tombstone left.
+        age(&p, 30);
+        assert!(remove_unless_touched(&p, &old, false).unwrap());
+        assert!(!p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 0);
+        // Gone already (another GC, or never there): nothing.
+        assert!(!remove_unless_touched(&p, &old, false).unwrap());
     }
 
     #[test]

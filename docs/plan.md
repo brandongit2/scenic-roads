@@ -2328,7 +2328,10 @@ between jobs into the other way. On:
   under a day old, merged, nothing told or listed waiting); **GC** only on a step that re-asserted
   the lead's term, so caught up; it keeps every file the newest records, or a journal entry they
   don't reflect yet, names (agent::gc::unmerged: an entry not merged keeps its changes and uploads,
-  however old), so it may run beside other jobs.
+  however old; one that doesn't read whole, reads damaged or isn't there as listed holds the sweep,
+  said as GC's warning in the status, until the lead refuses it), so it may run beside other jobs.
+  A file it removes is renamed to a tombstone first and its time looked at again there: touched
+  since GC listed it (a job reusing it by name), it's put back.
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
   (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
   devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
@@ -2789,9 +2792,14 @@ At each phase's end an Opus agent reviews the work against this plan.
      and one written in the minutes between GC's read of the journal and its sweep isn't seen by
      that sweep. (No watermark short of the horizon: an entry kept unwritten for weeks is written
      into the day of its first try, so a day once merged whole may gain one.) A file reused by name
-     is touched as it's reused, uploaded again if it can't be or is gone once touched, and GC looks
-     at a file's time again right before it removes it; an entry not whole a day on is passed over,
-     said as GC's warning in the status;
+     is touched as it's reused, uploaded again if it can't be or is gone once touched; GC renames a
+     file it removes to a tombstone first and looks at its time again there, putting it back if
+     touched (a job reusing it then finds no file of its name, and uploads it again). What's left:
+     a member's touch over the share reaching GC's Mac a moment late (macOS keeps a file's
+     attributes cached a while on SMB), so GC may still read the old time and remove a file another
+     Mac reused that moment; that job's entry then names a file gone, which a catalog would miss
+     (unchecked, as plan §10's stale reads). An entry that doesn't read whole holds GC until its
+     lead refuses it, after an hour unreadable;
    - the disk a job takes is counted by the caches' accessor in Rust alone: dem/cachefile.py's
      writes (the pageview months) count only through the scratch folder's look (the disk's fall,
      logged, is no floor); a unit's disk is what the accessor wrote while it was built here, its

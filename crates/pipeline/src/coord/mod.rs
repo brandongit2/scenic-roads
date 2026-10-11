@@ -654,8 +654,25 @@ impl Coordinator {
         anyhow::bail!("no coordinator in WebAssembly")
     }
 
+    #[cfg(target_os = "wasi")]
+    pub fn start_on(_dir: &Path, _wasm: Option<PathBuf>, _listener: std::net::TcpListener, _me: &str, _app: &str) -> Result<Coordinator> {
+        anyhow::bail!("no coordinator in WebAssembly")
+    }
+
     #[cfg(not(target_os = "wasi"))]
     pub fn start(dir: &Path, wasm: Option<PathBuf>, port: u16, me: &str, app: &str) -> Result<Coordinator> {
+        // (Listening first: a port in use writes nothing of its state. A coordinator this process
+        // stopped has let its port go as its `stop` returned; another process's is no reason to
+        // wait, and isn't waited for.)
+        let listener = std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listen on port {port}"))?;
+        Coordinator::start_on(dir, wasm, listener, me, app)
+    }
+
+    /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
+    /// start: no other can take it between).
+    #[cfg(not(target_os = "wasi"))]
+    pub fn start_on(dir: &Path, wasm: Option<PathBuf>, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
+        let port = listener.local_addr()?.port();
         std::fs::create_dir_all(dir.join("journal"))?;
         let token = http::token(dir)?;
         let now = Instant::now();
@@ -694,20 +711,8 @@ impl Coordinator {
         let stopped: Arc<std::sync::atomic::AtomicBool> = Default::default();
         let wake: Arc<tokio::sync::Notify> = Default::default();
         let (closed_tx, closed) = std::sync::mpsc::channel();
-        // (The port of a coordinator this process stopped a moment ago may be free only once its
-        // listener has closed: a few tries.)
         let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default() };
-        let mut tries = 0;
-        let urls = loop {
-            match http::serve(port, ctx.clone(), stopped.clone(), wake.clone(), closed_tx.clone()) {
-                Ok(u) => break u,
-                Err(e) if tries < 10 && e.chain().any(|x| x.downcast_ref::<std::io::Error>().is_some_and(|x| x.kind() == std::io::ErrorKind::AddrInUse)) => {
-                    tries += 1;
-                    std::thread::sleep(Duration::from_millis(300));
-                }
-                Err(e) => return Err(e),
-            }
-        };
+        let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
         let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped, wake, closed: Mutex::new(Some(closed)) };
         c.write_page();
         Ok(c)
@@ -720,9 +725,9 @@ impl Coordinator {
         s.leases.all(now).len()
     }
 
-    /// Stops answering (this process no longer leads): its listener closed, its port free for the
-    /// next coordinator once this returns (its thread says so, `closed`: no clock decides it). Its
-    /// state stays on disk.
+    /// Stops answering (this process no longer leads): its listener closed and its runtime shut down,
+    /// its port free for the next coordinator once this returns (its thread says so, `closed`: no
+    /// clock decides it), whatever a blocking task of it waits on. Its state stays on disk.
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
         self.wake.notify_one();
@@ -2054,10 +2059,9 @@ mod http {
     }
 
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
-    pub fn serve(port: u16, ctx: Ctx, stopped: Arc<std::sync::atomic::AtomicBool>, wake: Arc<tokio::sync::Notify>, closed: std::sync::mpsc::Sender<()>) -> Result<Vec<String>> {
-        let listener = std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listen on port {port}"))?;
+    pub fn serve(listener: std::net::TcpListener, port: u16, ctx: Ctx, stopped: Arc<std::sync::atomic::AtomicBool>, wake: Arc<tokio::sync::Notify>, closed: std::sync::mpsc::Sender<()>) -> Result<Vec<String>> {
         listener.set_nonblocking(true)?;
-        let app = Router::new()
+        let routes = Router::new()
             .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
             .route("/work/", get(|| page(Url(String::new()))))
             // (The watching page's old address: the page is the dashboard now, helping opt-in.)
@@ -2080,7 +2084,11 @@ mod http {
             .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/work/prog/{name}", get(prog))
-            .route("/task/{*rest}", any(json))
+            .route("/task/{*rest}", any(json));
+        // (A test's handler that waits on a blocking task for good: a stop returns all the same.)
+        #[cfg(test)]
+        let routes = routes.route("/work/test-block", get(test_block));
+        let app = routes
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), gate))
             .layer(tower_http::catch_panic::CatchPanicLayer::new())
             .with_state(ctx);
@@ -2092,12 +2100,34 @@ mod http {
                     Err(e) => eprintln!("coordinator: its socket: {e}"),
                 }
             });
-            // (Its listener gone with `accept`, and its connections with its runtime: nothing of
-            // it holds the port, however long a loaded Mac takes to end a connection's task.)
-            drop(rt);
+            // (Its listener gone with `accept`; its runtime shut down without waiting for its
+            // blocking tasks (a stat of a NAS that doesn't answer may never return), its
+            // connections' tasks dropped with it: nothing of it holds the port.)
+            rt.shutdown_background();
             closed.send(()).ok();
         })?;
         Ok(urls(port))
+    }
+
+    /// The blocking task a test's request waits on (`/work/test-block`), told to `TEST_BLOCKED` as
+    /// it begins: it never returns.
+    #[cfg(test)]
+    pub(super) static TEST_BLOCKED: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
+
+    #[cfg(test)]
+    async fn test_block() -> &'static str {
+        let tx = TEST_BLOCKED.lock().unwrap().take();
+        tokio::task::spawn_blocking(move || {
+            if let Some(tx) = tx {
+                tx.send(()).ok();
+            }
+            loop {
+                std::thread::park();
+            }
+        })
+        .await
+        .ok();
+        "unreachable"
     }
 
     /// The most connections at once, how long a request's headers may take to arrive (and an idle
@@ -2469,46 +2499,68 @@ mod http {
 /// test that checks its port is free finds it so.
 #[cfg(test)]
 pub(crate) fn test_port() -> u16 {
+    let (l, port) = test_listener();
+    HELD.lock().unwrap().insert(port, l);
+    port
+}
+
+/// The ports `test_port` gave, each still held open (its listener), for the coordinator a test
+/// starts on it to take (`take_test_listener`): no other process can take one between.
+#[cfg(test)]
+static HELD: std::sync::Mutex<BTreeMap<u16, std::net::TcpListener>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The listener `test_port` holds for `port`, when it holds one (a coordinator starting on it takes
+/// it, rather than listen on the port again).
+#[cfg(test)]
+pub(crate) fn take_test_listener(port: u16) -> Option<std::net::TcpListener> {
+    HELD.lock().unwrap().remove(&port)
+}
+
+/// A listener on a port no other test of this process has been given, and its port.
+#[cfg(test)]
+fn test_listener() -> (std::net::TcpListener, u16) {
     static GIVEN: std::sync::Mutex<BTreeSet<u16>> = std::sync::Mutex::new(BTreeSet::new());
     let mut g = GIVEN.lock().unwrap();
     // (Each turn a port given before: not time, but ports.)
     for _ in 0..1000 {
-        let port = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port();
+        let l = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
         if g.insert(port) {
-            return port;
+            return (l, port);
         }
     }
     panic!("no port left that wasn't given before")
 }
 
-/// A test's coordinator (its state in `dir`), listening on a port found free; and the port. Found
-/// free by listening on it as the coordinator does, the port can be another's by the time the
-/// coordinator listens on it, after its files are read and written (longer on a loaded Mac): then
-/// another, the history as it was before (the try added its start).
+/// A test's coordinator (its state in `dir`), on a port the test held from the start (`test_port`'s
+/// listener, handed over: no other process can take it between); and the port.
 #[cfg(test)]
 pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u16) {
-    let history = dir.join("history.jsonl");
-    let before = std::fs::read(&history).ok();
-    for _ in 0..10 {
-        let port = test_port();
-        match Coordinator::start(dir, None, port, me, app) {
-            Ok(c) => return (c, port),
-            Err(e) if e.chain().any(|x| x.downcast_ref::<std::io::Error>().is_some_and(|x| x.kind() == std::io::ErrorKind::AddrInUse)) => {
-                eprintln!("{e:#}: another port");
-                match &before {
-                    Some(b) => std::fs::write(&history, b).unwrap(),
-                    None => std::fs::remove_file(&history).unwrap_or(()),
-                }
-            }
-            Err(e) => panic!("{e:#}"),
-        }
-    }
-    panic!("no port a coordinator could listen on, in 10 tries");
+    let (listener, port) = test_listener();
+    (Coordinator::start_on(dir, None, listener, me, app).unwrap(), port)
 }
 
 #[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
+
+    /// A stop returns whatever a blocking task of the coordinator waits on (a stat of a NAS that
+    /// doesn't answer, here one that never returns), its listener closed: no clock decides it.
+    #[test]
+    fn a_stop_returns_while_a_blocking_task_never_does() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("a"), "m4", "");
+        let (tx, rx) = std::sync::mpsc::channel();
+        *http::TEST_BLOCKED.lock().unwrap() = Some(tx);
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "a page");
+        let asked = std::thread::spawn(move || w.get_bytes("/work/test-block").is_err());
+        // (Its blocking task under way, for good.)
+        rx.recv().unwrap();
+        c.stop();
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
+        // (The request's connection ended with the runtime: it fails, it doesn't hang.)
+        assert!(asked.join().unwrap());
+    }
 
     #[test]
     fn unpublish_leaves_another_leads_contact_of_the_same_token() {

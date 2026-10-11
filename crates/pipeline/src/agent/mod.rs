@@ -2616,9 +2616,12 @@ impl Agent {
         if self.o.helper {
             helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
         } else if self.by_measure {
-            // (By measure: the reserve and what it was measured to take on the disk; a cold start,
-            // the reserve alone, the disk guard its backstop.)
-            room::RESERVE + self.measured_job(spec).map_or(0, |m| m.disk_mb << 20)
+            // (By measure, beside another job: the reserve and what it was measured to take on the
+            // disk. Alone in the first slot: the reserve alone, the disk guard its backstop, so a
+            // stale or high disk floor, which only rises, never holds the build, the owner's room
+            // target past it or not; a cold start likewise.)
+            let alone = k == 0 && self.slots.iter().skip(1).all(|s| s.running.is_none());
+            room::RESERVE + if alone { 0 } else { self.measured_job(spec).map_or(0, |m| m.disk_mb << 20) }
         } else if k > 0 {
             second_need(&step)
         } else if spec.id.starts_with("osm-pass") {
@@ -5524,7 +5527,17 @@ fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str)
             eprintln!("agent: the pool's token: {e:#}");
         }
     }
-    match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), coord_port(), host, app) {
+    let port = coord_port();
+    // (A test's port, held open by it from the start: no other process can take it between.)
+    #[cfg(test)]
+    let held = crate::coord::take_test_listener(port);
+    #[cfg(not(test))]
+    let held: Option<std::net::TcpListener> = None;
+    let started = match held {
+        Some(l) => crate::coord::Coordinator::start_on(&o.home.join("coord"), Some(o.bin.join("wasm")), l, host, app),
+        None => crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), port, host, app),
+    };
+    match started {
         Ok(c) => {
             eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
             Some(c)
@@ -6227,6 +6240,18 @@ mod tests {
         c_disks_huge(a.coord.as_ref().unwrap());
         a.free_set = Some(40 * g);
         assert!(a.try_start(0, unit.clone(), &cond, Some(&root), &mut Vec::new()), "started alone, the guard its backstop");
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+        a.end_lease(0, Outcome::Interrupted, &[], "stopped");
+        a.release_claims(0, Some(&root));
+        a.slots[0].running = None;
+        // So too with the owner's room target set: alone, the reserve and the target are what it
+        // starts with, not its floor past them.
+        a.room_target = Some(room::Target { bytes: 20 * g, by: "a test".into(), at: now_s() });
+        a.free_set = Some(room::RESERVE + 21 * g);
+        let mut w = Vec::new();
+        assert!(a.try_start(0, unit.clone(), &cond, Some(&root), &mut w), "started alone past a high floor, the target kept: {w:?}");
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
@@ -7888,8 +7913,8 @@ mod pool_tests {
         lead.change_part(&r, &out);
         assert!(lead.slots[0].running.is_none(), "its catalog stopped");
         assert!(lead.coord.is_none() && lead.o.helper && lead.pool.as_ref().unwrap().role == pool::Role::Member);
-        // (Free as its stop returned: no wait.)
-        assert!(std::net::TcpListener::bind(("0.0.0.0", port)).is_ok(), "its port free");
+        // (Its listener closed as its stop returned: a connection to its port refused.)
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
     }
 
     #[test]
@@ -7899,12 +7924,9 @@ mod pool_tests {
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
         c.stop();
         drop(c);
-        // (Its port free as its stop returned, however loaded the Mac.)
-        assert!(std::net::TcpListener::bind(("0.0.0.0", port)).is_ok(), "its port free");
-        // (The next on the same port starts.)
-        let c2 = crate::coord::Coordinator::start(&d.path().join("b"), None, port, "m4", "").unwrap();
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
-        drop(c2);
+        // (Its listener closed as its stop returned, however loaded the Mac: a connection to its
+        // port refused.)
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
     }
 
     #[test]

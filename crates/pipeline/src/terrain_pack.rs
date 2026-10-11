@@ -561,24 +561,43 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
-/// The raw tiles' archives' index in `store` as read now, with the hash of the bytes it was read
-/// from (its stamp: not its time and size, which two versions written a moment apart, an archive
-/// swapped for another of a name as long, can share); none there, empty, `-` its stamp.
-fn load_index(store: &std::path::Path) -> anyhow::Result<(crate::rawpack::Index, String)> {
-    let p = store.join(crate::rawpack::INDEX);
-    match std::fs::read(&p) {
-        Ok(b) => Ok((serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {}: {e}", p.display()))?, store::naming::hash16(&b))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((crate::rawpack::Index::default(), "-".into())),
-        Err(e) => Err(anyhow::Error::from(e).context(format!("read {}", p.display()))),
-    }
+/// The index file a version of the raw tiles' index is (`Stamp`): its inode, time and size. The
+/// index is only ever written by a temporary name and renamed over (rawpack's `Index::save`,
+/// crate::whole), and a rename always brings a new inode, so two versions never share a stamp, even
+/// written a moment apart with an archive swapped for another of a name as long (the same time and
+/// size). None: no index there.
+type Stamp = Option<(u64, std::time::SystemTime, u64)>;
+
+fn stamp_of(m: &std::fs::Metadata) -> Stamp {
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(m);
+    #[cfg(not(unix))]
+    let ino = 0;
+    Some((ino, m.modified().ok()?, m.len()))
 }
 
-/// The stamp of the index in `store` as it is now (`load_index`'s), when it can be read.
-fn index_stamp(store: &std::path::Path) -> Option<String> {
-    match std::fs::read(store.join(crate::rawpack::INDEX)) {
-        Ok(b) => Some(store::naming::hash16(&b)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some("-".into()),
-        Err(_) => None,
+/// The raw tiles' archives' index in `store` as read now, with the stamp of the very file it was
+/// read from (taken from the open file, not its name again); none there, empty.
+fn load_index(store: &std::path::Path) -> anyhow::Result<(crate::rawpack::Index, Stamp)> {
+    use std::io::Read;
+    let p = store.join(crate::rawpack::INDEX);
+    let mut f = match std::fs::File::open(&p) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((crate::rawpack::Index::default(), None)),
+        Err(e) => return Err(anyhow::Error::from(e).context(format!("read {}", p.display()))),
+    };
+    let stamp = f.metadata().ok().as_ref().and_then(stamp_of);
+    let mut b = Vec::new();
+    f.read_to_end(&mut b).map_err(|e| anyhow::anyhow!("read {}: {e}", p.display()))?;
+    Ok((serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {}: {e}", p.display()))?, stamp))
+}
+
+/// The stamp of the index in `store` as it is now (a stat: `Stamp`); Err when it can't be told.
+fn index_stamp(store: &std::path::Path) -> Result<Stamp, ()> {
+    match std::fs::metadata(store.join(crate::rawpack::INDEX)) {
+        Ok(m) => Ok(stamp_of(&m)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
     }
 }
 
@@ -618,11 +637,11 @@ pub struct RawTiles {
     /// The index's stamp as it was read (`load_index`): one changed since (an archive packed meanwhile,
     /// by another job here or room-making, of tiles this job's cache held) has an area's archives
     /// opened again before a tile they lack is fetched from AWS.
-    index_stamp: Mutex<Option<String>>,
+    index_stamp: Mutex<Stamp>,
     /// The index's stamp each area's archives were opened by (`index_stamp` as it
     /// was then): an area whose index has changed since is opened again before AWS is asked for a
     /// tile it lacks, whichever area read the index last.
-    opened_at: Mutex<HashMap<String, Option<String>>>,
+    opened_at: Mutex<HashMap<String, Stamp>>,
     /// Each area's archives, newest first, opened when first wanted: by the area's own lock, so
     /// reading one from the NAS holds up only the tiles of that area.
     archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<Opened>>>>>,
@@ -664,9 +683,9 @@ impl RawTiles {
     /// `index`, with the stamp of the bytes it was read from (`load_index`), taken together under
     /// its lock: an area opened by it is known by the stamp of the index it was opened by, not one
     /// another thread read since.
-    fn index_pair(&self, st: &std::path::Path, fresh: bool) -> Option<(std::sync::Arc<crate::rawpack::Index>, Option<String>)> {
+    fn index_pair(&self, st: &std::path::Path, fresh: bool) -> Option<(std::sync::Arc<crate::rawpack::Index>, Stamp)> {
         let mut s = self.index.lock().unwrap();
-        let pair = |s: &(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)| s.0.clone().map(|ix| (ix, self.index_stamp.lock().unwrap().clone()));
+        let pair = |s: &(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)| s.0.clone().map(|ix| (ix, *self.index_stamp.lock().unwrap()));
         if let (Some(_), false) = (&s.0, fresh) {
             return pair(&s);
         }
@@ -676,7 +695,7 @@ impl RawTiles {
         for attempt in 0..3 {
             match load_index(st) {
                 Ok((ix, stamp)) => {
-                    *self.index_stamp.lock().unwrap() = Some(stamp);
+                    *self.index_stamp.lock().unwrap() = stamp;
                     *s = (Some(std::sync::Arc::new(ix)), None);
                     return pair(&s);
                 }
@@ -756,7 +775,7 @@ impl RawTiles {
     /// `archived`, saying in `used` the stamp of the index the area's archives it looked in were
     /// opened by (taken under the area's lock: another thread may open them again a moment after),
     /// so `get` opens them again only when the index has changed since those were opened.
-    fn archived_by(&self, z: u8, x: u32, y: u32, used: &mut Option<Option<String>>) -> Option<Option<Vec<u8>>> {
+    fn archived_by(&self, z: u8, x: u32, y: u32, used: &mut Option<Stamp>) -> Option<Option<Vec<u8>>> {
         let st = self.store.as_ref()?;
         let area = crate::rawpack::area(z, x, y);
         let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
@@ -775,19 +794,23 @@ impl RawTiles {
             let mut c = cell.lock().unwrap();
             if c.is_none() {
                 let opened = self.open_area(st, &area);
-                *used = Some(self.opened_at.lock().unwrap().get(&area).cloned().flatten());
+                *used = Some(self.opened_at.lock().unwrap().get(&area).copied().flatten());
                 *c = Some(opened?);
             }
-            *used = Some(self.opened_at.lock().unwrap().get(&area).cloned().flatten());
-            // (Read a few times: copied here whole, if it can be; else read by range from now on.)
+            // (Read a few times: copied here whole, if it can be, by the index as it is now, which
+            // its archives are then known by; else read by range from now on.)
             if let Some(Opened::Ranged { reads, stay: stay @ false, .. }) = c.as_mut() {
                 if *reads >= RANGED {
-                    match self.index(st, false).and_then(|index| self.copy_area(st, index.of(&area))) {
-                        Some(h) => *c = Some(Opened::Here(h)),
+                    match self.index_pair(st, false).and_then(|(index, stamp)| self.copy_area(st, index.of(&area)).map(|h| (h, stamp))) {
+                        Some((h, stamp)) => {
+                            *c = Some(Opened::Here(h));
+                            self.opened_at.lock().unwrap().insert(area.clone(), stamp);
+                        }
                         None => *stay = true,
                     }
                 }
             }
+            *used = Some(self.opened_at.lock().unwrap().get(&area).copied().flatten());
             match c.as_mut()? {
                 Opened::Here(h) => h.clone(),
                 Opened::Ranged { archives, reads, .. } => {
@@ -869,21 +892,34 @@ impl RawTiles {
             // the index read afresh, before AWS is asked (docs/pool.md §7.7: two raw-tile jobs at
             // once on one Mac).
             let area = crate::rawpack::area(z, x, y);
-            // (By the index the archives it looked in were opened by, not those another thread
-            // opened since; or its archives couldn't be opened just now: tried once more, afresh.)
-            let was = used;
-            let open = self.archives.lock().unwrap().get(&area).is_some_and(|c| c.lock().unwrap().is_some());
-            if was.as_ref().is_some_and(|w| index_stamp(st) != *w) || (was.is_some() && !open) {
-                if let Some(cell) = self.archives.lock().unwrap().get(&area).cloned() {
-                    *cell.lock().unwrap() = None;
-                }
-                self.index(st, true);
+            if self.refresh_area(st, &area, used) {
                 if let Some(b) = self.archived(z, x, y) {
                     return Ok((b, false));
                 }
             }
         }
         self.fetch(z, x, y).map(|b| (b, true))
+    }
+
+    /// Whether area `area`'s archives may hold a tile they lacked when looked in (`used`: the stamp of
+    /// the index they were opened by then; None: none looked in): decided, and acted on, under the
+    /// area's lock, so no other thread opens them from an older index between. Opened again by the
+    /// index read afresh when the index has changed since, or when they couldn't be opened (true);
+    /// true too when another thread has opened them again since that look (look again); false when
+    /// nothing has changed (the tile isn't in them: AWS is asked).
+    fn refresh_area(&self, st: &std::path::Path, area: &str, used: Option<Stamp>) -> bool {
+        let Some(used) = used else { return false };
+        // (The map let go before the area's lock is waited on.)
+        let cell = self.archives.lock().unwrap().entry(area.to_string()).or_default().clone();
+        let mut c = cell.lock().unwrap();
+        let cur = self.opened_at.lock().unwrap().get(area).copied().flatten();
+        let now = index_stamp(st);
+        if c.is_some() && now == Ok(cur) {
+            return cur != used;
+        }
+        self.index(st, true);
+        *c = self.open_area(st, area);
+        true
     }
 
     /// Fetches the tiles of `tiles` (zoom `z`) not here yet, `threads` at a time: a download mostly
