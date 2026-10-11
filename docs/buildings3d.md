@@ -1463,6 +1463,52 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   down: Tokyo −1.6 L* at z11 and −1.5 at z12 (the open darkening), −0.6 at z9; Annecy and Chamonix
   within ±0.5.
 
+**The straight-down darkening, worked on (11 Oct).**
+- **Fixed in the model:**
+  - the classes' roofs taken as apart (a building is in one class);
+  - each step's events taken in the order a ray coming down meets them: the walls of the classes
+    above it, then each class's roofs at their own height, tallest first, composited front to back.
+    Taken together in one step, a building's walls below its roof had taken a share of the colour
+    though the roof is met first;
+  - the walls' gradient taken at the height where the ray meets them;
+  - the light turned with the bearing when it's anchored to the viewport.
+
+  Tokyo straight down: −1.16 L* at z11 (was −2.2), −0.90 at z12 (was −1.5), −0.31 at z9 (was
+  −1.1). Annecy and Chamonix within ±0.6. Checks: A ≤ 0.34; B ≤ 1.3 (Annecy at a visual z15
+  −0.25); C biases −0.71 to +0.09; the hand-over seam +0.57.
+- **Tried and dropped:**
+  - walls entered at the open share's rate (÷ (1 − F)): wrong where a texel is smaller than a
+    building (level 14 near an edge: walls ×20, Annecy z15 −1.16);
+  - rows of buildings instead of a random set: almost no effect;
+  - the walls' facing spread from the data: none;
+  - lit "from either side": fits straight down, overshoots tilted views by 0.7–1.9 L*.
+- **Measured, ruled out:**
+  - the field's coverage against the footprints: within 1.5 %;
+  - ring winding: consistent;
+  - the tall buildings alone: −0.15;
+  - the open runs on the footprints (tools/bldcheck/openrun.mjs): longer than the random set's
+    (the walls' rate 0.6–0.9 of the model's at 4–16 m), so too much ground isn't the cause. A
+    per-texel open-ground measure from the builder wouldn't help, and isn't planned.
+- **Left open:** with the light overhead (`lup=1`: roofs fully lit, walls black) the field shows
+  less roof than full detail: −1.5 to −2 L* at the view's centre, −6 at its corners (20–28° off
+  vertical). The cause isn't found.
+
+**The hand-overs' cross-fade (zoom 12 and 13): not cheap, not built.**
+- MapLibre swaps the meshes' tile zoom at the integer. A fade needs both representations drawn
+  at once: two mesh layers by height, whose translucent extrusions (opacity 0.85) then show
+  through each other, or a fade inside the field that has no mesh to fade to.
+- The step the fade would hide (+0.5 / +0.8 L* in the view's mean) is the difference between the
+  field and the meshes for the same buildings, the darkening above. Closing it closes the step.
+
+**Heritage in the field: small, planned for the pipeline.**
+- 222,475 heritage sites (the map server's count). The builder, reading the sites' points, lists
+  the buildings holding one a tile: simplified footprint (≤ 16 points, u16 in the tile), height,
+  base, site group, about 80 B each: ≤ 18 MB worldwide, ~16 KB a z6 block.
+- At runtime the list's buildings of the sites the overlay shows (its filters, as buildings.ts's
+  setHeritage) join the heritage layer's source: drawn a little larger in the group's colour over
+  the field, as near ones over their meshes.
+- Built with the pipeline (the builder reads markdata).
+
 ## 5. Phases, risks, questions, decisions
 
 ### 5.1 Phases

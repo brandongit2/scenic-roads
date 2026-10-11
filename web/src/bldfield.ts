@@ -301,50 +301,85 @@ void main() {
         if ((mk & 16) != 0) { s = textureLod(u_c4, uv, lod); F[4] = s.r; W[4] = s.g; V[4] = s.b; }
       }
       float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
-      float tt = 0.0;
-      vec3 hit = vec3(0.0);   // Σ τ × colour over the classes' roofs and walls
       covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
-      float openK = 1.0;   // (the walls' rate a metre in the open: see the open-ground measure, planned)
-      for (int c = 4; c >= 0; c--) {   // (tallest first: the order a ray coming down meets them)
+      // Each class present: its share, its roofs' height, its walls' rate (entered a horizontal metre
+      // below its roofs), its roof's and its walls' colours (the plain one or the colour scale's at its
+      // mean top; fill-extrusion's gradient up a wall at the height the ray meets it).
+      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Rc[5] = Fc;
+      vec3 RCc[5] = vec3[5](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0)), WCc[5] = RCc;
+      for (int c = 0; c < 5; c++) {
         float f = clamp(F[c], 0.0, 0.999);
         if (f < 1e-5) continue;
         float H = max(V[c] / F[c], 0.5);
         float Hs = H * u_hk;
-        float below;
-        if (abs(ae - ac) < 1e-4) below = ac < Hs ? sg : 0.0;
-        else {
-          float sh = clamp((Hs - ac) / (ae - ac), 0.0, 1.0) * sg;   // where it passes H
-          below = ae < ac ? (ac < Hs ? sg : sg - sh) : (ac < Hs ? sh : 0.0);
-        }
-        float tc = max(W[c], 0.0) * u_hk / Hs / 3.14159265 * hstep * below * openK * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0);
-        float tr = 0.0;
-        if (ac >= Hs && ae < Hs) {
-          tr = -log(1.0 - clamp(f / max(1.0 - covE, 1e-3), 0.0, 0.999));
-          covE = min(covE + f, 0.999);
-          covL = clamp(4.0 * f * Hs / max(W[c] * u_hk, 1e-6), 2.0, 200.0);
-        }
-        if (tc + tr <= 0.0) continue;
-        // The class's colour: the plain one, or the colour scale's at its mean top (the app's own
-        // scale, palette and fades, read from the lookup the map gives).
-        // (fill-extrusion's gradient up a wall, from gmin at its foot to its top's: at the height the
-        // ray is where it meets it, the middle of its run below the roofs in the step)
+        Fc[c] = f;
+        Hc[c] = Hs;
+        Rc[c] = max(W[c], 0.0) * u_hk / Hs / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0);
         float hm = 0.5 * (clamp(ac, 0.0, Hs) + clamp(ae, 0.0, Hs));
         float gv = mix(gmin, clamp(sqrt(Hs / 150.0), gmin, 1.0), clamp(hm / Hs, 0.0, 1.0));
-        vec3 roof = roofC, wall = clamp(wallC * gv, lowc, vec3(1.0));
+        RCc[c] = roofC;
+        WCc[c] = clamp(wallC * gv, lowc, vec3(1.0));
         if (u_byHeight == 1) {
           vec3 base = texture(u_lut, vec2(clamp(H / ${LUT_MAX_M}.0, 0.0, 1.0), 0.5)).rgb;
           float cv = dot(base, vec3(0.2126, 0.7152, 0.0722));
           float hiD = max(1.0 - cv + u_lightintensity, 1.0);
-          roof = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dRoof) * u_lightcolor, lowc, vec3(1.0));
-          wall = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dWall) * gv * u_lightcolor, lowc, vec3(1.0));
+          RCc[c] = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dRoof) * u_lightcolor, lowc, vec3(1.0));
+          WCc[c] = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dWall) * gv * u_lightcolor, lowc, vec3(1.0));
         }
-        tt += tc + tr;
-        hit += tr * roof + tc * wall;
       }
-      if (tt > 0.0) {
-        float a = 1.0 - exp(-tt);
-        col += T * a * hit / tt;
-        T *= 1.0 - a;
+      float hlen = hstep * sg;   // horizontal metres of the step, before the ground
+      if (u_dbg != 26 && ae < ac - 1e-4) {
+        // Coming down: what it meets in the order it meets it, front to back: the walls of the classes
+        // whose roofs are above it, down to the next class's roofs; those roofs (if it misses them,
+        // on down, their walls now too); … to the step's end. (Taken together in a step, a building's
+        // walls below its roof took a share of the colour though the roof is met first.)
+        float cur = ac, rateA = 0.0;
+        vec3 wcol = vec3(0.0);
+        for (int c = 4; c >= 0; c--) if (Fc[c] > 0.0 && Hc[c] >= ac) { rateA += Rc[c]; wcol += Rc[c] * WCc[c]; }
+        for (int c = 4; c >= 0; c--) {
+          if (Fc[c] <= 0.0 || Hc[c] >= ac || Hc[c] < ae) continue;
+          float tw = rateA * (cur - Hc[c]) / (ac - ae) * hlen;
+          if (tw > 0.0) { float a = 1.0 - exp(-tw); col += T * a * wcol / rateA; T *= 1.0 - a; }
+          float pr = clamp(Fc[c] / max(1.0 - covE, 1e-3), 0.0, 0.999);
+          col += T * pr * RCc[c];
+          T *= 1.0 - pr;
+          covE = min(covE + Fc[c], 0.999);
+          covL = clamp(4.0 * Fc[c] * Hc[c] / max(W[c] * u_hk, 1e-6), 2.0, 200.0);
+          rateA += Rc[c];
+          wcol += Rc[c] * WCc[c];
+          cur = Hc[c];
+        }
+        float tw = rateA * (cur - ae) / (ac - ae) * hlen;
+        if (tw > 0.0) { float a = 1.0 - exp(-tw); col += T * a * wcol / rateA; T *= 1.0 - a; }
+      } else {
+        // Level or rising: the walls of the classes above it, over its share of the step below them
+        // (no roof comes down on).
+        float tt = 0.0;
+        vec3 hit = vec3(0.0);
+        for (int c = 0; c < 5; c++) {
+          if (Fc[c] <= 0.0) continue;
+          float below;
+          if (abs(ae - ac) < 1e-4) below = ac < Hc[c] ? sg : 0.0;
+          else below = ac < Hc[c] ? clamp((Hc[c] - ac) / (ae - ac), 0.0, 1.0) * sg : 0.0;
+          float tc = Rc[c] * hstep * below;
+          if (u_dbg == 26) {
+            // (the old way, a test: roofs and walls taken together)
+            float sh = clamp((Hc[c] - ac) / (ae - ac), 0.0, 1.0) * sg;
+            below = abs(ae - ac) < 1e-4 ? (ac < Hc[c] ? sg : 0.0) : (ae < ac ? (ac < Hc[c] ? sg : sg - sh) : (ac < Hc[c] ? sh : 0.0));
+            tc = Rc[c] * hstep * below;
+            float tr = (ac >= Hc[c] && ae < Hc[c]) ? -log(1.0 - clamp(Fc[c] / max(1.0 - covE, 1e-3), 0.0, 0.999)) : 0.0;
+            if (tr > 0.0) { covE = min(covE + Fc[c], 0.999); }
+            tt += tr;
+            hit += tr * RCc[c];
+          }
+          tt += tc;
+          hit += tc * WCc[c];
+        }
+        if (tt > 0.0) {
+          float a = 1.0 - exp(-tt);
+          col += T * a * hit / tt;
+          T *= 1.0 - a;
+        }
       }
       if (T < u_tmin || a1 < 0.0) { done = true; break; }
       ac = a1;

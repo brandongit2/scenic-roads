@@ -132,6 +132,8 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
   // (a test: the light's intensity, `lint=`)
   const lint = new URLSearchParams(location.search).get('lint');
   if (lint !== null) map.once('idle', () => map.setLight({ intensity: Number(lint) } as never));
+  // (a test: the light overhead, `lup=1`: roofs lit fully, walls black)
+  if (new URLSearchParams(location.search).get('lup') === '1') map.once('idle', () => map.setLight({ anchor: 'map', position: [1.5, 0, 0], intensity: 1 } as never));
   const dpr = map.getPixelRatio();
   /** The buildings' source and layers as the app added them. */
   let orig: { src: SourceSpecification; layers: { spec: LayerSpecification; before?: string }[] } | null = null;
