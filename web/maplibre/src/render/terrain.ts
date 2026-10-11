@@ -418,7 +418,7 @@ export class Terrain {
      */
     getDepthTexture(): {texture: WebGLTexture; width: number; height: number} | null {
         const t = this._fboDepthTexture;
-        return t ? {texture: t.texture, width: t.size[0], height: t.size[1]} : null;
+        return t ? {texture: t.texture, width: Math.floor(t.size[0]), height: Math.floor(t.size[1])} : null;
     }
 
     /**

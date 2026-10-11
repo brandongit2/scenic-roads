@@ -141,7 +141,7 @@ The arguments (`CustomRenderMethodInput`) gain:
 - `depthRangeFor3D`: the depth range the 3D layers draw in;
 - `terrainDepth` (`{texture, width, height, revision, unpack}`, null without terrain): the terrain's
   depth texture MapLibre already draws for the symbols (packed RGBA8), read in place, `width` and
-  `height` its own size (the drawing buffer's over `devicePixelRatio`), `unpack` a GLSL function
+  `height` its own size in whole pixels (the drawing buffer's over `devicePixelRatio`), `unpack` a GLSL function
   reading it;
 - `sceneDepth` (`{texture, width, height}`), for a layer with `readsSceneDepth: true`: the frame's
   depth so far, a `DEPTH24_STENCIL8` texture (the terrain's mesh, the extrusions, the 3D layers

@@ -488,3 +488,13 @@ describe('Terrain elevation range of a tile deeper than its DEM tile (Scenic Roa
         expect(terrain.getMinMaxElevation(demTileID)).toEqual({minElevation: 30, maxElevation: 3000});
     });
 });
+
+describe('Terrain depth texture (Scenic Roads)', () => {
+    test('getDepthTexture reports its size in whole pixels', () => {
+        const terrain = new Terrain(null, {_source: {tileSize: 512}} as any, {} as any);
+        expect(terrain.getDepthTexture()).toBeNull();
+        // (drawn at the drawing buffer's size over devicePixelRatio, which needn't be whole)
+        (terrain as any)._fboDepthTexture = {texture: 'depth', size: [683.5, 384.25]};
+        expect(terrain.getDepthTexture()).toEqual({texture: 'depth', width: 683, height: 384});
+    });
+});
