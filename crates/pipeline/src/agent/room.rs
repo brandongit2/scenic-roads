@@ -916,6 +916,10 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
 /// (`goal`: the target as it is now, when it may change midway: room::toward's, the owner's to lower.)
 #[allow(clippy::too_many_arguments)]
 fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, spare: &dyn Fn(&Path) -> bool, hint: &dyn Fn(&Path) -> bool, goal: Option<&dyn Fn() -> u64>) -> Result<BTreeMap<String, u64>> {
+    // (No caches yet, a new home's: nothing to free.)
+    if !cache.try_exists()? {
+        return Ok(BTreeMap::new());
+    }
     let free = free_space(cache)?;
     if free >= need {
         return Ok(BTreeMap::new());
