@@ -711,10 +711,11 @@ mod tests {
         let (t1, t2) = (offer(&job, "a"), offer(&job, "b"));
         let stranger = Offload::at(url.clone(), "not the job's key".into(), &d.path().join("other"));
         assert!(matches!(settle(&stranger, &t1, true), (Some(Settled::Here(None)), true)));
-        // The coordinator stopped: run here, waiting or not.
+        // The coordinator stopped: run here, waiting or not. (No wait: its listener is closed once
+        // `stop` returns, and a connection the job's client kept from its offers ends with the
+        // coordinator's runtime, unanswered: either way the ask fails, and the task runs here.)
         c.stop();
         drop(c);
-        std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(matches!(settle(&job, &t2, true), (Some(Settled::Here(None)), true)));
         assert!(matches!(settle(&job, &t2, false), (Some(Settled::Here(None)), true)));
     }

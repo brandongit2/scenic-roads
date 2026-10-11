@@ -476,14 +476,25 @@ fn put_back(tomb: &Path, dry_run: bool, rep: &mut Report) {
         eprintln!("gc: would put {} back", name.display());
         return;
     }
-    let r = if name.exists() { std::fs::remove_file(tomb) } else { std::fs::rename(tomb, &name) };
-    match r {
+    // (`restore`: never over a file of its name a job has uploaded again.)
+    match restore(tomb, &name) {
         Ok(()) => {
             rep.tombs += 1;
             rep.restored.insert(name);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => eprintln!("gc: putting {} back: {e}", name.display()),
+    }
+}
+
+/// Tombstone `tomb` back under `name`, by a rename that never replaces: a file there already (a job
+/// uploaded the same bytes again meanwhile, newer than the tombstone's copy) is kept, and the
+/// tombstone goes. (A replacing rename would put the tombstone's old time over the new upload's,
+/// for the next run to remove.)
+fn restore(tomb: &Path, name: &Path) -> std::io::Result<()> {
+    match store::naming::rename_no_replace(tomb, name) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => std::fs::remove_file(tomb),
+        r => r,
     }
 }
 
@@ -515,8 +526,9 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
         };
     }
     // (Touched: back under its name; one uploaded again meanwhile is the same bytes, its name its
-    // content's. Gone already, another GC put it back: kept. Failing, the next run puts it back.)
-    if let Err(e) = std::fs::rename(&tomb, p) {
+    // content's, and kept: `restore`. Gone already, another GC put it back: kept. Failing, the
+    // next run puts it back.)
+    if let Err(e) = restore(&tomb, p) {
         if e.kind() != std::io::ErrorKind::NotFound {
             eprintln!("gc: putting {} back: {e} (the next run does)", p.display());
         }
@@ -868,6 +880,8 @@ mod tests {
         fs::write(&tomb, b"x").unwrap();
         let r = run(root, 14, false).unwrap();
         assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
+        // (The upload's time kept, not the tombstone's: never replaced by it.)
+        assert!(fs::metadata(&p).unwrap().modified().unwrap().elapsed().unwrap() < Duration::from_secs(86400), "the new upload kept");
     }
 
     #[test]

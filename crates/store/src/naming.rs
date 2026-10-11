@@ -251,7 +251,7 @@ pub(crate) fn tmp_path(path: &Path) -> PathBuf {
 /// supports exclusive renames (APFS); elsewhere (some SMB servers) it checks first, which only a
 /// concurrent writer of the same name could race: then the rename finds the name taken, and the
 /// copy there (same name, same content) is checked for its size instead.
-pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;

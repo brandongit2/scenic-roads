@@ -733,8 +733,9 @@ impl Coordinator {
     /// Stops answering (this process no longer leads): its listener closed and its runtime shut down,
     /// its port free for the next coordinator once this returns (its thread says so, `closed`: no
     /// clock decides it), whatever a blocking task of it waits on. Its state stays on disk, as the
-    /// requests under way left it: they're let finish (local and short: the state's lock and its
-    /// files), and none starts after, so none writes it once this returns.
+    /// requests under way left it: the JSON routes under way are let finish (local and short: the
+    /// state's lock and its files), and none starts after, so no JSON route writes once this
+    /// returns (an upload's rename already under way, `/work/out`, may still land).
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
         *self.routes.write().unwrap_or_else(|e| e.into_inner()) = true;

@@ -241,8 +241,9 @@ impl Out {
 
     /// Uploads bytes as `<logical>.<hash16>.<ext>` without naming them in the manifest (the gate's
     /// checked copies, which its index names: crate::inputs::gate), and returns the content name.
-    /// One there already is reused and touched, as `put_file` does, and uploaded again when it
-    /// can't be touched or is gone once touched (GC took it between: its tombstone sweep).
+    /// One there already is reused and touched, as `put_file` does; one that can't be touched is
+    /// taken as an upload of its own, its check pending, and one gone once touched (GC took it
+    /// between: its tombstone sweep) is uploaded again.
     pub fn store_bytes(&mut self, logical: &str, ext: &str, bytes: &[u8]) -> Result<String> {
         let h = store::naming::hash16(bytes);
         let name = store::naming::content_name(logical, &h, ext);
@@ -515,9 +516,10 @@ mod tests {
         assert!(out.pending.contains_key(&name));
     }
 
-    /// The gate's copies (`store_bytes`) likewise: one reused is touched; one GC took between (gone
-    /// once touched: its tombstone sweep), or that can't be touched, is uploaded again, its check
-    /// pending, so the index the gate writes never names a file that isn't there.
+    /// The gate's copies (`store_bytes`) likewise: one reused is touched; one that can't be touched
+    /// is taken as an upload of its own, its check pending; one GC took between (gone once touched:
+    /// its tombstone sweep) is uploaded again, so the index the gate writes never names a file that
+    /// isn't there.
     #[test]
     fn a_stored_copy_reused_is_touched_or_uploaded_again() {
         let d = tempfile::tempdir().unwrap();
@@ -532,7 +534,7 @@ mod tests {
         assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), name);
         assert!(std::fs::metadata(&dest).unwrap().modified().unwrap().elapsed().unwrap() < std::time::Duration::from_secs(600), "touched");
         assert!(out.pending.is_empty(), "reused, not uploaded");
-        // Can't be touched (read-only here): uploaded as new, its check pending.
+        // Can't be touched (read-only here): taken as an upload of its own, its check pending.
         let mut perm = std::fs::metadata(&dest).unwrap().permissions();
         perm.set_readonly(true);
         std::fs::set_permissions(&dest, perm).unwrap();

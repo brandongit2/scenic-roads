@@ -2336,8 +2336,9 @@ between jobs into the other way. On:
   one refuses, so one whose day is over three days past is passed over, said as GC's warning in
   the status), so it may run beside other jobs. A file it removes is renamed to a tombstone first
   and its time looked at again there: touched since GC listed it (a job reusing it by name), it's
-  put back; a tombstone a sweep finds (a GC stopped between) is put back too, never removed, for
-  the next run to decide.
+  put back; a tombstone a sweep finds (a GC stopped between) is never removed as a stale file:
+  it's put back under its name for the next run to decide, or removed only when its name holds
+  the same bytes again (a put-back never replaces a file there).
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
   (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
   devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
