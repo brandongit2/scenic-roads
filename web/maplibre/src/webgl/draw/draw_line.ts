@@ -1,4 +1,5 @@
 import {DepthMode} from '../depth_mode.ts';
+import {StencilMode} from '../stencil_mode.ts';
 import {CullFaceMode} from '../cull_face_mode.ts';
 import {Texture} from '../texture.ts';
 import {
@@ -167,7 +168,8 @@ function drawLineTiles(
 ) {
     // Scenic Roads: an elevated line (line-z-offset, line-elevation-reference) is drawn in 3D,
     // depth-tested against the terrain and the 3D layers, not draped (render_to_texture.ts's drapes).
-    const depthMode = layer.elevationReference() > 0 ?
+    const elevated = layer.elevationReference() > 0;
+    const depthMode = elevated ?
         new DepthMode(painter.context.gl.LEQUAL, DepthMode.ReadOnly, renderContext.depthRangeFor3D) :
         painter.getDepthModeForSublayer(0, DepthMode.ReadOnly);
     const colorMode = painter.colorModeForRenderPass();
@@ -243,7 +245,8 @@ function drawLineTiles(
             uniformValues = lineUniformValues(painter, tile, layer, pixelRatio);
         }
 
-        const stencil = painter.stencilModeForClipping(coord);
+        // (Scenic Roads: a lifted line clips itself to its tile in the fragment shader.)
+        const stencil = elevated ? StencilMode.disabled : painter.stencilModeForClipping(coord);
 
         program.draw(context, gl.TRIANGLES, depthMode,
             stencil, colorMode, CullFaceMode.disabled, uniformValues, terrainData, projectionData,

@@ -1,5 +1,6 @@
 import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {DepthMode} from '../depth_mode.ts';
+import {StencilMode} from '../stencil_mode.ts';
 import {CullFaceMode} from '../cull_face_mode.ts';
 import {
     fillUniformValues,
@@ -186,7 +187,8 @@ function drawFillTiles(
                 fillOutlineUniformValues(translateForUniforms, elevationReference);
         }
 
-        const stencil = painter.stencilModeForClipping(coord);
+        // (Scenic Roads: a lifted fill clips itself to its tile in the fragment shader.)
+        const stencil = elevationReference > 0 ? StencilMode.disabled : painter.stencilModeForClipping(coord);
 
         program.draw(painter.context, drawMode, depthMode,
             stencil, colorMode, CullFaceMode.backCCW, uniformValues, terrainData, projectionData,

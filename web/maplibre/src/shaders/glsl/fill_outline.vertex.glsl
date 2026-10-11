@@ -1,6 +1,8 @@
 uniform vec2 u_fill_translate;
 // Scenic Roads: 0 draped (or flat), 1 z_offset above the ground, 2 above sea level.
 uniform float u_elevation_reference;
+// (the vertex in its tile, for the fragment shader's clip of a lifted fill)
+out highp vec2 v_tile_pos;
 
 layout(location = 0) in vec2 a_pos;
 
@@ -27,9 +29,14 @@ void main() {
     // Scenic Roads: an elevated fill (fill-z-offset, fill-elevation-reference) is drawn in 3D at its
     // elevation, with the perspective depth the terrain's is drawn with; else as upstream.
     float ele = 0.0;
+    v_tile_pos = a_pos + u_fill_translate;
     if (u_elevation_reference > 0.5) {
         ele = elevationOf(a_pos, z_offset, u_elevation_reference);
         gl_Position = projectTileFor3D(a_pos + u_fill_translate, ele);
+        #ifndef GLOBE
+        // (pole vertices killed, as projectTile kills them on mercator)
+        if (a_pos.y < -32767.5 || a_pos.y > 32766.5) gl_Position.z = -10000000.0;
+        #endif
     } else {
         gl_Position = projectTile(a_pos + u_fill_translate, a_pos);
     }

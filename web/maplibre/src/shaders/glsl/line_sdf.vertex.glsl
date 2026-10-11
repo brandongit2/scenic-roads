@@ -16,6 +16,8 @@ layout(location = 1) in uvec4 a_data;
 uniform vec2 u_translation;
 // Scenic Roads: 0 draped (or flat), 1 z_offset above the ground, 2 above sea level.
 uniform float u_elevation_reference;
+// (the vertex in its tile, for the fragment shader's clip of a lifted line)
+out highp vec2 v_tile_pos;
 uniform mediump float u_ratio;
 uniform float u_tileratio;
 uniform float u_crossfade_from;
@@ -115,6 +117,7 @@ void main() {
         projected_with_extrude = projectTile(pos_with_extrude);
     }
     gl_Position = projected_with_extrude;
+    v_tile_pos = pos_with_extrude;
     #ifdef GLOBE
     if (elevated) {
         // (the horizon's clipping depth, for the fragment shader's back-of-the-globe test)

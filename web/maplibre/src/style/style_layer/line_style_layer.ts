@@ -129,7 +129,8 @@ export class LineStyleLayer extends StyleLayer {
     }
 
     isTileClipped(): boolean {
-        return true;
+        // Scenic Roads: a lifted layer clips itself in its shader (the masks lie at sea level).
+        return this.elevationReference() === 0;
     }
 }
 

@@ -177,7 +177,12 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   shows through).
 - A vertex takes the elevation of its own point: a long segment between two vertices is straight
   in 3D, so a `ground` line or fill follows the terrain only as finely as its vertices do (the globe
-  subdivides fills; lines are as their data is). A `sea` surface is level, so that's exact for it.
+  subdivides fills; lines are as their data is). Each tile's clip adds vertices at its edges, which
+  take the ground there, so a sparse `ground` line can step at tile seams; give it dense vertices.
+  A `sea` surface is level, so that's exact for it.
+- A lifted layer isn't clipped by the tiles' stencil masks (drawn flat at sea level, they'd cut it
+  where it stands above another tile on screen): its fragment shaders discard what lies outside
+  its tile (`v_tile_pos`), and its layer reports `isTileClipped()` false.
 - Without 3D terrain the ground is at 0: both are a height above the map.
 - Not in the TypeScript types: the style objects' types are the style-spec package's, so a layer
   using them is cast.
