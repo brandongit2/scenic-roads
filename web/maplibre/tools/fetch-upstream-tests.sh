@@ -13,4 +13,10 @@ rm -rf test/integration/render/tests/upstream test/integration/assets
 mkdir -p test/integration/render/tests
 mv $tmp/maplibre-gl-js-${tag#v}/test/integration/render/tests test/integration/render/tests/upstream
 mv $tmp/maplibre-gl-js-${tag#v}/test/integration/assets test/integration/assets
+# Where this fork draws differently on purpose, its own expected image (test/integration/render/expected/,
+# committed; FORK.md says why each differs).
+(cd test/integration/render/expected && find . -name 'expected*.png') | while read f; do
+  rm -f test/integration/render/tests/upstream/${f:h}/expected*.png
+  cp test/integration/render/expected/$f test/integration/render/tests/upstream/$f
+done
 echo "upstream's render tests ($tag) in test/integration/render/tests/upstream/"
