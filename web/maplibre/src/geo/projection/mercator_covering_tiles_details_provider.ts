@@ -31,15 +31,22 @@ export class MercatorCoveringTilesDetailsProvider implements CoveringTilesDetail
     getTileBoundingVolume(tileID: {x: number; y: number; z: number}, wrap: number, elevation: number, options: CoveringTilesOptionsInternal): Aabb {
         let minElevation = Math.min(0, elevation);
         let maxElevation = Math.max(0, elevation);
+        let terrainRange: [number, number] | undefined;
         if (options?.terrain) {
             const overscaledTileID = new OverscaledTileID(tileID.z, wrap, tileID.z, tileID.x, tileID.y);
             const minMax = options.terrain.getMinMaxElevation(overscaledTileID);
             minElevation = minMax.minElevation ?? minElevation;
-            maxElevation = minMax.maxElevation ?? maxElevation;
+            // Scenic Roads: the content allowance kept above the terrain's top, as the globe's
+            // volumes keep it: with each tile's own range (Terrain.getMinMaxElevation's grids, no
+            // longer the whole DEM tile's) the far tiles at a steep pitch were culled at the horizon.
+            maxElevation = Math.max(minMax.maxElevation ?? maxElevation, maxElevation);
+            terrainRange = minMax.maxElevation === null ? undefined : [minMax.minElevation, minMax.maxElevation];
         }
         const numTiles = 1 << tileID.z;
-        return new Aabb([wrap + tileID.x / numTiles, tileID.y / numTiles, minElevation],
+        const aabb = new Aabb([wrap + tileID.x / numTiles, tileID.y / numTiles, minElevation],
             [wrap + (tileID.x + 1) / numTiles, (tileID.y + 1) / numTiles, maxElevation]);
+        aabb.terrainRange = terrainRange;
+        return aabb;
     }
     
     allowVariableZoom(transform: IReadonlyTransform, options: CoveringTilesOptionsInternal): boolean {

@@ -491,7 +491,10 @@ export class Terrain {
     getMinTileElevationForLngLatZoom(lnglat: LngLat, zoom: number): number {
         if (!isInBoundsForZoomLngLat(zoom, lnglat.wrap())) return 0;
         const {tileID} = this._getOverscaledTileIDFromLngLatZoom(lnglat, zoom);
-        return this.getMinMaxElevation(tileID).minElevation ?? 0;
+        // Scenic Roads: the whole DEM tile's minimum, as upstream's, not the tile's own
+        // (getMinMaxElevation's grids): it bounds the frustum's far plane, which must reach ground
+        // lower than the center's tile beyond it (from Dead Sea's rim, the sea beyond was cut off).
+        return this.getMinMaxElevation(tileID, true).minElevation ?? 0;
     }
 
     /**
@@ -499,15 +502,27 @@ export class Terrain {
      * exaggeration included in the terrain.
      *
      * @param tileID - ID of the tile to be used as a source for the min/max elevation
+     * @param wholeDemTile - Scenic Roads: the whole DEM tile's range, not the tile's part of it
      * @returns the minimum and maximum elevation found in the tile, including the terrain's
      * exaggeration
      */
-    getMinMaxElevation(tileID: OverscaledTileID): {minElevation: number | null; maxElevation: number | null} {
+    getMinMaxElevation(tileID: OverscaledTileID, wholeDemTile: boolean = false): {minElevation: number | null; maxElevation: number | null} {
         const tile = this.tileManager.getSourceTile(tileID, true);
         const minMax: {minElevation: number | null; maxElevation: number | null} = {minElevation: null, maxElevation: null};
         if (tile?.dem) {
-            minMax.minElevation = tile.dem.min * this.exaggeration;
-            minMax.maxElevation = tile.dem.max * this.exaggeration;
+            // Scenic Roads: the range of the part of the DEM tile under this tile, from its grid
+            // (DEMData.getMinMaxInRegion), not the whole DEM tile's: a z14 tile in a z12 DEM tile in
+            // the Alps took the 4,800 m of a peak 5 km away as its own.
+            const dz = tileID.canonical.z - tile.tileID.canonical.z;
+            let min = tile.dem.min, max = tile.dem.max;
+            if (dz > 0 && !wholeDemTile) {
+                const scale = 1 << dz;
+                const x0 = tileID.canonical.x / scale - tile.tileID.canonical.x;
+                const y0 = tileID.canonical.y / scale - tile.tileID.canonical.y;
+                ({min, max} = tile.dem.getMinMaxInRegion(x0, y0, x0 + 1 / scale, y0 + 1 / scale));
+            }
+            minMax.minElevation = min * this.exaggeration;
+            minMax.maxElevation = max * this.exaggeration;
         }
         return minMax;
     }

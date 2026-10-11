@@ -18,8 +18,19 @@ export type DEMEncoding = 'mapbox' | 'terrarium' | 'custom';
  * surrounding pixel values to compute the slope at that pixel, and we cannot accurately calculate the slope at pixels on a
  * tile's edge without backfilling from neighboring tiles.
  */
+/** Where each grid of `DEMData.gridMin` and `gridMax` starts, finest first, and their length. */
+const GRID = 32;
+const GRID_OFFSETS: number[] = [];
+let GRID_LENGTH = 0;
+for (let n = GRID; n >= 1; n >>= 1) {
+    GRID_OFFSETS.push(GRID_LENGTH);
+    GRID_LENGTH += n * n;
+}
+
 export class DEMData {
     private static readonly byteViewCache = new WeakMap<DEMData, Uint8Array>();
+    /** The cells across the tile in the finest grid of `gridMin` and `gridMax`. */
+    static readonly GRID: number = GRID;
 
     uid: string | number;
     data: Uint32Array;
@@ -27,6 +38,14 @@ export class DEMData {
     dim: number;
     min: number;
     max: number;
+    /**
+     * Scenic Roads: the minimum and maximum of each cell of grids over the tile, `DEMData.GRID`
+     * cells across and then each half as fine down to one (row-major, north row first, finest grid
+     * first), so the elevation range of any part of the tile is known from a few cells without
+     * reading its pixels (`getMinMaxInRegion`).
+     */
+    gridMin: Float32Array;
+    gridMax: Float32Array;
     redFactor: number;
     greenFactor: number;
     blueFactor: number;
@@ -90,18 +109,78 @@ export class DEMData {
             this.data.fill(this.data[offset + dim - 1], this._idx(dim, y), this._idx(dim + 1, y) + 1);
         }
 
-        // calculate min/max values
+        // calculate min/max values, the tile's and each grid cell's
         const pixels = this._getByteView();
         this.min = Number.MAX_SAFE_INTEGER;
         this.max = Number.MIN_SAFE_INTEGER;
+        const G = DEMData.GRID;
+        const gridMin = this.gridMin = new Float32Array(GRID_LENGTH).fill(Infinity);
+        const gridMax = this.gridMax = new Float32Array(GRID_LENGTH).fill(-Infinity);
         for (let x = 0; x < dim; x++) {
+            const gx = Math.floor(x * G / dim);
             for (let y = 0; y < dim; y++) {
                 const index = this._idx(x, y) * 4;
                 const ele = this._unpackAtIndex(pixels, index);
                 if (ele > this.max) this.max = ele;
                 if (ele < this.min) this.min = ele;
+                const cell = Math.floor(y * G / dim) * G + gx;
+                if (ele > gridMax[cell]) gridMax[cell] = ele;
+                if (ele < gridMin[cell]) gridMin[cell] = ele;
             }
         }
+        if (dim < G) {
+            // (a tile of fewer pixels than cells: each cell takes the pixels it overlaps)
+            for (let cy = 0; cy < G; cy++) {
+                for (let cx = 0; cx < G; cx++) {
+                    for (let y = Math.floor(cy * dim / G); y < Math.ceil((cy + 1) * dim / G); y++) {
+                        for (let x = Math.floor(cx * dim / G); x < Math.ceil((cx + 1) * dim / G); x++) {
+                            const ele = this._unpackAtIndex(pixels, this._idx(x, y) * 4);
+                            gridMin[cy * G + cx] = Math.min(gridMin[cy * G + cx], ele);
+                            gridMax[cy * G + cx] = Math.max(gridMax[cy * G + cx], ele);
+                        }
+                    }
+                }
+            }
+        }
+        // the coarser grids, each cell its four children's
+        for (let level = 1, n = G >> 1; n >= 1; level++, n >>= 1) {
+            const at = GRID_OFFSETS[level], from = GRID_OFFSETS[level - 1];
+            for (let y = 0; y < n; y++) {
+                for (let x = 0; x < n; x++) {
+                    const c = from + 2 * y * 2 * n + 2 * x;
+                    gridMin[at + y * n + x] = Math.min(gridMin[c], gridMin[c + 1], gridMin[c + 2 * n], gridMin[c + 2 * n + 1]);
+                    gridMax[at + y * n + x] = Math.max(gridMax[c], gridMax[c + 1], gridMax[c + 2 * n], gridMax[c + 2 * n + 1]);
+                }
+            }
+        }
+    }
+
+    /**
+     * Scenic Roads: the elevation range of a part of the tile, from the grid: the cells it touches,
+     * with a pixel's margin (the terrain's mesh interpolates between pixel centres, so its surface at
+     * the region's edge reaches the next pixel). Coordinates are fractions of the tile, 0 at its
+     * west or north edge. Falls back to the whole tile's range for data made without the grid.
+     */
+    getMinMaxInRegion(x0: number, y0: number, x1: number, y1: number): {min: number; max: number} {
+        if (!this.gridMin) return {min: this.min, max: this.max};
+        const margin = 1 / this.dim;
+        x0 -= margin; y0 -= margin; x1 += margin; y1 += margin;
+        // the finest grid on which the region spans at most four cells' width: 5 × 5 cells at most
+        const size = Math.max(x1 - x0, y1 - y0);
+        let level = 0, n = DEMData.GRID;
+        while (n > 1 && size > 4 / n) { level++; n >>= 1; }
+        const cell = (v: number) => Math.min(n - 1, Math.max(0, Math.floor(v * n)));
+        const cx0 = cell(x0), cx1 = cell(x1), cy0 = cell(y0), cy1 = cell(y1);
+        const at = GRID_OFFSETS[level];
+        let min = Infinity, max = -Infinity;
+        for (let cy = cy0; cy <= cy1; cy++) {
+            for (let cx = cx0; cx <= cx1; cx++) {
+                const i = at + cy * n + cx;
+                if (this.gridMin[i] < min) min = this.gridMin[i];
+                if (this.gridMax[i] > max) max = this.gridMax[i];
+            }
+        }
+        return {min, max};
     }
 
     get(x: number, y: number): number {

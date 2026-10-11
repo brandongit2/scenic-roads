@@ -4,6 +4,7 @@ import {IntersectionResult, type IBoundingVolume} from './bounding_volume.ts';
 import type {Frustum} from './frustum.ts';
 
 export class Aabb implements IBoundingVolume {
+    terrainRange?: [number, number];
     min: vec3;
     max: vec3;
     center: vec3;

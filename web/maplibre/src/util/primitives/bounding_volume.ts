@@ -18,4 +18,11 @@ export interface IBoundingVolume {
      * The half-space is assumed to lie on the positive side of the plane.
      */
     intersectsPlane(plane: vec4): IntersectionResult;
+
+    /**
+     * Scenic Roads: the lowest and highest the terrain reaches in the tile, in metres with its
+     * exaggeration, when the terrain's elevations there are known (covering_tiles.ts picks the
+     * tile's zoom by its distance from the camera with them).
+     */
+    terrainRange?: [number, number];
 }

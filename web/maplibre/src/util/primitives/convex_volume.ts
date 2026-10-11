@@ -7,6 +7,7 @@ import type {Frustum} from './frustum.ts';
  * A general convex bounding volume, defined by a set of points.
  */
 export class ConvexVolume implements IBoundingVolume {
+    terrainRange?: [number, number];
     // Precomputed AABB for rejecting frustum intersection.
     min: vec3;
     max: vec3;

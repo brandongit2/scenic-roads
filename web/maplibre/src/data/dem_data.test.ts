@@ -202,6 +202,8 @@ function expectSerialization(dem0: DEMData, redFactor: number, greenFactor: numb
             greenFactor,
             blueFactor,
             baseShift,
+            gridMin: dem0.gridMin,
+            gridMax: dem0.gridMax,
             max,
             min,
         });
@@ -317,5 +319,71 @@ describe('DEMData pack and unpack', () => {
 
         expect(dem.unpack(255, 0, 255)).toEqual(4170983.75);
         expect(dem.pack(4170983.75)).toEqual({r: 255, g: 0, b: 255});
+    });
+});
+
+describe('DEMData.getMinMaxInRegion (Scenic Roads)', () => {
+    // A terrarium tile whose elevation at pixel (x, y) is 3x + 2y + 100 metres, with one spike.
+    const dim = 64;
+    const elevationAt = (x: number, y: number) => (x === 40 && y === 9) ? 5000 : 3 * x + 2 * y + 100;
+    const size = dim + 4;
+    const pixels = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const e = elevationAt(Math.min(dim - 1, Math.max(0, x - 2)), Math.min(dim - 1, Math.max(0, y - 2))) + 32768;
+            const i = (y * size + x) * 4;
+            pixels[i] = Math.floor(e / 256);
+            pixels[i + 1] = Math.floor(e) % 256;
+            pixels[i + 2] = Math.round((e % 1) * 256);
+            pixels[i + 3] = 255;
+        }
+    }
+    const dem = new DEMData('0', new RGBAImage({width: size, height: size}, pixels), 'terrarium');
+
+    const bruteForce = (x0: number, y0: number, x1: number, y1: number) => {
+        let min = Infinity, max = -Infinity;
+        for (let y = 0; y < dim; y++) {
+            for (let x = 0; x < dim; x++) {
+                if ((x + 1) / dim < x0 || x / dim > x1 || (y + 1) / dim < y0 || y / dim > y1) continue;
+                min = Math.min(min, elevationAt(x, y));
+                max = Math.max(max, elevationAt(x, y));
+            }
+        }
+        return {min, max};
+    };
+
+    test('the whole tile is the tile\'s range', () => {
+        expect(dem.getMinMaxInRegion(0, 0, 1, 1)).toEqual({min: dem.min, max: dem.max});
+        expect(dem.max).toBe(5000);
+    });
+
+    test('a region\'s range holds its pixels\', a small one\'s tighter than the tile\'s', () => {
+        for (const [x0, y0, s] of [[0, 0, 0.5], [0.5, 0.5, 0.5], [0.25, 0.75, 0.25], [0.125, 0.5, 0.125], [0.875, 0.875, 0.0625], [0.5, 0, 0.03125]]) {
+            const got = dem.getMinMaxInRegion(x0, y0, x0 + s, y0 + s);
+            const want = bruteForce(x0, y0, x0 + s, y0 + s);
+            expect(got.min).toBeLessThanOrEqual(want.min);
+            expect(got.max).toBeGreaterThanOrEqual(want.max);
+            if (s <= 0.125) expect(got.max - got.min).toBeLessThan(dem.max - dem.min);
+        }
+    });
+
+    test('the spike counts only in the regions near it', () => {
+        expect(dem.getMinMaxInRegion(0.5, 0, 0.75, 0.25).max).toBe(5000);
+        expect(dem.getMinMaxInRegion(0, 0.5, 0.5, 1).max).toBeLessThan(5000);
+    });
+
+    test('a tile smaller than the grid has every cell filled', () => {
+        const small = new DEMData('0', createMockImage(4, 4), 'terrarium');
+        expect(small.gridMin.every((v) => Number.isFinite(v))).toBe(true);
+        expect(small.gridMax.every((v) => Number.isFinite(v))).toBe(true);
+        const {min, max} = small.getMinMaxInRegion(0.6, 0.6, 0.62, 0.62);
+        expect(min).toBeLessThanOrEqual(small.get(2, 2));
+        expect(max).toBeGreaterThanOrEqual(small.get(2, 2));
+        expect(Number.isFinite(min) && Number.isFinite(max)).toBe(true);
+    });
+
+    test('the grids survive the transfer from the worker', () => {
+        const copy = deserialize(serialize(dem)) as DEMData;
+        expect(copy.getMinMaxInRegion(0, 0.5, 0.5, 1)).toEqual(dem.getMinMaxInRegion(0, 0.5, 0.5, 1));
     });
 });

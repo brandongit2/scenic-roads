@@ -867,3 +867,58 @@ describe('coveringZoomLevel', () => {
         expect(coveringZoomLevel(transform, options)).toBe(13);
     });
 });
+
+describe('coveringTiles over 3D terrain (Scenic Roads)', () => {
+    // A Chamonix-like view: the globe camera pivots at sea level, ~4.9 km up, over ground ~3 km up.
+    const view = (transform: GlobeTransform | MercatorTransform) => {
+        transform.resize(1400, 800);
+        transform.setMaxPitch(85);
+        transform.setCenter(new LngLat(6.884, 45.939));
+        transform.setZoom(12.8);
+        transform.setBearing(50);
+        transform.setPitch(60);
+        return transform;
+    };
+    const ground = (elevation: number | null) => ({
+        getMinMaxElevation: () => ({minElevation: elevation, maxElevation: elevation}),
+    }) as any;
+    const options = {tileSize: 512, minzoom: 0, maxzoom: 22, reparseOverscaled: true};
+    const maxZ = (tiles: OverscaledTileID[]) => Math.max(...tiles.map((t) => t.overscaledZ));
+    const key = (t: OverscaledTileID) => t.key;
+
+    for (const [name, make] of [['globe', () => new GlobeTransform()], ['mercator', () => new MercatorTransform()]] as const) {
+        describe(name, () => {
+            // (A transform each: the globe's keeps its tiles' bounding volumes, with the elevations
+            // they were made with, for as long as each frame asks for them.)
+            // (On the flat map a tile's known elevations also change its culling volume.)
+            test.runIf(name === 'globe')('ground at the center\'s elevation leaves the tiles as unknown elevations do', () => {
+                const unknown = coveringTiles(view(make()), {...options, terrain: ground(null)}).map(key);
+                expect(coveringTiles(view(make()), {...options, terrain: ground(0)}).map(key)).toEqual(unknown);
+                expect(coveringTiles(view(make()), options).map(key)).toEqual(unknown);
+            });
+
+            test('ground near the camera\'s height takes finer tiles', () => {
+                const low = coveringTiles(view(make()), {...options, terrain: ground(0)});
+                const high = coveringTiles(view(make()), {...options, terrain: ground(3000)});
+                expect(maxZ(high)).toBeGreaterThanOrEqual(maxZ(low) + 1);
+            });
+
+            test('a tile\'s zoom is taken at the middle of its elevation range', () => {
+                const span = {getMinMaxElevation: () => ({minElevation: 0, maxElevation: 6000})} as any;
+                // (Its box, for culling, spans the whole range: more tiles are in view.)
+                expect(maxZ(coveringTiles(view(make()), {...options, terrain: span})))
+                    .toBe(maxZ(coveringTiles(view(make()), {...options, terrain: ground(3000)})));
+                expect(maxZ(coveringTiles(view(make()), {...options, terrain: span})))
+                    .toBeLessThan(maxZ(coveringTiles(view(make()), {...options, terrain: ground(4000)})));
+            });
+
+            test('ground above the camera stops at the map\'s highest zoom', () => {
+                const transform = view(make());
+                transform.setMaxZoom(16);
+                const tiles = coveringTiles(transform, {...options, terrain: ground(100000)});
+                expect(maxZ(tiles)).toBeLessThanOrEqual(16);
+                expect(tiles.every((t) => Number.isFinite(t.overscaledZ))).toBe(true);
+            });
+        });
+    }
+});

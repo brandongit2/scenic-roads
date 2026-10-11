@@ -2,7 +2,7 @@ import {OverscaledTileID} from '../../tile/tile_id.ts';
 import {vec2, type vec3, type vec4} from 'gl-matrix';
 import {Frustum} from '../../util/primitives/frustum.ts';
 import {Aabb} from '../../util/primitives/aabb.ts';
-import {MercatorCoordinate} from '../mercator_coordinate.ts';
+import {MercatorCoordinate, mercatorZfromAltitude} from '../mercator_coordinate.ts';
 import {clamp, degreesToRadians, scaleZoom} from '../../util/util.ts';
 import {cameraMercatorCoordinate, maxMercatorHorizonAngle} from './mercator_utils.ts';
 import {earthRadius} from '../lng_lat.ts';
@@ -308,6 +308,22 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     const distanceZ = Math.abs(centerCoord.z - cameraCoord.z);
     const distanceToCenter3d = Math.hypot(distanceToCenter2d, distanceZ);
 
+    // Scenic Roads: a tile's zoom by its distance from the camera over the terrain. The zoom
+    // function measures a tile's distance as if it lay at the center's elevation (sea level, where
+    // the app's globe camera pivots), so with 3D terrain under the camera, whose ground can be
+    // kilometres closer than that, the tiles near the camera were up to two zooms too coarse (a
+    // Chamonix view that looks like z15 reports zoom 12.8, and its buildings' tiles were z12-13).
+    // Where the terrain's elevations in a tile are known, the zoom gains log2 of how much closer
+    // its ground is than the zoom function assumed. The ground is the middle of the tile's
+    // elevation range: its top over-fetched wherever a tile spans a valley and a ridge (a top-down
+    // Chamonix view took 2.3x the tiles, most of them beside the view, where only a ridge comes
+    // near). Ground below the center's elevation (on the flat map, whose camera pivots on the
+    // ground) leaves the zoom as it was: never coarser than upstream's. Capped at the map's
+    // highest zoom.
+    const terrainLod = allowVariableZoom && !!options.terrain;
+    const mercatorPerMeter = terrainLod ? mercatorZfromAltitude(1, transform.center.lat) : 0;
+    const maxTerrainLodZoom = transform.maxZoom + scaleZoom(transform.tileSize / options.tileSize);
+
     const newRootTile = (wrap: number): CoveringTilesStackEntry => {
         return {
             zoom: 0,
@@ -360,6 +376,16 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                 distanceZ,
                 distanceToCenter3d,
                 transform.fov);
+            const range = boundingVolume.terrainRange;
+            if (terrainLod && range !== undefined) {
+                const ground = (range[0] + range[1]) / 2;
+                const toGroundZ = Math.max(0, cameraCoord.z - ground * mercatorPerMeter);
+                const assumed = Math.hypot(distToTile2d, distanceZ);
+                const actual = Math.max(Math.hypot(distToTile2d, toGroundZ), mercatorPerMeter);
+                if (actual < assumed) {
+                    thisTileDesiredZ = Math.min(thisTileDesiredZ + scaleZoom(assumed / actual), Math.max(thisTileDesiredZ, maxTerrainLodZoom));
+                }
+            }
         }
         thisTileDesiredZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
         thisTileDesiredZ = Math.max(0, thisTileDesiredZ);

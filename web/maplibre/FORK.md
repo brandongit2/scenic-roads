@@ -82,3 +82,30 @@ now source changes:
   loaded lay at sea level, so tilted over steep ground the tiles on the slopes nearest the camera
   were culled and not asked for until the camera moved (lochs missing in the Highlands until a
   no-op `jumpTo`). The cache is now cleared whenever a DEM tile loads.
+- **A tile's zoom by its distance over the terrain** (`covering_tiles.ts`): the zoom function
+  measures a tile's distance from the camera as if the tile lay at the center's elevation (sea
+  level on the app's globe, where its camera pivots), so with 3D terrain the tiles near the camera
+  were up to two zooms too coarse: a Chamonix view that looks like z15 reports zoom 12.8, and its
+  buildings' tiles were z12–13 (only towers drew). Where a tile's elevations are known, its zoom
+  gains log2 of how much closer the middle of its elevation range is than the function assumed,
+  capped at the map's highest zoom; ground below the center's elevation (the flat map pivots on the
+  ground) leaves it as it was, never coarser than upstream's. The middle, not the top: the top
+  over-fetched where a tile spans a valley and a ridge. Every source's cover, the terrain's own
+  render-to-texture tiles included.
+- **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
+  a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
+  5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser
+  levels, made with its own min and max in the worker, and a tile's range is read from at most
+  5 × 5 cells. Tighter culling volumes too.
+
+### Known render-test differences
+
+`test/integration/render/expected/` holds this fork's expected image where it draws differently on
+purpose (`tools/fetch-upstream-tests.sh` puts them in place):
+
+- `terrain/fill-extrusion`, `-vertical-gradient`, `-vertical-gradient-pattern`: the walls' feet on
+  the terrain under each corner.
+
+On this Mac (Apple silicon, SwiftShader in headless Chrome) upstream's own build fails four render
+tests, `text-local-glyphs/{cjk,missing,no-glyphs}` and `text-local-ideographs/cjk-symbols` (the
+system's fonts); so does this fork.

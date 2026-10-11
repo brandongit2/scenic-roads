@@ -456,3 +456,35 @@ describe('Terrain', () => {
     });
 
 });
+
+describe('Terrain elevation range of a tile deeper than its DEM tile (Scenic Roads)', () => {
+    test('is the part of the DEM tile under it, from its grid', () => {
+        const demTileID = new OverscaledTileID(5, 0, 5, 17, 11);
+        const tile = new Tile(demTileID, 256);
+        const regions: number[][] = [];
+        tile.dem = {
+            min: 10,
+            max: 1000,
+            getMinMaxInRegion: (x0: number, y0: number, x1: number, y1: number) => {
+                regions.push([x0, y0, x1, y1]);
+                return {min: 50, max: 60};
+            },
+        } as any as DEMData;
+        const painter = {context: new Context(createNullGL()), width: 1, height: 1, getTileTexture: () => null} as any as Painter;
+        const tileManager = {
+            _source: {maxzoom: 5, minzoom: 0, tileSize: 512},
+            _cache: {max: 10},
+            getTileByID: () => tile,
+        } as any as TileManager;
+        const terrain = new Terrain(painter, tileManager, {exaggeration: 3} as any as TerrainSpecification);
+
+        // z7 tile (17 * 4 + 1, 11 * 4 + 2): the DEM tile's second quarter across, third down.
+        const {minElevation, maxElevation} = terrain.getMinMaxElevation(new OverscaledTileID(7, 0, 7, 69, 46));
+        expect(regions).toEqual([[0.25, 0.5, 0.5, 0.75]]);
+        expect(minElevation).toBe(150);
+        expect(maxElevation).toBe(180);
+
+        // The DEM tile's own zoom: the whole tile's range.
+        expect(terrain.getMinMaxElevation(demTileID)).toEqual({minElevation: 30, maxElevation: 3000});
+    });
+});
