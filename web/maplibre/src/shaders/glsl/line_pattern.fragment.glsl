@@ -1,7 +1,8 @@
-// Scenic Roads: a lifted layer (u_elevation_reference > 0) is clipped to its tile here, its tile's
-// stencil mask being drawn flat at sea level.
-uniform highp float u_elevation_reference;
+#ifdef LIFTED
+// Scenic Roads: a lifted layer's program clips it to its tile here (its tile's stencil mask is
+// drawn flat at sea level); the flat programs are upstream's, without the discard.
 in highp vec2 v_tile_pos;
+#endif
 #ifdef GL_ES
     precision highp float;
 #endif
@@ -28,7 +29,9 @@ in float v_depth;
 #pragma maplibre: define lowp float opacity
 
 void main() {
-    if (u_elevation_reference > 0.5 && (v_tile_pos.x < 0.0 || v_tile_pos.y < 0.0 || v_tile_pos.x > 8192.0 || v_tile_pos.y > 8192.0)) discard;
+    #ifdef LIFTED
+    if (v_tile_pos.x < 0.0 || v_tile_pos.y < 0.0 || v_tile_pos.x > 8192.0 || v_tile_pos.y > 8192.0) discard;
+    #endif
     #pragma maplibre: initialize mediump vec4 pattern_from
     #pragma maplibre: initialize mediump vec4 pattern_to
     #pragma maplibre: initialize lowp float pixel_ratio_from

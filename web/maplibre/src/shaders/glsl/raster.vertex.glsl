@@ -4,9 +4,12 @@ uniform float u_buffer_scale;
 uniform vec3 u_image_warp;
 uniform vec4 u_coords_top; // xy = left, zw = right
 uniform vec4 u_coords_bottom;
-// Scenic Roads: 0 draped (or flat), 1 u_z_offset above the ground, 2 above sea level.
+#ifdef LIFTED
+// Scenic Roads: a lifted raster's program (painter.useProgram's LIFTED define): 1 u_z_offset above
+// the ground, 2 above sea level.
 uniform float u_elevation_reference;
 uniform float u_z_offset;
+#endif
 
 layout(location = 0) in vec2 a_pos;
 
@@ -35,15 +38,15 @@ void main() {
     vec2 position = mix(projectivePos, bilinearPos, u_image_warp.z);
     // Scenic Roads: a lifted raster (raster-z-offset, raster-elevation-reference) is drawn in 3D at its
     // elevation, with the perspective depth the terrain's is drawn with; else as upstream.
-    if (u_elevation_reference > 0.5) {
-        gl_Position = projectTileFor3D(position, elevationOf(position, u_z_offset, u_elevation_reference));
-        #ifndef GLOBE
-        // (pole vertices killed, as projectTile kills them on mercator)
-        if (a_pos.y < -32767.5 || a_pos.y > 32766.5) gl_Position.z = -10000000.0;
-        #endif
-    } else {
-        gl_Position = projectTile(position, position);
-    }
+    #ifdef LIFTED
+    gl_Position = projectTileFor3D(position, elevationOf(position, u_z_offset, u_elevation_reference));
+    #ifndef GLOBE
+    // (pole vertices killed, as projectTile kills them on mercator)
+    if (a_pos.y < -32767.5 || a_pos.y > 32766.5) gl_Position.z = -10000000.0;
+    #endif
+    #else
+    gl_Position = projectTile(position, position);
+    #endif
 
     // We are using Int16 for texture position coordinates to give us enough precision for
     // fractional coordinates. We use 8192 to scale the texture coordinates in the buffer

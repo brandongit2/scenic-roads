@@ -211,7 +211,9 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   A `sea` surface is level, so that's exact for it.
 - A lifted layer isn't clipped by the tiles' stencil masks (drawn flat at sea level, they'd cut it
   where it stands above another tile on screen): its fragment shaders discard what lies outside
-  its tile (`v_tile_pos`), and its layer reports `isTileClipped()` false.
+  its tile (`v_tile_pos`), and its layer reports `isTileClipped()` false. The lifted code is a
+  program variant (`painter.useProgram`'s `LIFTED` define, `render/lifted.ts`), so a layer that
+  isn't lifted runs upstream's programs unchanged.
 - Without 3D terrain the ground is at 0: both are a height above the map.
 - A source's tiles are culled with room for its lifted layers' heights (`TileManager`'s content
   elevation: the offsets, data-driven ones by their tiles' largest, times the exaggeration for

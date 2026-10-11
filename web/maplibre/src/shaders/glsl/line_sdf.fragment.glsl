@@ -1,7 +1,8 @@
-// Scenic Roads: a lifted layer (u_elevation_reference > 0) is clipped to its tile here, its tile's
-// stencil mask being drawn flat at sea level.
-uniform highp float u_elevation_reference;
+#ifdef LIFTED
+// Scenic Roads: a lifted layer's program clips it to its tile here (its tile's stencil mask is
+// drawn flat at sea level); the flat programs are upstream's, without the discard.
 in highp vec2 v_tile_pos;
+#endif
 uniform lowp float u_lineatlas_width;
 uniform sampler2D u_image;
 uniform float u_mix;
@@ -24,7 +25,9 @@ in float v_depth;
 #pragma maplibre: define mediump vec4 dasharray_to
 
 void main() {
-    if (u_elevation_reference > 0.5 && (v_tile_pos.x < 0.0 || v_tile_pos.y < 0.0 || v_tile_pos.x > 8192.0 || v_tile_pos.y > 8192.0)) discard;
+    #ifdef LIFTED
+    if (v_tile_pos.x < 0.0 || v_tile_pos.y < 0.0 || v_tile_pos.x > 8192.0 || v_tile_pos.y > 8192.0) discard;
+    #endif
     #pragma maplibre: initialize highp vec4 color
     #pragma maplibre: initialize lowp float blur
     #pragma maplibre: initialize lowp float opacity

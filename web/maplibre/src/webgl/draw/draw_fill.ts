@@ -1,4 +1,5 @@
 import {Color} from '@maplibre/maplibre-gl-style-spec';
+import {LIFTED_DEFINES} from '../../render/lifted.ts';
 import {DepthMode} from '../depth_mode.ts';
 import {StencilMode} from '../stencil_mode.ts';
 import {CullFaceMode} from '../cull_face_mode.ts';
@@ -160,7 +161,8 @@ function drawFillTiles(
 
         const isSdfPattern = bucket.sdfPatterns[layer.id] ?? false;
         const programConfiguration = bucket.programConfigurations.get(layer.id);
-        const program = painter.useProgram(programName, programConfiguration);
+        // (Scenic Roads: a lifted fill's program variant, LIFTED; the flat ones are upstream's.)
+        const program = painter.useProgram(programName, programConfiguration, false, elevationReference > 0 ? LIFTED_DEFINES : []);
         const terrainData = getTerrainDataForTile(renderContext, coord);
 
         if (image) {

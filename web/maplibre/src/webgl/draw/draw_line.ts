@@ -1,3 +1,4 @@
+import {LIFTED_DEFINES} from '../../render/lifted.ts';
 import {DepthMode} from '../depth_mode.ts';
 import {StencilMode} from '../stencil_mode.ts';
 import {CullFaceMode} from '../cull_face_mode.ts';
@@ -205,7 +206,8 @@ function drawLineTiles(
 
         const programConfiguration = bucket.programConfigurations.get(layer.id);
         const prevProgram = painter.context.program.get();
-        const program = painter.useProgram(programId, programConfiguration);
+        // (Scenic Roads: a lifted line's program variant, LIFTED; the flat ones are upstream's.)
+        const program = painter.useProgram(programId, programConfiguration, false, elevated ? LIFTED_DEFINES : []);
         const programChanged = firstTile || program.program !== prevProgram;
         const terrainData = getTerrainDataForTile(renderContext, coord);
 

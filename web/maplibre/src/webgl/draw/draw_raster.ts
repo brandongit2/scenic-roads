@@ -2,6 +2,7 @@ import {clamp} from '../../util/util.ts';
 import {ImageSource} from '../../source/image_source.ts';
 import {now} from '../../util/time_control.ts';
 import {StencilMode} from '../stencil_mode.ts';
+import {LIFTED_DEFINES} from '../../render/lifted.ts';
 import {DepthMode} from '../depth_mode.ts';
 import {CullFaceMode} from '../cull_face_mode.ts';
 import {
@@ -93,7 +94,8 @@ function drawTiles(
 
     const context = painter.context;
     const gl = context.gl;
-    const program = painter.useProgram('raster');
+    // (Scenic Roads: a lifted raster's program variant, LIFTED; the flat one is upstream's.)
+    const program = painter.useProgram('raster', null, false, layer.elevationReference() > 0 ? LIFTED_DEFINES : []);
 
     const projection = painter.style.projection;
 
