@@ -750,6 +750,13 @@ impl RawTiles {
     /// A tile from its area's archives: Some(None) when AWS hasn't it, None when they (or the
     /// store) haven't it whole.
     fn archived(&self, z: u8, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
+        self.archived_by(z, x, y, &mut None)
+    }
+
+    /// `archived`, saying in `used` the stamp of the index the area's archives it looked in were
+    /// opened by (taken under the area's lock: another thread may open them again a moment after),
+    /// so `get` opens them again only when the index has changed since those were opened.
+    fn archived_by(&self, z: u8, x: u32, y: u32, used: &mut Option<Option<String>>) -> Option<Option<Vec<u8>>> {
         let st = self.store.as_ref()?;
         let area = crate::rawpack::area(z, x, y);
         let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
@@ -767,8 +774,11 @@ impl RawTiles {
         let here = {
             let mut c = cell.lock().unwrap();
             if c.is_none() {
-                *c = Some(self.open_area(st, &area)?);
+                let opened = self.open_area(st, &area);
+                *used = Some(self.opened_at.lock().unwrap().get(&area).cloned().flatten());
+                *c = Some(opened?);
             }
+            *used = Some(self.opened_at.lock().unwrap().get(&area).cloned().flatten());
             // (Read a few times: copied here whole, if it can be; else read by range from now on.)
             if let Some(Opened::Ranged { reads, stay: stay @ false, .. }) = c.as_mut() {
                 if *reads >= RANGED {
@@ -834,7 +844,8 @@ impl RawTiles {
             return Ok((None, false));
         }
         // In its area's archive.
-        if let Some(b) = self.archived(z, x, y) {
+        let mut used = None;
+        if let Some(b) = self.archived_by(z, x, y, &mut used) {
             return Ok((b, false));
         }
         // On the NAS (its column listed once): copied here (its folder here made as it's put:
@@ -858,8 +869,9 @@ impl RawTiles {
             // the index read afresh, before AWS is asked (docs/pool.md §7.7: two raw-tile jobs at
             // once on one Mac).
             let area = crate::rawpack::area(z, x, y);
-            let was = self.opened_at.lock().unwrap().get(&area).cloned();
-            // (Or its archives couldn't be opened just now: tried once more, afresh.)
+            // (By the index the archives it looked in were opened by, not those another thread
+            // opened since; or its archives couldn't be opened just now: tried once more, afresh.)
+            let was = used;
             let open = self.archives.lock().unwrap().get(&area).is_some_and(|c| c.lock().unwrap().is_some());
             if was.as_ref().is_some_and(|w| index_stamp(st) != *w) || (was.is_some() && !open) {
                 if let Some(cell) = self.archives.lock().unwrap().get(&area).cloned() {
