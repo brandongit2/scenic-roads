@@ -395,7 +395,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                     // Scenic Roads: the gain picks finer tiles, but lays a reparsed (vector) tile
                     // out no deeper than the source's maxzoom + 1 beyond what upstream would: a
                     // camera low over the ground would otherwise lay its tiles out again at z19+.
-                    layoutZCap = Math.max(Math.floor(thisTileDesiredZ), maxZoom + 1);
+                    layoutZCap = Math.max((options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ), maxZoom + 1);
                     thisTileDesiredZ = Math.min(thisTileDesiredZ + scaleZoom(assumed / actual), Math.max(thisTileDesiredZ, maxTerrainLodZoom));
                 }
             }

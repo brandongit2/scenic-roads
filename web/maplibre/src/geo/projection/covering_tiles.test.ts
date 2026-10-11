@@ -925,6 +925,19 @@ describe('coveringTiles over 3D terrain (Scenic Roads)', () => {
                 expect(raised.every((t) => t.canonical.z <= 12)).toBe(true);
             });
 
+            test('with roundZoom the cap rounds as the tile\'s zoom does: never shallower than upstream', () => {
+                // (an overscaled source, its tiles laid out at the desired zoom rounded)
+                for (const zoom of [12.3, 12.6, 12.8, 13.2, 13.6]) {
+                    const opts = {...options, maxzoom: 8, roundZoom: true};
+                    const at = (elevation: number) => {
+                        const t = view(make());
+                        t.setZoom(zoom);
+                        return coveringTiles(t, {...opts, terrain: ground(elevation)});
+                    };
+                    expect(maxZ(at(1500)), `zoom ${zoom}`).toBeGreaterThanOrEqual(maxZ(at(0)));
+                }
+            });
+
             test('ground above the camera stops at the map\'s highest zoom', () => {
                 const transform = view(make());
                 transform.setMaxZoom(16);

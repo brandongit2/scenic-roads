@@ -106,7 +106,8 @@ now source changes:
   buildings' tiles were z12–13 (only towers drew). Where a tile's elevations are known, its zoom
   gains log2 of how much closer the middle of its elevation range is than the function assumed,
   capped at the map's highest zoom (a reparsed vector tile's layout, its overscaled zoom, raised by
-  the gain to the source's maxzoom + 1 at most, so a camera low over the ground doesn't lay its
+  the gain to the source's maxzoom + 1 at most, or to upstream's own layout zoom where that's
+  deeper, rounded as the source rounds its zoom, so a camera low over the ground doesn't lay its
   tiles out again at z19); ground below the center's elevation (the flat map pivots on the
   ground) leaves it as it was, never coarser than upstream's. The middle, not the top: the top
   over-fetched where a tile spans a valley and a ridge. Every source's cover but the terrain's own
