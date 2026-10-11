@@ -7339,7 +7339,7 @@ mod pool_tests {
     }
 
     fn free_port() -> u16 {
-        std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+        crate::coord::test_port()
     }
 
     /// Loops `a` until `done` says so, at most a minute.

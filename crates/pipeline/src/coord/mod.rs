@@ -2092,7 +2092,9 @@ mod http {
                     Err(e) => eprintln!("coordinator: its socket: {e}"),
                 }
             });
-            // (Its listener gone with `accept`: the port free.)
+            // (Its listener gone with `accept`, and its connections with its runtime: nothing of
+            // it holds the port, however long a loaded Mac takes to end a connection's task.)
+            drop(rt);
             closed.send(()).ok();
         })?;
         Ok(urls(port))
@@ -2462,6 +2464,23 @@ mod http {
     }
 }
 
+/// A port for a test's coordinator that no other test in this process has been given (the system's
+/// pick, once): one a stopped coordinator let go is never handed to another test meanwhile, so a
+/// test that checks its port is free finds it so.
+#[cfg(test)]
+pub(crate) fn test_port() -> u16 {
+    static GIVEN: std::sync::Mutex<BTreeSet<u16>> = std::sync::Mutex::new(BTreeSet::new());
+    let mut g = GIVEN.lock().unwrap();
+    // (Each turn a port given before: not time, but ports.)
+    for _ in 0..1000 {
+        let port = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port();
+        if g.insert(port) {
+            return port;
+        }
+    }
+    panic!("no port left that wasn't given before")
+}
+
 /// A test's coordinator (its state in `dir`), listening on a port found free; and the port. Found
 /// free by listening on it as the coordinator does, the port can be another's by the time the
 /// coordinator listens on it, after its files are read and written (longer on a loaded Mac): then
@@ -2471,7 +2490,7 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
     let history = dir.join("history.jsonl");
     let before = std::fs::read(&history).ok();
     for _ in 0..10 {
-        let port = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port();
+        let port = test_port();
         match Coordinator::start(dir, None, port, me, app) {
             Ok(c) => return (c, port),
             Err(e) if e.chain().any(|x| x.downcast_ref::<std::io::Error>().is_some_and(|x| x.kind() == std::io::ErrorKind::AddrInUse)) => {
