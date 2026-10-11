@@ -524,12 +524,13 @@ export class FieldLayer implements CustomLayerInterface {
   /** MapLibre's wall normals face inward of the ring as the tiles wind it (checked against the
    * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
   wallSign = -1;
-  /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone). */
   /** The march's sub-cell walk (`?fsub=1`; off: it cost 3.3 ms at Manhattan 70° on the quiet Mac for nothing it skipped). */
   subWalk = new URLSearchParams(location.search).get('fsub') === '1';
   /** The hits summed in linear light (`?flin=0` off). */
   linAcc = new URLSearchParams(location.search).get('flin') !== '0';
-  stepTexel = Number(new URLSearchParams(location.search).get('fstx') ?? 1);
+  /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone;
+   * 2 by default: one-texel steps cost 1.2 ms more at Manhattan 70° on the quiet Mac). */
+  stepTexel = Number(new URLSearchParams(location.search).get('fstx') ?? 2);
   lastTrans = -1;
   /** The hulls' blocks: cells a side (`?fblk=`; 1, 2, 4, 8). */
   blockCells = Number(new URLSearchParams(location.search).get('fblk')) || 8;
