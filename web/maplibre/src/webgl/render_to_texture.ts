@@ -124,13 +124,17 @@ export class RenderToTexture {
         this._rttTiles = [];
         this._renderableTiles = this.terrain.tileManager.getRenderableTiles();
         this._renderableLayerIds = style._order.filter(id => !style._layers[id].isHidden(zoom));
-        const visibleLayerIds = this._renderableLayerIds.join();
+        // Scenic Roads: which layers are draped is part of what a texture holds (a line lifted off
+        // the terrain, or set back down, changes it), marked by a '^' after the layer's id.
+        const visibleLayerIds = this._renderableLayerIds.map(id => drapes(style._layers[id]) ? `${id}^` : id).join();
 
+        // (Scenic Roads: the sources of the layers draped, drapes(): a source used only by lifted
+        // layers has no fingerprint, else every texture would be drawn again every frame.)
         const rttSourceIds = new Set<string>();
         for (const layerId of this._renderableLayerIds) {
             const layer = style._layers[layerId];
             const source = layer.source;
-            if (source && LAYERS_TO_TEXTURES[layer.type]) rttSourceIds.add(source);
+            if (source && drapes(layer)) rttSourceIds.add(source);
         }
 
         this._coordsAscending = {};
@@ -260,6 +264,8 @@ export class RenderToTexture {
             renderContext.isRenderingToTexture = false;
             drawTerrain(this.painter, this.terrain, this._rttTiles, renderContext);
             this._rttTiles = [];
+            // Scenic Roads: the stencil masks drawn were the textures', not the frame's.
+            painter.currentStencilSource = undefined;
 
             // Scenic Roads: the custom layers draped here draw in the main pass right after the
             // terrain carrying their drape, before the next layer.

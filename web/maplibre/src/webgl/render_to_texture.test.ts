@@ -1,5 +1,5 @@
 import {beforeEach, describe, test, expect, vi} from 'vitest';
-import {RenderToTexture} from './render_to_texture.ts';
+import {RenderToTexture, drapes} from './render_to_texture.ts';
 import {RTTFingerprint} from './rtt_fingerprint.ts';
 import {createRenderContext} from '../render/render_context.ts';
 import {Context} from '../webgl/context.ts';
@@ -143,7 +143,7 @@ describe('render to texture', () => {
     });
 
     function visibleLayerIds() {
-        return style._order.join();
+        return style._order.map((id) => drapes(style._layers[id]) ? `${id}^` : id).join();
     }
 
     function markRendered(renderedTile: Tile, obj: RTTObject, fingerprint: RTTFingerprint) {
@@ -497,6 +497,41 @@ describe('render to texture', () => {
         expect(symbolTileManager.getVisibleCoordinates).not.toHaveBeenCalled();
         expect(terrain.tileManager.getTerrainCoords).toHaveBeenCalledTimes(1);
         expect(Object.keys(rtt._coordsAscending)).toStrictEqual(['maine']);
+    });
+
+    describe('lifted layers and the textures (Scenic Roads)', () => {
+        const lifted = {id: 'lifted-line', type: 'line', source: 'lifted', isHidden: () => false, elevationReference: () => 1} as any;
+        const lowered = {id: 'lowered-line', type: 'line', source: 'maine', isHidden: () => false, level: 0, elevationReference() { return this.level; }} as any;
+
+        beforeEach(() => {
+            style._layers['lifted-line'] = lifted;
+            style._layers['lowered-line'] = lowered;
+            (style.tileManagers as any).lifted = {getVisibleCoordinates: () => [tile.tileID], getSource: () => ({}), getState: () => ({revision: 0})};
+        });
+
+        test('a source drawn only by lifted layers doesn\'t redraw the textures every frame', () => {
+            style._order = ['maine-fill', 'lifted-line'];
+            rtt.prepareForRender(style, 0);
+            const renderContext = createRenderContext(painter.transform, undefined, terrain);
+            for (const id of style._order) rtt.renderLayer(style._layers[id], renderContext);
+            expect(tile.getRTT(0)).toBeTruthy();
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeTruthy();
+            expect(Object.keys(rtt._rttFingerprints)).not.toContain('lifted');
+        });
+
+        test('a layer lifted off the terrain draws the textures again', () => {
+            style._order = ['maine-fill', 'lowered-line'];
+            lowered.level = 0;
+            rtt.prepareForRender(style, 0);
+            const renderContext = createRenderContext(painter.transform, undefined, terrain);
+            for (const id of style._order) rtt.renderLayer(style._layers[id], renderContext);
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeTruthy();
+            lowered.level = 1;
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeUndefined();
+        });
     });
 
     describe('custom layers draped (Scenic Roads)', () => {
