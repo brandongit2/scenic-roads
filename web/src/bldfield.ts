@@ -125,6 +125,14 @@ uniform vec4 u_dWallB;
 uniform float u_opacity;
 uniform int u_linear;
 uniform vec3 u_bg;     // the map's land colour (stored values)
+// A class's share at a point (its texture at the read's level).
+float classF(int c, vec2 uv, float lod) {
+  if (c == 0) return textureLod(u_c0, uv, lod).r;
+  if (c == 1) return textureLod(u_c1, uv, lod).r;
+  if (c == 2) return textureLod(u_c2, uv, lod).r;
+  if (c == 3) return textureLod(u_c3, uv, lod).r;
+  return textureLod(u_c4, uv, lod).r;
+}
 vec3 toLin(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
 vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 
@@ -202,6 +210,12 @@ void main() {
   // ray travels across, what it passed over decorrelates over the buildings' own width (4 f H ÷ w:
   // a footprint's side from its area and walls).
   float covE = 0.0, covL = 10.0;
+  float dRoofA = 0.0, dWallA = 0.0;   // (debug: what the roofs and the walls took)
+  // The hits' colours summed in linear light, as full detail shrunk sums its pixels: each surface's
+  // own (cLin), and as MapLibre shows it, mixed with the ground at the opacity in stored values
+  // (pLin). (Summed as stored values, a pixel's roofs and walls together came out darker than
+  // their light's sum, the more so the more walls: tilted views, and straight down at the edges.)
+  vec3 cLin = vec3(0.0), pLin = vec3(0.0);
   float prevBound = 1e9;
   for (int k = 0; k < 96; k++) {
     if (done || t >= tmax) break;
@@ -214,7 +228,9 @@ void main() {
     if (abs(dT.y) > 1e-12) te = min(te, t + ((dT.y > 0.0 ? float(cell.y + 1) : float(cell.y)) * ${EXTENT / 32}.0 - p.y) / dT.y);
     te = clamp(te, t + 0.01, tmax);
     vec2 tg = texelFetch(u_top32, cell, 0).rg;
-    float topc = tg.r * u_hk;
+    // (a little above the cell's tallest roof: a run starting at a roof's height would take it as
+    // already below it, its walls met, its roof never)
+    float topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25);
     // The hull: each cell holding buildings a column from the ground to its highest ground plus its
     // tallest roof (+ 0.5 m), as the faces are drawn; the ray leaves it going into a column below it
     // (or a cell without any), or rising out of the one it was in. Each entry's fragment marches only
@@ -339,9 +355,20 @@ void main() {
         for (int c = 4; c >= 0; c--) {
           if (Fc[c] <= 0.0 || Hc[c] >= ac || Hc[c] < ae) continue;
           float tw = rateA * (cur - Hc[c]) / (ac - ae) * hlen;
-          if (tw > 0.0) { float a = 1.0 - exp(-tw); col += T * a * wcol / rateA; T *= 1.0 - a; }
-          float pr = clamp(Fc[c] / max(1.0 - covE, 1e-3), 0.0, 0.999);
+          if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; col += T * a * wc; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
+          // (the roofs' share where the ray comes down through them, not at the step's middle: a step
+          // of a steep ray spans the whole layer, its roofs met at their own heights' points)
+          float fRoof = Fc[c];
+          if (u_dbg == 27) {
+            float tc0 = t1 - step + (ac - Hc[c]) / max(ac - a1, 1e-6) * step;
+            vec2 pc = (E.xy + d.xy * tc0) / mpu;
+            fRoof = clamp(classF(c, pc / ${EXTENT}.0, log2(max((dist0 + tc0) * u_pixAngle / texel, 1.0))), 0.0, 0.999);
+          }
+          float pr = clamp(fRoof / max(1.0 - covE, 1e-3), 0.0, 0.999);
           col += T * pr * RCc[c];
+          cLin += T * pr * toLin(RCc[c]);
+          pLin += T * pr * toLin(u_opacity * RCc[c] + (1.0 - u_opacity) * u_bg);
+          dRoofA += T * pr;
           T *= 1.0 - pr;
           covE = min(covE + Fc[c], 0.999);
           covL = clamp(4.0 * Fc[c] * Hc[c] / max(W[c] * u_hk, 1e-6), 2.0, 200.0);
@@ -350,7 +377,7 @@ void main() {
           cur = Hc[c];
         }
         float tw = rateA * (cur - ae) / (ac - ae) * hlen;
-        if (tw > 0.0) { float a = 1.0 - exp(-tw); col += T * a * wcol / rateA; T *= 1.0 - a; }
+        if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; col += T * a * wc; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
       } else {
         // Level or rising: the walls of the classes above it, over its share of the step below them
         // (no roof comes down on).
@@ -377,7 +404,10 @@ void main() {
         }
         if (tt > 0.0) {
           float a = 1.0 - exp(-tt);
-          col += T * a * hit / tt;
+          vec3 hc = hit / tt;
+          col += T * a * hc;
+          cLin += T * a * toLin(hc);
+          pLin += T * a * toLin(u_opacity * hc + (1.0 - u_opacity) * u_bg);
           T *= 1.0 - a;
         }
       }
@@ -389,6 +419,7 @@ void main() {
     t = te;
     a0 = aEnd;
   }
+  if (u_dbg == 29) { fragColor = vec4(dRoofA, dWallA, 1.0 - T, 1.0); return; }
   if (T > 0.9999) discard;
   // Straight into the frame (premultiplied, over what's there), at the opacity, as MapLibre blends a
   // mesh. The hardware blends stored values; full detail shrunk mixes in linear light. The alpha is
@@ -401,8 +432,8 @@ void main() {
   float al = a * u_opacity;
   if (u_linear == 1) {
     vec3 g0 = u_bg;
-    vec3 px = u_opacity * b + (1.0 - u_opacity) * g0;
-    float tl = dot(toSrgb((1.0 - a) * toLin(g0) + a * toLin(px)), vec3(0.2126, 0.7152, 0.0722));
+    b = toSrgb(cLin / a);   // (the surfaces' colour, their light's mean)
+    float tl = dot(toSrgb((1.0 - a) * toLin(g0) + pLin), vec3(0.2126, 0.7152, 0.0722));
     float gl = dot(g0, vec3(0.2126, 0.7152, 0.0722)), bl = dot(b, vec3(0.2126, 0.7152, 0.0722));
     al = abs(bl - gl) > 0.02 ? clamp((tl - gl) / (bl - gl), 0.0, 1.0) : a * u_opacity;
   }

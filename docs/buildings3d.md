@@ -1489,9 +1489,26 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   - the open runs on the footprints (tools/bldcheck/openrun.mjs): longer than the random set's
     (the walls' rate 0.6–0.9 of the model's at 4–16 m), so too much ground isn't the cause. A
     per-texel open-ground measure from the builder wouldn't help, and isn't planned.
-- **Left open:** with the light overhead (`lup=1`: roofs fully lit, walls black) the field shows
-  less roof than full detail: −1.5 to −2 L* at the view's centre, −6 at its corners (20–28° off
-  vertical). The cause isn't found.
+- **Found (11 Oct): the hits' colours were summed as stored values.**
+  - With the light overhead (`lup=1`: roofs fully lit, walls black) the field showed less roof than
+    full detail: −1.5 to −2 L* at the view's centre, −6 at its corners (20–28° off vertical).
+  - A synthetic town (tools/bldcheck/synth.mjs, served by synthserve.mjs) gave the same: identical
+    12 m blocks on a 24 m grid over open water, as exact mesh tiles and exact field tiles. Full
+    detail was uniform; the field −1.4 at the centre, −8 at the corners.
+  - The march itself was right: a debug view (`fdbg=29`) showed the roofs taking exactly the
+    coverage, 0.25, centre to corners, and the walls 0.02 at the centre to 0.10 at the corners, as
+    the tilt gives.
+  - The fault was in the colours: summed in stored values, a pixel's roofs and walls came out darker
+    than their light's sum, the more so the more walls.
+  - The march now sums them in linear light: each surface's own, and each mixed with the ground at
+    the opacity in stored values, as MapLibre shows a mesh. The overhead test is within ±1.3 L* on
+    the synthetic town, centre to corners.
+  - Straight down now: Tokyo −0.81 L* at z11, −0.66 at z12, −0.03 at z9, −0.02 at z13; Annecy
+    +0.24 / +0.72; Chamonix +0.33 / +0.53. Checks: A ≤ 0.40; B ≤ 1.25 (Chamonix t12 +1.16, as
+    before); C biases −0.52 to +0.39; the hand-over seam +0.63.
+  - Left on the synthetic town: −2 to −3.6 at its corners in normal light. Its walls all face the
+    four compass points, which the field's walls, spread evenly, don't; real towns' measure within
+    1 L*.
 
 **The hand-overs' cross-fade (zoom 12 and 13): not cheap, not built.**
 - MapLibre swaps the meshes' tile zoom at the integer. A fade needs both representations drawn
