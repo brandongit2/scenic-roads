@@ -89,7 +89,9 @@ now source changes:
   were up to two zooms too coarse: a Chamonix view that looks like z15 reports zoom 12.8, and its
   buildings' tiles were z12–13 (only towers drew). Where a tile's elevations are known, its zoom
   gains log2 of how much closer the middle of its elevation range is than the function assumed,
-  capped at the map's highest zoom; ground below the center's elevation (the flat map pivots on the
+  capped at the map's highest zoom (a reparsed vector tile's layout, its overscaled zoom, raised by
+  the gain to the source's maxzoom + 1 at most, so a camera low over the ground doesn't lay its
+  tiles out again at z19); ground below the center's elevation (the flat map pivots on the
   ground) leaves it as it was, never coarser than upstream's. The middle, not the top: the top
   over-fetched where a tile spans a valley and a ridge. Every source's cover but the terrain's own
   render-to-texture tiles (`terrainAwareZoom: false`): each redraws every draped layer, and finer

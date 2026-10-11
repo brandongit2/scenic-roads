@@ -376,6 +376,8 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
         const distToTile2d = detailsProvider.distanceToTile2d(cameraCoord.x, cameraCoord.y, tileID, boundingVolume);
 
         let thisTileDesiredZ = desiredZ;
+        // (the zoom the terrain's gain may raise a reparsed tile's layout to: see below)
+        let layoutZCap = Infinity;
         if (allowVariableZoom) {
             const tileZoomFunc = options.calculateTileZoom || defaultCalculateTileZoom;
             thisTileDesiredZ = tileZoomFunc(transform.zoom + scaleZoom(transform.tileSize / options.tileSize),
@@ -390,6 +392,10 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                 const assumed = Math.hypot(distToTile2d, distanceZ);
                 const actual = Math.max(Math.hypot(distToTile2d, toGroundZ), mercatorPerMeter);
                 if (actual < assumed) {
+                    // Scenic Roads: the gain picks finer tiles, but lays a reparsed (vector) tile
+                    // out no deeper than the source's maxzoom + 1 beyond what upstream would: a
+                    // camera low over the ground would otherwise lay its tiles out again at z19+.
+                    layoutZCap = Math.max(Math.floor(thisTileDesiredZ), maxZoom + 1);
                     thisTileDesiredZ = Math.min(thisTileDesiredZ + scaleZoom(assumed / actual), Math.max(thisTileDesiredZ, maxTerrainLodZoom));
                 }
             }
@@ -409,7 +415,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
             const dz = nominalZ - it.zoom;
             const dx = cameraPoint[0] - 0.5 - (x << dz);
             const dy = cameraPoint[1] - 0.5 - (y << dz);
-            const overscaledZ = options.reparseOverscaled ? Math.max(it.zoom, thisTileDesiredZ) : it.zoom;
+            const overscaledZ = options.reparseOverscaled ? Math.max(it.zoom, Math.min(thisTileDesiredZ, layoutZCap)) : it.zoom;
             result.push({
                 tileID: new OverscaledTileID(it.zoom === maxZoom ? overscaledZ : it.zoom, it.wrap, it.zoom, x, y),
                 distanceSq: vec2.sqrLen([centerPoint[0] - 0.5 - x, centerPoint[1] - 0.5 - y]),

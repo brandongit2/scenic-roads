@@ -917,6 +917,14 @@ describe('coveringTiles over 3D terrain (Scenic Roads)', () => {
                     .toBe(maxZ(coveringTiles(view(make()), {...options, terrain: ground(0)})));
             });
 
+            test('the gain lays a reparsed tile out at most at the source\'s maxzoom + 1', () => {
+                const opts = {...options, maxzoom: 12};
+                const upstream = maxZ(coveringTiles(view(make()), {...opts, terrain: ground(0)}));
+                const raised = coveringTiles(view(make()), {...opts, terrain: ground(4500)});
+                expect(maxZ(raised)).toBeLessThanOrEqual(Math.max(upstream, 13));
+                expect(raised.every((t) => t.canonical.z <= 12)).toBe(true);
+            });
+
             test('ground above the camera stops at the map\'s highest zoom', () => {
                 const transform = view(make());
                 transform.setMaxZoom(16);
