@@ -58,6 +58,53 @@ describe('drawFill', () => {
         expect(programConfiguration.setConstantPatternPositions).toHaveBeenCalled();
     });
 
+    // Scenic Roads (second review 1): a lifted fill isn't clipped by its tiles' masks, so where a
+    // retained parent and a loaded child overlap it takes the overlap stencil rasters use.
+    test('a lifted fill draws a retained parent and a loaded child z-descending with the overlap stencil', async () => {
+        const {Painter: ActualPainter} = await vi.importActual<typeof import('../../render/painter.ts')>('../../render/painter.ts');
+        const painterMock: Painter = constructMockPainter();
+        painterMock.context.gl = {GEQUAL: 0x0206, KEEP: 0x1E00, REPLACE: 0x1E01} as any;
+        painterMock.nextStencilID = 1;
+        painterMock.getStencilConfigForOverlapAndUpdateStencilID = ActualPainter.prototype.getStencilConfigForOverlapAndUpdateStencilID;
+
+        const layer = new FillStyleLayer({
+            id: 'lifted', source: 'empty-source', type: 'fill', layout: {},
+            paint: {'fill-color': '#00f', 'fill-opacity': 0.5, 'fill-z-offset': 1500, 'fill-elevation-reference': 'sea'}
+        } as any, {});
+        layer.recalculate({zoom: 0, zoomHistory: {} as ZoomHistory} as EvaluationParameters, []);
+        expect(layer.elevationReference()).toBe(2);
+
+        const programMock = new Program(null, null, null, null, null, null, null, null);
+        (vi.mocked(painterMock.useProgram)).mockReturnValue(programMock);
+        const parent = constructMockTile(layer);
+        const child = constructMockTile(layer);
+        child.tileID = new OverscaledTileID(2, 0, 2, 0, 0);
+        child.tileID.terrainRttPosMatrix32f = createIdentityMat4f32();
+
+        const tileManagerMock = new TileManager(null, null, null);
+        (vi.mocked(tileManagerMock.getTile)).mockImplementation((id) => id.key === child.tileID.key ? child : parent);
+        tileManagerMock.map = {showCollisionBoxes: false} as any as Map;
+
+        const coords = [parent.tileID, child.tileID];
+        drawFill(painterMock, tileManagerMock, layer, coords, painterMock.renderContext);
+
+        expect(coords).toEqual([parent.tileID, child.tileID]); // the caller's order kept
+        expect(vi.mocked(painterMock.stencilModeForClipping)).not.toHaveBeenCalled();
+        // fill then outline, each child (z2) first, with a higher GEQUAL ref that REPLACEs
+        const calls = vi.mocked(programMock.draw).mock.calls;
+        expect(calls).toHaveLength(4);
+        const [childFill, parentFill, childOutline, parentOutline] = calls.map(c => c[3] as any);
+        for (const s of [childFill, parentFill]) {
+            expect(s.test.func).toBe(0x0206);
+            expect(s.pass).toBe(0x1E01);
+        }
+        expect(childFill.ref).toBeGreaterThan(parentFill.ref);
+        // one config for both passes: the parent's outline is kept off the child's fill too
+        expect(childOutline).toBe(childFill);
+        expect(parentOutline).toBe(parentFill);
+        expect(calls[0][9]).toBe('lifted');
+    });
+
     function constructMockLayer(): FillStyleLayer {
         const layerSpec = {
             id: 'mock-layer',

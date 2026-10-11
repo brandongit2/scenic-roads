@@ -217,6 +217,10 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   program variant (`painter.useProgram`'s `LIFTED` define, `render/lifted.ts`), so a layer that
   isn't lifted runs upstream's programs unchanged. On the globe a fill's polar caps, whose vertices
   lie beyond the tile's y, are kept inside the clip (`v_tile_pos` at the tile's edge).
+- Where a retained parent tile and a loaded child overlap (while one loads), the parent's part
+  under the child would draw again: lifted lines and fills take the overlap stencil upstream's
+  rasters use (tiles drawn z-descending, each zoom a higher `GEQUAL` reference that `REPLACE`s), so
+  only the child draws there; a fill's outline shares its fill's references.
 - Without 3D terrain the ground is at 0: both are a height above the map. On the globe without
   terrain the 3D layers are depth-tested against upstream's depth pre-pass of the sphere
   (`_renderTilesDepthBuffer`, for the far side), which is tessellated unlike a fill: a lifted
@@ -231,8 +235,8 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   `raster-elevation-reference`, on the same terms (`raster_style_layer.ts`, `raster.vertex.glsl`,
   `draw_raster.ts`): the app's water raster (basemap.ts's `water`) as a level surface. A raster's
   tiles' meshes are coarse (a quad, subdivided on the globe), so `ground` follows the terrain only
-  at their vertices; `sea` is exact. Overlapping parent and child tiles (while one loads) both draw
-  at the same depth: harmless opaque, doubled where see-through.
+  at their vertices; `sea` is exact. Where a parent and a child tile overlap, upstream's overlap
+  stencil (which rasters always take) draws only the child.
 - Point labels: upstream lifts them (`symbol-height-offset`, `symbol-height-anchor` `ground` or
   `absolute`, where `absolute` isn't exaggerated, so a label at a lake's level sank into exaggerated
   terrain); the anchor `sea` is added, its offset times the terrain's exaggeration, in the shaders

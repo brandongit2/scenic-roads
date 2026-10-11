@@ -196,6 +196,12 @@ function drawLineTiles(
 
     let firstTile = true;
 
+    // (Scenic Roads: a lifted line, not clipped by its tiles' masks, is drawn with the overlap stencil
+    // rasters use: tiles z-descending, so where a retained parent and a loaded child overlap only
+    // the child draws.)
+    let stencilModes: {[_: number]: Readonly<StencilMode>} | null = null;
+    if (elevated && coords.length) [stencilModes, coords] = painter.getStencilConfigForOverlapAndUpdateStencilID(coords.slice());
+
     for (const coord of coords) {
         const tile = tileManager.getTile(coord);
 
@@ -248,7 +254,7 @@ function drawLineTiles(
         }
 
         // (Scenic Roads: a lifted line clips itself to its tile in the fragment shader.)
-        const stencil = elevated ? StencilMode.disabled : painter.stencilModeForClipping(coord);
+        const stencil = stencilModes ? stencilModes[coord.overscaledZ] : painter.stencilModeForClipping(coord);
 
         program.draw(context, gl.TRIANGLES, depthMode,
             stencil, colorMode, CullFaceMode.disabled, uniformValues, terrainData, projectionData,

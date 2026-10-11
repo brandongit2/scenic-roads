@@ -45,11 +45,16 @@ export function drawFill(painter: Painter, tileManager: TileManager, layer: Fill
         const gl = painter.context.gl;
         const opaque = !pattern.constantOr(1 as any) && color.constantOr(Color.transparent).a === 1 && opacity.constantOr(0) === 1;
         const colorMode = painter.colorModeForRenderPass();
-        drawFillTiles(painter, tileManager, layer, coords,
-            new DepthMode(gl.LEQUAL, opaque ? DepthMode.ReadWrite : DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, false, renderContext);
+        if (!coords.length) return;
+        // Not clipped by its tiles' masks, it's drawn with the overlap stencil rasters use: tiles
+        // z-descending, so where a retained parent and a loaded child overlap only the child draws
+        // (one config for the fill and its outline, so the parent's outline is kept off the child too).
+        const [stencilModes, sorted] = painter.getStencilConfigForOverlapAndUpdateStencilID(coords.slice());
+        drawFillTiles(painter, tileManager, layer, sorted,
+            new DepthMode(gl.LEQUAL, opaque ? DepthMode.ReadWrite : DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, false, renderContext, stencilModes);
         if (layer.paint.get('fill-antialias')) {
-            drawFillTiles(painter, tileManager, layer, coords,
-                new DepthMode(gl.LEQUAL, DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, true, renderContext);
+            drawFillTiles(painter, tileManager, layer, sorted,
+                new DepthMode(gl.LEQUAL, DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, true, renderContext, stencilModes);
         }
         return;
     }
@@ -128,7 +133,8 @@ function drawFillTiles(
     depthMode: Readonly<DepthMode>,
     colorMode: Readonly<ColorMode>,
     isOutline: boolean,
-    renderContext: RenderContext) {
+    renderContext: RenderContext,
+    stencilModes: {[_: number]: Readonly<StencilMode>} | null = null) {
     const gl = painter.context.gl;
     const fillPropertyName = 'fill-pattern';
     const patternProperty = layer.paint.get(fillPropertyName);
@@ -189,8 +195,9 @@ function drawFillTiles(
                 fillOutlineUniformValues(translateForUniforms, elevationReference);
         }
 
-        // (Scenic Roads: a lifted fill clips itself to its tile in the fragment shader.)
-        const stencil = elevationReference > 0 ? StencilMode.disabled : painter.stencilModeForClipping(coord);
+        // (Scenic Roads: a lifted fill clips itself to its tile in the fragment shader, and takes the
+        // overlap stencil drawFill gives it.)
+        const stencil = stencilModes ? stencilModes[coord.overscaledZ] : painter.stencilModeForClipping(coord);
 
         program.draw(painter.context, drawMode, depthMode,
             stencil, colorMode, CullFaceMode.backCCW, uniformValues, terrainData, projectionData,
