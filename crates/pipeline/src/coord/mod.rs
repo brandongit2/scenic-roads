@@ -2534,6 +2534,16 @@ pub(crate) fn take_test_listener(port: u16) -> Option<std::net::TcpListener> {
     HELD.lock().unwrap().remove(&port)
 }
 
+/// Whether nothing listens on `port`: listened on here, at once let go (std sets SO_REUSEADDR, so
+/// a connection of an earlier listener left closing doesn't count; a listener still open does). Not
+/// told by connecting: a connection takes a local port of its own, which a loaded Mac, its ports
+/// held closing by the suites' many connections, may not have (EADDRNOTAVAIL), saying nothing of
+/// the listener.
+#[cfg(test)]
+pub(crate) fn port_free(port: u16) -> std::io::Result<()> {
+    std::net::TcpListener::bind(("0.0.0.0", port)).map(drop)
+}
+
 /// A listener on a port no other test of this process has been given, and its port.
 #[cfg(test)]
 fn test_listener() -> (std::net::TcpListener, u16) {
@@ -2575,7 +2585,7 @@ mod tests {
         // (Its blocking task under way, for good; a request that never reached it fails here.)
         rx.recv_timeout(WATCHDOG).expect("the request reached its handler");
         c.stop();
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
+        crate::coord::port_free(port).unwrap_or_else(|e| panic!("its listener closed: {e}"));
         // (The request's connection ended with the runtime: it fails, it doesn't hang.)
         assert!(asked.join().unwrap());
     }

@@ -7918,20 +7918,20 @@ mod pool_tests {
         lead.change_part(&r, &out);
         assert!(lead.slots[0].running.is_none(), "its catalog stopped");
         assert!(lead.coord.is_none() && lead.o.helper && lead.pool.as_ref().unwrap().role == pool::Role::Member);
-        // (Its listener closed as its stop returned: a connection to its port refused.)
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
+        // (Its listener closed as its stop returned: the port can be listened on again.)
+        crate::coord::port_free(port).unwrap_or_else(|e| panic!("its listener closed: {e}"));
     }
 
     #[test]
     fn a_coordinator_stopped_frees_its_port() {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("a"), "m4", "");
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        assert!(crate::coord::port_free(port).is_err(), "it listens");
         c.stop();
         drop(c);
-        // (Its listener closed as its stop returned, however loaded the Mac: a connection to its
-        // port refused.)
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
+        // (Its listener closed as its stop returned, however loaded the Mac: the port can be
+        // listened on again.)
+        crate::coord::port_free(port).unwrap_or_else(|e| panic!("its listener closed: {e}"));
     }
 
     #[test]
