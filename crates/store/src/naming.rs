@@ -97,10 +97,15 @@ pub fn valid_logical(s: &str) -> bool {
     !s.is_empty() && !s.contains(['.', '\0', '\\']) && s.split('/').all(|c| !c.is_empty())
 }
 
-/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash.
+/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash, and not GC's tombstone
+/// (`TOMB`: a file it's about to remove, renamed aside, isn't a content-named file).
 fn valid_ext(s: &str) -> bool {
-    !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty())
+    !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty()) && !s.ends_with(TOMB)
 }
+
+/// What GC renames a content-named file it's about to remove to: its name and this (crate::agent's
+/// gc: removed only if no job reused it meanwhile).
+pub const TOMB: &str = ".gc-tomb";
 
 fn is_hash16(s: &str) -> bool {
     s.len() == HASH_LEN && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))

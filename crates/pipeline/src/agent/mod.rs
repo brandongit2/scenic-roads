@@ -2619,7 +2619,8 @@ impl Agent {
             // (By measure, beside another job: the reserve and what it was measured to take on the
             // disk. Alone in the first slot: the reserve alone, the disk guard its backstop, so a
             // stale or high disk floor, which only rises, never holds the build, the owner's room
-            // target past it or not; a cold start likewise.)
+            // target past it or not; a cold start likewise. Room is still made for its measured
+            // disk as the caches allow: `try_start_said`.)
             let alone = k == 0 && self.slots.iter().skip(1).all(|s| s.running.is_none());
             room::RESERVE + if alone { 0 } else { self.measured_job(spec).map_or(0, |m| m.disk_mb << 20) }
         } else if k > 0 {
@@ -2704,10 +2705,14 @@ impl Agent {
             if let Some(t) = id.strip_prefix("terrain ") {
                 hints.add("terrain", &[t.to_string()]);
             }
-            match room::make_room(&cache, &r.join("sources"), room, margin, &hints) {
+            // (By measure, alone: room is made, as it can, for its measured disk too, though it
+            // waits only on the reserve and the target, `need_of`: the disk guard its backstop.)
+            let measured = if self.by_measure && !self.o.helper { self.measured_job(&spec).map_or(0, |m| m.disk_mb << 20) } else { 0 };
+            let sized = room.saturating_add(measured);
+            match room::make_room(&cache, &r.join("sources"), sized, margin, &hints) {
                 Ok(0) => {}
                 Ok(n) => {
-                    eprintln!("agent: {} GB of the cheap caches deleted (canopy squares, raw terrain tiles, copies of the records' files, pageview months) for {} GB free", n >> 30, room.saturating_add(margin) >> 30);
+                    eprintln!("agent: {} GB of the cheap caches deleted (canopy squares, raw terrain tiles, copies of the records' files, pageview months) for {} GB free", n >> 30, sized.saturating_add(margin) >> 30);
                     self.cheap = None;
                 }
                 Err(e) => eprintln!("agent: making room on the disk: {e:#}"),

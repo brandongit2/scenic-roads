@@ -561,11 +561,14 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
-/// The index file a version of the raw tiles' index is (`Stamp`): its inode, time and size. The
-/// index is only ever written by a temporary name and renamed over (rawpack's `Index::save`,
-/// crate::whole), and a rename always brings a new inode, so two versions never share a stamp, even
-/// written a moment apart with an archive swapped for another of a name as long (the same time and
-/// size). None: no index there.
+/// The index file a version of the raw tiles' index is (`Stamp`): its inode (on the NAS, the
+/// server's file ID on the share), time and size. The index is only ever written by a temporary
+/// name and renamed over (rawpack's `Index::save`, crate::whole), and a renamed file has a new file
+/// ID as the share gives them, so two versions don't share a stamp even written a moment apart with
+/// an archive swapped for another of a name as long (the same time and size). A change the stamp
+/// missed would cost a re-fetch (a tile asked of AWS that a newer archive had), not correctness:
+/// the archives looked in are those the index they were opened by named, held open. None: no
+/// index there.
 type Stamp = Option<(u64, std::time::SystemTime, u64)>;
 
 fn stamp_of(m: &std::fs::Metadata) -> Stamp {

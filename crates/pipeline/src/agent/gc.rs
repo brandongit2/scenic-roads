@@ -44,6 +44,11 @@ pub struct Report {
     pub inputs_skipped: Option<String>,
     /// The pool's journal entries its records don't reflect yet, whose files were kept.
     pub unmerged: usize,
+    /// Tombstones found and put back (or, their name taken again, removed).
+    pub tombs: usize,
+    /// The files put back this run: left alone by its sweeps (the next run decides).
+    #[serde(skip)]
+    pub restored: BTreeSet<PathBuf>,
     /// What it passed over and why (the agent's status says them as the job's note).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -60,9 +65,12 @@ const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "ap
 /// (its member away for weeks, its entry written but untold) keeps the files it names, its changes
 /// and its uploads, so GC may run beside other jobs. Empty with the pool never on (no journal); an
 /// error when any of them can't be read now, or an entry the records don't name doesn't read whole
-/// (short, damaged, or not there as listed: a read cut short says nothing of the entry): GC removes
-/// nothing then, until its lead has refused it (one unreadable for `driver::UNREADABLE_S` awake),
-/// which the records then name, so the hold is bounded.
+/// (short, damaged, or not there as listed: a read cut short says nothing of the entry): GC fails
+/// then, removing nothing (tried again as a failed job is, sooner than its daily run), until the
+/// lead has refused the entry (one unreadable for `driver::UNREADABLE_S` awake), which the records
+/// then name. With no term led (the pool switched off, or its term not readable whole), no one
+/// refuses: an entry unreadable whose day is `PASS_OVER_S` past is passed over, said as a warning,
+/// so the hold is bounded either way.
 #[derive(Debug, Default)]
 pub struct Unmerged {
     /// Content names, of the records and of the entries not merged.
@@ -74,9 +82,22 @@ pub struct Unmerged {
     pub records: Vec<(String, String)>,
     /// How many entries weren't merged.
     pub entries: usize,
+    /// The entries passed over, unreadable with no term led (`PASS_OVER_S`), said.
+    pub warnings: Vec<String>,
 }
 
-pub fn unmerged(root: &Path) -> Result<Unmerged> {
+/// How long an entry stays unreadable, no term led, before GC passes over it: three days. An entry
+/// is written whole in seconds (by a temporary name), and a lead refuses one its reads find not
+/// whole for `driver::UNREADABLE_S` (an hour) awake; three days is that hour with a margin for the
+/// pool switched off as a lead's Mac slept, a term handed over, or a share answering stale reads a
+/// while. Passing over isn't removing: the entry's files go only when old by GC's own keep window,
+/// as any file no catalog, manifest or records name.
+pub const PASS_OVER_S: u64 = 3 * 86400;
+const _: () = assert!(PASS_OVER_S >= crate::pool::driver::UNREADABLE_S + 2 * 86400);
+
+/// `now`: unix seconds, which `PASS_OVER_S` is counted to (by the entry's day, its key's: one
+/// whose day is before `now - PASS_OVER_S`'s was written longer ago than that).
+pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
     use crate::pool::{journal, records::Records, term};
     let mut u = Unmerged::default();
     match std::fs::metadata(root.join(journal::DIR)) {
@@ -87,6 +108,9 @@ pub fn unmerged(root: &Path) -> Result<Unmerged> {
     let nas = crate::pool::nas::Share::new(root);
     let cur = term::current(&nas).context("the current term")?;
     let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
+    // (Led: a term readable whole, the switch on or not told now; only then does anyone refuse.)
+    let led = cur.lead.is_some() && !matches!(crate::agent::pool::mode(root), Some(crate::agent::pool::Mode::Off | crate::agent::pool::Mode::Shadow));
+    let cutoff = journal::day(now.saturating_sub(PASS_OVER_S)).unwrap_or_default();
     u.files.extend(r.manifest.values().cloned());
     u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
     u.files.extend(r.pending.keys().cloned());
@@ -107,11 +131,21 @@ pub fn unmerged(root: &Path) -> Result<Unmerged> {
                     }
                 }
             }
-            // (Only the lead decides an entry is lost: it refuses one it can't read whole for an
-            // hour awake, and the records then name it.)
-            journal::Read::Short => anyhow::bail!("journal entry {key} doesn't read whole yet (its lead hasn't refused it)"),
-            journal::Read::Damaged(why) => anyhow::bail!("journal entry {key} reads damaged ({why}; its lead hasn't refused it)"),
-            journal::Read::Missing => anyhow::bail!("journal entry {key}, listed, isn't there as read (its lead hasn't refused it)"),
+            // (The lead decides an entry is lost: it refuses one it can't read whole for an hour
+            // awake, and the records then name it. No term led, one `PASS_OVER_S` old is passed.)
+            unreadable => {
+                let what = match unreadable {
+                    journal::Read::Short => "doesn't read whole".to_string(),
+                    journal::Read::Damaged(why) => format!("reads damaged ({why})"),
+                    _ => "isn't there as read, listed".to_string(),
+                };
+                let day = key.split('/').next().unwrap_or_default();
+                if !led && !cutoff.is_empty() && day < cutoff.as_str() {
+                    u.warnings.push(format!("journal entry {key} {what}, no term led to refuse it, for over {} days: passed over", PASS_OVER_S / 86400));
+                    continue;
+                }
+                anyhow::bail!("journal entry {key} {what} (not refused yet: nothing removed)");
+            }
         }
     }
     Ok(u)
@@ -222,19 +256,17 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
     };
     // The pool's newest records and its journal's entries not merged yet: unreadable, nothing
-    // removed, and said, loud, as a warning (the job's note in the status) every run it stays so.
+    // removed, the job failed (said in the status, tried again as failures are); entries passed
+    // over, no term led, said as warnings (the job's note).
     let um = {
         let _p = phase("the journal read", Class::NasRead);
-        match unmerged(root) {
-            Ok(u) => u,
-            Err(e) => {
-                let w = format!("nothing removed: the pool's records or journal can't be read whole ({e:#})");
-                eprintln!("gc: warning: {w}");
-                rep.warnings.push(w);
-                return Ok(rep);
-            }
-        }
+        let now_s = now.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        unmerged(root, now_s).context("nothing removed: the pool's records or journal can't be read whole")?
     };
+    for w in &um.warnings {
+        eprintln!("gc: warning: {w}");
+    }
+    rep.warnings.extend(um.warnings.iter().cloned());
     rep.unmerged = um.entries;
     // (What the gate's copies are kept by, read before the manifest is given up.)
     let inputs_keep = match inputs_kept(root, &m, &um, keep, now) {
@@ -265,10 +297,17 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                     continue;
                 }
                 rep.files_seen += 1;
+                if rep.restored.contains(&p) {
+                    continue;
+                }
                 let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
                 let name = e.file_name().to_string_lossy().into_owned();
                 let mtime = md.modified().unwrap_or(now);
-                if name.ends_with(".tmp") || name.ends_with(TOMB) {
+                if name.ends_with(TOMB) {
+                    put_back(&p, dry_run, &mut rep);
+                    continue;
+                }
+                if name.ends_with(".tmp") {
                     // A write that never finished (two days: no write takes that long).
                     if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
                         remove(&p, dry_run)?;
@@ -307,9 +346,16 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                     continue;
                 }
                 rep.files_seen += 1;
+                if rep.restored.contains(&p) {
+                    continue;
+                }
                 let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
                 let mtime = md.modified().unwrap_or(now);
-                if e.file_name().to_string_lossy().ends_with(".tmp") || e.file_name().to_string_lossy().ends_with(TOMB) {
+                if e.file_name().to_string_lossy().ends_with(TOMB) {
+                    put_back(&p, dry_run, &mut rep);
+                    continue;
+                }
+                if e.file_name().to_string_lossy().ends_with(".tmp") {
                     if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
                         remove(&p, dry_run)?;
                         rep.tmp_removed += 1;
@@ -374,6 +420,13 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
                 continue;
             }
             rep.files_seen += 1;
+            if e.file_name().to_string_lossy().ends_with(TOMB) {
+                put_back(&p, dry_run, rep);
+                continue;
+            }
+            if rep.restored.contains(&p) {
+                continue;
+            }
             let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
             let named = store::naming::parse_content_name(&rel).is_some();
             let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) && remove_unless_touched(&p, old, dry_run)? } else if plain_due {
@@ -409,9 +462,30 @@ fn still_old(p: &Path, old: &dyn Fn(SystemTime) -> bool) -> bool {
     std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(old)
 }
 
-/// What a file GC is about to remove is renamed to first (`remove_unless_touched`); one left by a
-/// GC stopped between is removed as an abandoned temporary file is, two days on.
-const TOMB: &str = ".gc-tomb";
+/// What a file GC is about to remove is renamed to first (`remove_unless_touched`).
+const TOMB: &str = store::naming::TOMB;
+
+/// A tombstone a sweep finds (left by a GC stopped between its rename and its removal, a put-back
+/// that failed, or another GC's still in flight): never removed here, but put back under its name
+/// when that's free, for the usual rules to decide next run; when its name has a file again (a job
+/// uploaded the same bytes meanwhile), the tombstone's copy is the same bytes and goes. Another
+/// GC's in flight finds its tombstone gone and keeps the file (`remove_unless_touched`).
+fn put_back(tomb: &Path, dry_run: bool, rep: &mut Report) {
+    let Some(name) = tomb.to_str().and_then(|t| t.strip_suffix(TOMB)).map(PathBuf::from) else { return };
+    if dry_run {
+        eprintln!("gc: would put {} back", name.display());
+        return;
+    }
+    let r = if name.exists() { std::fs::remove_file(tomb) } else { std::fs::rename(tomb, &name) };
+    match r {
+        Ok(()) => {
+            rep.tombs += 1;
+            rep.restored.insert(name);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("gc: putting {} back: {e}", name.display()),
+    }
+}
 
 /// Removes content-named file `p`, unless a job reused it by name meanwhile: renamed to a tombstone
 /// first (a job reusing it now finds no file of its name, and uploads it again: out::Out::put_file),
@@ -425,18 +499,28 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
     let mut tomb = p.as_os_str().to_owned();
     tomb.push(TOMB);
     let tomb = PathBuf::from(tomb);
-    match std::fs::rename(p, &tomb) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e).with_context(|| format!("rename {} aside", p.display())),
+    // (Not renamed aside, for whatever reason: kept this run, as a young file is.)
+    if let Err(e) = std::fs::rename(p, &tomb) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("gc: {} not set aside ({e}): kept this run", p.display());
+        }
+        return Ok(false);
     }
     if still_old(&tomb, old) {
-        std::fs::remove_file(&tomb).with_context(|| format!("remove {}", tomb.display()))?;
-        return Ok(true);
+        return match std::fs::remove_file(&tomb) {
+            Ok(()) => Ok(true),
+            // (Another GC put it back meanwhile: kept.)
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("remove {}", tomb.display())),
+        };
     }
     // (Touched: back under its name; one uploaded again meanwhile is the same bytes, its name its
-    // content's.)
-    std::fs::rename(&tomb, p).with_context(|| format!("put {} back", p.display()))?;
+    // content's. Gone already, another GC put it back: kept. Failing, the next run puts it back.)
+    if let Err(e) = std::fs::rename(&tomb, p) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("gc: putting {} back: {e} (the next run does)", p.display());
+        }
+    }
     Ok(false)
 }
 
@@ -651,7 +735,8 @@ mod tests {
 
     /// A journal entry the newest records don't reflect yet keeps the files it names (its changes
     /// and its uploads), however old; once merged (or refused) it keeps nothing of its own; an
-    /// entry not whole yet keeps GC from removing anything.
+    /// entry not whole yet keeps GC from removing anything, until refused, or with no term led,
+    /// `PASS_OVER_S` old.
     #[test]
     fn an_unmerged_entry_keeps_its_files() {
         use crate::pool::journal::{self, Entry, LeaseId};
@@ -692,33 +777,51 @@ mod tests {
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
-        // An entry that doesn't read whole (short, of whatever day: a read cut short says nothing
-        // of it), or reads damaged: nothing removed, said loud (the job's note), every run, until
-        // its lead refuses it.
+        // With the pool on (its switch and a term led): an entry that doesn't read whole (short,
+        // of whatever day: a read cut short says nothing of it), or reads damaged: GC fails,
+        // nothing removed, every run, until the lead refuses it.
+        let enabled = root.join(crate::agent::pool::ENABLED);
+        fs::create_dir_all(enabled.parent().unwrap()).unwrap();
+        fs::write(&enabled, b"").unwrap();
         put(c, 60);
         let now = crate::agent::jobs::now_s();
-        let short_key = format!("{}/1-5", journal::day(now - 3 * 86400).unwrap());
-        let short = root.join(journal::DIR).join(format!("{short_key}.json"));
-        fs::create_dir_all(short.parent().unwrap()).unwrap();
-        fs::write(&short, b"{\"member\": ").unwrap();
+        let entry_at = |key: &str, bytes: &[u8]| {
+            let p = root.join(journal::DIR).join(format!("{key}.json"));
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, bytes).unwrap();
+            p
+        };
+        let short_key = format!("{}/1-5", journal::day(now - 10 * 86400).unwrap());
+        entry_at(&short_key, b"{\"member\": ");
         for _ in 0..2 {
-            let r = run(root, 14, false).unwrap();
-            assert!(r.removed == 0 && r.warnings.len() == 1 && r.warnings[0].contains("nothing removed") && r.warnings[0].contains("1-5"), "{r:?}");
+            let e = format!("{:#}", run(root, 14, false).unwrap_err());
+            assert!(e.contains("nothing removed") && e.contains("1-5"), "{e}");
             assert!(root.join(c).exists());
         }
         let damaged_key = format!("{}/1-6", journal::day(now).unwrap());
-        let damaged = root.join(journal::DIR).join(format!("{damaged_key}.json"));
-        fs::create_dir_all(damaged.parent().unwrap()).unwrap();
-        fs::write(&damaged, b"{\"not\": \"an entry\"}").unwrap();
+        entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
         rec.save(&nas).unwrap();
-        let r = run(root, 14, false).unwrap();
-        assert!(r.removed == 0 && r.warnings[0].contains("damaged"), "{r:?}");
+        let e = format!("{:#}", run(root, 14, false).unwrap_err());
+        assert!(e.contains("damaged") && root.join(c).exists(), "{e}");
         // Both refused by the lead: passed over, the sweep goes on.
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
         assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
+        // The pool switched off since: no one refuses. An entry unreadable from today still fails
+        // GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far from the
+        // bound) is passed over, said as a warning, the sweep going on.
+        fs::remove_file(&enabled).unwrap();
+        put(c, 60);
+        let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
+        let e = format!("{:#}", run(root, 14, false).unwrap_err());
+        assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
+        fs::remove_file(&young).unwrap();
+        entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
+        let r = run(root, 14, false).unwrap();
+        assert!(r.removed == 1 && r.warnings.len() == 1 && r.warnings[0].contains("1-7") && r.warnings[0].contains("passed over"), "{r:?}");
+        assert!(!root.join(c).exists());
     }
 
     /// A file reused by name as GC removes it: renamed to a tombstone first, its time looked at
@@ -743,6 +846,28 @@ mod tests {
         assert!(!p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 0);
         // Gone already (another GC, or never there): nothing.
         assert!(!remove_unless_touched(&p, &old, false).unwrap());
+        // A tombstone a sweep finds (a GC stopped between, or another's in flight): never removed
+        // as a stale file, put back under its name for the usual rules; its name taken again (the
+        // same bytes uploaded meanwhile), it goes. Not a content-named file either way.
+        let root = d.path();
+        let mut tomb = p.as_os_str().to_owned();
+        tomb.push(TOMB);
+        let tomb = PathBuf::from(tomb);
+        fs::write(&tomb, b"x").unwrap();
+        age(&tomb, 30);
+        assert!(store::naming::parse_content_name(&tomb.strip_prefix(root).unwrap().to_string_lossy()).is_none());
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.files.insert("layers/roads/hi/6-9-9".into(), store::catalog::FileRef { file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(), ..Default::default() });
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert!(r.tombs == 1 && p.exists() && !tomb.exists() && r.removed == 0, "put back, decided next run: {r:?}");
+        // (Its name a young file of the same bytes, uploaded again meanwhile.)
+        fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
+        fs::write(&tomb, b"x").unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
     }
 
     #[test]

@@ -1879,8 +1879,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     the disk's free space. A cold start (a step none of whose targets has run) runs alone, and
     nothing starts beside it; the first slot waits for its next job that doesn't fit beside the
     second's, as above. Two Wikidata steps, two heavy NAS readers and two jobs of one step that
-    isn't shared still never run at once (batch 7). A job's room on the disk is the reserve and its
-    measured disk.
+    isn't shared still never run at once (batch 7). Beside another job, a job's room on the disk is
+    the reserve and its measured disk; alone in the first slot, room is made for the reserve, its
+    measured disk and the owner's target as the caches allow, but the job waits only for the
+    reserve and the target (a disk floor only rises: a stale or high one never holds the build),
+    the disk guard its backstop.
 - **A newly installed app:** the first job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one; a second job still running stops then (what it
   finished kept) and goes on under the new one.
@@ -2328,10 +2331,13 @@ between jobs into the other way. On:
   under a day old, merged, nothing told or listed waiting); **GC** only on a step that re-asserted
   the lead's term, so caught up; it keeps every file the newest records, or a journal entry they
   don't reflect yet, names (agent::gc::unmerged: an entry not merged keeps its changes and uploads,
-  however old; one that doesn't read whole, reads damaged or isn't there as listed holds the sweep,
-  said as GC's warning in the status, until the lead refuses it), so it may run beside other jobs.
-  A file it removes is renamed to a tombstone first and its time looked at again there: touched
-  since GC listed it (a job reusing it by name), it's put back.
+  however old; one that doesn't read whole, reads damaged or isn't there as listed fails GC,
+  nothing removed, tried again as a failed job is, until the lead refuses it; with no term led no
+  one refuses, so one whose day is over three days past is passed over, said as GC's warning in
+  the status), so it may run beside other jobs. A file it removes is renamed to a tombstone first
+  and its time looked at again there: touched since GC listed it (a job reusing it by name), it's
+  put back; a tombstone a sweep finds (a GC stopped between) is put back too, never removed, for
+  the next run to decide.
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
   (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
   devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
@@ -2799,7 +2805,9 @@ At each phase's end an Opus agent reviews the work against this plan.
      attributes cached a while on SMB), so GC may still read the old time and remove a file another
      Mac reused that moment; that job's entry then names a file gone, which a catalog would miss
      (unchecked, as plan §10's stale reads). An entry that doesn't read whole holds GC until its
-     lead refuses it, after an hour unreadable;
+     lead refuses it, after an hour unreadable, or with no term led, three days on its day, when
+     GC passes over it: a member's entry that reads whole only later (a share's stale reads over
+     three days, the pool off) may then name files GC removed, if older than its two weeks;
    - the disk a job takes is counted by the caches' accessor in Rust alone: dem/cachefile.py's
      writes (the pageview months) count only through the scratch folder's look (the disk's fall,
      logged, is no floor); a unit's disk is what the accessor wrote while it was built here, its

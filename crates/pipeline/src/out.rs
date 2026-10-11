@@ -241,23 +241,29 @@ impl Out {
 
     /// Uploads bytes as `<logical>.<hash16>.<ext>` without naming them in the manifest (the gate's
     /// checked copies, which its index names: crate::inputs::gate), and returns the content name.
-    /// One there already is reused and touched, as `put_file` does.
+    /// One there already is reused and touched, as `put_file` does, and uploaded again when it
+    /// can't be touched or is gone once touched (GC took it between: its tombstone sweep).
     pub fn store_bytes(&mut self, logical: &str, ext: &str, bytes: &[u8]) -> Result<String> {
         let h = store::naming::hash16(bytes);
         let name = store::naming::content_name(logical, &h, ext);
         let dest = self.root.join(&name);
-        let existed = dest.exists();
+        let mut existed = dest.exists();
         let local = self.scratch_file(&format!("{logical}.{ext}"));
         std::fs::write(&local, bytes)?;
         let got = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
+        if got.is_ok() && existed {
+            let touched = std::fs::File::options().write(true).open(&dest).and_then(|f| f.set_modified(std::time::SystemTime::now())).is_ok();
+            if !touched || !dest.exists() {
+                existed = false;
+                let again = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
+                std::fs::remove_file(&local).ok();
+                anyhow::ensure!(again? == name, "{logical}: wrote another name than {name}");
+            }
+        }
         std::fs::remove_file(&local).ok();
         anyhow::ensure!(got? == name, "{logical}: wrote another name than {name}");
         crate::timings::count(if existed { 0 } else { bytes.len() as u64 }, 1);
-        if existed {
-            if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
-                f.set_modified(std::time::SystemTime::now()).ok();
-            }
-        } else {
+        if !existed {
             self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));
         }
         Ok(name)
@@ -507,6 +513,39 @@ mod tests {
         std::fs::set_permissions(&dest, perm).unwrap();
         assert_eq!(out.put_file("work/x/6-1-1", "bin", &local("c")).unwrap(), name);
         assert!(out.pending.contains_key(&name));
+    }
+
+    /// The gate's copies (`store_bytes`) likewise: one reused is touched; one GC took between (gone
+    /// once touched: its tombstone sweep), or that can't be touched, is uploaded again, its check
+    /// pending, so the index the gate writes never names a file that isn't there.
+    #[test]
+    fn a_stored_copy_reused_is_touched_or_uploaded_again() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let mut out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let name = out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap();
+        out.pending.clear();
+        let dest = root.join(&name);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+        std::fs::File::options().write(true).open(&dest).unwrap().set_modified(old).unwrap();
+        assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), name);
+        assert!(std::fs::metadata(&dest).unwrap().modified().unwrap().elapsed().unwrap() < std::time::Duration::from_secs(600), "touched");
+        assert!(out.pending.is_empty(), "reused, not uploaded");
+        // Can't be touched (read-only here): uploaded as new, its check pending.
+        let mut perm = std::fs::metadata(&dest).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&dest, perm).unwrap();
+        assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), name);
+        assert!(out.pending.contains_key(&name));
+        // Gone (GC took it): written again, there.
+        let mut perm = std::fs::metadata(&dest).unwrap().permissions();
+        perm.set_readonly(false);
+        std::fs::set_permissions(&dest, perm).unwrap();
+        std::fs::remove_file(&dest).unwrap();
+        out.pending.clear();
+        assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), name);
+        assert!(dest.exists() && out.pending.contains_key(&name));
     }
 
     #[test]

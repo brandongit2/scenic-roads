@@ -492,6 +492,10 @@ pub struct Coordinator {
     stopped: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
     closed: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// The requests' `route` calls under way (each holds it read) and whether it has stopped: `stop`
+    /// takes it to write, so it returns only once none runs, and none starts after (`http::json`):
+    /// no request writes its state (leases, costs, …) into its folder once `stop` has returned.
+    routes: Arc<std::sync::RwLock<bool>>,
 }
 
 impl Drop for Coordinator {
@@ -711,9 +715,10 @@ impl Coordinator {
         let stopped: Arc<std::sync::atomic::AtomicBool> = Default::default();
         let wake: Arc<tokio::sync::Notify> = Default::default();
         let (closed_tx, closed) = std::sync::mpsc::channel();
-        let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default() };
+        let routes: Arc<std::sync::RwLock<bool>> = Default::default();
+        let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default(), routes: routes.clone() };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
-        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped, wake, closed: Mutex::new(Some(closed)) };
+        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped, wake, closed: Mutex::new(Some(closed)), routes };
         c.write_page();
         Ok(c)
     }
@@ -727,9 +732,12 @@ impl Coordinator {
 
     /// Stops answering (this process no longer leads): its listener closed and its runtime shut down,
     /// its port free for the next coordinator once this returns (its thread says so, `closed`: no
-    /// clock decides it), whatever a blocking task of it waits on. Its state stays on disk.
+    /// clock decides it), whatever a blocking task of it waits on. Its state stays on disk, as the
+    /// requests under way left it: they're let finish (local and short: the state's lock and its
+    /// files), and none starts after, so none writes it once this returns.
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+        *self.routes.write().unwrap_or_else(|e| e.into_inner()) = true;
         self.wake.notify_one();
         if let Some(rx) = self.closed.lock().unwrap().take() {
             // (Its thread gone already, its listener with it: the sender dropped.)
@@ -2006,6 +2014,9 @@ mod http {
         /// tasks (`net`).
         pub root: Arc<Mutex<Option<PathBuf>>>,
         pub remote: Arc<Remote>,
+        /// Held read by each request's `route`, true once the coordinator has stopped
+        /// (Coordinator::stop): then none runs.
+        pub routes: Arc<std::sync::RwLock<bool>>,
     }
 
     /// The data servers' files opened for tasks, kept (the most recent `REMOTE_FILES`), each with
@@ -2283,7 +2294,15 @@ mod http {
             Ok(Err(_)) => return error(StatusCode::PAYLOAD_TOO_LARGE, "too big, or cut short"),
             Err(_) => return error(StatusCode::REQUEST_TIMEOUT, "its body didn't come"),
         };
-        match tokio::task::spawn_blocking(move || route(&path, &body, &c.shared, &c.journal, &caller)).await {
+        // (Not once the coordinator has stopped: what it would write is the next one's to keep.)
+        let routed = tokio::task::spawn_blocking(move || {
+            let stopped = c.routes.read().unwrap_or_else(|e| e.into_inner());
+            if *stopped {
+                return Ok((503, serde_json::json!({ "error": "this coordinator has stopped" })));
+            }
+            route(&path, &body, &c.shared, &c.journal, &caller)
+        });
+        match routed.await {
             Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
             Ok(Ok((code, v))) => (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), [(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
             Ok(Err(e)) => error(StatusCode::BAD_REQUEST, format!("{e:#}")),
@@ -2553,12 +2572,31 @@ mod tests {
         *http::TEST_BLOCKED.lock().unwrap() = Some(tx);
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "a page");
         let asked = std::thread::spawn(move || w.get_bytes("/work/test-block").is_err());
-        // (Its blocking task under way, for good.)
-        rx.recv().unwrap();
+        // (Its blocking task under way, for good; a request that never reached it fails here.)
+        rx.recv_timeout(WATCHDOG).expect("the request reached its handler");
         c.stop();
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused), "its listener closed");
         // (The request's connection ended with the runtime: it fails, it doesn't hang.)
         assert!(asked.join().unwrap());
+    }
+
+    /// Only turns a hang into a failure: never reached by a test that passes.
+    const WATCHDOG: Duration = Duration::from_secs(300);
+
+    /// The next coordinator, this process's (a member that takes the lead again), starts on the port
+    /// a stopped one let go, a request answered by it before: `stop` returns once the port is free,
+    /// no wait and no retry. It answers there, the state the first left loaded.
+    #[test]
+    fn the_next_coordinator_starts_on_the_port_a_stopped_one_let_go() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("a");
+        let (c, port) = start_for_test(&dir, "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        w.ask(&ask(4096)).unwrap();
+        c.stop();
+        let next = Coordinator::start(&dir, None, port, "m4", "").unwrap();
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.contact.token.clone(), "m1");
+        w.ask(&ask(4096)).unwrap();
     }
 
     #[test]
