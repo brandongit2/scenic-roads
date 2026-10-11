@@ -567,8 +567,9 @@ export class FieldLayer implements CustomLayerInterface {
    * sub-cell walk, colour by height, linear mixing, the steps' least length) as constants; 2 the hits
    * as MapLibre shows them from their mean colour, not summed a hit; 4 light to stored values by
    * square roots; 8 the ground by the hardware's bilinear filter (with the float-linear extension); 16 the
-   * hits' colours at half precision (mediump). */
-  opt = Number(new URLSearchParams(location.search).get('fopt')) || 0;
+   * hits' colours at half precision (mediump). 1 and 2 by default: −0.76 and −0.30 ms at Manhattan 70°
+   * on the quiet Mac, the images within 0.04 L*; 4, 8 and 16 measured nothing. */
+  opt = Number(new URLSearchParams(location.search).get('fopt') ?? 3);
   floatLinear = false;
   /** The hulls' blocks: cells a side (`?fblk=`; 1, 2, 4, 8). */
   blockCells = Number(new URLSearchParams(location.search).get('fblk')) || 8;

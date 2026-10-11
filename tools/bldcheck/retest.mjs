@@ -32,7 +32,7 @@ const PHASES = opt('phases', 'H,B,S').split(',');
 const CDP = 5293, APP = 'http://127.0.0.1:5291', FIELD = 'http://127.0.0.1:5290/field', BLD = 'http://127.0.0.1:5290/bld';
 const views = JSON.parse(fs.readFileSync(viewsFile, 'utf8'));
 const VAR_VIEWS = opt('var-views', 't-manhattan-p70,t-kanto-p70,t-tokyo-z11').split(',');
-const BASE = { blockCells: 8, tmin: 0.004, stepTexel: 2, opt: 0 };
+const BASE = { blockCells: 8, tmin: 0.004, stepTexel: 2, opt: 3 };
 
 const closeAll = async () => {
   for (const t of await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json()) if (t.type === 'page') await fetch(`http://127.0.0.1:${CDP}/json/close/${t.id}`);

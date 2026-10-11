@@ -1544,8 +1544,25 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
      extension;
   16. the hits' colours at half precision.
 
-  All five together change no view by more than 0.06 L* (sets R, A, B, C). 1, 4 and 8 are the ones
-  that can help straight down, where steps don't.
+  All five together change no view by more than 0.06 L* (sets R, A, B, C).
+- **Timed (11 Oct, 17:20–18:00, quiet window; retest.mjs phase O over the six views, paired,
+  against two-texel steps):** 1, the switches as constants: −0.76 ± 0.02 ms at Manhattan 70°, −0.30
+  Tokyo straight down, −0.16 Manhattan z11, −0.15 Kantō, ~0 elsewhere; 2, the shown colour from the
+  mean: −0.30 ± 0.04 at Manhattan 70°, −0.11 Kantō, 0 elsewhere; 4, 8 and 16: nothing beyond the
+  noise (≤ 0.09). **1 and 2 are the default** (`?fopt=3`; 4, 8, 16 stay as switches, off).
+- **The field's cost now** (phase H, the defaults: two-texel steps, options 1 and 2; six paired
+  repetitions):
+
+  | View | ms | 1-minute load |
+  |---|---|---|
+  | Manhattan z11, 70° | +0.58 ± 0.09 | 3.4 |
+  | Kantō z10, 70° | +0.75 ± 0.34 | 3.5 |
+  | CN Tower z10, 80° | +0.79 ± 0.28 | 3.7 |
+  | Chamonix z12, 65° | +0.81 ± 0.23 | 4.1 |
+  | Tokyo z11 straight down | +1.67 ± 0.25 | 4.8 |
+  | Manhattan z11 straight down | +1.57 ± 0.23 | 4.7 |
+
+  All six within the 2 ms budget (straight down the tightest: 0.3–0.4 ms to spare).
 
 **The hand-overs' cross-fade (zoom 12 and 13): not cheap, not built.**
 - MapLibre swaps the meshes' tile zoom at the integer. A fade needs both representations drawn
