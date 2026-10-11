@@ -2111,9 +2111,9 @@ mod http {
                     Err(e) => eprintln!("coordinator: its socket: {e}"),
                 }
             });
-            // (Its listener gone with `accept`; its runtime shut down without waiting for its
-            // blocking tasks (a stat of a NAS that doesn't answer may never return), its
-            // connections' tasks dropped with it: nothing of it holds the port.)
+            // (Its listener and every connection's socket closed by `accept` as it returned; its
+            // runtime shut down without waiting for its blocking tasks (a stat of a NAS that
+            // doesn't answer may never return), which hold no socket: nothing of it holds the port.)
             rt.shutdown_background();
             closed.send(()).ok();
         })?;
@@ -2153,11 +2153,20 @@ mod http {
     async fn accept(listener: tokio::net::TcpListener, app: Router, stopped: Arc<std::sync::atomic::AtomicBool>, wake: Arc<tokio::sync::Notify>) {
         use tower::ServiceExt;
         let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
+        // (Its connections: each ended, its socket closed, before a stop returns.)
+        let mut conns = tokio::task::JoinSet::new();
+        let (end, ending) = tokio::sync::watch::channel(false);
         loop {
-            // (Stopped: the listener closed, the runtime and its connections ended with it.)
+            // (Stopped: every connection told to end, its socket closed at once (reset, not left
+            // closing), and waited for, whatever its handler waits on; then the listener closed.
+            // No socket of it is left holding the port once `stop` returns: a connection still
+            // open would refuse the next coordinator's listen on it, EADDRINUSE.)
             if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                end.send(true).ok();
+                while conns.join_next().await.is_some() {}
                 return;
             }
+            while conns.try_join_next().is_some() {}
             let got = tokio::select! {
                 _ = wake.notified() => continue,
                 got = listener.accept() => got,
@@ -2177,13 +2186,27 @@ mod http {
             let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
             socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive).ok();
             let app = app.clone();
-            tokio::spawn(async move {
+            let mut ending = ending.clone();
+            conns.spawn(async move {
+                use std::os::fd::{AsRawFd, BorrowedFd};
+                let fd = stream.as_raw_fd();
                 let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
                     req.extensions_mut().insert(ConnectInfo(peer));
                     app.clone().oneshot(req.map(Body::new))
                 });
                 let conn = hyper::server::conn::http1::Builder::new().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(HEADERS_MAX).serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
-                tokio::time::timeout(CONNECTION_MAX, conn).await.ok();
+                // (Told to end: no linger set while `conn` still owns the stream, so dropping it
+                // resets the connection, the socket gone at once.)
+                let end = async {
+                    ending.wait_for(|e| *e).await.ok();
+                    // SAFETY: `fd` is the stream `conn` owns, still open: `select!` drops `conn` only
+                    // once this future has completed.
+                    socket2::SockRef::from(&unsafe { BorrowedFd::borrow_raw(fd) }).set_linger(Some(Duration::ZERO)).ok();
+                };
+                tokio::select! {
+                    _ = tokio::time::timeout(CONNECTION_MAX, conn) => {}
+                    _ = end => {}
+                }
                 drop(permit);
             });
         }
