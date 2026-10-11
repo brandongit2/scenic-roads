@@ -182,7 +182,7 @@ void main() {
   float gmin = mix(0.7, 0.98, 1.0 - u_lightintensity);
   float hiD0 = max(1.0 - u_colorvalue + u_lightintensity, 1.0);
   vec3 roofC = clamp((u_colour + 0.03) * mix(1.0 - u_lightintensity, hiD0, dRoof) * u_lightcolor, lowc, vec3(1.0));
-  vec3 wallC = (u_colour + 0.03) * mix(1.0 - u_lightintensity, hiD0, dWall) * u_lightcolor;
+  vec3 wallC = (u_colour + 0.03) * mix(1.0 - u_lightintensity, hiD0, u_dbg == 25 ? dRoof : dWall) * u_lightcolor / (u_dbg == 25 ? gmin : 1.0);
   // March: T what still gets through, col what the hits so far show. The coarse walk goes through the
   // tile's 32 × 32 cells along the ray, skipping a cell whole where the ray stays above its tallest
   // roof; in the others, steps of a pixel's footprint where the ray is (one where it comes nearly
@@ -304,12 +304,7 @@ void main() {
       float tt = 0.0;
       vec3 hit = vec3(0.0);   // Σ τ × colour over the classes' roofs and walls
       covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
-      // The open share around the ray at its height: a ray that hasn't met a building is in the
-      // open, so it meets walls at their crossings ÷ π a metre over that share (the walls of a
-      // random set entered from outside it), the buildings taller than the ray its obstacles.
-      float amid = 0.5 * (ac + ae), Ftall = 0.0;
-      if (u_dbg != 23) for (int c = 0; c < 5; c++) if (F[c] > 1e-5 && max(V[c] / F[c], 0.5) * u_hk > amid) Ftall += clamp(F[c], 0.0, 0.999);
-      float openK = 1.0 / max(1.0 - Ftall, 0.05);
+      float openK = 1.0;   // (the walls' rate a metre in the open: see the open-ground measure, planned)
       for (int c = 4; c >= 0; c--) {   // (tallest first: the order a ray coming down meets them)
         float f = clamp(F[c], 0.0, 0.999);
         if (f < 1e-5) continue;
