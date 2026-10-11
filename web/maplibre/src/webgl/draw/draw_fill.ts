@@ -27,25 +27,19 @@ export function drawFill(painter: Painter, tileManager: TileManager, layer: Fill
     const layerOpacity = layer.paint.get('fill-layer-opacity');
     if (opacity.constantOr(1) === 0 || layerOpacity === 0) return;
 
-    if (layerOpacity < 1) {
-        if (renderContext.currentPass !== 'translucent') return;
-        const results = prepareDrawLayerOpacity(painter, layer, coords);
-        drawFillAndOutline(painter, tileManager, layer, coords, renderContext);
-        drawLayerOpacity(painter, layerOpacity, results, layer);
-        return;
-    }
-
     const pattern = layer.paint.get('fill-pattern');
 
     // Scenic Roads: an elevated fill (fill-z-offset, fill-elevation-reference) is drawn in 3D,
     // depth-tested against the terrain and the 3D layers, not draped (render_to_texture.ts's
-    // drapes): opaque, it hides what lies below it; see-through, what's below shows.
+    // drapes): opaque, it hides what lies below it; see-through, what's below shows. Before the
+    // layer-opacity branch, as it draws no clipping masks for that branch's EQUAL tests.
     if (layer.elevationReference() > 0) {
         if (renderContext.currentPass !== 'translucent') return;
+        if (!coords.length) return;
         const gl = painter.context.gl;
         const opaque = !pattern.constantOr(1 as any) && color.constantOr(Color.transparent).a === 1 && opacity.constantOr(0) === 1;
+        const results = layerOpacity < 1 ? prepareDrawLayerOpacity(painter, layer, coords) : null;
         const colorMode = painter.colorModeForRenderPass();
-        if (!coords.length) return;
         // Not clipped by its tiles' masks, it's drawn with the overlap stencil rasters use: tiles
         // z-descending, so where a retained parent and a loaded child overlap only the child draws
         // (one config for the fill and its outline, so the parent's outline is kept off the child too).
@@ -56,6 +50,15 @@ export function drawFill(painter: Painter, tileManager: TileManager, layer: Fill
             drawFillTiles(painter, tileManager, layer, sorted,
                 new DepthMode(gl.LEQUAL, DepthMode.ReadOnly, renderContext.depthRangeFor3D), colorMode, true, renderContext, stencilModes);
         }
+        if (results) drawLayerOpacity(painter, layerOpacity, results, layer);
+        return;
+    }
+
+    if (layerOpacity < 1) {
+        if (renderContext.currentPass !== 'translucent') return;
+        const results = prepareDrawLayerOpacity(painter, layer, coords);
+        drawFillAndOutline(painter, tileManager, layer, coords, renderContext);
+        drawLayerOpacity(painter, layerOpacity, results, layer);
         return;
     }
 

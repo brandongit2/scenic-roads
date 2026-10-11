@@ -8,6 +8,7 @@ import {createRenderContext} from '../../render/render_context.ts';
 import {Program} from '../program.ts';
 import {FillStyleLayer} from '../../style/style_layer/fill_style_layer.ts';
 import {drawFill} from './draw_fill.ts';
+import {prepareDrawLayerOpacity, drawLayerOpacity} from './draw_layer_opacity.ts';
 import {FillBucket} from '../../data/bucket/fill_bucket.ts';
 import {createIdentityMat4f32} from '../../util/util.ts';
 
@@ -31,6 +32,10 @@ vi.mock(import('../../data/bucket/symbol_bucket'), () => {
     };
 });
 vi.mock(import('../../symbol/projection'));
+vi.mock(import('./draw_layer_opacity'), () => ({
+    prepareDrawLayerOpacity: vi.fn(() => ({}) as any),
+    drawLayerOpacity: vi.fn(),
+}));
 
 describe('drawFill', () => {
     test('should call programConfiguration.setConstantPatternPositions for transitioning fill-pattern', () => {
@@ -103,6 +108,42 @@ describe('drawFill', () => {
         expect(childOutline).toBe(childFill);
         expect(parentOutline).toBe(parentFill);
         expect(calls[0][9]).toBe('lifted');
+    });
+
+    // Scenic Roads (third review B1): with fill-layer-opacity below 1 a lifted fill still takes the
+    // overlap stencil, not the clipping masks' EQUAL tests (it draws no masks).
+    test('a lifted fill with layer opacity takes the overlap stencil inside the layer-opacity pass', async () => {
+        const {Painter: ActualPainter} = await vi.importActual<typeof import('../../render/painter.ts')>('../../render/painter.ts');
+        const painterMock: Painter = constructMockPainter();
+        painterMock.context.gl = {GEQUAL: 0x0206, KEEP: 0x1E00, REPLACE: 0x1E01} as any;
+        painterMock.nextStencilID = 1;
+        painterMock.getStencilConfigForOverlapAndUpdateStencilID = ActualPainter.prototype.getStencilConfigForOverlapAndUpdateStencilID;
+
+        const layer = new FillStyleLayer({
+            id: 'lifted', source: 'empty-source', type: 'fill', layout: {},
+            paint: {'fill-color': '#00f', 'fill-z-offset': 1500, 'fill-elevation-reference': 'sea', 'fill-layer-opacity': 0.5}
+        } as any, {});
+        layer.recalculate({zoom: 0, zoomHistory: {} as ZoomHistory} as EvaluationParameters, []);
+
+        const programMock = new Program(null, null, null, null, null, null, null, null);
+        (vi.mocked(painterMock.useProgram)).mockReturnValue(programMock);
+        const parent = constructMockTile(layer);
+        const child = constructMockTile(layer);
+        child.tileID = new OverscaledTileID(2, 0, 2, 0, 0);
+        child.tileID.terrainRttPosMatrix32f = createIdentityMat4f32();
+        const tileManagerMock = new TileManager(null, null, null);
+        (vi.mocked(tileManagerMock.getTile)).mockImplementation((id) => id.key === child.tileID.key ? child : parent);
+        tileManagerMock.map = {showCollisionBoxes: false} as any as Map;
+
+        drawFill(painterMock, tileManagerMock, layer, [parent.tileID, child.tileID], painterMock.renderContext);
+
+        expect(vi.mocked(prepareDrawLayerOpacity)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(drawLayerOpacity)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(painterMock.stencilModeForClipping)).not.toHaveBeenCalled();
+        const stencils = vi.mocked(programMock.draw).mock.calls.map(c => c[3] as any);
+        expect(stencils).toHaveLength(4);
+        for (const s of stencils) expect(s.test.func).toBe(0x0206);
+        expect(stencils[0].ref).toBeGreaterThan(stencils[1].ref);
     });
 
     function constructMockLayer(): FillStyleLayer {
