@@ -32,6 +32,7 @@ import type {CanvasSourceSpecification} from '../source/canvas_source.ts';
 import type {LoadTileResult} from '../source/vector_tile_source.ts';
 import type {SymbolStyleLayer} from '../style/style_layer/symbol_style_layer.ts';
 import type {SymbolBucket} from '../data/bucket/symbol_bucket.ts';
+import type {LineBucket} from '../data/bucket/line_bucket.ts';
 
 type TileResult = {
     tile: Tile;
@@ -515,9 +516,33 @@ export class TileManager extends Evented<SourceEventType> {
         const layers = this.map?.style?._layers;
         if (!layers) return maxElevation;
         const tiles = this._inViewTiles.getAllTiles();
+        // Scenic Roads: the lifted lines, fills and rasters (style_spec_extensions.ts) too: their
+        // offset, times the terrain's exaggeration for the reference `sea`.
+        const exaggeration = this.map?.terrain?.exaggeration ?? 1;
         for (const layerId in layers) {
             const layer = layers[layerId];
-            if (layer.type !== 'symbol' || layer.source !== this.id || layer.isHidden(this.transform.zoom)) continue;
+            if (layer.source !== this.id || layer.isHidden(this.transform.zoom)) continue;
+            const lifted = layer as unknown as {elevationReference?: () => number; paint: {get(k: string): unknown}};
+            const reference = typeof lifted.elevationReference === 'function' ? lifted.elevationReference() : 0;
+            if (reference > 0) {
+                const scale = reference === 2 ? exaggeration : 1;
+                const name = `${layer.type}-z-offset`;
+                const value = lifted.paint.get(name) as number | {constantOr(v: number): number; isConstant(): boolean};
+                if (typeof value === 'number') {
+                    maxElevation = Math.max(maxElevation, value * scale);
+                } else {
+                    maxElevation = Math.max(maxElevation, value.constantOr(0) * scale);
+                    if (!value.isConstant()) {
+                        for (const tile of tiles) {
+                            const bucket = tile.getBucket(layer) as LineBucket | undefined;
+                            const offset = bucket?.programConfigurations?.get(layer.id)?.getMaxValue(name);
+                            if (offset !== undefined && offset * scale > maxElevation) maxElevation = offset * scale;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (layer.type !== 'symbol') continue;
             const symbolLayer = layer as SymbolStyleLayer;
             if (!symbolLayer.layout) continue;
             const heightOffset = symbolLayer.layout.get('symbol-height-offset');

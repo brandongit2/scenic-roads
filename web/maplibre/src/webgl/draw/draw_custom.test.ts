@@ -134,6 +134,13 @@ describe('drapeMatrix (Scenic Roads)', () => {
         expectToBeCloseToArray(apply(m, 8192, 8192), [3, -3]);
     });
 
+    test('a tile of another world copy', () => {
+        expect(drapeMatrix(target, {z: 10, x: 100, y: 200, wrap: 1})).toBeNull();
+        const wrapped = new OverscaledTileID(10, 1, 10, 100, 200);
+        const m = drapeMatrix(wrapped, {z: 10, x: 100, y: 200, wrap: 1});
+        expectToBeCloseToArray(apply(m, 0, 0), [-1, 1]);
+    });
+
     test('a tile elsewhere: none', () => {
         expect(drapeMatrix(target, {z: 10, x: 101, y: 200})).toBeNull();
         expect(drapeMatrix(target, {z: 12, x: 0, y: 0})).toBeNull();
@@ -179,5 +186,22 @@ describe('drawCustom reading the frame\'s depth (Scenic Roads)', () => {
         expect(args.sceneDepth).toBeNull();
         expect(args.framebuffer).toBe('frame');
         expect(args.terrainDepth).toBeNull();
+    });
+
+    test('terrainDepth gives the depth texture\'s own size', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: true});
+        transform.resize(500, 500);
+        const painter = new Painter(null, null);
+        painter.style = {projection: new MercatorProjection(), map: {terrain: {getDepthTexture: () => ({texture: 'depth', width: 250, height: 125})}}} as any;
+        painter.transform = transform;
+        painter.terrainFacilitator = {renderTime: 7} as any;
+        painter.width = 1000;
+        painter.pixelRatio = 3;
+        const renderContext = createRenderContext(transform, painter.style.projection, null);
+        renderContext.currentPass = 'translucent';
+        painter.context = {gl: {}, setColorMode: () => {}, setStencilMode: () => {}, setDepthMode: () => {}, setDirty: () => {}, bindFramebuffer: {set: () => {}, get: () => null}} as any;
+        let args: CustomRenderMethodInput;
+        drawCustom(painter, null, new CustomStyleLayer({id: 'c', type: 'custom', render(_gl, a) { args = a; }}, {}), renderContext);
+        expect(args.terrainDepth).toMatchObject({texture: 'depth', width: 250, height: 125, revision: 7});
     });
 });

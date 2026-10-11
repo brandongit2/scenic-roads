@@ -231,9 +231,9 @@ export type CustomDrapeMethodInput = CustomRenderMethodInput & {
     /**
      * The matrix that takes a tile's coordinates (0..8192 across, any zoom) to clip space in this
      * texture: `gl_Position = matrix * vec4(posInTile, 0.0, 1.0)`. `null` for a tile that doesn't
-     * meet this terrain tile.
+     * meet this terrain tile. `wrap` is the world copy (as an `OverscaledTileID`'s), 0 by default.
      */
-    getDrapeMatrix: (tile: {z: number; x: number; y: number}) => Float32Array | null;
+    getDrapeMatrix: (tile: {z: number; x: number; y: number; wrap?: number}) => Float32Array | null;
 };
 
 /**
@@ -377,7 +377,8 @@ export interface CustomLayerInterface {
      * Scenic Roads: the layer reads the frame's depth in `render` ({@link CustomRenderMethodInput.sceneDepth}).
      * While a visible layer asks, MapLibre draws the frame into textures and copies its colour to the
      * canvas at the end (a blit of the frame's colour, once a frame); while none asks, it draws
-     * straight to the canvas.
+     * straight to the canvas. Not with a multisampled canvas (`canvasContextAttributes.antialias`
+     * true), where WebGL refuses the blit: `sceneDepth` is then null, and a warning says why.
      */
     readsSceneDepth?: boolean;
     /**

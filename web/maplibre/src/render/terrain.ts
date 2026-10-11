@@ -413,11 +413,12 @@ export class Terrain {
     }
 
     /**
-     * Scenic Roads: the texture the terrain's depth is drawn into (packed into RGBA8, the frame's
-     * size in CSS pixels), or null before it's first drawn: `CustomRenderMethodInput.terrainDepth`.
+     * Scenic Roads: the texture the terrain's depth is drawn into (packed into RGBA8) with its size,
+     * or null before it's first drawn: `CustomRenderMethodInput.terrainDepth`.
      */
-    getDepthTexture(): WebGLTexture | null {
-        return this._fboDepthTexture?.texture ?? null;
+    getDepthTexture(): {texture: WebGLTexture; width: number; height: number} | null {
+        const t = this._fboDepthTexture;
+        return t ? {texture: t.texture, width: t.size[0], height: t.size[1]} : null;
     }
 
     /**

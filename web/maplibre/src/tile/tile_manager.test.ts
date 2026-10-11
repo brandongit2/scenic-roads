@@ -2738,6 +2738,28 @@ describe('TileManager content elevation', () => {
         expect(getBucket).not.toHaveBeenCalledWith(map.getLayer('constant'));
     });
 
+    test('counts lifted lines and fills, a sea reference times the exaggeration (Scenic Roads)', async () => {
+        map = globalCreateMap({
+            style: {
+                version: 8,
+                sources: {id: {type: 'geojson', data: {type: 'FeatureCollection', features: []}}},
+                layers: [
+                    {id: 'bridge', type: 'line', source: 'id', paint: {'line-z-offset': 300}},
+                    {id: 'lake', type: 'fill', source: 'id', paint: {'fill-z-offset': 447, 'fill-elevation-reference': 'sea'}}
+                ]
+            } as any
+        });
+        await map.once('load');
+        tileManager = createTileManager({async loadTile(tile: Tile) { tile.state = 'loaded'; }});
+        tileManager.onAdd(map);
+        const transform = new MercatorTransform();
+        transform.resize(512, 512);
+        tileManager.transform = transform;
+        (map as any).terrain = {exaggeration: 3};
+        expect(tileManager._updateMaxContentElevation()).toBe(447 * 3);
+        (map as any).terrain = null;
+    });
+
     test.each(['resetMaxContentElevation', 'clearTiles'] as const)(
         'preserves expanded tile coverage after unloading until %s', async (reset) => {
             map = globalCreateMap({

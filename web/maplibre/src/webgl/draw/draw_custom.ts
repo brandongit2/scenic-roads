@@ -15,12 +15,13 @@ const UNPACK_TERRAIN_DEPTH = `highp float unpackTerrainDepth(highp sampler2D dep
 }`;
 
 function terrainDepthOf(painter: Painter): CustomTerrainDepth | null {
-    const texture = painter.style.map?.terrain?.getDepthTexture() ?? null;
-    if (!texture) return null;
+    const depth = painter.style.map?.terrain?.getDepthTexture() ?? null;
+    if (!depth) return null;
     return {
-        texture,
-        width: Math.round(painter.width / painter.pixelRatio),
-        height: Math.round(painter.height / painter.pixelRatio),
+        texture: depth.texture,
+        // (its own size: drawn at the drawing buffer's size over devicePixelRatio, draw_terrain.ts)
+        width: depth.width,
+        height: depth.height,
         revision: painter.terrainFacilitator.renderTime,
         unpack: UNPACK_TERRAIN_DEPTH,
     };
@@ -30,13 +31,13 @@ function terrainDepthOf(painter: Painter): CustomTerrainDepth | null {
  * Scenic Roads: the matrix taking `tile`'s coordinates to clip space in the texture of terrain tile
  * `target` (see CustomDrapeMethodInput.getDrapeMatrix), or null where they don't meet.
  */
-export function drapeMatrix(target: OverscaledTileID, tile: {z: number; x: number; y: number}): Float32Array | null {
+export function drapeMatrix(target: OverscaledTileID, tile: {z: number; x: number; y: number; wrap?: number}): Float32Array | null {
     const t = target.canonical;
     // Both in the finer zoom's tile units.
     const z = Math.max(t.z, tile.z);
     const ts = 1 << (z - t.z), ss = 1 << (z - tile.z);
     const tx = (t.x + target.wrap * (1 << t.z)) * ts, ty = t.y * ts;
-    const sx = tile.x * ss, sy = tile.y * ss;
+    const sx = (tile.x + (tile.wrap ?? 0) * (1 << tile.z)) * ss, sy = tile.y * ss;
     if (sx + ss <= tx || sx >= tx + ts || sy + ss <= ty || sy >= ty + ts) return null;
     // tile units → the target's tile units (0..EXTENT) → clip.
     const m = mat4.ortho(new Float64Array(16) as unknown as mat4, 0, EXTENT, EXTENT, 0, 0, 1);

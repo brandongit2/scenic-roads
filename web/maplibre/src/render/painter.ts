@@ -17,6 +17,7 @@ import {ColorMode} from '../webgl/color_mode.ts';
 import {CullFaceMode} from '../webgl/cull_face_mode.ts';
 import {Texture} from '../webgl/texture.ts';
 import {SceneTarget} from '../webgl/scene_target.ts';
+import {warnOnce} from '../util/util.ts';
 import {Color} from '@maplibre/maplibre-gl-style-spec';
 import {selectDebugSource, webglDrawFunctions, type DrawFunctions} from '../webgl/draw/index.ts';
 import {Mesh} from './mesh.ts';
@@ -690,7 +691,15 @@ export class Painter {
             this.sceneTarget.destroy();
             this.sceneTarget = null;
         }
-        if (wanted && !this.sceneTarget) this.sceneTarget = new SceneTarget(this.context, this.width, this.height);
+        if (wanted && !this.sceneTarget) {
+            // The frame's colour goes to the canvas by a blit, which WebGL refuses into a
+            // multisampled canvas (`antialias: true`): no scene target there, the layers' sceneDepth null.
+            if (this.context.gl.getParameter(this.context.gl.SAMPLES) > 0) {
+                warnOnce('readsSceneDepth needs a canvas without antialias (canvasContextAttributes.antialias false, the default): the layer gets no sceneDepth.');
+                return;
+            }
+            this.sceneTarget = new SceneTarget(this.context, this.width, this.height);
+        }
     }
 
     /**

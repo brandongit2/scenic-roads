@@ -124,20 +124,27 @@ The arguments (`CustomRenderMethodInput`) gain:
   others;
 - `depthRangeFor3D`: the depth range the 3D layers draw in;
 - `terrainDepth` (`{texture, width, height, revision, unpack}`, null without terrain): the terrain's
-  depth texture MapLibre already draws for the symbols (packed RGBA8, CSS pixels), read in place,
-  `unpack` a GLSL function reading it;
+  depth texture MapLibre already draws for the symbols (packed RGBA8), read in place, `width` and
+  `height` its own size (the drawing buffer's over `devicePixelRatio`), `unpack` a GLSL function
+  reading it;
 - `sceneDepth` (`{texture, width, height}`), for a layer with `readsSceneDepth: true`: the frame's
   depth so far, a `DEPTH24_STENCIL8` texture (the terrain's mesh, the extrusions, the 3D layers
   before it), with `framebuffer` the frame's colour without the depth attached (sampling a texture
   attached to the framebuffer drawn into is an error in WebGL), so the layer tests depth in its
   shader (`gl_FragCoord.z` against `texelFetch(depth, ivec2(gl_FragCoord.xy), 0).r`).
 - `drape`'s also `tileID`, `size` and `getDrapeMatrix(tile)` (a tile's 0..8192 coordinates to clip
-  space in the texture).
+  space in the texture; `tile.wrap` its world copy).
+
+A new `drapeRevision` is read at the next frame, which only comes when something asks for one: set
+it, then call `map.triggerRepaint()`.
 
 No copies of the frame are made for a layer. While a visible layer has `readsSceneDepth`, the main
 pass draws into a colour renderbuffer and a depth-stencil texture (`SceneTarget`) and the colour is
 blitted to the canvas once at the end of the frame; while none has, the frame goes straight to the
-canvas as upstream's, and the only cost is a check of the layers each frame.
+canvas as upstream's, and the only cost is a check of the layers each frame. Not with a
+multisampled canvas (`canvasContextAttributes.antialias: true`): WebGL refuses a blit into it, so
+no target is made, `sceneDepth` is null and a warning says why (MapLibre's default canvas isn't
+multisampled, nor is the app's).
 `test/scenic/demo.html?case=custom` shows each hook.
 
 **The #102 field (`web/src/bldfield.ts`) on these hooks.** It draws its boxes far to near into
@@ -187,6 +194,9 @@ object, so validation and expressions know them; the API after Mapbox GL v3's `l
   where it stands above another tile on screen): its fragment shaders discard what lies outside
   its tile (`v_tile_pos`), and its layer reports `isTileClipped()` false.
 - Without 3D terrain the ground is at 0: both are a height above the map.
+- A source's tiles are culled with room for its lifted layers' heights (`TileManager`'s content
+  elevation: the offsets, data-driven ones by their tiles' largest, times the exaggeration for
+  `sea`), as for upstream's lifted symbols.
 - Not in the TypeScript types: the style objects' types are the style-spec package's, so a layer
   using them is cast.
 - Rasters: `raster-z-offset` (metres, one per layer: data-constant) and
