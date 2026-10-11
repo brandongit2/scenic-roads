@@ -54,9 +54,12 @@ install chrome`, or an existing one in `~/.cache/puppeteer`).
   - `symbol-height-anchor/sea`: point labels at 1,300 m, `sea` (times the exaggeration) against
     `absolute`;
   - `custom-layer/drape-and-scene-depth`: the `drape` hook's stripes and a column testing
-    `sceneDepth` itself (green in front of the terrain, red behind);
-  - `terrain/culling-after-dem-load`: on the globe, terrain added after the raster has loaded,
-    the tiles near the camera on the slopes covered once the DEM tiles arrive.
+    `sceneDepth` itself (green in front of the terrain, red behind).
+
+  The covers' culling after the DEM tiles load has no render case: in the harness's views the
+  stale volumes didn't show (upstream's build drew the same image), as they need the DEM to arrive
+  after the covers with the camera unclamped from the ground, as the app's is. Its unit tests
+  (`globe_covering_tiles.test.ts`, failing without the fix) and the Argyll loch view hold it.
 - The type check: `npm run typecheck` in `web/`; this package's own `npm run typecheck` also checks
   its tests.
 
