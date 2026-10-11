@@ -157,9 +157,9 @@ No copies of the frame are made for a layer. While a visible layer has `readsSce
 pass draws into a colour renderbuffer and a depth-stencil texture (`SceneTarget`) and the colour is
 blitted to the canvas once at the end of the frame; while none has, the frame goes straight to the
 canvas as upstream's, and the only cost is a check of the layers each frame. Not with a
-multisampled canvas (`canvasContextAttributes.antialias: true`): WebGL refuses a blit into it, so
-no target is made, `sceneDepth` is null and a warning says why (MapLibre's default canvas isn't
-multisampled, nor is the app's).
+multisampled canvas (`canvasContextAttributes.antialias: true`, read once from the context's
+attributes): WebGL refuses a blit into it, so no target is made, `sceneDepth` is null and a warning
+says why (MapLibre's default canvas isn't multisampled, nor is the app's).
 `test/scenic/demo.html?case=custom` shows each hook.
 
 **The #102 field (`web/src/bldfield.ts`) on these hooks.** It draws its boxes far to near into

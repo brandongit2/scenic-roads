@@ -143,6 +143,8 @@ export class Painter {
     renderContext: RenderContext;
     currentStencilSource: string;
     nextStencilID: number;
+    /** Scenic Roads: whether the canvas is multisampled (its context's antialias), read once. */
+    _canvasAntialias: boolean | undefined;
     id: string;
     _showOverdrawInspector: boolean;
     cache: {[_: string]: Program<any>};
@@ -694,7 +696,8 @@ export class Painter {
         if (wanted && !this.sceneTarget) {
             // The frame's colour goes to the canvas by a blit, which WebGL refuses into a
             // multisampled canvas (`antialias: true`): no scene target there, the layers' sceneDepth null.
-            if (this.context.gl.getParameter(this.context.gl.SAMPLES) > 0) {
+            this._canvasAntialias ??= !!this.context.gl.getContextAttributes()?.antialias;
+            if (this._canvasAntialias) {
                 warnOnce('readsSceneDepth needs a canvas without antialias (canvasContextAttributes.antialias false, the default): the layer gets no sceneDepth.');
                 return;
             }

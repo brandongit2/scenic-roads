@@ -254,4 +254,37 @@ describe('RTT pool', () => {
         expect(destroyed).toBe(10);
         expect(painter._rttSharedFbo).toBeNull();
     });
+
+    // Scenic Roads (second review 5): the scene target is refused on a multisampled canvas, known by
+    // the context's antialias attribute (read once), not gl.SAMPLES of whatever framebuffer is bound.
+    describe('the scene target and the canvas\'s antialias', () => {
+        const withReader = (antialias: boolean, boundSamples: number) => {
+            const gl = createNullGL() as any;
+            gl.getContextAttributes.mockReturnValue({antialias});
+            const getParameter = gl.getParameter.getMockImplementation();
+            gl.getParameter.mockImplementation((p: number) => p === gl.SAMPLES ? boundSamples : getParameter(p));
+            const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: true});
+            transform.resize(64, 64);
+            const p = new Painter(gl, transform);
+            p.resize(64, 64, 1);
+            const layer = new CustomStyleLayer({id: 'reader', type: 'custom', readsSceneDepth: true, render() {}} as any, {});
+            const s = {_order: ['reader'], _layers: {reader: layer}} as any as Style;
+            return {gl, p, s};
+        };
+
+        test('an antialiased canvas: no scene target, whatever framebuffer is bound; the attribute read once', () => {
+            const {gl, p, s} = withReader(true, 0);
+            p._prepareSceneTarget(s);
+            p._prepareSceneTarget(s);
+            expect(p.sceneTarget).toBeFalsy();
+            expect(gl.getContextAttributes).toHaveBeenCalledTimes(1);
+        });
+
+        test('a canvas without antialias: a scene target, even with a multisampled framebuffer bound', () => {
+            const {p, s} = withReader(false, 4);
+            p._prepareSceneTarget(s);
+            expect(p.sceneTarget).toBeTruthy();
+            p.sceneTarget.destroy();
+        });
+    });
 });
