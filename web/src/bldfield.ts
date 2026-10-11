@@ -99,7 +99,8 @@ uniform float u_gmax;   // the tile's highest ground (m)
 uniform highp sampler2D u_top128;   // the tallest roof over each 4 × 4 texels and the texel around them (m)
 uniform highp sampler2D u_tb;
 uniform float u_stepTexel;
-uniform int u_sub;   // the sub-cell walk (0: the cell's run in one go, as before it)   // the steps' least length (texels)   // each cell's hull column's top (m; −1e9: none)
+uniform int u_sub;
+uniform int u_linacc;   // the hits summed in linear light (0: as stored values, before it)   // the sub-cell walk (0: the cell's run in one go, as before it)   // the steps' least length (texels)   // each cell's hull column's top (m; −1e9: none)
 uniform float u_wallSign;   // (a test: which way MapLibre's wall normals face)     // the tile's lowest ground (m)
 uniform float u_hk;
 uniform vec4 u_box;
@@ -133,7 +134,8 @@ float classF(int c, vec2 uv, float lod) {
   if (c == 3) return textureLod(u_c3, uv, lod).r;
   return textureLod(u_c4, uv, lod).r;
 }
-vec3 toLin(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+// (stored values to light: the sRGB curve's cubic fit, within ~0.001; no powers in the march's loop)
+vec3 toLin(vec3 c) { return u_dbg == 31 ? mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)) : c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
 vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 
 float ground(vec2 p) {
@@ -153,6 +155,15 @@ bool inside(vec3 q) {
   return q.z >= g - 0.5 && q.z <= g + u_top;
 }
 
+// A class's roof and walls as fill-extrusion lights them: the plain colour's (worked out once a
+// fragment), or the colour scale's at the class's mean top.
+vec3 lutBase(float H) { return texture(u_lut, vec2(clamp(H / ${LUT_MAX_M}.0, 0.0, 1.0), 0.5)).rgb; }
+vec3 shadeC(vec3 base, float dd, float g, vec3 lowc) {
+  float hiD = max(1.0 - dot(base, vec3(0.2126, 0.7152, 0.0722)) + u_lightintensity, 1.0);
+  return clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dd) * g * u_lightcolor, lowc, vec3(1.0));
+}
+#define ROOFC(c) (u_byHeight == 1 ? shadeC(lutBase(Hc[c] / u_hk), dRoof, 1.0, lowc) : roofC)
+#define WALLC(c) (u_byHeight == 1 ? shadeC(lutBase(Hc[c] / u_hk), dWall, Gc[c], lowc) : clamp(wallC * Gc[c], lowc, vec3(1.0)))
 void main() {
   if (v_clip > 1.0) discard;
   float mpu = u_camTile.w;
@@ -197,7 +208,6 @@ void main() {
   // straight down), each step's height over the ground linear between its ends: the share of it
   // below each class's roofs, and whether it comes down through them (a roof), so no step jumps a layer.
   float T = 1.0;
-  vec3 col = vec3(0.0);
   vec2 dT = d.xy / mpu;   // tile units a metre along the ray
   float t = t0;
   float a0 = E.z + d.z * t0 - ground((E.xy + d.xy * t0) / mpu);
@@ -296,11 +306,16 @@ void main() {
       vec2 pt = (E.xy + d.xy * (t1 - step * (1.0 - 0.5 * sg))) / mpu;
       bool inBox = !(pt.x < u_box.x || pt.y < u_box.y || pt.x > u_box.z || pt.y > u_box.w);
       vec2 uv = pt / ${EXTENT}.0;
-      // The five height classes present (f, w, v of each), read at the pixel's footprint.
-      float F[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), W[5] = F, V[5] = F;
+      float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
+      covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
+      // Each class present, read at the pixel's footprint: its share, its roofs' height, its walls'
+      // rate (entered a horizontal metre below its roofs), and fill-extrusion's gradient up a wall at
+      // the height the ray meets it (the colours made from it where they're used: arrays of vectors,
+      // and the raw reads kept beside these, held more registers than the GPU had).
+      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;
+#define SETC(c, sm) { float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float Hs_ = max(sm.b / sm.r, 0.5) * u_hk; Fc[c] = f_; Hc[c] = Hs_; Rc[c] = max(sm.g, 0.0) * u_hk / Hs_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)); } }
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
-        vec4 s;
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
         // read: each level's mask is its texels' and their neighbours')
         int ml = min(int(lod) + 1, 9);
@@ -310,38 +325,11 @@ void main() {
         int cut = int(mina > 8.0) + int(mina > 20.0) + int(mina > 40.0) + int(mina > 100.0);
         if (u_dbg != 15) mk &= (31 << cut) & 31;
         if (u_dbg == 19) mk &= 24;
-        if ((mk & 1) != 0) { s = textureLod(u_c0, uv, lod); F[0] = s.r; W[0] = s.g; V[0] = s.b; }
-        if ((mk & 2) != 0) { s = textureLod(u_c1, uv, lod); F[1] = s.r; W[1] = s.g; V[1] = s.b; }
-        if ((mk & 4) != 0) { s = textureLod(u_c2, uv, lod); F[2] = s.r; W[2] = s.g; V[2] = s.b; }
-        if ((mk & 8) != 0) { s = textureLod(u_c3, uv, lod); F[3] = s.r; W[3] = s.g; V[3] = s.b; }
-        if ((mk & 16) != 0) { s = textureLod(u_c4, uv, lod); F[4] = s.r; W[4] = s.g; V[4] = s.b; }
-      }
-      float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
-      covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
-      // Each class present: its share, its roofs' height, its walls' rate (entered a horizontal metre
-      // below its roofs), its roof's and its walls' colours (the plain one or the colour scale's at its
-      // mean top; fill-extrusion's gradient up a wall at the height the ray meets it).
-      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Rc[5] = Fc;
-      vec3 RCc[5] = vec3[5](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0)), WCc[5] = RCc;
-      for (int c = 0; c < 5; c++) {
-        float f = clamp(F[c], 0.0, 0.999);
-        if (f < 1e-5) continue;
-        float H = max(V[c] / F[c], 0.5);
-        float Hs = H * u_hk;
-        Fc[c] = f;
-        Hc[c] = Hs;
-        Rc[c] = max(W[c], 0.0) * u_hk / Hs / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0);
-        float hm = 0.5 * (clamp(ac, 0.0, Hs) + clamp(ae, 0.0, Hs));
-        float gv = mix(gmin, clamp(sqrt(Hs / 150.0), gmin, 1.0), clamp(hm / Hs, 0.0, 1.0));
-        RCc[c] = roofC;
-        WCc[c] = clamp(wallC * gv, lowc, vec3(1.0));
-        if (u_byHeight == 1) {
-          vec3 base = texture(u_lut, vec2(clamp(H / ${LUT_MAX_M}.0, 0.0, 1.0), 0.5)).rgb;
-          float cv = dot(base, vec3(0.2126, 0.7152, 0.0722));
-          float hiD = max(1.0 - cv + u_lightintensity, 1.0);
-          RCc[c] = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dRoof) * u_lightcolor, lowc, vec3(1.0));
-          WCc[c] = clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dWall) * gv * u_lightcolor, lowc, vec3(1.0));
-        }
+        if ((mk & 1) != 0) SETC(0, textureLod(u_c0, uv, lod))
+        if ((mk & 2) != 0) SETC(1, textureLod(u_c1, uv, lod))
+        if ((mk & 4) != 0) SETC(2, textureLod(u_c2, uv, lod))
+        if ((mk & 8) != 0) SETC(3, textureLod(u_c3, uv, lod))
+        if ((mk & 16) != 0) SETC(4, textureLod(u_c4, uv, lod))
       }
       float hlen = hstep * sg;   // horizontal metres of the step, before the ground
       if (u_dbg != 26 && ae < ac - 1e-4) {
@@ -351,11 +339,11 @@ void main() {
         // walls below its roof took a share of the colour though the roof is met first.)
         float cur = ac, rateA = 0.0;
         vec3 wcol = vec3(0.0);
-        for (int c = 4; c >= 0; c--) if (Fc[c] > 0.0 && Hc[c] >= ac) { rateA += Rc[c]; wcol += Rc[c] * WCc[c]; }
+        for (int c = 4; c >= 0; c--) if (Fc[c] > 0.0 && Hc[c] >= ac) { rateA += Rc[c]; wcol += Rc[c] * WALLC(c); }
         for (int c = 4; c >= 0; c--) {
           if (Fc[c] <= 0.0 || Hc[c] >= ac || Hc[c] < ae) continue;
           float tw = rateA * (cur - Hc[c]) / (ac - ae) * hlen;
-          if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; col += T * a * wc; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
+          if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
           // (the roofs' share where the ray comes down through them, not at the step's middle: a step
           // of a steep ray spans the whole layer, its roofs met at their own heights' points)
           float fRoof = Fc[c];
@@ -365,19 +353,18 @@ void main() {
             fRoof = clamp(classF(c, pc / ${EXTENT}.0, log2(max((dist0 + tc0) * u_pixAngle / texel, 1.0))), 0.0, 0.999);
           }
           float pr = clamp(fRoof / max(1.0 - covE, 1e-3), 0.0, 0.999);
-          col += T * pr * RCc[c];
-          cLin += T * pr * toLin(RCc[c]);
-          pLin += T * pr * toLin(u_opacity * RCc[c] + (1.0 - u_opacity) * u_bg);
+          cLin += T * pr * toLin(ROOFC(c));
+          pLin += T * pr * toLin(u_opacity * ROOFC(c) + (1.0 - u_opacity) * u_bg);
           dRoofA += T * pr;
           T *= 1.0 - pr;
           covE = min(covE + Fc[c], 0.999);
-          covL = clamp(4.0 * Fc[c] * Hc[c] / max(W[c] * u_hk, 1e-6), 2.0, 200.0);
+          covL = clamp(4.0 * Fc[c] / max(Rc[c] * 3.14159265, 1e-6), 2.0, 200.0);
           rateA += Rc[c];
-          wcol += Rc[c] * WCc[c];
+          wcol += Rc[c] * WALLC(c);
           cur = Hc[c];
         }
         float tw = rateA * (cur - ae) / (ac - ae) * hlen;
-        if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; col += T * a * wc; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
+        if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc); pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); dWallA += T * a; T *= 1.0 - a; }
       } else {
         // Level or rising: the walls of the classes above it, over its share of the step below them
         // (no roof comes down on).
@@ -397,15 +384,14 @@ void main() {
             float tr = (ac >= Hc[c] && ae < Hc[c]) ? -log(1.0 - clamp(Fc[c] / max(1.0 - covE, 1e-3), 0.0, 0.999)) : 0.0;
             if (tr > 0.0) { covE = min(covE + Fc[c], 0.999); }
             tt += tr;
-            hit += tr * RCc[c];
+            hit += tr * ROOFC(c);
           }
           tt += tc;
-          hit += tc * WCc[c];
+          hit += tc * WALLC(c);
         }
         if (tt > 0.0) {
           float a = 1.0 - exp(-tt);
           vec3 hc = hit / tt;
-          col += T * a * hc;
           cLin += T * a * toLin(hc);
           pLin += T * a * toLin(u_opacity * hc + (1.0 - u_opacity) * u_bg);
           T *= 1.0 - a;
@@ -428,11 +414,10 @@ void main() {
   // (a building pixel is the opacity's mix in stored values, as MapLibre blends a mesh; the
   // coverage then mixes it in linear light)
   float a = 1.0 - T;
-  vec3 b = col / a;
+  vec3 b = toSrgb(cLin / a);   // (the surfaces' colour, their light's mean)
   float al = a * u_opacity;
   if (u_linear == 1) {
     vec3 g0 = u_bg;
-    b = toSrgb(cLin / a);   // (the surfaces' colour, their light's mean)
     float tl = dot(toSrgb((1.0 - a) * toLin(g0) + pLin), vec3(0.2126, 0.7152, 0.0722));
     float gl = dot(g0, vec3(0.2126, 0.7152, 0.0722)), bl = dot(b, vec3(0.2126, 0.7152, 0.0722));
     al = abs(bl - gl) > 0.02 ? clamp((tl - gl) / (bl - gl), 0.0, 1.0) : a * u_opacity;
@@ -542,6 +527,8 @@ export class FieldLayer implements CustomLayerInterface {
   /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone). */
   /** The march's sub-cell walk (`?fsub=1`; off: it cost 3.3 ms at Manhattan 70° on the quiet Mac for nothing it skipped). */
   subWalk = new URLSearchParams(location.search).get('fsub') === '1';
+  /** The hits summed in linear light (`?flin=0` off). */
+  linAcc = new URLSearchParams(location.search).get('flin') !== '0';
   stepTexel = Number(new URLSearchParams(location.search).get('fstx') ?? 1);
   lastTrans = -1;
   /** The hulls' blocks: cells a side (`?fblk=`; 1, 2, 4, 8). */
@@ -658,7 +645,7 @@ export class FieldLayer implements CustomLayerInterface {
     const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
     const p = link(gl, head + VS, FS);
     const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
+    for (const n of ['u_linacc', 'u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_lightpos_globe', 'u_wallSign', 'u_top', 'u_gmin', 'u_p22', 'u_ztol', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_res', 'u_minSteps', 'u_tmin', 'u_top32', 'u_elev', 'u_scene', 'u_p23', 'u_fwd', 'u_dbg', 'u_drange', 'u_byHeight', 'u_lut', 'u_viewport', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightpos', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
       'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(sd.variantName, pr);
@@ -1116,6 +1103,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1f(u.u_opacity, this.opacity);
     gl.uniform1f(u.u_stepTexel, this.stepTexel);
     gl.uniform1i(u.u_sub, this.subWalk ? 1 : 0);
+    gl.uniform1i(u.u_linacc, this.linAcc ? 1 : 0);
     gl.uniform1i(u.u_linear, this.linear ? 1 : 0);
     {
       // (the land colour under the buildings: the background layer's)
