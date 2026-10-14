@@ -490,6 +490,7 @@ pub struct Coordinator {
     /// once `stop` returns (a member that took the lead in its process starts one; one that lost it
     /// stops it): `closed` hears from its thread as its listener is gone.
     stopped: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(not(target_os = "wasi"))]
     wake: Arc<tokio::sync::Notify>,
     closed: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     /// The requests' `route` calls under way (each holds it read) and whether it has stopped: `stop`
@@ -739,6 +740,7 @@ impl Coordinator {
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
         *self.routes.write().unwrap_or_else(|e| e.into_inner()) = true;
+        #[cfg(not(target_os = "wasi"))]
         self.wake.notify_one();
         if let Some(rx) = self.closed.lock().unwrap().take() {
             // (Its thread gone already, its listener with it: the sender dropped.)
