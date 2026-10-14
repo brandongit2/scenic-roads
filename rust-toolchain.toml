@@ -1,6 +1,7 @@
-# The Rust both Macs build with, the same everywhere (rustup reads this file: Homebrew's rustup on
-# each Mac, /opt/homebrew/opt/rustup/bin on the PATH). The WebAssembly target is the web workers'
-# builds' (tools/app/wasm.sh). Changing the version here moves both Macs to it on their next build.
+# The Rust both Macs build with. mise.toml declares it (installed by `mise install`; tools/app/*.sh
+# put it on the PATH); this file names the same version, target and component for rustup, which a
+# plain `cargo` reads, so the two must agree. The WebAssembly target is the web workers' builds'
+# (tools/app/wasm.sh). Changing the version moves both Macs to it on their next `mise install`.
 [toolchain]
 channel = "1.98.1"
 targets = ["wasm32-wasip1"]

@@ -20,7 +20,8 @@ if [[ ${1:-} == --rollback ]]; then
   echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
 fi
-export PATH=/opt/homebrew/opt/rustup/bin:$PATH
+# Rust and the wasi-sdk as mise.toml pins them (`mise install` once).
+eval "$(mise env -s zsh)"
 # The commit it's built from, read now: one made while it runs would name a version it isn't.
 head=$(git rev-parse --short HEAD)
 cargo build --release -p server -p pipeline 2>&1 | tail -2

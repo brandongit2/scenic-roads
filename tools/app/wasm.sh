@@ -1,17 +1,17 @@
 #!/bin/zsh
 # Build the step programs for WebAssembly (wasm32-wasip1), the builds web workers run (docs/workers.md),
 # into target/wasm32-wasip1/release/*.wasm. zstd's C is compiled to WebAssembly too (the real zstd:
-# the same compressed bytes as natively), with Homebrew's LLVM and WASI libc:
-#   brew install rustup llvm@22 wasi-libc (the toolchain and its wasm32-wasip1 target: rust-toolchain.toml)
+# the same compressed bytes as natively), with the wasi-sdk's clang, llvm-ar and sysroot. Rust and the
+# wasi-sdk are the versions mise.toml pins (the Rust's wasm32-wasip1 target among them); once:
+#   mise install
 #
 #   tools/app/wasm.sh
 set -euo pipefail
 cd ${0:A:h}/../..
-export PATH=/opt/homebrew/opt/rustup/bin:$PATH
-llvm=/opt/homebrew/opt/llvm@22/bin
-sysroot=/opt/homebrew/opt/wasi-libc/share/wasi-sysroot
-[[ -x $llvm/clang && -d $sysroot ]] || { echo "needs Homebrew's llvm@22 and wasi-libc"; exit 2; }
-export CC_wasm32_wasip1=$llvm/clang AR_wasm32_wasip1=$llvm/llvm-ar CFLAGS_wasm32_wasip1="--sysroot=$sysroot"
+eval "$(mise env -s zsh)"
+wasi=$(mise where "github:WebAssembly/wasi-sdk" 2>/dev/null) || wasi=
+[[ -x $wasi/bin/clang && -d $wasi/share/wasi-sysroot ]] || { echo "the wasi-sdk isn't installed: run 'mise install'" >&2; exit 2; }
+export CC_wasm32_wasip1=$wasi/bin/clang AR_wasm32_wasip1=$wasi/bin/llvm-ar CFLAGS_wasm32_wasip1="--sysroot=$wasi/share/wasi-sysroot"
 # The page gives each program its memory, capped at what its task may use: one that needs more
 # fails cleanly (docs/workers.md §6).
 export CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--import-memory"
