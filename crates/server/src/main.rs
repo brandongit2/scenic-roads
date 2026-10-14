@@ -482,6 +482,7 @@ async fn main() -> Result<()> {
         .route("/tiles/base/{z}/{x}/{y}", get(tiles::base_tile))
         .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tiles::tree_tile))
         .route("/tiles/buildings/{z}/{x}/{y}", get(tiles::building_tile))
+        .route("/tiles/buildings-field/{z}/{x}/{y}", get(tiles::building_field_tile))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
         .route("/api/railfreq", get(rail_freq_h))

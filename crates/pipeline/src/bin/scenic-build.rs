@@ -52,9 +52,9 @@
 //!                                (pipeline::bld::job): the buildings touching the coverage, their
 //!                                heights filled, z14, as the hi pack layers/buildings/hi/6-x-y;
 //!                                under the agent, some z8 areas offered to workers as tasks
-//!                                with the field (levels 14–8) as layers/buildings-field/hi/6-x-y and
+//!                                with the field (levels 14–9) as layers/buildings-field/hi/6-x-y and
 //!                                its level-8 planes as work/bldfield-mid/6-x-y
-//!   bldfield-lo <Q …>            z3 tiles Q's zoomed-out buildings field (levels 7–4, the lo pack
+//!   bldfield-lo <Q …>            z3 tiles Q's zoomed-out buildings field (levels 8–4, the lo pack
 //!                                layers/buildings-field/lo/3-x-y) from their z6 tiles' mids
 //!   bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]  a z8 area's task folder
 //!                                as a bldtiles job cuts it (pipeline::bld::task; a z6 tile: its
@@ -464,7 +464,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "bldprep" => bldprep_step(&mut out, &args)?,
         "bldtiles" => bldtiles_step(&mut out, &args)?,
         "bldfield-lo" => {
-            // bldfield-lo <Q …>: each z3 tile's zoomed-out field of the 3D buildings (levels 7–4,
+            // bldfield-lo <Q …>: each z3 tile's zoomed-out field of the 3D buildings (levels 8–4,
             // its lo pack) from its z6 tiles' mids (pipeline::bld::job::build_lo).
             let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
             for (k, &q) in qs.iter().enumerate() {
@@ -1001,7 +1001,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "ferries" => (0, 6),
         // The 3D buildings: z14 hi packs (pipeline::bld).
         "buildings" => (pipeline::bld::ZOOM, pipeline::bld::ZOOM),
-        // Their field: levels 8–14 in the hi packs, 4–7 in the lo (pipeline::bld::field).
+        // Their field: levels 9–14 in the hi packs, 4–8 in the lo (pipeline::bld::field).
         "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
         _ => return None,
     })

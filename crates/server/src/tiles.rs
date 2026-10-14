@@ -85,6 +85,11 @@ pub async fn rail_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
     plain(s, "rails".into(), z, x, y, q, headers, "application/octet-stream", true).await
 }
 
+/// The 3D buildings' field (pipeline::bld::field): `field3-webp` tiles, levels 4–14, as stored.
+pub async fn building_field_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+    plain(s, "buildings-field".into(), z, x, y, q, headers, "application/octet-stream", false).await
+}
+
 /// The 3D buildings (pipeline::bld): gzip'd MVT, layer `b`, served as stored (no names).
 pub async fn building_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     plain(s, "buildings".into(), z, x, y, q, headers, "application/x-protobuf", true).await

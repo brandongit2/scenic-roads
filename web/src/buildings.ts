@@ -1,5 +1,5 @@
 // 3D buildings (docs/buildings3d.md §4): every building of the coverage extruded to its height on
-// the 3D terrain by MapLibre's fill-extrusion, from the z12–14 tiles of /tiles/buildings (layer `b`:
+// the 3D terrain by MapLibre's fill-extrusion, from the z14 tiles of /tiles/buildings (from map zoom 14; below it, the field: bldfield.ts) (layer `b`:
 // h top and m base in dm, s where the height comes from, f floors, c kind, k 1 a part / 2 an outline
 // with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). A building is whole in
 // its centroid's tile, and the z14 tiles stay whole at every zoom above (keepWhole). Its roof is
@@ -201,20 +201,20 @@ function keepWhole(map: MLMap) {
  * (`flatBefore`: the first boundary layer). */
 export function addBuildings(map: MLMap, before: string, flatBefore: string) {
   if (map.getSource(SOURCE)) return;
-  map.addSource(SOURCE, { type: 'vector', tiles: [buildingTiles()], minzoom: 12, maxzoom: 14 });
+  map.addSource(SOURCE, { type: 'vector', tiles: [buildingTiles()], minzoom: 14, maxzoom: 14 });
   keepWhole(map);
   watchTall(map);
   map.addLayer({
-    id: FLAT, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: flatFilter(),
+    id: FLAT, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 14, filter: flatFilter(),
     layout: { visibility: 'none' },
     paint: { 'fill-color': PLAIN, 'fill-opacity': 0.55, 'fill-outline-color': 'rgba(20,24,30,0.6)' },
   }, flatBefore);
   map.addLayer({
-    id: PICK, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(true),
+    id: PICK, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 14, filter: extrudedFilter(true),
     paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
   }, flatBefore);
   map.addLayer({
-    id: LAYER, type: 'fill-extrusion', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(),
+    id: LAYER, type: 'fill-extrusion', source: SOURCE, 'source-layer': 'b', minzoom: 14, filter: extrudedFilter(),
     paint: { 'fill-extrusion-color': PLAIN, 'fill-extrusion-height': metres('h', 1), 'fill-extrusion-base': metres('m', 1), 'fill-extrusion-vertical-gradient': true },
   }, before);
   map.addSource('bld-heritage', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });

@@ -9,13 +9,14 @@
 //! Densities, so a coarser level is the mean of its four children. Every level holds every building
 //! (the meshes are z14's alone, from map zoom 14); level 14 is drawn from zoom 13 to 14.
 //!
-//! - **`bldtiles T`** makes a z8 area's levels 14–8 ([`area`]) from the same records as its meshes
+//! - **`bldtiles T`** makes a z8 area's levels 14–9 and its level-8 planes ([`area`]) from the same records as its meshes
 //!   (filled, `job::area_tiles`): every building and part extruded (not an outline with parts, not a
 //!   copy), the area's own and those around it reaching in, each rasterized into the z13 cells of the
 //!   area it meets at level 14, in fixed point (i64: the sums don't depend on their order), the cells'
 //!   level 13 from their level 14, then levels 12–8 by means of four in a fixed order. The level-8
 //!   planes are kept exactly ([`write_mid`]: `work/bldfield-mid/6-x-y`).
-//! - **`bldfield-lo Q`** (a z3 tile) makes levels 7–4 from its z6 tiles' mids ([`lo`]).
+//! - **`bldfield-lo Q`** (a z3 tile) makes levels 8–4 from its z6 tiles' mids ([`lo`]): the lo packs
+//!   hold levels 4–8, the hi packs 9–14 (as the server takes zooms 3–8 from lo packs).
 //! - **Encoding `field3-webp`** ([`encode`]): a mask byte (the classes held, bit k class k), then one
 //!   lossless WebP (`crate::webp`), 512 wide and 512 × (the classes held) tall, a class's rows after
 //!   the one before: R `f` as √f, G `w` as log2(1 + w) ÷ log2(4097) (to 4096), B the class's mean top
@@ -40,7 +41,7 @@ pub const LO_M: [f64; K] = [0.0, 8.0, 20.0, 40.0, 100.0];
 pub const HI_M: [f64; K] = [8.0, 20.0, 40.0, 100.0, 1000.0];
 /// The finest level, and the hi packs' coarsest (a z8 area's), and the lo packs' coarsest.
 pub const LEVEL_MAX: u8 = 14;
-pub const LEVEL_HI_MIN: u8 = 8;
+pub const LEVEL_HI_MIN: u8 = 9;
 pub const LEVEL_MIN: u8 = 4;
 pub const ALL_CLASSES: u8 = 0b11111;
 /// The served layer (`layers/buildings-field/hi/6-x-y`, `lo/3-x-y`) and its encoding.
@@ -395,7 +396,15 @@ fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
 #[derive(Debug, Default, PartialEq)]
 pub struct AreaField {
     pub tiles: Vec<(u8, u32, u32, Vec<u8>)>,
-    pub mid: Option<Planes>,
+    pub mid: Option<Mid>,
+}
+
+/// An area's level-8 planes and its heritage list ([`heritage`]): what its mid keeps, and what
+/// `bldfield-lo` makes its level-8 tile of.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mid {
+    pub planes: Planes,
+    pub heritage: Vec<u8>,
 }
 
 /// Area `a`'s field (a z8 tile) from the footprints meeting it (any order: the sums are integers),
@@ -487,7 +496,14 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
             up(9, bx, by, kids)
         })
         .collect();
-    let (mut tiles, mid) = up_with(8, a.0, a.1, z9, her);
+    // (Level 8 a z8 area's own tile: the lo packs', made by `lo` from the mid.)
+    let mut tiles = Vec::new();
+    let mut planes: Vec<Option<Planes>> = Vec::with_capacity(4);
+    for (t, p) in z9 {
+        tiles.extend(t);
+        planes.push(p);
+    }
+    let mid = Planes::parent([planes[0].as_ref(), planes[1].as_ref(), planes[2].as_ref(), planes[3].as_ref()]).map(|planes| Mid { planes, heritage: her.to_vec() });
     tiles.sort_by(|p, q| q.0.cmp(&p.0).then((p.1, p.2).cmp(&(q.1, q.2))));
     AreaField { tiles, mid }
 }
@@ -495,10 +511,6 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
 /// A level's tile (`z`, `x`, `y`) from its four children's (nw, ne, sw, se: their tiles and planes):
 /// the children's tiles and its own, and its planes.
 fn up(z: u8, x: u32, y: u32, kids: Vec<(Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>)>) -> (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>) {
-    up_with(z, x, y, kids, &[])
-}
-
-fn up_with(z: u8, x: u32, y: u32, kids: Vec<(Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>)>, tail: &[u8]) -> (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>) {
     let mut tiles = Vec::new();
     let mut planes: Vec<Option<Planes>> = Vec::with_capacity(4);
     for (t, p) in kids {
@@ -507,7 +519,7 @@ fn up_with(z: u8, x: u32, y: u32, kids: Vec<(Vec<(u8, u32, u32, Vec<u8>)>, Optio
     }
     let p = Planes::parent([planes[0].as_ref(), planes[1].as_ref(), planes[2].as_ref(), planes[3].as_ref()]);
     if let Some(p) = &p {
-        if let Some(b) = encode(p, ALL_CLASSES, tail) {
+        if let Some(b) = encode(p, ALL_CLASSES, &[]) {
             tiles.push((z, x, y, b));
         }
     }
@@ -709,16 +721,20 @@ pub fn sites_of_markdata(path: &std::path::Path) -> Result<Vec<[i32; 2]>> {
 
 // ---- mids and the lo levels ------------------------------------------------------------------------
 
-const MID_MAGIC: &[u8; 8] = b"BFMID01\0";
+const MID_MAGIC: &[u8; 8] = b"BFMID02\0";
 
-/// A z6 tile's mid: its areas' level-8 planes, exactly (magic, then each area by (x, y): u32 x,
-/// u32 y, u8 class mask, each class's f, w, v as 512 × 512 f32 LE), zstd'd.
-pub fn write_mid(areas: &BTreeMap<(u32, u32), Planes>) -> Result<Vec<u8>> {
+/// A z6 tile's mid: its areas' level-8 planes, exactly, and their heritage lists (magic, then each
+/// area by (x, y): u32 x, u32 y, u32 the heritage list's bytes and those bytes, u8 class mask,
+/// each class's f, w, v as 512 × 512 f32 LE), zstd'd.
+pub fn write_mid(areas: &BTreeMap<(u32, u32), Mid>) -> Result<Vec<u8>> {
     let mut raw = MID_MAGIC.to_vec();
-    for (&(x, y), p) in areas {
+    for (&(x, y), m) in areas {
+        let p = &m.planes;
         ensure!(p.n == T, "a mid's planes are a tile's");
         raw.extend_from_slice(&x.to_le_bytes());
         raw.extend_from_slice(&y.to_le_bytes());
+        raw.extend_from_slice(&(m.heritage.len() as u32).to_le_bytes());
+        raw.extend_from_slice(&m.heritage);
         raw.push(p.mask());
         for c in p.c.iter().flatten() {
             for plane in c.iter() {
@@ -729,17 +745,22 @@ pub fn write_mid(areas: &BTreeMap<(u32, u32), Planes>) -> Result<Vec<u8>> {
     Ok(zstd::bulk::compress(&raw, 3)?)
 }
 
-pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Planes>> {
+pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Mid>> {
     let raw = zstd::stream::decode_all(b)?;
     ensure!(raw.starts_with(MID_MAGIC), "not a field mid");
     let mut at = MID_MAGIC.len();
     let mut out = BTreeMap::new();
     while at < raw.len() {
-        ensure!(at + 9 <= raw.len(), "a field mid cut short");
+        ensure!(at + 12 <= raw.len(), "a field mid cut short");
         let x = u32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
         let y = u32::from_le_bytes(raw[at + 4..at + 8].try_into().unwrap());
-        let mask = raw[at + 8];
-        at += 9;
+        let hl = u32::from_le_bytes(raw[at + 8..at + 12].try_into().unwrap()) as usize;
+        at += 12;
+        ensure!(at + hl < raw.len(), "a field mid cut short");
+        let heritage = raw[at..at + hl].to_vec();
+        at += hl;
+        let mask = raw[at];
+        at += 1;
         let mut p = Planes::empty(T);
         for k in 0..K {
             if mask & 1 << k == 0 {
@@ -755,21 +776,27 @@ pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Planes>> {
                 at += len;
             }
         }
-        out.insert((x, y), p);
+        out.insert((x, y), Mid { planes: p, heritage });
     }
     Ok(out)
 }
 
-/// The lo levels (7–4) of z3 tile `q`, from its z6 tiles' mids (`mid(x, y)`: None where there's
-/// none): (level, x, y, `field3-webp`), by level from 7, then x, y.
+/// The lo levels (8–4) of z3 tile `q`, from its z6 tiles' mids (`mid(x, y)`: None where there's
+/// none; level 8 each area's planes, its heritage list after them): (level, x, y, `field3-webp`),
+/// by level from 8, then x, y.
 pub fn lo(q: (u32, u32), mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
     type Out = (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>);
     fn node(z: u8, x: u32, y: u32, mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Out> {
         if z == 6 {
             let Some(b) = mid(x, y)? else { return Ok((Vec::new(), None)) };
             let areas = read_mid(&b)?;
-            let get = |ax: u32, ay: u32| areas.get(&(ax, ay));
+            let get = |ax: u32, ay: u32| areas.get(&(ax, ay)).map(|m| &m.planes);
             let mut tiles = Vec::new();
+            for (&(ax, ay), m) in &areas {
+                if let Some(b) = encode(&m.planes, ALL_CLASSES, &m.heritage) {
+                    tiles.push((8, ax, ay, b));
+                }
+            }
             let mut l7: Vec<Option<Planes>> = Vec::new();
             for q in 0..4u32 {
                 let (x7, y7) = (x * 2 + q % 2, y * 2 + q / 2);

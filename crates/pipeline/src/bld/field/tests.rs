@@ -59,7 +59,7 @@ fn areas_and_tops_kept() {
     let feet = feet_of(&rings);
     let a = (129, 88);
     let mut field = area(a, &feet, &[]);
-    let mid = field.mid.take().unwrap();
+    let mid = field.mid.take().unwrap().planes;
     let (w0, n0) = world7(r[3]);
     let (w1, s1) = world7(r[1]);
     let cy = 0.5 * (n0 + s1) * WORLD_TEXELS;
@@ -79,9 +79,9 @@ fn areas_and_tops_kept() {
     assert!((sf / fp - 1.0).abs() < 1e-3, "{sf} {fp}");
     assert!((sv / sf - 15.0).abs() < 1e-3, "{}", sv / sf);
     assert!((sw / (per * 15.0) - 1.0).abs() < 1e-3, "{sw} {}", per * 15.0);
-    // Its tiles: levels 14–8, one each, the finest first.
+    // Its tiles: levels 14–9, one each, the finest first (level 8 the lo step's).
     let levels: Vec<u8> = field.tiles.iter().map(|t| t.0).collect();
-    assert_eq!(levels, [14, 13, 12, 11, 10, 9, 8]);
+    assert_eq!(levels, [14, 13, 12, 11, 10, 9]);
 }
 
 #[test]
@@ -103,7 +103,8 @@ fn the_same_bytes_in_any_order() {
     let l12: u8 = one.tiles.iter().filter(|t| t.0 == 12).map(|t| t.3[0]).fold(0, |m, k| m | k);
     assert_eq!((l13 & 0b11000, l12 & 0b11000), (0b11000, 0b11000), "{l13:b} {l12:b}");
     // The house across the west edge: its part in the area counted, in the first column.
-    let mid = one.mid.as_ref().unwrap();
+    let mid = &one.mid.as_ref().unwrap().planes;
+    assert_eq!(one.mid.as_ref().unwrap().heritage, her);
     let k = class_of(90);
     let col: f32 = (0..T).map(|y| mid.c[k].as_ref().unwrap()[0][y * T]).sum();
     assert!(col > 0.0);
@@ -115,8 +116,10 @@ fn encoding_round_trip() {
     let feet = feet_of(&rings);
     let a = (129, 88);
     let field = area(a, &feet, &[]);
-    let mid = field.mid.as_ref().unwrap();
-    let b = field.tiles.iter().find(|t| t.0 == 8).unwrap();
+    let mid = &field.mid.as_ref().unwrap().planes;
+    let b9 = field.tiles.iter().find(|t| t.0 == 9).unwrap();
+    decode(&b9.3);
+    let b = (8u8, a.0, a.1, encode(mid, ALL_CLASSES, &[]).unwrap());
     let (mask, classes) = decode(&b.3);
     assert_eq!(mask, mid.mask());
     let mut ks = (0..K).filter(|k| mask & 1 << k != 0);
@@ -145,19 +148,23 @@ fn mids_and_lo() {
     let rings = town();
     let feet = feet_of(&rings);
     let a = (129, 88);
-    let field = area(a, &feet, &[]);
-    let mid = field.mid.clone().unwrap();
+    let her = heritage(a, &feet, &[[e7(2.4001), e7(48.8501)]]);
+    let field = area(a, &feet, &her);
+    let m = field.mid.clone().unwrap();
+    let mid = m.planes.clone();
     let mut areas = BTreeMap::new();
-    areas.insert(a, mid.clone());
+    areas.insert(a, m);
     let bytes = write_mid(&areas).unwrap();
     assert_eq!(read_mid(&bytes).unwrap(), areas, "kept exactly");
     // Z3 tile 3/4/2 holds z6 6/32/22 (area 129/88's).
     let lo_tiles = lo((4, 2), &|x, y| Ok(((x, y) == (32, 22)).then(|| bytes.clone()))).unwrap();
     let got: Vec<(u8, u32, u32)> = lo_tiles.iter().map(|t| (t.0, t.1, t.2)).collect();
-    assert_eq!(got, [(7, 64, 44), (6, 32, 22), (5, 16, 11), (4, 8, 5)]);
+    assert_eq!(got, [(8, 129, 88), (7, 64, 44), (6, 32, 22), (5, 16, 11), (4, 8, 5)]);
+    // Level 8 the area's planes, its heritage list after them.
+    assert_eq!(lo_tiles[0].3, encode(&mid, ALL_CLASSES, &her).unwrap());
     // Level 7 is level 8's parent (8/129/88 the ne quadrant of 7/64/44).
     let p7 = Planes::parent([None, Some(&mid), None, None]).unwrap();
-    assert_eq!(lo_tiles[0].3, encode(&p7, ALL_CLASSES, &[]).unwrap());
+    assert_eq!(lo_tiles[1].3, encode(&p7, ALL_CLASSES, &[]).unwrap());
 }
 
 #[test]
@@ -169,10 +176,11 @@ fn heritage_lists_the_buildings_holding_a_site() {
     let b = heritage(a, &feet, &[[e7(2.4001), e7(48.8501)], [e7(2.35035), e7(48.86)]]);
     assert_eq!(u32::from_le_bytes(b[0..4].try_into().unwrap()), 1);
     assert_eq!((u16::from_le_bytes([b[4], b[5]]), u16::from_le_bytes([b[6], b[7]]), b[8]), (600, 0, 4));
-    // Carried after the level-8 tile's WebP.
+    // Kept with the area's level-8 planes, for its level-8 tile (`lo`), after the WebP.
     let field = area(a, &feet, &b);
-    let t8 = field.tiles.iter().find(|t| t.0 == 8).unwrap();
-    assert_eq!(split(&t8.3).unwrap().2, &b[..]);
+    let m = field.mid.unwrap();
+    assert_eq!(m.heritage, b);
+    assert_eq!(split(&encode(&m.planes, ALL_CLASSES, &m.heritage).unwrap()).unwrap().2, &b[..]);
     // A ring of 40 points simplified to 16 at most.
     let ring: Vec<[f64; 2]> = (0..40).map(|i| {
         let t = i as f64 / 40.0 * std::f64::consts::TAU;
@@ -214,7 +222,7 @@ fn a_courtyard_and_overlaps() {
     let a = (129, 88);
     let sum = |rings: &[(Vec<Vec<[i32; 2]>>, u16)]| -> (f64, f64) {
         let feet: Vec<Foot> = rings.iter().map(|(rs, h)| Foot { polys: vec![rs.iter().map(Vec::as_slice).collect()], h: *h, m: 0 }).collect();
-        let mid = area(a, &feet, &[]).mid.unwrap();
+        let mid = area(a, &feet, &[]).mid.unwrap().planes;
         let c = mid.c[0].as_ref().unwrap();
         let (mut f, mut v) = (0.0, 0.0);
         for i in 0..T * T {

@@ -16,7 +16,7 @@
 //!
 //! What the program writes there: `area.tiles` (an RDTILES archive of the area's z14 tiles, as
 //! `job::area_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES
-//! archive of its field's tiles, levels 14–8) and `area.mid` (its level-8 planes, `field::write_mid`;
+//! archive of its field's tiles, levels 14–9) and `area.mid` (its level-8 planes, `field::write_mid`;
 //! none without a building). The job's own run of an area
 //! (one no worker finished, or a worker's result checked) writes the same two files the same way,
 //! from the whole work files: a worker's are compared with them byte for byte.

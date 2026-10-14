@@ -57,12 +57,12 @@ pub struct Summary {
     pub fullest: Vec<(String, u32, u32)>,
     /// The pack written (its content name), if any.
     pub pack: Option<String>,
-    /// The field's tiles and their bytes at levels 8–14 (docs/buildings3d.md §4.8: `field`), and
+    /// The field's tiles and their bytes at levels 9–14 (docs/buildings3d.md §4.8: `field`), and
     /// the buildings and parts in its heritage lists.
     #[serde(default)]
-    pub field_tiles: [u64; 7],
+    pub field_tiles: [u64; 6],
     #[serde(default)]
-    pub field_bytes: [u64; 7],
+    pub field_bytes: [u64; 6],
     #[serde(default)]
     pub heritage: u64,
     /// The field's hi pack and mid written (their content names), if any.
@@ -95,7 +95,7 @@ impl Summary {
         for k in 0..6 {
             self.by_src[k] += o.by_src[k];
         }
-        for k in 0..7 {
+        for k in 0..6 {
             self.field_tiles[k] += o.field_tiles[k];
             self.field_bytes[k] += o.field_bytes[k];
         }
@@ -223,7 +223,7 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, sites: &[[i
 /// Area `a`'s tiles (a z8 tile of T: its buildings, and copies of those around it reaching into its
 /// tiles), by zoom, x, y, given to `add`: what `tiles_of` makes of it; and its field (`field::area`:
 /// every building and part extruded that meets the area, its own and those filled here around it,
-/// its level-8 tile carrying the heritage list of its own that hold one of `sites`, E7). It reads
+/// its mid carrying the heritage list of its own that hold one of `sites`, E7). It reads
 /// only the blocks `area_blocks` names, and the coverage where they are: a task's files
 /// (`super::task::cut`) give the same tiles.
 pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), sites: &[[i32; 2]], add: &mut AddTile) -> Result<(Summary, field::AreaField)> {
@@ -451,7 +451,7 @@ pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
     Ok(files)
 }
 
-/// Runs `bldfield-lo Q` (a z3 tile): its field's levels 7–4 from its z6 tiles' mids
+/// Runs `bldfield-lo Q` (a z3 tile): its field's levels 8–4 from its z6 tiles' mids
 /// (`field::lo`), as the lo pack `layers/buildings-field/lo/3-x-y`, or that dropped with no mid
 /// there. Its tiles.
 pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
@@ -520,12 +520,12 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
     let mut w = store::pack::PackWriter::create(&local, meta, true)?;
     let mut n = 0u64;
-    // The field's hi pack (levels 14–8), and its areas' level-8 planes for the mid.
+    // The field's hi pack (levels 14–9), and its areas' level-8 planes and heritage lists for the mid.
     let field_logical = field::hi_logical(t.x, t.y);
     let field_local = out.scratch_file(&format!("{field_logical}.pack"));
     let fmeta = serde_json::json!({"layer": field::LAYER, "scope": "hi", "root": t.slash(), "encoding": field::ENCODING});
     let mut fw = store::pack::PackWriter::create(&field_local, fmeta, false)?;
-    let mut mids: BTreeMap<(u32, u32), field::Planes> = BTreeMap::new();
+    let mut mids: BTreeMap<(u32, u32), field::Mid> = BTreeMap::new();
     let sites = sites(out, t)?;
     let areas = areas_of(&files);
     let mut offers = super::task::Offers::new(offload, &out.scratch, t, areas.len(), &sites);
