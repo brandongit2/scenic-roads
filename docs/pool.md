@@ -1180,9 +1180,13 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       simulator's runs with entries outside refused by every lead (by the same check,
       `steps::outside_by`, over the simulator's own outputs function); all 682 entries of the
       journal of 8–10 Oct 2026 within their write-sets (`real_journal_entries_are_within_their_write_sets`,
-      on a copy). **Scratch state (§13): both Macs** (the merge's refusals are the journal's):
-      pending, the owner's choice to merge first and run it once the M1 is home; run so far on the
-      M4 alone (legitimate entries merged, one outside refused with why, nothing wedged).
+      on a copy). **Scratch state (§13): both Macs, run** (14 Oct 2026, the M4 leading, the M1 a
+      member over Tailscale; the fake jobs handing off within their steps' outputs, `outside` one
+      outside them): the M1's terrain and tree cover entries, its outbox and an older helper's
+      hand-off merged into the lead's records; the lead's own entry with a name outside its step's
+      refused, its why noted beside the journal, the lead merging the next jobs' entries; the real
+      `scenic-build` on the M1, a pooled job writing outside its step, failing before anything
+      reached the NAS.
    7. **Exclusivity where the resource is used** (§7.7): the Wikimedia proxy with the pool's one
       budget on the NAS (tokens leased in batches, the query service by query time, a 429's wait
       shared, the rate divided by the members with the NAS away), every job's requests through it,
