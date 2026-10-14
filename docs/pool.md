@@ -1178,8 +1178,11 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       acknowledged then; every entry the journal held (the first batch's real journal run); the
       gate's and the rail feeds' steps run through a bound `Out`; the lint and its markers; the
       simulator's runs with entries outside refused by every lead (by the same check,
-      `steps::outside_by`, over the simulator's own outputs function). **Scratch state
-      (§13): both Macs** (the merge's refusals are the journal's).
+      `steps::outside_by`, over the simulator's own outputs function); all 682 entries of the
+      journal of 8–10 Oct 2026 within their write-sets (`real_journal_entries_are_within_their_write_sets`,
+      on a copy). **Scratch state (§13): both Macs** (the merge's refusals are the journal's):
+      pending, the owner's choice to merge first and run it once the M1 is home; run so far on the
+      M4 alone (legitimate entries merged, one outside refused with why, nothing wedged).
    7. **Exclusivity where the resource is used** (§7.7): the Wikimedia proxy with the pool's one
       budget on the NAS (tokens leased in batches, the query service by query time, a 429's wait
       shared, the rate divided by the members with the NAS away), every job's requests through it,
