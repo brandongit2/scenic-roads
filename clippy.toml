@@ -1,0 +1,12 @@
+# Every child is started, and every listener made and connection taken, by store::spawn: a child
+# started while a socket is made would hold it (docs/pool.md §7.5). Checked by
+# pipeline's every_child_is_started_by_spawn.
+disallowed-methods = [
+    { path = "std::process::Command::spawn", reason = "store::spawn::spawn: a child started while a socket is made holds it" },
+    { path = "std::process::Command::status", reason = "store::spawn::status: a child started while a socket is made holds it" },
+    { path = "std::process::Command::output", reason = "store::spawn::output: a child started while a socket is made holds it" },
+    { path = "std::net::TcpListener::bind", reason = "store::spawn::listen: a child started while it's made holds it" },
+    { path = "std::net::TcpListener::accept", reason = "store::spawn::accept: a child started while it's made holds it" },
+    { path = "tokio::net::TcpListener::bind", reason = "store::spawn::listen, then from_std: a child started while it's made holds it" },
+    { path = "tokio::net::TcpListener::accept", reason = "pipeline::net::Listener: a child started while it's made holds it" },
+]

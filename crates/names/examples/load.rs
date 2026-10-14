@@ -8,6 +8,8 @@ use names::{Kind, Names};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+// (This example makes no socket: store::spawn is no need here.)
+#[allow(clippy::disallowed_methods)]
 fn rss_mb() -> f64 {
     let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output();
     out.ok().and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.trim().parse::<f64>().ok()).map_or(f64::NAN, |kb| kb / 1024.0)

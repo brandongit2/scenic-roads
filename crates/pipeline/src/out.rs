@@ -377,7 +377,7 @@ impl Out {
             cmd.args(&ssh[1..]);
             let quoted: Vec<String> = chunk.iter().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
             cmd.arg(format!("cd '{nas_root}' && sha256sum {}", quoted.join(" ")));
-            let out = cmd.output().context("ssh to the NAS")?;
+            let out = store::spawn::output(&mut cmd).context("ssh to the NAS")?;
             let text = String::from_utf8_lossy(&out.stdout);
             let mut got: BTreeMap<String, String> = BTreeMap::new();
             for line in text.lines() {
@@ -403,7 +403,7 @@ impl Out {
             let mut cmd = std::process::Command::new(ssh[0]);
             cmd.args(&ssh[1..]);
             cmd.arg(format!("cd '{nas_root}' && rm -f {}", quoted.join(" ")));
-            cmd.status().ok();
+            store::spawn::status(&mut cmd).ok();
             for n in &bad {
                 self.pending.remove(n);
                 self.checked.insert(n.clone());

@@ -132,7 +132,7 @@ pub fn osmium() -> Command {
 
 fn run(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");
-    let st = c.status().with_context(|| format!("run {what}"))?;
+    let st = store::spawn::status(&mut c).with_context(|| format!("run {what}"))?;
     ensure!(st.success(), "{what} failed: {st}");
     Ok(())
 }
@@ -155,7 +155,7 @@ pub const BASEMAP_LANGUAGES: &str = "en,fr,es,pt,ca,eu,gl,cy,ga,gd,br,co,oc,de,i
 /// goes on to this job's) said as the part's.
 fn run_planetiler(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");
-    let mut child = c.stdout(std::process::Stdio::piped()).spawn().with_context(|| format!("run {what}"))?;
+    let mut child = store::spawn::spawn(&mut c.stdout(std::process::Stdio::piped())).with_context(|| format!("run {what}"))?;
     let mut far = 0.0f64;
     if let Some(o) = child.stdout.take() {
         crate::agent::jobs::each_line(o, |l| {
@@ -820,7 +820,7 @@ pub fn latest_pass(root: &Path) -> Option<String> {
 fn copy_keep(p: &Path, scratch: &Path) -> Result<PathBuf> {
     let d = scratch.join(format!("upload-{}", p.file_name().unwrap().to_string_lossy()));
     // A clone on APFS: instant, no extra space.
-    let st = Command::new("cp").arg("-c").arg(p).arg(&d).status()?;
+    let st = store::spawn::status(Command::new("cp").arg("-c").arg(p).arg(&d))?;
     if !st.success() {
         store::sys::copy_data(p, &d)?;
     }
@@ -915,7 +915,7 @@ fn way_ids(file: &Path, among: Option<&std::collections::BTreeSet<i64>>) -> Resu
             c.args(["getid", "--no-progress", "-f", "opl", "-i"]).arg(&list).arg(file);
         }
     }
-    let o = c.output().context("run osmium");
+    let o = store::spawn::output(&mut c).context("run osmium");
     if among.is_some() {
         std::fs::remove_file(std::env::temp_dir().join(format!("scenic-way-ids-{}", std::process::id()))).ok();
     }
@@ -929,7 +929,7 @@ fn way_ids(file: &Path, among: Option<&std::collections::BTreeSet<i64>>) -> Resu
 
 /// Runs a command whose output isn't wanted, failing with its name.
 fn quiet(mut c: Command, what: &str) -> Result<()> {
-    let o = c.output().with_context(|| format!("run {what}"))?;
+    let o = store::spawn::output(&mut c).with_context(|| format!("run {what}"))?;
     ensure!(o.status.success(), "{what} failed: {}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim());
     Ok(())
 }
@@ -943,7 +943,7 @@ fn buildinfo_version(props: &str) -> Option<&str> {
 /// (pipeline::water::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so a
 /// new one's basemap isn't drawn until its z14 water is checked again as full detail.
 pub fn check_planetiler(jar: &Path) -> Result<()> {
-    let o = Command::new("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties").output().with_context(|| format!("read {}", jar.display()))?;
+    let o = store::spawn::output(Command::new("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties")).with_context(|| format!("read {}", jar.display()))?;
     ensure!(o.status.success(), "no buildinfo.properties in {}", jar.display());
     let props = String::from_utf8_lossy(&o.stdout);
     let v = buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
@@ -989,7 +989,7 @@ mod tests {
     fn osm(dir: &Path, name: &str, opl: &str) -> PathBuf {
         let (src, dest) = (dir.join(format!("{name}.opl")), dir.join(format!("{name}.osm.pbf")));
         std::fs::write(&src, opl).unwrap();
-        let st = osmium().args(["cat", "--no-progress", "--overwrite", "-o"]).arg(&dest).arg(&src).status().unwrap();
+        let st = store::spawn::status(osmium().args(["cat", "--no-progress", "--overwrite", "-o"]).arg(&dest).arg(&src)).unwrap();
         assert!(st.success());
         dest
     }
@@ -1014,7 +1014,7 @@ mod tests {
         let after = out.path(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap());
         assert_ne!(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap(), before);
         assert_eq!(way_ids(&after, None).unwrap().into_iter().collect::<Vec<_>>(), [10, 20, 30]);
-        let opl = String::from_utf8(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&after).output().unwrap().stdout).unwrap();
+        let opl = String::from_utf8(store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&after)).unwrap().stdout).unwrap();
         assert_eq!(opl.lines().filter(|l| l.starts_with('n')).count(), 5);
         // A piece with no ferries near it stays as it was; a second run changes nothing.
         assert_eq!(out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap(), untouched);

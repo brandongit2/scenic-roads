@@ -720,7 +720,7 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     let mut c = std::process::Command::new("uv");
     c.current_dir(dem).args(["run", "python", "bldprep.py", "--root"]).arg(out.root()).args(["--tile", &t.slash(), "--release", release]).stdout(std::process::Stdio::piped());
     crate::timings::child(&mut c);
-    let mut child = c.spawn().context("run bldprep.py")?;
+    let mut child = store::spawn::spawn(&mut c).context("run bldprep.py")?;
     // The stream read on its own thread, a few frames ahead, so Python reads on while records are
     // made here.
     let stdout = child.stdout.take().context("bldprep.py's stdout")?;

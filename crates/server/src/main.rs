@@ -553,12 +553,15 @@ async fn main() -> Result<()> {
     let listen: Option<std::net::Ipv4Addr> = arg("--listen").map(|a| a.parse()).transpose()?;
     let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
     eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // (Made, and their connections taken, while no child is being started, store::spawn: a child
+    // started between would hold the port.)
+    use axum::serve::ListenerExt;
+    let listener = pipeline::net::Listener::new(store::spawn::listen(addr)?)?.tap_io(|_| ());
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if listen.is_none() {
-        if let Ok(l6) = tokio::net::TcpListener::bind(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).await {
+        if let Ok(l6) = store::spawn::listen(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).and_then(pipeline::net::Listener::new) {
             let svc6 = svc.clone();
-            tokio::spawn(async move { axum::serve(l6, svc6).await });
+            tokio::spawn(async move { axum::serve(l6.tap_io(|_| ()), svc6).await });
         }
     }
     axum::serve(listener, svc).await?;

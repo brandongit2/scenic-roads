@@ -363,7 +363,7 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
     std::fs::remove_dir_all(&work).ok();
     std::fs::create_dir_all(work.join("freq"))?;
     let run = |mut c: Command, what: &str| -> Result<()> {
-        let o = c.output().with_context(|| format!("run {what}"))?;
+        let o = store::spawn::output(&mut c).with_context(|| format!("run {what}"))?;
         anyhow::ensure!(o.status.success(), "{what}: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or(""));
         Ok(())
     };

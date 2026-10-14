@@ -114,7 +114,7 @@ impl Running {
         c.env("RAYON_NUM_THREADS", threads.to_string()).env("PYTHONUNBUFFERED", "1").envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
         // Its own process group, so pausing and stopping reach every process it starts.
         crate::sys::own_group(&mut c);
-        let child = c.spawn().with_context(|| format!("start {}", spec.id))?;
+        let child = store::spawn::spawn(&mut c).with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
         let caffeinate = keep_awake(child.id());
         let started = now_s();
@@ -169,7 +169,7 @@ impl Running {
 /// Keeps the Mac awake while process `pid` runs: no idle sleep (on battery too: -i), no system sleep
 /// on mains power (-s), ending with it (-w).
 fn keep_awake(pid: u32) -> Option<Child> {
-    Command::new("/usr/bin/caffeinate").args(["-i", "-s", "-w", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()
+    store::spawn::spawn(Command::new("/usr/bin/caffeinate").args(["-i", "-s", "-w", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())).ok()
 }
 
 impl Drop for Running {
@@ -382,7 +382,7 @@ pub fn each_line(mut from: impl std::io::Read, mut each: impl FnMut(&str)) {
 /// Runs `c` with its standard error read here as it comes: each fraction it says (`fraction_of`)
 /// to `seen`, every other line on to this job's log. (osmium says how far it is with `--progress`.)
 pub fn run_watched(c: &mut Command, mut seen: impl FnMut(f64)) -> std::io::Result<ExitStatus> {
-    let mut child = c.stderr(Stdio::piped()).spawn()?;
+    let mut child = store::spawn::spawn(&mut c.stderr(Stdio::piped()))?;
     if let Some(err) = child.stderr.take() {
         each_line(err, |l| match fraction_of(l) {
             Some(f) => seen(f),

@@ -1136,6 +1136,8 @@ mod tests {
     }
 
     #[test]
+    // (A server of the test's, its accepts blocking; this program starts no child: store::spawn isn't needed.)
+    #[allow(clippy::disallowed_methods)]
     fn files_kept_copied_or_downloaded_whole() {
         let d = tempfile::tempdir().unwrap();
         let (cache, store) = (d.path().join("cache"), d.path().join("store"));
@@ -1207,6 +1209,8 @@ mod tests {
     }
 
     #[test]
+    // (A server of the test's, its accepts blocking; this program starts no child: store::spawn isn't needed.)
+    #[allow(clippy::disallowed_methods)]
     fn a_file_asked_for_under_each_of_its_spellings() {
         // (Meta's equator row: our name, then `lat=-0.0`: pipeline::trees::chm_urls.) The first
         // isn't there (404), the second is: downloaded from it, into the store and here.

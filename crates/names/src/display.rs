@@ -653,6 +653,8 @@ mod tests {
     /// Node, and a Node on a newer Unicode than Rust's differs on newly assigned characters.
     #[test]
     #[ignore]
+    // (names makes no socket and depends on no crate that does: store::spawn is no need here.)
+    #[allow(clippy::disallowed_methods)]
     fn norm_matches_node() {
         const TRICKY: &[&str] = &["ΟΔΟΣ", "ΣΑΣ", "Σ", "ΑΣ.", "ΑΣ Α", "Α.Σ", "ΑΣ\u{301}", "İSTANBUL", "Ǆemal", "ǅ", "Ⅻ ⅻ", "ﬀ ﬃ ẞ", "Ｔｏｋｙｏ", "①②", "がっこう", "Ꭰꭰ", "𝔄𝔟𝔠", "🅰🅱🄰"];
         let script = r#"

@@ -15,6 +15,7 @@ pub mod pieces;
 pub mod pmtiles;
 pub mod range;
 pub mod sect;
+pub mod spawn;
 pub mod sys;
 
 pub use iopool::{IoError, IoPool};

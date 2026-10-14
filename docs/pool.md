@@ -649,6 +649,16 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   reading by (time, writer, number): no two Macs append to one file.
 - **The contact** (`state/coordinator.json`, for old apps): a lead stopping removes it only if it
   still names its own addresses.
+- **Its port, free for the next:** a stop returns with its listener and every connection it took
+  closed, and no child holds either. On macOS a socket is made, then marked close-on-exec, and a
+  child started between keeps it as long as it lives (the next listen refused, EADDRINUSE); a
+  child started by fork and exec holds every socket until its exec. So every child is started
+  (`store::spawn`) while no listener or connection is being made or closed, and the other way
+  round: one lock, read by the starts, written by the sockets. The map's server's listeners are
+  made the same way. clippy.toml's disallowed-methods, checked by `pipeline`'s
+  `every_child_is_started_by_spawn`, keeps every start, listen and accept in the workspace to it.
+  Outgoing connections (ureq's) aren't made under the lock: a child holding one keeps a
+  connection open, never a port from being listened on.
 - **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1: while the pool
   is on, no agent names the writer, no job carries `SCENIC_BUILD_MAC`, and `check_writer` refuses
   every save, so a step run by hand writes nothing, `scenic-build verify`'s none either: unverified

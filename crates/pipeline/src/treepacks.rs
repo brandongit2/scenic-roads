@@ -189,7 +189,7 @@ fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()
     let _p = crate::timings::phase(if python { "trees.py" } else { "the trees program" }, crate::timings::Class::Mixed);
     c.current_dir(dem).args(args);
     crate::timings::child(&mut c);
-    let st = c.status().with_context(|| format!("run {prog}"))?;
+    let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"))?;
     anyhow::ensure!(st.success(), "{prog}: {st}");
     Ok(())
 }

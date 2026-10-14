@@ -139,7 +139,7 @@ pub fn same(a: &str, b: &str) -> bool {
 /// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name.
 pub fn urls(port: u16) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(o) = std::process::Command::new("/sbin/ifconfig").output() {
+    if let Ok(o) = store::spawn::output(&mut std::process::Command::new("/sbin/ifconfig")) {
         for w in String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().windows(2) {
             let ["inet", a] = w else { continue };
             let Ok(ip) = a.parse::<std::net::Ipv4Addr>() else { continue };
@@ -158,7 +158,7 @@ pub fn urls(port: u16) -> Vec<String> {
 pub fn served_https(port: u16) -> Option<String> {
     let cli = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"].into_iter().find(|p| Path::new(p).exists())?;
     // (Bounded: a stuck daemon mustn't hold up whoever asks.)
-    let mut child = std::process::Command::new(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let mut child = store::spawn::spawn(std::process::Command::new(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())).ok()?;
     let t = Instant::now();
     while child.try_wait().ok()?.is_none() {
         if t.elapsed() > Duration::from_secs(3) {
@@ -185,6 +185,68 @@ pub fn https_in(v: &serde_json::Value, port: u16) -> Option<String> {
         }
     }
     None
+}
+
+/// A listener whose connections are taken, and which is closed, while no child is being started
+/// (store::spawn): tokio's takes a connection, then marks it close-on-exec, and a child started
+/// between holds it. The coordinator's and the map's server's.
+pub struct Listener(Option<tokio::io::unix::AsyncFd<std::net::TcpListener>>);
+
+impl Listener {
+    /// `listener`, answered on the runtime this is called on.
+    pub fn new(listener: std::net::TcpListener) -> std::io::Result<Listener> {
+        listener.set_nonblocking(true)?;
+        Ok(Listener(Some(tokio::io::unix::AsyncFd::new(listener)?)))
+    }
+
+    /// The next connection (store::spawn::accept, once one is waiting).
+    pub async fn accept(&self) -> std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)> {
+        let fd = self.0.as_ref().expect("open until dropped");
+        loop {
+            let mut ready = fd.readable().await?;
+            if let Ok(got) = ready.try_io(|l| store::spawn::accept(l.get_ref())) {
+                let (s, peer) = got?;
+                s.set_nonblocking(true)?;
+                return Ok((tokio::net::TcpStream::from_std(s)?, peer));
+            }
+        }
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.0.as_ref().expect("open until dropped").get_ref().local_addr()
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        if let Some(fd) = self.0.take() {
+            let l = fd.into_inner();
+            store::spawn::sockets(|| drop(l));
+        }
+    }
+}
+
+/// axum::serve's (with `.tap_io(|_| ())`, for its ConnectInfo): a connection that can't be taken
+/// (no descriptor left, say) said and waited a second on, as axum's own listener does.
+impl axum::serve::Listener for Listener {
+    type Io = tokio::net::TcpStream;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match Listener::accept(self).await {
+                Ok(x) => return x,
+                Err(e) => {
+                    eprintln!("taking a connection: {e}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Listener::local_addr(self)
+    }
 }
 
 #[cfg(test)]

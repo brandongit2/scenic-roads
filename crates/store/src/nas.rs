@@ -43,7 +43,7 @@ pub fn smb_url() -> &'static str {
 
 /// Whether the Keychain has an internet password for `server` (its attributes only: no prompt).
 fn keychain_knows(server: &str) -> bool {
-    Command::new("/usr/bin/security").args(["find-internet-password", "-s", server]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    crate::spawn::status(Command::new("/usr/bin/security").args(["find-internet-password", "-s", server]).stdout(Stdio::null()).stderr(Stdio::null())).is_ok_and(|s| s.success())
 }
 
 /// The URL to mount the share by away from home: the bare name (Tailscale's DNS sends it through the
@@ -195,7 +195,7 @@ fn applescript_escape(s: &str) -> String {
 /// Runs `cmd` to completion within `timeout`, killing it otherwise; an error with its stderr when
 /// it fails.
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<()> {
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().context("can't run it")?;
+    let mut child = crate::spawn::spawn(cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())).context("can't run it")?;
     let mut stderr = child.stderr.take();
     // Read stderr on the side so a chatty child can't block on a full pipe.
     let reader = thread::spawn(move || {

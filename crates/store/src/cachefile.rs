@@ -668,7 +668,7 @@ mod tests {
         hold(&p, &mut |t| std::fs::write(t, b"child")).unwrap();
         assert_eq!(try_remove(&p), Removed::InUse);
         // A child (cat) opens it by name, while a deleter tries in between.
-        let out = std::process::Command::new("cat").arg(&p).output().unwrap();
+        let out = crate::spawn::output(std::process::Command::new("cat").arg(&p)).unwrap();
         assert_eq!(out.stdout, b"child");
         // And the lock is the file's, not the name's: a child's own lock on it, shared, is no conflict.
         assert_eq!(try_remove(&p), Removed::InUse);

@@ -14,7 +14,7 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
         let mut c = std::process::Command::new("python3");
         c.arg("-I").arg(&script);
         timings::child(&mut c);
-        let st = c.status().expect("python3");
+        let st = store::spawn::status(&mut c).expect("python3");
         assert!(st.success());
     }
     let r = timings::snapshot(true).unwrap();

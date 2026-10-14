@@ -112,7 +112,7 @@ fn main() -> Result<()> {
             let dir = PathBuf::from(opt(&args, "--store").context("--store")?);
             let tmp = dir.join("sea-count.tmp");
             let mut w = GeomWriter::create(&tmp)?;
-            let mut unzip = std::process::Command::new("/usr/bin/unzip").arg("-p").arg(opt(&args, "--water-polygons").context("--water-polygons")?).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped()).spawn()?;
+            let mut unzip = store::spawn::spawn(std::process::Command::new("/usr/bin/unzip").arg("-p").arg(opt(&args, "--water-polygons").context("--water-polygons")?).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped()))?;
             wc::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, unzip.stdout.take().context("unzip")?), &mut w)?;
             anyhow::ensure!(unzip.wait()?.success(), "unzip failed");
             let (n, _) = w.finish()?;
@@ -146,7 +146,7 @@ fn build(args: &[String]) -> Result<()> {
     let mut w = GeomWriter::create(&out)?;
     let t = std::time::Instant::now();
     // The sea's water polygons.
-    let mut unzip = std::process::Command::new("/usr/bin/unzip").arg("-p").arg(&zip).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped()).spawn().context("run unzip")?;
+    let mut unzip = store::spawn::spawn(std::process::Command::new("/usr/bin/unzip").arg("-p").arg(&zip).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped())).context("run unzip")?;
     let shp = unzip.stdout.take().context("unzip's output")?;
     let polygons = wc::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, shp), &mut w);
     anyhow::ensure!(unzip.wait()?.success(), "unzip failed");
@@ -159,15 +159,16 @@ fn build(args: &[String]) -> Result<()> {
         "area_tags": wc::AREA_TAGS,
         "include_tags": ["natural", "water", "waterway", "landuse", "tunnel", "covered"],
     }))?)?;
-    let mut child = pipeline::osmpass::osmium()
+    let mut child = store::spawn::spawn(
+        pipeline::osmpass::osmium()
         .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "--overwrite", "-o", "-"])
         .arg("-c")
         .arg(&cfg)
         .arg(format!("--index-type={index}"))
         .arg(&set)
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .context("run osmium export")?;
+        .stdout(std::process::Stdio::piped()),
+    )
+    .context("run osmium export")?;
     let stdout = child.stdout.take().context("osmium's output")?;
     let n = wc::read_export(std::io::BufReader::with_capacity(4 << 20, stdout), &mut w, &|n| {
         if n % 1_000_000 < 16384 {
@@ -250,7 +251,7 @@ fn serve(args: &[String]) -> Result<()> {
     let app = axum::Router::new().route("/cov/{z}/{x}/{y}", axum::routing::get(tile)).with_state(g);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build()?;
     rt.block_on(async {
-        let l = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+        let l = pipeline::net::Listener::new(store::spawn::listen(("127.0.0.1", port))?)?;
         axum::serve(l, app).await?;
         anyhow::Ok(())
     })?;

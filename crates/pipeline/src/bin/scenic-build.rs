@@ -1895,7 +1895,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let p = phase("candidates extracted (extract)", Class::Compute);
         let mut c = std::process::Command::new(&extract);
         c.arg(&dir).arg("8").arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
-        let o = c.output().with_context(|| format!("run {}", extract.display()))?;
+        let o = store::spawn::output(&mut c).with_context(|| format!("run {}", extract.display()))?;
         anyhow::ensure!(o.status.success(), "extract --candidates for {}: {}\n{}", u.slash(), o.status, String::from_utf8_lossy(&o.stderr).lines().rev().take(8).collect::<Vec<_>>().join("\n"));
         drop(p);
         let p = phase("candidates kept in the coverage and written", Class::Compute);
@@ -2198,7 +2198,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let p = phase("items.py", Class::Mixed);
     pipeline::timings::child(&mut c);
-    let st = c.status().context("run items.py")?;
+    let st = store::spawn::status(&mut c).context("run items.py")?;
     drop(p);
     // What it fetched, on the NAS whether or not it finished (stopped, at the next start).
     let p = phase("the pass's answers sent to the NAS", Class::NasWrite);
@@ -2405,7 +2405,7 @@ fn osmium_run(mut c: std::process::Command, what: &str) -> Result<()> {
 /// just clipped), failing with its name: its progress not said (a second bar would set the stage's
 /// back).
 fn osmium_quiet(mut c: std::process::Command, what: &str) -> Result<()> {
-    let st = c.status().with_context(|| format!("run {what}"))?;
+    let st = store::spawn::status(&mut c).with_context(|| format!("run {what}"))?;
     anyhow::ensure!(st.success(), "{what} failed: {st}");
     Ok(())
 }
@@ -2489,7 +2489,7 @@ fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()
         .arg(&from)
         .arg(&list)
         .arg(&tar);
-    let st = c.status().context("tar | zstd")?;
+    let st = store::spawn::status(&mut c).context("tar | zstd")?;
     anyhow::ensure!(st.success(), "archiving {} failed: {st}", from.display());
     let files = std::fs::read_to_string(&list)?.lines().count();
     let size = std::fs::metadata(&tar)?.len();
@@ -2544,10 +2544,10 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     let epoch = cache.join(format!("heritage-{date}-{id}"));
     if !epoch.join(".done").exists() {
         std::fs::remove_dir_all(&epoch).ok();
-        let st = std::process::Command::new("cp").arg("-c").arg("-R").arg(&snap).arg(&epoch).status()?;
+        let st = store::spawn::status(std::process::Command::new("cp").arg("-c").arg("-R").arg(&snap).arg(&epoch))?;
         if !st.success() {
             std::fs::remove_dir_all(&epoch).ok();
-            let st = std::process::Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch).status()?;
+            let st = store::spawn::status(std::process::Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch))?;
             anyhow::ensure!(st.success(), "copying {} failed: {st}", snap.display());
         }
         std::fs::write(epoch.join(".done"), b"")?;
@@ -2583,7 +2583,7 @@ fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> 
         let mut c = std::process::Command::new("/bin/sh");
         c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
         c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&dir);
-        let st = c.status().context("zstd | tar")?;
+        let st = store::spawn::status(&mut c).context("zstd | tar")?;
         anyhow::ensure!(st.success(), "extracting {content} failed: {st}");
         std::fs::write(dir.join(".done"), b"")?;
     }
@@ -2633,7 +2633,7 @@ fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&s
     // (Its phase, its own phases under it: dem/timings.py.)
     let _p = phase(script, Class::Mixed);
     pipeline::timings::child(&mut c);
-    let st = c.status().with_context(|| format!("run {script}"))?;
+    let st = store::spawn::status(&mut c).with_context(|| format!("run {script}"))?;
     anyhow::ensure!(st.success(), "{script} failed: {st}");
     eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
     Ok(())
@@ -3430,7 +3430,7 @@ fn bld_fetch_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> 
     let mut c = std::process::Command::new("uv");
     c.current_dir(&dem).args(["run", "python", "bldfetch.py", "--root"]).arg(out.root()).args(["--release", pipeline::buildtiles::RELEASE, "--coverage"]).arg(&cover);
     pipeline::timings::child(&mut c);
-    let st = c.status().context("run bldfetch.py")?;
+    let st = store::spawn::status(&mut c).context("run bldfetch.py")?;
     anyhow::ensure!(st.success(), "bldfetch.py: {st}");
     Ok(())
 }
@@ -3937,7 +3937,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         .arg("--out")
         .arg(&found);
     pipeline::timings::child(&mut c);
-    let st = c.status().context("run railfeeds.py")?;
+    let st = store::spawn::status(&mut c).context("run railfeeds.py")?;
     drop(p);
     parts.start(2);
     let p = phase("the feeds uploaded", Class::NasWrite);
@@ -3992,7 +3992,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let mut c = std::process::Command::new("uv");
         c.current_dir(&dem).args(["run", "python", "railgtfs.py", "--feeds"]).arg(&list).arg("--out").arg(&pairs).arg("--used").arg(&used);
         pipeline::timings::child(&mut c);
-        let st = c.status().context("run railgtfs.py")?;
+        let st = store::spawn::status(&mut c).context("run railgtfs.py")?;
         anyhow::ensure!(st.success(), "railgtfs.py failed: {st}");
         drop(p);
         let p = phase("the pairs kept and the feeds' use uploaded", Class::NasWrite);
@@ -4049,7 +4049,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("its ways extracted and those in the coverage kept (extract)", Class::Compute);
     let dir = scratch.join("ways");
     std::fs::remove_dir_all(&dir).ok();
-    let st = std::process::Command::new(bin.join("extract")).arg(&dir).arg("8").arg(&clip).status().context("run extract")?;
+    let st = store::spawn::status(std::process::Command::new(bin.join("extract")).arg(&dir).arg("8").arg(&clip)).context("run extract")?;
     anyhow::ensure!(st.success(), "extract failed: {st}");
     std::fs::remove_file(&clip).ok();
     let (kept, _) = pipeline::unit::subset(&dir, |_, vs| cov.touches(vs))?;
@@ -4058,7 +4058,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // 4. The trains on them.
     parts.start(4);
     let p = phase("the trains matched onto the tracks (railfreq)", Class::Compute);
-    let st = std::process::Command::new(bin.join("railfreq")).arg(&dir).args(&inputs).status().context("run railfreq")?;
+    let st = store::spawn::status(std::process::Command::new(bin.join("railfreq")).arg(&dir).args(&inputs)).context("run railfreq")?;
     anyhow::ensure!(st.success(), "railfreq failed: {st}");
     let ways = roadcore::Ways::open(&dir)?;
     let freq = rail::by_way_id(ways.ways(), &std::fs::read(dir.join("rail-freq.bin"))?);
@@ -4099,7 +4099,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let mut c = std::process::Command::new("uv");
     c.current_dir(&dem).args(["run", "python", "labels.py", "--src"]).arg(&local).arg("--out").arg(&tiles).arg("--work").arg(&work);
     pipeline::timings::child(&mut c);
-    let st = c.status().context("run labels.py")?;
+    let st = store::spawn::status(&mut c).context("run labels.py")?;
     anyhow::ensure!(st.success(), "labels.py failed: {st}");
     drop(p);
     parts.start(2);

@@ -798,7 +798,7 @@ pub fn take_peak() -> u64 {
 fn snapshot(snap: &Path, n: usize, c: &Command, dir: &Path, what: &str, when: &str) -> Result<()> {
     let to = snap.join(format!("{n:02} {what} {when}"));
     std::fs::create_dir_all(snap)?;
-    let st = Command::new("cp").arg("-c").arg("-R").arg(dir).arg(&to).status()?;
+    let st = store::spawn::status(Command::new("cp").arg("-c").arg("-R").arg(dir).arg(&to))?;
     anyhow::ensure!(st.success(), "clone {} to {}", dir.display(), to.display());
     let mut cmd = format!("prog {}\n", c.get_program().to_string_lossy());
     for a in c.get_args() {
@@ -836,7 +836,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let _p = crate::timings::phase(what, program_class(what));
     crate::timings::child(&mut c);
     let t = std::time::Instant::now();
-    let mut child = c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped()).spawn().with_context(|| format!("start {what}"))?;
+    let mut child = store::spawn::spawn(c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped())).with_context(|| format!("start {what}"))?;
     // Its errors into its log as they come, and how far it says it is passed on as its stage's
     // (a bar's redraws only that).
     let err = child.stderr.take();

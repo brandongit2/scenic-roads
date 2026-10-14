@@ -195,7 +195,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     let mut c = std::process::Command::new("uv");
     c.current_dir(dem).args(["run", "python", "buildings.py", "--world"]).arg(&parts).args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", RELEASE]);
     crate::timings::child(&mut c);
-    let st = c.status().context("run buildings.py")?;
+    let st = store::spawn::status(&mut c).context("run buildings.py")?;
     anyhow::ensure!(st.success(), "buildings.py: {st}");
     drop(p);
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());

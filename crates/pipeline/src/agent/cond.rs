@@ -96,7 +96,7 @@ impl Mac {
 /// a battery says AC too. When pmset can't be read, mains is assumed (a broken probe shouldn't stop
 /// all work).
 pub fn power() -> (bool, Option<u8>) {
-    match Command::new("/usr/bin/pmset").args(["-g", "ps"]).output() {
+    match store::spawn::output(Command::new("/usr/bin/pmset").args(["-g", "ps"])) {
         Ok(o) => parse_power(&String::from_utf8_lossy(&o.stdout)),
         Err(_) => (true, None),
     }
@@ -114,7 +114,7 @@ fn parse_power(ps: &str) -> (bool, Option<u8>) {
 /// Seconds since the last keyboard or mouse input (IOHIDSystem's HIDIdleTime, in nanoseconds);
 /// u64::MAX when it can't be read.
 pub fn idle_seconds() -> u64 {
-    let Ok(o) = Command::new("/usr/sbin/ioreg").args(["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"]).output() else {
+    let Ok(o) = store::spawn::output(Command::new("/usr/sbin/ioreg").args(["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"])) else {
         return u64::MAX;
     };
     parse_idle(&String::from_utf8_lossy(&o.stdout)).unwrap_or(u64::MAX)
@@ -198,11 +198,11 @@ impl Resources {
 pub fn resources(home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
     static MEM: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     let mem_gb = *MEM.get_or_init(|| {
-        let o = Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok();
+        let o = store::spawn::output(Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).ok();
         o.and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).map_or(0.0, |b| b as f64 / (1u64 << 30) as f64)
     });
     // ("System-wide memory free percentage: 63%")
-    let mem_free_pct = Command::new("/usr/bin/memory_pressure").arg("-Q").output().ok().and_then(|o| {
+    let mem_free_pct = store::spawn::output(Command::new("/usr/bin/memory_pressure").arg("-Q")).ok().and_then(|o| {
         let s = String::from_utf8_lossy(&o.stdout).into_owned();
         s.split("free percentage:").nth(1)?.trim().trim_end_matches('%').trim().parse::<u8>().ok()
     });
@@ -235,9 +235,7 @@ pub fn host() -> &'static str {
 
 /// This Mac's name (for the heartbeat).
 pub fn host_name() -> String {
-    Command::new("/usr/sbin/scutil")
-        .args(["--get", "LocalHostName"])
-        .output()
+    store::spawn::output(Command::new("/usr/sbin/scutil").args(["--get", "LocalHostName"]))
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
