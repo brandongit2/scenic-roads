@@ -16,6 +16,14 @@ use det::Det;
 
 /// An opaque RGB image (`w` × `h`, 3 bytes a pixel, row by row) as a lossless WebP file.
 pub fn encode_rgb(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
+    encode_rgb_regions(rgb, w, h, 5)
+}
+
+/// `encode_rgb` with regions of 2^`rbits` pixels a side for its codes' groups (5 for the tree
+/// cover's tiles; the regions' merging takes the square of their count, so a larger image wants
+/// larger regions).
+pub fn encode_rgb_regions(rgb: &[u8], w: u32, h: u32, rbits: u32) -> Vec<u8> {
+    assert!((2..=9).contains(&rbits));
     // (16383 a side at most: libwebp's limit, and Safari's decoder fails on more.)
     assert!((1..=16383).contains(&w) && (1..=16383).contains(&h) && rgb.len() == w as usize * h as usize * 3);
     let px: Vec<u32> = rgb.as_chunks::<3>().0.iter().map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
@@ -31,7 +39,7 @@ pub fn encode_rgb(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
         None => Image { px, w, h },
     };
     b.put(0, 1); // no more transforms
-    entropy_coded(&mut b, &img, true);
+    entropy_coded(&mut b, &img, Some(rbits));
     let data = b.finish();
     let chunk = data.len() as u32;
     let mut out = Vec::with_capacity(data.len() + 21);
@@ -108,7 +116,7 @@ fn indexed(b: &mut Bits, px: &[u32], w: usize, h: usize, pal: &[u32]) -> Image {
     b.put(3, 2);
     b.put(pal.len() as u32 - 1, 8);
     let deltas: Vec<u32> = pal.iter().enumerate().map(|(i, &c)| if i == 0 { c } else { sub_pixels(c, pal[i - 1]) }).collect();
-    entropy_coded(b, &Image { px: deltas, w: pal.len(), h: 1 }, false);
+    entropy_coded(b, &Image { px: deltas, w: pal.len(), h: 1 }, None);
     let xbits = match pal.len() {
         0..=2 => 3,
         3..=4 => 2,
@@ -419,19 +427,22 @@ fn cost_of(total: &[u64; 5], used: &[u32; 5], sum: &[f64; 5], extra: u64) -> f64
 
 /// Writes an image's entropy-coded data: no colour cache; for the main image (`meta`), Huffman
 /// codes per region, clustered; then its codes and symbols.
-fn entropy_coded(b: &mut Bits, img: &Image, meta: bool) {
+fn entropy_coded(b: &mut Bits, img: &Image, meta: Option<u32>) {
     // A first pass's codes cost the second's copies.
     let first = lz77(&img.px, img.w, None);
     let costs = Costs::of(&Histo::of(first.iter().copied(), img.w));
     let syms = lz77(&img.px, img.w, Some(&costs));
     b.put(0, 1); // no colour cache
-    let (groups, of_region, rbits, rw) = if meta { regions(&syms, img) } else { (vec![Histo::of(syms.iter().copied(), img.w)], vec![0u16], 0, 1) };
-    if meta {
+    let (groups, of_region, rbits, rw) = match meta {
+        Some(rbits) => regions(&syms, img, rbits),
+        None => (vec![Histo::of(syms.iter().copied(), img.w)], vec![0u16], 0, 1),
+    };
+    if meta.is_some() {
         if groups.len() > 1 {
             b.put(1, 1);
             b.put(rbits - 2, 3);
             let sub: Vec<u32> = of_region.iter().map(|&g| 0xff00_0000 | (g as u32) << 8).collect();
-            entropy_coded(b, &Image { px: sub, w: rw, h: img.h.div_ceil(1 << rbits) }, false);
+            entropy_coded(b, &Image { px: sub, w: rw, h: img.h.div_ceil(1 << rbits) }, None);
         } else {
             b.put(0, 1);
         }
@@ -467,17 +478,17 @@ fn entropy_coded(b: &mut Bits, img: &Image, meta: bool) {
     }
 }
 
-/// The groups of codes for regions of 32 × 32 pixels: each region's histogram, then the pair whose
+/// The groups of codes for regions of 2^`rbits` pixels a side (32 × 32 for the tree cover's): each region's histogram, then the pair whose
 /// merging saves most merged, while one does. The groups' histograms, each region's group, the
 /// regions' bits and how many there are across.
-fn regions(syms: &[Sym], img: &Image) -> (Vec<Histo>, Vec<u16>, u32, usize) {
-    const RBITS: u32 = 5;
-    let (rw, rh) = (img.w.div_ceil(1 << RBITS), img.h.div_ceil(1 << RBITS));
+fn regions(syms: &[Sym], img: &Image, rbits: u32) -> (Vec<Histo>, Vec<u16>, u32, usize) {
+    let rb = rbits;
+    let (rw, rh) = (img.w.div_ceil(1 << rb), img.h.div_ceil(1 << rb));
     let n = rw * rh;
     let mut of: Vec<Vec<Sym>> = vec![Vec::new(); n];
     let mut i = 0;
     for &s in syms {
-        of[((i / img.w) >> RBITS) * rw + ((i % img.w) >> RBITS)].push(s);
+        of[((i / img.w) >> rb) * rw + ((i % img.w) >> rb)].push(s);
         i += match s {
             Sym::Copy { len, .. } => len as usize,
             Sym::Lit(_) => 1,
@@ -527,7 +538,7 @@ fn regions(syms: &[Sym], img: &Image) -> (Vec<Histo>, Vec<u16>, u32, usize) {
             groups.push(h);
         }
     }
-    (groups, of_region, RBITS, rw)
+    (groups, of_region, rb, rw)
 }
 
 // ---- Huffman codes --------------------------------------------------------------------------

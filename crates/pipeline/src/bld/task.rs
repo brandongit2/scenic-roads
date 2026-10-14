@@ -14,9 +14,9 @@
 //!
 //! - `heritage.bin`: T's heritage sites (`field::sites_of_markdata`), E7 pairs (i32 LE), sorted.
 //!
-//! What the program writes there: `area.tiles` (an RDTILES archive of the area's z12–14 tiles, as
+//! What the program writes there: `area.tiles` (an RDTILES archive of the area's z14 tiles, as
 //! `job::area_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES
-//! archive of its field's tiles, levels 13–8) and `area.mid` (its level-8 planes, `field::write_mid`;
+//! archive of its field's tiles, levels 14–8) and `area.mid` (its level-8 planes, `field::write_mid`;
 //! none without a building). The job's own run of an area
 //! (one no worker finished, or a worker's result checked) writes the same two files the same way,
 //! from the whole work files: a worker's are compared with them byte for byte.
@@ -220,7 +220,7 @@ pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, fie
     let ar = Archive::open(&dir.join(TILES))?;
     for e in ar.entries() {
         let (z, x, y) = super::key_zxy(e.key);
-        ensure!((super::MINZOOM..=super::MAXZOOM).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y), "area {}'s tiles hold {z}/{x}/{y}", a.slash());
+        ensure!(z == super::ZOOM && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y), "area {}'s tiles hold {z}/{x}/{y}", a.slash());
         add(z, x, y, ar.get_entry(e), e.raw_len)?;
     }
     let mut f = field::AreaField::default();

@@ -77,5 +77,5 @@ for (const r of runs) {
   console.log(`${r.name}: ${r.s.toFixed(1)} s, ${mem}: ${same ? "the same bytes" : "DIFFERENT"}`);
 }
 const sum = JSON.parse(readFileSync(join(first.d, "area.json"), "utf8"));
-console.log(`area ${cut.area}: ${sum.buildings} buildings, ${sum.parts} parts, ${sum.tiles.reduce((a, b) => a + b, 0)} tiles, ${(readFileSync(join(first.d, "area.tiles")).length / 2 ** 20).toFixed(1)} MB`);
+console.log(`area ${cut.area}: ${sum.buildings} buildings, ${sum.parts} parts, ${sum.tiles} tiles, ${(readFileSync(join(first.d, "area.tiles")).length / 2 ** 20).toFixed(1)} MB`);
 process.exit(bad ? 1 : 0);

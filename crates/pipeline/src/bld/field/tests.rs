@@ -53,7 +53,7 @@ fn town() -> Vec<(Vec<[i32; 2]>, u16, u16)> {
 #[test]
 fn areas_and_tops_kept() {
     // One 15 m house, alone: Σ f × texel area is its footprint, v / f its top, Σ w × texel area its
-    // walls (perimeter × height), at level 8 (means of level 13's).
+    // walls (perimeter × height), at level 8 (means of level 14's).
     let r = square(2.3501, 48.8602, 0.0002, true);
     let rings = vec![(r.clone(), 150u16, 0u16)];
     let feet = feet_of(&rings);
@@ -79,9 +79,9 @@ fn areas_and_tops_kept() {
     assert!((sf / fp - 1.0).abs() < 1e-3, "{sf} {fp}");
     assert!((sv / sf - 15.0).abs() < 1e-3, "{}", sv / sf);
     assert!((sw / (per * 15.0) - 1.0).abs() < 1e-3, "{sw} {}", per * 15.0);
-    // Its tiles: levels 13–8, one each, the finest first.
+    // Its tiles: levels 14–8, one each, the finest first.
     let levels: Vec<u8> = field.tiles.iter().map(|t| t.0).collect();
-    assert_eq!(levels, [13, 12, 11, 10, 9, 8]);
+    assert_eq!(levels, [14, 13, 12, 11, 10, 9, 8]);
 }
 
 #[test]
@@ -98,10 +98,10 @@ fn the_same_bytes_in_any_order() {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     let two = pool.install(|| area(a, &feet2, &her));
     assert_eq!(one, two);
-    // The towers: level 13 holds classes 0–2 only, level 12 every class.
+    // The towers: in every level, the finest too.
     let l13: u8 = one.tiles.iter().filter(|t| t.0 == 13).map(|t| t.3[0]).fold(0, |m, k| m | k);
     let l12: u8 = one.tiles.iter().filter(|t| t.0 == 12).map(|t| t.3[0]).fold(0, |m, k| m | k);
-    assert_eq!((l13 & !L13_CLASSES, l12 & 0b11000), (0, 0b11000), "{l13:b} {l12:b}");
+    assert_eq!((l13 & 0b11000, l12 & 0b11000), (0b11000, 0b11000), "{l13:b} {l12:b}");
     // The house across the west edge: its part in the area counted, in the first column.
     let mid = one.mid.as_ref().unwrap();
     let k = class_of(90);
@@ -179,6 +179,32 @@ fn heritage_lists_the_buildings_holding_a_site() {
         [1000.0 + 300.0 * t.cos(), 1000.0 + 300.0 * t.sin()]
     }).collect();
     assert!(simplify_to(&ring, HERITAGE_PTS).len() <= HERITAGE_PTS);
+}
+
+/// The WebP coding's regions tried on a built pack's tiles (BLDFIELD_PACK, BLDFIELD_SAMPLE every
+/// n-th tile): bytes and time for each region size. By hand: cargo test --release … -- --ignored.
+#[test]
+#[ignore]
+fn region_sizes_tried() {
+    let Ok(p) = std::env::var("BLDFIELD_PACK") else { return };
+    let every: usize = std::env::var("BLDFIELD_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+    let b = std::fs::read(p).unwrap();
+    let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
+    let mut tot: BTreeMap<u32, (usize, f64)> = BTreeMap::new();
+    for e in idx.entries.iter().step_by(every) {
+        let blob = &b[e.offset as usize..e.offset as usize + e.len as usize];
+        let (mask, classes) = decode(blob);
+        let rgb: Vec<u8> = classes.iter().flatten().flatten().copied().collect();
+        let h = T as u32 * mask.count_ones();
+        for rb in [5u32, 6, 7, 8] {
+            let t0 = std::time::Instant::now();
+            let w = crate::webp::encode_rgb_regions(&rgb, T as u32, h, rb);
+            let s = tot.entry(rb).or_default();
+            s.0 += w.len();
+            s.1 += t0.elapsed().as_secs_f64();
+        }
+    }
+    eprintln!("{} tiles of {}: {tot:?}", idx.entries.len().div_ceil(every), idx.entries.len());
 }
 
 #[test]

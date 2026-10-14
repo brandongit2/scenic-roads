@@ -3,7 +3,7 @@
 //!
 //! usage: bldtile <dir> <8/x/y> [--workers n]
 //!            dir: the area's task folder (its work files' blocks, `coverage.sect`); writes there
-//!            `area.tiles` (its z12–14 tiles, RDTILES) and `area.json` (what it made)
+//!            `area.tiles` (its z14 tiles, RDTILES) and `area.json` (what it made)
 
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     let t0 = std::time::Instant::now();
     pipeline::dem::sample::within(pool.as_ref(), &|| {
         let s = pipeline::bld::task::run(&dir, a)?;
-        eprintln!("bldtile {}: {} buildings and {} parts in {} tiles ({:.1} s)", a.slash(), s.buildings, s.parts, s.tiles.iter().sum::<u64>(), t0.elapsed().as_secs_f64());
+        eprintln!("bldtile {}: {} buildings and {} parts in {} tiles ({:.1} s)", a.slash(), s.buildings, s.parts, s.tiles, t0.elapsed().as_secs_f64());
         Ok(())
     })
 }

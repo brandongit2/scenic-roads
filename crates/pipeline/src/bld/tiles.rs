@@ -7,8 +7,7 @@
 //! - A building running past its tile is also copied, whole, into each tile it reaches (`o` 1), for
 //!   the flat footprints: a fill is cut at its tile's edge, so the neighbour draws the rest. The
 //!   extruded layer leaves the copies out.
-//! - Quantized to the tile's grid (z14: 0.6 m at the equator), at z12–13 simplified to one grid
-//!   unit first (Douglas–Peucker); each ring's repeated points dropped, a ring of fewer than three
+//! - Quantized to the tile's grid (0.6 m at the equator); each ring's repeated points dropped, a ring of fewer than three
 //!   points or no area dropped (an exterior with its holes). Exteriors wind positive (y down), holes
 //!   negative.
 //! - No edge parallel to an axis beyond the extent ([`unclip`]): MapLibre takes such an edge for a
@@ -78,63 +77,14 @@ fn zz(v: i64) -> u32 {
     ((v << 1) ^ (v >> 63)) as u32
 }
 
-/// Squared distance from `p` to the segment a–b (to a when they coincide).
-fn seg_d2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let l2 = dx * dx + dy * dy;
-    let t = if l2 == 0.0 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0) };
-    let (ex, ey) = (p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
-    ex * ex + ey * ey
-}
-
-/// Douglas–Peucker of a closed ring (its points, the first repeated at the end), tolerance `tol`:
-/// the points kept, the closing one included.
-fn simplify(r: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
-    let n = r.len();
-    if n < 3 {
-        return r.to_vec();
-    }
-    let mut keep = vec![false; n];
-    keep[0] = true;
-    keep[n - 1] = true;
-    let mut stack = vec![(0usize, n - 1)];
-    let t2 = tol * tol;
-    while let Some((a, b)) = stack.pop() {
-        if b <= a + 1 {
-            continue;
-        }
-        let (mut best, mut far) = (0.0f64, a);
-        for i in a + 1..b {
-            let d = seg_d2(r[i], r[a], r[b]);
-            if d > best {
-                best = d;
-                far = i;
-            }
-        }
-        if best > t2 {
-            keep[far] = true;
-            stack.push((a, far));
-            stack.push((far, b));
-        }
-    }
-    r.iter().zip(&keep).filter(|(_, &k)| k).map(|(p, _)| *p).collect()
-}
-
 /// A ring on the tile's grid: its points (no repeats, no closing point), wound as `exterior` wants;
 /// None when fewer than three are left or it has no area.
-fn grid_ring(r: &[[i32; 2]], z: u8, tx: u32, ty: u32, simplified: bool) -> Option<Vec<[i64; 2]>> {
+fn grid_ring(r: &[[i32; 2]], z: u8, tx: u32, ty: u32) -> Option<Vec<[i64; 2]>> {
     let scale = (1u64 << z) as f64 * EXTENT as f64;
-    let mut pts: Vec<[f64; 2]> = r.iter().map(|&p| {
+    let pts: Vec<[f64; 2]> = r.iter().map(|&p| {
         let (wx, wy) = world7(p);
         [wx * scale, wy * scale]
     }).collect();
-    if simplified {
-        if let Some(&first) = pts.first() {
-            pts.push(first);
-            pts = simplify(&pts, 1.0);
-            pts.pop();
-        }
-    }
     let (ox, oy) = (tx as i64 * EXTENT as i64, ty as i64 * EXTENT as i64);
     let mut out: Vec<[i64; 2]> = Vec::with_capacity(pts.len());
     for p in pts {
@@ -366,13 +316,12 @@ fn area2(r: &[[i64; 2]]) -> i128 {
 
 /// A feature's geometry commands (none left: None).
 fn geometry(f: &Feat, z: u8, tx: u32, ty: u32) -> Option<Vec<u32>> {
-    let simplified = z < 14;
     let mut g = Vec::new();
     let (mut cx, mut cy) = (0i64, 0i64);
     for poly in &f.polys {
         let mut rings: Vec<Vec<[i64; 2]>> = Vec::with_capacity(poly.len());
         for (k, ring) in poly.iter().enumerate() {
-            let Some(mut r) = grid_ring(ring, z, tx, ty, simplified) else {
+            let Some(mut r) = grid_ring(ring, z, tx, ty) else {
                 if k == 0 {
                     break; // the exterior gone: its holes with it
                 }
@@ -741,13 +690,4 @@ mod tests {
         assert!(left * 50 < checked, "{left} of {checked}");
     }
 
-    #[test]
-    fn simplifying() {
-        // A square with a point 0.4 units off its west side: gone at one unit, kept at 0.1.
-        let r = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.4, 5.0], [0.0, 0.0]];
-        assert_eq!(simplify(&r, 1.0).len(), 5);
-        assert_eq!(simplify(&r, 0.1).len(), 6);
-        assert_eq!(kind_of("education"), 6);
-        assert_eq!(kind_of(""), 0);
-    }
 }

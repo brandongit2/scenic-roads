@@ -11,7 +11,7 @@
 //!   here, in Rust (§3.7): Python only decodes.
 //! - **`bldtiles T`** ([`job`]): the buildings of T that touch the coverage, their heights filled
 //!   ([`fill`]: the neighbours' rule reads the buildings within 300 m beyond T's edges from its 8
-//!   neighbours' files), the z12–14 tiles encoded ([`tiles`]), written as the hi pack
+//!   neighbours' files), the z14 tiles encoded ([`tiles`]), written as the hi pack
 //!   `layers/buildings/hi/6-x-y`. A z8 area at a time. Pure: its output is a function of its inputs'
 //!   bytes (the work files and the coverage over T).
 //!
@@ -37,8 +37,7 @@ pub const BUILDINGS_V: u32 = 3;
 /// The served layer (`/tiles/buildings/…`, the catalog's `buildings`).
 pub const LAYER: &str = "buildings";
 /// The zooms the tiles are made at.
-pub const MINZOOM: u8 = 12;
-pub const MAXZOOM: u8 = 14;
+pub const ZOOM: u8 = 14;
 
 /// A Web Mercator world unit at the equator, metres (WGS84's equator).
 pub const EQ: f64 = 40_075_016.685_578_49;

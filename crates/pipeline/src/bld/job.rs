@@ -1,5 +1,5 @@
 //! `bldtiles T` (docs/buildings3d.md §3.1): z6 tile T's buildings that touch the coverage, their
-//! heights filled ([`super::fill`]), as the z12–14 tiles ([`super::tiles`]) of the hi pack
+//! heights filled ([`super::fill`]), as the z14 tiles ([`super::tiles`]) of the hi pack
 //! `layers/buildings/hi/6-x-y`, a z8 area at a time.
 //!
 //! - **Which:** a building or part touches the coverage when its centroid or one of its vertices
@@ -12,8 +12,8 @@
 //! - **Copies:** a building reaching into tiles of the area other than its own is copied into
 //!   them (`tiles`: for the flat footprints), from the area itself or from 310 m around it; the
 //!   latter filled here as their own area fills them (their 300 m all read).
-//! - **Zooms:** z14 every building and part; z13 those 20 m tall or more, or with a footprint of
-//!   2,000 m² or more; z12 those 40 m tall or more.
+//! - **Zooms:** z14 alone, every building and part (below zoom 14 the field draws them:
+//!   [`super::field`]).
 //! - Pure: the pack is a function of the work files' bytes and the coverage over T (its shapes and
 //!   their countries).
 
@@ -46,10 +46,10 @@ pub struct Summary {
     pub outside: u64,
     /// The drawn buildings (not parts) by where their height comes from (`s`, 0–5).
     pub by_src: [u64; 6],
-    /// Tiles, their gzip'd bytes and features, at z12, z13 and z14.
-    pub tiles: [u64; 3],
-    pub bytes: [u64; 3],
-    pub features: [u64; 3],
+    /// Tiles (z14), their gzip'd bytes and features.
+    pub tiles: u64,
+    pub bytes: u64,
+    pub features: u64,
     /// The copies made for the flat footprints (in `features` too).
     pub copies: u64,
     /// The heaviest tiles (z/x/y, gzip'd bytes, features), heaviest first; the fullest likewise.
@@ -57,12 +57,12 @@ pub struct Summary {
     pub fullest: Vec<(String, u32, u32)>,
     /// The pack written (its content name), if any.
     pub pack: Option<String>,
-    /// The field's tiles and their bytes at levels 8–13 (docs/buildings3d.md §4.8: `field`), and
+    /// The field's tiles and their bytes at levels 8–14 (docs/buildings3d.md §4.8: `field`), and
     /// the buildings and parts in its heritage lists.
     #[serde(default)]
-    pub field_tiles: [u64; 6],
+    pub field_tiles: [u64; 7],
     #[serde(default)]
-    pub field_bytes: [u64; 6],
+    pub field_bytes: [u64; 7],
     #[serde(default)]
     pub heritage: u64,
     /// The field's hi pack and mid written (their content names), if any.
@@ -74,10 +74,9 @@ pub struct Summary {
 
 impl Summary {
     fn note(&mut self, z: u8, x: u32, y: u32, bytes: u32, n: u32) {
-        let k = (z - super::MINZOOM) as usize;
-        self.tiles[k] += 1;
-        self.bytes[k] += bytes as u64;
-        self.features[k] += n as u64;
+        self.tiles += 1;
+        self.bytes += bytes as u64;
+        self.features += n as u64;
         let t = (format!("{z}/{x}/{y}"), bytes, n);
         keep(&mut self.heaviest, t.clone(), 1);
         keep(&mut self.fullest, t, 2);
@@ -93,12 +92,7 @@ impl Summary {
         for k in 0..6 {
             self.by_src[k] += o.by_src[k];
         }
-        for k in 0..3 {
-            self.tiles[k] += o.tiles[k];
-            self.bytes[k] += o.bytes[k];
-            self.features[k] += o.features[k];
-        }
-        for k in 0..6 {
+        for k in 0..7 {
             self.field_tiles[k] += o.field_tiles[k];
             self.field_bytes[k] += o.field_bytes[k];
         }
@@ -386,23 +380,13 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
                 k: fl.k,
                 copy,
             };
-            for z in [14u8, 13, 12] {
-                let drawn = match z {
-                    14 => true,
-                    13 => fl.h >= 200 || b.area[i] >= 2000.0,
-                    _ => fl.h >= 400,
-                };
-                if !drawn {
-                    continue;
-                }
-                let tile = (x >> (14 - z), y >> (14 - z));
-                if own {
-                    by_tile.entry((z, tile.0, tile.1)).or_default().push(feat(false));
-                }
-                if fl.k == 1 {
-                    continue; // (parts aren't drawn flat)
-                }
-                for (tx, ty) in tiles::reached(&polys, z, tile) {
+            let z = super::ZOOM;
+            if own {
+                by_tile.entry((z, x, y)).or_default().push(feat(false));
+            }
+            // (Parts aren't drawn flat.)
+            if fl.k != 1 {
+                for (tx, ty) in tiles::reached(&polys, z, (x, y)) {
                     if (tx >> (z - 8), ty >> (z - 8)) == a {
                         by_tile.entry((z, tx, ty)).or_default().push(feat(true));
                         sum.copies += 1;
@@ -533,7 +517,7 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
     let mut w = store::pack::PackWriter::create(&local, meta, true)?;
     let mut n = 0u64;
-    // The field's hi pack (levels 13–8), and its areas' level-8 planes for the mid.
+    // The field's hi pack (levels 14–8), and its areas' level-8 planes for the mid.
     let field_logical = field::hi_logical(t.x, t.y);
     let field_local = out.scratch_file(&format!("{field_logical}.pack"));
     let fmeta = serde_json::json!({"layer": field::LAYER, "scope": "hi", "root": t.slash(), "encoding": field::ENCODING});
@@ -609,7 +593,7 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
         eprintln!("bldtiles {}: no building in the coverage ({:.0?})", t.slash(), t0.elapsed());
         return Ok(sum);
     }
-    eprintln!("bldtiles {}: {} buildings and {} parts in {} tiles, the field's {} tiles ({:.1} MB) ({:.0?})", t.slash(), sum.buildings, sum.parts, sum.tiles.iter().sum::<u64>(), sum.field_tiles.iter().sum::<u64>(), sum.field_bytes.iter().sum::<u64>() as f64 / 1e6, t0.elapsed());
+    eprintln!("bldtiles {}: {} buildings and {} parts in {} tiles, the field's {} tiles ({:.1} MB) ({:.0?})", t.slash(), sum.buildings, sum.parts, sum.tiles, sum.field_tiles.iter().sum::<u64>(), sum.field_bytes.iter().sum::<u64>() as f64 / 1e6, t0.elapsed());
     Ok(sum)
 }
 
@@ -670,11 +654,8 @@ mod tests {
         assert_eq!((sum.buildings, sum.parts, sum.outside), (14, 0, 1), "{sum:?}");
         // s: two measured towers... the tower and ten houses measured, floors, neighbours, size.
         assert_eq!(sum.by_src, [11, 1, 0, 1, 0, 1]);
-        // z14 tiles, z13 for the 45 m tower, z12 for it too.
-        assert!(got.iter().any(|t| t.0 == 12) && got.iter().any(|t| t.0 == 13));
-        let z12: Vec<_> = got.iter().filter(|t| t.0 == 12).collect();
-        let tile = names::mvt::Tile::decode(&names::mvt::gunzip_if_gzip(&z12[0].3).unwrap()).unwrap();
-        assert_eq!(tile.layers[0].features.len(), 1);
+        // Z14 tiles alone, the 45 m tower's too.
+        assert!(got.iter().all(|t| t.0 == 14));
         // The unmeasured house: its neighbours' 12 m. The far one: France's houses, 7 m.
         let z14: Vec<names::mvt::Tile> = got.iter().filter(|t| t.0 == 14).map(|t| names::mvt::Tile::decode(&names::mvt::gunzip_if_gzip(&t.3).unwrap()).unwrap()).collect();
         let mut hs: Vec<(u64, u64)> = Vec::new();
@@ -742,8 +723,8 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        // A copy of each at z14, and of the 30 m one at z13 (the other isn't drawn there).
-        assert_eq!(sum.copies, 3, "{got:?}");
+        // A copy of each.
+        assert_eq!(sum.copies, 2, "{got:?}");
         let (x0, y0) = crate::bld::tile_of(crate::bld::world(line + 0.00005, lat + 0.00015), 14);
         let own = &got[&(14, x0, y0)];
         let copy = &got[&(14, x0 - 1, y0)];
@@ -752,8 +733,7 @@ mod tests {
         let (x1, y1) = crate::bld::tile_of(crate::bld::world(edge + 0.00005, lat + 0.00015), 14);
         assert_eq!(got[&(14, x1, y1)], vec![(300, 0, 0)]);
         assert_eq!(got[&(14, x1 - 1, y1)], vec![(300, 0, 1)], "copied across the areas' edge");
-        assert_eq!(got[&(13, x1 / 2, y1 / 2)], vec![(300, 0, 0)]);
-        assert_eq!(got[&(13, x1 / 2 - 1, y1 / 2)], vec![(300, 0, 1)]);
+        assert!(got.keys().all(|k| k.0 == 14));
     }
 }
 

@@ -6,15 +6,14 @@
 //! - `w` wall area per ground area: Σ wall length × (top − base) ÷ the texel's area;
 //! - `v` Σ roof share × top (m), so `v ÷ f` is the class's mean top (scaled with `f`'s clamp).
 //!
-//! Densities, so a coarser level is the mean of its four children. Level 13 (drawn over the z12
-//! meshes, which draw the buildings 40 m or more) holds classes 0–2 only; level 12 and coarser every
-//! class. No level 14 (§4.8.1, storage).
+//! Densities, so a coarser level is the mean of its four children. Every level holds every building
+//! (the meshes are z14's alone, from map zoom 14); level 14 is drawn from zoom 13 to 14.
 //!
-//! - **`bldtiles T`** makes a z8 area's levels 13–8 ([`area`]) from the same records as its meshes
+//! - **`bldtiles T`** makes a z8 area's levels 14–8 ([`area`]) from the same records as its meshes
 //!   (filled, `job::area_tiles`): every building and part extruded (not an outline with parts, not a
-//!   copy), the area's own and those around it reaching in, each rasterized into the z12 cells of the
-//!   area it meets at level 13, in fixed point (i64: the sums don't depend on their order), the cells'
-//!   level 12 from their level 13, then levels 11–8 by means of four in a fixed order. The level-8
+//!   copy), the area's own and those around it reaching in, each rasterized into the z13 cells of the
+//!   area it meets at level 14, in fixed point (i64: the sums don't depend on their order), the cells'
+//!   level 13 from their level 14, then levels 12–8 by means of four in a fixed order. The level-8
 //!   planes are kept exactly ([`write_mid`]: `work/bldfield-mid/6-x-y`).
 //! - **`bldfield-lo Q`** (a z3 tile) makes levels 7–4 from its z6 tiles' mids ([`lo`]).
 //! - **Encoding `field3-webp`** ([`encode`]): a mask byte (the classes held, bit k class k), then one
@@ -40,11 +39,9 @@ pub const CLASS_TOP_DM: [u16; 4] = [80, 200, 400, 1000];
 pub const LO_M: [f64; K] = [0.0, 8.0, 20.0, 40.0, 100.0];
 pub const HI_M: [f64; K] = [8.0, 20.0, 40.0, 100.0, 1000.0];
 /// The finest level, and the hi packs' coarsest (a z8 area's), and the lo packs' coarsest.
-pub const LEVEL_MAX: u8 = 13;
+pub const LEVEL_MAX: u8 = 14;
 pub const LEVEL_HI_MIN: u8 = 8;
 pub const LEVEL_MIN: u8 = 4;
-/// Level 13's classes (what z12's meshes leave out: under 40 m).
-pub const L13_CLASSES: u8 = 0b00111;
 pub const ALL_CLASSES: u8 = 0b11111;
 /// The served layer (`layers/buildings-field/hi/6-x-y`, `lo/3-x-y`) and its encoding.
 pub const LAYER: &str = "buildings-field";
@@ -62,12 +59,12 @@ pub const LO_PEAK_MB: u64 = 256 + 16 * PLANES_MB * 2 + (5 + 4 * 2) * PLANES_MB;
 const SF: f64 = (1u64 << 32) as f64;
 const SV: f64 = (1u64 << 24) as f64;
 const SW: f64 = (1u64 << 16) as f64;
-/// Level-13 texels a z12 cell side, and z12 cells an area side.
+/// Level-14 texels a z13 cell side, and z13 cells an area side.
 const N: usize = 1024;
 const STRIDE: usize = N + 2;
-const CELLS: u32 = 16;
-/// Level 13's texels a world side.
-const WORLD_TEXELS: f64 = (1u64 << 22) as f64;
+const CELLS: u32 = 32;
+/// Level 14's texels a world side.
+const WORLD_TEXELS: f64 = (1u64 << 23) as f64;
 
 /// A class's planes: f, w, v.
 pub type Class = [Vec<f32>; 3];
@@ -153,7 +150,7 @@ pub fn class_of(h_dm: u16) -> usize {
     CLASS_TOP_DM.iter().filter(|&&t| h_dm >= t).count()
 }
 
-/// Metres a level-13 texel side at global texel row `y` (fractional; Web Mercator).
+/// Metres a level-14 texel side at global texel row `y` (fractional; Web Mercator).
 fn side_m(y: f64) -> f64 {
     let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / WORLD_TEXELS)).dsinh().datan();
     super::EQ * lat.dcos() / WORLD_TEXELS
@@ -167,7 +164,7 @@ pub struct Foot<'a> {
     pub m: u16,
 }
 
-/// A z12 cell's accumulators for a class.
+/// A z13 cell's accumulators for a class.
 struct Acc {
     f: Vec<i64>,
     v: Vec<i64>,
@@ -310,7 +307,7 @@ fn area2(r: &[(f64, f64)]) -> f64 {
     a
 }
 
-/// Z12 cell (`cx`, `cy`, global)'s level-13 planes (N × N), from the footprints meeting it.
+/// Z13 cell (`cx`, `cy`, global)'s level-14 planes (N × N), from the footprints meeting it.
 fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
     let (ox, oy) = (cx as f64 * N as f64, cy as f64 * N as f64);
     let mut acc: [Option<Acc>; K] = Default::default();
@@ -393,7 +390,7 @@ fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
     out
 }
 
-/// What an area's field made: its tiles, levels 13–8 ((level, x, y, `field3-webp` bytes), in that
+/// What an area's field made: its tiles, levels 14–8 ((level, x, y, `field3-webp` bytes), in that
 /// order, each level by x, y), and its level-8 planes (the mid's; None: no building).
 #[derive(Debug, Default, PartialEq)]
 pub struct AreaField {
@@ -404,7 +401,7 @@ pub struct AreaField {
 /// Area `a`'s field (a z8 tile) from the footprints meeting it (any order: the sums are integers),
 /// its level-8 tile carrying the heritage list `her` ([`heritage`]).
 pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
-    // The footprints by the area's z12 cells their boxes meet.
+    // The footprints by the area's z13 cells their boxes meet.
     let (ax, ay) = (a.0 as f64 * CELLS as f64 * N as f64, a.1 as f64 * CELLS as f64 * N as f64);
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); (CELLS * CELLS) as usize];
     for (fi, ft) in feet.iter().enumerate() {
@@ -433,11 +430,11 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
             }
         }
     }
-    // Levels 13 and 12 a cell, 11 a z11 block, 10 a z10 block, then 9 and 8: a tree, so a block's
-    // finer planes are dropped once its parent has them.
+    // Levels 14 and 13 a cell, 12 a z12 block, 11 a z11 block, 10 a z10 block, then 9 and 8: a
+    // tree, so a block's finer planes are dropped once its parent has them.
     type Tiles = Vec<(u8, u32, u32, Vec<u8>)>;
     let base = (a.0 * CELLS, a.1 * CELLS);
-    let z11 = |bx: u32, by: u32| -> (Tiles, Option<Planes>) {
+    let z12 = |bx: u32, by: u32| -> (Tiles, Option<Planes>) {
         let kids: Vec<(Tiles, Option<Planes>)> = (0..4u32)
             .into_par_iter()
             .map(|q| {
@@ -446,25 +443,29 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
                 if list.is_empty() {
                     return (Vec::new(), None);
                 }
-                let p13 = cell(feet, list, cx, cy);
+                let p14 = cell(feet, list, cx, cy);
                 let mut tiles = Vec::new();
                 for ty in 0..2 {
                     for tx in 0..2 {
-                        if let Some(b) = encode(&p13.window(tx, ty), L13_CLASSES, &[]) {
-                            tiles.push((13, cx * 2 + tx as u32, cy * 2 + ty as u32, b));
+                        if let Some(b) = encode(&p14.window(tx, ty), ALL_CLASSES, &[]) {
+                            tiles.push((14, cx * 2 + tx as u32, cy * 2 + ty as u32, b));
                         }
                     }
                 }
-                // (Level 12 from the cell's 1024 × 1024: its four 512s' parent.)
-                let w: Vec<Planes> = (0..4).map(|q| p13.window(q % 2, q / 2)).collect();
-                drop(p13);
-                let p12 = Planes::parent([Some(&w[0]), Some(&w[1]), Some(&w[2]), Some(&w[3])]).unwrap();
-                if let Some(b) = encode(&p12, ALL_CLASSES, &[]) {
-                    tiles.push((12, cx, cy, b));
+                // (Level 13 from the cell's 1024 × 1024: its four 512s' parent.)
+                let w: Vec<Planes> = (0..4).map(|q| p14.window(q % 2, q / 2)).collect();
+                drop(p14);
+                let p13 = Planes::parent([Some(&w[0]), Some(&w[1]), Some(&w[2]), Some(&w[3])]).unwrap();
+                if let Some(b) = encode(&p13, ALL_CLASSES, &[]) {
+                    tiles.push((13, cx, cy, b));
                 }
-                (tiles, (!p12.is_empty()).then_some(p12))
+                (tiles, (!p13.is_empty()).then_some(p13))
             })
             .collect();
+        up(12, bx, by, kids)
+    };
+    let z11 = |bx: u32, by: u32| -> (Tiles, Option<Planes>) {
+        let kids: Vec<(Tiles, Option<Planes>)> = (0..4u32).into_par_iter().map(|q| z12(bx * 2 + q % 2, by * 2 + q / 2)).collect();
         up(11, bx, by, kids)
     };
     let z10: Vec<(Tiles, Option<Planes>)> = (0..16u32)
@@ -554,7 +555,8 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let n = mask.count_ones();
-    let webp = crate::webp::encode_rgb(&rgb, T as u32, T as u32 * n);
+    // (Regions of 128 px for the codes' groups: 32 px took 6.8× the time for 0.25 % less, Annecy's tiles.)
+    let webp = crate::webp::encode_rgb_regions(&rgb, T as u32, T as u32 * n, 7);
     let mut out = Vec::with_capacity(1 + webp.len() + tail.len());
     out.push(mask);
     out.extend_from_slice(&webp);

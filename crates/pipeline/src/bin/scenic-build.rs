@@ -50,9 +50,9 @@
 //!                                GHSL windows under T), as work/bld/6-x-y
 //!   bldtiles <T …> [--pass d] [--regions dir]  the 3D buildings' tiles of z6 tiles T
 //!                                (pipeline::bld::job): the buildings touching the coverage, their
-//!                                heights filled, z12–14, as the hi pack layers/buildings/hi/6-x-y;
+//!                                heights filled, z14, as the hi pack layers/buildings/hi/6-x-y;
 //!                                under the agent, some z8 areas offered to workers as tasks
-//!                                with the field (levels 13–8) as layers/buildings-field/hi/6-x-y and
+//!                                with the field (levels 14–8) as layers/buildings-field/hi/6-x-y and
 //!                                its level-8 planes as work/bldfield-mid/6-x-y
 //!   bldfield-lo <Q …>            z3 tiles Q's zoomed-out buildings field (levels 7–4, the lo pack
 //!                                layers/buildings-field/lo/3-x-y) from their z6 tiles' mids
@@ -999,9 +999,9 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         l if l.starts_with("ov-") || l == "stations" => (0, pipeline::ovconv::MAXZ),
         // Blocks at zooms 0, 3 and 6 (the app picks one by the view's zoom).
         "ferries" => (0, 6),
-        // The 3D buildings: z12–14 hi packs (pipeline::bld).
-        "buildings" => (pipeline::bld::MINZOOM, pipeline::bld::MAXZOOM),
-        // Their field: levels 8–13 in the hi packs, 4–7 in the lo (pipeline::bld::field).
+        // The 3D buildings: z14 hi packs (pipeline::bld).
+        "buildings" => (pipeline::bld::ZOOM, pipeline::bld::ZOOM),
+        // Their field: levels 8–14 in the hi packs, 4–7 in the lo (pipeline::bld::field).
         "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
         _ => return None,
     })
