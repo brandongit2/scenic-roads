@@ -145,7 +145,11 @@ mod tests {
         assert_eq!(accept(&l).unwrap_err().kind(), io::ErrorKind::InvalidInput);
         l.set_nonblocking(true).unwrap();
         let _c = TcpStream::connect(addr).unwrap();
-        // (Connected: the connection is waiting on the listener's queue, whatever the time.)
+        // (Connected isn't yet on the listener's queue, under load: waited for, with no time limit,
+        // outside the lock, until the listener is readable, which then holds until taken.)
+        let mut ready = libc::pollfd { fd: l.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, on a descriptor `l` owns.
+        assert_eq!(unsafe { libc::poll(&mut ready, 1, -1) }, 1, "{}", io::Error::last_os_error());
         let (s, _) = accept(&l).unwrap();
         assert!(!child_holds(s.as_raw_fd()));
     }
