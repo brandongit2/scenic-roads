@@ -1245,6 +1245,26 @@ The nine cases:
    Aleutians' few buildings show on either side. The fields are per z6 tile, so nothing crosses it.
 9. **Steep terrain:** as B.
 
+**B5's pilot, checked (14 Oct; the WebP tiles, `tools/bldcheck` against full detail as above, σ8
+|ΔL*|):** A, the CN Tower z12–8 and 70°: 0.01–0.48 (the spike stands to z9); B, Chamonix and Annecy
+tilted: 0.65–1.52, but `chamonix-t12` 2.32 (the field 2 L* darker) and `annecy-z15`, which the
+headless harness draws empty though the same view draws in a windowed Chrome (not resolved); C,
+opacity 0.5 and 0.3 at 0/45/70°: Tokyo 0.41–1.83, Annecy 0.41–0.71; straight down, Tokyo z13–7
+0.54–1.94 (the field 1.0–1.2 L* darker at z11–13: the darkening above), Annecy and Chamonix z13–9
+0.34–0.83.
+
+**The hand-over at zoom 14, measured (14 Oct): not yet the same look.** Matched shots at 13.98 and
+14.02 (the same centre, bearing and pitch; a windowed Chrome, 1440 × 900 at 2×), and the field
+alone against the meshes at the same 14.02 camera: tilted 60°, Tokyo's field is 3.4 L* darker in
+σ8 (8–9 L* in the bottom third of the frame, the buildings nearest the camera), Manhattan's 1.9
+(4–8 in the bottom third); straight down, Tokyo's 1.3 (up to 3 in a region). Near the camera of a
+tilted view at zoom 14 a building is many device pixels, a level-14 texel several: the field shows
+blurred columns where the meshes show walls, a step a slow zoom shows plainly. Chamonix's 3×
+terrain keeps the camera from map zoom 14 at 60°: there the field draws to the end. The owner
+decides between the meshes taken by their tiles' distance as MapLibre's cover takes them (in a
+tilted view, near the camera below map zoom 14), a finer level near the camera, or the step as it
+is.
+
 **Storage: level 14 built (the owner's choice, 14 Oct).** Every building at every level 4–14, five
 classes a texel, each class's mean top kept at every level; the meshes z14's alone (the z12 and
 z13 tiles of tall and large buildings removed). (The 10 Oct choice, no level 14, left the buildings
@@ -1257,9 +1277,11 @@ option, not taken.) Measured in B5's pilot (2026-10-14, hi packs, levels 9–14;
 | 6/33/22, Annecy and the Alps | 4.5 M | 301 MB | 173 MB (58 %) | 76 MB | 78 MB | 3.9 |
 | 6/17/23, Toronto | 9.5 M | 885 MB | 505 MB (57 %) | 224 MB | 163 MB | 5.4 |
 | 6/18/24, New York | 14.6 M | 1,317 MB | 757 MB (58 %) | 330 MB | 263 MB | 5.0 |
+| 6/56/25, Kantō | 30.3 M | 1,376 MB | 831 MB (60 %) | 338 MB | 401 MB | 3.4 |
 
-So 66–90 B a building, level 14 about 57 % of it: for the coverage's ~342 M buildings ~23–31 GB of
-field hi packs (~10–13 GB of it without level 14), against the meshes' ~5.7 GB, and ~1 GB of mids.
+So 45–90 B a building (Kantō's small houses the least), level 14 57–60 % of it: for the coverage's
+~342 M buildings ~15–31 GB of field hi packs (~7–13 GB of it without level 14), against the meshes'
+~5.7 GB, and ~1 GB of mids.
 The coding can still be tuned (each class's mean top left out at the finest levels, its class's
 middle instead, or fewer classes there), not tried.
 
@@ -1606,7 +1628,7 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3, the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 100–180), 1.8–5.1 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. Not done: Kantō (6/56/25: the Mac's free space), the mirror's group and the World download, colour by height, fog and the heritage list drawn, the coverage build, measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3, the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14 isn't yet the same look (§4.8.1). Not done: the mirror's group and the World download, colour by height, fog and the heritage list drawn, the coverage build, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):
