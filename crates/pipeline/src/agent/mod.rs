@@ -481,17 +481,6 @@ pub struct PoolView {
     /// The pool as the controls show it (crate::agent::lead: docs/pool.md §10, §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<lead::View>,
-    /// Leading: the entries it merged with a change outside their step's write-set (the newest,
-    /// `pool::OUTSIDE_KEPT`), and how many since its agent started (crate::agent::steps: reported,
-    /// not refused, until the write-sets are enforced).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub outside: Vec<pool::Outside>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub outside_n: u64,
-}
-
-fn is_zero(n: &u64) -> bool {
-    *n == 0
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2266,7 +2255,7 @@ impl Agent {
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
-            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone(), outside: p.outside.iter().cloned().collect(), outside_n: p.outside_n }),
+            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone() }),
             memory: Some(self.guard_view()),
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
         };
@@ -7415,7 +7404,7 @@ mod pool_tests {
         let bin = d.join("app");
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
-            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{\"work/%s\":\"work/%s.0123456789abcdef.json\"}}}}' \"$step\" \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
+            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
             bin = bin.display()
         );
         for p in ["scenic", "scenic-build"] {
@@ -7517,7 +7506,7 @@ mod pool_tests {
         assert!(d.path().join(format!("app-folder/pool-{me}.lock")).exists() && home.join("pool/saved.json").exists());
         // Its first job (the daily backup) runs under a lease of its term, its saves handed off; the
         // records it merges are today's files' too (term 1's saves write them).
-        until(&mut a, |a| crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty() && crate::out::read_record::<BTreeMap<String, String>>(&a.o.root.as_ref().unwrap().join("state/build/manifest.json")).unwrap().contains_key("work/backup"));
+        until(&mut a, |a| crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty() && a.pool.as_ref().is_some_and(|p| p.side.driver().records().is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json"))));
         let env = std::fs::read_to_string(bin.join("env-backup")).unwrap();
         assert!(env.contains("SCENIC_HANDOFF=") && !env.contains("SCENIC_BUILD_MAC"), "{env}");
         assert!(env.contains(&format!("{}", home.join("pool/jobs/1-").display())), "{env}");
@@ -7538,8 +7527,8 @@ mod pool_tests {
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
         assert!(a.pool.as_ref().unwrap().gates.term >= 2);
         assert!(r.join("state/build/terms/2.json").exists());
-        let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/manifest.json")).unwrap();
-        assert!(m.contains_key("work/gc"), "{m:?}");
+        let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/pending.json")).unwrap();
+        assert!(m.contains_key("work/gc.0123456789abcdef.json"), "{m:?}");
         stop_jobs(&mut a);
     }
 
@@ -8131,7 +8120,7 @@ mod pool_tests {
         // On, in the pool: off waits for the lead to be caught up and the job to end.
         std::fs::create_dir_all(r.join("state/build/terms")).unwrap();
         std::fs::write(r.join("state/build/terms/1.json"), "{}").unwrap();
-        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None, lead: None, outside: Vec::new(), outside_n: 0 };
+        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None, lead: None };
         write(&st(Some(lead.clone()), true));
         assert!(pool::status(&r).contains("the pool: on"));
         let e = pool::switch_off(&r, false).unwrap_err().to_string();

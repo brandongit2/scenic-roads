@@ -235,6 +235,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     }
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
     let mut out = Out::open(&root, &scratch)?;
+    // (It puts and removes only its step's outputs: the function the lead's merge checks by.)
+    out.for_step(&step);
     let t0 = std::time::Instant::now();
     match step.as_str() {
         "pack" => {

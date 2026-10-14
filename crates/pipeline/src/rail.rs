@@ -506,6 +506,7 @@ mod tests {
     fn the_feeds_list_names_each_zip() {
         let d = tempfile::tempdir().unwrap();
         let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        out.for_step("rail-feeds");
         let cached = d.path().join("c.zip");
         std::fs::write(&cached, b"cached").unwrap();
         let cname = out.put_file(&zip_logical("mdb-1"), "zip", &cached).unwrap();
@@ -546,6 +547,7 @@ mod tests {
         let found = d.path().join("feeds.json");
         std::fs::write(&found, r#"{"feeds": [{"id": "sncf", "zip": "new", "fetched": "2026-10-04"}, {"id": "renfe", "zip": "new", "fetched": "2026-10-04"}]}"#).unwrap();
         let mut out = Out::open(&root, &scratch).unwrap();
+        out.for_step("rail-feeds");
         assert!(put_feeds(&mut out, &found, &gtfs).is_err());
         let out = Out::open(&root, &scratch).unwrap();
         let sncf = out.get(&zip_logical("sncf")).unwrap().to_string();
@@ -556,6 +558,7 @@ mod tests {
         std::fs::write(gtfs.join("a.zip"), b"a").unwrap();
         std::fs::create_dir_all(gtfs.join("b.zip")).unwrap();
         let mut out = Out::open(&root, &scratch).unwrap();
+        out.for_step("rail-feeds");
         assert!(keep_downloads(&mut out, &gtfs).is_err());
         let out = Out::open(&root, &scratch).unwrap();
         let a = out.get(&zip_logical("a")).unwrap().to_string();

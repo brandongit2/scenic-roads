@@ -11,12 +11,12 @@
 //! terrain area's whole run's disk, the memory a terrain area, a unit's piece or a 3D buildings tile
 //! is offered with, the 3D buildings' smaller batches while the regions' own work is left.)
 //!
-//! The write-sets: the pool's lead checks every journal entry it merges against its step's
-//! (`outside`), and reports what lies outside (crate::agent::pool), refusing nothing for it yet
-//! (docs/pool.md §12, phase 4: the steps' write-sets are enforced in a later batch, once the
-//! reports have shown them right on the real build). A shared step's files for its targets
-//! (`saves`, which crate::coord's check of a helper's hand-off and the merge's phase 1 check use)
-//! are enforced as they were.
+//! The write-sets: one outputs function per step (`writes`, its row's), which both ends use, so
+//! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
+//! step (crate::out::Out::for_step), puts and removes only names it gives, a name outside failing
+//! the job; and the pool's lead refuses every journal entry with a change outside it (`outside`,
+//! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
+//! crate::coord's check of a helper's hand-off and the merge's check use) are checked beside it.
 
 use crate::legacy::Unit;
 
@@ -299,13 +299,25 @@ pub const NAS_READS: [&str; 2] = set_of(Set::NasReads);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
+/// Whether a job of `step` may write `logical` (`removal`: remove it): its outputs function, the
+/// one a job's `Out` and the lead's merge both use. None for a step the table doesn't know.
+pub fn writes(step: &str, logical: &str, removal: bool) -> Option<bool> {
+    row(step).map(|s| (s.writes)(logical, removal))
+}
+
 /// Whether journal entry `e`'s changes are all within its step's write-set; why not when they
 /// aren't (the first outside it, and how many), or when the table has no row for its step.
 pub fn outside(e: &crate::pool::journal::Entry) -> Option<String> {
-    let Some(s) = row(&e.step) else {
-        return (!e.handoff.changes.is_empty()).then(|| format!("{} isn't a step the steps table knows ({} change{})", e.step, e.handoff.changes.len(), if e.handoff.changes.len() == 1 { "" } else { "s" }));
+    outside_by(e, &|l, removal| writes(&e.step, l, removal))
+}
+
+/// `outside`, by outputs function `writes` (None: the step isn't known): the simulator's steps have
+/// a function of their own (crate::pool::sim).
+pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -> Option<bool>) -> Option<String> {
+    let out: Vec<&String> = match e.handoff.changes.iter().map(|(l, v)| writes(l, v.is_none()).map(|ok| (l, ok))).collect::<Option<Vec<_>>>() {
+        Some(v) => v.into_iter().filter(|(_, ok)| !ok).map(|(l, _)| l).collect(),
+        None => return Some(format!("{} isn't a step the steps table knows ({} change{})", e.step, e.handoff.changes.len(), if e.handoff.changes.len() == 1 { "" } else { "s" })),
     };
-    let out: Vec<&String> = e.handoff.changes.iter().filter(|(l, v)| !(s.writes)(l, v.is_none())).map(|(l, _)| l).collect();
     let first = out.first()?;
     let what = if e.handoff.changes[*first].is_none() { "removes" } else { "writes" };
     Some(format!("{what} {first}, outside {}'s write-set{}", e.step, if out.len() > 1 { format!(" (and {} more)", out.len() - 1) } else { String::new() }))

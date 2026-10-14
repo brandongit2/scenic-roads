@@ -34,8 +34,9 @@ tests_log=~/Library/Logs/scenic/publish-tests-$(date +%Y%m%d-%H%M%S).log
 tests_ok=0
 cargo test -q -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
 # (And the pipeline's whole-crate checks: every cache read through the accessor, every drop box
-# read through the gate's (docs/inputs.md §7.1), the Python steps' timer.)
-cargo test -q -p pipeline --test cache_accessor --test inputs_accessor --test timings_python >> $tests_log 2>&1 || tests_ok=$?
+# read through the gate's (docs/inputs.md §7.1), the records written only through Out (docs/pool.md
+# §7.3), the Python steps' timer.)
+cargo test -q -p pipeline --test cache_accessor --test inputs_accessor --test write_sets --test timings_python >> $tests_log 2>&1 || tests_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }

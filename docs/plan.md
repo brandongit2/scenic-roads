@@ -2760,10 +2760,10 @@ At each phase's end an Opus agent reviews the work against this plan.
      here, so a tail it runs here later is counted against the unit under way then; and a helper's
      job with the pool off sends its targets' floors nowhere (its result has none: the pool-off path
      goes, pool.md §12);
-   - the steps' write-sets (`agent::steps`, phase 4's first batch) are checked at merge and what lies
-     outside them reported, not refused: an entry a step's bug sends outside its write-set is merged
-     all the same until a later batch derives them from the code that writes and enforces them
-     (pool.md §7.3, §7.7, §12);
+   - the steps' write-sets (`agent::steps::writes`) are a predicate over a name per step, which a
+     job's `Out` and the merge share, not a type only the function can construct (pool.md §7.7's
+     design): a step's code can still form a name outside, which fails its job as it's written
+     (pool.md §7.3, §12 phase 4's sixth batch);
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents
@@ -2934,7 +2934,7 @@ The batches after the memory guard were reordered around it.
 
 **The pool's phase 4 in batches (2026-10-10):** docs/pool.md §12, item 4. Why the plan is so:
 - **The parts that can lose work come first,** each soaking on the real build, reported or behind its
-  switch, while the rest is built on them: refusing entries (the write-sets are reported from the
+  switch, while the rest is built on them: refusing entries (the write-sets were reported from the
   first batch, enforced in the sixth), stopping a job over its memory (second), a job across a
   handover (fourth), resuming on one Mac (eighth, behind the measures it needs).
 - **One table for the per-step rules** (crate::agent::steps): the step sets, memory, disk, needs and

@@ -721,9 +721,11 @@ fn load_saved(p: &Path) -> (Saved, Vec<u8>) {
     }
 }
 
-/// The merge's checks of a journal entry, phase 1's (docs/pool.md §7.3; the steps' write-sets are
-/// phase 4's): its done record is its own step's and names targets; every change is to a logical
-/// name, as a content name of it; each raw tiles' archive it names is one of its area. A shared
+/// The merge's checks of a journal entry (docs/pool.md §7.3): its done record is its own step's
+/// and names targets; every change is to a logical name, as a content name of it, and within its
+/// step's outputs (crate::agent::steps::outside: the function its job's `Out` wrote by, so an entry
+/// it refuses is one an older app's job, or a damaged one, made); each raw tiles' archive it names
+/// is one of its area. A shared
 /// step's (what a helper's coordinator checked of its hand-off: crate::coord, `check_handoff`):
 /// every change is to a file its step saves for one of the targets it did, every upload it says
 /// is pending one of its saves, every one it says it checked one of those. (Not that its targets
@@ -747,6 +749,9 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
                 return Err(format!("{c} isn't a content name of {l}"));
             }
         }
+    }
+    if let Some(why) = crate::agent::steps::outside(e) {
+        return Err(why);
     }
     for (area, p) in &h.raw {
         if !crate::rawpack::is_area(area) || !crate::rawpack::named_for(&p.name, area) {
@@ -885,30 +890,12 @@ pub struct Run {
     /// Its part changes in this process (`SLOTS`): a step that takes up a term or loses one doesn't
     /// ask for a restart; the agent changes its part (crate::agent's `change_part`).
     pub in_process: bool,
-    /// The entries it merged with a change outside their step's write-set (crate::agent::steps::
-    /// outside: reported, not refused, until the write-sets are enforced), the last `OUTSIDE_KEPT`
-    /// of them, and how many in all since this process started (each entry once).
-    pub outside: VecDeque<Outside>,
-    pub outside_n: u64,
-    outside_seen: BTreeSet<String>,
 }
-
-/// An entry merged with a change outside its step's write-set: its key, its step, and what lies
-/// outside.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Outside {
-    pub key: String,
-    pub step: String,
-    pub why: String,
-}
-
-/// The entries outside their write-sets the status keeps (the newest).
-pub const OUTSIDE_KEPT: usize = 20;
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, outside: VecDeque::new(), outside_n: 0, outside_seen: BTreeSet::new() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -926,20 +913,7 @@ impl Run {
     pub fn step(&mut self, able: bool) -> Out {
         let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: std::mem::take(&mut self.asks), conds: self.conds };
         let marks = std::mem::take(&mut self.marks);
-        // (The merge's checks, phase 1's; and each entry they pass checked against its step's
-        // write-set, what lies outside it reported: docs/pool.md §7.3.)
-        let found = std::cell::RefCell::new(Vec::new());
-        let checked = |e: &Entry, r: &Records| {
-            let ok = check(e, r);
-            if ok.is_ok() {
-                if let (Some(why), Some(key)) = (super::steps::outside(e), e.key()) {
-                    found.borrow_mut().push(Outside { key, step: e.step.clone(), why });
-                }
-            }
-            ok
-        };
-        let out = self.side.step(give, &checked);
-        self.note_outside(found.into_inner());
+        let out = self.side.step(give, &check);
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
         // removal failed isn't drained again by a later process.)
         let kept = out.stop.is_none() && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
@@ -980,23 +954,6 @@ impl Run {
             eprintln!("pool: {}", said(e));
         }
         out
-    }
-
-    /// Entries merged outside their step's write-set, as the last step's checks found them: each
-    /// new one logged and kept for the status (an entry checked again, read again or by a later
-    /// take-up, counted once).
-    fn note_outside(&mut self, found: Vec<Outside>) {
-        for o in found {
-            if !self.outside_seen.insert(o.key.clone()) {
-                continue;
-            }
-            eprintln!("pool: entry {} ({}) {}; not refused for it (the write-sets aren't enforced yet)", o.key, o.step, o.why);
-            self.outside_n += 1;
-            self.outside.push_back(o);
-            while self.outside.len() > OUTSIDE_KEPT {
-                self.outside.pop_front();
-            }
-        }
     }
 
     /// The jobs an earlier process left in the agent's folder `home` (`left_jobs`), handed to the
@@ -1384,7 +1341,7 @@ pub fn status(root: &Path) -> String {
     }
     let now = crate::agent::jobs::now_s();
     for (f, st) in statuses(root) {
-        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, if p.outside_n > 0 { format!(", {} entries merged outside their write-sets (the last: {})", p.outside_n, p.outside.last().map_or(String::new(), |o| format!("{} {}", o.key, o.why))) } else { String::new() }, p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
+        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
         out.push(format!("{} ({f}, app {}, beat {} s ago, job {}): {p}", st.host, st.app, now.saturating_sub(st.beat), st.job.as_ref().map_or("none", |j| j.id.as_str())));
     }
     let left = pool_files(root);
@@ -1729,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn entries_outside_their_write_sets_are_reported_and_merged() {
+    fn the_merge_refuses_what_out_would() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
@@ -1744,20 +1701,24 @@ mod tests {
         let within = pack(1, "6/1/2", &["hidata", "layers/roads/hi"]);
         let outside = pack(2, "6/1/3", &["hidata", "layers/terrain/hi"]);
         let key = outside.key().unwrap();
+        // (The same names a pack job's `Out` takes and refuses.)
+        let mut o = crate::out::Out::open(&d.path().join("o"), &d.path().join("o-scratch")).unwrap();
+        o.for_step("pack");
+        for (l, c) in &within.handoff.changes {
+            o.set(l, c.clone());
+        }
+        o.save().unwrap();
+        o.set("layers/terrain/hi/6-1-3", Some("layers/terrain/hi/6-1-3.0000000000000002.pack".into()));
+        assert!(o.save().is_err());
         run.entries.extend([(within, None), (outside, None)]);
         let out = run.step(true);
         assert_eq!(out.leads, Some(1));
-        // Both merged (the write-sets aren't enforced yet), the one outside reported.
+        // The one within merged, the one outside refused, with why, and nothing of it taken.
         let rec = run.side.driver().records().unwrap();
-        assert_eq!((rec.keys.recorded("pack", "6/1/2"), rec.keys.recorded("pack", "6/1/3")), (Some("k1"), Some("k2")));
-        assert!(rec.manifest.contains_key("layers/terrain/hi/6-1-3"));
-        assert_eq!(run.outside_n, 1);
-        let o = run.outside.back().unwrap();
-        assert_eq!((o.key.as_str(), o.step.as_str()), (key.as_str(), "pack"));
-        assert!(o.why.contains("layers/terrain/hi/6-1-3"), "{}", o.why);
-        // Counted once, however often it's checked again.
-        run.note_outside(vec![o.clone()]);
-        assert_eq!((run.outside_n, run.outside.len()), (1, 1));
+        assert_eq!((rec.keys.recorded("pack", "6/1/2"), rec.keys.recorded("pack", "6/1/3")), (Some("k1"), None));
+        assert!(!rec.manifest.contains_key("layers/terrain/hi/6-1-3") && !rec.manifest.contains_key("hidata/6-1-3"));
+        let why = rec.rejected.get(&key).expect("refused");
+        assert!(why.contains("layers/terrain/hi/6-1-3"), "{why}");
     }
 
     #[test]
@@ -1865,11 +1826,15 @@ mod tests {
         let mut up = e.clone();
         up.handoff.pending.insert("base/6-1-9.3333333333333333.base".into(), "aa".into());
         assert!(check(&up, &r).unwrap_err().contains("isn't one of its saves"));
-        // Another step's (the OSM pass's stages): any logical name.
+        // Another step's (the OSM pass's stages): any name of its outputs, and none outside them
+        // (the unit's base pack, another step's).
         let mut pass = e;
         pass.step = "osm-pass".into();
         pass.handoff.done = None;
         pass.handoff.changes.insert("sources/osm/2026-10-01/pass".into(), Some("sources/osm/2026-10-01/pass.4444444444444444.json".into()));
+        assert!(check(&pass, &r).unwrap_err().contains("writes base/6-1-2, outside osm-pass's write-set"));
+        pass.handoff.changes.remove("base/6-1-2");
+        pass.handoff.pending.clear();
         assert!(check(&pass, &r).is_ok());
     }
 

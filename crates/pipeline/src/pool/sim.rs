@@ -415,12 +415,26 @@ fn consistent(r: &Records) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// The lead's check of an entry: a step it doesn't know writes nothing; and one the lead of an odd
-/// term refuses (a stand-in for a check by the lead's state: its leases, its app's write-sets), so
-/// one a lead refused may be taken by the next.
+/// The simulator's steps' outputs (crate::agent::steps::writes' stand-in): a unit job, and the
+/// lead of an odd term's stand-in, write a unit's file, a prune removes one; another step changes
+/// nothing.
+fn writes(step: &str, l: &str, removal: bool) -> Option<bool> {
+    match step {
+        "unit" | "flaky" => Some(l.starts_with("sim/")),
+        "prune" => Some(removal && l.starts_with("sim/")),
+        _ => None,
+    }
+}
+
+/// The lead's check of an entry: every change within its step's outputs, by the merge's own check
+/// (crate::agent::steps::outside_by, refused by every lead); and one the lead of an odd term
+/// refuses (a stand-in for a check by the lead's state: its leases), so one a lead refused may be
+/// taken by the next.
 fn check(e: &Entry, r: &Records) -> std::result::Result<(), String> {
+    if let Some(why) = crate::agent::steps::outside_by(e, &|l, removal| writes(&e.step, l, removal)) {
+        return Err(why);
+    }
     match e.step.as_str() {
-        "bogus" => Err("no such step".into()),
         "flaky" if r.term % 2 == 1 => Err(format!("refused by term {}'s lead", r.term)),
         _ => Ok(()),
     }
@@ -1017,10 +1031,13 @@ impl World {
         } else if let Some(key) = entry_of(path).filter(|_| !self.erroring.contains(path)) {
             if let Ok(en) = serde_json::from_slice::<Entry>(b) {
                 let kind = match en.step.as_str() {
-                    "bogus" => Kind::Refused,
+                    _ if crate::agent::steps::outside_by(&en, &|l, removal| writes(&en.step, l, removal)).is_some() => Kind::Refused,
                     "flaky" => Kind::Either,
                     _ => Kind::Taken,
                 };
+                if kind == Kind::Refused && !self.written.contains_key(&key) {
+                    self.count("entries outside their step's outputs, refused by every lead");
+                }
                 self.writers.insert(key.clone(), mac_of(&en.member));
                 self.written_at.entry(key.clone()).or_insert(self.t);
                 self.written.insert(key, kind);
@@ -1639,14 +1656,15 @@ impl Mac {
     }
 
     /// A job's hand-off, of lease `lease`: a unit built with a new key, now and then a prune, one
-    /// of a step that doesn't exist (refused), or one the lead of an odd term refuses.
+    /// that writes outside its step's outputs too (refused by every lead), or one the lead of an
+    /// odd term refuses.
     fn job(&mut self, lease: LeaseId, now: u64) -> Entry {
         self.jobs += 1;
         let t = TARGETS[self.rng.below(TARGETS.len() as u64) as usize];
         let k = format!("k{}x{}", self.k, self.jobs);
         let built = |k: &str| Handoff { changes: [(logical(t), Some(content(t, k)))].into(), pending: [(content(t, k), "sha".into())].into(), done: Some(("unit".into(), vec![(t.into(), k.to_string())])), ..Default::default() };
         let (step, h) = match self.rng.below(20) {
-            0 => ("bogus", Handoff { changes: [(logical(t), Some(content(t, "bogus")))].into(), done: Some(("unit".into(), vec![(t.into(), "bogus".into())])), ..Default::default() }),
+            0 => ("unit", Handoff { changes: [(logical(t), Some(content(t, "bogus"))), (format!("elsewhere/{t}"), Some(format!("elsewhere/{t}.bogus.x")))].into(), done: Some(("unit".into(), vec![(t.into(), "bogus".into())])), ..Default::default() }),
             1 | 2 => ("prune", Handoff { changes: [(logical(t), None)].into(), done: Some(("prune".into(), vec![(format!("unit {t}"), String::new())])), ..Default::default() }),
             3 | 4 => ("flaky", built(&k)),
             _ => ("unit", built(&k)),
@@ -1852,7 +1870,8 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
 
 /// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
 /// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 40] = [
+const KINDS: [&str; 41] = [
+    "entries outside their step's outputs, refused by every lead",
     "handed over",
     "taken back",
     "taken over",

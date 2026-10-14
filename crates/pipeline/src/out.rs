@@ -37,6 +37,12 @@ pub struct Out {
     /// A round's job ($SCENIC_UNITS_AS_OF): the units' outputs as they were when the round began,
     /// read in place of the manifest's own (`units_as_of`).
     as_of: Option<BTreeMap<String, String>>,
+    /// The step whose job this is (`for_step`): it puts and removes only the names its outputs
+    /// function gives (crate::agent::steps, the one the lead's merge checks every entry against),
+    /// and a name outside them fails the job. None: no step (the agent merging hand-offs, a tool).
+    step: Option<String>,
+    /// Names set or removed outside the step's outputs: the save fails, naming the first.
+    outside: Vec<String>,
 }
 
 /// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
@@ -149,7 +155,36 @@ impl Out {
         let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
         // (A helper's job hands off only its own uploads.)
         let pending = if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
-        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff, as_of })
+        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff, as_of, step: None, outside: Vec::new() })
+    }
+
+    /// Binds this to a job of `step` (scenic-build, as it starts a step): from now on it puts and
+    /// removes only `step`'s outputs (crate::agent::steps::writes, the function the lead's merge
+    /// checks every entry against, so the writer and the check can't disagree; docs/pool.md §7.3).
+    /// A put outside them fails before anything is uploaded; a `set` or `remove` outside them fails
+    /// the next save, before anything is saved. A step the steps table doesn't know (a tool run by
+    /// hand) is held to nothing while it writes the manifest, and changes nothing when it hands off
+    /// (the merge refuses such an entry).
+    pub fn for_step(&mut self, step: &str) {
+        self.step = Some(step.to_string());
+    }
+
+    /// Whether this job may put (`removal`: remove) `logical`; why not.
+    fn admits(&self, logical: &str, removal: bool) -> Result<()> {
+        let Some(step) = &self.step else { return Ok(()) };
+        match crate::agent::steps::writes(step, logical, removal) {
+            Some(true) => Ok(()),
+            Some(false) => bail!("{} {logical}, outside {step}'s outputs (crate::agent::steps)", if removal { "removes" } else { "writes" }),
+            None if self.handoff.is_some() => bail!("{} {logical}: {step} isn't a step the steps table knows, so its hand-off may change nothing", if removal { "removes" } else { "writes" }),
+            None => Ok(()),
+        }
+    }
+
+    /// `admits`, for a `set` or `remove`, which can't fail: one outside is kept for the save.
+    fn note(&mut self, logical: &str, removal: bool) {
+        if let Err(e) = self.admits(logical, removal) {
+            self.outside.push(format!("{e:#}"));
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -185,6 +220,7 @@ impl Out {
         if logical.contains('.') {
             bail!("logical names have no dots: {logical}");
         }
+        self.admits(logical, false)?;
         // (Its name's hash and its checksum from one read of it: `write_atomic_hashed` checks the
         // read-back against the hash, as against its own.)
         let size = std::fs::metadata(local)?.len();
@@ -273,6 +309,7 @@ impl Out {
     /// Names `content` (None: nothing) under `logical` in the manifest: a file uploaded already
     /// (`store_bytes`).
     pub fn set(&mut self, logical: &str, content: Option<String>) {
+        self.note(logical, content.is_none());
         match &content {
             Some(c) => self.manifest.insert(logical.to_string(), c.clone()),
             None => self.manifest.remove(logical),
@@ -282,6 +319,7 @@ impl Out {
 
     /// Upload bytes under `logical`.
     pub fn put_bytes(&mut self, logical: &str, ext: &str, bytes: &[u8]) -> Result<String> {
+        self.admits(logical, false)?;
         let local = self.scratch_file(&format!("{logical}.{ext}"));
         std::fs::write(&local, bytes)?;
         self.put_file(logical, ext, &local)
@@ -289,6 +327,7 @@ impl Out {
 
     /// Record a logical name as gone (its file stays until GC).
     pub fn remove(&mut self, logical: &str) {
+        self.note(logical, true);
         self.manifest.remove(logical);
         self.changes.insert(logical.to_string(), None);
     }
@@ -298,6 +337,10 @@ impl Out {
     /// them off instead (crate::handoff).
     pub fn save(&mut self) -> Result<()> {
         let _p = crate::timings::phase("records saved", crate::timings::Class::NasWrite);
+        // (Nothing saved of a job that named something outside its step's outputs.)
+        if let Some(first) = self.outside.first() {
+            bail!("{first}{}: nothing saved", if self.outside.len() > 1 { format!(" (and {} more)", self.outside.len() - 1) } else { String::new() });
+        }
         if let Some(dir) = &self.handoff {
             if self.changes.is_empty() && self.pending.is_empty() && self.checked.is_empty() {
                 return Ok(());
@@ -677,5 +720,50 @@ mod tests {
         out.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
         assert!(format!("{:#}", out.save().unwrap_err()).contains("the pool is on"));
         assert!(check_writer(&root).is_err());
+    }
+
+    /// A job puts and removes only its step's outputs (crate::agent::steps::writes, the function
+    /// the lead's merge checks by): a put outside fails before it uploads, a set or removal outside
+    /// fails the save before anything is saved, and a step the table doesn't know hands off nothing.
+    #[test]
+    fn a_job_writes_only_its_steps_outputs() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let local = d.path().join("f.bin");
+        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        out.for_step("pack");
+        // Its own: a map tile's data and road pack, a rail pack removed.
+        std::fs::write(&local, b"tile").unwrap();
+        out.put_file("hidata/6-1-2", "hidata", &local).unwrap();
+        out.put_bytes("layers/roads/hi/6-1-2", "pack", b"roads").unwrap();
+        out.remove("layers/rails/hi/6-1-2");
+        out.save().unwrap();
+        let saved: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
+        assert_eq!(saved.keys().collect::<Vec<_>>(), ["hidata/6-1-2", "layers/roads/hi/6-1-2"]);
+        // Another step's file: refused before it's uploaded, the local file left.
+        std::fs::write(&local, b"terrain").unwrap();
+        let e = format!("{:#}", out.put_file("layers/terrain/hi/6-1-2", "pack", &local).unwrap_err());
+        assert!(e.contains("writes layers/terrain/hi/6-1-2, outside pack's outputs"), "{e}");
+        assert!(local.exists() && !root.join("layers/terrain").exists());
+        assert!(out.put_bytes("layers/roads/hi/7-1-2", "pack", b"x").is_err(), "a name of the wrong zoom");
+        // A set and a removal outside: the next save fails, saving nothing, whatever came with them.
+        out.put_bytes("layers/roads/hi/6-1-3", "pack", b"more").unwrap();
+        out.set("layers/terrain/hi/6-1-3", Some("layers/terrain/hi/6-1-3.1111111111111111.pack".into()));
+        out.remove("base/6-1-3");
+        let e = format!("{:#}", out.save().unwrap_err());
+        assert!(e.contains("layers/terrain/hi/6-1-3") && e.contains("and 1 more") && e.contains("nothing saved"), "{e}");
+        assert_eq!(read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json")).unwrap(), saved);
+        assert!(out.save().is_err(), "it stays failed");
+        // A step the table doesn't know: held to nothing while it writes the manifest (a tool run
+        // by hand) and to no change at all when it hands off (the merge refuses such an entry).
+        let mut tool = Out::open(&root, &d.path().join("s2")).unwrap();
+        tool.for_step("patch-ferries");
+        tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-2", "osm", b"p").unwrap();
+        tool.handoff = Some(d.path().join("handoff"));
+        assert!(format!("{:#}", tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-3", "osm", b"q").unwrap_err()).contains("isn't a step the steps table knows"));
+        // Not bound to a step (the agent merging hand-offs): anything.
+        let mut merge = Out::open(&root, &d.path().join("s3")).unwrap();
+        merge.set("layers/terrain/hi/6-1-4", Some("layers/terrain/hi/6-1-4.2222222222222222.pack".into()));
+        merge.save().unwrap();
     }
 }

@@ -3,12 +3,12 @@
 Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its driver and phase
 2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls built**
 (crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); **phase 4's
-first four batches built** (the steps table, crate::agent::steps, its write-sets checked and
-reported at merge; the memory guard, crate::agent::memguard; power, home and the in-use rule gone;
+first four batches built** (the steps table, crate::agent::steps; the memory guard, crate::agent::memguard; power, home and the in-use rule gone;
 the lead's slots as any member's, behind its switch: §7.2, §7.3, §7.6, §12) and its fifth (disk
 measured and learned per target, GC reading the journal, the OSM pass's clear through the caches'
-accessor, and the Mac shared by measure with its disk guard, behind its switch: §7.7, §12); the
-rest is planned. It replaces the fixed
+accessor, and the Mac shared by measure with its disk guard, behind its switch: §7.7, §12) and its
+sixth (the write-sets enforced: a job's `Out` writes only its step's outputs, the merge refuses
+what lies outside them, the lint gating publish: §7.3, §12); the rest is planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -582,12 +582,14 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   and the HTTP body limit; a takeover finds every result on the NAS; GC sees them all.
 - **The lead validates at merge time:** every change in the step's write-set (the steps table's,
   §7.2), every content name matching its logical name, the lease's targets and keys (the merge is
-  given the check: `records::Check`). The write-sets are checked and reported, not yet enforced: an
-  entry the other checks pass with a change outside its step's write-set is merged, logged and kept
-  in its lead's status (`pool.outside`, the newest twenty, and `outside_n`; `scenic pool status`
-  says them), until a later batch of phase 4 derives the write-sets from the code that writes and
-  refuses such entries as it lands (§7.7, §12; every entry in the journal from the pool's first two
-  days is within today's). A refused entry is named in the records with why; once they're
+  given the check: `records::Check`). The write-sets are enforced at both ends by one function per
+  step (`agent::steps::writes`, its row's): a job's `Out`, bound to its step as `scenic-build`
+  starts it, puts and removes only names that function gives (a put outside fails before it
+  uploads, a set or removal outside fails the job's next save, nothing of it saved), and the merge
+  refuses an entry with a change outside it, or of a step the table doesn't know (§7.7, §12 phase
+  4's sixth batch). So an entry the merge refuses for its write-set is one no job of this app could
+  hand off (an older app's, or a damaged one); every entry in the journal from the pool's first two
+  days is within the functions. A refused entry is named in the records with why; once they're
   saved its why is noted beside the journal, `state/journal/rejected/<key>.why`
   (`journal::note_refusal`), for the owner. The entry stays in its day: a refusal may be a lead's
   that's no longer current (its check depends on its state), and a lead whose records don't name the
@@ -726,7 +728,7 @@ Each of its columns, and what replaces it:
 | answered | a lease at the point of use, across the Macs: sending the pass's answers to the NAS (`crate::answers`) takes a lease on the NAS (`state/pool/answers.lease`, create-new, renewed, lapsing as a job's does) with writer preference (a reader that starts while a sender waits waits for it; readers run for hours, so a sender never waits on new readers), the steps that read them a shared one | no list of the steps that keep answers; a lapsed lease costs a wait, never a torn answers file (the answers are written whole by temporary name) |
 | shared and its rank | every step offered to every member (§7.2); the order by how crucial a target is (the forecast's slack, measured times) | |
 | batch | measured: as many of a step's targets as fit a quarter of an hour by their measured times (a cold start: one target a job) | a wrong time makes a job longer or shorter, never wrong |
-| write-set | derived from the code that writes, and enforced as it lands (the owner's choice: no soak): each step's output names are **produced** by one function of its targets and pass (`outputs(step, target, pass)`), and enforced by type: `Out` puts and removes only an output name, a type only that function can construct, so a step's code can't form one itself, a new kind of output can only come by changing that function, and the lead's merge checks every entry against the same function. A good result can't be refused: the writer can't name what the function doesn't give (the compiler refuses it), the every-step tests run each step through `Out`, and the lint (nothing writes the manifest, the hand-offs or the journal but through `Out`) gates publish. The step's removals of stale names under its layer, a prune's of the pruned step's names, and the OSM pass's of older passes' are the same function's. Writes outside the manifest: the raw tiles' archives (named by their area, checked as today: crate::rawpack::named_for), the answers (`crate::answers`' own names, under its lease) and the 3D buildings' sources (bld-fetch's, under `sources/`, which nothing reads by the manifest) are outside the records, so outside the merge; each is written whole under a name its own module makes, and the same lint covers their writers | entries of an app before it are checked by the merge alone, reported, until no member runs one |
+| write-set | derived from the code that writes, and enforced as it lands (the owner's choice: no soak): each step's output names are given by one function (`agent::steps::writes`, the steps table's row), which `Out` writes by and the lead's merge checks every entry by, so the writer and the check can't disagree; a good result can't be refused: a job's `Out` refuses a name outside its step's (the job fails before anything of it lands), and the lint (nothing writes the manifest, the hand-offs or the journal but through `Out`, or the listed paths of the merge and the raw tiles' archives) gates publish. The step's removals of stale names under its layer, a prune's of the pruned step's names, and the OSM pass's of older passes' are the same function's. Writes outside the manifest: the raw tiles' archives (named by their area, checked as today: crate::rawpack::named_for), the answers (`crate::answers`' own names, under its lease) and the 3D buildings' sources (bld-fetch's, under `sources/`, which nothing reads by the manifest) are outside the records, so outside the merge; each is written whole under a name its own module makes | **built** (phase 4's sixth batch): the function is a predicate over a name, not a type only it can construct (the design's first form): the same guarantee as the job runs, without rewriting every step's writes; entries of an app before it are refused as any outside is (their work done again) |
 | moves (planned) | derived: a job's progress on its Mac's disk is written through one accessor (the OSM pass's stages, a terrain area's raw tiles), which names the Mac holding it on the NAS (`state/pool/progress/<step>.json`) | |
 | floor of memory (planned) | not built: what a target held (its measured floor, §7.2) covers it, the Planetiler heap among it | |
 
@@ -965,8 +967,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      - **The merge's checks** (`agent::pool::check`): a done record of the entry's step naming
        targets, content names of their logical names, raw archives of their areas, and for a
        shared step the coordinator's check of a helper's hand-off (its done targets' files, its own
-       uploads); not the lease's targets (a later lead may not know the lease). The steps'
-       write-sets are checked beside them, and what lies outside reported, not refused (§7.3).
+       uploads); not the lease's targets (a later lead may not know the lease). An entry with a
+       change outside its step's write-set is refused with them (§7.3).
      - **The lead's coordinator:** leases granted in its term (`Lease::term`, `granted_at`), its
        state per term (`state/coord/term/<E>/state.json`: the jobs' leases, costs, failures by the
        wall clock, the pause) written each loop it changed, on the NAS; "the lead is moving" while
@@ -1040,15 +1042,14 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    can soak on the real build behind it. A batch that only reports, or only learns, needs none. They're ordered so the parts that can lose work
    (refusing entries, stopping jobs, a job across a handover, resuming on one Mac) come early, and
    run longest, reported or switched, before what builds on them.
-   1. **The steps table, its write-sets reported: built** (crate::agent::steps; §7.2, §7.3). A row
+   1. **The steps table: built** (crate::agent::steps; §7.2, §7.3). A row
       per step: memory's first guess, disk, power, home, shared and its rank, alone, beside and its
       rank, light, the groups never two on one Mac, the answers kept, the batch, the write-set. The
       step sets the agent and the coordinator test are made from it as the app is built (a set of
       the wrong size, two steps of one rank or a rank missing failing the build), in the orders the
       agent and the forecast walk them, and its tests check them, the rows' memory, disk, needs
       and batches, a row for every step the agent runs, and a shared step's saves within its
-      write-set. The lead checks every entry it merges against its step's write-set and reports
-      what lies outside, refusing nothing for it; every one of the 574 entries in the journal of
+      write-set. Every one of the 574 entries in the journal of
       8–9 Oct 2026 is within (`real_journal_entries_are_within_their_write_sets`, run on a copy of
       the journal), though they hold none of the pass's worldwide steps (the OSM pass, its sets, the
       reach, the world's buildings, the summits, the heritage sites; the labels and the water once
@@ -1144,15 +1145,24 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       target, the disk guard its backstop), and a cold start runs alone, nothing beside it; a job of no
       targets of its own (GC, a catalog, the OSM pass) is measured by its id. **Scratch state (§13):
       both Macs** (`state/pool/by-measure` made in the scratch folder) before the switch goes on.
-   6. **Write-sets from the code that writes** (§7.3, §7.7): one outputs function per step, `Out`
-      refusing any other name in the job, the merge checking every entry against the same
-      function, the lint gating publish; entries outside refused as it lands (the owner's choice:
-      the writer and the check share one function, so they can't disagree, and no soak is needed).
-      No switch. Tests: every step's real saves within its outputs (the
-      journal's entries, and each step run in the tests); a name outside failing the save in the
-      job; the merge refusing what `Out` would; the lint; the simulator's runs with entries outside
-      refused by every lead. **Scratch state (§13): both Macs** (the merge's refusals are the
-      journal's).
+   6. **Write-sets enforced where they're written: built** (§7.3, §7.7): one outputs function per
+      step (`agent::steps::writes`, its row's), which `Out` writes by and the merge checks by, so
+      they can't disagree; a job's `Out` refusing any other name (`Out::for_step`, bound as
+      `scenic-build` starts a step: a put outside fails before it uploads, a set or removal outside
+      fails the save, nothing of it saved; a step the table doesn't know held to nothing while it
+      writes the manifest by hand, and to no change when it hands off); the merge refusing every
+      entry with a change outside it (`agent::pool::check`); the lint (`tests/write_sets.rs`:
+      nothing writes a hand-off, a journal entry or the manifest's file but `Out` and the listed
+      paths of the merge and of the raw tiles' archives) gating publish. As built, the function is
+      a predicate over a name, not a type only it can construct (§7.7's design): it gives the same
+      guarantee as the job runs (a name outside fails the job before anything of it lands), without
+      a rewrite of every step's ~100 writes; a later batch may make it a type. No switch. Tests: a
+      job's `Out` refusing a name outside its step's and saving nothing; the merge refusing what
+      `Out` would, the entry within merged; every entry the journal held (the first batch's real
+      journal run); the gate's and the rail feeds' steps run through a bound `Out`; the lint and
+      its markers; the simulator's runs with entries outside refused by every lead (by the same
+      check, `steps::outside_by`, over the simulator's own outputs function). **Scratch state
+      (§13): both Macs** (the merge's refusals are the journal's).
    7. **Exclusivity where the resource is used** (§7.7): the Wikimedia proxy with the pool's one
       budget on the NAS (tokens leased in batches, the query service by query time, a 429's wait
       shared, the rate divided by the members with the NAS away), every job's requests through it,
