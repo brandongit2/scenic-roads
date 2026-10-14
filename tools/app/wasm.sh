@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Build the step programs for WebAssembly (wasm32-wasip1), the builds web workers run (docs/workers.md),
 # into target/wasm32-wasip1/release/*.wasm. zstd's C is compiled to WebAssembly too (the real zstd:
-# the same compressed bytes as natively), with the wasi-sdk's clang, llvm-ar and sysroot. Rust and the
-# wasi-sdk are the versions mise.toml pins (the Rust's wasm32-wasip1 target among them); once:
+# the same compressed bytes as natively), with the wasi-sdk's clang, llvm-ar and sysroot. The wasi-sdk
+# is the version mise.toml pins, and the Rust the one rust-toolchain.toml does (with its wasm32-wasip1
+# target); both installed by mise, once:
 #   mise install
 #
 #   tools/app/wasm.sh

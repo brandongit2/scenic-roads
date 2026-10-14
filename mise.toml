@@ -1,3 +1,11 @@
+# The build's tools, installed by `mise install` (tools/app/*.sh put them on the PATH with `mise env`).
+#
+# Rust has no version here: rust-toolchain.toml declares it (version, target, components), which every
+# cargo honours, and mise reads it as Rust's version file (the setting below), installing rustup and
+# that toolchain with its target and components. The wasi-sdk is the C compiler and libc for the
+# WebAssembly build of zstd (tools/app/wasm.sh).
 [tools]
-rust = { version = "1.98.1", profile = "minimal", components = "clippy", targets = "wasm32-wasip1" }
 "github:WebAssembly/wasi-sdk" = "wasi-sdk-33"
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]

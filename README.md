@@ -360,9 +360,9 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 - **Any device** on the LAN or the tailnet can help from the build page, with no key: it takes an area's last steps, and a z8 area's 3D buildings (`bldtile`), as WebAssembly, the same bytes as the build Mac's (a worker's first three results are checked against the build Mac's own run, then one in eight). The page shows the whole build to anyone on the LAN or the tailnet.
 - **The pool:** any Mac leading the build, handed over from any Mac's menu, the build page, the map's build panel or `scenic lead`, and taken over when its lead is gone (`docs/pool.md`; its first phase is built and switched on since 8 Oct 2026, `state/pool/enabled`; its controls, phase 3, built; the proactive offer taken by itself only once `scenic lead auto on`). Planned: every job handing off, placement and pages talking to every Mac (phase 4).
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node. Rust and the wasi-sdk (for
-  the WebAssembly build's C) are installed by [mise](https://mise.jdx.dev/) (`mise install`) at the
-  versions `mise.toml` pins, the same on both Macs; the Rust's WebAssembly target is in `mise.toml`
-  and `rust-toolchain.toml`.
+  the WebAssembly build's C) are installed by [mise](https://mise.jdx.dev/) (`mise install`) : the
+  wasi-sdk at the version `mise.toml` pins, Rust at the version, WebAssembly target and components
+  `rust-toolchain.toml` declares (the only place they are), the same on both Macs.
 - **The agent** needs [uv](https://docs.astral.sh/uv/), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
 
 ## Rendering notes
