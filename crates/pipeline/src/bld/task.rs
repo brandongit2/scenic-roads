@@ -565,6 +565,7 @@ mod tests {
         // tiles_of: the areas' tiles in order, their summaries merged.
         assert_eq!(all, by_area);
         assert_eq!(merged, whole);
+        assert!(whole.tiles > 0 && whole.features > 0);
         assert_eq!(whole.heritage, 1, "the tower holding the site");
         // A worker's tile outside its area is refused.
         let a8 = Unit { z: 8, x: 131, y: 88 };

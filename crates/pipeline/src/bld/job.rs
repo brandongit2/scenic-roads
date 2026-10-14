@@ -89,6 +89,9 @@ impl Summary {
         self.parts += o.parts;
         self.outside += o.outside;
         self.copies += o.copies;
+        self.tiles += o.tiles;
+        self.bytes += o.bytes;
+        self.features += o.features;
         for k in 0..6 {
             self.by_src[k] += o.by_src[k];
         }
