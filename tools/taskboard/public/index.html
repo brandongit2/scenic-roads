@@ -170,7 +170,7 @@
   .filt { display: none; }
 
   /* Panes. */
-  .panes { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(320px, 380px); }
+  .panes { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); }
   .pane-h { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); min-width: 0; }
   .pane-h h2 { margin: 0; font: 600 11px/1 var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
@@ -302,13 +302,18 @@
   body.drag-live, body.drag-live * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 
   /* The details of the selected item: docked on wide screens, a drawer otherwise. */
-  .editor { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--panel); }
+  .editor { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: min(420px, 100%); min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--panel); padding-bottom: env(safe-area-inset-bottom, 0px); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); transform: translateX(104%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s; }
+  .app.sheet .editor { transform: none; visibility: visible; transition: transform 0.18s ease; }
+  /* The backdrop behind the open details: dims the page, blocks it, a click on it closes them. */
+  .scrim { position: fixed; inset: 0; z-index: 19; background: var(--scrim); opacity: 0; visibility: hidden; transition: opacity 0.18s ease, visibility 0s linear 0.18s; }
+  .app.sheet ~ .scrim { opacity: 1; visibility: visible; transition: opacity 0.18s ease; }
+  .ed-sticky { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin: 0 -16px; padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
   /* (One column that never grows past the panel: a long folder path in the crumbs is cut with an
      ellipsis instead of widening the column.) */
-  .ed { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 12px 16px 48px; }
+  .ed { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 16px 48px; }
   .ed-top { display: flex; align-items: center; gap: 4px; min-height: 26px; }
   .ed-crumbs { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-  .ed-close { display: none; }
+  .ed-empty { display: none; }
   .ed-title { display: block; width: calc(100% + 12px); margin: -4px -6px; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); font: 600 15px/1.35 var(--sans); resize: none; overflow: hidden; }
   .ed-title:hover { border-color: var(--line); }
   .ed-title:focus { border-color: var(--accent); background: var(--bg); outline: none; }
@@ -401,10 +406,6 @@
   @media (max-width: 1199px) {
     .panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .pane:last-of-type { border-right: 0; }
-    .editor { position: fixed; z-index: 20; top: var(--top-h, 0px); right: 0; bottom: 0; width: min(420px, 100%); padding-block: env(safe-area-inset-top, 0px) env(safe-area-inset-bottom, 0px); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); transform: translateX(104%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s; }
-    .app.sheet .editor { transform: none; visibility: visible; transition: transform 0.18s ease; }
-    .ed-close { display: grid; }
-    .ed-empty { display: none; }
   }
   /* Narrow: one pane at a time, as tabs. */
   @media (max-width: 899px) {
@@ -431,7 +432,6 @@
     .chips, .sep { display: none; }
     .app.filters-open .chips { display: flex; flex-basis: 100%; }
     .pane-h .ghost-btn { padding: 0 5px; }
-    .editor { top: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation-duration: 0.01ms !important; }
@@ -473,6 +473,7 @@
     <aside class="editor" id="editor" aria-label="Details"></aside>
   </main>
 </div>
+<div class="scrim" id="scrim" aria-hidden="true"></div>
 <div class="menu" id="menu" role="menu" hidden></div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <div class="viewer" id="viewer" hidden><img id="viewer-img" alt=""><button class="btn" type="button" id="viewer-close">Close</button></div>
@@ -1790,7 +1791,7 @@
       h("button", { class: "ic ed-close", type: "button", "data-act": "ed-close", "aria-label": "Close the details", title: "Close (Esc)" }, icon("close")));
     // (A task's number, before its title: a click copies "#57".)
     f.num = kind === "task" ? h("button", { class: "ed-num", type: "button", "data-act": "copy-num", hidden: true }) : null;
-    const parts = [top, h("p", { class: "hint bad", id: "ed-unsaved", hidden: ![...pending.values()].some((p) => p.id === it.id) }, "Not saved yet: changes are paused until the connection is back. What you typed is kept and saved then; Esc puts a field back."), h("div", { class: "ed-head" }, f.num, f.title), f.chips];
+    const parts = [h("div", { class: "ed-sticky" }, top, h("div", { class: "ed-head" }, f.num, f.title)), h("p", { class: "hint bad", id: "ed-unsaved", hidden: ![...pending.values()].some((p) => p.id === it.id) }, "Not saved yet: changes are paused until the connection is back. What you typed is kept and saved then; Esc puts a field back."), f.chips];
     f.reply = h("div", { class: "sec" });
     if (kind === "task") {
       parts.push(f.reply);
@@ -2590,6 +2591,15 @@
     e.preventDefault();
     addPhotos(S.sel, files);
   });
+  // A click on the backdrop closes the details; one that began inside them (a text selection dragged
+  // out) isn't one: it must have begun on the backdrop too.
+  let scrimDown = false;
+  $("scrim").addEventListener("pointerdown", (e) => { scrimDown = e.target === $("scrim"); });
+  $("scrim").addEventListener("click", (e) => {
+    const ok = scrimDown && e.target === $("scrim");
+    scrimDown = false;
+    if (ok && S.sheet) { S.sheet = false; render(); }
+  });
   $("viewer-close").addEventListener("click", closePhoto);
   $("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) closePhoto(); });
 
@@ -2604,7 +2614,7 @@
       if (a && $("editor").contains(a)) {
         e.preventDefault();
         a.blur();
-        if (matchMedia("(max-width: 1199px)").matches) { S.sheet = false; render(); }
+        S.sheet = false; render();
         const pane = narrow.matches ? S.tab : "tree";
         (rowEl(pane, S.sel) || rowEl("prio", S.sel))?.focus({ preventScroll: true });
         return;
