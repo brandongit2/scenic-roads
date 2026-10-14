@@ -75,7 +75,7 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
-pub const TABLE: [Step; 44] = [
+pub const TABLE: [Step; 45] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
     // planet with room to spare, less the pack cache it clears).
     Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },
@@ -137,6 +137,8 @@ pub const TABLE: [Step; 44] = [
     // 5.1 GB to read its 30.3 M rows, 3.3 GB to raise its tiles. Offered by the rows they read.)
     Step { mem_mb: 5200, shared: Some(6), beside: Some(12), groups: &[Group::NasReads], batch: 8, ..base("bldprep", w_bldprep) },
     Step { mem_mb: 3400, shared: Some(7), beside: Some(13), batch: 16, ..base("bldtiles", w_bldtiles) },
+    // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
+    Step { mem_mb: crate::bld::field::LO_PEAK_MB, batch: 4, ..base("bldfield-lo", w_bldfield_lo) },
     Step { ..base("catalog", w_none) },
     Step { ..base("catalog-held", w_none) },
     Step { ..base("prune", w_prune) },
@@ -338,7 +340,8 @@ pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -
 /// pieces (a z6 tile's) hi pack of their layer and its mid, an assembly's (a z3 tile's) lo pack; an
 /// area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
 /// z3 tile's whole run: a lease of the scheme before pieces); a z6 tile's normalized buildings
-/// (`bldprep`) or 3D buildings' hi pack (`bldtiles`). False for the other steps.
+/// (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid (`bldtiles`); a z3 tile's field
+/// lo pack (`bldfield-lo`). False for the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     let tile = Unit::parse(target);
@@ -347,7 +350,8 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
         // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
         "bldprep" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::work_logical(t.x, t.y)),
-        "bldtiles" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::pack_logical(t.x, t.y)),
+        "bldtiles" => tile.is_some_and(|t| t.z == 6 && (l == crate::bld::pack_logical(t.x, t.y) || l == crate::bld::field::hi_logical(t.x, t.y) || l == crate::bld::field::mid_logical(t.x, t.y))),
+        "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == crate::bld::field::lo_logical(t.x, t.y)),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
         "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
         "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")),
@@ -602,14 +606,19 @@ fn w_bldprep(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["work", "bld", t] if tile(t, 6))
 }
 
+/// The 3D buildings' hi packs, their field's and its mids.
 fn w_bldtiles(l: &str, _: bool) -> bool {
-    pack(l, crate::bld::LAYER, &["hi"])
+    pack(l, crate::bld::LAYER, &["hi"]) || pack(l, crate::bld::field::LAYER, &["hi"]) || matches!(parts(l).as_slice(), ["work", "bldfield-mid", t] if tile(t, 6))
+}
+
+fn w_bldfield_lo(l: &str, _: bool) -> bool {
+    pack(l, crate::bld::field::LAYER, &["lo"])
 }
 
 /// What the regions no longer cover, removed: a unit's files, candidates and peaks, map tiles, the
 /// 3D buildings'. Nothing written.
 fn w_prune(l: &str, removal: bool) -> bool {
-    removal && (w_unit(l, false) || w_pois(l, false) || w_peaks(l, false) || w_pack(l, false) || w_lo(l, false) || w_bldprep(l, false) || w_bldtiles(l, false))
+    removal && (w_unit(l, false) || w_pois(l, false) || w_peaks(l, false) || w_pack(l, false) || w_lo(l, false) || w_bldprep(l, false) || w_bldtiles(l, false) || w_bldfield_lo(l, false))
 }
 
 #[cfg(test)]

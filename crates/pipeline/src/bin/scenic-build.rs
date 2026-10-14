@@ -52,6 +52,10 @@
 //!                                (pipeline::bld::job): the buildings touching the coverage, their
 //!                                heights filled, z12–14, as the hi pack layers/buildings/hi/6-x-y;
 //!                                under the agent, some z8 areas offered to workers as tasks
+//!                                with the field (levels 13–8) as layers/buildings-field/hi/6-x-y and
+//!                                its level-8 planes as work/bldfield-mid/6-x-y
+//!   bldfield-lo <Q …>            z3 tiles Q's zoomed-out buildings field (levels 7–4, the lo pack
+//!                                layers/buildings-field/lo/3-x-y) from their z6 tiles' mids
 //!   bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]  a z8 area's task folder
 //!                                as a bldtiles job cuts it (pipeline::bld::task; a z6 tile: its
 //!                                densest area), for the `bldtile` program and the checks
@@ -459,6 +463,20 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "bld-fetch" => bld_fetch_step(&mut out, &args, &scratch)?,
         "bldprep" => bldprep_step(&mut out, &args)?,
         "bldtiles" => bldtiles_step(&mut out, &args)?,
+        "bldfield-lo" => {
+            // bldfield-lo <Q …>: each z3 tile's zoomed-out field of the 3D buildings (levels 7–4,
+            // its lo pack) from its z6 tiles' mids (pipeline::bld::job::build_lo).
+            let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
+            for (k, &q) in qs.iter().enumerate() {
+                pipeline::control::safe_point("bldfield-lo");
+                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
+                let t = cost_start("bldfield-lo", &q.slash());
+                pipeline::bld::job::build_lo(&mut out, q)?;
+                pipeline::control::done("bldfield-lo", &q.slash());
+                note_cost("bldfield-lo", &q.slash(), t);
+            }
+            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
+        }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
@@ -983,6 +1001,8 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "ferries" => (0, 6),
         // The 3D buildings: z12–14 hi packs (pipeline::bld).
         "buildings" => (pipeline::bld::MINZOOM, pipeline::bld::MAXZOOM),
+        // Their field: levels 8–13 in the hi packs, 4–7 in the lo (pipeline::bld::field).
+        "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
         _ => return None,
     })
 }
@@ -1016,6 +1036,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
                     l if l.starts_with("marks-") => "rdmt",
                     l if l.starts_with("ov-") || l == "stations" || l == "buildings" => "mvt",
                     "ferries" => "geojson-gz",
+                    "buildings-field" => pipeline::bld::field::ENCODING,
                     _ => "unknown",
                 };
                 let zs = match *scope {
@@ -3310,7 +3331,8 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
             "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
             "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
             "bldprep" => vec![format!("work/bld/{d}")],
-            "bldtiles" => vec![format!("layers/{}/hi/{d}", pipeline::bld::LAYER)],
+            "bldtiles" => vec![format!("layers/{}/hi/{d}", pipeline::bld::LAYER), format!("layers/{}/hi/{d}", pipeline::bld::field::LAYER), format!("work/bldfield-mid/{d}")],
+            "bldfield-lo" => vec![format!("layers/{}/lo/{d}", pipeline::bld::field::LAYER)],
             k => bail!("{t:?}: unknown prune target {k:?}"),
         };
         for l in logicals {

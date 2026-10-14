@@ -104,6 +104,9 @@ pub struct Keys {
     pub bldprep: BTreeMap<String, String>,
     #[serde(default)]
     pub bldtiles: BTreeMap<String, String>,
+    /// The buildings field's lo levels, per z3 tile ("3/x/y": `bld_targets`).
+    #[serde(default)]
+    pub bldfield_lo: BTreeMap<String, String>,
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -183,6 +186,7 @@ impl Keys {
             "trees-lo" => &mut self.trees_lo,
             "bldprep" => &mut self.bldprep,
             "bldtiles" => &mut self.bldtiles,
+            "bldfield-lo" => &mut self.bldfield_lo,
             _ => &mut self.lo,
         }
     }
@@ -203,13 +207,15 @@ impl Keys {
             "trees-lo" => &self.trees_lo,
             "bldprep" => &self.bldprep,
             "bldtiles" => &self.bldtiles,
+            "bldfield-lo" => &self.bldfield_lo,
             _ => return None,
         };
         m.get(target).map(String::as_str)
     }
 
     /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead
-    /// ("unit 6/x/y", "pois 6/x/y", "pack 6/x/y", "lo 3/x/y", "bldprep 6/x/y", "bldtiles 6/x/y"), so a
+    /// ("unit 6/x/y", "pois 6/x/y", "pack 6/x/y", "lo 3/x/y", "bldprep 6/x/y", "bldtiles 6/x/y",
+    /// "bldfield-lo 3/x/y"), so a
     /// region added back is built again.
     pub fn record(&mut self, step: &str, done: &[(String, String)]) {
         if step == "prune" {
@@ -234,6 +240,9 @@ impl Keys {
                     }
                     "bldtiles" => {
                         self.bldtiles.remove(at);
+                    }
+                    "bldfield-lo" => {
+                        self.bldfield_lo.remove(at);
                     }
                     _ => {}
                 }
@@ -2102,15 +2111,19 @@ pub struct BldTargets {
     /// release and that.
     pub prep: Vec<(String, String)>,
     /// `bldtiles T`: the z6 tiles meeting the coverage (its buffers included). Its key: the version,
-    /// the content names of T's and its 8 neighbours' normalized files ("-" none), and the coverage's
+    /// the content names of T's and its 8 neighbours' normalized files ("-" none), the coverage's
     /// shapes over T grown by 1 km in the recipes' order with their countries
-    /// (`Coverage::shapes_key`: which shape a building is in sets its country's fits).
+    /// (`Coverage::shapes_key`: which shape a building is in sets its country's fits), and T's
+    /// markdata's content name (its heritage sites, for the field's heritage lists; "-" none).
     pub tiles: Vec<(String, String)>,
+    /// `bldfield-lo Q`: the z3 tiles holding a `bldtiles` target, each with its key (the version,
+    /// Q, and its z6 tiles' mids' content names, "-" none) and its `bldtiles` targets.
+    pub lo: Vec<(String, String, Vec<String>)>,
 }
 
 /// The 3D buildings' targets for the coverage `cov`, the manifest `m` and the sources (`inputs`).
 pub fn bld_targets(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> BldTargets {
-    use crate::bld::{work_logical, BLDPREP_V, BUILDINGS_V};
+    use crate::bld::{field, work_logical, BLDPREP_V, BUILDINGS_V};
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let sources = bld_sources(inputs) == Some(true);
     let mut out = BldTargets::default();
@@ -2128,9 +2141,26 @@ pub fn bld_targets(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeM
                 });
             }
             ins.push(shapes.clone());
+            ins.push(get(&field::markdata_logical(*x, *y)).to_string());
             let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
             out.tiles.push((t, h(&refs)));
         }
+    }
+    let mut by_q: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
+    for (t, _) in &out.tiles {
+        if let Some(u) = Unit::parse(t) {
+            by_q.entry((u.x >> 3, u.y >> 3)).or_default().push(t.clone());
+        }
+    }
+    for ((qx, qy), ts) in by_q {
+        let mut ins = vec![format!("bldfield-lo {}", field::LO_V), format!("3/{qx}/{qy}")];
+        for y in qy * 8..qy * 8 + 8 {
+            for x in qx * 8..qx * 8 + 8 {
+                ins.push(get(&field::mid_logical(x, y)).to_string());
+            }
+        }
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        out.lo.push((format!("3/{qx}/{qy}"), h(&refs), ts));
     }
     out
 }
@@ -2185,14 +2215,17 @@ fn bld_around(x: u32, y: u32) -> Vec<(Option<u32>, Option<u32>)> {
 }
 
 /// The normalized files and tiles no target has any more (the coverage shrank): prune targets
-/// ("bldprep 6/x/y", "bldtiles 6/x/y"). The files only while the sources read (an index missing
-/// would make every tile seem to read nothing).
+/// ("bldprep 6/x/y", "bldtiles 6/x/y": its packs and the field's mid, "bldfield-lo 3/x/y"). The
+/// files only while the sources read (an index missing would make every tile seem to read nothing).
 fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Option<Work> {
     let prep: BTreeSet<String> = tt.prep.iter().map(|t| t.0.replace('/', "-")).collect();
     let tiles: BTreeSet<String> = tt.tiles.iter().map(|t| t.0.replace('/', "-")).collect();
+    let lo: BTreeSet<String> = tt.lo.iter().map(|t| t.0.replace('/', "-")).collect();
     let mut t: BTreeSet<String> = BTreeSet::new();
     let pack = format!("layers/{}/hi/", crate::bld::LAYER);
-    for (prefix, keep, kind) in [("work/bld/", &prep, "bldprep"), (pack.as_str(), &tiles, "bldtiles")] {
+    let fpack = format!("layers/{}/hi/", crate::bld::field::LAYER);
+    let flo = format!("layers/{}/lo/", crate::bld::field::LAYER);
+    for (prefix, keep, kind) in [("work/bld/", &prep, "bldprep"), (pack.as_str(), &tiles, "bldtiles"), (fpack.as_str(), &tiles, "bldtiles"), ("work/bldfield-mid/", &tiles, "bldtiles"), (flo.as_str(), &lo, "bldfield-lo")] {
         if kind == "bldprep" && !sources {
             continue;
         }
@@ -2233,7 +2266,10 @@ pub fn bld_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, input
     let mut tiles: Vec<(String, String)> = tt.tiles.iter().filter(|(t, k)| sources && done.bldtiles.get(t) != Some(k) && ready(t)).cloned().collect();
     prep.sort_by_cached_key(|t| rank(&t.0));
     tiles.sort_by_cached_key(|t| rank(&t.0));
-    for (step, targets) in [("bldprep", prep), ("bldtiles", tiles)] {
+    // The field's lo levels once every bldtiles target of their z3 tile is done as it will stay.
+    let tiles_stale: BTreeSet<&str> = tt.tiles.iter().filter(|(t, k)| done.bldtiles.get(t) != Some(k)).map(|t| t.0.as_str()).collect();
+    let lo: Vec<(String, String)> = tt.lo.iter().filter(|(q, k, ts)| sources && done.bldfield_lo.get(q) != Some(k) && ts.iter().all(|t| !tiles_stale.contains(t.as_str()))).map(|(q, k, _)| (q.clone(), k.clone())).collect();
+    for (step, targets) in [("bldprep", prep), ("bldtiles", tiles), ("bldfield-lo", lo)] {
         if !targets.is_empty() {
             out.push(Work { step: step.into(), targets });
         }
@@ -2255,7 +2291,11 @@ fn bld_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, inputs: &
         return Some(Work { step: "bldprep".into(), targets: prep });
     }
     let tiles: Vec<(String, String)> = tt.tiles.into_iter().filter(|(t, k)| done.bldtiles.get(t) != Some(k)).collect();
-    (!tiles.is_empty()).then(|| Work { step: "bldtiles".into(), targets: tiles })
+    if !tiles.is_empty() {
+        return Some(Work { step: "bldtiles".into(), targets: tiles });
+    }
+    let lo: Vec<(String, String)> = tt.lo.into_iter().filter(|(q, k, _)| done.bldfield_lo.get(q) != Some(k)).map(|(q, k, _)| (q, k)).collect();
+    (!lo.is_empty()).then(|| Work { step: "bldfield-lo".into(), targets: lo })
 }
 
 /// A z6 tile's place in the 3D buildings' order (`bld_rank`).
@@ -2336,6 +2376,7 @@ pub fn label(step: &str) -> &'static str {
         "bld-fetch" => "Fetching the 3D buildings' sources",
         "bldprep" => "Reading the regions' buildings",
         "bldtiles" => "Raising the 3D buildings",
+        "bldfield-lo" => "Assembling the zoomed-out buildings",
         "terrain-root" | "slope-root" => "Building the world-level terrain and slope",
         "prune" => "Removing what the regions no longer cover",
         "inputs" => "Checking the inputs dropped",
@@ -2367,7 +2408,7 @@ fn next_of(works: &[Work]) -> Vec<String> {
     }
     runs.into_iter()
         .map(|(s, n)| match s {
-            "pois" | "peaks" | "unit" | "pack" | "trees-lo" | "terrain-lo" | "slope-lo" if n > 1 => format!("{}: {n} areas", label(s)),
+            "pois" | "peaks" | "unit" | "pack" | "trees-lo" | "terrain-lo" | "slope-lo" | "bldfield-lo" if n > 1 => format!("{}: {n} areas", label(s)),
             "trees" | "terrain" | "slope" | "bldprep" | "bldtiles" if n > 1 => format!("{}: {n} tiles", label(s)),
             _ => label(s).to_string(),
         })
@@ -2422,7 +2463,7 @@ pub fn checklist_to_come() -> Vec<Step> {
         (ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
         (TRAINS, &["rail-feeds", "rail"]),
         (LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"]),
-        (BUILDINGS, &["bld-fetch", "bldprep", "bldtiles"]),
+        (BUILDINGS, &["bld-fetch", "bldprep", "bldtiles", "bldfield-lo"]),
         (PUBLISH, &["catalog", "catalog-held"]),
     ]
     .iter()
@@ -2536,9 +2577,11 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     out.push(marks);
     // (Its tiles' normalized files and tiles together; known once the sources' indexes read.)
     let bt = bld_targets(cov, m, inputs);
-    let mut bld = per(BUILDINGS, &["bld-fetch", "bldprep", "bldtiles"], &bt.prep, &done.bldprep, "tiles", bld_sources(inputs) == Some(true));
+    let mut bld = per(BUILDINGS, &["bld-fetch", "bldprep", "bldtiles", "bldfield-lo"], &bt.prep, &done.bldprep, "tiles", bld_sources(inputs) == Some(true));
     bld.done += count(&bt.tiles, &done.bldtiles);
-    bld.total = bld.total.map(|t| t + bt.tiles.len());
+    let lo: Vec<(String, String)> = bt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect();
+    bld.done += count(&lo, &done.bldfield_lo);
+    bld.total = bld.total.map(|t| t + bt.tiles.len() + lo.len());
     bld.next = next_of(&remaining(done, |d| bld_next(cov, m, d, inputs)));
     out.push(bld);
     let key = catalog_key(m, inputs, ready);
@@ -4299,7 +4342,22 @@ pub(crate) mod tests {
         done.record("bldtiles", &w[0].targets);
         for (t, k) in &w[0].targets {
             let u = Unit::parse(t).unwrap();
-            let l = crate::bld::pack_logical(u.x, u.y);
+            for l in [crate::bld::pack_logical(u.x, u.y), crate::bld::field::hi_logical(u.x, u.y), crate::bld::field::mid_logical(u.x, u.y)] {
+                m.insert(l.clone(), format!("{l}.{k}.pack"));
+            }
+        }
+        // Then the field's lo levels of their z3 tiles, keyed on their mids.
+        let tt = bld_targets(&c, &m, &inputs);
+        assert!(!tt.lo.is_empty() && tt.lo.iter().all(|(q, _, ts)| ts.iter().all(|t| Unit::parse(t).is_some_and(|u| format!("3/{}/{}", u.x >> 3, u.y >> 3) == *q))));
+        let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
+        assert_eq!(steps(&w), ["bldfield-lo"]);
+        let lo: Vec<(String, String)> = tt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect();
+        assert_eq!(w[0].targets, lo);
+        assert_eq!(remaining(&done, |d| bld_next(&c, &m, d, &inputs)).len(), 1);
+        done.record("bldfield-lo", &w[0].targets);
+        for (q, k) in &lo {
+            let u = Unit::parse(q).unwrap();
+            let l = crate::bld::field::lo_logical(u.x, u.y);
             m.insert(l.clone(), format!("{l}.{k}.pack"));
         }
         assert!(bld_work(&c, &m, &done, &inputs, &by_spatial).is_empty());
@@ -4341,7 +4399,7 @@ pub(crate) mod tests {
         let cl = checklist(&c, date, &m, &done, &inputs, false);
         let b = cl.iter().find(|x| x.what == BUILDINGS).unwrap();
         let tt = bld_targets(&c, &m, &inputs);
-        assert_eq!((b.done, b.total), (0, Some(tt.prep.len() + tt.tiles.len())));
+        assert_eq!((b.done, b.total), (0, Some(tt.prep.len() + tt.tiles.len() + tt.lo.len())));
         assert_eq!(b.next[0], label("bld-fetch"));
         assert!(b.next[1].starts_with(label("bldprep")));
         // Its steps' targets go by tile in the jobs' names.
@@ -4374,6 +4432,7 @@ pub(crate) mod tests {
         let tt = bld_targets(&c, &m, &inputs);
         done.record("bldprep", &tt.prep);
         done.record("bldtiles", &tt.tiles);
+        done.record("bldfield-lo", &tt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect::<Vec<_>>());
         let p = plan(&m, &done, &on(&["a", "b", "c"]), Some(600), None);
         assert!(p.work.iter().any(|w| w.step == "bld-fetch"), "{:?}", p.work);
         assert!(p.begins.is_some());

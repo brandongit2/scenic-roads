@@ -25,7 +25,7 @@ use super::{key_zxy, tile_box_deg, world7, EQ};
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
 use crate::out::Out;
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -462,6 +462,50 @@ pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
         }
     }
     Ok(files)
+}
+
+/// Runs `bldfield-lo Q` (a z3 tile): its field's levels 7–4 from its z6 tiles' mids
+/// (`field::lo`), as the lo pack `layers/buildings-field/lo/3-x-y`, or that dropped with no mid
+/// there. Its tiles.
+pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
+    ensure!(q.z == 3, "bldfield-lo takes z3 tiles ({} isn't one)", q.slash());
+    use crate::timings::{phase, Class};
+    let t0 = std::time::Instant::now();
+    let mut paths: BTreeMap<(u32, u32), std::path::PathBuf> = BTreeMap::new();
+    for y in q.y * 8..q.y * 8 + 8 {
+        for x in q.x * 8..q.x * 8 + 8 {
+            if let Some(c) = out.get(&field::mid_logical(x, y)) {
+                paths.insert((x, y), out.path(c));
+            }
+        }
+    }
+    let p = phase("the mids read, the levels made", Class::Compute);
+    let tiles = field::lo((q.x, q.y), &|x, y| paths.get(&(x, y)).map(|p| std::fs::read(p).with_context(|| format!("read {}", p.display()))).transpose())?;
+    drop(p);
+    let logical = field::lo_logical(q.x, q.y);
+    if tiles.is_empty() {
+        if out.get(&logical).is_some() {
+            out.remove(&logical);
+        }
+        out.save()?;
+        eprintln!("bldfield-lo {}: no mid; nothing made", q.slash());
+        return Ok(0);
+    }
+    let local = out.scratch_file(&format!("{logical}.pack"));
+    let meta = serde_json::json!({"layer": field::LAYER, "scope": "lo", "root": q.slash(), "encoding": field::ENCODING});
+    let mut w = store::pack::PackWriter::create(&local, meta, false)?;
+    let mut bytes = 0usize;
+    for (z, x, y, b) in &tiles {
+        w.add(*z, *x, *y, b, b.len() as u32)?;
+        bytes += b.len();
+    }
+    w.finish()?;
+    let p = phase("uploaded", Class::NasWrite);
+    out.put_file(&logical, "pack", &local)?;
+    drop(p);
+    out.save()?;
+    eprintln!("bldfield-lo {}: {} mids, {} tiles ({:.1} MB) ({:.0?})", q.slash(), paths.len(), tiles.len(), bytes as f64 / 1e6, t0.elapsed());
+    Ok(tiles.len())
 }
 
 /// T's heritage sites (its markdata's, `field::sites_of_markdata`), for the field's heritage lists;
