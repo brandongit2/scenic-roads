@@ -5,9 +5,11 @@
 //   f  roof coverage (the share of the texel under a footprint standing on the ground),
 //   w  wall area per ground area (Σ wall length × wall height ÷ texel area),
 //   v  Σ coverage × wall height (m): v ÷ f is the mean roof height.
-// Every level holds every building. Below map zoom 14 the field alone draws them, level ⌊zoom⌋ + 1
-// (a texel a device pixel at 2×; level 14 from zoom 13), split by distance as MapLibre's cover
-// splits; from zoom 14 the z14 meshes (buildings.ts) hold every building and the field isn't drawn.
+// Every level holds every building. Where MapLibre draws the z14 meshes (buildings.ts: from map zoom
+// 14, the tiles its cover takes at z14) they hold every building and the field draws nothing; else
+// the field draws them, level ⌊zoom⌋ + 1 (a texel a device pixel at 2×; level 14 from zoom 13),
+// split by distance as MapLibre's cover splits: below zoom 14 everywhere, above it beyond the
+// meshes in a tilted view.
 //
 // Drawn as a layer of buildings standing on the terrain, seen through: each tile as a hull of
 // columns, one a block of 8 × 8 of its 1/32 cells holding buildings (from their lowest ground to
@@ -538,9 +540,9 @@ export class FieldLayer implements CustomLayerInterface {
   linear = true;
   /** Only the buildings in this box (west, south, east, north; the comparison's), or all. */
   box: [number, number, number, number] | null = null;
-  /** Drawn below this map zoom only (14: the z14 meshes hold every building). */
+  /** The meshes' zoom (MapLibre's z14 tiles hold every building: the field isn't drawn under them). */
   maxZoom = 14;
-  /** The meshes drawn (off, the comparison's field alone: drawn at every zoom). */
+  /** The meshes drawn (off, the comparison's field alone: drawn everywhere). */
   meshOn = true;
   /** The frame's depth read (the fork's sceneDepth). */
   readsSceneDepth = true;
@@ -707,13 +709,32 @@ export class FieldLayer implements CustomLayerInterface {
     return pr;
   }
 
+  /** The meshes' tiles MapLibre has loaded in view (the buildings' source `bld`, z14), while its
+   * extruded layer shows. */
+  private meshTiles(): Set<string> {
+    const out = new Set<string>();
+    if (!this.meshOn || this.map.getLayoutProperty('buildings', 'visibility') === 'none' || !this.map.getLayer('buildings')) return out;
+    const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { state: string; tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
+    for (const t of tm?._inViewTiles?.getAllTiles?.() ?? []) {
+      const c = t.tileID.canonical;
+      if (c.z === this.maxZoom && (t.state === 'loaded' || t.state === 'reloading')) out.add(`${c.z}/${c.x}/${c.y}`);
+    }
+    return out;
+  }
+
   /** The tiles the view wants: a quadtree from level 4, split where a tile is nearer the camera than
-   * its level's distance (as MapLibre's cover splits), down to level ⌊zoom⌋ + 1 at most (14). No
-   * tile under one the server doesn't have. */
+   * its level's distance (as MapLibre's cover splits), down to level ⌊zoom⌋ + 1 at most (14); none
+   * where MapLibre draws a z14 mesh tile (a tile holding one split down to them). No tile under one
+   * the server doesn't have. */
   private cover(): FTile[] {
     const map = this.map;
     const zoom = map.getZoom();
-    if (this.meshOn && zoom >= this.maxZoom) return [];
+    const meshes = this.meshTiles();
+    const holds = new Set<string>();
+    for (const k of meshes) {
+      const [mz, mx, my] = k.split('/').map(Number);
+      for (let z = mz - 1; z >= LEVEL_MIN; z--) holds.add(`${z}/${mx >> (mz - z)}/${my >> (mz - z)}`);
+    }
     const tr = trOf(map);
     const cam = MercatorCoordinate.fromLngLat(tr.getCameraLngLat(), tr.getCameraAltitude());
     const ctr = MercatorCoordinate.fromLngLat(map.getCenter(), 0);
@@ -739,14 +760,16 @@ export class FieldLayer implements CustomLayerInterface {
       const n = 2 ** z;
       const tx0 = x / n, tx1 = (x + 1) / n, ty0 = y / n, ty1 = (y + 1) / n;
       if (ty1 < y0 || ty0 > y1 || !xs.some(([x0, x1]) => tx1 >= x0 && tx0 <= x1)) return;
-      const known = this.tiles.get(`${z}/${x}/${y}`);
+      const key = `${z}/${x}/${y}`;
+      if (meshes.has(key)) return;
+      const known = this.tiles.get(key);
       if (known?.state === 'empty') return;
       // By its distance from the camera, the ground at the view's centre's height (the map's zoom is
       // measured from a sea-level pivot: over high ground the view is closer than it says).
       const dx = Math.max(tx0 - cam.x, 0, cam.x - tx1), dy = Math.max(ty0 - cam.y, 0, cam.y - ty1);
       const d = Math.hypot(dx, dy, Math.max(cam.z - groundM, 1e-12));
       const want = Math.min(most, Math.floor(zoom + this.levelBias + Math.log2(centreDist / d)) + 1);
-      if (z < want) {
+      if (z < want || holds.has(key)) {
         for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(z + 1, x * 2 + i, y * 2 + j);
       } else out.push(this.tile(z, x, y));
     };

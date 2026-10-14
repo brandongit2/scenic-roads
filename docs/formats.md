@@ -293,20 +293,19 @@ row group's buildings (1) and parts (2), the end (9). dem/bldprep.py's docstring
 it checks their names and types against what it reads.
 
 **Tiles** `layers/buildings/hi/6-<x>-<y>` (RDPACK v1, encoding `mvt`, blobs gzip'd at level 6,
-z12–14; no lo or root packs), made by `bldtiles` from the tile's and its 8 neighbours' normalized
+z14 alone; no lo or root packs), made by `bldtiles` from the tile's and its 8 neighbours' normalized
 files and the coverage: MVT 2.1, extent 4096, one layer `b`, a feature per building or part that
 touches the coverage (its centroid or a vertex in it, with the 1 km buffer), whole in the tile of
 its centroid (not clipped); a building or outline (not a part: parts aren't drawn flat) also
-copied whole into each other tile at that zoom its exteriors reach (`o` 1: for the flat
+copied whole into each other tile its exteriors reach (`o` 1: for the flat
 footprints, which a fill cuts at its tile's edge; from up to 310 m beyond a z8 area's edge);
-quantized to the tile's grid, at z12–13 simplified to one unit first; repeated points dropped,
+quantized to the tile's grid; repeated points dropped,
 rings of fewer than 3 points or no area dropped (an exterior with its holes); exteriors positive,
 holes negative; no edge parallel to an axis beyond the extent (MapLibre takes one for a clip line
 and draws no wall on it: such an edge gets points between its ends a unit off it, outside the
 ring, at MapLibre's subdivision lines every 2,048 units and midway, and a slanted edge out there a
 point at each such line; inside the ring where outside would cross the ring or its polygon's
-others, else none). z14 every building and part, z13 those 20 m or more or
-of 2,000 m² or more, z12 those 40 m or more. Properties (uint): `h` the top (dm), `m` the base (dm;
+others, else none). Every building and part. Properties (uint): `h` the top (dm), `m` the base (dm;
 parts; left out when 0), `s` where the height comes from (0 measured, 1 floors, 2 Microsoft's
 estimate, 3 neighbours, 4 GHSL, 5 size and kind), `f` floors (when `s` is 1), `c` the kind (0
 unknown, 1 residential, 2 outbuilding, 3 commercial, 4 industrial, 5 religious, 6 civic, education
@@ -314,6 +313,35 @@ or medical, 7 agricultural, 8 transportation, 9 other), `k` (1 a part, 2 a build
 parts: the flat layer's only; left out when 0), `o` (1 a copy; left out otherwise); keys in that
 order in every tile, values in order of first use. No feature ids, no names. Features sorted by their centroid's Morton code in the
 tile (12 bits an axis), then id.
+
+**The field** (`pipeline::bld::field`, docs/buildings3d.md §4.8): every building and part extruded
+(not an outline with parts, not a copy) as densities on 512 × 512 texels a tile, levels 4–14 (a
+level's tiles are that zoom's), for five classes by a building's or part's top (under 8 m, 8–20,
+20–40, 40–100, 100 m and up): `f` the share of the texel under the class's roofs (exact areas;
+overlapping footprints summed, clamped to 1), `w` Σ wall length × (top − base) ÷ the texel's area
+(m² a m²), `v` Σ roof share × top (m; scaled with `f`'s clamp). Each level the mean of the four
+under it.
+- **Hi packs** `layers/buildings-field/hi/6-<x>-<y>` (RDPACK v1, encoding `field3-webp`, blobs as
+  they are: not gzip'd), levels 9–14 of the z6 tile, made by `bldtiles` with the meshes.
+- **Lo packs** `layers/buildings-field/lo/3-<x>-<y>`, levels 4–8 of the z3 tile, made by
+  `bldfield-lo` from its z6 tiles' mids. (The server takes zooms 3–8 from lo packs.)
+- **`field3-webp`**, a tile: a byte, the classes it holds (bit k class k), then a lossless WebP
+  (RIFF, its size in its header), 512 wide and 512 × (the classes held) tall, a class's rows after
+  the one before, opaque RGB: R `round(√f × 255)`, G `round(log2(1 + w) ÷ log2(4097) × 255)` (at
+  most 255), B the class's mean top `v ÷ f` as `round((H − lo) ÷ (hi − lo) × 255)` clamped, its
+  class's range lo–hi 0–8, 8–20, 20–40, 40–100, 100–1000 m (0 where R and G are). A class whose R
+  and G are 0 everywhere is left out; a tile with none isn't stored. A level-8 tile (a z8 area's)
+  may have after the WebP its heritage list: u32 n, then n buildings or parts holding a heritage
+  site's point (T's markdata's heritage kind, a World Heritage Site's components left out), each
+  u16 top (dm), u16 base (dm), u8 m, m points (u16 x, u16 y: the z8 tile's 65,536 a side) of its
+  first polygon's exterior, simplified (Douglas–Peucker, the tolerance doubled from half a unit)
+  to 16 at most. The served `/tiles/buildings-field/{z}/{x}/{y}` answers a tile as stored, 204 for
+  none.
+- **Mids** `work/bldfield-mid/6-<x>-<y>.<h>.zst` (content-named), a z6 tile's: zstd (level 3) of
+  `BFMID02\0`, then each of its z8 areas with a building, by x then y: u32 x, u32 y, u32 the
+  heritage list's bytes and that list (as a level-8 tile carries it), u8 the class mask, each class
+  held's `f`, `w`, `v` planes as 512 × 512 f32 LE (the level-8 values exactly, so the lo levels
+  are the same whatever made them).
 
 **A z8 area's task** (`pipeline::bld::task`, docs/buildings3d.md §3.6; a folder on the build Mac,
 its files sent to the worker as `u/…`, not in the manifest): `6-<x>-<y>.sect`, of T's and its 8
@@ -323,9 +351,12 @@ as stored; `coverage.sect` (RDSECT v1), meta `{"fmt": 1, "shapes": [{"source", "
 "buffer_m", "rings": [vertices a ring, …]}, …]}` and section `verts` (`[i32; 2]` E7 a vertex, the
 rings' in order): the coverage's shapes whose buffered box meets the box of every point the area
 asks about (its blocks' boxes, their records' centroids and vertices), whole, in the recipes'
-order. The program `bldtile` writes there `area.tiles` (RDTILES, meta `{"layer": "buildings",
-"area": "8/x/y", "encoding": "mvt"}`: the area's z12–14 tiles as the pack holds them, gzip'd) and
-`area.json` (what it made: `bld::job::Summary`, as `bldtiles` logs a tile's).
+order; `heritage.bin`, T's heritage sites' points (`[i32; 2]` E7 pairs, LE, sorted). The program
+`bldtile` writes there `area.tiles` (RDTILES, meta `{"layer": "buildings", "area": "8/x/y",
+"encoding": "mvt"}`: the area's z14 tiles as the pack holds them, gzip'd), `area.field` (RDTILES,
+meta `{"layer": "buildings-field", "area": "8/x/y", "encoding": "field3-webp"}`: its field's levels
+9–14), `area.mid` (with a building: a mid as above holding the area alone) and `area.json` (what
+it made: `bld::job::Summary`, as `bldtiles` logs a tile's).
 
 **A row of tree cover blocks' task** (`pipeline::trees::task`, docs/plan.md §6 Trees; a folder on
 the build Mac, its file sent to the worker as `u/…`, not in the manifest): `coverage.json`, the
@@ -596,8 +627,9 @@ Where they're kept:
 
 ## Server API (changes)
 
-- Tiles: `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`
-  (`buildings`: the 3D buildings' MVT as stored, versioned `buildings.tiles` in `/api/meta`).
+- Tiles: `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`
+  (`buildings`: the 3D buildings' MVT as stored, versioned `buildings.tiles` in `/api/meta`;
+  `buildings-field`: their field's `field3-webp` tiles as stored).
   `/api/meta` says `water` when the catalog has the water layer (`versions.water`: the drawing's version,
   its packs' and the basemap's, as deeper tiles are drawn from the basemap).
   Strong `ETag`: the stored blob's hash, plus for named tiles the versions of the languages spoken

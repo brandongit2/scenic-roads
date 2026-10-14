@@ -7,7 +7,10 @@ part of the build (§3.2–3.6), the mirror, the iPad's service worker and the c
 layer; the tiles building since. **B3 built** (2026-10-08, not yet published): a tile's z8 areas as
 tasks for pages and helper Macs (§3.6), and on the map the walls on the terrain under each corner,
 the globe's feet without their saw (task #115), fog, bridges after the buildings, the camera above
-roofs, colour by height on the shared scale, the heritage tint (§4). Nothing of B4 built; B5, the far buildings (§4.8), designed and prototyped (2026-10-10), not built. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
+roofs, colour by height on the shared scale, the heritage tint (§4). Nothing of B4 built. B5, the far buildings (§4.8): the field's builder and the renderer's work
+built and piloted by hand (2026-10-14, §5.1), behind `?bldfield` and not yet in the build's
+published catalog; the meshes are z14's alone since (the z12 and z13 tiles of tall and large
+buildings gone). The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order),
 `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
 on the NAS (§2.6); `dem/bldmeasure.py` measured them (§2.2–2.5); `dem/bldprep.py` and
@@ -35,21 +38,14 @@ it, with its 1 km buffer), whether or not a road is near; not the world. 339 mil
 and 2.8 million building parts in today's 88 regions (§2.5). Where the coverage ends, buildings end,
 as roads do.
 
-**At which zooms.** Tiles at z12, z13 and z14; above z14 the map draws the z14 tiles, whole, up to
-its 19.5 (§4.1).
-- z14: every building.
-- z13: buildings 20 m tall or more, or with a footprint of 2,000 m² or more.
-- z12: buildings 40 m tall or more: the skyline.
-- So the layer shows the towers from zoom 12, the large buildings from 13 and every building from 14.
-  Planned (§4.8): every building at every zoom, the ones under a pixel as a field of their summed
-  roofs and walls, and every building as a mesh from zoom 14 (the meshes' tiles as today).
-  A tilted view takes coarser tiles toward the horizon (MapLibre's cover), so every building near the
-  camera, only the tall ones farther out, and none beyond the z12 tiles.
-- The tiles' sizes (B0, §2.5), against ~300 KB a tile: the thresholds keep z12 and z13 under it (the
-  fullest z12 tile 10,339 buildings, 176 KB at most; z13 17,842, 284 KB at most). z14 holds every
-  building, and about 15 of its 2.2 million tiles are over 300 KB, at most 490 KB: old towns drawn on
-  Spain's cadastral parcels and three of Tokyo's wards. They stay as they are until the iPad is
-  measured (§4.6): simplified to a grid unit, they would lose ~18 %. B1's pilot built them: Barcelona's
+**At which zooms.** Meshes from z14 tiles alone, every building, drawn from map zoom 14; above z14
+the map draws the z14 tiles, whole, up to its 19.5 (§4.1). Below zoom 14 the buildings are the
+field's (§4.8, behind `?bldfield` until it's on by default): every building at every zoom, the
+ones under a pixel as their summed roofs and walls; without it, none below zoom 14.
+- The tiles' sizes (B0, §2.5), against ~300 KB a tile: z14 holds every building, and about 15 of
+  its 2.2 million tiles are over 300 KB, at most 490 KB: old towns drawn on Spain's cadastral
+  parcels and three of Tokyo's wards. They stay as they are until the iPad is measured (§4.6):
+  simplified to a grid unit, they would lose ~18 %. B1's pilot built them: Barcelona's
   14/8292/6115 is 484 KB (25,483 buildings), the heaviest of Tokyo's 313 KB.
 
 **Beside the terrain.**
@@ -59,7 +55,7 @@ its 19.5 (§4.1).
   as in Google Earth. A setting scales them (1–3×) or makes them follow the terrain's exaggeration.
 - The hill-shading, slope tint, tree cover and contours lie on the ground under the buildings.
 - Fog: the extrusions take the terrain's fog (B3: our MapLibre's fill-extrusion shaders, `web/maplibre/`;
-  upstream's drew the colour alone), so the far skyline fades with the ground behind it. MapLibre
+  upstream's drew the colour alone), so far buildings fade with the ground behind them. MapLibre
   fogs only the flat map (from zoom 16.5 here) from 60° of pitch: on the globe neither is fogged.
 
 **Beside the roads and rail.** Buildings are drawn after the road and rail layers (§4.2):
@@ -256,8 +252,8 @@ estimates too: `dem/bldmeasure.py`'s report phase. What set the rules:
   2.7 m, the 300 m fallback 7 % at 1.6 / 5.7 m (GHSL, scaled per country, on the same buildings:
   2.4 m); without the footprints' condition the 150 m stage is 0.9 / 3.5 m.
 - **Tall buildings come out low**, whatever the rule: the held-out buildings 20–40 m tall by 12 m in
-  the median, those of 40 m or more by 22 m (by 35 m where floors aren't known). The z12–13 skyline
-  is the measured and the floors-known towers, and GHSL's high-rise cores (§2.5).
+  the median, those of 40 m or more by 22 m (by 35 m where floors aren't known). A far view's tall
+  buildings are the measured and the floors-known towers, and GHSL's high-rise cores (§2.5).
 - **The hold-out flatters the neighbours:** a measured building's neighbours are measured more often
   than an unmeasured one's. Rule 3 answers 99 % of the held-out buildings but 52 % of the buildings
   with no height or floors; the size rule fills a quarter of the coverage.
@@ -404,7 +400,8 @@ three (§3.2–3.3).
   (`pipeline::bld::job`):
   the buildings of T that touch the coverage, heights filled (§2.3, `pipeline::bld::fill`; it reads
   the buildings within 620 m beyond the area, T's or its neighbours', by their z14 blocks), the
-  z12–14 tiles encoded (§3.4, `pipeline::bld::tiles`), the hi pack written. A building within 310 m
+  z14 tiles encoded (§3.4, `pipeline::bld::tiles`), the hi pack written; with them the field's levels
+  14–9 and each area's level-8 planes (§4.8, `pipeline::bld::field`): the field's hi pack and T's mid. A building within 310 m
   beyond the area that reaches into its tiles is filled there too, the same as its own area fills
   it (every building within 300 m of it read), for its copies (§3.4).
   Pure: its output is a function of its inputs' bytes. A z6 tile with no building in the coverage
@@ -544,7 +541,7 @@ manifest; a work file, not served; docs/formats.md has the bytes). Meta `{"fmt":
   five holes of no area in Vermont's z14, a unit across, made by the first rule (a unit away from
   the tile), which the rule outside the ring can't make (packs not rebuilt since).
 - Quantized to the tile's grid (z14: 0.6 m at the equator); repeated points dropped, rings that
-  collapse dropped; at z12–13, simplified to one grid unit. Known: from zoom 18 the grid shows, a
+  collapse dropped. Known: from zoom 18 the grid shows, a
   unit a few pixels: curved and slanted walls in small sawtooth facets, and a wall past its tile's
   edge with the points above a unit off its line.
 - Properties: `h` the top (dm), `m` the base (dm; parts; left out when 0), `s` the height's source
@@ -556,16 +553,16 @@ manifest; a work file, not served; docs/formats.md has the bytes). Meta `{"fmt":
 - Encoded by `pipeline::bld` over `names::mvt`, not `vtgen`, which clips features at the tile's
   edges and simplifies at 3 units (1.8 m at z14: a house's corners). gzip level 6 (flate2).
 
-**Packs:** `layers/buildings/hi/6-x-y` (RDPACK v1, encoding `mvt`, blobs gzip'd): z12–14 of the z6
-tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mvt`, zooms 12–14
+**Packs:** `layers/buildings/hi/6-x-y` (RDPACK v1, encoding `mvt`, blobs gzip'd): z14 of the z6
+tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mvt`, zoom 14
 (`layer_zooms` and the encoding match in `scenic-build`'s catalog).
 
 ### 3.5 Served
 
 - `/tiles/buildings/{z}/{x}/{y}`: the pack's tile as stored (`tiles::plain`, gzip, ETag the blob's
   hash, `?v=` the layer's version: `buildings.tiles` in `/api/meta`'s versions), 204 where there's
-  none. No names attached. Built in B1, with the catalog's layer `buildings` (encoding `mvt`, zooms
-  12–14); the app reads the tiles from a host of their own (`buildings.localhost` on this Mac).
+  none. No names attached. Built in B1, with the catalog's layer `buildings` (encoding `mvt`, zoom
+  14); the app reads the tiles from a host of their own (`buildings.localhost` on this Mac).
 - **Mirror** (B2): a copy group of its own after the other hi packs (`store::mirror::groups`,
   group 5), so a downloaded area's roads and terrain come first. They're never in the World
   download (no root or lo packs); a downloaded area has them as every layer's hi packs (plan.md
@@ -613,7 +610,8 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   own and those within 620 m around it), their bytes as stored, and the coverage's shapes that can
   answer for its points, whole, in the recipes' order (France's outline: 0.6 MB). The program
   `bldtile` (`/work/prog/bldtile.wasm` in a page, the app's `bldtile` on a helper Mac:
-  `scenic run-task`) writes the area's z12–14 tiles (an RDTILES archive) and its summary; the job
+  `scenic run-task`) writes the area's z14 tiles and its field's levels 14–9 (RDTILES archives),
+  its level-8 planes and its summary; the job
   puts them into the pack in the area's turn. Nothing waits on a worker slower than the job
   (docs/workers.md §3): in its turn an area no one took gets 30 s while a worker that could take it
   asks for work, measured faster than the job at `bldtile` (or not yet measured, once an hour),
@@ -684,7 +682,7 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   1.43 M vertices took 42 MB (§4.6);
 - an opacity under 1 draws twice (depth, then colour), so roads behind show faintly; at 1, once.
 
-**A source and four layers** (`web/src/buildings.ts`): the vector source `bld` (z12–14,
+**A source and four layers** (`web/src/buildings.ts`): the vector source `bld` (z14 alone, from map zoom 14,
 `/tiles/buildings/…?v=`), the layer `buildings` (fill-extrusion: height `h / 10` × the scale, base
 `m / 10`, colour by the mode, vertical gradient on; parts and buildings without parts, not the
 copies), `buildings-flat` (fill: buildings and outlines, not parts; the copies too, so a footprint
@@ -837,8 +835,8 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
 
 ### 4.6 Levels of detail and the iPad
 
-- Detail comes from the tiles (§1): z12 and z13 tiles hold only the tall and large buildings, and a
-  tilted view takes them toward the horizon.
+- Detail comes from the tiles (§1): the meshes are z14's, from map zoom 14; farther out, and below
+  zoom 14, the field (§4.8).
 - **The iPad's budget** (8 GB iPad Pro; Safari gives a tab ~4 GB, the map's roads, terrain and
   basemap take a share): buildings ≤ 300 MB in the densest view, ≤ 8 ms of GPU a frame. What counts
   is everything the source holds, for the tiles in view **and in its cache**: its buffers
@@ -990,15 +988,16 @@ artefacts call for it (B4):
   (four corners, a ridge along the long side), which villages would show;
 - distance-based detail like the roads' (perspective), and the iPad's memory under our control.
 
-### 4.8 Planned: far away, the field (task #102)
+### 4.8 Far away, the field (task #102)
 
-**Planned, prototyped (2026-10-10), not built.** The owner's aim: buildings at every zoom, each zoom
-looking practically as the closer ones do, "as though the map were rendered at extremely high
-resolution at full detail and then downsampled to the screen". Today they vanish below zoom 12, and
-between 12 and 14 only the tall and large ones show (§1), where full detail would show a city's grey
-grain of houses. The prototype is `web/src/bldfield.ts` and `web/src/bldcmp.ts` (both behind link
-options, `?bldfield=` and `?bldcmp`), `tools/bldfield/` (the field's builder) and `tools/bldcheck/`
-(the comparison); its numbers are below.
+**Built and piloted (B5, 2026-10-14), not yet on by default nor in the build's catalog.** The
+owner's aim: buildings at every zoom, each zoom looking practically as the closer ones do, "as
+though the map were rendered at extremely high resolution at full detail and then downsampled to
+the screen". Without the field the buildings vanish below zoom 14 (§1). The builder is
+`pipeline::bld::field` (in `bldtiles` and the `bldfield-lo` step), the renderer
+`web/src/bldfield.ts` with its worker (behind `?bldfield`), the comparison `web/src/bldcmp.ts`
+(`?bldcmp`) and `tools/bldcheck/`. `tools/bldfield/` is the prototype's builder (16-bit planes from a
+pack's z14 tiles), kept for the prototype's numbers below.
 
 **What full detail shrinks to.** Once a building is under a pixel, what a pixel of the shrunk image
 holds is the share of it under roofs (each lit as a flat roof is), the share of walls the camera sees
@@ -1019,26 +1018,21 @@ is as bright at every level of detail. The water does the same with coverage til
 `tools/coastcheck`). The field is the buildings' version: their area (and their walls' area) summed
 per texel, every building at every level.
 
-**The bands** (as decided, 10 Oct: the meshes' tiles as today):
+**The bands** (the owner's decisions, 10 and 14 Oct):
 
 | Map zoom | Meshes (fill-extrusion) | Field |
 |---|---|---|
 | 14 and up | z14 tiles: every building | none |
-| 13–14 | z13 tiles: 20 m or more, or 2,000 m² or more | level 14: every other building (not built for now: §4.8.1, storage) |
-| 12–13 | z12 tiles: 40 m or more | level 13: every other building |
-| under 12 | none | level ⌊zoom⌋ + 1 (down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
+| under 14 | none | level ⌊zoom⌋ + 1 (14 at zoom 13–14, down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
 
 - A field level's texel is half a CSS pixel where it's first drawn (one device pixel on a 2× screen,
-  as the roads' finest cells: `LOD_CELL_PX`), a full one where it hands over to the next.
-- The field of a level holds the buildings that level's meshes leave out, so no building is drawn
-  twice nor missed: over each mesh tile MapLibre draws, the field level of that tile's zoom (the
-  layer reads the meshes' source's tiles: matched in a tilted view too, as the second prototype
-  does), and past the meshes' least zoom the field alone, split by distance as MapLibre's cover is.
-- (The first prototype drew every building from zoom 13 with the meshes' tiles a zoom earlier; the
-  owner chose 14, which with one-device-pixel texels needs a level 14: §4.8.1, storage.)
-- No pop at the hand-overs: two levels' aggregates are equal by construction (only the texels'
-  sharpness changes), and a building passing from the field to a mesh does so where it is one or two
-  device pixels, its texel's light becoming its pixel's.
+  as the roads' finest cells: `LOD_CELL_PX`), a full one where it hands over to the next. In a
+  tilted view the levels go by each tile's distance from the camera, as MapLibre's cover splits.
+- Every level holds every building, so nothing is drawn twice nor missed: one hand-over, at zoom
+  14, from the field to the z14 meshes.
+- No pop at the field's own hand-overs: two levels' aggregates are equal by construction (only the
+  texels' sharpness changes); a building passing from the field to a mesh at zoom 14 does so where
+  it is a few device pixels, its texels' light becoming its pixels'.
 
 **The look** (the first prototype's; the second ray-marches the field instead: §4.8.1). Drawn as fill-extrusion draws a building, so field and meshes are one material:
 - each pixel: the roofs cover `f`; the walls facing the camera add `w × g`, where `g` is the
@@ -1060,25 +1054,29 @@ per texel, every building at every level.
   from 60°), the source colouring (a fourth channel, or plain far away: the owner's choice). No hover
   on the field.
 
-**The field's tiles.** 512 × 512 texels, levels 4–13 (level 13's texel is 2.4 m at the equator):
-- built in `bldtiles T`, per z8 area, from the buildings as filled (§2.3), with the meshes: each
-  building rasterized into the area's level-13 grid a z10 block at a time (three sets: what z13's
-  meshes leave out, what z12's leave out, the rest; prefix sums of exact signed areas, walls
-  deposited along each edge texel by texel), levels 13–8 by means of four. A pure function of the
-  same inputs, so the same key (`BUILDINGS_V` raised), the same task for pages (`bldtile`), the same
-  bytes in WebAssembly; accumulated in fixed point (the prototype's f32 sums are deterministic only
-  in a fixed order).
-- a z6 tile's level-8 sums kept exactly (`work/bldfield-mid/6-x-y`, as terrain's and the trees'
-  mids), and a new step `bldfield-lo` per z3 tile assembles levels 7–4 from its z6 tiles' mids (as
-  `terrain-lo` and `trees-lo`; seconds), its key the mids' content names.
-- served as `layers/buildings-field/hi/6-x-y` (levels 8–13) and `lo/3-x-y` (4–7), encoding
-  `field3-webp`: three 8-bit channels, `f` linear, `w` as √(w ÷ 16), the mean roof height as
-  √(h ÷ 400 m), lossless WebP; decoded to linear values in a worker before the GPU's mipmaps (the
-  square roots would bias them). The lo packs (a few MB for the coverage) can go in the World
-  download, so the far buildings show offline.
-- the prototype's builder (`tools/bldfield`, Rust, from a pack's z14 tiles rather than the work
-  files) made Kantō's 6/56/25 (30.3 M buildings) in 22 s on the build Mac's 14 threads (13 GB at
-  most; ~0.6 GB a z10 block in flight), Annecy's 6/33/22 (4.5 M) in 9–21 s.
+**The field's tiles** (B5; docs/formats.md, The field). 512 × 512 texels, levels 4–14 (level 14's
+texel is 1.2 m at the equator), five height classes a texel (§4.8.1):
+- built in `bldtiles T`, per z8 area, from the buildings as filled (§2.3), with the meshes: every
+  building and part extruded that meets the area (its own and those filled around it, for their
+  parts inside it), rasterized into the z13 cells of the area at level 14, each cell's accumulators
+  of exact signed areas (coverage, coverage × top) and walls deposited texel by texel along each
+  edge, in i64 fixed point, so the sums don't depend on their order (the same bytes on any number
+  of threads, tested); then level 13 from 14 and levels 12–9 by means of four in a fixed order. The
+  same task for pages and helper Macs (`bldtile`); the key `BUILDINGS_V` (3) and, for the heritage
+  list, T's markdata's content name.
+- each z8 area's level-8 planes kept exactly, with its heritage list, in T's mid
+  (`work/bldfield-mid/6-x-y`), and a step `bldfield-lo` per z3 tile makes levels 8–4 from its z6
+  tiles' mids (as `terrain-lo` and `trees-lo`), its key the mids' content names; it runs once
+  every `bldtiles` target of its z3 tile is done.
+- served as `layers/buildings-field/hi/6-x-y` (levels 9–14) and `lo/3-x-y` (4–8: the server takes
+  zooms 3–8 from lo packs), encoding `field3-webp` (§4.8.1's 8-bit coding, lossless WebP, a class
+  a block of rows); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
+  before the GPU's mipmaps (the coding's square root and log would bias them).
+- a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
+  point (T's markdata), its height, base and footprint (16 points at most). Built; not drawn yet.
+- Not done: the catalog's layer is listed by `scenic-build catalog` (encoding `field3-webp`, zooms
+  4–14) but the field isn't in the mirror's groups nor the World download, and the agent's forecast
+  has no measured cost for `bldfield-lo` yet.
 
 **Sizes, measured on the first prototype's fields** (one class, levels 4–13; the second's: §4.8.1) (every tile encoded as above):
 
