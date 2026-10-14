@@ -170,7 +170,7 @@
   .filt { display: none; }
 
   /* Panes. */
-  .panes { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .panes { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(320px, 380px); }
   .pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); }
   .pane-h { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); min-width: 0; }
   .pane-h h2 { margin: 0; font: 600 11px/1 var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
@@ -302,18 +302,16 @@
   body.drag-live, body.drag-live * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 
   /* The details of the selected item: docked on wide screens, a drawer otherwise. */
-  .editor { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: min(420px, 100%); min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--panel); padding-bottom: env(safe-area-inset-bottom, 0px); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); transform: translateX(104%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s; }
-  .app.sheet .editor { transform: none; visibility: visible; transition: transform 0.18s ease; }
-  /* The backdrop behind the open details: dims the page, blocks it, a click on it closes them. */
-  .scrim { position: fixed; inset: 0; z-index: 19; background: var(--scrim); opacity: 0; visibility: hidden; transition: opacity 0.18s ease, visibility 0s linear 0.18s; }
-  .app.sheet ~ .scrim { opacity: 1; visibility: visible; transition: opacity 0.18s ease; }
+  .editor { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--panel); }
+  /* The backdrop behind the open drawer (narrow only): dims the page, blocks it, a click closes the details. */
+  .scrim { display: none; }
   .ed-sticky { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin: 0 -16px; padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
   /* (One column that never grows past the panel: a long folder path in the crumbs is cut with an
      ellipsis instead of widening the column.) */
   .ed { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 16px 48px; }
   .ed-top { display: flex; align-items: center; gap: 4px; min-height: 26px; }
   .ed-crumbs { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-  .ed-empty { display: none; }
+  .ed-close { display: none; }
   .ed-title { display: block; width: calc(100% + 12px); margin: -4px -6px; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); font: 600 15px/1.35 var(--sans); resize: none; overflow: hidden; }
   .ed-title:hover { border-color: var(--line); }
   .ed-title:focus { border-color: var(--accent); background: var(--bg); outline: none; }
@@ -406,6 +404,12 @@
   @media (max-width: 1199px) {
     .panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .pane:last-of-type { border-right: 0; }
+    .editor { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: min(420px, 100%); padding-bottom: env(safe-area-inset-bottom, 0px); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); transform: translateX(104%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s; }
+    .app.sheet .editor { transform: none; visibility: visible; transition: transform 0.18s ease; }
+    .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: var(--scrim); opacity: 0; visibility: hidden; transition: opacity 0.18s ease, visibility 0s linear 0.18s; }
+    .app.sheet ~ .scrim { opacity: 1; visibility: visible; transition: opacity 0.18s ease; }
+    .ed-close { display: grid; }
+    .ed-empty { display: none; }
   }
   /* Narrow: one pane at a time, as tabs. */
   @media (max-width: 899px) {
@@ -2614,7 +2618,7 @@
       if (a && $("editor").contains(a)) {
         e.preventDefault();
         a.blur();
-        S.sheet = false; render();
+        if (matchMedia("(max-width: 1199px)").matches) { S.sheet = false; render(); }
         const pane = narrow.matches ? S.tab : "tree";
         (rowEl(pane, S.sel) || rowEl("prio", S.sel))?.focus({ preventScroll: true });
         return;
