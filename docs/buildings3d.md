@@ -1245,19 +1245,23 @@ The nine cases:
    Aleutians' few buildings show on either side. The fields are per z6 tile, so nothing crosses it.
 9. **Steep terrain:** as B.
 
-**Storage: the choice made (10 Oct, the PM for the owner):** **no level 14 for now.** Five classes
-at levels 4–13, each class's mean top kept at every level. For the coverage, after the meshes'
-4.6–6.9 GB: ~6–11 GB more (Annecy's 6/33/22 ~130 MB against its meshes' 79 MB; the first design's one
-class 110 MB). The cost, as the renderer stands: over a z13 mesh tile it draws the level-14 tiles
-under it, so with no level 14 nothing is drawn there, and at zoom 13–14 the buildings z13's meshes
-leave out (under 20 m and under 2,000 m²) are missing. Level 13 can't simply stand in, magnified: it
-holds every building under 40 m, so the 20–40 m ones z13's meshes draw would be drawn twice. B5
-decides (§5.1): level 14, or a level-13 set of what z13's meshes leave out.
-**Later, an option:** level 14 (~+7–14 GB for the coverage; Annecy's ~160 MB) gives one-device-pixel
-texels there; the format doesn't change (a level more in the hi packs), so it can be added alone.
-Not taken either, for now: each class's mean top left out at the finest levels (its class's middle
-instead: −15–30 %). Why: the build Mac has ~53 GB free and mirrors the catalog, and the buildings'
-meshes are 5.6 GB today.
+**Storage: level 14 built (the owner's choice, 14 Oct).** Every building at every level 4–14, five
+classes a texel, each class's mean top kept at every level; the meshes z14's alone (the z12 and
+z13 tiles of tall and large buildings removed). (The 10 Oct choice, no level 14, left the buildings
+z13's meshes left out missing at zoom 13–14; drawing level 13 magnified there instead was the other
+option, not taken.) Measured in B5's pilot (2026-10-14, hi packs, levels 9–14; the lo packs, levels
+4–8, are a few MB a z3 tile):
+
+| z6 tile | buildings | field (hi pack) | level 14 | level 13 | the z14 meshes | field ÷ meshes |
+|---|---|---|---|---|---|---|
+| 6/33/22, Annecy and the Alps | 4.5 M | 301 MB | 173 MB (58 %) | 76 MB | 78 MB | 3.9 |
+| 6/17/23, Toronto | 9.5 M | 885 MB | 505 MB (57 %) | 224 MB | 163 MB | 5.4 |
+| 6/18/24, New York | 14.6 M | 1,317 MB | 757 MB (58 %) | 330 MB | 263 MB | 5.0 |
+
+So 66–90 B a building, level 14 about 57 % of it: for the coverage's ~342 M buildings ~23–31 GB of
+field hi packs (~10–13 GB of it without level 14), against the meshes' ~5.7 GB, and ~1 GB of mids.
+The coding can still be tuned (each class's mean top left out at the finest levels, its class's
+middle instead, or fewer classes there), not tried.
 
 **The march, timed** (10 Oct, the build Mac: M4, a windowed Chrome at the display's 120 Hz, a 1440 ×
 900 window at 2× (2880 × 1626 device px), the comparison mode's layers; 300 frames turning slowly, the
@@ -1602,18 +1606,24 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (planned; prototyped 2026-10-10) | The field (§4.8): built in `bldtiles` with the meshes, its mids and a `bldfield-lo` step per z3 tile, the catalog's layer, mirror and offline; the custom layer matched to the meshes' tiles, colour by height, fog; every building a mesh from zoom 14 (the meshes' tiles as today); the field at zoom 13–14 (level 14, or a level-13 set of what z13's meshes leave out: §4.8.1, storage); the renderer's work before the field is on by default (below); the comparison (`tools/bldcheck`) over a set of views, tilted ones too; measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3, the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 100–180), 1.8–5.1 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. Not done: Kantō (6/56/25: the Mac's free space), the mirror's group and the World download, colour by height, fog and the heritage list drawn, the coverage build, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
-11 Oct; it runs only behind `?bldfield=` until then):
-- GPU memory: the tiles' textures and buffers kept under a budget (least recently drawn freed),
-  freed in `onRemove`, rebuilt after a lost context; one `idle` listener, not one an `onAdd`.
-- Decoding in a worker, with a cap on fetches in flight and the ones the view has left cancelled.
-- A loading tile's ancestor drawn only over the missing child's area (today it is drawn whole, over
-  its loaded siblings too); a tile that failed retried.
-- The scene's depth along the march (a mesh or the terrain inside a column stops the ray), from
-  #153's `sceneDepth`, not only the faces' hardware depth test.
-- The layer's code loaded by `import()` only when its parameters are set.
+11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):
+- GPU memory: the tiles' textures and buffers kept under a budget (384 MB; least recently wanted
+  freed), freed in `onRemove`, made again after a lost context (the tiles asked for again); one
+  `idle` listener a layer added.
+- Decoding in a worker (`bldfield.worker.ts`: WebP to linear values, and the march's tops and class
+  masks), at most six fetches in flight, the coarsest first, those the view has left cancelled.
+- A loading tile's ancestor drawn only over the missing tile's area; a tile that failed asked again
+  after 2, 4 … 60 s; a tile the server doesn't have (204) holds nothing, nor do the ones under it.
+- The scene's depth along the march, from the fork's `sceneDepth` (`readsSceneDepth`): the faces
+  tested against it in the shader, and on the flat map the march stopped where the ray meets a mesh
+  or the terrain; on the globe the march still stops at its own ground.
+- The layer's code loaded by `import()` only with `?bldfield`.
+- The cover: the field wherever MapLibre's cover has no loaded z14 mesh tile showing (below zoom 14
+  everywhere, above it beyond the meshes of a tilted view); the fork's tile zoom by depth (FORK.md)
+  so the tiles at the screen's sides are as sharp as the middle's.
 
 B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the build
 Mac's pace in B1 over the 380 tiles' ~440 M rows): `bldprep` 2.2–4.7 s a million rows (Kantō's

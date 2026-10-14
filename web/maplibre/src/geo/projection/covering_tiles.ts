@@ -361,8 +361,11 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     // line of sight (√(depth² − height²): what makes its distance its depth), so its terms stay as
     // they were for the tiles on the line of sight. On the globe, the tile's corners as the flat
     // map has them (the same near the camera, where the zooms are fine).
+    // (Not the terrain's own render-to-texture tiles, `terrainAwareZoom: false`, as for the zoom over
+    // the terrain below: each redraws every draped layer, for drapes no one asked to sharpen.)
+    const byDepth = options.terrainAwareZoom !== false;
     const depthDistance2d = (tileID: {x: number; y: number; z: number}, wrap: number, d2: number) =>
-        tileDepthDistance2d(cameraCoord, distanceZ, transform.pitchInRadians, transform.bearingInRadians, tileID, wrap, d2);
+        byDepth ? tileDepthDistance2d(cameraCoord, distanceZ, transform.pitchInRadians, transform.bearingInRadians, tileID, wrap, d2) : d2;
     const terrainLod = allowVariableZoom && !!options.terrain && options.terrainAwareZoom !== false;
     const mercatorPerMeter = terrainLod ? mercatorZfromAltitude(1, transform.center.lat) : 0;
     const maxTerrainLodZoom = transform.maxZoom + scaleZoom(transform.tileSize / options.tileSize);

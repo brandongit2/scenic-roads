@@ -128,10 +128,12 @@ now source changes:
   tiles on the line of sight what it was, and never more than upstream's. On the globe the same
   from the tile's flat-map corners (the globe's cover measures its distances on the flat map too).
   Tiles ahead of the center on the line of sight are finer too (their depth is less than their
-  distance), and a view straight down takes the center's zoom everywhere. Tested by
+  distance), and a view straight down takes the center's zoom everywhere. Not the terrain's own
+  render-to-texture tiles (`terrainAwareZoom: false`, as below). Tested by
   `covering_tiles_depth.test.ts` (a tilted view's middle row one zoom from edge to edge; equal
   depths given equal distances); seven of upstream's cover lists in `covering_tiles.test.ts`
-  changed with it (finer tiles at a pitched view's sides).
+  changed with it (finer tiles at a pitched view's sides), and twelve render cases draw finer
+  tiles at their sides or near the camera (their expected images below).
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser
@@ -293,6 +295,12 @@ purpose (`tools/fetch-upstream-tests.sh` puts them in place):
 - `terrain/fill-extrusion`, `-vertical-gradient`, `-vertical-gradient-pattern`: the walls' feet on
   the terrain under each corner (the last also its wall pattern, the DEM tiles finer near the
   camera with the tile zoom over the terrain).
+- The tile zoom by depth (2026-10-14): `high-pitch/terrain-pitch95`, `terrain/fill-extrusion` (its
+  nearest row of tiles z14, not z13), `field-of-view-number`, `fog-sky-blend-globe`, `heatmap`,
+  `image-projective`, `occlusion-debug`, `rtt-mipmap-minification/pitch-70`,
+  `symbol-height-anchor-absolute`, `symbol-height-anchor-ground`, `symbol-height-offset-building`,
+  `tile-stiching`; and our `symbol-height-anchor/sea` (its DEM tiles finer at the side). Each run
+  without the rule passed on the same build.
 
 Run on this Mac on 2026-10-11 (the last full run under other agents' load, the failures it showed
 run again quiet): every other upstream case passes. Under heavy load a handful of terrain cases
