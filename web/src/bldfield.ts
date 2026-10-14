@@ -5,11 +5,11 @@
 //   f  roof coverage (the share of the texel under a footprint standing on the ground),
 //   w  wall area per ground area (Σ wall length × wall height ÷ texel area),
 //   v  Σ coverage × wall height (m): v ÷ f is the mean roof height.
-// Every level holds every building. Where MapLibre draws the z14 meshes (buildings.ts: from map zoom
-// 14, the tiles its cover takes at z14) they hold every building and the field draws nothing; else
-// the field draws them, level ⌊zoom⌋ + 1 (a texel a device pixel at 2×; level 14 from zoom 13),
-// split by distance as MapLibre's cover splits: below zoom 14 everywhere, above it beyond the
-// meshes in a tilted view.
+// Every level holds every building. Where MapLibre draws the z14 meshes (buildings.ts: wherever its
+// cover takes z14 tiles, by their distance: from map zoom 14, and near the camera of a tilted view
+// below it) they hold every building and the field draws nothing there; elsewhere the field draws
+// them, level ⌊zoom⌋ + 1 (a texel a device pixel at 2×; level 14 from zoom 13), split by distance as
+// MapLibre's cover splits.
 //
 // Drawn as a layer of buildings standing on the terrain, seen through: each tile as a hull of
 // columns, one a block of 8 × 8 of its 1/32 cells holding buildings (from their lowest ground to
@@ -545,6 +545,8 @@ export class FieldLayer implements CustomLayerInterface {
   maxZoom = 14;
   /** The meshes drawn (off, the comparison's field alone: drawn everywhere). */
   meshOn = true;
+  /** (diagnosis: the class textures read nearest, not filtered) */
+  nearest = false;
   /** The frame's depth read (the fork's sceneDepth). */
   readsSceneDepth = true;
   dbg = urlNum('fdbg', 0);
@@ -716,8 +718,7 @@ export class FieldLayer implements CustomLayerInterface {
    * extruded layer shows. */
   private meshTiles(): Set<string> {
     const out = new Set<string>();
-    // (Not while the layer's least zoom hides them: over high ground MapLibre's cover takes z14
-    // tiles below map zoom 14, which the layer doesn't draw there.)
+    // (Its layer's least zoom too, where one is set: the comparison's references lower it.)
     const layer = this.map.getLayer('buildings');
     if (!this.meshOn || !layer || this.map.getLayoutProperty('buildings', 'visibility') === 'none' || this.map.getZoom() < (layer.minzoom ?? 0)) return out;
     const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { state: string; tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
@@ -1237,6 +1238,10 @@ export class FieldLayer implements CustomLayerInterface {
       for (let k = 0; k < 5; k++) {
         gl.activeTexture(gl.TEXTURE4 + k);
         gl.bindTexture(gl.TEXTURE_2D, t.tex![k]);
+        if (t.tex![k]) {
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, this.nearest ? gl.NEAREST_MIPMAP_NEAREST : gl.LINEAR_MIPMAP_LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, this.nearest ? gl.NEAREST : gl.LINEAR);
+        }
       }
       gl.uniform1i(u.u_mask, t.mask);
       gl.activeTexture(gl.TEXTURE10);

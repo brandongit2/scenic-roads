@@ -38,7 +38,8 @@ it, with its 1 km buffer), whether or not a road is near; not the world. 339 mil
 and 2.8 million building parts in today's 88 regions (§2.5). Where the coverage ends, buildings end,
 as roads do.
 
-**At which zooms.** Meshes from z14 tiles alone, every building, drawn from map zoom 14; above z14
+**At which zooms.** Meshes from z14 tiles alone, every building, drawn wherever MapLibre's cover takes
+z14 tiles (from map zoom 14, and below it near the camera of a tilted view); above z14
 the map draws the z14 tiles, whole, up to its 19.5 (§4.1). Below zoom 14 the buildings are the
 field's (§4.8, behind `?bldfield` until it's on by default): every building at every zoom, the
 ones under a pixel as their summed roofs and walls; without it, none below zoom 14.
@@ -1022,14 +1023,15 @@ per texel, every building at every level.
 
 | Map zoom | Meshes (fill-extrusion) | Field |
 |---|---|---|
-| 14 and up | z14 tiles: every building | none |
-| under 14 | none | level ⌊zoom⌋ + 1 (14 at zoom 13–14, down to 4; under zoom 3, level 4 shrunk by its mipmaps): every building |
+| where MapLibre's cover takes z14 tiles (from 14, and nearer the camera of a tilted view below it) | z14 tiles: every building | none |
+| elsewhere (the cover's tiles coarser than z14) | none | level ⌊zoom⌋ + 1 (14 at zoom 13–14, down to 4; under zoom 3, level 4 shrunk by its mipmaps), finer by distance as the cover splits: every building |
 
 - A field level's texel is half a CSS pixel where it's first drawn (one device pixel on a 2× screen,
   as the roads' finest cells: `LOD_CELL_PX`), a full one where it hands over to the next. In a
   tilted view the levels go by each tile's distance from the camera, as MapLibre's cover splits.
-- Every level holds every building, so nothing is drawn twice nor missed: one hand-over, at zoom
-  14, from the field to the z14 meshes.
+- Every level holds every building, so nothing is drawn twice nor missed: one hand-over, by
+  distance (the owner's decision, 14 Oct): the field draws nothing over a z14 mesh tile MapLibre has
+  loaded (its source z14 alone, its layers with no least zoom), and draws the rest.
 - No pop at the field's own hand-overs: two levels' aggregates are equal by construction (only the
   texels' sharpness changes); a building passing from the field to a mesh at zoom 14 does so where
   it is a few device pixels, its texels' light becoming its pixels'.
@@ -1261,9 +1263,13 @@ alone against the meshes at the same 14.02 camera: tilted 60°, Tokyo's field is
 tilted view at zoom 14 a building is many device pixels, a level-14 texel several: the field shows
 blurred columns where the meshes show walls, a step a slow zoom shows plainly. Chamonix's 3×
 terrain keeps the camera from map zoom 14 at 60°: there the field draws to the end. The owner
-decides between the meshes taken by their tiles' distance as MapLibre's cover takes them (in a
-tilted view, near the camera below map zoom 14), a finer level near the camera, or the step as it
-is.
+chose the hand-over by distance (meshes wherever the cover takes z14 tiles). Measured again with it:
+across 14, Manhattan's 13.98 against 14.02 differ by 0.42 L* in σ8 (at most 0.68 a region), Tokyo's
+by 1.6 (6.8 in the bottom-right region, a band the cover moves from the field to the meshes at 14),
+straight down 0.65; within a frame at 13.5 and 60°, the meshes' band is 1.3–2.7 L* lighter than the
+field would be there (Tokyo; Manhattan 0.3–1.8). The meshes below 14 add 10–11 z14 tiles (1.3–1.9 M
+vertices, 19–29 MB of buffers) to those views and shorten their frames (Tokyo 16.1 to 11.9 ms whole
+frames at 1440 × 900 at 2×; the field near the camera cost more than the meshes).
 
 **Storage: level 14 built (the owner's choice, 14 Oct).** Every building at every level 4–14, five
 classes a texel, each class's mean top kept at every level; the meshes z14's alone (the z12 and

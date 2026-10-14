@@ -146,6 +146,11 @@ for (const v of views) {
       const t1 = Date.now();
       let o = null;
       if (mode === 'app') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
+      else if (mode === 'step0' || mode === 'sub' || mode === 'nearest') {
+        // (diagnosis: the march's steps a pixel's footprint, the sub-cell walk, the textures unfiltered)
+        await tab.evaluate(`const f = window.__bld.field; f.stepTexel = ${mode === 'step0' ? 0 : 2}; f.subWalk = ${mode === 'sub'}; f.nearest = ${mode === 'nearest'}; return 1`);
+        o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
+      }
       else if (mode === 'fieldonly') o = { field: true, buildings: false, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
       else if (mode === 'appneg') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, wallSign: -1, ...common };
       else if (mode === 'flat') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, linear: false, ...common };
@@ -167,6 +172,18 @@ for (const v of views) {
       rec[mode] = { ...o, secs: (Date.now() - t1) / 1000, tiles: r.tiles };
       await tab.evaluate('await window.__bld.reset(); return 1');
       console.log(`${v.id} ${mode} ${JSON.stringify({ ...o, box: undefined })} ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+    }
+    if (MODES.includes('cost')) {
+      // The meshes by their tiles' distance (the layers with no least zoom) against from map zoom 14
+      // alone (the layers' least zoom 14), interleaved `reps` times: the z14 mesh tiles loaded, the
+      // source's buffers, and whole frames (GPU timer medians, `__bld.frames`).
+      rec.cost = [];
+      for (let r = 0; r < (v.reps ?? 3); r++) {
+        for (const rule of r % 2 ? ['zoom14', 'distance'] : ['distance', 'zoom14']) {
+          rec.cost.push(await tab.evaluate(`const b = window.__bld; const m = b.map; for (const id of ['buildings', 'buildings-flat', 'buildings-pick']) if (m.getLayer(id)) m.setLayerZoomRange(id, ${rule === 'zoom14' ? 14 : 0}, 24); b.field.on = true; await b.ready(); const tm = m.style.tileManagers.bld; const ts = tm?._inViewTiles?.getAllTiles?.() ?? []; let bytes = 0; for (const t of ts) for (const bk of Object.values(t.buckets ?? {})) for (const k of ['layoutVertexBuffer', 'indexBuffer']) bytes += bk[k]?.byteLength ?? (bk[k]?.length ?? 0) * 0; const f = await b.frames(${v.frames ?? 120}); return { rule: '${rule}', zoom: m.getZoom(), meshTiles: ts.filter((t) => t.state === 'loaded').length, fieldTiles: new Set(b.field.drawn).size, frame: f }`, 600));
+        }
+      }
+      console.log(`${v.id} cost ${JSON.stringify(rec.cost.map((c) => [c.rule, c.meshTiles, c.fieldTiles, c.frame?.frameMs]))}`);
     }
     if (MODES.includes('sweep') && v.sweep) {
       // A slow zoom through the hand-over (v.sweep: from, to, step), the app as it draws, a frame a
