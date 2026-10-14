@@ -68,7 +68,7 @@ import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 import { EVAL, evalState, installEval } from './evalmode';
 import { CMP, cmpState, installCmp } from './bldcmp';
-import { FieldLayer } from './bldfield';
+import type { FieldLayer } from './bldfield';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -145,10 +145,15 @@ async function main() {
     ...(CMP ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(CMP.dpr ? { pixelRatio: CMP.dpr } : {}) } : {}),
   });
   if (EVAL) installEval(map);
-  // PROTOTYPE (task #102): the far buildings' field (bldfield.ts) and its comparison mode (bldcmp.ts).
+  // The far buildings' field (bldfield.ts, task #102; loaded only with `?bldfield`, not yet on by
+  // default) and its comparison mode (bldcmp.ts).
   const fieldUrl = new URLSearchParams(location.search).get('bldfield');
-  const field = fieldUrl ? new FieldLayer(fieldUrl) : null;
-  if (CMP) installCmp(map, field);
+  let field: FieldLayer | null = null;
+  const fieldReady: Promise<FieldLayer> | null = fieldUrl !== null ? import('./bldfield').then((m) => (field = new m.FieldLayer(fieldUrl || null))) : null;
+  if (CMP) {
+    if (fieldReady) void fieldReady.then((f) => installCmp(map, f));
+    else installCmp(map, null);
+  }
   // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
   if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
@@ -2132,7 +2137,11 @@ async function main() {
     if (meta.layers?.buildings) {
       addBuildings(map, 'water-name-line', 'boundary-county');
       heritageChanged(map, store.s.overlays.heritage);
-      if (field) map.addLayer(field, 'buildings-heritage');
+      if (fieldReady)
+        void fieldReady.then((f) => {
+          if (!map.getLayer(f.id) && map.getLayer('buildings-heritage')) map.addLayer(f, 'buildings-heritage');
+          applyBuildingsNow(store.s);
+        });
     }
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).

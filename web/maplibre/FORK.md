@@ -118,6 +118,20 @@ now source changes:
   render-to-texture tiles (`terrainAwareZoom: false`): each redraws every draped layer, and finer
   ones near the camera tripled the GPU time of a moving frame in a tilted Chamonix view (1.8 to
   6.9 ms, under load), for drapes no one asked to sharpen; at upstream's zoom it's 1.7 to 2.0 ms.
+- **A tile's zoom by its depth, not its distance** (`covering_tiles.ts`, `tileDepthDistance2d`):
+  what's drawn of a tile shrinks with its depth along the camera's forward vector, but the zoom
+  function took its distance from the camera, so a tile at the screen's sides, farther than one at
+  the same depth in the middle, got a coarser zoom: Tokyo at z13.5, 65°, z12–13 at the left and right
+  edges against z14 in the middle (the buildings blurrier at the edges, task #102). The function is
+  now given, for each tile, the horizontal distance at which a point of the tile's least depth (its
+  corners' and its nearest point's) would lie under the line of sight, √(depth² − height²): for the
+  tiles on the line of sight what it was, and never more than upstream's. On the globe the same
+  from the tile's flat-map corners (the globe's cover measures its distances on the flat map too).
+  Tiles ahead of the center on the line of sight are finer too (their depth is less than their
+  distance), and a view straight down takes the center's zoom everywhere. Tested by
+  `covering_tiles_depth.test.ts` (a tilted view's middle row one zoom from edge to edge; equal
+  depths given equal distances); seven of upstream's cover lists in `covering_tiles.test.ts`
+  changed with it (finer tiles at a pitched view's sides).
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser

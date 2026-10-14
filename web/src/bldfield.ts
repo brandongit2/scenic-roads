@@ -1,14 +1,13 @@
-// PROTOTYPE (task #102, docs/buildings3d.md §4.8, planned): the far buildings' field. Where the
-// buildings are smaller than a pixel, what full detail shows of them is their aggregate. The field
-// tiles (512 × 512 texels, levels 4–13) hold three densities per texel, so a coarser level is the
-// mean of its four children and the GPU's mipmaps stay exact:
+// The far buildings' field (task #102, docs/buildings3d.md §4.8). Where the buildings are smaller
+// than a pixel, what full detail shows of them is their aggregate. The field tiles (512 × 512 texels,
+// levels 4–14; crates/pipeline/src/bld/field.rs) hold three densities per texel, so a coarser level
+// is the mean of its four children and the GPU's mipmaps stay exact:
 //   f  roof coverage (the share of the texel under a footprint standing on the ground),
 //   w  wall area per ground area (Σ wall length × wall height ÷ texel area),
 //   v  Σ coverage × wall height (m): v ÷ f is the mean roof height.
-// Level ⌊zoom⌋ + 1 is drawn (a texel a device pixel at 2×): level 13 (over the z12 meshes) holds the
-// buildings under 40 m, level 12 and coarser every building. Over a z13 mesh tile the level-14 tiles
-// under it would be drawn, but level 14 isn't built for now (docs/buildings3d.md §4.8.1, storage); at
-// zoom 14 and above the z14 meshes hold every building and the field isn't drawn.
+// Every level holds every building. Below map zoom 14 the field alone draws them, level ⌊zoom⌋ + 1
+// (a texel a device pixel at 2×; level 14 from zoom 13), split by distance as MapLibre's cover
+// splits; from zoom 14 the z14 meshes (buildings.ts) hold every building and the field isn't drawn.
 //
 // Drawn as a layer of buildings standing on the terrain, seen through: each tile as a hull of
 // columns, one a block of 8 × 8 of its 1/32 cells holding buildings (from their lowest ground to
@@ -27,11 +26,21 @@
 // worked out once a tile a frame. Each step reads only the classes its texel's mask holds.
 // Timed against the frame budget (2 ms at 2880 × 1626 on the M4), see docs/buildings3d.md §4.8.1.
 //
-// `?bldfield=<url>` turns it on: the tiles at <url>/<z>/<x>/<y>.bin (gzip of 15 planes of
-// 512 × 512 u16 LE: f₀…f₄ × 65535, log2(1 + w₀…w₄) ÷ 12 × 65535, v₀…v₄ × 64) and <url>/index.json.
+// `?bldfield` turns it on (`?bldfield=<url>`: the tiles at <url>/{z}/{x}/{y}, else the server's
+// /tiles/buildings-field): `field3-webp` tiles, fetched and decoded to linear values in a worker
+// (bldfield.worker.ts), a few at a time, those the view has left cancelled. A tile the server
+// doesn't have (204) holds no building, nor do its children: they aren't asked for. A tile that
+// failed is asked again after a while (2, 4 … 60 s). While one loads, its nearest loaded ancestor
+// stands in, drawn only over the missing tile's area. Its textures are kept under a budget (the
+// least recently drawn freed), freed when the layer is removed, and made again after a lost
+// context. With the fork's `sceneDepth` (web/maplibre/FORK.md), the march stops at the frame's
+// depth so far (a mesh or the terrain inside a column stops the ray) on the flat map; on the globe
+// the faces are tested against it and the march stops at its own ground.
 
 import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MLMap } from 'maplibre-gl';
 import { link } from './roads/layer';
+import { hostFor } from './hosts';
+import type { FieldIn, FieldOut } from './bldfield.worker';
 
 const G = 32;
 const EXTENT = 8192;
@@ -40,6 +49,13 @@ const STEPS = 64;
 /** Colour by height: the lookup's span (m) and size. */
 const LUT_MAX_M = 700;
 const LUT_N = 2048;
+/** The finest level, and the coarsest. */
+const LEVEL_MAX = 14;
+const LEVEL_MIN = 4;
+/** Fetches in flight at most. */
+const FETCHES = 6;
+/** The tiles' GPU memory kept at most (MB), the least recently drawn freed beyond it. */
+const GPU_BUDGET_MB = 384;
 /** MapLibre's transform (its camera's, in v6). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 /** A number from the page's URL, or the default where it's absent or not finite. */
@@ -118,6 +134,11 @@ uniform vec4 u_dWallB;
 uniform float u_opacity;
 uniform int u_linear;
 uniform vec3 u_bg;     // the map's land colour (stored values)
+uniform highp sampler2D u_scene;   // the frame's depth so far (the fork's sceneDepth)
+uniform int u_sceneOn;
+uniform mat4 u_invProj;   // clip space to the tile's (tile units, tile units, metres): the flat map's
+uniform vec2 u_vp;        // the framebuffer's size (px)
+uniform vec2 u_depthRange;
 // A class's share at a point (its texture at the read's level).
 float classF(int c, vec2 uv, float lod) {
   if (c == 0) return textureLod(u_c0, uv, lod).r;
@@ -184,6 +205,18 @@ void main() {
   if (d.z > 1e-6) tmax = min(tmax, (u_gmax + u_top + 2.0 - E.z) / d.z);
   if (d.z < -1e-6) tmax = min(tmax, (E.z - u_gmin + 1.0) / -d.z);
   tmax = clamp(tmax, 0.0, 1e6);
+  if (u_sceneOn == 1) {
+    // The face against the frame's depth (as the hardware test with a polygon offset of −2/−8 was),
+    // and on the flat map the march stopped where the ray meets what's drawn (a mesh, the terrain).
+    float sd = texelFetch(u_scene, ivec2(gl_FragCoord.xy), 0).r;
+    if (gl_FragCoord.z - 2.0 * fwidth(gl_FragCoord.z) - 8.0 / 16777216.0 > sd) discard;
+    if (u_trans < 0.001 && sd < 1.0) {
+      float ndz = 2.0 * (sd - u_depthRange.x) / max(u_depthRange.y - u_depthRange.x, 1e-9) - 1.0;
+      vec4 P = u_invProj * vec4(gl_FragCoord.xy / u_vp * 2.0 - 1.0, ndz, 1.0);
+      P /= P.w;
+      tmax = min(tmax, max(dot(vec3(P.xy * mpu, P.z) - E, d), 0.0));
+    }
+  }
   float t0 = 0.0;
   if (u_dbg == 2) { fragColor = vec4(0.0, 0.0, 0.0, 0.01); return; }
   float texel = mpu * ${EXTENT / 512}.0;
@@ -447,7 +480,9 @@ interface FTile {
   x: number;
   y: number;
   key: string;
-  state: 'loading' | 'ready' | 'missing';
+  /** 'empty': the server has no such tile (no building there, nor under it); 'failed': asked again
+   * at `retryAt`. */
+  state: 'loading' | 'ready' | 'empty' | 'failed' | 'queued';
   /** Each height class present: an RGBA16F texture (f, w, v); null where absent. */
   tex: (WebGLTexture | null)[] | null;
   /** The classes present (bits). */
@@ -478,6 +513,12 @@ interface FTile {
   vao: WebGLVertexArrayObject | null;
   elevFor: string;
   bytes: number;
+  /** Its textures' and buffers' GPU memory (bytes, about). */
+  gpu: number;
+  /** The frame it was last wanted in, its failures so far, when it's asked again (ms). */
+  used: number;
+  fails: number;
+  retryAt: number;
 }
 
 type Prog = { p: WebGLProgram; u: Record<string, WebGLUniformLocation | null> };
@@ -499,8 +540,10 @@ export class FieldLayer implements CustomLayerInterface {
   box: [number, number, number, number] | null = null;
   /** Drawn below this map zoom only (14: the z14 meshes hold every building). */
   maxZoom = 14;
-  /** Matched to the meshes' tiles (off: the field alone, by distance, every building). */
+  /** The meshes drawn (off, the comparison's field alone: drawn at every zoom). */
   meshOn = true;
+  /** The frame's depth read (the fork's sceneDepth). */
+  readsSceneDepth = true;
   dbg = urlNum('fdbg', 0);
   /** Colour by height: the colour of each height 0 … LUT_MAX_M m (RGB, LUT_N entries), or null (plain). */
   heightLut: Uint8Array | null = null;
@@ -535,40 +578,91 @@ export class FieldLayer implements CustomLayerInterface {
   private map!: MLMap;
   private gl!: WebGL2RenderingContext;
   private tiles = new Map<string, FTile>();
-  private index: Map<number, Set<string>> | null = null;
   private progs = new Map<string, Prog>();
+  private worker: Worker | null = null;
+  /** Tiles waiting for a fetch, nearest first when started; those in flight. */
+  private queue: FTile[] = [];
+  private flying = new Set<string>();
+  private frame = 0;
+  private onIdle = () => {
+    const k = this.terrainKey();
+    if (k !== this.elevKey) {
+      this.elevKey = k;
+      this.map.triggerRepaint();
+    }
+  };
+  private onLost = (e: Event) => {
+    e.preventDefault();
+    // (Every GL object is gone with the context: the tiles asked for again once it's back.)
+    this.drop();
+    this.progs.clear();
+    this.lutTex = null;
+    this.lutFor = null;
+  };
+  private onRestored = () => this.map.triggerRepaint();
   private elevKey = '';
   private failed = false;
   private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
 
-  constructor(private base: string) {}
+  /** `url`: the tiles' template ({z}/{x}/{y}), else the server's. */
+  constructor(private url: string | null = null) {}
+
+  private tileUrl(z: number, x: number, y: number) {
+    const t = this.url && this.url !== '1' ? (this.url.includes('{z}') ? this.url : `${this.url}/{z}/{x}/{y}`) : `${hostFor('buildings')}/tiles/buildings-field/{z}/{x}/{y}`;
+    return t.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y));
+  }
 
   onAdd(map: MLMap, gl: WebGL2RenderingContext) {
     this.map = map;
     this.gl = gl;
     this.timer.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
-    void fetch(`${this.base}/index.json`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`index.json: ${r.status}`);
-        return r.json();
-      })
-      .then((j: Record<string, string[]>) => {
-        this.index = new Map(Object.entries(j).map(([z, l]) => [Number(z), new Set(l)]));
-        map.triggerRepaint();
-      })
-      .catch((e: unknown) => {
-        // (absent: no tiles, nothing drawn, nothing pending)
-        console.warn('bldfield: no index', e);
-        this.index = new Map();
-      });
-    // Elevations follow the terrain as its tiles arrive.
-    map.on('idle', () => {
-      const k = this.terrainKey();
-      if (k !== this.elevKey) {
-        this.elevKey = k;
-        map.triggerRepaint();
-      }
-    });
+    this.worker = new Worker(new URL('./bldfield.worker.ts', import.meta.url), { type: 'module' });
+    this.worker.onmessage = (e: MessageEvent<FieldOut>) => this.received(e.data);
+    // (One listener a layer added: elevations follow the terrain as its tiles arrive.)
+    map.on('idle', this.onIdle);
+    const cv = map.getCanvas();
+    cv.addEventListener('webglcontextlost', this.onLost);
+    cv.addEventListener('webglcontextrestored', this.onRestored);
+  }
+
+  onRemove(map: MLMap) {
+    map.off('idle', this.onIdle);
+    const cv = map.getCanvas();
+    cv.removeEventListener('webglcontextlost', this.onLost);
+    cv.removeEventListener('webglcontextrestored', this.onRestored);
+    this.worker?.terminate();
+    this.worker = null;
+    this.drop(true);
+    for (const pr of this.progs.values()) this.gl.deleteProgram(pr.p);
+    this.progs.clear();
+    if (this.lutTex) this.gl.deleteTexture(this.lutTex);
+    this.lutTex = null;
+    this.lutFor = null;
+  }
+
+  /** Every tile dropped (`free`: its GL objects deleted; a lost context has none to delete). */
+  private drop(free = false) {
+    for (const t of this.tiles.values()) {
+      if (free) this.freeGl(t);
+      if (this.flying.has(t.key)) this.worker?.postMessage({ type: 'cancel', key: t.key } satisfies FieldIn);
+    }
+    this.tiles.clear();
+    this.queue = [];
+    this.flying.clear();
+  }
+
+  private freeGl(t: FTile) {
+    const gl = this.gl;
+    for (const x of t.tex ?? []) if (x) gl.deleteTexture(x);
+    for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex]) if (x) gl.deleteTexture(x);
+    if (t.elev) gl.deleteBuffer(t.elev);
+    if (t.ibuf) gl.deleteBuffer(t.ibuf);
+    if (t.vao) gl.deleteVertexArray(t.vao);
+    t.tex = null;
+    t.top32 = t.cmask = t.tbTex = t.top128 = t.elevTex = null;
+    t.elev = t.ibuf = null;
+    t.vao = null;
+    t.gpu = 0;
   }
 
   private terrainKey() {
@@ -579,9 +673,8 @@ export class FieldLayer implements CustomLayerInterface {
 
   /** Tiles still loading (for the comparison harness). */
   pending(): number {
-    if (!this.index) return 1;
     let n = 0;
-    for (const t of this.tiles.values()) if (t.state === 'loading') n++;
+    for (const t of this.tiles.values()) if (t.state === 'loading' || t.state === 'queued') n++;
     return n;
   }
 
@@ -608,39 +701,19 @@ export class FieldLayer implements CustomLayerInterface {
     const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
     for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
+      'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(key, pr);
     return pr;
   }
 
-  /** The tiles to draw: a quadtree from z4, split where a tile is nearer the camera than its
-   * level's distance, down to the map's zoom (as MapLibre's cover takes tiles). */
-  /** The meshes' tiles MapLibre draws now (the buildings' source): z12–14. */
-  private meshTiles(): { z: number; x: number; y: number }[] {
-    const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
-    const ts = tm?._inViewTiles?.getAllTiles?.() ?? [];
-    const seen = new Set<string>();
-    const out: { z: number; x: number; y: number }[] = [];
-    for (const t of ts) {
-      const c = t.tileID.canonical;
-      const k = `${c.z}/${c.x}/${c.y}`;
-      if (!seen.has(k)) {
-        seen.add(k);
-        out.push({ z: c.z, x: c.x, y: c.y });
-      }
-    }
-    return out;
-  }
-
-  /** The tiles to draw. Over each mesh tile MapLibre draws, the field level that tile's zoom leaves
-   * out: none over z14's (every building), level 14's four over a z13 tile, level 13's over a z12
-   * one. Elsewhere (beyond the meshes' least zoom) every building, as a quadtree from z4 split by
-   * distance from the camera as MapLibre's cover splits, down to level 12. */
+  /** The tiles the view wants: a quadtree from level 4, split where a tile is nearer the camera than
+   * its level's distance (as MapLibre's cover splits), down to level ⌊zoom⌋ + 1 at most (14). No
+   * tile under one the server doesn't have. */
   private cover(): FTile[] {
     const map = this.map;
     const zoom = map.getZoom();
-    if (!this.index || zoom >= this.maxZoom) return [];
+    if (this.meshOn && zoom >= this.maxZoom) return [];
     const tr = trOf(map);
     const cam = MercatorCoordinate.fromLngLat(tr.getCameraLngLat(), tr.getCameraAltitude());
     const ctr = MercatorCoordinate.fromLngLat(map.getCenter(), 0);
@@ -661,177 +734,169 @@ export class FieldLayer implements CustomLayerInterface {
     }
     const y0 = MercatorCoordinate.fromLngLat([0, Math.min(85, b.getNorth())]).y, y1 = MercatorCoordinate.fromLngLat([0, Math.max(-85, b.getSouth())]).y;
     const out: FTile[] = [];
-    const has = (z: number, x: number, y: number) => !!this.index!.get(z)?.has(`${x}/${y}`);
-    // The meshes' tiles, and every tile holding one (a quadtree's walk stops at them).
-    const mesh = this.meshOn ? this.meshTiles().filter((t) => t.z >= 12 && t.z <= 14) : [];
-    const holds = new Set<string>();
-    for (const m of mesh) {
-      for (let z = m.z; z >= 4; z--) holds.add(`${z}/${m.x >> (m.z - z)}/${m.y >> (m.z - z)}`);
-      if (m.z < 14) {
-        for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
-          const c = { z: m.z + 1, x: m.x * 2 + i, y: m.y * 2 + j };
-          if (has(c.z, c.x, c.y)) out.push(this.tile(c.z, c.x, c.y));
-        }
-      }
-    }
+    const most = Math.min(LEVEL_MAX, Math.floor(zoom + this.levelBias) + 1);
     const visit = (z: number, x: number, y: number) => {
       const n = 2 ** z;
       const tx0 = x / n, tx1 = (x + 1) / n, ty0 = y / n, ty1 = (y + 1) / n;
       if (ty1 < y0 || ty0 > y1 || !xs.some(([x0, x1]) => tx1 >= x0 && tx0 <= x1)) return;
-      const key = `${z}/${x}/${y}`;
-      // (MapLibre's cover partitions the view: a tile holding a mesh tile is all meshes from z12.)
-      if (holds.has(key) && z >= 12) return;
-      if (!has(z, x, y)) return;
+      const known = this.tiles.get(`${z}/${x}/${y}`);
+      if (known?.state === 'empty') return;
       // By its distance from the camera, the ground at the view's centre's height (the map's zoom is
       // measured from a sea-level pivot: over high ground the view is closer than it says).
       const dx = Math.max(tx0 - cam.x, 0, cam.x - tx1), dy = Math.max(ty0 - cam.y, 0, cam.y - ty1);
       const d = Math.hypot(dx, dy, Math.max(cam.z - groundM, 1e-12));
-      const split = holds.has(key) || (z < 12 && z < Math.floor(zoom + this.levelBias + Math.log2(centreDist / d)));
-      if (split) {
+      const want = Math.min(most, Math.floor(zoom + this.levelBias + Math.log2(centreDist / d)) + 1);
+      if (z < want) {
         for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(z + 1, x * 2 + i, y * 2 + j);
       } else out.push(this.tile(z, x, y));
     };
-    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) visit(4, x, y);
+    for (let y = 0; y < 2 ** LEVEL_MIN; y++) for (let x = 0; x < 2 ** LEVEL_MIN; x++) visit(LEVEL_MIN, x, y);
     return out;
   }
 
+  /** Tile z/x/y, asked for if it's new or its retry is due. */
   private tile(z: number, x: number, y: number): FTile {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
-    if (t) return t;
-    t = { z, x, y, key, state: 'loading', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0 };
-    this.tiles.set(key, t);
-    const tt = t;
-    void (async () => {
-      try {
-        const r = await fetch(`${this.base}/${key}.bin`);
-        if (!r.ok) throw new Error(String(r.status));
-        const raw = await new Response(r.body!.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
-        const u = new Uint16Array(raw);
-        const N = 512 * 512;
-        // Planes: f0..f4, w0..w4, v0..v4 (u16): to linear values, four RGBA16F textures.
-        const gl = this.gl;
-        // Each class present: f, w (log-coded), v, as an RGBA16F texture.
-        const tex: (WebGLTexture | null)[] = [];
-        let top = 0, mask = 0;
-        for (let c = 0; c < 5; c++) {
-          let any = false;
-          for (let i = 0; i < N; i++) if (u[c * N + i] || u[(5 + c) * N + i]) { any = true; break; }
-          if (!any) {
-            tex.push(null);
-            continue;
-          }
-          mask |= 1 << c;
-          const px = new Float32Array(N * 4);
-          for (let i = 0; i < N; i++) {
-            const f = u[c * N + i] / 65535, v = u[(10 + c) * N + i] / 64;
-            px[i * 4] = f;
-            px[i * 4 + 1] = 2 ** ((u[(5 + c) * N + i] / 65535) * 12) - 1;
-            px[i * 4 + 2] = v;
-            if (f > 1e-5) top = Math.max(top, v / f);
-          }
-          const tx = gl.createTexture()!;
-          gl.bindTexture(gl.TEXTURE_2D, tx);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 512, 512, 0, gl.RGBA, gl.FLOAT, px);
-          gl.generateMipmap(gl.TEXTURE_2D);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-          tex.push(tx);
-        }
-        gl.bindTexture(gl.TEXTURE_2D, null);
-        tt.mask = mask;
-        // The tallest mean top in each 1/32 of the tile: its 16 × 16 texels and the texel around them
-        // (bilinear reads reach across a cell's edge by one).
-        const hmax = new Float32Array(N);
-        for (let c = 0; c < 5; c++) {
-          if (!(mask & (1 << c))) continue;
-          for (let i = 0; i < N; i++) {
-            const f = u[c * N + i];
-            if (!f) continue;
-            const h = u[(10 + c) * N + i] / 64 / (f / 65535);
-            if (h > hmax[i]) hmax[i] = h;
-          }
-        }
-        // (and over each 4 × 4 texels and the texel around them: the march's sub-cells)
-        const d128 = new Float32Array(128 * 128);
-        for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) {
-          const h = hmax[y * 512 + x];
-          if (!h) continue;
-          for (let cy = Math.max(0, (y - 1) >> 2); cy <= Math.min(127, (y + 1) >> 2); cy++)
-            for (let cx = Math.max(0, (x - 1) >> 2); cx <= Math.min(127, (x + 1) >> 2); cx++) if (h > d128[cy * 128 + cx]) d128[cy * 128 + cx] = h;
-        }
-        const t128 = gl.createTexture()!;
-        gl.bindTexture(gl.TEXTURE_2D, t128);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 128, 128, 0, gl.RED, gl.FLOAT, d128);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-        tt.top128 = t128;
-        const d32 = new Float32Array(32 * 32);
-        for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) {
-          const h = hmax[y * 512 + x];
-          if (!h) continue;
-          for (let cy = Math.max(0, (y - 1) >> 4); cy <= Math.min(31, (y + 1) >> 4); cy++)
-            for (let cx = Math.max(0, (x - 1) >> 4); cx <= Math.min(31, (x + 1) >> 4); cx++) if (h > d32[cy * 32 + cx]) d32[cy * 32 + cx] = h;
-        }
-        const t32 = gl.createTexture()!;
-        gl.bindTexture(gl.TEXTURE_2D, t32);
-        const rg = new Float32Array(32 * 32 * 2);
-        for (let i = 0; i < 32 * 32; i++) rg[i * 2] = d32[i];
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
-        tt.top32cpu = d32;
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-        tt.top32 = t32;
-        // The classes each texel holds, and its neighbours: a step reads only those (each coarser
-        // level the four's, and its neighbours again, so a filtered read's texels are all in it).
-        {
-          let m = new Uint8Array(N);
-          for (let c = 0; c < 5; c++) {
-            if (!(mask & (1 << c))) continue;
-            for (let i = 0; i < N; i++) if (u[c * N + i] || u[(5 + c) * N + i]) m[i] |= 1 << c;
-          }
-          const dil = (a: Uint8Array, sz: number) => {
-            const o = new Uint8Array(sz * sz);
-            for (let y = 0; y < sz; y++) for (let x = 0; x < sz; x++) {
-              let v = 0;
-              for (let yy = Math.max(0, y - 1); yy <= Math.min(sz - 1, y + 1); yy++) for (let xx = Math.max(0, x - 1); xx <= Math.min(sz - 1, x + 1); xx++) v |= a[yy * sz + xx];
-              o[y * sz + x] = v;
-            }
-            return o;
-          };
-          const cm = gl.createTexture()!;
-          gl.bindTexture(gl.TEXTURE_2D, cm);
-          gl.texStorage2D(gl.TEXTURE_2D, 10, gl.R8UI, 512, 512);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          m = dil(m, 512);
-          for (let lv = 0, sz = 512; lv < 10; lv++, sz >>= 1) {
-            gl.texSubImage2D(gl.TEXTURE_2D, lv, 0, 0, sz, sz, gl.RED_INTEGER, gl.UNSIGNED_BYTE, m);
-            if (sz === 1) break;
-            const h = sz >> 1, o = new Uint8Array(h * h);
-            for (let y = 0; y < h; y++) for (let x = 0; x < h; x++) o[y * h + x] = m[2 * y * sz + 2 * x] | m[2 * y * sz + 2 * x + 1] | m[(2 * y + 1) * sz + 2 * x] | m[(2 * y + 1) * sz + 2 * x + 1];
-            m = dil(o, h);
-          }
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-          gl.bindTexture(gl.TEXTURE_2D, null);
-          tt.cmask = cm;
-        }
-        tt.tex = tex;
-        tt.top = Math.min(1000, top + 2);
-        tt.bytes = r.headers.get('content-length') ? Number(r.headers.get('content-length')) : 0;
-        tt.state = 'ready';
-      } catch {
-        tt.state = 'missing';
-      }
-      this.map.triggerRepaint();
-    })();
+    if (!t) {
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0 };
+      this.tiles.set(key, t);
+      this.queue.push(t);
+    } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
+      t.state = 'queued';
+      this.queue.push(t);
+    }
+    t.used = this.frame;
     return t;
+  }
+
+  /** Fetches started while fewer than FETCHES are in flight, the coarsest wanted first; those the
+   * view has left (not wanted this frame) cancelled or taken off the queue. */
+  private pump() {
+    if (!this.worker) return;
+    for (const k of [...this.flying]) {
+      const t = this.tiles.get(k);
+      if (t && t.used < this.frame) {
+        this.worker.postMessage({ type: 'cancel', key: k } satisfies FieldIn);
+      }
+    }
+    this.queue = this.queue.filter((t) => {
+      if (t.used < this.frame && t.state === 'queued') {
+        this.tiles.delete(t.key);
+        return false;
+      }
+      return t.state === 'queued';
+    });
+    this.queue.sort((a, b) => a.z - b.z);
+    while (this.flying.size < FETCHES && this.queue.length) {
+      const t = this.queue.shift()!;
+      t.state = 'loading';
+      this.flying.add(t.key);
+      this.worker.postMessage({ type: 'load', key: t.key, url: this.tileUrl(t.z, t.x, t.y) } satisfies FieldIn);
+    }
+  }
+
+  /** A worker's answer: the tile's textures made, or it marked empty or failed. */
+  private received(m: FieldOut) {
+    this.flying.delete(m.key);
+    const t = this.tiles.get(m.key);
+    if (t) {
+      if (m.type === 'failed') {
+        if (m.error === 'cancelled') this.tiles.delete(m.key);
+        else {
+          t.fails++;
+          t.state = 'failed';
+          t.retryAt = performance.now() + Math.min(60, 2 ** t.fails) * 1000;
+          console.warn(`bldfield: ${m.key}: ${m.error}`);
+        }
+      } else if (m.empty) t.state = 'empty';
+      else this.upload(t, m);
+    }
+    this.pump();
+    this.map.triggerRepaint();
+  }
+
+  private upload(t: FTile, m: Extract<FieldOut, { empty: false }>) {
+    const gl = this.gl;
+    const tex: (WebGLTexture | null)[] = [];
+    let gpu = 0;
+    for (const c of m.classes) {
+      if (!c) {
+        tex.push(null);
+        continue;
+      }
+      const tx = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tx);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 512, 512, 0, gl.RGBA, gl.FLOAT, c);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      tex.push(tx);
+      gpu += (512 * 512 * 8 * 4) / 3;
+    }
+    const r32 = (data: Float32Array, n: number) => {
+      const x = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, x);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, n, n, 0, gl.RED, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      return x;
+    };
+    t.top128 = r32(m.top128, 128);
+    // (RG32F: the cells' tallest top, and their highest ground once the elevations are known)
+    const rg = new Float32Array(32 * 32 * 2);
+    for (let i = 0; i < 32 * 32; i++) rg[i * 2] = m.top32[i];
+    const t32 = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, t32);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    t.top32 = t32;
+    t.top32cpu = m.top32;
+    const cm = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, cm);
+    gl.texStorage2D(gl.TEXTURE_2D, 10, gl.R8UI, 512, 512);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    for (let lv = 0, sz = 512, at = 0; lv < 10; lv++, at += sz * sz, sz >>= 1) gl.texSubImage2D(gl.TEXTURE_2D, lv, 0, 0, sz, sz, gl.RED_INTEGER, gl.UNSIGNED_BYTE, m.cmask.subarray(at, at + sz * sz));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    t.cmask = cm;
+    t.tex = tex;
+    t.mask = m.mask;
+    t.top = Math.min(1000, m.top + 2);
+    t.bytes = m.bytes;
+    t.gpu = gpu + 128 * 128 * 4 + 32 * 32 * 8 * 2 + (512 * 512 * 4) / 3;
+    t.state = 'ready';
+  }
+
+  /** The least recently wanted tiles' GPU memory freed while over the budget (those wanted in this
+   * frame kept). */
+  private trim() {
+    let total = 0;
+    for (const t of this.tiles.values()) total += t.gpu;
+    if (total <= GPU_BUDGET_MB * 1e6) return;
+    const old = [...this.tiles.values()].filter((t) => t.state === 'ready' && t.used < this.frame).sort((a, b) => a.used - b.used);
+    for (const t of old) {
+      if (total <= GPU_BUDGET_MB * 1e6) break;
+      total -= t.gpu;
+      this.freeGl(t);
+      this.tiles.delete(t.key);
+    }
+  }
+
+  /** GPU memory the tiles hold (MB), and how many are loaded. */
+  gpuSize(): { tiles: number; mb: number } {
+    let mb = 0, n = 0;
+    for (const t of this.tiles.values()) {
+      mb += t.gpu / 1e6;
+      if (t.state === 'ready') n++;
+    }
+    return { tiles: n, mb };
   }
 
   /** The tile's grid elevations, from the terrain as drawn (m, exaggerated): the box's vertices
@@ -950,35 +1015,44 @@ export class FieldLayer implements CustomLayerInterface {
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     this.drawn = [];
     if (!this.on) return;
+    this.frame++;
     const tiles = this.cover();
-    // A tile still loading: its nearest loaded ancestor stands in (drawn once).
-    const draw: FTile[] = [];
-    const seen = new Set<string>();
+    this.pump();
+    // A tile still loading: its nearest loaded ancestor stands in, over the missing tile's area only
+    // (in the ancestor's tile units); one loaded whole over its own.
+    const draw: { t: FTile; clip: [number, number, number, number] | null }[] = [];
     for (const t of tiles) {
       let d: FTile | undefined = t;
       while (d && d.state !== 'ready') {
-        if (d.z <= 4) {
+        if (d.state === 'empty' || d.z <= LEVEL_MIN) {
           d = undefined;
           break;
         }
         d = this.tiles.get(`${d.z - 1}/${d.x >> 1}/${d.y >> 1}`);
       }
-      if (d && !seen.has(d.key)) {
-        seen.add(d.key);
-        draw.push(d);
+      if (!d) continue;
+      d.used = this.frame;
+      if (d === t) draw.push({ t: d, clip: null });
+      else {
+        const k = 2 ** (t.z - d.z), s = EXTENT / k;
+        const ox = (t.x - d.x * k) * s, oy = (t.y - d.y * k) * s;
+        draw.push({ t: d, clip: [ox, oy, ox + s, oy + s] });
       }
     }
+    this.trim();
     if (!draw.length) return;
     const map = this.map;
     const tr = trOf(map);
     const camM = MercatorCoordinate.fromLngLat(tr.getCameraLngLat());
     const camAlt = tr.getCameraAltitude();
     // Far to near: each tile is composited over the ones behind it.
-    const dist = (t: FTile) => {
-      const n = 2 ** t.z;
-      return Math.hypot((t.x + 0.5) / n - camM.x, (t.y + 0.5) / n - camM.y);
+    const dist = (e: { t: FTile; clip: [number, number, number, number] | null }) => {
+      const n = 2 ** e.t.z;
+      const cx = e.clip ? (e.clip[0] + e.clip[2]) / 2 / EXTENT : 0.5, cy = e.clip ? (e.clip[1] + e.clip[3]) / 2 / EXTENT : 0.5;
+      return Math.hypot((e.t.x + cx) / n - camM.x, (e.t.y + cy) / n - camM.y);
     };
     draw.sort((a, b) => dist(b) - dist(a));
+    const scene = opts.sceneDepth;
     const timed = this.timing && this.timer.ext;
     let q: WebGLQuery | null = null;
     if (timed) {
@@ -1001,11 +1075,23 @@ export class FieldLayer implements CustomLayerInterface {
     // Into MapLibre's own frame, its depth tested in hardware (a box face behind the terrain or a mesh
     // isn't drawn; pulled a little toward the camera so the faces down at the ground pass), blended
     // over what's there.
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LEQUAL);
+    // (With the frame's depth read, the test is the shader's: the framebuffer has no depth then.)
+    if (scene) gl.disable(gl.DEPTH_TEST);
+    else {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(-2, -8);
+    }
     gl.depthMask(false);
-    gl.enable(gl.POLYGON_OFFSET_FILL);
-    gl.polygonOffset(-2, -8);
+    gl.uniform1i(u.u_sceneOn, scene ? 1 : 0);
+    gl.uniform2f(u.u_vp, vp[2], vp[3]);
+    gl.uniform2f(u.u_depthRange, opts.depthRangeFor3D[0], opts.depthRangeFor3D[1]);
+    if (scene) {
+      gl.activeTexture(gl.TEXTURE14);
+      gl.bindTexture(gl.TEXTURE_2D, scene.texture);
+      gl.uniform1i(u.u_scene, 14);
+    }
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.STENCIL_TEST);
     gl.enable(gl.BLEND);
@@ -1062,7 +1148,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1i(u.u_top32, 10);
     gl.uniform1f(u.u_tmin, this.tmin);
     gl.uniform1i(u.u_elev, 1);
-    for (const t of draw) {
+    for (const { t, clip } of draw) {
       if (t.elevFor !== this.elevKey + '|' + this.hk + '|' + this.blockCells) this.elevations(t);
       const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
       gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
@@ -1071,6 +1157,7 @@ export class FieldLayer implements CustomLayerInterface {
       const cp = pd.clippingPlane as ArrayLike<number>;
       gl.uniform4f(u.u_projection_clipping_plane, cp[0], cp[1], cp[2], cp[3]);
       gl.uniform1f(u.u_projection_transition, pd.projectionTransition);
+      if (scene) gl.uniformMatrix4fv(u.u_invProj, false, invert(pd.mainMatrix as ArrayLike<number>));
       gl.uniform1f(u.u_trans, pd.projectionTransition);
       gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
       const n = 2 ** t.z;
@@ -1107,11 +1194,17 @@ export class FieldLayer implements CustomLayerInterface {
       gl.activeTexture(gl.TEXTURE11);
       gl.bindTexture(gl.TEXTURE_2D, t.cmask);
       gl.uniform1f(u.u_gmin, t.gmin);
-      if (this.box) {
-        const [w, s, e, nn] = this.box;
-        const a = MercatorCoordinate.fromLngLat([w, nn]), c = MercatorCoordinate.fromLngLat([e, s]);
-        gl.uniform4f(u.u_box, (a.x * n - t.x) * EXTENT, (a.y * n - t.y) * EXTENT, (c.x * n - t.x) * EXTENT, (c.y * n - t.y) * EXTENT);
-      } else gl.uniform4f(u.u_box, -1e9, -1e9, 1e9, 1e9);
+      {
+        // (the comparison's box, and a stand-in ancestor's clip: their intersection)
+        let bx = [-1e9, -1e9, 1e9, 1e9];
+        if (this.box) {
+          const [w, s, e, nn] = this.box;
+          const a = MercatorCoordinate.fromLngLat([w, nn]), c = MercatorCoordinate.fromLngLat([e, s]);
+          bx = [(a.x * n - t.x) * EXTENT, (a.y * n - t.y) * EXTENT, (c.x * n - t.x) * EXTENT, (c.y * n - t.y) * EXTENT];
+        }
+        if (clip) bx = [Math.max(bx[0], clip[0]), Math.max(bx[1], clip[1]), Math.min(bx[2], clip[2]), Math.min(bx[3], clip[3])];
+        gl.uniform4f(u.u_box, bx[0], bx[1], bx[2], bx[3]);
+      }
       for (let k = 0; k < 5; k++) {
         gl.activeTexture(gl.TEXTURE4 + k);
         gl.bindTexture(gl.TEXTURE_2D, t.tex![k]);
@@ -1153,7 +1246,7 @@ export class FieldLayer implements CustomLayerInterface {
     }
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
-    for (const k of [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+    for (const k of [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
@@ -1162,6 +1255,8 @@ export class FieldLayer implements CustomLayerInterface {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
+    // (MapLibre's framebuffer bound again, as the fork asks of a layer that reads the scene's depth)
+    if (scene) gl.bindFramebuffer(gl.FRAMEBUFFER, opts.framebuffer);
     if (q && timed) {
       gl.endQuery(this.timer.ext!.TIME_ELAPSED_EXT);
       this.timer.q.push(q);
@@ -1178,8 +1273,44 @@ export class FieldLayer implements CustomLayerInterface {
   /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (RGBA16F with
    * mipmaps, MB). */
   drawnSize(): { tiles: number; bytes: number; textureMB: number } {
-    let bytes = 0;
-    for (const k of this.drawn) bytes += this.tiles.get(k)?.bytes ?? 0;
-    return { tiles: this.drawn.length, bytes, textureMB: (this.drawn.length * 4 * 512 * 512 * 8 * 4) / 3 / 1e6 };
+    let bytes = 0, gpu = 0;
+    for (const k of new Set(this.drawn)) {
+      bytes += this.tiles.get(k)?.bytes ?? 0;
+      gpu += this.tiles.get(k)?.gpu ?? 0;
+    }
+    return { tiles: new Set(this.drawn).size, bytes, textureMB: gpu / 1e6 };
   }
+}
+
+/** A 4 × 4 matrix's inverse (column-major), or the identity where it has none. */
+function invert(m: ArrayLike<number>): Float32Array {
+  const a = Array.from(m);
+  const o = new Float32Array(16);
+  const [a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33] = a;
+  const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
+  const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12, b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
+  const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (!det) {
+    o[0] = o[5] = o[10] = o[15] = 1;
+    return o;
+  }
+  det = 1 / det;
+  o[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+  o[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+  o[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+  o[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+  o[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+  o[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+  o[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+  o[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+  o[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+  o[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+  o[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+  o[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+  o[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+  o[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+  o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+  o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+  return o;
 }

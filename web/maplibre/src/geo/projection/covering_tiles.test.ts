@@ -1,3 +1,4 @@
+// Scenic Roads: seven of these lists follow the cover's zoom by depth (FORK.md, covering_tiles_depth.test.ts).
 import {beforeEach, describe, expect, test} from 'vitest';
 import {GlobeTransform} from './globe_transform.ts';
 import {LngLat} from '../lng_lat.ts';
@@ -99,9 +100,9 @@ describe('coveringTiles', () => {
             });
     
             expect(tiles).toEqual([
-                new OverscaledTileID(7, 0, 7, 64, 64),
+                new OverscaledTileID(8, 0, 8, 127, 127),
+                new OverscaledTileID(8, 0, 8, 128, 128),
                 new OverscaledTileID(7, 0, 7, 64, 63),
-                new OverscaledTileID(7, 0, 7, 63, 63),
                 new OverscaledTileID(10, 0, 10, 510, 512),
                 new OverscaledTileID(10, 0, 10, 511, 512),
                 new OverscaledTileID(10, 0, 10, 511, 513)
@@ -310,7 +311,7 @@ describe('coveringTiles', () => {
 
                 expect(coveringTiles(transform, options)).toEqual([
                     new OverscaledTileID(11, 0, 11, 1024, 1023),
-                    new OverscaledTileID(10, 0, 10, 511, 511),
+                    new OverscaledTileID(11, 0, 11, 1023, 1023)
                 ]);
             });
 
@@ -333,11 +334,11 @@ describe('coveringTiles', () => {
                     transform.setElevation(20000);
 
                     expect(coveringTiles(transform, options)).toEqual([
-                        new OverscaledTileID(11, 0, 11, 1023, 1023),
                         new OverscaledTileID(11, 0, 11, 1024, 1022),
                         new OverscaledTileID(11, 0, 11, 1023, 1022),
+                        new OverscaledTileID(12, 0, 12, 2047, 2046),
                         new OverscaledTileID(12, 0, 12, 2048, 2046),
-                        new OverscaledTileID(12, 0, 12, 2048, 2047),
+                        new OverscaledTileID(12, 0, 12, 2048, 2047)
                     ]);
                 });
 
@@ -359,9 +360,8 @@ describe('coveringTiles', () => {
 
                     expect(coveringTiles(transform, options)).toEqual([
                         new OverscaledTileID(11, 0, 11, 1024, 1023),
-                        new OverscaledTileID(9, 0, 9, 256, 256),
                         new OverscaledTileID(12, 0, 12, 2047, 2046),
-                        new OverscaledTileID(12, 0, 12, 2047, 2047),
+                        new OverscaledTileID(12, 0, 12, 2047, 2047)
                     ]);
                 });
 
@@ -382,11 +382,12 @@ describe('coveringTiles', () => {
                     transform.setElevation(20000);
 
                     expect(coveringTiles(transform, options)).toEqual([
-                        new OverscaledTileID(11, 0, 11, 1023, 1023),
                         new OverscaledTileID(8, 0, 8, 128, 128),
                         new OverscaledTileID(8, 0, 8, 127, 128),
+                        new OverscaledTileID(12, 0, 12, 2047, 2046),
+                        new OverscaledTileID(12, 0, 12, 2047, 2047),
                         new OverscaledTileID(12, 0, 12, 2048, 2046),
-                        new OverscaledTileID(12, 0, 12, 2048, 2047),
+                        new OverscaledTileID(12, 0, 12, 2048, 2047)
                     ]);
                 });
 
@@ -407,10 +408,10 @@ describe('coveringTiles', () => {
                     transform.setElevation(20000);
 
                     expect(coveringTiles(transform, options)).toEqual([
+                        new OverscaledTileID(10, 0, 10, 511, 512),
                         new OverscaledTileID(10, 0, 10, 511, 511),
-                        new OverscaledTileID(9, 0, 9, 255, 256),
                         new OverscaledTileID(12, 0, 12, 2048, 2046),
-                        new OverscaledTileID(12, 0, 12, 2048, 2047),
+                        new OverscaledTileID(12, 0, 12, 2048, 2047)
                     ]);
                 });
             });
@@ -603,11 +604,12 @@ describe('coveringTiles', () => {
                 calculateTileZoom: createCalculateTileZoomFunction(10.0, 1.0)
             };
             expect(coveringTiles(transform, optionsWithTileLodParams)).toEqual([
+                new OverscaledTileID(8, 0, 8, 145, 73),
                 new OverscaledTileID(7, 0, 7, 73, 37),
                 new OverscaledTileID(7, 0, 7, 73, 36),
-                new OverscaledTileID(7, 0, 7, 72, 36),
                 new OverscaledTileID(6, 0, 6, 37, 18),
-                new OverscaledTileID(5, 0, 5, 18, 8),
+                new OverscaledTileID(6, 0, 6, 37, 17),
+                new OverscaledTileID(6, 0, 6, 36, 17),
                 new OverscaledTileID(9, 0, 9, 290, 148),
                 new OverscaledTileID(9, 0, 9, 291, 148)
             ]);

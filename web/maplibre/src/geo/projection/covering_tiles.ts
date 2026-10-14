@@ -280,6 +280,30 @@ export function expandCullingToContentElevation(frustum: Frustum, plane: vec4, c
 }
 
 /**
+ * Scenic Roads: the horizontal distance the zoom function is given for a tile (see `coveringTiles`):
+ * where a point at the tile's least depth along the camera's forward vector would lie on the line of
+ * sight's vertical plane, √(depth² − height²); never more than `d2` (its distance as upstream has
+ * it). `camera` in mercator units, `distanceZ` the camera's height over the center's elevation.
+ */
+export function tileDepthDistance2d(camera: {x: number; y: number}, distanceZ: number, pitch: number, bearing: number,
+    tileID: {x: number; y: number; z: number}, wrap: number, d2: number): number {
+    const sinPitch = Math.sin(pitch), cosPitch = Math.cos(pitch);
+    const fwdX = Math.sin(bearing) * sinPitch, fwdY = -Math.cos(bearing) * sinPitch;
+    const n = Math.pow(2, tileID.z);
+    const x0 = tileID.x / n + wrap, x1 = (tileID.x + 1) / n + wrap, y0 = tileID.y / n, y1 = (tileID.y + 1) / n;
+    const nx = Math.min(Math.max(camera.x, x0), x1), ny = Math.min(Math.max(camera.y, y0), y1);
+    const height = distanceZ * cosPitch;
+    let depth = Infinity;
+    for (const [px, py] of [[nx, ny], [x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+        const dd = (px - camera.x) * fwdX + (py - camera.y) * fwdY + height;
+        if (dd > 0) depth = Math.min(depth, dd);
+    }
+    if (!isFinite(depth)) return d2;
+    // (never nearer than the camera's height over the ground: the zoom of a point straight below)
+    return Math.min(d2, Math.sqrt(Math.max(0, depth * depth - distanceZ * distanceZ)));
+}
+
+/**
  * Returns a list of tiles that optimally covers the screen. Adapted for globe projection.
  * Correctly handles LOD when moving over the antimeridian.
  * @param transform - The transform instance.
@@ -327,6 +351,18 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     // near). Ground below the center's elevation (on the flat map, whose camera pivots on the
     // ground) leaves the zoom as it was: never coarser than upstream's. Capped at the map's
     // highest zoom.
+    // Scenic Roads: a tile's distance for its zoom is its depth along the camera's forward vector, not
+    // its distance from the camera. What's drawn of a tile shrinks with its depth (a pinhole camera's
+    // scale is 1 / depth), and a tile at the screen's side is farther from the camera than one at the
+    // same depth in the middle: by its distance it got a coarser zoom (Tokyo at z13.5, 65°: z12–13 at
+    // the left and right edges against z14 in the middle, task #102). Its depth is the least of its
+    // corners' and its nearest point's (ahead of the camera); the zoom function is given the
+    // horizontal distance at which a point of that depth would lie straight below the camera's
+    // line of sight (√(depth² − height²): what makes its distance its depth), so its terms stay as
+    // they were for the tiles on the line of sight. On the globe, the tile's corners as the flat
+    // map has them (the same near the camera, where the zooms are fine).
+    const depthDistance2d = (tileID: {x: number; y: number; z: number}, wrap: number, d2: number) =>
+        tileDepthDistance2d(cameraCoord, distanceZ, transform.pitchInRadians, transform.bearingInRadians, tileID, wrap, d2);
     const terrainLod = allowVariableZoom && !!options.terrain && options.terrainAwareZoom !== false;
     const mercatorPerMeter = terrainLod ? mercatorZfromAltitude(1, transform.center.lat) : 0;
     const maxTerrainLodZoom = transform.maxZoom + scaleZoom(transform.tileSize / options.tileSize);
@@ -373,7 +409,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
             fullyVisible = intersectResult === IntersectionResult.Full;
         }
 
-        const distToTile2d = detailsProvider.distanceToTile2d(cameraCoord.x, cameraCoord.y, tileID, boundingVolume);
+        const distToTile2d = depthDistance2d(tileID, it.wrap, detailsProvider.distanceToTile2d(cameraCoord.x, cameraCoord.y, tileID, boundingVolume));
 
         let thisTileDesiredZ = desiredZ;
         // (the zoom the terrain's gain may raise a reparsed tile's layout to: see below)
