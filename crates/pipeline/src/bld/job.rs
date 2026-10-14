@@ -17,6 +17,7 @@
 //! - Pure: the pack is a function of the work files' bytes and the coverage over T (its shapes and
 //!   their countries).
 
+use super::field;
 use super::fill::{self, src, Near, Point};
 use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
@@ -56,6 +57,19 @@ pub struct Summary {
     pub fullest: Vec<(String, u32, u32)>,
     /// The pack written (its content name), if any.
     pub pack: Option<String>,
+    /// The field's tiles and their bytes at levels 8–13 (docs/buildings3d.md §4.8: `field`), and
+    /// the buildings and parts in its heritage lists.
+    #[serde(default)]
+    pub field_tiles: [u64; 6],
+    #[serde(default)]
+    pub field_bytes: [u64; 6],
+    #[serde(default)]
+    pub heritage: u64,
+    /// The field's hi pack and mid written (their content names), if any.
+    #[serde(default)]
+    pub field_pack: Option<String>,
+    #[serde(default)]
+    pub field_mid: Option<String>,
 }
 
 impl Summary {
@@ -84,6 +98,11 @@ impl Summary {
             self.bytes[k] += o.bytes[k];
             self.features[k] += o.features[k];
         }
+        for k in 0..6 {
+            self.field_tiles[k] += o.field_tiles[k];
+            self.field_bytes[k] += o.field_bytes[k];
+        }
+        self.heritage += o.heritage;
         for t in &o.heaviest {
             keep(&mut self.heaviest, t.clone(), 1);
         }
@@ -191,24 +210,26 @@ pub fn areas_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
 }
 
 /// Every tile of T (its work file and its neighbours' in `files`, as `area_blocks` has them), in
-/// order (each z8 area's, by zoom, x, y), given to `add`.
-pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut AddTile) -> Result<Summary> {
+/// order (each z8 area's, by zoom, x, y), given to `add` (the field's left out).
+pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, sites: &[[i32; 2]], add: &mut AddTile) -> Result<Summary> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     let mut sum = Summary::default();
     let areas = areas_of(files);
     for (k, &a) in areas.iter().enumerate() {
         crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
-        sum.merge(&area_tiles(files, cov, t, a, add)?);
+        sum.merge(&area_tiles(files, cov, t, a, sites, add)?.0);
     }
     crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
     Ok(sum)
 }
 
 /// Area `a`'s tiles (a z8 tile of T: its buildings, and copies of those around it reaching into its
-/// tiles), by zoom, x, y, given to `add`: what `tiles_of` makes of it. It reads only the blocks
-/// `area_blocks` names, and the coverage where they are: a task's files (`super::task::cut`) give
-/// the same tiles.
-pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), add: &mut AddTile) -> Result<Summary> {
+/// tiles), by zoom, x, y, given to `add`: what `tiles_of` makes of it; and its field (`field::area`:
+/// every building and part extruded that meets the area, its own and those filled here around it,
+/// its level-8 tile carrying the heritage list of its own that hold one of `sites`, E7). It reads
+/// only the blocks `area_blocks` names, and the coverage where they are: a task's files
+/// (`super::task::cut`) give the same tiles.
+pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), sites: &[[i32; 2]], add: &mut AddTile) -> Result<(Summary, field::AreaField)> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     let mut sum = Summary::default();
     let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
@@ -325,6 +346,9 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
     // The area's tiles: its own records, in the tiles of their centroids; and the copies, for
     // the flat footprints, of every building filled here into the area's tiles it reaches.
     let mut by_tile: BTreeMap<(u8, u32, u32), Vec<Feat>> = BTreeMap::new();
+    // The field's footprints (every one extruded: not an outline with parts), and the area's own.
+    let mut feet: Vec<field::Foot> = Vec::new();
+    let mut own_feet: Vec<usize> = Vec::new();
     for (bi, (b, (_, e))) in blocks.iter().zip(&list).enumerate() {
         let (_, x, y) = key_zxy(e.key);
         for (i, fl) in filled[bi].iter().enumerate() {
@@ -344,6 +368,12 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
                 }
             }
             let polys: Vec<Vec<&[[i32; 2]]>> = b.polygons(i).map(|p| p.collect()).collect();
+            if fl.k != 2 {
+                if own {
+                    own_feet.push(feet.len());
+                }
+                feet.push(field::Foot { polys: polys.clone(), h: fl.h, m: fl.m });
+            }
             let feat = |copy: bool| Feat {
                 polys: polys.clone(),
                 cen: b.cen[i],
@@ -389,7 +419,21 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
             sum.note(*z, *x, *y, gz.len() as u32, n);
         }
     }
-    Ok(sum)
+    drop(list);
+    let her = {
+        let own: Vec<field::Foot> = own_feet.iter().map(|&i| field::Foot { polys: feet[i].polys.clone(), h: feet[i].h, m: feet[i].m }).collect();
+        field::heritage(a, &own, sites)
+    };
+    if her.len() >= 4 {
+        sum.heritage = u32::from_le_bytes(her[..4].try_into().unwrap()) as u64;
+    }
+    let f = field::area(a, &feet, &her);
+    for (z, _, _, b) in &f.tiles {
+        let k = (*z - field::LEVEL_HI_MIN) as usize;
+        sum.field_tiles[k] += 1;
+        sum.field_bytes[k] += b.len() as u64;
+    }
+    Ok((sum, f))
 }
 
 /// Area `a`'s box (a z8 tile) grown by `m` ground metres (at its latitude furthest from the
@@ -420,8 +464,17 @@ pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
     Ok(files)
 }
 
-/// Runs `bldtiles T`: its hi pack made and uploaded (or, with no building touching the coverage,
-/// the one it had dropped). With `offload` (the build Mac's coordinator), some of its z8 areas are
+/// T's heritage sites (its markdata's, `field::sites_of_markdata`), for the field's heritage lists;
+/// none without its markdata.
+pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
+    match out.get(&field::markdata_logical(t.x, t.y)) {
+        Some(c) => field::sites_of_markdata(&out.path(c)),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Runs `bldtiles T`: its hi pack, its field's hi pack and its field's mid made and uploaded (or,
+/// with no building touching the coverage, those it had dropped). With `offload` (the build Mac's coordinator), some of its z8 areas are
 /// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
 /// every area's tiles go into the pack in its turn, the same bytes wherever it was made.
 pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
@@ -436,8 +489,15 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
     let mut w = store::pack::PackWriter::create(&local, meta, true)?;
     let mut n = 0u64;
+    // The field's hi pack (levels 13–8), and its areas' level-8 planes for the mid.
+    let field_logical = field::hi_logical(t.x, t.y);
+    let field_local = out.scratch_file(&format!("{field_logical}.pack"));
+    let fmeta = serde_json::json!({"layer": field::LAYER, "scope": "hi", "root": t.slash(), "encoding": field::ENCODING});
+    let mut fw = store::pack::PackWriter::create(&field_local, fmeta, false)?;
+    let mut mids: BTreeMap<(u32, u32), field::Planes> = BTreeMap::new();
+    let sites = sites(out, t)?;
     let areas = areas_of(&files);
-    let mut offers = super::task::Offers::new(offload, &out.scratch, t, areas.len());
+    let mut offers = super::task::Offers::new(offload, &out.scratch, t, areas.len(), &sites);
     let mut sum = Summary::default();
     for (k, &a) in areas.iter().enumerate() {
         crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
@@ -449,7 +509,7 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
             n += 1;
             w.add(z, x, y, gz, raw)
         };
-        let s = match offers.result(&files, cov, &areas, k)? {
+        let (s, f) = match offers.result(&files, cov, &areas, k)? {
             Some(dir) => {
                 let _p = phase("another worker's area taken in", Class::Disk);
                 let s = super::task::take_area(&dir, Unit { z: 8, x: a.0, y: a.1 }, &mut add)?;
@@ -459,29 +519,53 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
             None => {
                 let _p = phase("areas' tiles made here", Class::Compute);
                 let here = std::time::Instant::now();
-                let s = area_tiles(&files, cov, t, a, &mut add)?;
+                let (s, f) = area_tiles(&files, cov, t, a, &sites, &mut add)?;
                 offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());
-                s
+                (s, f)
             }
         };
         sum.merge(&s);
+        for (z, x, y, b) in &f.tiles {
+            fw.add(*z, *x, *y, b, b.len() as u32)?;
+        }
+        if let Some(m) = f.mid {
+            mids.insert(a, m);
+        }
     }
     crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
     w.finish()?;
-    if n == 0 {
-        std::fs::remove_file(&local).ok();
-        if out.get(&logical).is_some() {
-            out.remove(&logical);
+    fw.finish()?;
+    // The field's hi pack and mid, and the meshes': each uploaded, or dropped with nothing in it.
+    let mid_logical = field::mid_logical(t.x, t.y);
+    let mid_local = out.scratch_file(&format!("{mid_logical}.zst"));
+    let has_field = !mids.is_empty();
+    if has_field {
+        std::fs::write(&mid_local, field::write_mid(&mids)?)?;
+    }
+    drop(mids);
+    let p = phase("uploaded", Class::NasWrite);
+    for (k, (logical, local, ext, keep)) in [(&logical, &local, "pack", n > 0), (&field_logical, &field_local, "pack", has_field), (&mid_logical, &mid_local, "zst", has_field)].into_iter().enumerate() {
+        if keep {
+            let name = Some(out.put_file(logical, ext, local)?);
+            match k {
+                0 => sum.pack = name,
+                1 => sum.field_pack = name,
+                _ => sum.field_mid = name,
+            }
+        } else {
+            std::fs::remove_file(local).ok();
+            if out.get(logical).is_some() {
+                out.remove(logical);
+            }
         }
-        out.save()?;
+    }
+    drop(p);
+    out.save()?;
+    if n == 0 {
         eprintln!("bldtiles {}: no building in the coverage ({:.0?})", t.slash(), t0.elapsed());
         return Ok(sum);
     }
-    let p = phase("uploaded", Class::NasWrite);
-    sum.pack = Some(out.put_file(&logical, "pack", &local)?);
-    drop(p);
-    out.save()?;
-    eprintln!("bldtiles {}: {} buildings and {} parts in {} tiles ({:.0?})", t.slash(), sum.buildings, sum.parts, sum.tiles.iter().sum::<u64>(), t0.elapsed());
+    eprintln!("bldtiles {}: {} buildings and {} parts in {} tiles, the field's {} tiles ({:.1} MB) ({:.0?})", t.slash(), sum.buildings, sum.parts, sum.tiles.iter().sum::<u64>(), sum.field_tiles.iter().sum::<u64>(), sum.field_bytes.iter().sum::<u64>() as f64 / 1e6, t0.elapsed());
     Ok(sum)
 }
 
@@ -534,7 +618,7 @@ mod tests {
         files[4] = Some(work(d.path(), t, &bs));
         let c = cov("place:2.3470,48.8580,3", "FR");
         let mut got: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
-        let sum = tiles_of(&files, &c, t, &mut |z, x, y, gz, raw| {
+        let sum = tiles_of(&files, &c, t, &[], &mut |z, x, y, gz, raw| {
             got.push((z, x, y, gz.to_vec(), raw));
             Ok(())
         })
@@ -565,7 +649,7 @@ mod tests {
         // The same bytes on one thread.
         let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
         let mut again: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
-        pool.install(|| tiles_of(&files, &c, t, &mut |z, x, y, gz, raw| {
+        pool.install(|| tiles_of(&files, &c, t, &[], &mut |z, x, y, gz, raw| {
             again.push((z, x, y, gz.to_vec(), raw));
             Ok(())
         }))
@@ -609,7 +693,7 @@ mod tests {
         files[4] = Some(work(d.path(), t, &bs));
         let c = cov("place:2.5,48.86,40", "FR");
         let mut got: BTreeMap<(u8, u32, u32), Props> = BTreeMap::new();
-        let sum = tiles_of(&files, &c, t, &mut |z, x, y, gz, _| {
+        let sum = tiles_of(&files, &c, t, &[], &mut |z, x, y, gz, _| {
             got.insert((z, x, y), props(gz));
             Ok(())
         })

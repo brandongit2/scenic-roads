@@ -3562,7 +3562,8 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
         by.into_iter().max_by_key(|(a, n)| (*n, std::cmp::Reverse(*a))).context("no buildings in that tile")?.0
     };
     let t0 = std::time::Instant::now();
-    let c = pipeline::bld::task::cut(&files, &cov, t, a, &dir)?;
+    let sites = pipeline::bld::job::sites(out, t)?;
+    let c = pipeline::bld::task::cut(&files, &cov, t, a, &sites, &dir)?;
     println!("{}", serde_json::json!({ "area": format!("8/{}/{}", a.0, a.1), "bytes": c.bytes, "records": c.records, "mem_mb": c.mem_mb(), "secs": t0.elapsed().as_secs_f64() }));
     Ok(())
 }

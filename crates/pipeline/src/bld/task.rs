@@ -12,11 +12,16 @@
 //!   each whole with its buffer and country: a building's shape is then the same shape (another
 //!   index), so its country and the first-match order are the same.
 //!
+//! - `heritage.bin`: T's heritage sites (`field::sites_of_markdata`), E7 pairs (i32 LE), sorted.
+//!
 //! What the program writes there: `area.tiles` (an RDTILES archive of the area's z12–14 tiles, as
-//! `job::area_tiles` makes them) and `area.json` (its `job::Summary`). The job's own run of an area
+//! `job::area_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES
+//! archive of its field's tiles, levels 13–8) and `area.mid` (its level-8 planes, `field::write_mid`;
+//! none without a building). The job's own run of an area
 //! (one no worker finished, or a worker's result checked) writes the same two files the same way,
 //! from the whole work files: a worker's are compared with them byte for byte.
 
+use super::field;
 use super::job::{self, AddTile, Summary};
 use super::work::{self, WorkFile};
 use crate::coverage::{Coverage, Shape};
@@ -31,6 +36,12 @@ pub const COVERAGE: &str = "coverage.sect";
 /// What the program writes: the area's tiles, and what it made.
 pub const TILES: &str = "area.tiles";
 pub const SUMMARY: &str = "area.json";
+pub const FIELD: &str = "area.field";
+pub const MID: &str = "area.mid";
+/// T's heritage sites, in a task's folder.
+pub const SITES: &str = "heritage.bin";
+/// What the program writes (`MID` only with a building).
+pub const OUTPUTS: [&str; 4] = [TILES, SUMMARY, FIELD, MID];
 /// The task's kind and its program.
 pub const KIND: &str = "bldtile";
 
@@ -57,9 +68,10 @@ impl Cut {
 
 /// Writes area `a`'s task files (of T, `files` its and its neighbours' work files as
 /// `job::work_files` has them) into `dir`.
-pub fn cut(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), dir: &Path) -> Result<Cut> {
+pub fn cut(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), sites: &[[i32; 2]], dir: &Path) -> Result<Cut> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(SITES), sites_bytes(sites))?;
     let (list, n_own) = job::area_blocks(files, t, a);
     let records = list[..n_own].iter().map(|(_, e)| e.count as u64).sum();
     // Each file's blocks, by key; and the box of every point the area asks the coverage about.
@@ -90,6 +102,21 @@ pub fn cut(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), d
     write_coverage(&path, &kept)?;
     bytes += std::fs::metadata(&path)?.len();
     Ok(Cut { bytes, records })
+}
+
+/// Sites as `SITES` holds them.
+pub fn sites_bytes(sites: &[[i32; 2]]) -> Vec<u8> {
+    sites.iter().flat_map(|p| p[0].to_le_bytes().into_iter().chain(p[1].to_le_bytes())).collect()
+}
+
+fn read_sites(path: &Path) -> Result<Vec<[i32; 2]>> {
+    let b = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    ensure!(b.len() % 8 == 0, "{}: not E7 pairs", path.display());
+    Ok(b.chunks_exact(8).map(|c| [i32::from_le_bytes(c[0..4].try_into().unwrap()), i32::from_le_bytes(c[4..8].try_into().unwrap())]).collect())
 }
 
 /// Writes shapes as a task's coverage (RDSECT: meta `{"fmt": 1, "shapes": [{source, country,
@@ -157,13 +184,23 @@ pub fn tile_of(a: Unit) -> Unit {
 
 /// Area `a`'s tiles and summary written into `dir` (`TILES`, `SUMMARY`), from `files` and `cov`
 /// (the whole work files and coverage, or a task's): the program's run and the job's own.
-pub fn write_area(files: &[Option<WorkFile>], cov: &Coverage, a: Unit, dir: &Path) -> Result<Summary> {
+pub fn write_area(files: &[Option<WorkFile>], cov: &Coverage, a: Unit, sites: &[[i32; 2]], dir: &Path) -> Result<Summary> {
     ensure!(a.z == 8, "an area is a z8 tile ({} isn't one)", a.slash());
     std::fs::create_dir_all(dir)?;
     let meta = serde_json::json!({ "layer": super::LAYER, "area": a.slash(), "encoding": "mvt" }).to_string();
     let mut w = ArchiveWriter::create(&dir.join(TILES), &meta)?;
-    let sum = job::area_tiles(files, cov, tile_of(a), (a.x, a.y), &mut |z, x, y, gz, raw| w.add(z, x, y, gz, raw as usize))?;
+    let (sum, f) = job::area_tiles(files, cov, tile_of(a), (a.x, a.y), sites, &mut |z, x, y, gz, raw| w.add(z, x, y, gz, raw as usize))?;
     w.finish()?;
+    let meta = serde_json::json!({ "layer": field::LAYER, "area": a.slash(), "encoding": field::ENCODING }).to_string();
+    let mut w = ArchiveWriter::create(&dir.join(FIELD), &meta)?;
+    for (z, x, y, b) in &f.tiles {
+        w.add(*z, *x, *y, b, b.len())?;
+    }
+    w.finish()?;
+    std::fs::remove_file(dir.join(MID)).ok();
+    if let Some(m) = f.mid {
+        std::fs::write(dir.join(MID), field::write_mid(&BTreeMap::from([((a.x, a.y), m)]))?)?;
+    }
     std::fs::write(dir.join(SUMMARY), serde_json::to_vec(&sum)?)?;
     Ok(sum)
 }
@@ -172,13 +209,13 @@ pub fn write_area(files: &[Option<WorkFile>], cov: &Coverage, a: Unit, dir: &Pat
 pub fn run(dir: &Path, a: Unit) -> Result<Summary> {
     let files = open_files(dir, tile_of(a))?;
     let cov = read_coverage(&dir.join(COVERAGE))?;
-    write_area(&files, &cov, a, dir)
+    write_area(&files, &cov, a, &read_sites(&dir.join(SITES))?, dir)
 }
 
 /// An area's results in `dir` (`write_area`'s, a worker's or this Mac's), each tile given to `add`
-/// in order (zoom, x, y: as `area_tiles` gives them); its summary. A tile outside the area, or of
-/// another zoom, is refused.
-pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<Summary> {
+/// in order (zoom, x, y: as `area_tiles` gives them); its summary and field. A tile outside the
+/// area, or of another zoom or level, is refused.
+pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, field::AreaField)> {
     let sum: Summary = serde_json::from_slice(&std::fs::read(dir.join(SUMMARY))?).context("an area's summary")?;
     let ar = Archive::open(&dir.join(TILES))?;
     for e in ar.entries() {
@@ -186,7 +223,25 @@ pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<Summary> {
         ensure!((super::MINZOOM..=super::MAXZOOM).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y), "area {}'s tiles hold {z}/{x}/{y}", a.slash());
         add(z, x, y, ar.get_entry(e), e.raw_len)?;
     }
-    Ok(sum)
+    let mut f = field::AreaField::default();
+    let ar = Archive::open(&dir.join(FIELD))?;
+    for e in ar.entries() {
+        let (z, x, y) = super::key_zxy(e.key);
+        ensure!((field::LEVEL_HI_MIN..=field::LEVEL_MAX).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y), "area {}'s field holds {z}/{x}/{y}", a.slash());
+        f.tiles.push((z, x, y, ar.get_entry(e).to_vec()));
+    }
+    // (In the field's order: the finest level first.)
+    f.tiles.sort_by(|p, q| q.0.cmp(&p.0).then((p.1, p.2).cmp(&(q.1, q.2))));
+    match std::fs::read(dir.join(MID)) {
+        Ok(b) => {
+            let mut m = field::read_mid(&b)?;
+            ensure!(m.len() == 1 && m.contains_key(&(a.x, a.y)), "area {}'s mid holds another area", a.slash());
+            f.mid = m.remove(&(a.x, a.y));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok((sum, f))
 }
 
 /// A task's spec (the shape of a tail's: crate::offload) for area `a`: the program `bldtile` over
@@ -206,9 +261,13 @@ pub fn inputs_of(root: &Path) -> Result<BTreeMap<String, u64>> {
     Ok(out)
 }
 
-/// Whether two areas' results are the same bytes (both files).
+/// Whether two areas' results are the same bytes (every file, `MID` there in both or neither).
 pub fn same_files(a: &Path, b: &Path) -> bool {
-    [TILES, SUMMARY].iter().all(|f| matches!((std::fs::read(a.join(f)), std::fs::read(b.join(f))), (Ok(x), Ok(y)) if x == y))
+    OUTPUTS.iter().all(|f| match (std::fs::read(a.join(f)), std::fs::read(b.join(f))) {
+        (Ok(x), Ok(y)) => x == y,
+        (Err(x), Err(y)) => *f == MID && x.kind() == std::io::ErrorKind::NotFound && y.kind() == std::io::ErrorKind::NotFound,
+        _ => false,
+    })
 }
 
 /// Where an area's results wait for its turn in the pack.
@@ -240,13 +299,15 @@ pub struct Offers<'a> {
     /// their time and buildings (what an area takes here, `Patience`).
     records: BTreeMap<usize, u64>,
     here: (f64, u64),
+    /// T's heritage sites (`SITES`).
+    sites: Vec<[i32; 2]>,
 }
 
 impl<'a> Offers<'a> {
-    pub fn new(offload: Option<&'a crate::offload::Offload>, scratch: &Path, t: Unit, areas: usize) -> Offers<'a> {
+    pub fn new(offload: Option<&'a crate::offload::Offload>, scratch: &Path, t: Unit, areas: usize, sites: &[[i32; 2]]) -> Offers<'a> {
         let scratch = scratch.to_path_buf();
         std::fs::remove_dir_all(scratch.join("bldtile-results")).ok();
-        Offers { offload, t, scratch, out: BTreeMap::new(), ready: BTreeMap::new(), far: areas, most: 3, records: BTreeMap::new(), here: (0.0, 0) }
+        Offers { offload, t, scratch, out: BTreeMap::new(), ready: BTreeMap::new(), far: areas, most: 3, records: BTreeMap::new(), here: (0.0, 0), sites: sites.to_vec() }
     }
 
     /// An area made here took `secs` for its `records` buildings (and parts, and those outside).
@@ -280,7 +341,7 @@ impl<'a> Offers<'a> {
             let a = self.area(areas, self.far);
             let offered = (|| {
                 let root = o.task_root(&format!("bldtile-{}", a.dash()));
-                let c = cut(files, cov, self.t, (a.x, a.y), &root.join("u"))?;
+                let c = cut(files, cov, self.t, (a.x, a.y), &self.sites, &root.join("u"))?;
                 let inputs = inputs_of(&root)?;
                 o.offer_spec(KIND, spec(a, o.version(), &inputs), &root, inputs, c.mem_mb()).map(|t| (t, c.records))
             })();
@@ -317,7 +378,7 @@ impl<'a> Offers<'a> {
         let mine = results_dir(&self.scratch, a);
         let here = || -> Result<()> {
             std::fs::remove_dir_all(&mine).ok();
-            write_area(files, cov, a, &mine).map(|_| ())
+            write_area(files, cov, a, &self.sites, &mine).map(|_| ())
         };
         let theirs = |st: &serde_json::Value| st["out"].as_str().map(|o| Path::new(o).join("u"));
         let mut take = |st: &serde_json::Value| -> Result<()> {
@@ -326,7 +387,10 @@ impl<'a> Offers<'a> {
                 let from = theirs(st).context("no outputs' folder")?;
                 std::fs::remove_dir_all(&mine).ok();
                 std::fs::create_dir_all(&mine)?;
-                for f in [TILES, SUMMARY] {
+                for f in OUTPUTS {
+                    if f == MID && !from.join(f).exists() {
+                        continue;
+                    }
                     if std::fs::rename(from.join(f), mine.join(f)).is_err() {
                         store::sys::copy_data(from.join(f), mine.join(f)).with_context(|| format!("take {f}"))?;
                     }
@@ -451,22 +515,25 @@ mod tests {
         let cov = coverage();
         let areas = job::areas_of(&files);
         assert_eq!(areas, [(129, 88), (131, 88)]);
+        // A heritage site in the 45 m tower.
+        let sites = [[crate::bld::e7(5.6235), crate::bld::e7(48.80)]];
         let mut all: Tiles = Vec::new();
-        let whole = job::tiles_of(&files, &cov, t, &mut collect(&mut all)).unwrap();
+        let whole = job::tiles_of(&files, &cov, t, &sites, &mut collect(&mut all)).unwrap();
         let mut merged = Summary::default();
         let mut by_area: Tiles = Vec::new();
         for &a in &areas {
             let a8 = Unit { z: 8, x: a.0, y: a.1 };
             let mut here: Tiles = Vec::new();
-            let s = job::area_tiles(&files, &cov, t, a, &mut collect(&mut here)).unwrap();
+            let (s, f) = job::area_tiles(&files, &cov, t, a, &sites, &mut collect(&mut here)).unwrap();
             merged.merge(&s);
+            assert!(!f.tiles.is_empty() && f.mid.is_some());
             // Cut, run as the program runs, taken back: the same tiles and summary.
             let dir = d.path().join(a8.dash());
-            let c = cut(&files, &cov, t, a, &dir).unwrap();
+            let c = cut(&files, &cov, t, a, &sites, &dir).unwrap();
             let got = run(&dir, a8).unwrap();
             assert_eq!(got, s);
             let mut back: Tiles = Vec::new();
-            assert_eq!(take_area(&dir, a8, &mut collect(&mut back)).unwrap(), s);
+            assert_eq!(take_area(&dir, a8, &mut collect(&mut back)).unwrap(), (s, f));
             assert_eq!(back, here, "area {}", a8.slash());
             assert!(!here.is_empty());
             // Only the shapes that can answer there, in order; the area's own records counted.
@@ -489,7 +556,7 @@ mod tests {
             assert!(c.mem_mb() >= 256);
             // On one thread: the same bytes.
             let one = d.path().join(format!("{}-1", a8.dash()));
-            cut(&files, &cov, t, a, &one).unwrap();
+            cut(&files, &cov, t, a, &sites, &one).unwrap();
             let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
             pool.install(|| run(&one, a8)).unwrap();
             assert!(same_files(&one, &dir));
@@ -498,6 +565,7 @@ mod tests {
         // tiles_of: the areas' tiles in order, their summaries merged.
         assert_eq!(all, by_area);
         assert_eq!(merged, whole);
+        assert_eq!(whole.heritage, 1, "the tower holding the site");
         // A worker's tile outside its area is refused.
         let a8 = Unit { z: 8, x: 131, y: 88 };
         let bad = d.path().join("bad");
@@ -542,8 +610,8 @@ mod tests {
         }
         run(&u, a).unwrap();
         let mut outputs = Vec::new();
-        for f in [TILES, SUMMARY] {
-            let mut b = std::fs::read(u.join(f)).unwrap();
+        for f in OUTPUTS {
+            let Ok(mut b) = std::fs::read(u.join(f)) else { continue };
             if spoil && f == TILES {
                 let n = b.len();
                 b[n / 2] ^= 1;
@@ -571,7 +639,7 @@ mod tests {
         let o = crate::offload::Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job")).clock(clock.clone());
         let scratch = d.path().join("job");
         // No worker around: nothing offered, every area run here.
-        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len());
+        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
         offers.top_up(&files, &cov, &areas, 0).unwrap();
         assert!(offers.out.is_empty());
         // A worker that takes them asks (nothing yet), and is counted.
@@ -590,7 +658,7 @@ mod tests {
         let a8 = Unit { z: 8, x: 131, y: 88 };
         take_area(&dir, a8, &mut collect(&mut got)).unwrap();
         let mut want: Tiles = Vec::new();
-        job::area_tiles(&files, &cov, t, (131, 88), &mut collect(&mut want)).unwrap();
+        job::area_tiles(&files, &cov, t, (131, 88), &[], &mut collect(&mut want)).unwrap();
         assert_eq!(got, want);
         assert!(offers.result(&files, &cov, &areas, 0).unwrap().is_none(), "area 0 runs here");
         {
@@ -604,7 +672,7 @@ mod tests {
         // and the worker gets no more work. (Its pace forgotten first: measured slower than this
         // Mac's run on its first area, it would be given none, coord::task::Tasks::pick.)
         c.shared.lock().unwrap().tasks.paces.clear();
-        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len());
+        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
         offers.top_up(&files, &cov, &areas, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
         assert_eq!(c.shared.lock().unwrap().tasks.by_id.values().next().unwrap().mem_mb, 330);
@@ -618,7 +686,7 @@ mod tests {
         // at once. (What it would take here: its buildings at the pace of those made here.)
         let m2 = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
         m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() }).unwrap();
-        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len());
+        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
         offers.top_up(&files, &cov, &areas, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
         assert_eq!(offers.here_s(1), None);

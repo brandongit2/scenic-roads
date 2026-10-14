@@ -51,6 +51,12 @@ pub const LAYER: &str = "buildings-field";
 pub const ENCODING: &str = "field3-webp";
 /// Bumped when the lo step's output changes (every `bldfield-lo` target runs again).
 pub const LO_V: u32 = 1;
+/// A tile's planes, every class (MB).
+const PLANES_MB: u64 = ((K * 3 * T * T * 4) >> 20) as u64;
+/// What `bldfield-lo` holds at most (MB): one z6 tile's mid at a time, its 16 areas' planes both
+/// decompressed and read (`read_mid`), the four level-7 tiles and the parent, the levels above's
+/// four children each (levels 4 and 5), and 256 MB for the program.
+pub const LO_PEAK_MB: u64 = 256 + 16 * PLANES_MB * 2 + (5 + 4 * 2) * PLANES_MB;
 
 /// Fixed-point scales: coverage, coverage × top (m), wall area (m²).
 const SF: f64 = (1u64 << 32) as f64;
@@ -777,7 +783,8 @@ pub fn lo(q: (u32, u32), mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sy
             }
             return Ok((tiles, p6));
         }
-        let kids: Vec<Out> = (0..4u32).into_par_iter().map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid)).collect::<Result<_>>()?;
+        // (One z6 tile's mid at a time: `LO_PEAK_MB`.)
+        let kids: Vec<Out> = (0..4u32).map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid)).collect::<Result<_>>()?;
         Ok(up(z, x, y, kids))
     }
     let mut tiles = Vec::new();
@@ -797,6 +804,10 @@ pub fn mid_logical(x: u32, y: u32) -> String {
 }
 pub fn lo_logical(x: u32, y: u32) -> String {
     format!("layers/{LAYER}/lo/3-{x}-{y}")
+}
+/// Z6 tile T's markdata (its heritage sites).
+pub fn markdata_logical(x: u32, y: u32) -> String {
+    format!("markdata/6-{x}-{y}")
 }
 
 #[cfg(test)]
