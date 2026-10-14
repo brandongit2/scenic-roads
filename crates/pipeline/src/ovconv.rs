@@ -172,7 +172,7 @@ pub fn overlays(out: &mut Out, src: &str, dots: &HashMap<u64, (u64, f64, f64)>) 
         .manifest
         .keys()
         .filter(|k| AREAS.iter().any(|a| k.starts_with(&format!("layers/{}/", a.layer))) || k.starts_with("ovdata/") || k.starts_with("global/heritage/"))
-        .filter(|k| !wrote.contains(*k))
+        .filter(|k| !wrote.contains(*k) && out.may_remove(k))
         .cloned()
         .collect();
     for k in &stale {
@@ -499,7 +499,7 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
 /// time: a tile it has nothing for any more (a pass without that ferry, a region removed). How many.
 fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
     let prefix = format!("layers/{layer}/");
-    let stale: Vec<String> = out.manifest.keys().filter(|k| k.starts_with(&prefix) && !wrote.contains(*k)).cloned().collect();
+    let stale: Vec<String> = out.manifest.keys().filter(|k| k.starts_with(&prefix) && !wrote.contains(*k) && out.may_remove(k)).cloned().collect();
     for k in &stale {
         out.remove(k);
     }
@@ -608,4 +608,28 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles)?;
     drop_stale(out, "stations", &wrote);
     Ok((kept.len(), ntiles))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A step's sweep of its stale packs removes only names its outputs function allows: a legacy
+    /// or malformed name under its prefix stays, and the save goes through, rather than fail every
+    /// run of the step for good.
+    #[test]
+    fn a_stale_sweep_removes_only_its_steps_outputs() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let mut seed = Out::unbound(&root, &d.path().join("s0")).unwrap();
+        for l in ["layers/stations/hi/6-1-2", "layers/stations/hi/6-1-3", "layers/stations/hi/7-1-2", "layers/stations/old"] {
+            seed.set(l, Some(format!("{l}.0123456789abcdef.pack")));
+        }
+        seed.save().unwrap();
+        let mut out = Out::open(&root, &d.path().join("s1"), "stations").unwrap();
+        assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
+        out.save().unwrap();
+        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+        assert_eq!(m.keys().map(String::as_str).collect::<Vec<_>>(), ["layers/stations/hi/6-1-2", "layers/stations/hi/7-1-2", "layers/stations/old"]);
+    }
 }

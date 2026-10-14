@@ -1028,7 +1028,7 @@ mod tests {
             out.save().unwrap();
         };
         let lo = "layers/slope/lo/3-3-2";
-        let mut fresh = Out::open(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
+        let mut fresh = Out::unbound(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
         terrain(&mut fresh);
         build_piece(&mut fresh, (28, 16), false, &|_, _, _| {}).unwrap();
         build_lo(&mut fresh, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
@@ -1040,7 +1040,7 @@ mod tests {
         assert!(made.get(7, 48, 46).unwrap().is_none(), "a fresh build stores no z7 tile of a z6 tile that isn't its piece");
         assert_ne!(made.get(6, 24, 23).unwrap().as_ref(), Some(&z6), "the earlier run's tile isn't the fresh one");
         drop(made);
-        let mut again = Out::open(&d.path().join("again"), &d.path().join("again-scratch")).unwrap();
+        let mut again = Out::unbound(&d.path().join("again"), &d.path().join("again-scratch")).unwrap();
         terrain(&mut again);
         let old = vec![(6, 24, 23, z6.clone(), z6.len() as u32), (7, 48, 46, z7.clone(), z7.len() as u32)];
         crate::layers::write_pack(&mut again, "slope", "slope4-png", false, "lo", (3, 3, 2), &mut old.into_iter()).unwrap();
@@ -1065,7 +1065,7 @@ mod tests {
         };
         let (hi, mid, other) = (hi_logical(28, 16), mid_logical(28, 16), hi_logical(29, 16));
         let (lhi, lmid) = (hi_logical(24, 23), mid_logical(24, 23));
-        let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         fake(&mut out, &hi);
         let kept = fake(&mut out, &other);
         let e = build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap_err().to_string();
@@ -1083,11 +1083,11 @@ mod tests {
         assert_eq!(drop_piece(&mut out, (24, 23)).unwrap(), 2);
         assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none());
         assert_eq!(out.get(&other), Some(kept.as_str()), "another tile's hi pack stays");
-        let again = Out::open(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
+        let again = Out::unbound(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
         assert!(again.get(&hi).is_none() && again.get(&lhi).is_none() && again.get(&lmid).is_none() && again.get(&mid).is_some());
         // An area's whole run (3/3/2, its one piece 6/28/16): its piece's hi pack dropped the same;
         // a z6 tile not among its pieces left as it is (its "none" piece drops it).
-        let mut area = Out::open(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
+        let mut area = Out::unbound(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
         for l in [&hi, &lhi] {
             fake(&mut area, l);
         }
@@ -1102,7 +1102,7 @@ mod tests {
         out.save().unwrap();
         assert!(out.get(lo).is_some());
         build_lo(&mut out, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
-        let mut fresh = Out::open(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
+        let mut fresh = Out::unbound(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
         build_piece(&mut fresh, (28, 16), false, &|_, _, _| {}).unwrap();
         build_lo(&mut fresh, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
         assert_eq!(out.get(lo), fresh.get(lo), "the same lo pack as a fresh build's");
@@ -1162,14 +1162,14 @@ mod tests {
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let terrain = d.path().join("terrain");
         for (&q, ts) in &by_q {
-            crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
+            crate::terrain_pack::build_q(&mut Out::unbound(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
         }
-        let slope = |root: &std::path::Path| Out::open(root, &d.path().join("s")).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
+        let slope = |root: &std::path::Path| Out::unbound(root, &d.path().join("s")).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
         let made = |name: &str, way: &dyn Fn(&mut Out, (u32, u32), &[(u32, u32)])| {
             let root = d.path().join(name);
             copy_dir(&terrain, &root);
             for (&q, ts) in &by_q {
-                way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), q, ts);
+                way(&mut Out::unbound(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), q, ts);
             }
             root
         };
@@ -1190,7 +1190,7 @@ mod tests {
         assert_eq!(slope(&parts), slope(&v1), "the pieces' jobs and the assemblies'");
         // A mid gone (a piece current without one): its tiles from the lo pack, the same lo pack.
         let (&q, ts) = by_q.iter().next().unwrap();
-        let mut out = Out::open(&parts, &d.path().join("p2")).unwrap();
+        let mut out = Out::unbound(&parts, &d.path().join("p2")).unwrap();
         let before = out.manifest.clone();
         out.remove(&mid_logical(ts[0].0, ts[0].1));
         build_lo(&mut out, q, ts, &|_, _, _| {}).unwrap();
@@ -1269,16 +1269,16 @@ mod tests {
         }
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let terrain = d.path().join("terrain");
-        crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
+        crate::terrain_pack::build_q(&mut Out::unbound(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
         // Its slope, both ways, each over a copy of the terrain's root: the area's first, then again
         // over what the first stored (nothing an earlier run stored is read back: the same packs).
         let made = |name: &str, way: &dyn Fn(&mut Out, &[(u32, u32)])| {
             let root = d.path().join(name);
             copy_dir(&terrain, &root);
-            let slope = || Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
-            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
+            let slope = || Out::unbound(&root, &d.path().join(format!("{name}-scratch"))).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
+            way(&mut Out::unbound(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
             let first = slope();
-            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
+            way(&mut Out::unbound(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
             (first, slope())
         };
         let now = made("now", &|out, ts| {

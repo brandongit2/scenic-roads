@@ -136,8 +136,17 @@ fn hashes_of(p: &Path) -> Result<(String, String)> {
 
 
 impl Out {
-    /// `root`: the NAS project folder (or a local folder standing in for it); `scratch`: local space.
-    pub fn open(root: &Path, scratch: &Path) -> Result<Self> {
+    /// A job of `step`'s: `root`, the NAS project folder (or a local folder standing in for it);
+    /// `scratch`, local space. It puts and removes only `step`'s outputs (`for_step`).
+    pub fn open(root: &Path, scratch: &Path, step: &str) -> Result<Self> {
+        let mut out = Self::open_as_of(root, scratch, std::env::var(UNITS_AS_OF_ENV).ok().as_deref())?;
+        out.for_step(step);
+        Ok(out)
+    }
+
+    /// Not a step's job's: the agent merging hand-offs, a tool, a test of a step's parts. It may
+    /// put and remove any name, so a step's job opens with `open`, never this.
+    pub fn unbound(root: &Path, scratch: &Path) -> Result<Self> {
         Self::open_as_of(root, scratch, std::env::var(UNITS_AS_OF_ENV).ok().as_deref())
     }
 
@@ -162,10 +171,11 @@ impl Out {
     /// removes only `step`'s outputs (crate::agent::steps::writes, the function the lead's merge
     /// checks every entry against, so the writer and the check can't disagree; docs/pool.md §7.3).
     /// A put outside them fails before anything is uploaded; a `set` or `remove` outside them fails
-    /// the next save, before anything is saved. A step the steps table doesn't know (a tool run by
+    /// the next save, and nothing of that save lands (what earlier saves saved, the targets done
+    /// before it, stands). A step the steps table doesn't know (a tool run by
     /// hand) is held to nothing while it writes the manifest, and changes nothing when it hands off
     /// (the merge refuses such an entry).
-    pub fn for_step(&mut self, step: &str) {
+    fn for_step(&mut self, step: &str) {
         self.step = Some(step.to_string());
     }
 
@@ -178,6 +188,13 @@ impl Out {
             None if self.handoff.is_some() => bail!("{} {logical}: {step} isn't a step the steps table knows, so its hand-off may change nothing", if removal { "removes" } else { "writes" }),
             None => Ok(()),
         }
+    }
+
+    /// Whether this job may remove `logical` (its step's outputs function allows it): a step's
+    /// sweep of its stale names removes only those, so a name its outputs don't give (a legacy or
+    /// malformed one under its prefix) stays, rather than fail its every save.
+    pub fn may_remove(&self, logical: &str) -> bool {
+        self.admits(logical, true).is_ok()
     }
 
     /// `admits`, for a `set` or `remove`, which can't fail: one outside is kept for the save.
@@ -536,7 +553,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let local = |n: &str| {
             let p = d.path().join(n);
             std::fs::write(&p, b"the same bytes").unwrap();
@@ -568,7 +585,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let name = out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap();
         out.pending.clear();
         let dest = root.join(&name);
@@ -620,20 +637,20 @@ mod tests {
         assert!(read_record::<BTreeMap<String, String>>(&p).is_err());
         // A save with the manifest unreadable fails, and writes nothing over it.
         let root = d.path().join("root");
-        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
         std::fs::create_dir_all(root.join("state/build/manifest.json")).unwrap();
         assert!(out.save().is_err());
         assert!(root.join("state/build/manifest.json").is_dir());
         // And opening with it unreadable fails too.
-        assert!(Out::open(&root, &d.path().join("s")).is_err());
+        assert!(Out::unbound(&root, &d.path().join("s")).is_err());
     }
 
     #[test]
     fn a_save_with_nothing_new_writes_nothing_and_still_reads_what_others_saved() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
         out.save().unwrap();
         let m = root.join("state/build/manifest.json");
@@ -641,7 +658,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         // Nothing new: the records stay as they were (no rename over a file another Mac may have
         // open), and what another step saved meanwhile is read.
-        let mut other = Out::open(&root, &d.path().join("s2")).unwrap();
+        let mut other = Out::unbound(&root, &d.path().join("s2")).unwrap();
         other.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
         other.save().unwrap();
         let theirs = std::fs::metadata(&m).unwrap().modified().unwrap();
@@ -703,7 +720,7 @@ mod tests {
     fn only_the_build_mac_saves_the_records() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         // Another Mac named the writer: refused.
         std::fs::write(root.join("state/build/writer"), "not-this-mac").unwrap();
@@ -730,8 +747,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         let local = d.path().join("f.bin");
-        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
-        out.for_step("pack");
+        let mut out = Out::open(&root, &d.path().join("s"), "pack").unwrap();
         // Its own: a map tile's data and road pack, a rail pack removed.
         std::fs::write(&local, b"tile").unwrap();
         out.put_file("hidata/6-1-2", "hidata", &local).unwrap();
@@ -756,13 +772,12 @@ mod tests {
         assert!(out.save().is_err(), "it stays failed");
         // A step the table doesn't know: held to nothing while it writes the manifest (a tool run
         // by hand) and to no change at all when it hands off (the merge refuses such an entry).
-        let mut tool = Out::open(&root, &d.path().join("s2")).unwrap();
-        tool.for_step("patch-ferries");
+        let mut tool = Out::open(&root, &d.path().join("s2"), "patch-ferries").unwrap();
         tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-2", "osm", b"p").unwrap();
         tool.handoff = Some(d.path().join("handoff"));
         assert!(format!("{:#}", tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-3", "osm", b"q").unwrap_err()).contains("isn't a step the steps table knows"));
         // Not bound to a step (the agent merging hand-offs): anything.
-        let mut merge = Out::open(&root, &d.path().join("s3")).unwrap();
+        let mut merge = Out::unbound(&root, &d.path().join("s3")).unwrap();
         merge.set("layers/terrain/hi/6-1-4", Some("layers/terrain/hi/6-1-4.2222222222222222.pack".into()));
         merge.save().unwrap();
     }

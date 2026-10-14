@@ -241,7 +241,7 @@ pub fn put_slices(out: &mut Out, date: &str, sites: &BTreeMap<(u32, u32), Vec<[i
         wrote.insert(l);
     }
     for prefix in [format!("work/heritage/{date}/pos/"), format!("work/heritage/{date}/areas/")] {
-        let stale: Vec<String> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, _)| l.clone()).filter(|l| !wrote.contains(l)).collect();
+        let stale: Vec<String> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, _)| l.clone()).filter(|l| !wrote.contains(l) && out.may_remove(l)).collect();
         for l in stale {
             out.remove(&l);
         }
@@ -324,7 +324,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
         std::fs::write(root.join("state/build/pending.json"), b"{}").unwrap();
-        let out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let b = [-71.0, 45.0, -55.0, 48.0];
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
         let (a, c) = (d.path().join("a"), d.path().join("c"));
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn slices_and_a_units_inputs() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::open(d.path(), &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
         let her = br#"{"type":"FeatureCollection","features":[
             {"type":"Feature","geometry":{"type":"Point","coordinates":[-1.6,55.0]},"properties":{"name":"a"}},
             {"type":"Feature","geometry":{"type":"Point","coordinates":[-1.6,55.0]},"properties":{"name":"a again"}},

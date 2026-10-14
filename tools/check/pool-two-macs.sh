@@ -2,7 +2,7 @@
 # The pool's two-Mac test (docs/pool.md §13): the real agents, with the pool on, over a scratch
 # folder of the NAS (never the project folder), each Mac's in a folder of its own (never the
 # app's), its coordinator on a port of its own (never 8090, the real agent's), its jobs played by a
-# script that hands off one save of its step's. Run on each Mac, from a build of the app:
+# script that hands off one save within its step's outputs. Run on each Mac, from a build of the app:
 #
 #   pool-two-macs.sh root <folder> [slots]          the scratch folder, as the pool begins: today's
 #                                                   records, the build Mac (this Mac) their writer,
@@ -26,6 +26,9 @@
 #                                                   newer's copy), its current: an update to take
 #   pool-two-macs.sh jobs <dir> <seconds>           how long each fake job runs from now on (5 s
 #                                                   until set): long enough to span a handover
+#   pool-two-macs.sh outside <dir>                  the next fake job's hand-off also writes a name
+#                                                   outside every step's outputs: the merge refuses
+#                                                   its entry (docs/pool.md §7.3)
 #   pool-two-macs.sh measure <folder> [off]         state/pool/by-measure in the scratch folder:
 #                                                   the Mac shared by measure and its disk guard
 #                                                   (`off`: the switch removed)
@@ -82,7 +85,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, measure, fill, extra or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -132,7 +135,25 @@ sleep "$(cat "$d/../job-seconds" 2>/dev/null || echo 5)"
 [ -n "$scratch" ] && rm -f "$scratch/fill-$$.bin"
 if [ -n "$SCENIC_HANDOFF" ]; then
   mkdir -p "$SCENIC_HANDOFF"
-  printf '{"changes":{"work/test-%s":"work/test-%s.0123456789abcdef.json"}}' "$step" "$step" > "$SCENIC_HANDOFF/00000000000000000001-$$.json"
+  # A save within its step's outputs (crate::agent::steps::writes, which the merge refuses
+  # anything outside of): a worldwide layer's root pack, or a global file; a shared step's none (its
+  # files are its targets', which these jobs don't name), nor a step's that writes none; an upload
+  # checked otherwise. `outside`: the next job also writes a name outside every step's, which
+  # the merge refuses.
+  case "$step" in
+    water|labels|stations|ferries) l="layers/$step/root/0-0-0" ;;
+    terrain-root|slope-root) l="layers/${step%-root}/root/0-0-0" ;;
+    spoken|roadunits) l="global/$step" ;;
+    *) l="" ;;
+  esac
+  case "$step" in
+    terrain|slope|trees|unit|pois|peaks|bldprep|bldtiles) ch="" up="" ;;
+    *) ch=${l:+"\"$l\":\"$l.0123456789abcdef.pack\""} up="\"work/test-$step.0123456789abcdef.json\":\"aa\"" ;;
+  esac
+  if [ -e "$d/../job-outside" ] && rm "$d/../job-outside" 2>/dev/null; then
+    ch="${ch:+$ch,}\"work/test-$step\":\"work/test-$step.0123456789abcdef.json\""
+  fi
+  printf '{"changes":{%s},"pending":{%s}}' "$ch" "$up" > "$SCENIC_HANDOFF/00000000000000000001-$$.json"
 fi
 exit 0
 EOF
@@ -160,6 +181,7 @@ EOF
     done
     ;;
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
+  outside) : > ${2:?its folder}/v/app/job-outside ;;
   extra) print -n ${3:?MB} > ${2:?its folder}/disk-extra-mb ;;
   fill) print -n ${3:?MB} > ${2:?its folder}/v/app/job-fill-mb ;;
   measure)
@@ -180,5 +202,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, measure, fill, extra or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra or stop"; exit 2 ;;
 esac

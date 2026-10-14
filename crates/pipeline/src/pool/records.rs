@@ -37,8 +37,14 @@ const TODAY: [&str; 3] = ["state/build/manifest.json", "state/build/jobs.json", 
 
 /// A check of a journal entry before it's applied, given the records it would apply to (§7.3: its
 /// writes within its step's write-set, its content names matching their logical names, its lease's
-/// targets and keys): why it's refused, if it is.
+/// targets and keys): why it's refused, if it is; or, its why beginning `HOLD`, why it's held
+/// (neither applied nor refused: merged again later, `Merged::held`).
 pub type Check<'a> = &'a dyn Fn(&Entry, &Records) -> std::result::Result<(), String>;
+
+/// What a check's why begins with when it holds an entry rather than refuse it (`Check`): an
+/// entry from a member on a newer app than the lead's, which may write what this app's
+/// write-sets don't know of (crate::agent::pool::check_from).
+pub const HOLD: &str = "held: ";
 
 /// A term's records.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -284,6 +290,8 @@ pub struct Merged {
     /// Not read: the read failed (the share didn't answer), which says nothing of the entry; to
     /// merge later.
     pub failed: Vec<String>,
+    /// Read, and held by the check (`HOLD`), with why: neither applied nor refused; to merge later.
+    pub held: Vec<(String, String)>,
 }
 
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
@@ -335,10 +343,13 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
                     out.overtaken.push(k);
                 }
             }
-            Err(why) => {
-                r.refuse(&k, &why);
-                out.refused.push((k, why));
-            }
+            Err(why) => match why.strip_prefix(HOLD) {
+                Some(held) => out.held.push((k, held.to_string())),
+                None => {
+                    r.refuse(&k, &why);
+                    out.refused.push((k, why));
+                }
+            },
         }
     }
     out

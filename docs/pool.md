@@ -583,13 +583,21 @@ measure alone: no prediction, and nothing from the steps table, decides it.
 - **The lead validates at merge time:** every change in the step's write-set (the steps table's,
   §7.2), every content name matching its logical name, the lease's targets and keys (the merge is
   given the check: `records::Check`). The write-sets are enforced at both ends by one function per
-  step (`agent::steps::writes`, its row's): a job's `Out`, bound to its step as `scenic-build`
-  starts it, puts and removes only names that function gives (a put outside fails before it
-  uploads, a set or removal outside fails the job's next save, nothing of it saved), and the merge
-  refuses an entry with a change outside it, or of a step the table doesn't know (§7.7, §12 phase
-  4's sixth batch). So an entry the merge refuses for its write-set is one no job of this app could
-  hand off (an older app's, or a damaged one); every entry in the journal from the pool's first two
-  days is within the functions. A refused entry is named in the records with why; once they're
+  step (`agent::steps::writes`, its row's): a job's `Out`, opened for its step as `scenic-build`
+  starts it (`Out::open`; the merge and tools open `Out::unbound`), puts and removes only names
+  that function gives (a put outside fails before it uploads; a set or removal outside fails the
+  job's next save, and nothing of that save lands, though the targets it saved before stand), a
+  step's sweep of its stale names removing only names it gives (a legacy name under its prefix
+  stays), and the merge refuses an entry with a change outside it, or of a step the table doesn't
+  know (§7.7, §12 phase 4's sixth batch). So an entry the merge refuses for its write-set is one no
+  job of the lead's app could hand off: an older app's, a damaged one, or a newer app's, whose step
+  may write a name the lead's app doesn't know of; that one, from a member whose heartbeat says it
+  runs a newer app than the lead's (or whose heartbeat can't be read now), is held instead
+  (`agent::pool::check_from`, as the coordinator ends such a member's lease rather than hold its
+  failure against it): neither merged nor refused, merged again every step until the lead runs
+  that app, said in the log as it's first held and in the status (`pool.gates.held`; `scenic pool
+  status`), and keeping no catalog back. Every entry in the journal from the pool's first two days
+  is within the functions. A refused entry is named in the records with why; once they're
   saved its why is noted beside the journal, `state/journal/rejected/<key>.why`
   (`journal::note_refusal`), for the owner. The entry stays in its day: a refusal may be a lead's
   that's no longer current (its check depends on its state), and a lead whose records don't name the
@@ -728,7 +736,7 @@ Each of its columns, and what replaces it:
 | answered | a lease at the point of use, across the Macs: sending the pass's answers to the NAS (`crate::answers`) takes a lease on the NAS (`state/pool/answers.lease`, create-new, renewed, lapsing as a job's does) with writer preference (a reader that starts while a sender waits waits for it; readers run for hours, so a sender never waits on new readers), the steps that read them a shared one | no list of the steps that keep answers; a lapsed lease costs a wait, never a torn answers file (the answers are written whole by temporary name) |
 | shared and its rank | every step offered to every member (§7.2); the order by how crucial a target is (the forecast's slack, measured times) | |
 | batch | measured: as many of a step's targets as fit a quarter of an hour by their measured times (a cold start: one target a job) | a wrong time makes a job longer or shorter, never wrong |
-| write-set | derived from the code that writes, and enforced as it lands (the owner's choice: no soak): each step's output names are given by one function (`agent::steps::writes`, the steps table's row), which `Out` writes by and the lead's merge checks every entry by, so the writer and the check can't disagree; a good result can't be refused: a job's `Out` refuses a name outside its step's (the job fails before anything of it lands), and the lint (nothing writes the manifest, the hand-offs or the journal but through `Out`, or the listed paths of the merge and the raw tiles' archives) gates publish. The step's removals of stale names under its layer, a prune's of the pruned step's names, and the OSM pass's of older passes' are the same function's. Writes outside the manifest: the raw tiles' archives (named by their area, checked as today: crate::rawpack::named_for), the answers (`crate::answers`' own names, under its lease) and the 3D buildings' sources (bld-fetch's, under `sources/`, which nothing reads by the manifest) are outside the records, so outside the merge; each is written whole under a name its own module makes | **built** (phase 4's sixth batch): the function is a predicate over a name, not a type only it can construct (the design's first form): the same guarantee as the job runs, without rewriting every step's writes; entries of an app before it are refused as any outside is (their work done again) |
+| write-set | derived from the code that writes, and enforced as it lands (the owner's choice: no soak): each step's output names are given by one function (`agent::steps::writes`, the steps table's row), which `Out` writes by and the lead's merge checks every entry by, so the writer and the check can't disagree; a job's `Out` refuses a name outside its step's (a put before it uploads; a set or removal fails the job's next save, and nothing of that save lands, though the targets it saved before stand), and the lint, best-effort (a scan of the source for what makes or writes a hand-off or an entry, or names the manifest's file or the journal's folder: nothing does but `Out` and the listed paths of the merge, the readers and the raw tiles' archives), gates publish; an entry from a member on a newer app than the lead's that its write-sets refuse is held, not refused (§7.3). The step's removals of stale names under its layer, a prune's of the pruned step's names, and the OSM pass's of older passes' are the same function's. Writes outside the manifest: the raw tiles' archives (named by their area, checked as today: crate::rawpack::named_for), the answers (`crate::answers`' own names, under its lease) and the 3D buildings' sources (bld-fetch's, under `sources/`, which nothing reads by the manifest) are outside the records, so outside the merge; each is written whole under a name its own module makes | **built** (phase 4's sixth batch): the function is a predicate over a name, not a type only it can construct (the design's first form): the same guarantee as the job runs, without rewriting every step's writes; entries of an app before it are refused as any outside is (their work done again) |
 | moves (planned) | derived: a job's progress on its Mac's disk is written through one accessor (the OSM pass's stages, a terrain area's raw tiles), which names the Mac holding it on the NAS (`state/pool/progress/<step>.json`) | |
 | floor of memory (planned) | not built: what a target held (its measured floor, §7.2) covers it, the Planetiler heap among it | |
 
@@ -1147,21 +1155,30 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       both Macs** (`state/pool/by-measure` made in the scratch folder) before the switch goes on.
    6. **Write-sets enforced where they're written: built** (§7.3, §7.7): one outputs function per
       step (`agent::steps::writes`, its row's), which `Out` writes by and the merge checks by, so
-      they can't disagree; a job's `Out` refusing any other name (`Out::for_step`, bound as
-      `scenic-build` starts a step: a put outside fails before it uploads, a set or removal outside
-      fails the save, nothing of it saved; a step the table doesn't know held to nothing while it
-      writes the manifest by hand, and to no change when it hands off); the merge refusing every
-      entry with a change outside it (`agent::pool::check`); the lint (`tests/write_sets.rs`:
-      nothing writes a hand-off, a journal entry or the manifest's file but `Out` and the listed
-      paths of the merge and of the raw tiles' archives) gating publish. As built, the function is
-      a predicate over a name, not a type only it can construct (§7.7's design): it gives the same
-      guarantee as the job runs (a name outside fails the job before anything of it lands), without
-      a rewrite of every step's ~100 writes; a later batch may make it a type. No switch. Tests: a
-      job's `Out` refusing a name outside its step's and saving nothing; the merge refusing what
-      `Out` would, the entry within merged; every entry the journal held (the first batch's real
-      journal run); the gate's and the rail feeds' steps run through a bound `Out`; the lint and
-      its markers; the simulator's runs with entries outside refused by every lead (by the same
-      check, `steps::outside_by`, over the simulator's own outputs function). **Scratch state
+      they can't disagree; a job's `Out` refusing any other name (`Out::open` takes the step, as
+      `scenic-build` starts one; `Out::unbound` is the merge's and tools': a put outside fails
+      before it uploads, a set or removal outside fails the job's next save, and nothing of that
+      save lands, though the targets it saved before stand; a step the table doesn't know held to
+      nothing while it writes the manifest by hand, and to no change when it hands off); the steps'
+      sweeps of their stale names (the labels, the water and the small water, the stations, the
+      ferries, the overlays, the landmarks, the heritage chain and sites) removing only names their
+      step's function allows (`Out::may_remove`), so a legacy or malformed name can't fail a step
+      for good; the merge refusing every entry with a change outside it (`agent::pool::check`),
+      but holding one from a member on a newer app (`check_from`, `records::HOLD`: neither merged
+      nor refused, merged again every step until the lead runs that app, `pool.gates.held` in the
+      status); the lint (`tests/write_sets.rs`, best-effort: a scan of the source for what makes or
+      writes a hand-off or an entry, or names the manifest's file or the journal's folder; nothing
+      does but `Out` and the listed paths of the merge, the readers and the raw tiles' archives)
+      gating publish. As built, the function is a predicate over a name, not a type only it can
+      construct (§7.7's design): a name outside fails the job as it's written, without a rewrite of
+      every step's ~100 writes; a later batch may make it a type. No switch. Tests: a job's `Out`
+      refusing a name outside its step's, nothing of that save landing; a stale sweep leaving a
+      name its step's function doesn't give; the merge refusing what `Out` would, the entry within
+      merged; an entry outside from a newer app held, then merged once the check takes it,
+      acknowledged then; every entry the journal held (the first batch's real journal run); the
+      gate's and the rail feeds' steps run through a bound `Out`; the lint and its markers; the
+      simulator's runs with entries outside refused by every lead (by the same check,
+      `steps::outside_by`, over the simulator's own outputs function). **Scratch state
       (§13): both Macs** (the merge's refusals are the journal's).
    7. **Exclusivity where the resource is used** (§7.7): the Wikimedia proxy with the pool's one
       budget on the NAS (tokens leased in batches, the query service by query time, a 429's wait

@@ -263,6 +263,10 @@ pub struct Out {
     /// after a sleep. A catalog waits for it (and `duties`); GC too (and `fresh`): an entry not
     /// merged yet may hold uploads the records don't name.
     pub caught_up: bool,
+    /// Leading: the entries its check holds (`records::HOLD`: from a member on a newer app), with
+    /// why: neither merged nor refused, merged again every step until the check takes or refuses
+    /// them. They don't keep it from being `caught_up`.
+    pub held: Vec<(String, String)>,
     /// Leading: when it asked for the newest listing of every day its records reflect (this Mac's
     /// clock; within `RELIST_S` while `caught_up`): caught up, every entry the listing found,
     /// written before it as far as a read may be stale, is merged.
@@ -374,6 +378,8 @@ struct Lead {
     dirty: bool,
     /// Entries refused: their refusals to note once that's saved.
     refused: Vec<(String, String)>,
+    /// Entries its check holds (`records::HOLD`), with why: merged again every step.
+    held: BTreeMap<String, String>,
 }
 
 /// A handover this Mac passed on: waiting for its target to lead.
@@ -654,6 +660,7 @@ impl Driver {
             out.fresh &= self.must.is_none();
             out.caught_up = l.listed_at.is_some_and(|at| end.0.saturating_sub(at) < RELIST_S) && !l.dirty && l.waiting.is_empty() && self.must.is_none();
             out.listed_at = l.listed_at;
+            out.held = l.held.iter().map(|(k, w)| (k.clone(), w.clone())).collect();
         } else {
             out.fresh = false;
         }
@@ -786,7 +793,7 @@ impl Driver {
                 // merged too, so a sweep's step is caught up. Not after a sleep: what was written
                 // meanwhile, told to it and lost, a listing finds.)
                 if let Some(n) = self.lead.as_mut() {
-                    (n.told, n.waiting, n.unreadable, n.said, n.refused) = (l.told, l.waiting, l.unreadable, l.said, l.refused);
+                    (n.told, n.waiting, n.unreadable, n.said, n.refused, n.held) = (l.told, l.waiting, l.unreadable, l.said, l.refused, l.held);
                     if l.listed_at.is_some() && !slept {
                         n.listed_at = l.listed_at;
                         (self.due, self.asked) = (due, asked);
@@ -896,7 +903,7 @@ impl Driver {
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
         let horizon = r.horizon.clone();
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), turn: 0, listed_at: None, dirty: false, refused: Vec::new() });
+        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), turn: 0, listed_at: None, dirty: false, refused: Vec::new(), held: BTreeMap::new() });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
         self.asked.clear();
@@ -935,7 +942,7 @@ impl Driver {
         for k in own {
             l.told.insert(k, me.clone());
         }
-        let mut keys: Vec<String> = l.told.keys().chain(&l.waiting).filter(|k| !l.records.handles(k)).cloned().collect();
+        let mut keys: Vec<String> = l.told.keys().chain(&l.waiting).chain(l.held.keys()).filter(|k| !l.records.handles(k)).cloned().collect();
         let from_listing = listed.is_some();
         if let Some(listed) = listed {
             // (A listing of every day, its take-up's or a daily one: once merged and saved, the
@@ -975,6 +982,17 @@ impl Driver {
             l.dirty = true;
             l.refused.extend(m.refused.iter().cloned());
             out.events.push(Event::Merged { applied: m.applied.clone(), overtaken: m.overtaken.len(), refused: m.refused.len(), listed: from_listing });
+        }
+        // What its check holds is merged again next step (said once as it's first held); what it
+        // read this step and didn't hold is no longer held.
+        let unread: BTreeSet<&String> = m.unread.iter().collect();
+        let was: BTreeSet<String> = l.held.keys().cloned().collect();
+        let records = &l.records;
+        l.held.retain(|k, _| unread.contains(k) && !records.handles(k));
+        for (k, why) in &m.held {
+            if l.held.insert(k.clone(), why.clone()).is_none() && !was.contains(k) {
+                out.events.push(Event::Waits { what: "merge an entry", why: format!("{k}: {why}") });
+            }
         }
         // What isn't read whole yet is read again next step; what's handled or forgotten, done.
         l.waiting.extend(m.waiting.iter().chain(&m.unread).chain(&m.failed).cloned());
@@ -1743,6 +1761,41 @@ mod tests {
         ia.pass(20);
         let o = step(&mut a, &ia, able());
         assert!(Records::load(&mem, 1).unwrap().unwrap().handles(&key) && o.caught_up, "{:?}", o.events);
+    }
+
+    /// An entry its check holds (`records::HOLD`: a member's on a newer app, outside this app's
+    /// write-sets) is neither merged nor refused, merged again every step, said once, and keeps
+    /// no catalog back; once the check takes it (the lead on that app), it's merged.
+    #[test]
+    fn an_entry_held_is_merged_again_until_taken() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
+        let e = entry(B, 1, 3, "6-1-1");
+        let key = journal::write(&mem, &e).unwrap();
+        let hold = std::cell::Cell::new(true);
+        let check = |_: &Entry, _: &Records| if hold.get() { Err(format!("{}its member runs a newer app", records::HOLD)) } else { Ok(()) };
+        let said = |o: &Out| o.events.iter().filter(|ev| matches!(ev, Event::Waits { what: "merge an entry", .. })).count();
+        ia.pass(20);
+        let o = a.step(&ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }, &check);
+        assert_eq!(o.held, [(key.clone(), "its member runs a newer app".to_string())]);
+        assert!(o.caught_up && said(&o) == 1 && o.send.is_empty(), "{:?}", o.events);
+        let r = Records::load(&mem, 1).unwrap().unwrap();
+        assert!(!r.handles(&key) && journal::refusal(&mem, &key).unwrap().is_none(), "neither merged nor refused");
+        // Merged again the next step, held still, not said again; nothing acknowledged.
+        ia.pass(20);
+        let o = a.step(&ia, able(), &check);
+        assert!(o.held.len() == 1 && said(&o) == 0 && o.send.is_empty(), "{:?}", o.events);
+        // Taken: merged, acknowledged to its member, no longer held.
+        hold.set(false);
+        ia.pass(20);
+        let o = a.step(&ia, able(), &check);
+        assert!(o.held.is_empty() && Records::load(&mem, 1).unwrap().unwrap().reflected.contains(&key), "{:?}", o.events);
+        assert!(o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))), "{:?}", o.send);
     }
 
     #[test]

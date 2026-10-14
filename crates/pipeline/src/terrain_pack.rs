@@ -1617,7 +1617,7 @@ pub(crate) mod tests {
     fn a_pack_copied_here_reads_the_same_and_goes_with_its_reader() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut out = Out::open(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
         for z in 9..=10u8 {
             let s = 1u32 << (z - 6);
@@ -1674,7 +1674,7 @@ pub(crate) mod tests {
         }
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let cov = Coverage::from_recipes(&[], None, d.path()).unwrap();
-        let mut out = Out::open(&root, &scratch).unwrap();
+        let mut out = Out::unbound(&root, &scratch).unwrap();
         let said = Mutex::new(Vec::new());
         build_q_with(&mut out, &raw, (1, 1), &[], &cov, &Sources::default(), &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))).unwrap();
         let said = said.into_inner().unwrap();
@@ -1791,9 +1791,9 @@ pub(crate) mod tests {
         let ts = &ts;
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let made = |root: &str, way: &dyn Fn(&mut Out)| {
-            let mut out = Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+            let mut out = Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
             way(&mut out);
-            let out = Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+            let out = Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
         };
         let now = made("now", &|out| {
@@ -1834,9 +1834,9 @@ pub(crate) mod tests {
         assert!(crate::rawpack::pack_local(&staged, &store, &root, false).unwrap() > 0);
         let made = |name: &str, cache: &std::path::Path| {
             let raw = RawTiles::with_store(cache, &store);
-            let mut out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
             build_q(&mut out, &raw, q, &ts, &cov, &Sources::default()).unwrap();
-            let out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
         };
         let calm = made("calm", &d.path().join("calm-cache"));
@@ -1908,9 +1908,9 @@ pub(crate) mod tests {
         assert!(to_pack > 0 && crate::rawpack::pack_local(&staged, &store, &root, false).unwrap() > 0);
         let piece = |name: &str, cache: &std::path::Path, t: (u32, u32)| {
             let raw = RawTiles::with_store(cache, &store);
-            let mut out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
             build_piece(&mut out, &raw, t, &cov, &Sources::default(), false, &|_, _, _| {}).unwrap();
-            let out = Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/") || l.starts_with("work/terrain-mid/")).collect::<Vec<_>>()
         };
         let (a, b) = (ts[0], ts[1]);
@@ -1981,9 +1981,9 @@ pub(crate) mod tests {
         }
         let made = |name: &str, cache: &std::path::Path| {
             let raw = RawTiles::with_store(&cache.join("aws-terrarium"), &store);
-            let mut out = Out::open(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+            let mut out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
             build_q(&mut out, &raw, q, &ts, &cov, &Sources::default()).unwrap();
-            let out = Out::open(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+            let out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
         };
         let t = std::time::Instant::now();
@@ -2309,7 +2309,7 @@ pub(crate) mod tests {
         let water = crate::terrain_water::tests::Fixed(lake_across);
         let coarse = Coarse::new(&raw);
         let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
-        let open = |root: &str| Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+        let open = |root: &str| Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
         let terrain = |o: &Out| o.manifest.iter().filter(|(l, _)| l.starts_with("layers/terrain/")).map(|(l, c)| (l.clone(), c.clone())).collect::<Vec<_>>();
         let mut v3 = open("v3");
         let r = area_v3(&mut v3, &raw, q, ts, &cov, &src, &|_, _, _| {}).unwrap();
@@ -2442,7 +2442,7 @@ pub(crate) mod tests {
         let cov = near_without_hi(d.path());
         let raw = RawTiles::new(&d.path().join("raw"));
         let src = Sources { north: None, water: None, coarse: None };
-        let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         // (Files an earlier run left: their bytes don't matter here.)
         let fake = |out: &mut Out, l: &str| {
             let ext = if l.starts_with("work/") { "sect" } else { "pack" };
@@ -2476,7 +2476,7 @@ pub(crate) mod tests {
         assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none());
         assert_eq!(out.get(&other), Some(kept.as_str()), "another tile's hi pack stays");
         // Saved: the manifest on disk says the same.
-        let again = Out::open(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
+        let again = Out::unbound(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
         assert!(again.get(&hi).is_none() && again.get(&lhi).is_none() && again.get(&lmid).is_none() && again.get(&mid).is_some());
         assert_eq!(drop_piece(&mut out, (10, 10)).unwrap(), 0, "nothing left to drop");
         // An area's whole run drops the same hi packs: its piece's making no hi tile, and its z6
@@ -2488,7 +2488,7 @@ pub(crate) mod tests {
         let local = d.path().join("area-raw");
         synthetic_raw(&local, &cov, (2, 2), &ts);
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
-        let mut area = Out::open(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
+        let mut area = Out::unbound(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
         let (ahi, alhi, almid) = ("layers/terrain/hi/6-21-18".to_string(), "layers/terrain/hi/6-16-17".to_string(), mid_logical(16, 17));
         for l in [&ahi, &alhi, &almid] {
             fake(&mut area, l);

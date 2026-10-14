@@ -341,8 +341,7 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     let m: BTreeMap<String, String> = BTreeMap::new();
     let key = check_key(GT, &planned.listing, &planned.accepted, &m);
     // The check at T+6, given what the key was made from: it isn't taken, nor taken as removed.
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(planned)).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert!(open(&root, &m, TEST_UNIT).unwrap().is_none());
@@ -350,16 +349,14 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     let later = settle(&raw, t + 11);
     assert_eq!(later.files.len(), 1);
     assert_ne!(check_key(GT, &later, &BTreeSet::new(), &m), key);
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(Planned { listing: later, accepted: BTreeSet::new() })).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert!(open(&root, &m, TEST_UNIT).unwrap().unwrap().index.files.contains_key("a.jsonl"));
     // A planned listing a file has changed since: left as it was (here, out), not taken half-read.
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n{\"k\":").unwrap();
     let stale = Planned { listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![] }, accepted: BTreeSet::new() };
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_eq!(m2.get(&logical(TEST_UNIT)), m.get(&logical(TEST_UNIT)));
@@ -417,8 +414,7 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
         std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
     };
     put("{\"k\": \"x\", \"v\": 1}\n");
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     let a = open(&root, &m, TEST_NESTED).unwrap().unwrap();
@@ -429,8 +425,7 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
     }
     // A change of version: the check's state names the index it replaced.
     put("{\"k\": \"x\", \"v\": 22}\n");
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_eq!(read_listed(&root, &m2, TEST_NESTED).unwrap().replaced.as_deref(), Some(a.version.as_str()));
@@ -554,8 +549,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     };
     put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n");
     std::fs::create_dir_all(root.join("state/build")).unwrap();
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     let a = open(&root, &m, TEST_UNIT).unwrap().unwrap();
@@ -564,8 +558,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert!(!m.contains_key(&held_logical(TEST_UNIT)));
     // A warning: held, its report named; the version as it was.
     put("a.jsonl", "{\"k\": \"x\", \"v\": -1}\n");
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_eq!(m2[&logical(TEST_UNIT)], a.version);
@@ -583,8 +576,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert!(accept(&root, TEST_UNIT, &r.findings[0], "-", "test").unwrap());
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
     std::fs::File::options().write(true).open(root.join(&a.version)).unwrap().set_modified(old).unwrap();
-    let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
-    out.for_step("inputs");
+    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m3: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_ne!(m3[&logical(TEST_UNIT)], a.version);
@@ -596,7 +588,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert_eq!(v[0].state, view::State::Ok);
     assert!(v[0].stale.is_empty(), "the acceptance is the version's: {:?}", v[0].stale);
     // The NAS root a step gets refuses a drop-box path, naming the caller.
-    let out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+    let out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
     let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(msg.contains("tests.rs") && msg.contains("crate::inputs::open"), "{msg}");

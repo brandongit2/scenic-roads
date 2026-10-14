@@ -528,7 +528,7 @@ mod tests {
             let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: sq.path().into(), chm_store: d.path().join("store"), leaf: sq.path().into(), out: dir.into(), dem: d.path().into() };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
-        let out = |name: &str| Out::open(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+        let out = |name: &str| Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
         // The whole run.
         let mut whole = out("whole");
         let q = Unit { z: 3, x: 4, y: 2 };
@@ -632,7 +632,7 @@ mod tests {
         let cov = Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")).unwrap();
         let tt = targets(&cov, &m);
         eprintln!("pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)", recipes.len(), tt.pieces.len(), tt.lo.len(), t0.elapsed().as_secs_f64());
-        let out = Out::open(&data.join("no-root"), &data.join("scratch")).unwrap();
+        let out = Out::unbound(&data.join("no-root"), &data.join("scratch")).unwrap();
         let chm = data.join("chm");
         std::fs::create_dir_all(&chm).unwrap();
         let run = |t: Unit, dir: &Path| {

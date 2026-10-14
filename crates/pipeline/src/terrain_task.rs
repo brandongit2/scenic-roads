@@ -780,7 +780,7 @@ mod tests {
     /// The piece's run with `offload` into root `name` under `d`: its hi pack's and mid's content
     /// names.
     fn piece(d: &Path, name: &str, t: (u32, u32), cov: &Coverage, raw: &RawTiles, src: &Sources, offload: Option<&Offload>) -> (Option<String>, Option<String>) {
-        let mut out = Out::open(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+        let mut out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
         rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap().install(|| build_piece_with(&mut out, raw, t, cov, src, false, &|_, _, _| {}, offload)).unwrap();
         (out.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(str::to_string), out.get(&mid_logical(t.0, t.1)).map(|c| {
             let (_, m) = read_mid(&out.path(c)).unwrap();
@@ -904,7 +904,7 @@ mod tests {
         use crate::terrain_water::{tile_water, WaterSource};
         use rayon::prelude::*;
         let root = PathBuf::from(std::env::var("TT_ROOT").expect("TT_ROOT"));
-        let out = Out::open(&root, &std::env::temp_dir().join("tt-own-keys")).unwrap();
+        let out = Out::unbound(&root, &std::env::temp_dir().join("tt-own-keys")).unwrap();
         let cov = live_coverage(&out);
         let water = crate::terrain_pack::open_water(&out).unwrap();
         let pieces: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
@@ -961,7 +961,7 @@ mod tests {
         let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} isn't set"));
         let (root, scratch) = (PathBuf::from(env("TT_ROOT")), PathBuf::from(env("TT_SCRATCH")));
         let port: u16 = env("TT_PORT").parse().unwrap();
-        let mut out = Out::open(&root, &scratch.join("job")).unwrap();
+        let mut out = Out::unbound(&root, &scratch.join("job")).unwrap();
         let cov = live_coverage(&out);
         let raw = RawTiles::with_store(&PathBuf::from(env("TT_RAW")), &root.join("sources/aws-terrarium"));
         let opened = crate::terrain_pack::SourceFiles::open(&out, false).unwrap();

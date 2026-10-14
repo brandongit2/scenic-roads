@@ -232,14 +232,14 @@ fn scan() -> Result<()> {
     let opened = if args.iter().any(|a| a == "--bare") {
         None
     } else {
-        let o = pipeline::out::Out::open(&root, &cache.join("scratch"))?;
+        let o = pipeline::out::Out::unbound(&root, &cache.join("scratch"))?;
         Some(pipeline::terrain_pack::SourceFiles::open(&o, false)?)
     };
     if let Some(o) = &opened {
         eprintln!("scan: sources {}", o.sources(None).pin());
     }
     let mut fixed = match opt("--fixed-out") {
-        Some(d) => Some(pipeline::out::Out::open(Path::new(&d), &cache.join("fixed-scratch"))?),
+        Some(d) => Some(pipeline::out::Out::unbound(Path::new(&d), &cache.join("fixed-scratch"))?),
         None => None,
     };
     let sc = Scan {
@@ -299,7 +299,7 @@ fn scan() -> Result<()> {
         std::fs::remove_dir_all(cache.join("packs")).ok();
     } else {
         // The coverage, as the agent has it (the regions' recipes, the pass's outlines).
-        let out = pipeline::out::Out::open(&root, &cache.join("scratch"))?;
+        let out = pipeline::out::Out::unbound(&root, &cache.join("scratch"))?;
         let date = pipeline::osmpass::latest_pass(&root).context("no OSM pass")?;
         let outlines = out.get(&format!("sources/osm/{date}/outlines")).map(|c| out.path(c));
         let outlines = outlines.as_deref().map(pipeline::outlines::Outlines::open).transpose()?;
@@ -1015,7 +1015,7 @@ fn towers_left(e: &[f32]) -> Vec<(u32, f32, f32, u32)> {
 /// OSM's summits with a height (the pass's `work/summits`), by z6 tile; none when there are none.
 fn summits_by_z6(root: &Path) -> HashMap<(u32, u32), Vec<(f64, f64, f32, String)>> {
     let mut by: HashMap<(u32, u32), Vec<(f64, f64, f32, String)>> = HashMap::new();
-    let Ok(out) = pipeline::out::Out::open(root, &std::env::temp_dir().join("scan-summits")) else { return by };
+    let Ok(out) = pipeline::out::Out::unbound(root, &std::env::temp_dir().join("scan-summits")) else { return by };
     let Some(date) = pipeline::osmpass::latest_pass(root) else { return by };
     let Some(c) = out.get(&format!("work/summits/{date}")) else { return by };
     let Ok(all) = pipeline::summits::read(&out.path(c)) else { return by };

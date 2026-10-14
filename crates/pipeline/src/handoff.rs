@@ -187,7 +187,7 @@ pub fn merge_from(root: &Path, scratch: &Path, bases: &[PathBuf]) -> Result<usiz
     }
     let Some(lock) = crate::out::BuildLock::try_take(root)? else { return Ok(0) };
     // (Records that can't be read now: an error, and nothing written.)
-    let mut out = crate::out::Out::open(root, scratch)?;
+    let mut out = crate::out::Out::unbound(root, scratch)?;
     let mut keys = crate::agent::build::Keys::load_strict(root)?;
     let mut last: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut raw: Vec<(String, crate::rawpack::Pack)> = Vec::new();

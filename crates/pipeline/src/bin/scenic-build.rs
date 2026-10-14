@@ -234,9 +234,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         return Ok(());
     }
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
-    let mut out = Out::open(&root, &scratch)?;
     // (It puts and removes only its step's outputs: the function the lead's merge checks by.)
-    out.for_step(&step);
+    let mut out = Out::open(&root, &scratch, &step)?;
     let t0 = std::time::Instant::now();
     match step.as_str() {
         "pack" => {
@@ -2383,7 +2382,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .range(prefix.clone()..)
         .take_while(|(l, _)| l.starts_with(&prefix))
         .map(|(l, _)| l.clone())
-        .filter(|l| !l[prefix.len()..].contains('/') && !wrote.contains(l))
+        .filter(|l| !l[prefix.len()..].contains('/') && !wrote.contains(l) && out.may_remove(l))
         .collect();
     for l in stale {
         out.remove(&l);
@@ -4112,7 +4111,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     eprintln!("labels: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
     // Packs of an earlier labels layer that this one doesn't have go from the manifest.
     let keep: std::collections::BTreeSet<String> = lo.root.iter().chain(lo.lo.values()).chain(lo.hi.values()).cloned().collect();
-    let gone: Vec<String> = out.manifest.keys().filter(|k| k.starts_with("layers/labels/") && !keep.contains(*k)).cloned().collect();
+    let gone: Vec<String> = out.manifest.keys().filter(|k| k.starts_with("layers/labels/") && !keep.contains(*k) && out.may_remove(k)).cloned().collect();
     for k in gone {
         out.remove(&k);
     }
@@ -4204,7 +4203,7 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // islands and lakes' layer it replaces (`layers/smallwater/`, the dots of before).
     let keep: BTreeSet<String> = lo.root.iter().chain(lo.lo.values()).chain(lo.hi.values()).cloned().collect();
     let prefix = format!("layers/{}/", wt::LAYER);
-    let gone: Vec<String> = out.manifest.keys().filter(|k| (k.starts_with(&prefix) && !keep.contains(*k)) || k.starts_with("layers/smallwater/")).cloned().collect();
+    let gone: Vec<String> = out.manifest.keys().filter(|k| ((k.starts_with(&prefix) && !keep.contains(*k)) || k.starts_with("layers/smallwater/")) && out.may_remove(k)).cloned().collect();
     for k in gone {
         out.remove(&k);
     }

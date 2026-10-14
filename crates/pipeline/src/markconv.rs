@@ -316,7 +316,7 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         }
     }
     out.put_bytes("global/marks/summary", "json", &serde_json::to_vec(&serde_json::json!({ "fmt": 1, "kinds": totals, "tiers": tiers }))?)?;
-    let stale: Vec<String> = out.manifest.keys().filter(|k| (k.starts_with("markdata/") || k.starts_with("layers/marks-")) && !wrote.contains(*k)).cloned().collect();
+    let stale: Vec<String> = out.manifest.keys().filter(|k| (k.starts_with("markdata/") || k.starts_with("layers/marks-")) && !wrote.contains(*k) && out.may_remove(k)).cloned().collect();
     for k in &stale {
         out.remove(k);
     }

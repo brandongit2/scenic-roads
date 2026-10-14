@@ -7103,7 +7103,7 @@ mod tests {
         assert_eq!(work.targets[0].0, format!("inputs/{unit}"));
         // Run (as its job would) and recorded: a normal check planned next (its key without the full
         // one's), then nothing while nothing changes.
-        let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+        let mut out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
         crate::inputs::gate::run(&mut out, unit, true, None).unwrap();
         let mut keys = build::Keys::load_strict(&root).unwrap();
         keys.record("inputs", &work.targets);
@@ -7157,7 +7157,7 @@ mod tests {
         let plan = b.plan(&root, &c, &mut w);
         let f = plan.iter().find(|j| j.id == format!("inputs {unit} forget")).expect("a job forgetting its records");
         assert!(f.cmd.ends_with(&["--forget".to_string()]));
-        let mut out = crate::out::Out::open(&root, &d.path().join("s")).unwrap();
+        let mut out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
         crate::inputs::gate::forget(&mut out, unit).unwrap();
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
         assert!(!m.keys().any(|l| crate::inputs::unit_of(l) == Some(unit)));

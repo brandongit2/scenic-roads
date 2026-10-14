@@ -776,6 +776,25 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// `check`, by a lead on app `lead_app`, members' apps as `app_of` reads them (their heartbeats;
+/// None: not read): an entry with a change outside its step's write-set from a member on a newer
+/// app than the lead's is held (`records::HOLD`), neither merged nor refused, until the lead runs
+/// an app as new (its step may write what this app's write-sets don't know of: refused, its work
+/// would be done again, and refused again, until the lead updates). As the coordinator ends such a
+/// member's lease rather than hold its failure against its targets (crate::coord). An entry whose
+/// member's app can't be read now is held too (that says nothing of it); one from a member on the
+/// lead's app, or an older one, is refused.
+pub fn check_from(e: &Entry, r: &Records, lead_app: &str, app_of: &dyn Fn(&str) -> Option<String>) -> std::result::Result<(), String> {
+    match check(e, r) {
+        Err(why) if crate::agent::steps::outside(e).as_deref() == Some(why.as_str()) => match app_of(&e.member) {
+            Some(app) if app == lead_app || crate::pool::term::app_at_least(lead_app, &app) => Err(why),
+            Some(app) => Err(format!("{}{why}; its member runs app {app}, newer than this lead's ({lead_app}): held until the lead runs it", crate::pool::records::HOLD)),
+            None => Err(format!("{}{why}; its member's app can't be read now", crate::pool::records::HOLD)),
+        },
+        other => other,
+    }
+}
+
 /// An event in words, for the log.
 pub fn said(e: &Event) -> String {
     match e {
@@ -821,11 +840,15 @@ pub struct Gates {
     pub fresh: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listed_at: Option<u64>,
+    /// Leading: the entries it holds, with why (`check_from`: from a member on a newer app,
+    /// outside this app's write-sets), neither merged nor refused until it runs that app.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<(String, String)>,
 }
 
 impl Gates {
     fn of(o: &Out) -> Gates {
-        Gates { term: o.term, leads: o.leads, duties: o.duties, settle: o.settle, caught_up: o.caught_up, fresh: o.fresh, listed_at: o.listed_at }
+        Gates { term: o.term, leads: o.leads, duties: o.duties, settle: o.settle, caught_up: o.caught_up, fresh: o.fresh, listed_at: o.listed_at, held: o.held.clone() }
     }
 
     /// A catalog may be published now.
@@ -913,7 +936,12 @@ impl Run {
     pub fn step(&mut self, able: bool) -> Out {
         let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: std::mem::take(&mut self.asks), conds: self.conds };
         let marks = std::mem::take(&mut self.marks);
-        let out = self.side.step(give, &check);
+        // (The merge's checks, an entry outside its step's write-set from a member on a newer app
+        // held: `check_from`. Its member's app read from its heartbeat, only for such an entry.)
+        let (nas, lead_app, me) = (self.side.nas.clone(), self.side.member().app.clone(), self.side.member().id.clone());
+        let app_of = |m: &str| -> Option<String> { if m == me { return Some(lead_app.clone()) } nas.read(&crate::pool::beat::path(m)).ok().flatten().and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok()).map(|h| h.pool.app) };
+        let checked = |e: &Entry, r: &Records| check_from(e, r, &lead_app, &app_of);
+        let out = self.side.step(give, &checked);
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
         // removal failed isn't drained again by a later process.)
         let kept = out.stop.is_none() && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
@@ -1341,7 +1369,7 @@ pub fn status(root: &Path) -> String {
     }
     let now = crate::agent::jobs::now_s();
     for (f, st) in statuses(root) {
-        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
+        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.gates.held.first().map(|(k, why)| format!(", {} entr{} held until it runs a newer app (the first: {k}: {why})", p.gates.held.len(), if p.gates.held.len() == 1 { "y" } else { "ies" })).unwrap_or_default(), p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
         out.push(format!("{} ({f}, app {}, beat {} s ago, job {}): {p}", st.host, st.app, now.saturating_sub(st.beat), st.job.as_ref().map_or("none", |j| j.id.as_str())));
     }
     let left = pool_files(root);
@@ -1702,8 +1730,7 @@ mod tests {
         let outside = pack(2, "6/1/3", &["hidata", "layers/terrain/hi"]);
         let key = outside.key().unwrap();
         // (The same names a pack job's `Out` takes and refuses.)
-        let mut o = crate::out::Out::open(&d.path().join("o"), &d.path().join("o-scratch")).unwrap();
-        o.for_step("pack");
+        let mut o = crate::out::Out::open(&d.path().join("o"), &d.path().join("o-scratch"), "pack").unwrap();
         for (l, c) in &within.handoff.changes {
             o.set(l, c.clone());
         }
@@ -1836,6 +1863,30 @@ mod tests {
         pass.handoff.changes.remove("base/6-1-2");
         pass.handoff.pending.clear();
         assert!(check(&pass, &r).is_ok());
+    }
+
+    /// An entry outside its step's write-set from a member on a newer app than the lead's is held,
+    /// not refused (its app's write-sets may know the name); from the lead's app or an older one,
+    /// refused; its member's app not read now, held; any other refusal stands whatever the app.
+    #[test]
+    fn an_entry_outside_from_a_newer_app_is_held() {
+        let r = Records::default();
+        let lead = "20261009-0000-bbbbbbb";
+        let mut e = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
+        e.handoff.changes.insert("work/new-output".into(), Some("work/new-output.0123456789abcdef.json".into()));
+        let on = |app: Option<&'static str>| move |_: &str| app.map(str::to_string);
+        let held = check_from(&e, &r, lead, &on(Some("20261010-0000-ccccccc"))).unwrap_err();
+        assert!(held.starts_with(crate::pool::records::HOLD) && held.contains("work/new-output") && held.contains("20261010-0000-ccccccc"), "{held}");
+        assert!(check_from(&e, &r, lead, &on(None)).unwrap_err().starts_with(crate::pool::records::HOLD));
+        for app in [lead, "20261008-0000-aaaaaaa"] {
+            let why = check_from(&e, &r, lead, &on(Some(app))).unwrap_err();
+            assert!(!why.starts_with(crate::pool::records::HOLD) && why.contains("outside unit's write-set"), "{app}: {why}");
+        }
+        // Another check's refusal (a content name not of its logical name): refused, newer or not.
+        let mut bad = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 2 }, "6/1/2", "k2");
+        bad.handoff.changes.insert("base/6-1-2".into(), Some("base/6-1-3.3333333333333333.base".into()));
+        assert!(!check_from(&bad, &r, lead, &on(Some("20261010-0000-ccccccc"))).unwrap_err().starts_with(crate::pool::records::HOLD));
+        assert_eq!(check_from(&unit_entry("m-000000000000000b", LeaseId { term: 1, n: 3 }, "6/1/2", "k2"), &r, lead, &on(None)), Ok(()));
     }
 
     #[test]

@@ -242,7 +242,7 @@ static D: [&str; 1] = ["translations"];"#;
 #[test]
 fn the_steps_root_refuses_a_drop_box_path() {
     let d = tempfile::tempdir().unwrap();
-    let out = pipeline::out::Out::open(d.path(), &d.path().join("s")).unwrap();
+    let out = pipeline::out::Out::unbound(d.path(), &d.path().join("s")).unwrap();
     for p in ["inputs/regions/wales.toml", "inputs/_gate-test/a.jsonl", "translations/fr.jsonl", "descriptions/x.jsonl", "inputs", "./inputs/keys.env"] {
         let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path(p))).expect_err(p);
         let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();

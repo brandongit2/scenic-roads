@@ -997,7 +997,7 @@ mod tests {
     #[test]
     fn pieces_gain_the_ferries_they_lack() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::open(d.path(), &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
         // Unit 6/32/21 (lon 0 to 5.6, lat 48.9 to 52.5): a road and a ferry the filter kept (a route
         // relation's member) in its piece; unit 6/40/20's piece has a road only.
         let shared = "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nn3 v1 x1.2 y50.1\nn4 v1 x1.5 y50.5\n";
@@ -1026,7 +1026,7 @@ mod tests {
     #[test]
     fn older_passes_retire() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::open(d.path(), &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
         for l in [
             "sources/osm/2026-03-28/pieces/6-1-2",
             "sources/osm/2026-03-28/sets/summits",

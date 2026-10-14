@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn a_neighbours_strip_is_read_where_it_is_and_staged_the_same() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         let (x6, y6) = (31u32, 19u32);
         let b = tile_box_grown(6, x6, y6, MARGIN_KM);
         assert!(copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b));
