@@ -655,8 +655,9 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   child started by fork and exec holds every socket until its exec. So every child is started
   (`store::spawn`) while no listener or connection is being made or closed, and the other way
   round: one lock, read by the starts, written by the sockets. The map's server's listeners are
-  made the same way. clippy.toml's disallowed-methods, checked by `pipeline`'s
-  `every_child_is_started_by_spawn`, keeps every start, listen and accept in the workspace to it.
+  made the same way. clippy.toml's disallowed-methods, checked by tools/app/publish.sh (a hit fails
+  the publish), keeps every start, listen and accept in the workspace to it; tests and examples
+  that start no coordinator (names', scenic-metrics' test servers) are excepted by an allow.
   Outgoing connections (ureq's) aren't made under the lock: a child holding one keeps a
   connection open, never a port from being listened on.
 - **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1: while the pool

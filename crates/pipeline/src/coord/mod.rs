@@ -2179,10 +2179,15 @@ mod http {
                     continue;
                 }
             };
+            // (Refused ones closed while no child is being started too, store::spawn.)
             if !allowed(peer.ip()) {
+                store::spawn::sockets(|| drop(stream));
                 continue;
             }
-            let Ok(permit) = room.clone().try_acquire_owned() else { continue };
+            let Ok(permit) = room.clone().try_acquire_owned() else {
+                store::spawn::sockets(|| drop(stream));
+                continue;
+            };
             let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
             socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive).ok();
             let app = app.clone();

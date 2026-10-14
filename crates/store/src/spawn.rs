@@ -12,8 +12,7 @@
 //! So a child is started (`spawn`, `status`, `output`) only while no listener or connection is
 //! being made or closed (`sockets`), and the other way round: one lock, read by the starts (any
 //! number at once), written by the sockets' few moments. Every start in the workspace goes
-//! through here (clippy.toml's disallowed-methods, checked by `pipeline`'s
-//! `every_child_is_started_by_spawn`).
+//! through here (clippy.toml's disallowed-methods, checked by tools/app/publish.sh).
 //!
 //! Not a fork-free start with every descriptor but the three closed (posix_spawn's
 //! `POSIX_SPAWN_CLOEXEC_DEFAULT`): std's `Child` can't be had from one, and std's own fork and

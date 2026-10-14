@@ -36,6 +36,9 @@ cargo test -q -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=
 # (And the pipeline's whole-crate checks: every cache read through the accessor, every drop box
 # read through the gate's (docs/inputs.md §7.1), the Python steps' timer.)
 cargo test -q -p pipeline --test cache_accessor --test inputs_accessor --test timings_python >> $tests_log 2>&1 || tests_ok=$?
+# (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
+# clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
+cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
 grep -E '^test result' $tests_log
 if (( tests_ok != 0 )); then
   sed -n '/^---- /,/^failures:$/p' $tests_log | grep -v '^progress: '
