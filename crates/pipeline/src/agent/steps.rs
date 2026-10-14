@@ -134,9 +134,10 @@ pub const TABLE: [Step; 45] = [
     Step { mem_mb: 6144, beside: Some(4), ..base("rail", w_rail) },
     Step { mem_mb: 1024, beside: Some(5), ..base("bld-fetch", w_none) },
     // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
-    // 5.1 GB to read its 30.3 M rows, 3.3 GB to raise its tiles. Offered by the rows they read.)
+    // 5.1 GB to read its 30.3 M rows; to raise its tiles and field, the model of B5's pilot for those
+    // rows. Offered by the rows they read.)
     Step { mem_mb: 5200, shared: Some(6), beside: Some(12), groups: &[Group::NasReads], batch: 8, ..base("bldprep", w_bldprep) },
-    Step { mem_mb: 3400, shared: Some(7), beside: Some(13), batch: 16, ..base("bldtiles", w_bldtiles) },
+    Step { mem_mb: super::bldtiles_peak(30_300_000), shared: Some(7), beside: Some(13), batch: 16, ..base("bldtiles", w_bldtiles) },
     // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
     Step { mem_mb: crate::bld::field::LO_PEAK_MB, batch: 4, ..base("bldfield-lo", w_bldfield_lo) },
     Step { ..base("catalog", w_none) },
@@ -662,7 +663,7 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
         // by the former), the batches, the disk.
-        let mem: [(&str, u64); 19] = [("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", 3400), ("terrain", 1500)];
+        let mem: [(&str, u64); 19] = [("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
         }

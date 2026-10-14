@@ -534,8 +534,9 @@ export class FieldLayer implements CustomLayerInterface {
   opacity = 0.85;
   hk = 1;
   on = true;
-  /** Levels finer than the map's zoom (a reference drawn as at a closer zoom: bldcmp.ts). */
-  levelBias = 0;
+  /** The level drawn: ⌊zoom⌋ + this at the view's centre (1: a texel a device pixel at 2×; more, a
+   * reference drawn as at a closer zoom: bldcmp.ts). */
+  levelBias = 1;
   /** Mixed with what's under it in linear light (as full detail shrunk), else as stored values. */
   linear = true;
   /** Only the buildings in this box (west, south, east, north; the comparison's), or all. */
@@ -667,9 +668,11 @@ export class FieldLayer implements CustomLayerInterface {
     t.gpu = 0;
   }
 
+  /** The terrain's tiles in view and whether each has loaded (a tile's elevations sampled before its
+   * DEM tile loaded read 0 there: sampled again once it has). */
   private terrainKey() {
-    const t = (this.map as unknown as { terrain?: { tileManager?: { _inViewTiles?: { getAllTiles?: () => { tileID: { key: string } }[] } } } | null }).terrain;
-    const ids = t?.tileManager?._inViewTiles?.getAllTiles?.()?.map((x) => x.tileID.key).sort().join(',') ?? '';
+    const t = (this.map as unknown as { terrain?: { tileManager?: { _inViewTiles?: { getAllTiles?: () => { state?: string; tileID: { key: string } }[] } } } | null }).terrain;
+    const ids = t?.tileManager?._inViewTiles?.getAllTiles?.()?.map((x) => `${x.tileID.key}${x.state === 'loaded' ? '' : '?'}`).sort().join(',') ?? '';
     return `${!!t}|${ids}|${this.map.getTerrain()?.exaggeration ?? 0}`;
   }
 
@@ -713,7 +716,10 @@ export class FieldLayer implements CustomLayerInterface {
    * extruded layer shows. */
   private meshTiles(): Set<string> {
     const out = new Set<string>();
-    if (!this.meshOn || this.map.getLayoutProperty('buildings', 'visibility') === 'none' || !this.map.getLayer('buildings')) return out;
+    // (Not while the layer's least zoom hides them: over high ground MapLibre's cover takes z14
+    // tiles below map zoom 14, which the layer doesn't draw there.)
+    const layer = this.map.getLayer('buildings');
+    if (!this.meshOn || !layer || this.map.getLayoutProperty('buildings', 'visibility') === 'none' || this.map.getZoom() < (layer.minzoom ?? 0)) return out;
     const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { state: string; tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
     for (const t of tm?._inViewTiles?.getAllTiles?.() ?? []) {
       const c = t.tileID.canonical;
@@ -755,7 +761,7 @@ export class FieldLayer implements CustomLayerInterface {
     }
     const y0 = MercatorCoordinate.fromLngLat([0, Math.min(85, b.getNorth())]).y, y1 = MercatorCoordinate.fromLngLat([0, Math.max(-85, b.getSouth())]).y;
     const out: FTile[] = [];
-    const most = Math.min(LEVEL_MAX, Math.floor(zoom + this.levelBias) + 1);
+    const most = Math.min(LEVEL_MAX, Math.floor(zoom + this.levelBias));
     const visit = (z: number, x: number, y: number) => {
       const n = 2 ** z;
       const tx0 = x / n, tx1 = (x + 1) / n, ty0 = y / n, ty1 = (y + 1) / n;
@@ -768,7 +774,7 @@ export class FieldLayer implements CustomLayerInterface {
       // measured from a sea-level pivot: over high ground the view is closer than it says).
       const dx = Math.max(tx0 - cam.x, 0, cam.x - tx1), dy = Math.max(ty0 - cam.y, 0, cam.y - ty1);
       const d = Math.hypot(dx, dy, Math.max(cam.z - groundM, 1e-12));
-      const want = Math.min(most, Math.floor(zoom + this.levelBias + Math.log2(centreDist / d)) + 1);
+      const want = Math.min(most, Math.floor(zoom + this.levelBias + Math.log2(centreDist / d)));
       if (z < want || holds.has(key)) {
         for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(z + 1, x * 2 + i, y * 2 + j);
       } else out.push(this.tile(z, x, y));

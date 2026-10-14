@@ -59,10 +59,10 @@ pub struct Cut {
 
 impl Cut {
     /// A task's predicted memory (MB): its files three times over (a page holds them, the program
-    /// reads them in, and room as much again), and the model of `bldtiles` (§3.6: 0.25 GB and
-    /// 280 B a building of the area).
+    /// reads them in, and room as much again), and the model of `bldtiles` for an area of its
+    /// records (`crate::agent::bldtiles_peak`, the field's cells in flight with it).
     pub fn mem_mb(&self) -> u64 {
-        (self.bytes >> 20) * 3 + 256 + ((self.records * 280) >> 20)
+        (self.bytes >> 20) * 3 + crate::agent::bldtiles_peak(self.records * 5 / 2)
     }
 }
 
