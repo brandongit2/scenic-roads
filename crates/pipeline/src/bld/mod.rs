@@ -18,6 +18,7 @@
 //! (The design's `buildings T` step is `bldtiles` here: `buildings` is the roadside buildings' job,
 //! crate::buildtiles, in scenic-build and the agent.)
 
+pub mod field;
 pub mod fill;
 pub mod job;
 pub mod prep;
