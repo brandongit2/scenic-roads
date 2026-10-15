@@ -8,11 +8,12 @@
 // fill_extrusion.vertex.glsl, where upstream sank every foot 10 m below the centroid's ground).
 //
 // A source and three layers: `buildings` (fill-extrusion: the parts, and the buildings without
-// parts), `buildings-flat` (fill, draped: footprints, the flat mode and 2D maps) and
-// `buildings-hover` (the hovered building, a little larger, lit). Settings → Buildings: 3D or flat,
+// parts), `buildings-flat` (fill, draped: footprints, the flat mode and 2D maps) and `buildings-pick`
+// (the footprints the hover finds). The highlights (the hovered building, the heritage tint) recolour
+// the extruded buildings themselves, by feature state on their ids (the tiles' feature ids). Settings → Buildings: 3D or flat,
 // colour (plain, by height, by where the height comes from), opacity, height scale.
 
-import type { ExpressionSpecification, FilterSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
+import type { ExpressionSpecification, FilterSpecification, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
 import { paletteFn } from './palettes';
 import { hostFor } from './hosts';
 import { ver } from './api';
@@ -50,9 +51,6 @@ export interface HeightLook {
 export const SOURCE = 'bld';
 export const LAYER = 'buildings';
 export const FLAT = 'buildings-flat';
-export const HOVER = 'buildings-hover';
-/** The buildings holding a heritage site's point, drawn again a little larger in its colour. */
-export const HERITAGE = 'buildings-heritage';
 /** The extruded buildings' footprints, transparent (a fill at opacity 0 isn't drawn): what the
  * hover finds candidates in (MapLibre's own query of extrusions ignores the terrain, and finds
  * nothing on the globe). */
@@ -197,12 +195,6 @@ export function keepWhole(map: MLMap) {
   map.on('render', check);
 }
 
-/** The highlights (the heritage tint, the hover) are the buildings drawn again a little larger: drawn
- * pulled this far toward the camera (our MapLibre's `scenic:depth-bias`, a polygon offset), they win
- * over the buildings under them where the depth can't tell the two apart (far off, their walls a few
- * tenths of a metre apart), where they fought as the map moved. */
-const DEPTH_BIAS: [number, number] = [1, 4];   // (factor 4 tinted a nearer tower's edge-on walls)
-
 /** Adds the source and layers (when the catalog has buildings): the extrusions after the road and
  * rail layers (`before`: the first symbol layer), the footprints among the draped layers
  * (`flatBefore`: the first boundary layer). */
@@ -227,16 +219,6 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
     id: LAYER, type: 'fill-extrusion', source: SOURCE, 'source-layer': 'b', filter: extrudedFilter(),
     paint: { 'fill-extrusion-color': PLAIN, 'fill-extrusion-height': metres('h', 1), 'fill-extrusion-base': metres('m', 1), 'fill-extrusion-vertical-gradient': true },
   }, before);
-  map.addSource('bld-heritage', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-  map.addLayer({
-    id: HERITAGE, type: 'fill-extrusion', source: 'bld-heritage', metadata: { 'scenic:depth-bias': DEPTH_BIAS },
-    paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-vertical-gradient': true },
-  }, before);
-  map.addSource('bld-hover', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-  map.addLayer({
-    id: HOVER, type: 'fill-extrusion', source: 'bld-hover', metadata: { 'scenic:depth-bias': DEPTH_BIAS },
-    paint: { 'fill-extrusion-color': '#ffd27a', 'fill-extrusion-opacity': 0.7, 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-vertical-gradient': false },
-  }, before);
 }
 
 /** The settings applied: visibility, colour, opacity, scale, filters, light. `exaggeration`: the
@@ -249,14 +231,11 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   const vis = (on: boolean) => (on ? 'visible' : 'none');
   map.setLayoutProperty(LAYER, 'visibility', vis(b.on && !flat));
   map.setLayoutProperty(FLAT, 'visibility', vis(b.on && flat));
-  map.setLayoutProperty(HOVER, 'visibility', vis(b.on && !flat));
   map.setLayoutProperty(PICK, 'visibility', vis(b.on && !flat));
-  map.setLayoutProperty(HERITAGE, 'visibility', vis(b.on && !flat && b.heritage));
   const c = colourOf(b, look);
-  map.setPaintProperty(LAYER, 'fill-extrusion-color', c);
+  map.setPaintProperty(LAYER, 'fill-extrusion-color', highlighted(c));
   map.setPaintProperty(FLAT, 'fill-color', c);
   map.setPaintProperty(LAYER, 'fill-extrusion-opacity', b.opacity);
-  map.setPaintProperty(HERITAGE, 'fill-extrusion-opacity', b.opacity);
   map.setPaintProperty(FLAT, 'fill-opacity', 0.65 * b.opacity);
   map.setPaintProperty(LAYER, 'fill-extrusion-height', metres('h', k));
   map.setPaintProperty(LAYER, 'fill-extrusion-base', metres('m', k));
@@ -271,6 +250,7 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
     t.dirty = true;
     t.k = b.on && !flat ? k : 0;
     t.wantDist = b.on && b.colour === 'height';
+    if (t.heritage !== (b.on && !flat && b.heritage)) t.heritageVer++;
     t.heritage = b.on && !flat && b.heritage;
     map.triggerRepaint();
   }
@@ -285,7 +265,11 @@ export function onHeights(map: MLMap, f: (d: Dist | null) => void) {
 
 /** Where the heritage tint takes the sites' points from (the landmark dots: dots.ts points). */
 export function heritagePoints(map: MLMap, f: Talls['points']) {
-  tallOf(map).points = f;
+  const t = tallOf(map);
+  t.points = f;
+  // (the field's tint textures are made again)
+  t.heritageVer++;
+  t.dirty = true;
 }
 
 /** The heritage sites shown changed (`shown`: their overlay on; their points or filters): the
@@ -293,6 +277,7 @@ export function heritagePoints(map: MLMap, f: Talls['points']) {
 export function heritageChanged(map: MLMap, shown: boolean) {
   const t = tallOf(map);
   t.sites = shown;
+  t.heritageVer++;
   t.dirty = true;
   map.triggerRepaint();
 }
@@ -367,13 +352,19 @@ type Talls = {
   /** The heritage sites' points shown within a box (w, s, e, n): lng, lat and their dots' class
    * (size + 3 × group: dotlayout.ts). */
   points: ((box: [number, number, number, number]) => { lng: number; lat: number; cls: number }[]) | null;
+  /** The buildings tinted now: feature id → group (feature state `her`). */
+  tinted: Map<string | number, number>;
+  /** Bumped when what the tint shows may have changed (its setting, the sites shown): the field's. */
+  heritageVer: number;
+  /** The hovered building's id (feature state `hover`). */
+  hover: string | number | null;
 };
 const talls = new WeakMap<MLMap, Talls>();
 
 function tallOf(map: MLMap) {
   let t = talls.get(map);
   if (!t) {
-    t = { dm: TALLEST_DM, dirty: true, tall: [], roofs: [], k: 1, sig: '', wantDist: false, onDist: null, heritage: false, sites: false, points: null };
+    t = { dm: TALLEST_DM, dirty: true, tall: [], roofs: [], k: 1, sig: '', wantDist: false, onDist: null, heritage: false, sites: false, points: null, tinted: new Map(), heritageVer: 0, hover: null };
     talls.set(map, t);
   }
   return t;
@@ -496,27 +487,46 @@ function heightsInView(map: MLMap): Dist | null {
   return total > 0 ? new Dist(lo, hi, bins, total) : null;
 }
 
-/** How much larger and taller a heritage building is drawn again than itself (m): enough to show
- * over it, as the hover's. */
-const HERITAGE_GROW_M = 0.4;
 /** How far a heritage building's colour goes from the plain one toward its group's. */
 const HERITAGE_TINT = 0.6;
 
-/** A group's colour (#rrggbb) as a heritage building's tint: part way from the plain colour. */
-function tint(hex: string): string {
-  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  return `rgb(${c.map((x, i) => Math.round((PLAIN_RGB[i] + (x - PLAIN_RGB[i]) * HERITAGE_TINT) * 255)).join(',')})`;
+/** A heritage group's tint (sRGB 0–1): its colour (#rrggbb) part way from the plain colour. */
+export function heritageTint(g: number): [number, number, number] {
+  const hex = HERITAGE_GROUPS[g].colour;
+  return [1, 3, 5].map((i, k) => PLAIN_RGB[k] + (parseInt(hex.slice(i, i + 2), 16) / 255 - PLAIN_RGB[k]) * HERITAGE_TINT) as [number, number, number];
+}
+const rgb = (c: number[]) => `rgb(${c.map((x) => Math.round(x * 255)).join(',')})`;
+
+/** The hovered building's colour: amber over the plain colour (as the old highlight at 0.7 over it). */
+const HOVER_COLOUR = rgb([0xff, 0xd2, 0x7a].map((x, i) => PLAIN_RGB[i] * 0.3 + (x / 255) * 0.7));
+
+/** A colour expression with the highlights: the hovered building amber, a heritage building in its
+ * group's tint (feature state `hover`, `her`), the rest `c`. */
+function highlighted(c: ExpressionSpecification | string): ExpressionSpecification {
+  return ['case',
+    ['boolean', ['feature-state', 'hover'], false], HOVER_COLOUR,
+    ['match', ['coalesce', ['feature-state', 'her'], -1], ...HERITAGE_GROUPS.flatMap((_, g) => [g, rgb(heritageTint(g))]), c],
+  ] as unknown as ExpressionSpecification;
+}
+
+/** Whether a point (lng, lat) is in a polygon's rings (even–odd), for the field's heritage list. */
+export const insideRings = (rings: number[][][], q: [number, number]) => inside(rings as Ring[], q);
+
+/** What the field's heritage tint needs (bldfield.ts): the sites' points shown in a box, null while
+ * the tint isn't shown, and a counter bumped when that may have changed. */
+export function heritageFor(map: MLMap): { ver: number; points: Talls['points'] } {
+  const t = tallOf(map);
+  return { ver: t.heritageVer, points: t.heritage && t.sites ? t.points : null };
 }
 
 /** The heritage tint: the loaded buildings (extruded) holding a heritage site's point as the
- * heritage overlay shows it (its dots, filtered), each drawn again in its site's group colour (World
- * Heritage, national, provincial, municipal), a little larger. The highest group wins where sites
+ * heritage overlay shows it (its dots, filtered), each in its site's group colour (World Heritage,
+ * national, provincial, municipal), by feature state on its id. The highest group wins where sites
  * share a building. */
 function setHeritage(map: MLMap, t: Talls) {
-  const src = map.getSource<GeoJSONSource>('bld-heritage');
-  if (!src) return;
+  if (!map.getSource(SOURCE)) return;
   const shown = t.heritage && t.sites && !!t.points;
-  const features: GeoJSON.Feature[] = [];
+  const want = new Map<string | number, number>();
   if (shown && t.points) {
     // The points around the view, in a grid of ~100 m cells.
     const cell = 0.001;
@@ -529,8 +539,8 @@ function setHeritage(map: MLMap, t: Talls) {
       l.push({ x: p.lng, y: p.lat, g: Math.min(3, Math.floor(p.cls / 3)) });
     }
     if (grid.size) {
-      const seen = new Set<string>();
       for (const f of map.querySourceFeatures(SOURCE, { sourceLayer: 'b', filter: extrudedFilter() })) {
+        if (f.id === undefined || want.has(f.id)) continue;
         if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
         const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
         let best = -1;
@@ -551,21 +561,14 @@ function setHeritage(map: MLMap, t: Talls) {
             }
           }
         }
-        if (best < 0) continue;
-        const p = f.properties as Record<string, number>;
-        const key = `${p.h}/${p.m ?? 0}/${JSON.stringify(polys[0]?.[0]?.[0])}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const grown = polys.map((poly) => poly.map((ring, i) => offsetRing(ring, HERITAGE_GROW_M, i === 0)));
-        features.push({
-          type: 'Feature',
-          properties: { c: tint(HERITAGE_GROUPS[best].colour), top: ((p.h ?? 0) / 10) * t.k + HERITAGE_GROW_M, base: ((p.m ?? 0) / 10) * t.k },
-          geometry: { type: 'MultiPolygon', coordinates: grown },
-        });
+        if (best >= 0) want.set(f.id, best);
       }
     }
   }
-  src.setData({ type: 'FeatureCollection', features });
+  const at = (id: string | number) => ({ source: SOURCE, sourceLayer: 'b', id });
+  for (const [id, g] of t.tinted) if (want.get(id) !== g) map.removeFeatureState(at(id), 'her');
+  for (const [id, g] of want) if (t.tinted.get(id) !== g) map.setFeatureState(at(id), { her: g });
+  t.tinted = want;
 }
 
 /** A query box on the screen, the least height (dm) a footprint in it needs to reach the ray, and
@@ -871,59 +874,14 @@ const fmtM = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)} m`;
 
 // ---- the hovered building ------------------------------------------------------------------
 
-/** A ring moved outward (`d` metres), or inward for a hole, so the highlight encloses the building's
- * walls: each vertex along its corner's bisector (the mitre capped). */
-function offsetRing(ring: number[][], d: number, grow: boolean): number[][] {
-  const n = ring.length - (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? 1 : 0);
-  if (n < 3) return ring;
-  const lat0 = ring[0][1];
-  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180), ky = 110574;
-  const pts = ring.slice(0, n).map(([x, y]) => [(x - ring[0][0]) * kx, (y - lat0) * ky]);
-  let a = 0;
-  for (let i = 0; i < n; i++) {
-    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % n];
-    a += x1 * y2 - x2 * y1;
-  }
-  // Outward (away from the ring's inside) is the right of each edge for a counter-clockwise ring.
-  const out = (a > 0 ? 1 : -1) * (grow ? 1 : -1);
-  const norm = (i: number) => {
-    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % n];
-    const l = Math.hypot(x2 - x1, y2 - y1) || 1;
-    return [(out * (y2 - y1)) / l, (-out * (x2 - x1)) / l];
-  };
-  const res = pts.map((_, i) => {
-    const n1 = norm((i + n - 1) % n), n2 = norm(i);
-    let bx = n1[0] + n2[0], by = n1[1] + n2[1];
-    const bl = Math.hypot(bx, by) || 1;
-    bx /= bl;
-    by /= bl;
-    const k = d / Math.max(0.4, bx * n2[0] + by * n2[1]);
-    return [ring[0][0] + (pts[i][0] + bx * k) / kx, lat0 + (pts[i][1] + by * k) / ky];
-  });
-  res.push(res[0]);
-  return res;
-}
-
-/** How much larger and taller the hovered building's highlight is than the building (m): enough
- * to show over it (each draws on the terrain at its own centroid). A tower's other parts and nearer
- * buildings still hide it where they're in front. */
-const HOVER_GROW_M = 1;
-
-/** The hovered building highlighted (null: none): its footprint a little larger and taller. */
-export function setHovered(map: MLMap, f: MapGeoJSONFeature | null, b: BuildingState, exaggeration: number) {
-  const src = map.getSource<GeoJSONSource>('bld-hover');
-  if (!src) return;
-  if (!f || (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon')) {
-    src.setData({ type: 'FeatureCollection', features: [] });
-    return;
-  }
-  const k = b.scale > 0 ? b.scale : Math.max(1, exaggeration);
-  const p = f.properties as Record<string, number>;
-  const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
-  const grown = polys.map((poly) => poly.map((ring, i) => offsetRing(ring, HOVER_GROW_M, i === 0)));
-  src.setData({
-    type: 'Feature',
-    properties: { top: ((p.h ?? 0) / 10) * k + HOVER_GROW_M, base: ((p.m ?? 0) / 10) * k },
-    geometry: { type: 'MultiPolygon', coordinates: grown },
-  });
+/** The hovered building highlighted (null: none): recoloured, by feature state on its id (a copy
+ * has its building's). */
+export function setHovered(map: MLMap, f: MapGeoJSONFeature | null) {
+  if (!map.getSource(SOURCE)) return;
+  const t = tallOf(map);
+  const id = f?.id ?? null;
+  if (id === t.hover) return;
+  if (t.hover !== null) map.removeFeatureState({ source: SOURCE, sourceLayer: 'b', id: t.hover }, 'hover');
+  if (id !== null) map.setFeatureState({ source: SOURCE, sourceLayer: 'b', id }, { hover: true });
+  t.hover = id;
 }

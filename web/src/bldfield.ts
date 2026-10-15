@@ -49,6 +49,7 @@ import { link } from './roads/layer';
 import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
 import type { DrawnTalls } from './camera3d';
+import { heritageFor, heritageTint, insideRings } from './buildings';
 
 const G = 32;
 /** The elevation grid's margin around a tile (grid cells): a roof's ground is taken at its building's
@@ -159,6 +160,8 @@ uniform int u_sceneOn;
 uniform mat4 u_invProj;   // clip space to the tile's (tile units, tile units, metres): the flat map's
 uniform vec2 u_vp;        // the framebuffer's size (px)
 uniform vec2 u_depthRange;
+uniform highp sampler2D u_her;   // the heritage tint: each texel's tint colour × the share of it under a tinted building (premultiplied), mipmapped
+uniform int u_herOn;
 // A class's share at a point (its texture at the read's level).
 float classF(int c, vec2 uv, float lod) {
   if (c == 0) return textureLod(u_c0, uv, lod).b;
@@ -204,8 +207,11 @@ vec3 shadeC(vec3 base, float dd, float g, vec3 lowc) {
   float hiD = max(1.0 - dot(base, vec3(0.2126, 0.7152, 0.0722)) + u_lightintensity, 1.0);
   return clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dd) * g * u_lightcolor, lowc, vec3(1.0));
 }
-#define ROOFC(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dRoof, 1.0, lowc) : roofC)
-#define WALLC(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dWall, Gc[c], lowc) : clamp(wallC * Gc[c], lowc, vec3(1.0)))
+#define ROOFC0(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dRoof, 1.0, lowc) : roofC)
+#define WALLC0(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dWall, Gc[c], lowc) : clamp(wallC * Gc[c], lowc, vec3(1.0)))
+// (a heritage building's texels toward its group's tint, lit alike, by the share of the texel it covers)
+#define ROOFC(c) (herA > 0.0 ? mix(ROOFC0(c), shadeC(herC, dRoof, 1.0, lowc), herA) : ROOFC0(c))
+#define WALLC(c) (herA > 0.0 ? mix(WALLC0(c), shadeC(herC, dWall, Gc[c], lowc), herA) : WALLC0(c))
 void main() {
   if (v_clip > 1.0) discard;
   float mpu = u_camTile.w;
@@ -381,8 +387,11 @@ void main() {
 // over the ground here instead; ?fdbg=32 each roof over the ground under its own texel)
 #define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; float dg_ = textureLod(u_dg, vec3(uv, float(L_[c])), lod).r / max(sm.r, 1e-5); float Hs_ = u_dbg == 32 ? H0_ : clamp(H0_ + dg_, 0.5, max(topc - 0.25, 0.5)); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
       float openK = 1.0;   // (the walls' rate over the open ground ÷ over all of it: below)
+      float herA = 0.0;
+      vec3 herC = vec3(0.0);
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
+        if (u_herOn == 1) { vec4 hz = textureLod(u_her, uv, lod); if (hz.a > 0.004) { herA = hz.a; herC = hz.rgb / hz.a; } }
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
         // read: each level's mask is its texels' and their neighbours')
         int ml = min(int(lod) + 1, 9);
@@ -576,6 +585,9 @@ interface FTile {
   used: number;
   fails: number;
   retryAt: number;
+  /** The heritage tint (RGBA8, premultiplied, mipmapped; null: none here) and what it was made for. */
+  herTex: WebGLTexture | null;
+  herFor: string;
   /** Only fetched ahead, under the meshes (not wanted for drawing this frame): after the wanted. */
   pre: boolean;
 }
@@ -663,6 +675,75 @@ export class FieldLayer implements CustomLayerInterface {
     this.zeroTex = null;
   };
   private onRestored = () => this.map.triggerRepaint();
+  /** The level-8 tiles' heritage lists (null: none; 'loading': asked for), by tile key. */
+  private herLists = new Map<string, Uint8Array | null | 'loading'>();
+  /** A level-8 tile's heritage buildings shown, for the heritage tint's version `ver`: each its
+   * footprint (world coordinates) and its group. */
+  private herItems = new Map<string, { ver: number; items: { ring: [number, number][]; box: [number, number, number, number]; g: number }[] }>();
+
+  /** Tile t's heritage tint (null: none), made again when the sites shown or its list change: the
+   * buildings of its level-8 tile's heritage list holding a heritage site's point the overlay shows
+   * (the meshes' rule, buildings.ts), each filled in its group's tint. From level 8 on (coarser, a
+   * building is under a texel, and the sites' dots mark them). */
+  private herTexFor(t: FTile): WebGLTexture | null {
+    if (t.z < 8) return null;
+    const h = heritageFor(this.map);
+    if (!h.points) return null;
+    const k8 = `8/${t.x >> (t.z - 8)}/${t.y >> (t.z - 8)}`;
+    const list = this.herLists.get(k8);
+    if (list === undefined) {
+      this.herLists.set(k8, 'loading');
+      this.worker?.postMessage({ type: 'her', key: k8, url: this.tileUrl(8, t.x >> (t.z - 8), t.y >> (t.z - 8)) } satisfies FieldIn);
+      return null;
+    }
+    if (!list || list === 'loading') return null;
+    const want = `${h.ver}`;
+    if (t.herFor === want) return t.herTex;
+    let it = this.herItems.get(k8);
+    if (!it || it.ver !== h.ver) {
+      it = { ver: h.ver, items: heritageItems(list, Number(k8.split('/')[1]), Number(k8.split('/')[2]), h.points) };
+      this.herItems.set(k8, it);
+    }
+    const gl = this.gl;
+    if (t.herTex) {
+      gl.deleteTexture(t.herTex);
+      t.herTex = null;
+      t.gpu -= (512 * 512 * 4 * 4) / 3;
+    }
+    t.herFor = want;
+    const n = 2 ** t.z;
+    const box: [number, number, number, number] = [t.x / n, t.y / n, (t.x + 1) / n, (t.y + 1) / n];
+    const mine = it.items.filter((b) => b.box[2] >= box[0] && b.box[0] <= box[2] && b.box[3] >= box[1] && b.box[1] <= box[3]);
+    if (!mine.length) return null;
+    const cv = new OffscreenCanvas(512, 512);
+    const cx = cv.getContext('2d', { willReadFrequently: true })!;
+    for (const b of mine) {
+      cx.fillStyle = `rgb(${heritageTint(b.g).map((v) => Math.round(v * 255)).join(',')})`;
+      cx.beginPath();
+      b.ring.forEach(([wx, wy], i) => (i ? cx.lineTo : cx.moveTo).call(cx, (wx * n - t.x) * 512, (wy * n - t.y) * 512));
+      cx.closePath();
+      cx.fill();
+    }
+    const px = cx.getImageData(0, 0, 512, 512).data;
+    // (premultiplied: the mipmaps mix the tint by the share each texel has)
+    for (let i = 0; i < px.length; i += 4) {
+      const a = px[i + 3] / 255;
+      px[i] = Math.round(px[i] * a);
+      px[i + 1] = Math.round(px[i + 1] * a);
+      px[i + 2] = Math.round(px[i + 2] * a);
+    }
+    const tx = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tx);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(px.buffer));
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    t.gpu += (512 * 512 * 4 * 4) / 3;
+    return (t.herTex = tx);
+  }
   private elevKey = '';
   private failed = false;
   private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
@@ -719,7 +800,9 @@ export class FieldLayer implements CustomLayerInterface {
   private freeGl(t: FTile) {
     const gl = this.gl;
     for (const x of t.tex ?? []) if (x) gl.deleteTexture(x);
-    for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex, t.dgTex]) if (x) gl.deleteTexture(x);
+    for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex, t.dgTex, t.herTex]) if (x) gl.deleteTexture(x);
+    t.herTex = null;
+    t.herFor = '';
     t.dgTex = null;
     t.dgc = null;
     t.dgFor = t.dgAsked = '';
@@ -771,7 +854,7 @@ export class FieldLayer implements CustomLayerInterface {
     const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
     for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_dg', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
+      'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(key, pr);
     return pr;
@@ -863,7 +946,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, pre };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', pre };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -903,6 +986,12 @@ export class FieldLayer implements CustomLayerInterface {
 
   /** A worker's answer: the tile's textures made, or it marked empty or failed. */
   private received(m: FieldOut) {
+    if (m.type === 'her') {
+      this.herLists.set(m.key, m.list);
+      this.herItems.delete(m.key);
+      this.map.triggerRepaint();
+      return;
+    }
     if (m.type === 'dg') {
       this.roofGround(m);
       return;
@@ -927,7 +1016,13 @@ export class FieldLayer implements CustomLayerInterface {
           console.warn(`bldfield: ${m.key}: ${m.error}`);
         }
       } else if (m.empty) t.state = 'empty';
-      else this.upload(t, m);
+      else {
+        if (t.z === 8) {
+          this.herLists.set(t.key, m.heritage);
+          this.herItems.delete(t.key);
+        }
+        this.upload(t, m);
+      }
     }
     this.pump();
     this.map.triggerRepaint();
@@ -1434,6 +1529,13 @@ export class FieldLayer implements CustomLayerInterface {
         }
       }
       gl.uniform1i(u.u_mask, t.mask);
+      {
+        const her = this.herTexFor(t);
+        gl.uniform1i(u.u_herOn, her ? 1 : 0);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, her);
+        gl.uniform1i(u.u_her, 2);
+      }
       gl.activeTexture(gl.TEXTURE15);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, t.dgTex ?? this.zeroDg());
       gl.uniform1i(u.u_dg, 15);
@@ -1473,7 +1575,7 @@ export class FieldLayer implements CustomLayerInterface {
     }
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
-    for (const k of [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
+    for (const k of [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
@@ -1528,6 +1630,44 @@ export class FieldLayer implements CustomLayerInterface {
 }
 
 /** A 4 × 4 matrix's inverse (column-major), or the identity where it has none. */
+/** A level-8 tile's (8/ax/ay) heritage list (crates/pipeline/src/bld/field.rs `heritage`: u32 count;
+ * each u16 top, u16 base (dm), u8 n, n points u16 x, y in the tile, 65,536 a side) as the buildings
+ * holding a site's point shown (`points`), each its footprint in world coordinates (0–1), its box
+ * and its group (the highest where sites share it: the meshes' rule). */
+export function heritageItems(list: Uint8Array, ax: number, ay: number, points: (box: [number, number, number, number]) => { lng: number; lat: number; cls: number }[]) {
+  const dv = new DataView(list.buffer, list.byteOffset, list.byteLength);
+  const out: { ring: [number, number][]; box: [number, number, number, number]; g: number }[] = [];
+  if (list.length < 4) return out;
+  const count = dv.getUint32(0, true);
+  let at = 4;
+  for (let i = 0; i < count && at + 5 <= list.length; i++) {
+    const np = list[at + 4];
+    at += 5;
+    if (at + np * 4 > list.length) break;
+    const ring: [number, number][] = [];
+    for (let k = 0; k < np; k++) ring.push([(ax + dv.getUint16(at + k * 4, true) / 65536) / 256, (ay + dv.getUint16(at + k * 4 + 2, true) / 65536) / 256]);
+    at += np * 4;
+    if (ring.length < 3) continue;
+    const box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [x, y] of ring) {
+      box[0] = Math.min(box[0], x);
+      box[1] = Math.min(box[1], y);
+      box[2] = Math.max(box[2], x);
+      box[3] = Math.max(box[3], y);
+    }
+    const ll = (x: number, y: number): [number, number] => [x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI];
+    const [w, nn] = ll(box[0], box[1]), [e, s] = ll(box[2], box[3]);
+    const rll = [ring.map(([x, y]) => ll(x, y))];
+    let g = -1;
+    for (const p of points([w, s, e, nn])) {
+      const pg = Math.min(3, Math.floor(p.cls / 3));
+      if ((g < 0 || pg < g) && p.lng >= w && p.lng <= e && p.lat >= s && p.lat <= nn && insideRings(rll, [p.lng, p.lat])) g = pg;
+    }
+    if (g >= 0) out.push({ ring, box, g });
+  }
+  return out;
+}
+
 function invert(m: ArrayLike<number>): Float32Array {
   const a = Array.from(m);
   const o = new Float32Array(16);

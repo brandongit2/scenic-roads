@@ -14,10 +14,14 @@ import { roofGround } from './bldfield.offsets';
 export type FieldIn =
   | { type: 'load'; key: string; url: string }
   | { type: 'cancel'; key: string }
+  /** A level-8 tile's heritage list alone (the tile fetched, its WebP not decoded). */
+  | { type: 'her'; key: string; url: string }
   /** Each texel's roof ground for the elevations `ver` (the grid GE × GE, M cells beyond the tile). */
   | { type: 'dg'; key: string; ver: string; texels: Uint8Array; n: number; ee: Float32Array; GE: number; M: number };
 
 export type FieldOut =
+  /** A level-8 tile's heritage list (null: none, or the tile not had). */
+  | { type: 'her'; key: string; list: Uint8Array | null }
   | { type: 'done'; key: string; empty: true }
   | { type: 'failed'; key: string; error: string }
   /** Share × each texel's roof ground (R16F's, a layer a class held), each cell's largest (32 × 32);
@@ -183,6 +187,17 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
   const msg = e.data;
   if (msg.type === 'cancel') {
     inflight.get(msg.key)?.abort();
+    return;
+  }
+  if (msg.type === 'her') {
+    fetch(msg.url)
+      .then(async (r) => {
+        if (!r.ok || r.status === 204) return null;
+        const { tail } = split(new Uint8Array(await r.arrayBuffer()));
+        return tail.length ? tail.slice() : null;
+      })
+      .catch(() => null)
+      .then((list) => (self as unknown as Worker).postMessage({ type: 'her', key: msg.key, list } satisfies FieldOut));
     return;
   }
   if (msg.type === 'dg') {

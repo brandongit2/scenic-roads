@@ -332,7 +332,8 @@ estimate, 3 neighbours, 4 GHSL, 5 size and kind), `f` floors (when `s` is 1), `c
 unknown, 1 residential, 2 outbuilding, 3 commercial, 4 industrial, 5 religious, 6 civic, education
 or medical, 7 agricultural, 8 transportation, 9 other), `k` (1 a part, 2 a building drawn by its
 parts: the flat layer's only; left out when 0), `o` (1 a copy; left out otherwise); keys in that
-order in every tile, values in order of first use. No feature ids, no names. Features sorted by their centroid's Morton code in the
+order in every tile, values in order of first use. No names. Feature ids (from `BUILDINGS_V` 4): x << 34 | y << 20 | the
+index among its z14 tile's records, of the building's own z14 tile (a copy has its building's id). Features sorted by their centroid's Morton code in the
 tile (12 bits an axis), then id.
 
 **The field** (`pipeline::bld::field`, docs/buildings3d.md §4.8): every building and part extruded

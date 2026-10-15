@@ -1503,7 +1503,7 @@ async function main() {
     const key = f ? JSON.stringify(f.geometry) : null;
     if (key === hoveredBuilding) return;
     hoveredBuilding = key;
-    setBuildingHover(map, f, store.s.buildings, store.s.terrain.on ? store.s.terrain.exaggeration : 0);
+    setBuildingHover(map, f);
   };
   // Last cursor position on the map (terrain-aware), for the Street View shortcut.
   let cursorLL: maplibregl.LngLat | null = null;
@@ -2142,7 +2142,10 @@ async function main() {
       heritageChanged(map, store.s.overlays.heritage);
       if (fieldReady)
         void fieldReady.then((f) => {
-          if (!map.getLayer(f.id) && map.getLayer('buildings-heritage')) map.addLayer(f, 'buildings-heritage');
+          // (Right after the extruded buildings.)
+          const ids = map.getStyle().layers.map((l) => l.id);
+          const next = ids[ids.indexOf('buildings') + 1];
+          if (!map.getLayer(f.id) && ids.includes('buildings')) map.addLayer(f, next);
           applyBuildingsNow(store.s);
         });
     }

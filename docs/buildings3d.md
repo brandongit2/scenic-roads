@@ -549,8 +549,12 @@ manifest; a work file, not served; docs/formats.md has the bytes). Meta `{"fmt":
 - Properties: `h` the top (dm), `m` the base (dm; parts; left out when 0), `s` the height's source
   (0–5, §2.3), `f` floors (when `s` is 1), `c` the kind (0 unknown, 1 residential, 2 outbuilding,
   3 commercial, 4 industrial, 5 religious, 6 civic, 7 agricultural, 8 transport, 9 other), `k` (1 a
-  part, 2 an outline with parts: drawn by the flat layer only), `o` (1 a copy). No feature ids, no
-  names (B1).
+  part, 2 an outline with parts: drawn by the flat layer only), `o` (1 a copy). No names (B1).
+- Feature ids from `BUILDINGS_V` 4: x << 34 | y << 20 | its index among its z14 tile's records (its
+  centroid's tile; under 2^48, a whole number in JavaScript); a copy has its building's id. The
+  highlights' feature state is set on them (§4.2). They add 10–24 % to a tile gzip'd (Toronto's
+  four downtown tiles 8–17 %, Tokyo's and Valencia's densest 22–24 %, measured by adding them to
+  served tiles).
 - In a tile, features sorted by their centroid's Morton code, then id.
 - Encoded by `pipeline::bld` over `names::mvt`, not `vtgen`, which clips features at the tile's
   edges and simplifies at 3 units (1.8 m at z14: a house's corners). gzip level 6 (flate2).
@@ -689,10 +693,10 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 `m / 10`, colour by the mode, vertical gradient on; parts and buildings without parts, not the
 copies), `buildings-flat` (fill: buildings and outlines, not parts; the copies too, so a footprint
 past its tile is drawn whole) for the flat mode, `buildings-pick` (fill at opacity 0, which MapLibre
-doesn't draw: the footprints the hover queries, copies too), `buildings-heritage` (a GeoJSON
-source's fill-extrusion: the loaded buildings holding a heritage site, 0.4 m larger and taller, in
-its colour, §4.4) and `buildings-hover` (likewise: the hovered building, 1 m larger and taller,
-amber). And two custom layers of the roads' code after them, `roads-bridges` and `rails-bridges`
+doesn't draw: the footprints the hover queries, copies too). The highlights, the heritage tint
+(§4.4) and the hovered building, recolour the extruded buildings themselves: `buildings`' colour
+is a `case` on feature state (`hover` amber, `her` a heritage group's tint, else the mode's colour),
+set on the tiles' feature ids (§3.4), a building's copies sharing its id. And two custom layers of the roads' code after them, `roads-bridges` and `rails-bridges`
 (§4.2).
 
 ### 4.2 Where in the style
@@ -788,11 +792,10 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   (violet), neighbours (amber), GHSL (red-orange), size (grey), so the fill can be judged on the map
   (B1).
 - **Heritage tint** (B3): the loaded buildings holding a heritage site's point, as the heritage
-  overlay's dots show it (its tiers and filters applied: `dots.points`), drawn again 0.4 m larger
-  (pulled toward the camera by a polygon offset of factor −1, units −4, our MapLibre's
-  `scenic:depth-bias`, so it wins over the building it copies rather than fighting it as the map
-  moves; a factor of −4 tinted stripes of a nearer tower's edge-on walls) in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
-  plain colour, the highest group where sites share a building. Read when the map is idle; on by
+  overlay's dots show it (its tiers and filters applied: `dots.points`), recoloured by feature state
+  on its id (nothing drawn again, so nothing to fight the building as the map moves) in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
+  plain colour, the highest group where sites share a building. Past the hand-over the field tints
+  the same buildings (§4.8). Read when the map is idle; on by
   default while Heritage sites show (Settings → Buildings, `bd=`'s sixth field). Over the other
   colour modes too.
 
@@ -835,9 +838,9 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   (the M1; the bottom bar and the highlight included, roads and rails left out) took 0.5–4.6 ms in
   the median, 0.8–6.8 at p90 (Shinjuku 3.5 and 6.3, Tokyo 4.3 and 5.5), at most 10.5. A road or
   rail line under the cursor gives way when the ray to its point meets a building above it (a
-  second call). The hovered building is drawn again in a small GeoJSON layer, 1 m larger and
-  taller, amber (with the heritage tint's depth bias); a tower's other parts and nearer buildings hide it where they're in front (later:
-  an outline drawn over the buildings). The bottom bar's slots as in §1. Known: while the globe hands
+  second call). The hovered building (or part) is recoloured amber by feature state on its id, at
+  its own size; nearer buildings hide it where they're in front (later: an outline drawn over the
+  buildings). The bottom bar's slots as in §1. Known: while the globe hands
   over to the flat map (zoom 15.5–16.5), MapLibre draws a blend of the two that `rayAt` doesn't
   follow: the hover can be off by up to 6.8 px there (at z16.4). Where the framing leaves the
   camera inside a hill (2 m into Aina Haina's ridge), the rays start underground: MapLibre's
@@ -919,10 +922,9 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
 
   So the corner feet, the fog and the globe's precision cost the extrusions up to ~0.6 ms of GPU
   (the four corners' globe positions a vertex), lost in the frames' noise (± 1 ms between runs of
-  the same build: with the buildings off, frames took 4.0–7.9 ms). The heritage tint adds 110
-  vertices at Shinjuku, 5,014 at Midtown, 34,665 at Châtelet (~1 MB of buffers); the buildings'
-  buffers are unchanged, far within the 300 MB budget. The timer on the heritage and bridge layers
-  alone gave 3–9 ms for a hundred vertices, as no whole frame did: on Metal a timer query around a
+  the same build: with the buildings off, frames took 4.0–7.9 ms). The heritage tint and the hover
+  add no vertices (they recolour the extrusions); the buildings' buffers are far within the 300 MB
+  budget. The timer on the bridge layers alone gave 3–9 ms for a hundred vertices, as no whole frame did: on Metal a timer query around a
   small layer also counts the work queued before it, so those aren't figures.
 - **Measured on the iPad** (the owner, 8 Oct; frames timed by `requestAnimationFrame` over 10 s of
   two-finger orbiting, memory from Safari's Web Inspector, buffers by the console snippet below):
@@ -1100,7 +1102,16 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
   before the GPU's mipmaps (the coding's square root and log would bias them).
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
   point (the heritage chain's slices of T, its World Heritage components left out: the map's dots
-  but for a few sites per tile its layer has and the slices don't, 0–9 in the pilot's tiles), its height, base and footprint (16 points at most). Built; not drawn yet.
+  but for a few sites per tile its layer has and the slices don't, 0–9 in the pilot's tiles), its height, base and footprint (16 points at most).
+  Drawn: a field tile from level 8 on takes its level-8 tile's list (that tile fetched for it, its
+  WebP not decoded, where the tile itself isn't loaded) and fills, in a 512² RGBA texture
+  (premultiplied, mipmapped), each listed building holding a heritage site's point the overlay shows
+  (the meshes' rule: `buildings.heritageFor`) in its group's tint; the march mixes a hit's roof and
+  wall colours toward the tint, lit alike, by the share of the texel the building covers. So a
+  tinted building stays tinted past the hand-over, with the same setting and sites. Coarser than
+  level 8 nothing is tinted (a building is under a texel; the sites' dots mark them). No hover on
+  the field: the hover picks the meshes' footprints, and past the hand-over a building is a few
+  pixels, whose dot and the bottom bar already say what's there.
 - The catalog lists the layer (`scenic-build catalog`: encoding `field5-webp`, zooms 4–14) as it
   lists the packs in the manifest when it's made: a z6 tile's field reaches the map with the next
   catalog after its `bldtiles` (New York's 6/18/23 and 6/18/24, handed in at 07:08 on 15 Oct, came
@@ -1252,9 +1263,8 @@ The nine cases:
    Colour by *where the height comes from* needs the area of each source class (6 more f planes, or
    the dominant source a texel); not prototyped.
 2. **Highlight, heritage tint:** the highlight is colour by height (above). The heritage tint is
-   decided at runtime (the overlay's points and filters), so the field can't bake it: proposed, a
-   short list a tile of the buildings holding a heritage site (site id, its texel, f, w, H) drawn
-   tinted when the site shows; not prototyped. Far out the sites' dots already mark them.
+   decided at runtime (the overlay's points and filters), so the field can't bake it: the level-8
+   tiles' heritage lists, drawn as §4.8 has it.
 3. **Height scale, flat:** the scale multiplies H and w at render time (u_hk), as the meshes'; flat
    mode is the march with no walls (f alone); not checked against images.
 4. **8-bit storage:** f as √f (a hamlet's 0.002 is 11 of 255, not 0), w as log2(1 + w) to 4096 (a
@@ -1676,7 +1686,7 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). Not done: colour by height, fog and the heritage list drawn, the coverage build, measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). Not done: colour by height, fog, the coverage build, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):
