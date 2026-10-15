@@ -4,9 +4,14 @@
 # cargo honours, and mise reads it as Rust's version file (the setting below), installing rustup and
 # that toolchain with its target and components. The wasi-sdk is the C compiler and libc for the
 # WebAssembly build of zstd (tools/app/wasm.sh). Node builds the web app (web/; its packages: `npm ci` there).
+#
+# Python has no version here either: dem/.python-version declares it, which uv honours (the agent's
+# Python steps run `uv run` in the app's copy of dem/, wherever they run) and mise reads (below).
+# uv runs the Python steps and publish.sh's checks of them.
 [tools]
 node = "24.20.0"
+uv = "0.12.9"
 "github:WebAssembly/wasi-sdk" = "wasi-sdk-33"
 
 [settings]
-idiomatic_version_file_enable_tools = ["rust"]
+idiomatic_version_file_enable_tools = ["rust", "python"]

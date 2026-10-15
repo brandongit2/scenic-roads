@@ -364,7 +364,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
   wasi-sdk at the versions `mise.toml` pins, Rust at the version, WebAssembly target and components
   `rust-toolchain.toml` declares (the only place they are), the same on both Macs; the web app's
   packages once in `web/` (`npm ci`).
-- **The agent** needs [uv](https://docs.astral.sh/uv/), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
+- **The agent** needs [uv](https://docs.astral.sh/uv/) (`mise.toml` pins it; its Python steps' Python is `dem/.python-version`'s), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
 
 ## Rendering notes
 
