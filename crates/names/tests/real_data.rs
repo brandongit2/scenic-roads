@@ -1,5 +1,5 @@
 //! Against the real data: the label archive and basemap in `data/build`, and the converted lines
-//! by language on the NAS (`translations/0-converted`, or `$NAMES_CONVERTED`). Those reading it are
+//! by language (`$NAMES_CONVERTED`: a copy of the translations' `0-converted/`, never the drop box). Those reading it are
 //! ignored unless asked for (`--ignored`: the suite reads no real data), and each skips (passes,
 //! saying so) when its data isn't there.
 
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn converted() -> PathBuf {
-    std::env::var_os("NAMES_CONVERTED").map_or_else(|| PathBuf::from("/Volumes/personal/projects/scenic-roads/translations/0-converted"), PathBuf::from)
+    std::env::var_os("NAMES_CONVERTED").map_or_else(|| PathBuf::from("/nonexistent: set NAMES_CONVERTED"), PathBuf::from)
 }
 
 fn build(file: &str) -> Option<PathBuf> {

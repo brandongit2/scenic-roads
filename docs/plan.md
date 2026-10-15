@@ -81,10 +81,13 @@ nothing built depends on how the coverage is divided into regions.
 - New areas appear when the build publishes its catalog: a round of publishing goes out as regions
   are done, about every hour while the build goes on (§8, A round).
 
-**Translations and descriptions** (§7). The user's two folders on the NAS:
-- `translations/` holds finished translation files: the map shows them within a minute or two of
-  being dropped there, with nothing rebuilt.
-- `descriptions/` likewise holds descriptions.
+**Translations and descriptions** (§7). Two drop boxes of the input check (docs/inputs.md §6.3,
+§6.4):
+- `inputs/translations/` holds finished translation files: once the input check has taken a drop
+  in (the next listing plus a check, a few minutes), the map shows it, with nothing rebuilt.
+- `inputs/descriptions/` likewise holds descriptions.
+- (They were `translations/` and `descriptions/` at the NAS's root until #137; those old folders
+  are left empty, and a file dropped there is an error finding saying where to move it.)
 - After each build the agent lists what still lacks English, or a description, in each folder's
   `todo/`, with the translators' and writers' briefs.
 
@@ -163,7 +166,7 @@ NAS root: `personal/projects/scenic-roads/`, on the `personal` share. Its Recycl
 deletions over SMB bypass it (tested 2026-10-02).
 
 ```
-translations/  descriptions/  the user's drop-ins (descriptions/README.md); todo/: the agent's lists (§7)
+translations/  descriptions/  the old places of inputs/translations and inputs/descriptions: left empty (#137)
 inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), keys.env
                (API keys, KEY=value lines: the rail feeds'), hold-catalog; _gate-test/ (the input
                check's test unit's drop box, checked while `state/inputs/gate-test` exists:
@@ -1457,12 +1460,12 @@ folder> --scratch <local dir>` as for every step.
   n/public_transport=station w/railway=station` and `osmium export … -f geojsonseq`); then
   `scenic-build put sources/rail/mtr-pairs bin pairs-mtr.bin` (and `mtr.json` as `sources/rail/mtr`).
   The rail job's key follows them.
-- **Translations' method** (§7): `translations/0-converted/conversion-log.txt`, how the earlier
-  translation work became the tables, and the scripts that sized the work (`inputs/names/analysis/`:
+- **Translations' method** (§7): `inputs/translations/how/conversion-log.txt`, how the earlier
+  translation work became the tables, and the scripts that sized the work (`inputs/translations/how/analysis/`:
   `latinwords.py`, `namecount.py`).
-- **Descriptions' method** (§7): the writers' briefs (`inputs/descriptions/briefs-2026-09/`:
+- **Descriptions' method** (§7): the writers' briefs (`inputs/descriptions/how/briefs-2026-09/`:
   `WRITERS.md`, `FIXERS.md`, `RESEARCH.md`); the lists to write and today's brief are the build
-  Mac's (`descriptions/todo/`, tools/names/descriptions-todo.md).
+  Mac's (`inputs/descriptions/todo/`, tools/names/descriptions-todo.md).
 - **Fonts** (`app/fonts/` on the NAS, `data/fonts` in a checkout): MapLibre's glyph ranges of three
   Noto Sans styles, `scripts/fonts.sh <folder>`.
 
@@ -1684,7 +1687,8 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
     outlines with the table compiled in, kept in its scratch).
 - It's the only place location enters: it sets the lookup order and which to-do list a name goes on.
 
-**Files:** `translations/**/*.jsonl` (not `todo/`), one line per translation, wherever the file is:
+**Files:** `inputs/translations/**/*.jsonl` (not `todo/` nor `how/`), one line per translation,
+wherever the file is (checked by the input check before the map reads it: docs/inputs.md §6.3):
 `{"n": "Lac Bleu", "kind": "other", "langs": ["fr"], "main": "Lac Bleu", "sub": "Blue Lake",
 "via": "agent:haiku"}`.
 - **Fields:**
@@ -1697,19 +1701,17 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
     which are left out.
 - Where lines share a name, kind and language, the later file (by path) wins, and within a file
   the later line.
-- Lines without `kind` or `langs` (the area tables' format) are left out and counted, a file of
-  nothing else passed over (no empty table kept), with one warning for them all. When the folder
-  holds those and none by language, the server says so in its log and in `/api/catalog`'s
-  `names.warning`.
-- A file is read once its size and modification time have held for 10 s; an unfinished last line is
-  ignored. The server copies the NAS folder to this Mac (`livefolder`), checking every minute while
-  the map is in use and for ten minutes after it starts: a drop shows within about a minute and a
-  half, with nothing rebuilt.
+- Lines without `kind` or `langs` (the area tables' format), and lines out of shape, are errors of
+  the input check: their file is held. check.py's rules are its warnings, one finding per file
+  listing the lines; accepting it accepts exactly those lines (docs/inputs.md §6.3).
+- The server copies the accepted version the lead's records name to this Mac
+  (crate::accepted, pipeline::inputs::served), reading the records every minute while the map is
+  in use: a drop shows after the next listing plus a check, a few minutes, with nothing rebuilt.
 - Compiled per file into one arena with an index by name (`names::table`): the converted lines
   (2.78 M, 442 MB of JSON) load in about 1.4 s into 132 MB. Lookups read them, with the spoken
   languages, through one shared `Arc` (`names::Namer`): nothing is copied per lookup.
-- **Versions:** each language's is a hash of the files holding lines in it (paths, sizes,
-  modification times). A tile's ETag includes the versions of the languages spoken within it (a
+- **Versions:** each language's is a hash of the accepted files holding lines in it (their paths
+  and content names: so it changes only with content). A tile's ETag includes the versions of the languages spoken within it (a
   tile wider than 40°, or 1,000 raster rows, takes every language's) and the raster's. A line in a
   language not spoken in a tile, which only OSM's tag on a thing there leads to, shows once the
   tile is asked for again for another reason.
@@ -1762,7 +1764,7 @@ them).
 
 **To-do** (`pipeline::namestodo`, the `names-todo` job, after each catalog the map serves; 1,070 s
 for catalog 15, read from the NAS on this Mac while busy, its estimate):
-- **`translations/todo/<language>.jsonl`:** a name, when something in the coverage has it, no
+- **`inputs/translations/todo/<language>.jsonl`:** a name, when something in the coverage has it, no
   English of its own and no line in any language spoken there (or OSM gives it).
   - **Read:** labels (the labels layer's zoom-12 tiles in the units' z6 tiles, the labels inside
     the coverage the catalog records), roads and rail lines
@@ -1784,15 +1786,15 @@ for catalog 15, read from the NAS on this Mac while busy, its estimate):
     fame; roads by class, 45 a motorway to 20 a residential street; plus log₁₀ of the count).
   - Entries are sorted by priority. Each goes on its first candidate's list, and the answer says
     which candidates it holds for. Entries carry no other thing's sourced English.
-  - **The brief:** `translations/todo/README.md` (`tools/names/translations-todo.md`): the entry
+  - **The brief:** `inputs/translations/todo/README.md` (`tools/names/translations-todo.md`): the entry
     and answer formats and the conventions (title case; settlements keep their own name unless they
     have a well-known English one; Hepburn without macrons in Japan, Hanyu Pinyin in Taiwan, the
     Hong Kong government's romanisation), from the translation work's brief. `check.py` beside it
     (`tools/names/check.py`, the translation work's checker on the new lines) checks an answer
     file.
-- **`descriptions/todo/`:** `landmarks.jsonl` (the markdata's points of every kind) and
+- **`inputs/descriptions/todo/`:** `landmarks.jsonl` (the markdata's points of every kind) and
   `areas.jsonl` (the ovdata's parks and protected areas) with an English Wikipedia article or a
-  register entry and no description (in `descriptions/`, or the record's own), by fame
+  register entry and no description (in the descriptions' accepted version, or the record's own), by fame
   (landmarks: the map's fame; areas: Wikidata's sitelinks, else the log of the area), so how far
   down to go is a choice; `README.md` (`tools/names/descriptions-todo.md`) is the writers' brief: a
   noun phrase opening on the claim to fame, at most 55 words, mundane places not inflated, sources
@@ -1802,12 +1804,12 @@ for catalog 15, read from the NAS on this Mac while busy, its estimate):
   and writers (Haiku for names, Sonnet for descriptions, a pilot, then checks) is done on request.
 
 **Descriptions.**
-- Descriptions are `descriptions/**/*.jsonl`, lines `{"qid", "long", "src"}`, or `{"id":
+- Descriptions are `inputs/descriptions/**/*.jsonl` (docs/inputs.md §6.4), lines `{"qid", "long", "src"}`, or `{"id":
   "n123"|"w123"|"r123", "long"}` for things without a Wikidata item. `"drop": true` removes one.
 - They're laid over the popups of details, landmarks and area overlays when serving: matched by the
   record's `qid`, else its first `wikidata`, else its `osm`. Later file names win, and `src` is
   credited.
-- Today's written descriptions are in `descriptions/heritage/`, prefixed 1–4 to keep their order.
+- Today's written descriptions are in `inputs/descriptions/heritage/`, prefixed 1–4 to keep their order.
 - They arrive as translations do.
 
 ## 8. Building

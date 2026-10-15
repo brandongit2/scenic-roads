@@ -411,23 +411,26 @@ row) and `mid.sect` (the group's part of the piece's mid, as `work/terrain-mid/6
 
 ## Names (docs/plan.md §7)
 
-- **Translation lines** (`translations/**/*.jsonl`, not `todo/`): `{"n", "kind", "langs", "main",
-  "sub", "via"}`: `kind` road, settlement or other, or a list; `langs` a language (ISO 639: its first
-  subtag counts) or a list; `main` null or empty for the name; `sub` null for none (an `en` stands
-  for a missing `sub`); `via` free text,
-  "todo" or "skipped" leaving the line out. Lines without `kind` or `langs` (the area tables'
-  `{"n", "main", "sub"}` and `{"n", "en"}`) are left out. The converted area tables are
-  `translations/0-converted/<language's English name>.jsonl`, with `conversion-log.txt` (JSON lines:
-  each disagreement settled).
+- **Translation lines** (`inputs/translations/**/*.jsonl`, not `todo/` nor `how/`; a drop box of
+  the input check, docs/inputs.md §6.3; the map reads the accepted copies): `{"n", "kind", "langs",
+  "main", "sub", "via"}`: `kind` road, settlement or other, or a list; `langs` a language (ISO 639:
+  its first subtag counts) or a list; `main` (required) a string, or null or empty for the name;
+  `sub` null for none; `via` free text, "todo" or "skipped" leaving the line out. Lines without
+  `kind` or `langs` (the area tables' `{"n", "main", "sub"}` and `{"n", "en"}`) are errors of the
+  input check. The converted area tables are `inputs/translations/0-converted/<language's English
+  name>.jsonl`, with `how/conversion-log.txt` (JSON lines: each disagreement settled).
+- **Descriptions** (`inputs/descriptions/**/*.jsonl`, likewise, §6.4): `{"qid": "Q…"}` or `{"id":
+  "n…"|"w…"|"r…"}`, `long` (unless `"drop": true`), `src` a string or a list of `{"t", "u"}`;
+  `about.toml` beside them, the input's description (§5.1).
 - **Labels** (`layers/labels`, layer `l`): `n` name, `en` its own English (`name:en`, else its
   romanised name), `kana` its kana reading (when it has no English), `l` the languages OSM gives its
   name (comma-separated), `o` its OSM object (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`,
   `ms`, `s` (dem/labels.py). Labels made before `LABELS_V` 2 have `n`, `en`, `k`, `c`, `mz`, `ms`,
   `s`.
-- **To translate** (`translations/todo/<language>.jsonl`, the `names-todo` job's, rewritten whole
+- **To translate** (`inputs/translations/todo/<language>.jsonl`, the `names-todo` job's, rewritten whole
   after each catalog): `{"n", "kind", "langs", "things", "example": {"osm" (n123, w123, r123) | "qid" | "label"
   (its row, labels before `LABELS_V` 2), "at": [lon, lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
-- **To describe** (`descriptions/todo/landmarks.jsonl`, `areas.jsonl`, likewise): `{"qid", "id",
+- **To describe** (`inputs/descriptions/todo/landmarks.jsonl`, `areas.jsonl`, likewise): `{"qid", "id",
   "name", "en", "kind", "designation", "at", "enwiki", "wiki", "register", "source", "fame"}`
   (landmarks) and `{"qid", "id", "name", "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by
   fame; with `README.md`.
@@ -507,7 +510,9 @@ mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces), of the archive 
                         directory
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer), as they're read
 catalog/<n>.json.zst    the last catalogs read
-translations/  descriptions/   local copies of the NAS folders, compiled by the server
+accepted/<unit>/        the translations' and descriptions' accepted versions, copied from the NAS:
+                        @index.json ({"version": the index's content name, "index"}) and each
+                        file under its content name (pipeline::inputs::served); compiled by the server
 names/spoken-<content>.bin   the languages spoken where, made from the catalog's outlines of that
                         content name (its slashes as underscores), for a catalog without
                         `global/spoken` (same format: names::spoken::Spoken::to_bytes: "SPOKEN01",

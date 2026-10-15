@@ -1,5 +1,5 @@
-//! Dated copies of the user's folders (docs/plan.md §3, Backups): `translations/`, `descriptions/`,
-//! `inputs/` and the gate's acceptances (`state/inputs/accepted/`), kept 30 days under
+//! Dated copies of the user's folders (docs/plan.md §3, Backups): `inputs/` (every drop box, the
+//! translations and descriptions among them since #137) and the input check's acceptances (`state/inputs/accepted/`), kept 30 days under
 //! `state/backups/` on the NAS and mirrored to the build Mac.
 //!
 //! Content-addressed, so an unchanged file is stored once however many days keep it:
@@ -15,9 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// The user's folders: the drop boxes (and the request–fulfil inputs' folders until they move under
-/// `inputs/`, #137) and the owner's acceptances of the gate's warnings (docs/inputs.md §4.9).
-pub const FOLDERS: [&str; 4] = ["translations", "descriptions", "inputs", crate::inputs::ACCEPTED];
+/// The user's folders: the drop boxes and the owner's acceptances of the input check's warnings
+/// (docs/inputs.md §4.9).
+pub const FOLDERS: [&str; 2] = ["inputs", crate::inputs::ACCEPTED];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
@@ -294,11 +294,11 @@ mod tests {
     fn backs_up_changes_only_and_prunes() {
         let d = tempfile::tempdir().unwrap();
         let (root, local) = (d.path().join("nas"), d.path().join("mac"));
-        fs::create_dir_all(root.join("translations/jp")).unwrap();
-        fs::create_dir_all(root.join("translations/todo")).unwrap();
+        fs::create_dir_all(root.join("inputs/translations/jp")).unwrap();
+        fs::create_dir_all(root.join("inputs/translations/todo")).unwrap();
         fs::create_dir_all(root.join("inputs/regions")).unwrap();
-        fs::write(root.join("translations/jp/places-jp.jsonl"), b"{\"n\":\"a\"}\n").unwrap();
-        fs::write(root.join("translations/todo/jp.jsonl"), b"skipped").unwrap();
+        fs::write(root.join("inputs/translations/jp/places-jp.jsonl"), b"{\"n\":\"a\"}\n").unwrap();
+        fs::write(root.join("inputs/translations/todo/jp.jsonl"), b"skipped").unwrap();
         fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"").unwrap();
         let r = run(&root, Some(&local), "2026-09-01", 30).unwrap();
         assert_eq!((r.files, r.new_blobs, r.written.as_deref()), (2, 2, Some("2026-09-01")));

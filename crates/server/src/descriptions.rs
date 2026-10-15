@@ -3,8 +3,7 @@
 //! (or `{"id": "n123" | "w123" | "r123", …}` for things without a Wikidata item), `{"qid": …,
 //! "drop": true}` removing an earlier one. Later files (by path) win. Copied to this Mac like the
 //! translations (crate::accepted), and laid over the popup details when served, so a description
-//! taken in shows within a minute of the check, with nothing rebuilt. (While the descriptions move
-//! under `inputs/`, the old folder's copy is read until it's empty: crate::accepted::choose.)
+//! taken in shows within a minute of the check, with nothing rebuilt.
 
 use crate::data::Data;
 use serde_json::Value;
@@ -17,45 +16,25 @@ use std::time::Duration;
 type Table = HashMap<String, Option<Value>>;
 
 pub struct Descriptions {
-    /// The local copy of the old NAS folder (while the move's first publish reads it).
-    dir: PathBuf,
     /// The local copy of the accepted version.
     accepted: PathBuf,
-    from: std::sync::Mutex<crate::accepted::From>,
+    /// An earlier app's copy of the old folder, removed once the copy here is the records' version.
+    old: PathBuf,
     table: RwLock<Arc<Table>>,
 }
 
 impl Descriptions {
     pub fn new(home: &Path) -> Arc<Descriptions> {
         let unit = pipeline::inputs::descriptions::UNIT;
-        let (dir, accepted) = (home.join(unit), crate::accepted::local_dir(home, unit));
-        let from = if crate::accepted::files(&accepted).is_some() && !dir.exists() { crate::accepted::From::Accepted } else { crate::accepted::From::Old };
-        Arc::new(Descriptions { dir, accepted, from: std::sync::Mutex::new(from), table: RwLock::new(Arc::new(HashMap::new())) })
+        Arc::new(Descriptions { accepted: crate::accepted::local_dir(home, unit), old: home.join(unit), table: RwLock::new(Arc::new(HashMap::new())) })
     }
 
-    /// The files to read, in path order (later ones win): the accepted version's `.jsonl` files
-    /// by their drop-box paths' components, or the old folder's copy's.
+    /// The accepted version's `.jsonl` files, in their drop-box paths' order (by component; later
+    /// ones win).
     fn files(&self) -> Vec<PathBuf> {
-        if *self.from.lock().unwrap() == crate::accepted::From::Accepted {
-            let mut fs: Vec<(String, PathBuf)> = crate::accepted::files(&self.accepted).unwrap_or_default().into_iter().filter(|(p, _)| p.ends_with(".jsonl")).map(|(p, (local, _))| (p, local)).collect();
-            fs.sort_by(|a, b| Path::new(&a.0).cmp(Path::new(&b.0)));
-            return fs.into_iter().map(|(_, l)| l).collect();
-        }
-        let mut files: Vec<PathBuf> = Vec::new();
-        let mut stack = vec![self.dir.clone()];
-        while let Some(d) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
-                if e.file_type().is_ok_and(|t| t.is_dir()) {
-                    stack.push(p);
-                } else if p.extension().is_some_and(|x| x == "jsonl") {
-                    files.push(p);
-                }
-            }
-        }
-        files.sort();
-        files
+        let mut fs: Vec<(String, PathBuf)> = crate::accepted::files(&self.accepted).unwrap_or_default().into_iter().filter(|(p, _)| p.ends_with(".jsonl")).map(|(p, (local, _))| (p, local)).collect();
+        fs.sort_by(|a, b| Path::new(&a.0).cmp(Path::new(&b.0)));
+        fs.into_iter().map(|(_, l)| l).collect()
     }
 
     /// Reads every file, in path order (later ones win).
@@ -78,7 +57,7 @@ impl Descriptions {
         *self.table.write().unwrap() = Arc::new(t);
     }
 
-    /// Keeps the local copy in step with the NAS (every minute while the map is in use).
+    /// Keeps the local copy in step with the records (every minute while the map is in use).
     pub fn spawn(self: &Arc<Self>, data: Arc<Data>) {
         let me = self.clone();
         std::thread::Builder::new()
@@ -98,14 +77,15 @@ impl Descriptions {
             .ok();
     }
 
-    /// Brings the local copies up to date: whether the files to read changed.
+    /// Brings the local copy up to date: whether it changed.
     fn sync(&self, data: &Data) -> bool {
-        let unit = pipeline::inputs::descriptions::UNIT;
-        let (from, changed) = crate::accepted::choose(data, unit, &self.accepted, unit, &self.dir);
-        let mut cur = self.from.lock().unwrap();
-        let moved = *cur != from;
-        *cur = from;
-        changed || moved
+        match crate::accepted::sync(data, pipeline::inputs::descriptions::UNIT, &self.accepted, &self.old) {
+            Ok(changed) => changed,
+            Err(e) => {
+                eprintln!("descriptions: {e:#}");
+                false
+            }
+        }
     }
 
     /// A popup record with its description laid over: the record's own `long` replaced, or removed
@@ -160,7 +140,7 @@ mod tests {
     use super::*;
 
     fn with(entries: &[(&str, Option<Value>)]) -> Descriptions {
-        let d = Descriptions { dir: PathBuf::new(), accepted: PathBuf::new(), from: std::sync::Mutex::new(crate::accepted::From::Accepted), table: RwLock::new(Arc::new(HashMap::new())) };
+        let d = Descriptions { accepted: PathBuf::new(), old: PathBuf::new(), table: RwLock::new(Arc::new(HashMap::new())) };
         *d.table.write().unwrap() = Arc::new(entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
         d
     }

@@ -1296,11 +1296,9 @@ mod tests {
         let (x, y) = (227, 101);
         let lo = labels_tile(&[(2, "横浜", None, "place", "city", 76.0, (2048, 2048))]);
         catalog(nas.path(), 1, &[("3/7/3", 1, vec![(8, x, y, lo)])], &[]);
-        let p = home.path().join("translations/0-converted/japanese.jsonl");
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, "{\"n\": \"横浜\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n").unwrap();
-        std::fs::File::options().write(true).open(&p).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))).unwrap();
+        crate::accepted::put(nas.path(), "translations", &[("0-converted/japanese.jsonl", "{\"n\": \"横浜\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n")]);
         let s = crate::test_state(home.path(), nas.path());
+        assert!(s.names.sync(&s.data));
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         let japan = names::spoken::Area { code: "JP".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(128.0, 30.0), pt(146.0, 30.0), pt(146.0, 46.0), pt(128.0, 46.0)]]] };
         s.names.set_spoken(names::Spoken::build(&names::Table::parse("JP\tja\n"), [japan]));

@@ -64,11 +64,11 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9)"),
+    ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9): the drop boxes, and the old translations/ and descriptions/ (#137), whose drops the input check flags"),
     ("crates/pipeline/src/agent/steps.rs", "TABLE", "base(\"inputs\", w_inputs)", "the `inputs` step's row"),
     ("crates/pipeline/src/agent/build.rs", "record", "matches!(step, \"inputs\" | ", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/build.rs", "label", "\"inputs\" => \"Checking the inputs dropped\"", "the `inputs` step's name"),
-    ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "\"translations\"", "the backups: every drop box and the acceptances, by design (§4.9)"),
+    ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every drop box and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "step", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/agent/mod.rs", "plan", "w.step == \"inputs\"", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
@@ -97,8 +97,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/server/src/descriptions.rs", "load", "\"descriptions: {} from {} files\"", "the map server's descriptions: its log's words, not a path"),
     ("crates/server/src/names_live.rs", "reload", "\"translations: {w}\"", "the map server's translations: its log's words, not a path"),
     ("crates/server/src/names_live.rs", "reload", "\"translations: {} lines, {} names in {} files, languages {:?} ({:.1?})\"", "the map server's translations: its log's words, not a path"),
-    ("crates/server/src/names_live.rs", "reload", "\"translations: WARNING: {ONLY_OLD}\"", "the map server's translations: its log's words, not a path"),
-    ("crates/server/src/names_live.rs", "reload", "\"translations: {e:#}\"", "the map server's translations: its log's words, not a path"),
+    ("crates/server/src/descriptions.rs", "sync", "\"descriptions: {e:#}\"", "the map server's descriptions: its log's words, not a path"),
+    ("crates/server/src/names_live.rs", "sync", "\"translations: {e:#}\"", "the map server's translations: its log's words, not a path"),
 ];
 
 /// The same of the Python steps.

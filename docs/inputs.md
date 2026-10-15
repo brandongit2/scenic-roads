@@ -1,8 +1,8 @@
 # Inputs: every input through a standard shape and a checked drop box
 
-**Status: the input check (§4) is built, on the test unit alone (#134: crate::inputs; its two-Mac
-trial of §4.10 ran on 2026-10-10); the accessor's guard (§7.1) is built and growing with each input; the rest
-is planned.** It is the spec for the input standardisation series on the task board (#133 is this
+**Status: the input check (§4) is built (#134: crate::inputs; its two-Mac trial of §4.10 ran on
+2026-10-10), with the translations and the descriptions its first real units (#137, §6.3, §6.4:
+built); the accessor's guard (§7.1) is built and growing with each input; the rest is planned.** It is the spec for the input standardisation series on the task board (#133 is this
 document; #134–#147 build it). Each section says what of it is built; where it describes today's
 code or today's NAS, it says "today" and cites the file; everything else is the design.
 Companions: `docs/plan.md` (the pipeline, keys and order, which these tasks change),
@@ -166,7 +166,8 @@ What moves (each in its task; §11):
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
 the languages (§6.2), the translations and the descriptions (§6.3, §6.4) and, while it's on, the
 test unit `_gate-test` (§4.10); each other input joins `inputs::UNITS` in its own task (#135,
-#138–#145). What of this section isn't built yet is marked planned.
+#138–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
+section isn't built yet is marked planned.
 
 ### 4.1 Terms
 
@@ -363,13 +364,10 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   a unit yet: each input's task moves its readers here.)
 - **Every read of a drop box today** moves to it in its input's task. Besides the regions' readers
   (§6.1), the ones that would bypass the input check if missed: `scenic-build`'s `coverage_of`
-  (crates/pipeline/src/bin/scenic-build.rs:3352, defaulting `--regions` to `inputs/regions`) and its
-  `--translations` default (:209, `translations/`, for `names-todo`); `namestodo::run` reading
-  `descriptions/` (crates/pipeline/src/namestodo.rs:607); the outline files read by the agent's
+  (crates/pipeline/src/bin/scenic-build.rs:3352, defaulting `--regions` to `inputs/regions`); the outline files read by the agent's
   regions digest and coverage key (agent/mod.rs:652, :4213); `input_digests`' read of
   `inputs/ferries/freq` (agent/mod.rs:4640); the ferries job's (ovconv.rs:384); the backups'
-  folders (agent/backup.rs, now `inputs` and `state/inputs/accepted` beside the two folders
-  still to move, #137); GC's `NEVER` (agent/gc.rs, §4.9); `dem/bldfetch.py:248–250`
+  folders (agent/backup.rs: `inputs` and `state/inputs/accepted`); GC's `NEVER` (agent/gc.rs, §4.9); `dem/bldfetch.py:248–250`
   (`inputs/outlines`). Each is in the guard's exemptions (§7.1), naming its task.
 - **Keys:** a step names the content of the input files it reads: the index's content name when it
   reads the whole unit, or the `keyed` digests of the files it reads when it reads some (the
@@ -378,10 +376,11 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   manifest (`agent::input_digests`, crates/pipeline/src/agent/mod.rs:4638, which digests the
   recipes and the outline files they name by size and time: `regions_digest`, :4671).
 - **The map's server** reads its inputs the same way: the translations and descriptions from the
-  accepted files the lead's manifest (`state/build/manifest.json`) names, copied to the Mac as
-  `livefolder` copies the folders today (crates/server/src/livefolder.rs), and away from the NAS
+  accepted files the lead's manifest (`state/build/manifest.json`) names, copied to the Mac
+  (crates/server/src/accepted.rs, pipeline::inputs::served: built, #137), and away from the NAS
   from that copy; the regions' recipes (for the Regions panel's pending and held states) from both
-  the accepted version and the drop box. Planned (#135, #137).
+  the accepted version and the drop box (planned, #135). `names-todo` reads the translations' and
+  descriptions' accepted versions the agent names (their indexes, in its key; built, #137).
 - **The catalog** records the accepted index of every unit its data was built from
   (`"inputs": {"<unit>": "<index content name>"}`), so what a published map was made from can be
   read back (planned: with the first unit whose data reaches the map, #135).
@@ -857,6 +856,24 @@ compiled in), and the map's server needs the input only for its fallback (a cata
 
 ### 6.3 Translations (#137)
 
+**Built** (crate::inputs::translations, crate::inputs::lint; the server's crate::accepted and
+pipeline::inputs::served; `names::Names::set_files`), with these choices where this section left
+room:
+- A line's shape is `names::line_shape`'s, the tables' own reading, so the check and the server
+  can't disagree; `main` must be there (a string or null), `sub` a string or null when there.
+- check.py runs as it is (one checker for the translators and the check): `uv run` in the app's
+  `dem/` (the Python `dem/.python-version` pins, so its Unicode tables and verdicts are the same on
+  every Mac), in its `--flagged` mode, on each new or changed file in the shape. Its per-line rules
+  (`problem`) and `drift` are the warnings (`tr-check`); its batch-level null count isn't run (the
+  converted tables are native names, mostly null by design). A finding's id names the flagged
+  lines' content only (not their numbers nor check.py's words); a drifted stretch is check.py's
+  window of 100 lines, named by all of its lines, so an edit above it that shifts the windows makes
+  it a new finding. check.py failing to run fails the check job (tried again), never takes a file
+  unchecked. check.py's text and the pinned Python's version are in the check's key
+  (`Checks::context`): a change to either checks the unit again, reading the held and changed
+  files under it; files already taken in stay as they are (§4.2).
+- A file other than `.jsonl` (`conversion-log.txt`) is a shape error: notes go in `how/`.
+
 **Kind:** request–fulfil. **Drop box:** `inputs/translations/` (moved from `translations/`).
 
 **Shape:** as today (plan §7, Files): `**/*.jsonl`, outside `todo/` and `how/`, one translation a line:
@@ -897,20 +914,32 @@ a drop to the map grows from about a minute and a half to the next listing plus 
 minutes; §12).
 
 **Migration.**
-1. Publish a server that reads the old folder until the copy on its Mac is the accepted version
-   the records name and the old folder holds no `.jsonl` file, then the accepted copy alone (§4.11;
-   built, #137's first publish). Once every Mac runs it, **copy** (never move) the files into
-   `inputs/translations/` while no translator runs (§3); empty the old folder only after each Mac's
-   accepted copy is confirmed to be the records' version (the task's runbook). Then the second
-   publish removes the old folder's reading (planned).
-2. Run the input check on today's files. The converted tables (2.78 M lines) are expected to raise
-   check.py warnings; they're accepted once, at migration, each listed in the task's report, each
+1. The code's side is built, in two publishes (#137). The first app's server reads the old folder
+   (never losing a file of its copy) until the copy on its Mac is the accepted version the records
+   name and the old folder holds no `.jsonl` file, then the accepted copy alone. This app (the
+   second) reads only the accepted copies, and removes an earlier app's copy of the old folder once
+   its own copy is the records' version. A file dropped into the old folder (but an older app's
+   `todo/`) is an error finding (`moved`) saying where to move it. The move was made on 15 October
+   2026, by #137's runbook, with the first app on every Mac: the files copied (never moved) into
+   `inputs/translations/` while no translator ran (§3), the check's warnings accepted, each Mac's
+   accepted copy confirmed as the records' version, and only then the old folder emptied (its
+   contents, the old area tables among them, in `inputs/translations/how/old-2026-10/`, the
+   owner's to delete); the second app was published once both Macs had their accepted copies.
+2. The input check on today's files: the converted tables (2.78 M lines) raised check.py warnings,
+   one a file (7 findings, 34,067 lines, listed in #137's report), each accepted once, each
    acceptance covering exactly the lines it lists (§4.4).
-3. Proof: the server's compiled tables (`names::table`) hold the same lines (the same lookups for
-   every name of a sample of tiles, and the same count per language).
-4. Delete the server's direct read of the NAS folder and the old-format skipping.
+3. Proof (run for #137 on a copy of today's files): the compiled tables hold the same lines (every
+   name of every file looked up in every kind and language, the same lookups; the same count per
+   language).
+4. The server's direct read of the NAS folder and the old-format skipping: deleted (this app).
 
 ### 6.4 Descriptions (#137)
+
+**Built** (crate::inputs::descriptions), with these choices: `src` is a string or a list (today's
+files carry lists of `{"t", "u"}`, as the server credits them); a `qid` is `Q` and digits without a
+leading zero; `about.toml` is optional (without it the catalog keeps `rules::CREDITS`' "Heritage
+descriptions"); its extent is the world when its `territory` is `"world"`, else unknown (listed
+nowhere) until the things' places are read.
 
 **Kind:** request–fulfil. **Drop box:** `inputs/descriptions/` (moved from `descriptions/`).
 
@@ -938,9 +967,12 @@ credit, rules.rs:391).
 `names-todo` reads the accepted descriptions from the agent too (today `namestodo::run` reads the
 NAS's `descriptions/`, crates/pipeline/src/namestodo.rs:607).
 
-**Migration.** As translations: `briefs-2026-09/` to `how/` first (§3), the two-publish move, the
-check (today's `descriptions/heritage/` files), the proof (every popup's description the same for
-the things in the files), then the direct reads go.
+**Migration.** As translations: the code's side built in the same two publishes (#137: the direct
+reads gone, the proof run, every popup's description the same for the things in the files); the
+move made on 15 October 2026 by the same runbook: `briefs-2026-09/` to `how/` first (§3), today's
+`descriptions/heritage/` files copied (never moved) into the drop box and checked, the old folder
+emptied only after each Mac's gate (its contents in `inputs/descriptions/how/old-2026-10/`, the
+owner's to delete).
 
 ### 6.5 Heritage registers (#138)
 
@@ -1484,7 +1516,7 @@ the drop boxes are reached only through an accessor that refuses everything else
   takes a drop-box path from the records or builds one as a content name fails its first run. It
   doesn't cover a path joined onto the root itself (`Out::root()`, or a `root` a function is given:
   most of today's readers), which the test below is for. Command-line defaults that point into a drop box (today
-  `--regions`, scenic-build.rs:3352, and `--translations`, :209) are removed: a step gets its
+  `--regions`, scenic-build.rs:3352; `--translations` went in #137) are removed: a step gets its
   inputs' paths from the agent, which takes them from the accessor.
 - **The test:** every item in `crates/` outside `#[cfg(test)]` code (a function, `const fn`
   included, by its block; a `const` or `static`; a line outside any is the file's top level) whose
@@ -1725,16 +1757,18 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 Not source names, but every place that would bypass the input check:
 - Regions: the readers listed in §6.1, `scenic-build`'s `coverage_of` (bin/scenic-build.rs:3352),
   the outline files at agent/mod.rs:652 and :4213 [#135].
-- Translations: `scenic-build`'s `--translations` default (bin/scenic-build.rs:209), the server's
-  `livefolder` copy (crates/server/src/livefolder.rs) [#137].
-- Descriptions: `namestodo::run` (crates/pipeline/src/namestodo.rs:607), the server's copy [#137].
+- Translations: `scenic-build`'s `--translations` default and the server's `livefolder` copy:
+  gone (#137; the server reads the accepted copies, crates/server/src/accepted.rs).
+- Descriptions: `namestodo::run`'s read of `descriptions/` and the server's copy: gone (#137).
 - Ferries: `input_digests`' read of `inputs/ferries/freq` (agent/mod.rs:4640), the ferries job's
   (ovconv.rs:384) [#140, #141].
 - Keyed feeds: `key_names` of `inputs/keys.env` (agent/mod.rs:4658): stays (keys.env isn't an input),
   exempt with its reason.
 - The never-swept and backed-up folders: `agent/gc.rs` (`NEVER`, which also holds all of
   `sources/` but `sources/inputs/`, swept since #134: §4.9) and `agent/backup.rs` (`FOLDERS`, with
-  `state/inputs/accepted` since #134) [#137 for the two folders still to move].
+  `state/inputs/accepted` since #134; the old `translations/` and `descriptions/` out of it since
+  #137). GC's `NEVER` keeps naming the two old folders, so a file dropped there is flagged by the
+  input check, never swept.
 - The catalog's key, `catalog_key` (agent/build.rs): its regions digest becomes the accepted index
   [#135]; it gained the credits' digest (§4.8) [#134, built].
 
@@ -1791,7 +1825,7 @@ The board's order, with what each needs and proves:
 | 134 | the input check (§4), on `_gate-test` (built; its trial ran on 2026-10-10) | 133 | its behaviour on the NAS between two Macs (§4.10: `tools/check/gate-two-macs.sh`) |
 | 135 | regions (§6.1), after 136 and 137 | 134 | coverage fingerprints unchanged: no build step reruns; the catalog is remade once (its key names the regions' digest); every `.poly` converted selects the same coverage |
 | 136 | languages (§6.2) | 134 | `global/spoken`'s content name unchanged |
-| 137 | translations, descriptions (§6.3, §6.4) | 134 | the served tables and descriptions unchanged |
+| 137 | translations, descriptions (§6.3, §6.4; built) | 134 | the served tables and descriptions unchanged |
 | 138 | heritage registers (§6.5) | 134, 136 (the chain's languages) | heritage-sites, heritage, marks, overlays unchanged or explained |
 | 139 | the seeds retired (§6.5.3) | 138, 137 | the heritage layers' English and park facts unchanged or explained |
 | 140 | feeds (§6.7.1) | 134 | the feed list, zips and `global/railfreq` unchanged; every `gtfs-<feed>.json` record reproduced field for field by the app's ferry counter on the same zips and days |

@@ -1,7 +1,7 @@
 //! Loads a translations folder and reports how long it took and what it holds, then times
 //! `attach` over label tiles.
 //!
-//! usage: cargo run --release -p names --example load [<translations folder>] [<labels.tiles>]
+//! usage: cargo run --release -p names --example load <a folder of translation files> [<labels.tiles>]
 
 use names::mvt::{self, LABELS};
 use names::{Kind, Names};
@@ -33,7 +33,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let dir = PathBuf::from(args.get(1).map_or("/Volumes/personal/projects/scenic-roads/translations/0-converted", String::as_str));
+    let dir = PathBuf::from(args.get(1).expect("usage: load <a folder of translation files> [<labels.tiles>]"));
     let labels = args.get(2).map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build/labels.tiles"));
 
     let before = rss_mb();
