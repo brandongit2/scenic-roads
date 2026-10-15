@@ -364,10 +364,14 @@ pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 }
 
 /// The to-do lists of names to translate and descriptions to write (crate::namestodo), once per
-/// catalog the map serves (or step version): after each build.
-pub fn names_todo_work(served: Option<u64>, done: &Keys) -> Option<Work> {
+/// catalog the map serves, accepted version of the translations and of the descriptions (it reads
+/// them: docs/inputs.md §6.3, §6.4), or step version: after each build, and after each batch taken
+/// in. None while either input has no accepted version yet.
+pub fn names_todo_work(served: Option<u64>, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let n = served?;
-    let k = h(&[&format!("names-todo {}", crate::namestodo::VERSION), &n.to_string()]);
+    let tr = m.get(&crate::inputs::logical(crate::inputs::translations::UNIT))?;
+    let de = m.get(&crate::inputs::logical(crate::inputs::descriptions::UNIT))?;
+    let k = h(&[&format!("names-todo {}", crate::namestodo::VERSION), &n.to_string(), tr, de]);
     (done.lo.get("names-todo").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
 }
 

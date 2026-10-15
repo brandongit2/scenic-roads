@@ -17,10 +17,12 @@ after every build; don't edit them.
 
 ## The answer
 
-Files anywhere in `descriptions/` but `todo/` (say `descriptions/written/5-batch-000.jsonl`), one
-line each: `{"qid": "Q243", "long": "…", "src": [{"t": "<title>", "u": "<url>"}]}`, or with `"id":
-"w123"` for a thing without a Wikidata item. `{"qid": …, "drop": true}` removes an earlier one.
-Later file names win. The map picks them up within about a minute and a half.
+Files anywhere in `inputs/descriptions/` but `todo/` and `how/` (say
+`inputs/descriptions/written/5-batch-000.jsonl`), one line each: `{"qid": "Q243", "long": "…",
+"src": [{"t": "<title>", "u": "<url>"}]}`, or with `"id": "w123"` for a thing without a Wikidata
+item. `{"qid": …, "drop": true}` removes an earlier one. Later file names win. The app's input
+check takes a batch in within a few minutes; a line out of shape holds the file, and a description
+over 55 words or without `src` holds it until the owner accepts those lines.
 
 ## The voice
 

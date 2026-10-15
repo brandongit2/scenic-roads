@@ -200,6 +200,9 @@ struct Tracked {
     failed: bool,
     /// The table in use, the stat it was read at, and its report's counts (not done, old).
     loaded: Option<(Stat, Arc<Table>, u64, u64)>,
+    /// A file given by its content name ([`Names::set_files`]): what its table was read as, and
+    /// what its languages' versions name instead of its size and time.
+    id: Option<String>,
 }
 
 /// The translation lines of a translations folder.
@@ -257,6 +260,61 @@ impl Names {
         self.scan(Instant::now(), SystemTime::now())
     }
 
+    /// Lines from a fixed set of files, each by its path (the order lines win in) with where it is
+    /// and its content name: the accepted copies of the translations (docs/inputs.md §6.3), which
+    /// never change under their names, so none waits to settle ([`set_files`](Self::set_files)).
+    pub fn from_files(files: &BTreeMap<String, (PathBuf, String)>) -> Names {
+        let mut n = Names::new(Path::new(""));
+        n.set_files(files);
+        n
+    }
+
+    /// Takes `files` as the whole set: reads those whose content name is new, drops the tables of
+    /// those gone. A language's [`version`](Self::version) is then a hash of the paths and content
+    /// names of the files holding lines in it, so it changes only with content. A file that fails
+    /// to read keeps its previous table, if any (with a warning), and is read again at the next
+    /// call. Returns whether any table changed. (Not mixed with [`refresh`](Self::refresh).)
+    pub fn set_files(&mut self, files: &BTreeMap<String, (PathBuf, String)>) -> bool {
+        self.scanned = true;
+        let mut changed = false;
+        self.files.retain(|rel, t| {
+            let keep = files.contains_key(rel);
+            changed |= !keep && t.loaded.is_some();
+            keep
+        });
+        let jobs: Vec<(String, PathBuf, String)> = files
+            .iter()
+            .filter(|(rel, (_, id))| self.files.get(*rel).is_none_or(|t| t.id.as_ref() != Some(id) || t.loaded.is_none()))
+            .map(|(rel, (p, id))| (rel.clone(), p.clone(), id.clone()))
+            .collect();
+        let outcomes = read_many(&jobs, |(_, p, _)| read_fixed(p));
+        for ((rel, _, id), outcome) in jobs.into_iter().zip(outcomes) {
+            let t = self.files.entry(rel.clone()).or_insert_with(|| Tracked { seen: Stat { size: 0, mtime: 0 }, since: Instant::now(), aged: true, failed: false, loaded: None, id: None });
+            match outcome {
+                Outcome::Read(table, report) => {
+                    let stat = Stat { size: report.bytes, mtime: 0 };
+                    t.seen = stat;
+                    t.loaded = Some((stat, Arc::new(table), report.ignored, report.old));
+                    t.id = Some(id);
+                    t.failed = false;
+                    changed = true;
+                }
+                Outcome::Failed(e) => {
+                    if !t.failed {
+                        let kept = if t.loaded.is_some() { "kept its previous table" } else { "not read" };
+                        self.warnings.push(format!("{rel}: {e:#}; {kept}, tried again at the next set"));
+                    }
+                    t.failed = true;
+                }
+                Outcome::Moved(_) | Outcome::Gone => t.failed = true,
+            }
+        }
+        if changed {
+            self.rebuild();
+        }
+        changed
+    }
+
     fn scan(&mut self, now: Instant, wall: SystemTime) -> Result<bool> {
         let found = list(&self.dir, &mut self.warnings)?;
         let first = !self.scanned;
@@ -275,7 +333,7 @@ impl Names {
                 Some(t) => (t.seen, t.since, t.aged, t.failed) = (stat, now, false, false),
                 None => {
                     let aged = first && stat.age(wall) >= self.stable;
-                    self.files.insert(rel.clone(), Tracked { seen: stat, since: now, aged, failed: false, loaded: None });
+                    self.files.insert(rel.clone(), Tracked { seen: stat, since: now, aged, failed: false, loaded: None, id: None });
                 }
             }
             let Some(t) = self.files.get(&rel) else { continue };
@@ -355,8 +413,16 @@ impl Names {
                 let key = keys.entry(*l).or_insert_with(|| RULES.to_vec());
                 key.extend_from_slice(rel.as_bytes());
                 key.push(0);
-                key.extend_from_slice(&stat.size.to_le_bytes());
-                key.extend_from_slice(&stat.mtime.to_le_bytes());
+                match &t.id {
+                    Some(id) => {
+                        key.extend_from_slice(id.as_bytes());
+                        key.push(0);
+                    }
+                    None => {
+                        key.extend_from_slice(&stat.size.to_le_bytes());
+                        key.extend_from_slice(&stat.mtime.to_le_bytes());
+                    }
+                }
             }
         }
         self.versions = keys.into_iter().map(|(l, k)| (l, table::hash(&k))).collect();
@@ -578,6 +644,23 @@ fn list(dir: &Path, warnings: &mut Vec<String>) -> Result<BTreeMap<String, (Path
 
 /// Reads the files, a few at a time.
 fn read_all(jobs: &[(String, PathBuf, Stat)]) -> Vec<Outcome> {
+    read_many(jobs, |(_, path, stat)| read_one(path, *stat))
+}
+
+/// Reads one file of a fixed set (a content-named copy: it doesn't change under its name).
+fn read_fixed(path: &Path) -> Outcome {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => return Outcome::Failed(anyhow::Error::new(e).context("opening")),
+    };
+    match Table::read(&mut BufReader::with_capacity(1 << 20, file)) {
+        Ok((table, report)) => Outcome::Read(table, report),
+        Err(e) => Outcome::Failed(e.context("reading")),
+    }
+}
+
+/// Reads `jobs` with `read`, a few at a time: the outcomes in their order.
+fn read_many<T: Sync>(jobs: &[T], read: impl Fn(&T) -> Outcome + Sync) -> Vec<Outcome> {
     let next = AtomicUsize::new(0);
     let mut done: Vec<(usize, Outcome)> = std::thread::scope(|s| {
         let workers: Vec<_> = (0..READERS.min(jobs.len()))
@@ -586,8 +669,8 @@ fn read_all(jobs: &[(String, PathBuf, Stat)]) -> Vec<Outcome> {
                     let mut mine = Vec::new();
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some((_, path, stat)) = jobs.get(i) else { break };
-                        mine.push((i, read_one(path, *stat)));
+                        let Some(job) = jobs.get(i) else { break };
+                        mine.push((i, read(job)));
                     }
                     mine
                 })
@@ -843,6 +926,39 @@ mod tests {
         let s = names2.summary();
         assert_eq!((s.files, s.lines, s.old), (3, 4, 0));
         assert_eq!(s.langs.keys().cloned().collect::<Vec<_>>(), ["fr", "ja"]);
+    }
+
+    #[test]
+    fn a_fixed_set_of_files_is_read_by_content_name() {
+        let d = Dir::new();
+        d.write("c/fr-1.jsonl", &line("Lac Noir", "\"other\"", "[\"fr\"]", None, Some("Lake Noir")));
+        d.write("c/fr-2.jsonl", &line("Lac Noir", "\"other\"", "[\"fr\"]", None, Some("Black Lake")));
+        d.write("c/ja.jsonl", &line("松島", "\"other\"", "[\"ja\"]", None, Some("Matsushima")));
+        let set = |fs: &[(&str, &str, &str)]| -> BTreeMap<String, (PathBuf, String)> { fs.iter().map(|(p, f, id)| (p.to_string(), (d.0.join(f), id.to_string()))).collect() };
+        let one = set(&[("a.jsonl", "c/fr-1.jsonl", "a.1111"), ("j.jsonl", "c/ja.jsonl", "j.1111")]);
+        let mut names = Names::from_files(&one);
+        assert_eq!(show(&names, Kind::Other, "Lac Noir", None, &[], FR), ds("Lac Noir", Some("Lake Noir")));
+        assert_eq!(names.pending(), None);
+        let (fr, ja) = (names.version(l("fr")), names.version(l("ja")));
+        // The same set: nothing read, the versions hold, whatever the files' times.
+        assert!(!names.set_files(&one));
+        assert_eq!(Names::from_files(&one).version(l("fr")), fr);
+        // A later path wins; a new content name in French changes French's version alone.
+        let two = set(&[("a.jsonl", "c/fr-1.jsonl", "a.1111"), ("b.jsonl", "c/fr-2.jsonl", "b.2222"), ("j.jsonl", "c/ja.jsonl", "j.1111")]);
+        assert!(names.set_files(&two));
+        assert_eq!(show(&names, Kind::Other, "Lac Noir", None, &[], FR), ds("Lac Noir", Some("Black Lake")));
+        assert_ne!(names.version(l("fr")), fr);
+        assert_eq!(names.version(l("ja")), ja);
+        // A file gone: its lines go; the set back as it was: the version too.
+        assert!(names.set_files(&one));
+        assert_eq!((names.version(l("fr")), show(&names, Kind::Other, "Lac Noir", None, &[], FR)), (fr, ds("Lac Noir", Some("Lake Noir"))));
+        // A copy that can't be read: said once, its previous table kept.
+        let gone = set(&[("a.jsonl", "c/none.jsonl", "a.3333"), ("j.jsonl", "c/ja.jsonl", "j.1111")]);
+        assert!(!names.set_files(&gone));
+        assert_eq!(names.take_warnings().len(), 1);
+        assert_eq!(show(&names, Kind::Other, "Lac Noir", None, &[], FR), ds("Lac Noir", Some("Lake Noir")));
+        assert!(!names.set_files(&gone));
+        assert!(names.take_warnings().is_empty());
     }
 
     #[test]

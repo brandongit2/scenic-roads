@@ -8,11 +8,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// One pass over `rel` (under the NAS project folder) into `local`; true when anything changed.
-pub fn sync(data: &Data, rel_dir: &str, local_dir: &Path) -> anyhow::Result<bool> {
-    let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(false) };
+/// One pass over `rel` (under the NAS project folder) into `local`: whether anything changed, and
+/// how many `.jsonl` files the NAS folder holds; None while the NAS is away.
+pub fn sync(data: &Data, rel_dir: &str, local_dir: &Path) -> anyhow::Result<Option<(bool, usize)>> {
+    let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(None) };
     if !pool.is_online() {
-        return Ok(false);
+        return Ok(None);
     }
     let src = root.join(rel_dir);
     let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
@@ -79,5 +80,5 @@ pub fn sync(data: &Data, rel_dir: &str, local_dir: &Path) -> anyhow::Result<bool
             }
         }
     }
-    Ok(changed)
+    Ok(Some((changed, seen.len())))
 }

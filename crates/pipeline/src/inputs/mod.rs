@@ -23,8 +23,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub mod credits;
+pub mod descriptions;
 pub mod gate;
 pub mod gatetest;
+pub mod lint;
+pub mod served;
+pub mod translations;
 pub mod view;
 pub mod watch;
 
@@ -32,7 +36,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 0] = [];
+pub const UNITS: [&str; 2] = [translations::UNIT, descriptions::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -74,6 +78,8 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
     match unit {
         TEST_UNIT => Some(&gatetest::GateTest(TEST_UNIT)),
         TEST_NESTED => Some(&gatetest::GateTest(TEST_NESTED)),
+        translations::UNIT => Some(&translations::Translations),
+        descriptions::UNIT => Some(&descriptions::Descriptions),
         _ => None,
     }
 }
@@ -129,6 +135,12 @@ pub fn in_drop_box(rel: &str) -> bool {
 /// Unit `unit`'s drop box. Only the gate lists and reads it (§7.1).
 fn drop_box(root: &Path, unit: &str) -> PathBuf {
     root.join("inputs").join(unit)
+}
+
+/// A request–fulfil unit's to-do lists (`inputs/<unit>/todo/`, the app's: never read as input),
+/// under the NAS project folder `root`: what crate::namestodo writes.
+pub fn todo_dir(root: &Path, unit: &str) -> PathBuf {
+    drop_box(root, unit).join("todo")
 }
 
 /// Where the checked copies of unit `unit` are kept (content-named, never edited).
@@ -230,6 +242,17 @@ pub trait Checks: Sync {
     }
     /// The shape checks of one new or changed file.
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck;
+    /// The rules run on one new or changed file by a program of their own (the translations'
+    /// check.py): an error when it can't be run, which fails the check job rather than take the
+    /// file unchecked.
+    fn lint(&self, _path: &str, _bytes: &[u8]) -> Result<Vec<Finding>> {
+        Ok(Vec::new())
+    }
+    /// The drop box's old place at the NAS's root, for an input moved under `inputs/` (#137): a
+    /// file there is an error finding saying where to move it, once the drop box exists.
+    fn old_folder(&self) -> Option<&'static str> {
+        None
+    }
     /// What a removal says: the file as accepted (its entry in the index).
     fn removed(&self, _path: &str, _was: &FileEntry) -> Vec<Finding> {
         Vec::new()
@@ -411,6 +434,10 @@ pub struct Listing {
     pub files: BTreeMap<String, (u64, u64)>,
     #[serde(default)]
     pub strays: Vec<String>,
+    /// Files in the drop box's old place (`Checks::old_folder`), by their paths from the NAS's
+    /// root: each an error finding saying where to move it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub misplaced: Vec<String>,
 }
 
 /// Whether a name in a drop box is passed over: the Mac's and the NAS's own files (`.DS_Store`,
@@ -455,6 +482,32 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
         }
     }
     l.strays.sort();
+    // (The drop box's old place, once the drop box is there: anything in it, at any depth, was
+    // meant for the drop box, and is never passed over quietly.)
+    if let Some(old) = checks(unit).and_then(|c| c.old_folder()) {
+        let mut stack = vec![(root.join(old), old.to_string())];
+        while let Some((dir, rel)) = stack.pop() {
+            let rd = match std::fs::read_dir(&dir) {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+            };
+            for e in rd {
+                let e = e.with_context(|| format!("list {}", dir.display()))?;
+                let name = e.file_name().to_string_lossy().into_owned();
+                if ignored(&name) {
+                    continue;
+                }
+                let path = format!("{rel}/{name}");
+                if e.file_type().with_context(|| format!("stat {}", e.path().display()))?.is_dir() {
+                    stack.push((e.path(), path));
+                } else {
+                    l.misplaced.push(path);
+                }
+            }
+        }
+        l.misplaced.sort();
+    }
     Ok(l)
 }
 
@@ -463,7 +516,7 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
 /// being written). One changed since is left for the next listing.
 pub fn settle(now: &Listing, at: u64) -> Listing {
     let files = now.files.iter().filter(|(_, &(_, t))| t + QUIET_S <= at).map(|(p, v)| (p.clone(), *v)).collect();
-    Listing { files, strays: now.strays.clone() }
+    Listing { files, strays: now.strays.clone(), misplaced: now.misplaced.clone() }
 }
 
 /// What a check is given to check (`scenic-build inputs --listing`): the listing and acceptances
@@ -569,6 +622,7 @@ pub fn check_key(checks: &dyn Checks, listing: &Listing, accepted: &BTreeSet<Str
     let mut parts = vec![format!("inputs {INPUTS_V}"), format!("{} {}", checks.unit(), checks.version())];
     parts.extend(listing.files.iter().map(|(p, (s, t))| format!("{p} {s} {t}")));
     parts.extend(listing.strays.iter().map(|p| format!("stray {p}")));
+    parts.extend(listing.misplaced.iter().map(|p| format!("misplaced {p}")));
     parts.push(format!("accepted {}", accepted.iter().cloned().collect::<Vec<_>>().join(",")));
     parts.push(format!("index {}", manifest.get(&logical(checks.unit())).map(String::as_str).unwrap_or("-")));
     parts.extend(checks.context(manifest));

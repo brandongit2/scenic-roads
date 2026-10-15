@@ -198,6 +198,10 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
         return Ok(());
     }
     let planned = opt(args, "--listing").map(|f| -> Result<pipeline::inputs::Planned> { Ok(serde_json::from_slice(&std::fs::read(&f).with_context(|| format!("read {f}"))?)?) }).transpose()?;
+    // (Where the Python the translations' checker runs in is: the app's copy of dem/.)
+    if let Some(dem) = opt(args, "--dem") {
+        pipeline::inputs::lint::set(pipeline::inputs::lint::Python::uv(&std::fs::canonicalize(&dem).with_context(|| format!("--dem {dem}"))?, &out.scratch_file("lint")));
+    }
     let said = pipeline::inputs::gate::run(out, &unit, args.iter().any(|a| a == "--full"), planned)?;
     eprintln!("inputs: {said}");
     Ok(())
@@ -226,14 +230,20 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         return water_key_check(&root, &args);
     }
     if step == "names-todo" {
-        // names-todo [--out <dir>] [--translations <dir>]: the translations' and descriptions' to-do
-        // lists from the newest catalog (pipeline::namestodo), into the root's translations/todo/
-        // and descriptions/todo/ (or --out's); it writes nothing else.
+        // names-todo --translations-index <index> --descriptions-index <index> [--out <dir>]: the
+        // translations' and descriptions' to-do lists from the newest catalog (pipeline::namestodo)
+        // and those inputs' accepted versions the agent names (their indexes' content names), into
+        // the drop boxes' todo/ under the root (or --out); it writes nothing else.
         let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
         let out = opt(&args, "--out").map_or_else(|| root.clone(), PathBuf::from);
-        let tr = opt(&args, "--translations").map_or_else(|| root.join("translations"), PathBuf::from);
+        let accepted = |unit: &str| -> Result<pipeline::inputs::Accepted> {
+            let index = opt(&args, &format!("--{unit}-index")).with_context(|| format!("--{unit}-index <its accepted index's content name>"))?;
+            let m = std::collections::BTreeMap::from([(pipeline::inputs::logical(unit), index)]);
+            pipeline::inputs::open(&root, &m, unit)?.with_context(|| format!("no accepted version of {unit}"))
+        };
+        let (tr, de) = (accepted(pipeline::inputs::translations::UNIT)?, accepted(pipeline::inputs::descriptions::UNIT)?);
         let t0 = std::time::Instant::now();
-        let r = pipeline::namestodo::run(&root, &out, &tr, &scratch, &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
+        let r = pipeline::namestodo::run(&root, &out, &tr, &de, &scratch, &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
         eprintln!("names-todo: {} in {:.0} s", serde_json::json!({"langs": r.langs, "read": r.read, "own": r.own, "lined": r.lined, "settlements": r.settlements, "english": r.english, "nowhere": r.nowhere, "landmarks": r.landmarks, "areas": r.areas}), t0.elapsed().as_secs_f64());
         return Ok(());
     }

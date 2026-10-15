@@ -1,10 +1,10 @@
 //! The to-do lists (docs/plan.md §7), written after each build by the `names-todo` job:
 //!
-//! - **`translations/todo/<language>.jsonl`:** the names in the coverage that something has with no
+//! - **`inputs/translations/todo/<language>.jsonl`:** the names in the coverage that something has with no
 //!   English of its own and no line in any language spoken where it is, one entry per name, kind
 //!   and first candidate language, sorted by priority; with `README.md`, the translators' brief,
 //!   and `check.py`, its checker.
-//! - **`descriptions/todo/`:** the landmarks (`landmarks.jsonl`) and parks and protected areas
+//! - **`inputs/descriptions/todo/`:** the landmarks (`landmarks.jsonl`) and parks and protected areas
 //!   (`areas.jsonl`) with an English Wikipedia article or a register entry and no description,
 //!   sorted by fame; with `README.md`, the writers' brief.
 //!
@@ -20,7 +20,8 @@
 //!   (Wikidata item, Wikipedia article, register entry, written description).
 //! - **Parks:** the ovdata's park records.
 //! - The languages spoken where: the catalog's outlines (`names::spoken`), kept in the scratch.
-//! - The translations folder and the descriptions folder (not their `todo/`).
+//! - The translations' and the descriptions' accepted versions (docs/inputs.md §6.3, §6.4), as the
+//!   agent names them (their indexes' content names, in the job's key): never the drop boxes.
 
 use anyhow::{Context, Result};
 use names::{Kind, Lang, Names, Spoken};
@@ -37,7 +38,7 @@ pub const VERSION: u32 = 1;
 /// The translators' brief, `translations/todo/README.md`.
 pub const TRANSLATORS: &str = include_str!("../../../tools/names/translations-todo.md");
 /// Its checker, `translations/todo/check.py`.
-pub const CHECK: &str = include_str!("../../../tools/names/check.py");
+pub const CHECK: &str = crate::inputs::lint::CHECK;
 /// The writers' brief, `descriptions/todo/README.md`.
 pub const WRITERS: &str = include_str!("../../../tools/names/descriptions-todo.md");
 
@@ -413,30 +414,16 @@ struct Wanted {
     line: Value,
 }
 
-/// The descriptions written: Wikidata items and OSM objects (`descriptions/**/*.jsonl`, not
-/// `todo/`; later file names win, `drop` removes one).
-fn described(dir: &Path) -> HashSet<String> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with('.') || n.starts_with('@') || n.starts_with('#') || n == "todo" {
-                continue;
-            }
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if n.ends_with(".jsonl") {
-                out.push(p);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(dir, &mut files);
-    files.sort();
+/// The descriptions written: Wikidata items and OSM objects (the descriptions' accepted `.jsonl`
+/// files, in their paths' order: later ones win, `drop` removes one). An error when a file can't be
+/// read: a list made without it would ask for descriptions already written.
+fn described(accepted: &crate::inputs::Accepted) -> Result<HashSet<String>> {
+    let mut files: Vec<(&String, PathBuf)> = accepted.files().filter(|(p, _)| p.ends_with(".jsonl")).collect();
+    // (By the paths' components, as the map's server reads them.)
+    files.sort_by(|a, b| Path::new(a.0).cmp(Path::new(b.0)));
     let mut set = HashSet::new();
-    for f in files {
-        let Ok(text) = std::fs::read_to_string(&f) else { continue };
+    for (_, f) in files {
+        let text = std::fs::read_to_string(&f).with_context(|| format!("read {}", f.display()))?;
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
             let Some(key) = v.get("qid").or_else(|| v.get("id")).and_then(Value::as_str) else { continue };
@@ -447,7 +434,13 @@ fn described(dir: &Path) -> HashSet<String> {
             }
         }
     }
-    set
+    Ok(set)
+}
+
+/// The translations' accepted files as the tables read them: by drop-box path, the copy and its
+/// content name.
+pub fn translation_files(accepted: &crate::inputs::Accepted) -> BTreeMap<String, (PathBuf, String)> {
+    accepted.files().filter(|(p, _)| p.ends_with(".jsonl")).map(|(p, path)| (p.clone(), (path, accepted.index.files[p].file.clone()))).collect()
 }
 
 /// An English Wikipedia article's title, from a record's tags (`wikipedia` "en:…", Wikidata's
@@ -582,16 +575,17 @@ fn put(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))
 }
 
-/// Makes the lists from the newest catalog under `root` into `out` (`translations/todo/` and
-/// `descriptions/todo/` under it: the root itself for the job, a scratch folder to look first),
-/// with the translations of `translations` (the root's `translations/` for the job).
-pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progress: &dyn Fn(&str, u64, u64)) -> Result<Report> {
+/// Makes the lists from the newest catalog under `root` into `out` (the translations' and the
+/// descriptions' `todo/` under it: the root itself for the job, a scratch folder to look first),
+/// with the accepted versions of the translations and the descriptions the agent names.
+pub fn run(root: &Path, out: &Path, translations: &crate::inputs::Accepted, descriptions: &crate::inputs::Accepted, scratch: &Path, progress: &dyn Fn(&str, u64, u64)) -> Result<Report> {
     use crate::timings::{phase, Class};
     let p = phase("the catalog, the languages spoken and the translations read", Class::NasRead);
     let cat = store::catalog::latest(&root.join("catalog"))?.context("no catalog")?;
     let spoken = spoken_for(root, &cat, scratch)?;
-    let mut names = Names::load(translations)?;
-    names.take_warnings();
+    let mut names = Names::from_files(&translation_files(translations));
+    let failed = names.take_warnings();
+    anyhow::ensure!(failed.is_empty(), "the translations' accepted files: {}", failed.join("; "));
     drop(p);
     let units = unit_tiles(&cat);
     let mut lists = Lists { names: &names, spoken: &spoken, entries: HashMap::new(), report: Report::default() };
@@ -604,7 +598,7 @@ pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progres
     roads(root, &cat, &mut lists, progress)?;
     drop(p);
     let p = phase("the landmarks' names gathered", Class::NasRead);
-    let done = described(&root.join("descriptions"));
+    let done = described(descriptions)?;
     let mut want = Vec::new();
     landmarks(root, &cat, &mut lists, &done, &mut want, progress)?;
     drop(p);
@@ -620,7 +614,7 @@ pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progres
     for ((n, k, l), e) in entries {
         by_lang.entry(l).or_default().push((n, k, e));
     }
-    let dir = out.join("translations/todo");
+    let dir = crate::inputs::todo_dir(out, crate::inputs::translations::UNIT);
     std::fs::create_dir_all(&dir)?;
     let mut written = HashSet::new();
     for (lang, mut es) in by_lang {
@@ -654,7 +648,7 @@ pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progres
     put(&dir.join("check").with_extension("py"), CHECK.as_bytes())?;
 
     // The descriptions' lists.
-    let ddir = out.join("descriptions/todo");
+    let ddir = crate::inputs::todo_dir(out, crate::inputs::descriptions::UNIT);
     std::fs::create_dir_all(&ddir)?;
     for (file, mut w) in [("landmarks.jsonl", want), ("areas.jsonl", wanted_areas)] {
         w.sort_by(|a, b| b.fame.total_cmp(&a.fame));

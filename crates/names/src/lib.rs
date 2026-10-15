@@ -18,6 +18,7 @@ mod pbf;
 pub mod romaji;
 pub mod spoken;
 mod table;
+pub use table::{line_shape, LineShape};
 
 pub use display::{in_parts, same_name, Display, DisplayRef, Kind, Namer, Names, Summary, Translation, STABLE};
 pub use spoken::{Lang, Spoken};

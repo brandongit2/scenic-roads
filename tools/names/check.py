@@ -4,6 +4,7 @@ library only). Adapted from the place-translations work's tools/check.py: the sa
 lines by language.
 
 usage: python3 check.py <answers>.jsonl [<todo list>.jsonl] [--all]
+       python3 check.py --flagged <answers>.jsonl   (the app's input check: JSON lines, `flagged`)
 
 With the list (translations/todo/<language>.jsonl), each answer's name, kind and languages must be
 one of its entries'. Prints the problems (one per line) or "N lines, all good"; exit status 1 when
@@ -182,6 +183,11 @@ def drift(names: list[str], ens: list[str | None]) -> list[str]:
     """Stretches of 100 lines whose English belongs to the names a few lines away (a translator that
     lost its place): Latin-script names keep their proper part, so an English line shares a word
     with its own name far more often than with a neighbour's."""
+    return [f"lines {w + 1}–{w + 100}: {msg}" for w, msg in drifted(names, ens)]
+
+
+def drifted(names: list[str], ens: list[str | None]) -> list[tuple[int, str]]:
+    """`drift`'s stretches: each one's first index and what's wrong with it."""
     bad = []
     for w in range(0, len(names), 100):
         idx = [i for i in range(w, min(w + 100, len(names))) if ens[i] and latin(names[i])]
@@ -189,8 +195,8 @@ def drift(names: list[str], ens: list[str | None]) -> list[str]:
                 for k in range(-5, 6)}
         k = max(hits, key=hits.get)
         if k and hits[k] >= 5 and hits[k] > 2 * hits[0]:
-            bad.append(f"lines {w + 1}–{w + 100}: the English is {abs(k)} line{'s' * (abs(k) > 1)} "
-                       f"{'ahead of' if k > 0 else 'behind'} its names (redo them, each on its own name's line)")
+            bad.append((w, f"the English is {abs(k)} line{'s' * (abs(k) > 1)} "
+                           f"{'ahead of' if k > 0 else 'behind'} its names (redo them, each on its own name's line)"))
     return bad
 
 
@@ -241,7 +247,45 @@ def check(path: str, todo: str | None, show_all: bool = False) -> int:
     return 0
 
 
+def flagged(path: str) -> int:
+    """The suspicious lines of an answer file, for the app's input check (docs/inputs.md §6.3): one
+    JSON object a line on stdout, {"line": n, "problem": "…"} for a line the rules flag, and
+    {"from": a, "to": b, "problem": "…"} for a stretch whose English drifted from its names. Lines
+    not in the shape, and lines not done ("via" "todo" or "skipped"), are passed over (the check's
+    shape errors are its own); the batch-level null count isn't run (the converted tables are
+    native names, mostly null, by design)."""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f, 1):
+            try:
+                x = json.loads(line)
+                kinds = x["kind"] if isinstance(x.get("kind"), list) else [x.get("kind")]
+                langs = x["langs"] if isinstance(x.get("langs"), list) else [x.get("langs")]
+                if not (isinstance(x.get("n"), str) and x["n"] and kinds and all(k in KINDS for k in kinds) and langs
+                        and all(isinstance(l, str) for l in langs)):
+                    continue
+                if not (x.get("main") is None or isinstance(x["main"], str)) or not (x.get("sub") is None or isinstance(x["sub"], str)):
+                    continue
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if x.get("via") in ("todo", "skipped"):
+                continue
+            main = (x.get("main") or "").strip() or x["n"]
+            en = x.get("sub") if main == x["n"] else main
+            rows.append((i, x["n"], en, "jp" if "ja" in langs else "gb" if set(langs) & {"cy", "ga", "gd"} else "other"))
+    out = sys.stdout
+    for i, n, en, region in rows:
+        p = problem(n, en, region)
+        if p:
+            out.write(json.dumps({"line": i, "problem": p}, ensure_ascii=False) + "\n")
+    for w, msg in drifted([r[1] for r in rows], [r[2] for r in rows]):
+        out.write(json.dumps({"from": rows[w][0], "to": rows[min(w + 100, len(rows)) - 1][0], "problem": msg}, ensure_ascii=False) + "\n")
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--flagged"] and len(sys.argv) == 3:
+        sys.exit(flagged(sys.argv[2]))
     args = [a for a in sys.argv[1:] if a != "--all"]
     if not args:
         print(__doc__, file=sys.stderr)

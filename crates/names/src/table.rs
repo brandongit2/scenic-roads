@@ -398,6 +398,30 @@ pub(crate) fn parse_line<'a>(text: &'a [u8]) -> Parsed<'a> {
     Parsed::Entry(Entry { n, kinds: bits, langs: ls, main, sub })
 }
 
+/// What a translation line is as the tables read it: what the input check's shape check of the
+/// translations goes by (docs/inputs.md §6.3), so the check and the reader can't disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineShape {
+    /// A line the tables keep.
+    Line,
+    /// A well-formed line not translated yet (`"via": "todo"` or `"skipped"`).
+    NotYet,
+    /// A line of the area tables' old format (no `kind` or no `langs`).
+    Old,
+    /// Not JSON, no name, or a kind or language that can't be read.
+    Bad,
+}
+
+/// The shape of one line (its text without the newline).
+pub fn line_shape(text: &[u8]) -> LineShape {
+    match parse_line(text) {
+        Parsed::Entry(_) => LineShape::Line,
+        Parsed::NotYet => LineShape::NotYet,
+        Parsed::Old => LineShape::Old,
+        Parsed::Bad => LineShape::Bad,
+    }
+}
+
 /// A field of a line: absent, null, or a string (any other type fails the line).
 #[derive(Debug, Default)]
 enum Field<'a> {

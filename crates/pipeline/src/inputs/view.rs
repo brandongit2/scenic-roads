@@ -190,6 +190,10 @@ pub fn of(root: &Path, manifest: &BTreeMap<String, String>, units: &[&str], chec
         if v.checked.is_some() && v.unread.is_none() {
             v.stale = acc.iter().filter(|id| !raised.contains(*id)).cloned().collect();
         }
+        // (A unit with nothing dropped yet, never checked, held nor accepted: not shown.)
+        if v.version.is_none() && v.state == State::Ok && v.unread.is_none() && v.accepted.is_empty() && !super::is_test(&unit) {
+            continue;
+        }
         out.push(v);
     }
     out

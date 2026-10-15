@@ -1,7 +1,9 @@
-//! Display names, live (docs/plan.md §7): the user's translation files are copied from the NAS
-//! folder to this Mac (so they work offline and load fast), compiled by the `names` crate, and
-//! attached to everything the server serves. The folder is polled every minute, but only while the
-//! map is in use (a request in the last ten minutes), so an idle server leaves the NAS alone.
+//! Display names, live (docs/plan.md §7): the translations' accepted version (docs/inputs.md §6.3:
+//! the files the input check took in) is copied from the NAS to this Mac (so it works offline and
+//! loads fast: crate::accepted), compiled by the `names` crate, and attached to everything the
+//! server serves. The records are read every minute, but only while the map is in use (a request
+//! in the last ten minutes), so an idle server leaves the NAS alone. (While the translations move
+//! under `inputs/`, the old folder's copy is read until it's empty: crate::accepted::choose.)
 //!
 //! The languages spoken where a thing is come from the catalog's outlines (the pass's), made into
 //! a raster once per outlines file and kept in the home (`names/spoken-<content>.bin`), so they
@@ -46,8 +48,12 @@ pub struct NamesState {
     current: RwLock<Option<Arc<Namer>>>,
     /// The languages spoken where, and the outlines' content name they were made from.
     spoken: RwLock<Option<(String, Arc<Spoken>)>>,
-    /// The local copy of the NAS folder.
+    /// The local copy of the old NAS folder (while the move's first publish reads it).
     dir: PathBuf,
+    /// The local copy of the accepted version.
+    accepted: PathBuf,
+    /// What the lines are read from.
+    from: std::sync::Mutex<crate::accepted::From>,
     /// Where the rasters are kept.
     spoken_dir: PathBuf,
     /// Seconds since the epoch of the last request that used names.
@@ -62,11 +68,17 @@ fn now() -> u64 {
 
 impl NamesState {
     pub fn new(home: &Path) -> Arc<NamesState> {
+        let unit = pipeline::inputs::translations::UNIT;
+        let (dir, accepted) = (home.join(unit), crate::accepted::local_dir(home, unit));
+        // (Offline too: the accepted version once the old folder's copy is gone.)
+        let from = if crate::accepted::files(&accepted).is_some() && !dir.exists() { crate::accepted::From::Accepted } else { crate::accepted::From::Old };
         Arc::new(NamesState {
             names: RwLock::new(None),
             current: RwLock::new(None),
             spoken: RwLock::new(None),
-            dir: home.join("translations"),
+            dir,
+            accepted,
+            from: std::sync::Mutex::new(from),
             spoken_dir: home.join("names"),
             last_use: AtomicU64::new(now()),
             only_old: Default::default(),
@@ -181,19 +193,14 @@ impl NamesState {
         std::thread::Builder::new()
             .name("names".into())
             .spawn(move || {
-                std::fs::create_dir_all(&me.dir).ok();
                 me.reload();
                 let mut next_sync = std::time::Instant::now();
                 loop {
                     if std::time::Instant::now() >= next_sync {
                         next_sync = std::time::Instant::now() + Duration::from_secs(60);
                         let recent = now().saturating_sub(me.last_use.load(Ordering::Relaxed)) < 600;
-                        if recent {
-                            match me.sync(&data) {
-                                Ok(true) => me.reload(),
-                                Ok(false) => {}
-                                Err(e) => eprintln!("translations: {e:#}"),
-                            }
+                        if recent && me.sync(&data) {
+                            me.reload();
                         }
                     }
                     // Files waiting to settle (10 s unchanged) are read once they may be.
@@ -226,9 +233,24 @@ impl NamesState {
     pub(crate) fn reload(&self) {
         let t = std::time::Instant::now();
         let cur = self.names.read().unwrap().clone();
-        let res = match cur {
-            Some(mut n) => n.refresh().map(|changed| (n, changed)),
-            None => Names::load(&self.dir).map(|n| (n, true)),
+        let res = match *self.from.lock().unwrap() {
+            crate::accepted::From::Accepted => {
+                let files = crate::accepted::files(&self.accepted).unwrap_or_default();
+                Ok(match cur {
+                    Some(mut n) => {
+                        let changed = n.set_files(&files);
+                        (n, changed)
+                    }
+                    None => (Names::from_files(&files), true),
+                })
+            }
+            crate::accepted::From::Old => {
+                std::fs::create_dir_all(&self.dir).ok();
+                match cur {
+                    Some(mut n) => n.refresh().map(|changed| (n, changed)),
+                    None => Names::load(&self.dir).map(|n| (n, true)),
+                }
+            }
         };
         match res {
             Ok((mut n, changed)) => {
@@ -326,10 +348,19 @@ impl NamesState {
         }
     }
 
-    /// Copy new and changed files from the NAS folder (once they've stopped changing), and drop
-    /// local files gone from it. True when anything changed.
-    fn sync(&self, data: &Data) -> anyhow::Result<bool> {
-        crate::livefolder::sync(data, "translations", &self.dir)
+    /// Brings the local copies up to date (the accepted version, and the old folder's while it's
+    /// read): whether the lines to read changed. A change of what they're read from starts the
+    /// tables afresh.
+    fn sync(&self, data: &Data) -> bool {
+        let unit = pipeline::inputs::translations::UNIT;
+        let (from, changed) = crate::accepted::choose(data, unit, &self.accepted, unit, &self.dir);
+        let mut cur = self.from.lock().unwrap();
+        if *cur != from {
+            *cur = from;
+            *self.names.write().unwrap() = None;
+            return true;
+        }
+        changed
     }
 }
 
@@ -380,43 +411,44 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_on_the_nas_shows_and_the_old_tables_alone_are_said() {
+    fn the_old_folder_is_read_until_the_accepted_version_takes_over() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        // Only the area tables: nothing shows, and the status says why.
-        write_aged(&nas.path().join("translations/fr/places-fr.jsonl"), "{\"n\": \"Lac Bleu\", \"main\": \"Lac Bleu\", \"sub\": \"Blue Lake\", \"via\": \"agent:haiku\"}\n", 3600);
+        let line = |sub: &str| format!("{{\"n\": \"Lac Bleu\", \"kind\": \"other\", \"langs\": [\"fr\"], \"main\": \"Lac Bleu\", \"sub\": \"{sub}\"}}\n");
+        let sub = |s: &crate::S| s.names.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0).sub;
+        // Before the move: the old folder, copied and read, as before.
+        write_aged(&nas.path().join("translations/answers/fr-001.jsonl"), &line("Blue Lake"), 3600);
+        std::fs::create_dir_all(nas.path().join("state/build")).unwrap();
+        std::fs::write(nas.path().join("state/build/manifest.json"), b"{}").unwrap();
         let s = crate::test_state(home.path(), nas.path());
         s.names.set_spoken(france());
-        assert!(s.names.sync(&s.data).unwrap());
+        assert!(s.names.sync(&s.data));
         s.names.reload();
-        let d = s.names.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0);
-        assert_eq!((d.main.as_str(), d.sub.as_deref()), ("Lac Bleu", None));
-        assert_eq!(s.names.versions()["warning"].as_str(), Some(ONLY_OLD));
-        // A line by language, dropped on the NAS (settled): copied, read, shown; the warning goes.
-        write_aged(&nas.path().join("translations/answers/fr-001.jsonl"), "{\"n\": \"Lac Bleu\", \"kind\": \"other\", \"langs\": [\"fr\"], \"main\": \"Lac Bleu\", \"sub\": \"Blue Lake\", \"via\": \"agent:haiku\"}\n", 20);
+        assert_eq!(sub(&s).as_deref(), Some("Blue Lake"));
+        // The drop box's copy checked and taken in while the old folder still has its files: the
+        // old folder's still read.
+        crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Azure Lake"))]);
+        s.names.sync(&s.data);
+        s.names.reload();
+        assert_eq!(sub(&s).as_deref(), Some("Blue Lake"));
         let before = s.names.version_for_tile(10, 517, 360, 0.0);
-        assert!(s.names.sync(&s.data).unwrap());
-        // Seen, then read once it has held for ten seconds (the names thread sleeps until then).
+        // The old folder emptied: the accepted version from then on, the old copy gone.
+        std::fs::remove_file(nas.path().join("translations/answers/fr-001.jsonl")).unwrap();
+        assert!(s.names.sync(&s.data));
         s.names.reload();
-        let wait = s.names.pending().expect("waiting to settle");
-        assert!(wait <= names::STABLE, "{wait:?}");
-        std::thread::sleep(wait + Duration::from_millis(200));
-        s.names.reload();
-        let d = s.names.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0);
-        assert_eq!((d.main.as_str(), d.sub.as_deref()), ("Lac Bleu", Some("Blue Lake")));
-        assert!(s.names.versions()["warning"].is_null());
-        assert!(s.names.versions()["langs"]["fr"].is_u64());
-        // A French tile's ETag part changed.
+        assert_eq!(sub(&s).as_deref(), Some("Azure Lake"));
+        assert!(!home.path().join("translations").exists());
         assert_ne!(s.names.version_for_tile(10, 517, 360, 0.0), before);
-        // Not where French isn't spoken, nor as another kind.
-        let d = s.names.display(Kind::Other, "Lac Bleu", None, &[], -30.0, 40.0);
-        assert_eq!(d.sub, None);
-        let d = s.names.display(Kind::Road, "Lac Bleu", None, &[], 2.0, 46.0);
-        assert_eq!(d.sub, None);
-        // A file still being written isn't copied. (Its time an hour on: still being written
-        // however long a busy Mac takes to get to the copy.)
-        let p = nas.path().join("translations/answers/fr-002.jsonl");
-        write_aged(&p, "{\"n\": \"Lac Noir\", \"kind\": \"other\", \"langs\": [\"fr\"], \"sub\": \"Black Lake\"}\n", 0);
-        std::fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
-        assert!(!s.names.sync(&s.data).unwrap());
+        // A file dropped into the old folder later isn't read (the input check says where to move
+        // it).
+        write_aged(&nas.path().join("translations/late.jsonl"), &line("Wrong Lake"), 3600);
+        s.names.sync(&s.data);
+        s.names.reload();
+        assert_eq!(sub(&s).as_deref(), Some("Azure Lake"));
+        // Started again, the NAS away: the accepted version kept here.
+        let again = crate::test_state(home.path(), &home.path().join("no-nas"));
+        again.names.set_spoken(france());
+        again.names.reload();
+        assert_eq!(sub(&again).as_deref(), Some("Azure Lake"));
     }
+
 }

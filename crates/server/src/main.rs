@@ -13,6 +13,7 @@
 
 mod cache;
 mod data;
+mod accepted;
 mod descriptions;
 mod details;
 mod downloads;

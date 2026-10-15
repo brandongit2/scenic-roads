@@ -33,8 +33,12 @@ English one is OSM's `name:en`, their own).
 
 ## The answer
 
-Put answer files anywhere in `translations/` but `todo/` (say `translations/answers/fr-001.jsonl`),
-one line per name: the entry's `n`, `kind` and `langs` as given, and the display.
+Put answer files anywhere in `inputs/translations/` but `todo/` and `how/` (say
+`inputs/translations/answers/fr-001.jsonl`; a new file per batch, not appended to an old one), one
+line per name: the entry's `n`, `kind` and `langs` as given, and the display (`main` always there,
+null for the name itself). The app's input check takes a batch in within a few minutes; a line out
+of this shape holds the whole file, and the lines `check.py` flags hold it until the owner accepts
+them (on the build page or the map's build panel).
 
 `{"n": "Lac Bleu", "kind": "other", "langs": ["fr"], "main": "Lac Bleu", "sub": "Blue Lake", "via": "agent:haiku"}`
 

@@ -16,7 +16,7 @@ impl Box_ {
         self.files.insert(p.into(), (b.as_bytes().to_vec(), t));
     }
     fn listing(&self) -> Listing {
-        Listing { files: self.files.iter().map(|(p, (b, t))| (p.clone(), (b.len() as u64, *t))).collect(), strays: Vec::new() }
+        Listing { files: self.files.iter().map(|(p, (b, t))| (p.clone(), (b.len() as u64, *t))).collect(), strays: Vec::new(), ..Default::default() }
     }
 }
 
@@ -311,7 +311,7 @@ fn a_version_checked_whole_holds_every_change_when_old_and_new_files_clash() {
 
 #[test]
 fn quiet_files_alone_are_settled() {
-    let now = Listing { files: [("a".to_string(), (1, 100)), ("b".to_string(), (2, 198)), ("c".to_string(), (1, 150))].into(), strays: vec![] };
+    let now = Listing { files: [("a".to_string(), (1, 100)), ("b".to_string(), (2, 198)), ("c".to_string(), (1, 150))].into(), strays: vec![], ..Default::default() };
     // a and c old enough; b changed 2 s before the listing: left for the next.
     assert_eq!(settle(&now, 200).files.keys().cloned().collect::<Vec<_>>(), ["a", "c"]);
     // The same in two listings a few seconds apart is no proof it's whole: by its time alone.
@@ -355,7 +355,7 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     assert!(open(&root, &m, TEST_UNIT).unwrap().unwrap().index.files.contains_key("a.jsonl"));
     // A planned listing a file has changed since: left as it was (here, out), not taken half-read.
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n{\"k\":").unwrap();
-    let stale = Planned { listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![] }, accepted: BTreeSet::new() };
+    let stale = Planned { listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![], ..Default::default() }, accepted: BTreeSet::new() };
     let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
@@ -483,7 +483,7 @@ fn listing_passes_over_the_macs_files_drafts_and_the_apps_folders_and_names_stra
 
 #[test]
 fn the_key_follows_the_listing_the_acceptances_and_the_index() {
-    let l = Listing { files: [("a.jsonl".to_string(), (10, 100))].into(), strays: vec![] };
+    let l = Listing { files: [("a.jsonl".to_string(), (10, 100))].into(), strays: vec![], ..Default::default() };
     let m: BTreeMap<String, String> = BTreeMap::new();
     let none = BTreeSet::new();
     let k = check_key(GT, &l, &none, &m);
@@ -629,6 +629,197 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let world = credits::catalog_credits(&[], &[], &[credits::Described { description: credits::Description { what: "New world source".into(), ..d.clone() }, ..mk("W", Some(credits::Extent::World("world".into()))) }]);
     assert!(world.iter().any(|c| c["what"] == "New world source" && c.get("areas").is_none()));
     assert!(!credits::catalog_credits(&[], &[], &[credits::Described { description: credits::Description { what: "Unknown".into(), ..d.clone() }, ..mk("U", None) }]).iter().any(|c| c["what"] == "Unknown"));
+}
+
+// ---- The translations and the descriptions (docs/inputs.md §6.3, §6.4) -------------------------
+
+const TR: &translations::Translations = &translations::Translations;
+const DE: &descriptions::Descriptions = &descriptions::Descriptions;
+
+/// The translators' checker run on this thread as the job runs it (`uv run` in the repository's
+/// `dem/`, the pinned Python), its files in `scratch`.
+fn with_checker(scratch: &Path) {
+    lint::set(lint::Python::uv(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem"), scratch));
+}
+
+fn tr_line(n: &str, langs: &str, main: Option<&str>, sub: Option<&str>) -> String {
+    serde_json::json!({"n": n, "kind": "other", "langs": langs, "main": main, "sub": sub, "via": "test"}).to_string() + "\n"
+}
+
+fn finding<'a>(d: &'a Decision, check: &str) -> &'a Finding {
+    d.report.as_ref().and_then(|r| r.findings.iter().find(|f| f.check() == check)).unwrap_or_else(|| panic!("no {check} finding in {:?}", d.report))
+}
+
+#[test]
+fn translation_lines_out_of_shape_and_the_area_tables_lines_are_errors() {
+    let store = Store::default();
+    let mut b = Box_::default();
+    let good = tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake"));
+    let text = [
+        good.as_str(),
+        "not json\n",
+        "{\"n\": \"Pont\", \"kind\": \"bridge\", \"langs\": \"fr\", \"main\": null}\n",
+        "{\"n\": \"Pont\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": \"Bridge\"}\n",
+        "{\"n\": \"Château\", \"main\": \"Castle\", \"sub\": null, \"via\": \"rule:bare\"}\n",
+        "{\"n\": \"Lac\", \"en\": \"Lake\"}\n",
+        "{\"n\": \"Rue\", \"kind\": \"road\", \"langs\": \"fr\", \"main\": null, \"via\": \"todo\"}\n",
+        "{\"n\": \"cut short\", \"kind\"",
+    ]
+    .concat();
+    b.put("answers/fr-001.jsonl", &text, 100);
+    b.put("notes.txt", "a note", 100);
+    let d = check(TR, &b, None, &[], &store, false);
+    // Held, both files: nothing taken in.
+    assert_eq!(held(&d), ["answers/fr-001.jsonl", "notes.txt"]);
+    assert!(d.index.files.is_empty());
+    let bad = finding(&d, "tr-line");
+    assert_eq!(bad.level, Level::Error);
+    // (Not JSON, a kind that can't be read, no main, the last line cut short.)
+    assert_eq!(bad.lines.iter().map(|l| l.0).collect::<Vec<_>>(), [2, 3, 4, 8]);
+    let old = finding(&d, "tr-old");
+    assert_eq!((old.level, old.lines.iter().map(|l| l.0).collect::<Vec<_>>()), (Level::Error, vec![5, 6]));
+    assert!(old.message.contains("2 lines in the area tables' old format"), "{}", old.message);
+    assert_eq!(finding(&d, "tr-shape").files, ["notes.txt"]);
+    // Errors can't be accepted.
+    assert!(accept(tempfile::tempdir().unwrap().path(), "translations", old, "-", "a test").is_err());
+}
+
+#[test]
+fn the_translators_checker_warns_once_a_file_and_accepting_takes_exactly_its_lines() {
+    let d = tempfile::tempdir().unwrap();
+    with_checker(d.path());
+    let store = Store::default();
+    let mut b = Box_::default();
+    let fine = tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake"));
+    // (A macron in Japanese, and English in the original's word order: check.py's rules.)
+    let macron = tr_line("東京", "ja", Some("東京"), Some("Tōkyō"));
+    let order = tr_line("Lac Long", "fr", Some("Lake Long"), None);
+    b.put("answers/a.jsonl", &[fine.as_str(), &macron, &order].concat(), 100);
+    let d1 = check(TR, &b, None, &[], &store, false);
+    let w = finding(&d1, "tr-check");
+    assert_eq!((w.level, w.files.clone()), (Level::Warning, vec!["answers/a.jsonl".to_string()]));
+    assert_eq!(w.lines.iter().map(|l| l.0).collect::<Vec<_>>(), [2, 3]);
+    assert!(w.lines[0].1.contains("macrons") && w.lines[1].1.contains("word order"), "{:?}", w.lines);
+    assert_eq!(held(&d1), ["answers/a.jsonl"]);
+    // Accepted: taken in, the acceptance kept with the version.
+    let id = w.id.clone();
+    let d2 = check(TR, &b, None, &[&id], &store, false);
+    assert!(d2.report.is_none() && d2.index.files.contains_key("answers/a.jsonl"));
+    assert_eq!(d2.index.accepted[&id], ["answers/a.jsonl"]);
+    assert_eq!(d2.index.files["answers/a.jsonl"].facts["lines"], 3);
+    // An unrelated line added, the flagged lines moved down: the same finding, still accepted.
+    b.put("answers/a.jsonl", &[tr_line("Mont Noir", "fr", Some("Mont Noir"), Some("Black Mountain")).as_str(), &fine, &macron, &order].concat(), 200);
+    let d3 = check(TR, &b, Some(&d2.index), &[&id], &store, false);
+    assert!(d3.report.is_none() && d3.changed, "{:?}", d3.report);
+    // A new suspicious line: a new finding, the edit held, the version before it kept.
+    b.put("answers/a.jsonl", &[fine.as_str(), &macron, &order, &tr_line("Lac Rond", "fr", Some("Lake Round"), None)].concat(), 300);
+    let d4 = check(TR, &b, Some(&d3.index), &[&id], &store, false);
+    let w4 = finding(&d4, "tr-check");
+    assert_ne!(w4.id, id);
+    assert_eq!(w4.lines.len(), 3);
+    assert_eq!(d4.index, d3.index);
+    // A clean file: no finding.
+    let mut c = Box_::default();
+    c.put("b.jsonl", &fine, 100);
+    assert!(check(TR, &c, None, &[], &Store::default(), false).report.is_none());
+}
+
+#[test]
+fn the_translators_checker_reads_its_flagged_mode() {
+    assert_eq!(
+        lint::parse(b"{\"line\": 3, \"problem\": \"p\"}\n{\"from\": 1, \"to\": 100, \"problem\": \"q\"}\n").unwrap(),
+        [lint::Flag { from: 3, to: 3, problem: "p".into() }, lint::Flag { from: 1, to: 100, problem: "q".into() }]
+    );
+    assert!(lint::parse(b"{\"line\": 0, \"problem\": \"p\"}\n").is_err());
+    assert!(lint::parse(b"{\"from\": 5, \"to\": 4, \"problem\": \"p\"}\n").is_err());
+    assert!(lint::parse(b"nonsense\n").is_err());
+    // No Python set on this thread: an error (the job fails), never a file taken unchecked.
+    let e = std::thread::spawn(|| lint::flagged(b"x\n").unwrap_err().to_string()).join().unwrap();
+    assert!(e.contains("no Python"), "{e}");
+}
+
+#[test]
+fn description_lines_out_of_shape_are_errors_and_long_or_unsourced_ones_warnings() {
+    let store = Store::default();
+    let mut b = Box_::default();
+    let words = |n: usize| vec!["word"; n].join(" ");
+    let lines = [
+        serde_json::json!({"qid": "Q1368", "long": "A fortified town.", "src": "Wikipedia"}).to_string(),
+        serde_json::json!({"id": "w123", "long": words(56), "src": [{"t": "Book", "u": "https://example.org"}]}).to_string(),
+        serde_json::json!({"qid": "Q9", "long": "Unsourced."}).to_string(),
+        serde_json::json!({"qid": "Q9", "drop": true}).to_string(),
+    ];
+    b.put("written/a.jsonl", &(lines.join("\n") + "\n"), 100);
+    let d1 = check(DE, &b, None, &[], &store, false);
+    let (long, src) = (finding(&d1, "de-long"), finding(&d1, "de-src"));
+    assert_eq!((long.level, long.lines.clone()), (Level::Warning, vec![(2, "56 words".to_string())]));
+    assert_eq!((src.level, src.lines.clone()), (Level::Warning, vec![(3, "Q9".to_string())]));
+    let both: Vec<&str> = vec![&long.id, &src.id];
+    let d2 = check(DE, &b, None, &both, &store, false);
+    assert!(d2.report.is_none() && d2.index.files["written/a.jsonl"].facts["lines"] == 4);
+    // Errors.
+    let mut e = Box_::default();
+    let bad = [
+        "[1]",
+        "{\"long\": \"No id.\"}",
+        "{\"qid\": \"Q1\", \"id\": \"n1\", \"long\": \"Both.\"}",
+        "{\"qid\": \"Q01\", \"long\": \"A leading zero.\"}",
+        "{\"id\": \"x5\", \"long\": \"Not an OSM object.\"}",
+        "{\"qid\": \"Q5\", \"long\": \" \"}",
+        "{\"qid\": \"Q5\", \"long\": \"Ok.\", \"src\": 5}",
+        "{\"qid\": \"Q5\", \"drop\": \"yes\"}",
+    ];
+    e.put("bad.jsonl", &(bad.join("\n") + "\n"), 100);
+    let d3 = check(DE, &e, None, &[], &Store::default(), false);
+    let f = finding(&d3, "de-line");
+    assert_eq!(f.lines.iter().map(|l| l.0).collect::<Vec<_>>(), (1..=8).collect::<Vec<_>>());
+    assert_eq!(f.lines[2].1, "both qid and id");
+    assert!(d3.index.files.is_empty());
+}
+
+#[test]
+fn the_descriptions_about_toml_is_their_credit() {
+    let mut b = Box_::default();
+    b.put("about.toml", "what = \"Heritage descriptions\"\ncredit = \"Wikipedia\"\nlicence = \"CC-BY-SA-4.0\"\nterritory = \"world\"\n", 100);
+    let d = check(DE, &b, None, &[], &Store::default(), false);
+    assert!(d.report.is_none(), "{:?}", d.report);
+    let described = credits::of_index(&d.index);
+    assert_eq!(described.len(), 1);
+    assert_eq!(described[0].extent, Some(credits::Extent::World("world".into())));
+    let mut no = Box_::default();
+    no.put("about.toml", "what = \"Heritage descriptions\"\n", 100);
+    assert_eq!(finding(&check(DE, &no, None, &[], &Store::default(), false), "description").level, Level::Error);
+}
+
+#[test]
+fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
+    let d = tempfile::tempdir().unwrap();
+    let put = |p: &str| {
+        let p = d.path().join(p);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"{\"qid\": \"Q1\", \"long\": \"x\", \"src\": \"s\"}\n").unwrap();
+    };
+    put("descriptions/heritage/late.jsonl");
+    put("descriptions/.DS_Store");
+    // Before the drop box is there (the move's first publish): not yet.
+    assert!(list(d.path(), "descriptions", true).unwrap().misplaced.is_empty());
+    put("inputs/descriptions/a.jsonl");
+    let l = list(d.path(), "descriptions", true).unwrap();
+    assert_eq!(l.misplaced, ["descriptions/heritage/late.jsonl"]);
+    assert_eq!(l.files.keys().collect::<Vec<_>>(), ["a.jsonl"]);
+    // In the key (a drop there is checked at once) and in the report, holding nothing else.
+    let none = BTreeSet::new();
+    let m = BTreeMap::new();
+    assert_ne!(check_key(DE, &l, &none, &m), check_key(DE, &Listing { misplaced: vec![], ..l.clone() }, &none, &m));
+    let read_new = |p: &str| Ok(std::fs::read(d.path().join("inputs/descriptions").join(p))?);
+    let read_old = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
+    let dec = decide(&Given { checks: DE, prev: None, prev_listed: &BTreeMap::new(), listing: &l, unsettled: &BTreeSet::new(), accepted: &none, full: false, read_new: &read_new, read_old: &read_old }).unwrap();
+    assert!(dec.index.files.contains_key("a.jsonl"));
+    let r = dec.report.unwrap();
+    assert_eq!(r.held, ["descriptions/heritage/late.jsonl"]);
+    assert_eq!(r.findings.len(), 1);
+    assert_eq!(r.findings[0].level, Level::Error);
+    assert!(r.findings[0].message.contains("dropped into the old folder: move it to inputs/descriptions/heritage/late.jsonl"), "{}", r.findings[0].message);
 }
 
 fn parse_description_ok(b: &[u8]) -> (credits::Description, Vec<Finding>, String) {

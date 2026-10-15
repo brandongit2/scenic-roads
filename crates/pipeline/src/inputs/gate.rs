@@ -95,6 +95,11 @@ pub fn decide(g: &Given) -> Result<Decision> {
         }
         // 2. Its shape.
         let mut check = g.checks.file(p, &bytes);
+        // (The rules of a program of its own, on a file in the shape: one with an error is held
+        // whatever they say.)
+        if !check.findings.iter().any(|f| f.level == Level::Error) {
+            check.findings.extend(g.checks.lint(p, &bytes).with_context(|| format!("check {p}"))?);
+        }
         if super::copy_name(unit, p, &hash).is_none() {
             check.findings.push(Finding::new("name", Level::Error, &[p], &[], vec![p.clone()], format!("{p}: a name the store can't keep (no backslashes)")));
         }
@@ -110,6 +115,10 @@ pub fn decide(g: &Given) -> Result<Decision> {
     // (What isn't the drop box's shape: a folder in a unit without them.)
     for s in &g.listing.strays {
         findings.push(Finding::new("stray", Level::Error, &[s], &[], vec![s.clone()], format!("{s}: {unit} takes no folders (but todo/ and how/): move what's in it up, or out")));
+    }
+    // (A file dropped into the drop box's old place: never read, never quietly passed over.)
+    for m in &g.listing.misplaced {
+        findings.push(Finding::new("moved", Level::Error, &[m], &[], vec![m.clone()], format!("{m}: dropped into the old folder: move it to inputs/{unit}/{}", m.split_once('/').map_or("", |(_, r)| r))));
     }
     // The candidate, checked whole: the files held still, and those that aren't as accepted.
     let candidate: BTreeMap<String, Option<Arc<Vec<u8>>>> = g
@@ -228,7 +237,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     }
     let listed_changed = listed != *g.prev_listed;
     // The report.
-    let strays: BTreeSet<String> = g.listing.strays.iter().cloned().collect();
+    let strays: BTreeSet<String> = g.listing.strays.iter().chain(&g.listing.misplaced).cloned().collect();
     let report = (!held.is_empty() || !strays.is_empty()).then(|| {
         let mut shown: Vec<Finding> = findings.iter().filter(|f| f.holds(g.accepted) && (f.files.iter().any(|p| held.contains(p) || strays.contains(p)) || together.is_some())).cloned().collect();
         shown.sort_by(|a, b| (a.level, &a.files, &a.id).cmp(&(b.level, &b.files, &b.id)));

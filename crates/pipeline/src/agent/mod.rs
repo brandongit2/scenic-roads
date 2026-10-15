@@ -4199,9 +4199,18 @@ impl Agent {
             }
         }
         // After each catalog the map serves: the names to translate and descriptions to write.
-        if let Some(w) = build::names_todo_work(served_catalog(&root.join("catalog")).map(|c| c.n), &keys) {
+        // (From the translations' and descriptions' accepted versions, which the agent names: the
+        // job reads them through the accessor, never the drop boxes.)
+        let served = served_catalog(&root.join("catalog")).map(|c| c.n);
+        if let Some(w) = build::names_todo_work(served, &manifest, &keys) {
             let n = w.targets[0].1.clone();
-            jobs.push(job(format!("names-todo {n}"), "Listing the names to translate and the descriptions to write", "names-todo", Vec::new(), Some(w)));
+            let mut args = Vec::new();
+            for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
+                args.extend([format!("--{unit}-index"), manifest.get(&crate::inputs::logical(unit)).cloned().unwrap_or_default()]);
+            }
+            jobs.push(job(format!("names-todo {n}"), "Listing the names to translate and the descriptions to write", "names-todo", args, Some(w)));
+        } else if served.is_some() && [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT].iter().any(|u| !manifest.contains_key(&crate::inputs::logical(u))) {
+            waiting.push(Waiting { step: Some("names-todo".into()), what: "Listing the names to translate and the descriptions to write".into(), why: "the translations' or the descriptions' first accepted version (the input check takes them in)".into() });
         }
         if recipes.is_empty() {
             return jobs;
@@ -5719,6 +5728,11 @@ impl Agent {
                     waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its drop box can't be listed now: {why}") });
                 }
                 let Some(l) = watch.get(unit) else { continue };
+                // (Nothing dropped yet and nothing ever taken in or held: nothing to check.)
+                let empty = l.listing.files.is_empty() && l.listing.strays.is_empty() && l.listing.misplaced.is_empty();
+                if empty && [crate::inputs::logical(unit), crate::inputs::held_logical(unit)].iter().all(|r| !manifest.contains_key(r)) {
+                    continue;
+                }
                 // (Daily by the records' last full check, whichever Mac made it: a new lead doesn't
                 // repeat one made less than a day ago.)
                 let full_at = manifest.get(&crate::inputs::listed_logical(unit)).and_then(|n| {
@@ -5752,7 +5766,7 @@ impl Agent {
                     waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its listing can't be kept for the check: {e:#}") });
                     continue;
                 }
-                let mut cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.to_string(), "--listing".into(), s(&planned)];
+                let mut cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.to_string(), "--listing".into(), s(&planned), "--dem".into(), s(&self.o.bin.join("dem"))];
                 if full {
                     cmd.push("--full".into());
                 }
