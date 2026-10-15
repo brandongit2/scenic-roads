@@ -1,6 +1,6 @@
 [
-{"id": "d-chamonix-p65", "z": 12, "lat": 45.915, "lon": 6.86, "pitch": 65, "bearing": 60},
-{"id": "d-chamonix-z14-p70", "z": 14, "lat": 45.923, "lon": 6.87, "pitch": 70, "bearing": 40},
-{"id": "d-annecy-p70", "z": 13.5, "lat": 45.86, "lon": 6.17, "pitch": 70, "bearing": 200},
-{"id": "d-tokyo-p65", "z": 14, "lat": 35.68, "lon": 139.75, "pitch": 65, "bearing": 30}
+{"id": "d-chamonix-valley", "z": 13.4, "lat": 45.905, "lon": 6.85, "pitch": 72, "bearing": 45},
+{"id": "d-annecy-lakeside", "z": 14.2, "lat": 45.875, "lon": 6.15, "pitch": 72, "bearing": 150},
+{"id": "d-tokyo-street", "z": 16, "lat": 35.6705, "lon": 139.762, "pitch": 70, "bearing": 30},
+{"id": "d-chamonix-p65", "z": 12, "lat": 45.915, "lon": 6.86, "pitch": 65, "bearing": 60}
 ]

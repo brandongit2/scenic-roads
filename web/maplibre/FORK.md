@@ -119,10 +119,8 @@ now source changes:
   deeper, rounded as the source rounds its zoom, so a camera low over the ground doesn't lay its
   tiles out again at z19); ground below the center's elevation (the flat map pivots on the
   ground) leaves it as it was, never coarser than upstream's. The middle, not the top: the top
-  over-fetched where a tile spans a valley and a ridge. Every source's cover but the terrain's own
-  render-to-texture tiles (`terrainAwareZoom: false`): each redraws every draped layer, and finer
-  ones near the camera tripled the GPU time of a moving frame in a tilted Chamonix view (1.8 to
-  6.9 ms, under load), for drapes no one asked to sharpen; at upstream's zoom it's 1.7 to 2.0 ms.
+  over-fetched where a tile spans a valley and a ridge. Every source's cover, the terrain's own
+  render-to-texture tiles (the drapes) included; below, what that costs them.
 - **A tile's zoom by its depth, not its distance** (`covering_tiles.ts`, `tileDepthDistance2d`):
   what's drawn of a tile shrinks with its depth along the camera's forward vector, but the zoom
   function took its distance from the camera, so a tile at the screen's sides, farther than one at
@@ -133,12 +131,29 @@ now source changes:
   tiles on the line of sight what it was, and never more than upstream's. On the globe the same
   from the tile's flat-map corners (the globe's cover measures its distances on the flat map too).
   Tiles ahead of the center on the line of sight are finer too (their depth is less than their
-  distance), and a view straight down takes the center's zoom everywhere. Not the terrain's own
-  render-to-texture tiles (`terrainAwareZoom: false`, as below). Tested by
+  distance), and a view straight down takes the center's zoom everywhere. The terrain's
+  render-to-texture tiles too (below). Tested by
   `covering_tiles_depth.test.ts` (a tilted view's middle row one zoom from edge to edge; equal
   depths given equal distances); seven of upstream's cover lists in `covering_tiles.test.ts`
   changed with it (finer tiles at a pitched view's sides), and twelve render cases draw finer
   tiles at their sides or near the camera (their expected images below).
+- **The drapes' tiles by elevation and by depth** (`terrain_tile_manager.ts`,
+  `TerrainTileManager.terrainAwareZoom`, true by default; false gives upstream's zoom, a switch for
+  comparing): the terrain's render-to-texture tiles, into which every draped layer (roads, water,
+  fills, lines) is drawn, take both zooms above, so the drapes near the camera and at the screen's
+  sides are as fine as what stands on them. Each tile is a 1024² RGBA8 texture with mipmaps
+  (5.3 MB a texture a stack of draped layers), so its GPU memory is the tile count times that.
+  Measured on the build Mac (windowed Chrome, 120 Hz, 2880 × 1626, quiet gate,
+  `tools/bldcheck/drape.mjs`, upstream's zoom → this one), the median GPU time of a moving frame:
+  Chamonix at 65° 2.96 → 3.94 ms turning, 3.25 → 3.55 gliding; Annecy at 70° 1.84 → 2.28 and
+  2.16 → 2.29; Tokyo at 65° 7.88 → 8.00 and 8.10 → 8.68. Few textures are drawn a moving frame
+  (0.4–1.6), the rest kept from earlier frames. The textures held at rest: Chamonix at 65° 13 → 49
+  tiles (69 → 261 MB), Annecy 18 → 30 (96 → 160 MB), Tokyo 16 → 24 (85 → 128 MB); with the camera
+  low over the Chamonix valley (400 m above the ground, the map's zoom 11.6 on the globe's sea-level
+  pivot) 25 → 734 tiles, 585 of them z19 (133 MB → 3.9 GB): the zoom over the terrain lifts the
+  tiles near the camera to the map's highest zoom, and the render-to-texture tiles have no source
+  maxzoom to cap them. Capping them (`maxzoom`) at z16 there gives 98 tiles (523 MB), at z17 161
+  (859 MB). No cap nor tile budget is built.
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser
@@ -300,6 +315,9 @@ purpose (`tools/fetch-upstream-tests.sh` puts them in place):
 - `terrain/fill-extrusion`, `-vertical-gradient`, `-vertical-gradient-pattern`: the walls' feet on
   the terrain under each corner (the last also its wall pattern, the DEM tiles finer near the
   camera with the tile zoom over the terrain).
+- The drapes' tiles by elevation and by depth: `terrain/default` and
+  `terrain/fill-extrusion-multipolygon` (finer drapes and the terrain's mesh with them near the
+  camera: edges move by a pixel), and our `symbol-height-anchor/sea` (a few far slopes).
 - The tile zoom by depth (2026-10-14): `high-pitch/terrain-pitch95`, `terrain/fill-extrusion` (its
   nearest row of tiles z14, not z13), `field-of-view-number`, `fog-sky-blend-globe`, `heatmap`,
   `image-projective`, `occlusion-debug`, `rtt-mipmap-minification/pitch-70`,

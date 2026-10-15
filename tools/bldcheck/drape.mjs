@@ -3,7 +3,7 @@
 // TerrainTileManager.terrainAwareZoom), in the app as it is (?checks), in a windowed Chrome (CDP 5293,
 // chrome-win.sh; nothing else open in it):
 //   node drape.mjs <views.json> <out.json> [--reps 4] [--frames 300] [--shots <dir>] [--allow-busy]
-//     [--app http://127.0.0.1:5291]
+//     [--app http://127.0.0.1:5291] [--maxz <deepest render-to-texture zoom>]
 // Each view: the app opened at it, then for each repetition both settings in a rotated order (A B,
 // B A, …) in the same tab: the cover switched, the map left to settle (idle), then the camera moved
 // one step a requestAnimationFrame for `--frames` frames, turning (0.02° a frame) and then gliding
@@ -11,17 +11,19 @@
 // MapLibre's _render), the render-to-texture tiles, the textures drawn that frame (Painter.acquireRTT
 // calls), the draped layers; at rest before and after, the textures held (the tiles' and the pool's)
 // and their memory (RGBA8 with mipmaps). `--shots`: each setting's view at rest saved as a PNG
-// (<id>-on.png, <id>-off.png). The quiet-Mac gate (quiet.mjs) before each view and after each
+// (<id>-on.png, <id>-off.png), a crop of the near drapes of each (the view's `crop`, CSS px)
+// and the two crops side by side (<id>-crops-off-on.png, upstream's zoom on the left). The quiet-Mac gate (quiet.mjs) before each view and after each
 // repetition; a busy repetition is measured again (3 tries), unless --allow-busy, which records it
 // marked busy.
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { waitQuiet, snapshot } from './quiet.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
 const [viewsFile, outFile] = argv;
-const REPS = Number(opt('reps', 4)), N = Number(opt('frames', 300));
+const REPS = Number(opt('reps', 4)), MAXZ = opt('maxz', ''), N = Number(opt('frames', 300));
 const SHOTS = opt('shots', '');
 const CDP = Number(opt('cdp', 5293)), APP = opt('app', 'http://127.0.0.1:5291');
 const ALLOW_BUSY = argv.includes('--allow-busy');
@@ -161,7 +163,26 @@ for (const v of views) {
     await new Promise((r) => setTimeout(r, 200));
   }
   await t.ev(SETUP);
-  const rec = { before, shots: {}, reps: [] };
+  // (--maxz: the render-to-texture tiles' deepest zoom, TerrainTileManager.maxzoom, 22 by default)
+  if (MAXZ) await t.ev(`window.__app.map.terrain.tileManager.maxzoom = ${Number(MAXZ)}; return 1`);
+  // (the view framed as the app frames a place, camera3d.frame, as bldcmp's place(): the target at the
+  // centre over its ground, the camera kept 150 m or more above the terrain under it, farther out by
+  // quarter zooms while it isn't; the app's own start from the hash can leave it elsewhere)
+  const placed = await t.ev(`
+    const m = window.__app.map, cam3d = window.__app.cam3d, tr = m._camera.transform, v = ${JSON.stringify(v)};
+    let z = v.z, clear = 0;
+    for (let i = 0; i < 24; i++) {
+      const elev = m.queryTerrainElevation([v.lon, v.lat]) ?? 0;
+      m.jumpTo(cam3d.frame(m, { lng: v.lon, lat: v.lat }, elev, z, v.pitch ?? 0, v.bearing ?? 0));
+      await window.__drape.idle();
+      clear = tr.getCameraAltitude() - (m.queryTerrainElevation(tr.getCameraLngLat()) ?? 0);
+      if (clear >= 150 && Math.abs((m.queryTerrainElevation([v.lon, v.lat]) ?? 0) - elev) < 1) break;
+      if (clear < 150) z -= 0.25;
+    }
+    const c = m.getCenter();
+    return [c.lng, c.lat, m.getZoom(), z, clear];`);
+  console.log(`${v.id} at ${placed.map((x) => x.toFixed(4)).join(' ')}`);
+  const rec = { before, placed, shots: {}, reps: [] };
   if (SHOTS) {
     for (const on of [false, true]) {
       await t.ev(`const m = window.__app.map; m.terrain.tileManager.terrainAwareZoom = ${on}; await window.__drape.idle(); await window.__drape.idle(); await new Promise((r) => setTimeout(r, 500)); return 1`);
@@ -169,9 +190,18 @@ for (const v of views) {
       const shot = await t.send('Page.captureScreenshot', { format: 'png' });
       const file = path.join(SHOTS, `${v.id}-${on ? 'on' : 'off'}.png`);
       fs.writeFileSync(file, Buffer.from(shot.result.data, 'base64'));
+      // (a crop of the near drapes at the screen's own pixels: the view's `crop`, CSS px)
+      const [cx, cy, cw, ch] = v.crop ?? [300, 440, 560, 280];
+      const cs = await t.send('Page.captureScreenshot', { format: 'png', clip: { x: cx, y: cy, width: cw, height: ch, scale: 1 } });
+      fs.writeFileSync(file.replace(/\.png$/, '-crop.png'), Buffer.from(cs.result.data, 'base64'));
       rec.shots[on ? 'on' : 'off'] = { file, held };
       console.log(`${v.id} ${on ? 'on ' : 'off'} ${file} ${JSON.stringify(held)}`);
     }
+  }
+  if (SHOTS) {
+    // the two crops side by side, upstream's zoom on the left (ffmpeg)
+    const c = (k) => path.join(SHOTS, `${v.id}-${k}-crop.png`);
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', c('off'), '-i', c('on'), '-filter_complex', 'hstack', path.join(SHOTS, `${v.id}-crops-off-on.png`)]);
   }
   for (let r = 0; r < REPS; r++) {
     for (let attempt = 1; ; attempt++) {
