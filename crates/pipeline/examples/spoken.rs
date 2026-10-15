@@ -1,9 +1,9 @@
 //! The languages spoken where, from a pass's outlines and a languages table (the languages input's
-//! `territories.tsv`; `-`: the table compiled in): builds the raster (`names::spoken`), times it,
+//! `territories.tsv`): builds the raster (`names::spoken`), times it,
 //! prints what it gives at known places, and the hash its content name would have (as
 //! `global/spoken.<hash>.bin`).
 //!
-//! usage: cargo run --release -p pipeline --example spoken -- <outlines .sect> <territories.tsv | -> [<raster out>]
+//! usage: cargo run --release -p pipeline --example spoken -- <outlines .sect> <territories.tsv> [<raster out>]
 
 use std::time::Instant;
 
@@ -53,12 +53,9 @@ const PLACES: &[(&str, f64, f64)] = &[
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let usage = "usage: spoken <outlines> <territories.tsv | -> [<raster out>]";
+    let usage = "usage: spoken <outlines> <territories.tsv> [<raster out>]";
     let path = args.get(1).expect(usage);
-    let table = match args.get(2).expect(usage).as_str() {
-        "-" => names::Table::embedded().clone(),
-        p => names::Table::parse(&std::fs::read_to_string(p)?),
-    };
+    let table = names::Table::parse(&std::fs::read_to_string(args.get(2).expect(usage))?);
     let t0 = Instant::now();
     let o = pipeline::outlines::Outlines::open(std::path::Path::new(path))?;
     eprintln!("{} outlines' records and names read in {:.1?}", o.recs.len(), t0.elapsed());

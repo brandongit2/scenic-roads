@@ -234,7 +234,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // translations' and descriptions' to-do lists from the newest catalog (pipeline::namestodo)
         // and those inputs' accepted versions the agent names (their indexes' content names), into
         // the drop boxes' todo/ under the root (or --out); it writes nothing else.
-        let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
         let out = opt(&args, "--out").map_or_else(|| root.clone(), PathBuf::from);
         let accepted = |unit: &str| -> Result<pipeline::inputs::Accepted> {
             let index = opt(&args, &format!("--{unit}-index")).with_context(|| format!("--{unit}-index <its accepted index's content name>"))?;
@@ -243,7 +242,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         };
         let (tr, de) = (accepted(pipeline::inputs::translations::UNIT)?, accepted(pipeline::inputs::descriptions::UNIT)?);
         let t0 = std::time::Instant::now();
-        let r = pipeline::namestodo::run(&root, &out, &tr, &de, &scratch, &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
+        let r = pipeline::namestodo::run(&root, &out, &tr, &de, &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
         eprintln!("names-todo: {} in {:.0} s", serde_json::json!({"langs": r.langs, "read": r.read, "own": r.own, "lined": r.lined, "settlements": r.settlements, "english": r.english, "nowhere": r.nowhere, "landmarks": r.landmarks, "areas": r.areas}), t0.elapsed().as_secs_f64());
         return Ok(());
     }
@@ -389,19 +388,16 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "slope-lo" => slope_lo_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "spoken" => {
-            // spoken [--pass <date>] [--languages-index <index>]: the languages spoken where
+            // spoken [--pass <date>] --languages-index <index>: the languages spoken where
             // (names::spoken), from the pass's outlines and the languages input's accepted version
-            // the agent names (its index's content name; without one, the table compiled in), as
-            // global/spoken, which the servers read.
+            // the agent names (its index's content name), as global/spoken, which the servers read.
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
-            let table = match opt(&args, "--languages-index") {
-                Some(index) => {
-                    let unit = pipeline::inputs::languages::UNIT;
-                    let m = std::collections::BTreeMap::from([(pipeline::inputs::logical(unit), index)]);
-                    let a = pipeline::inputs::open(out.root(), &m, unit)?.with_context(|| format!("no accepted version of {unit}"))?;
-                    pipeline::inputs::languages::table_of(&a)?
-                }
-                None => names::Table::embedded().clone(),
+            let table = {
+                let unit = pipeline::inputs::languages::UNIT;
+                let index = opt(&args, "--languages-index").context("--languages-index <the languages' accepted index's content name>")?;
+                let m = std::collections::BTreeMap::from([(pipeline::inputs::logical(unit), index)]);
+                let a = pipeline::inputs::open(out.root(), &m, unit)?.with_context(|| format!("no accepted version of {unit}"))?;
+                pipeline::inputs::languages::table_of(&a)?
             };
             let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
             // (The outlines read from the NAS as it works through them: one phase.)

@@ -357,15 +357,12 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 
 /// The languages spoken where (names::spoken), worldwide, once per pass's outlines, accepted
 /// version of the languages input (docs/inputs.md §6.2: its index's content name, which the job is
-/// given, `spoken_args`) or rules version: `global/spoken`, which the servers read. Before the
-/// input has an accepted version, the table compiled in stands in, and the key is as it was
-/// without the input.
+/// given) or rules version: `global/spoken`, which the servers read. None while the input has no
+/// accepted version.
 pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let outlines = m.get(&format!("sources/osm/{date}/outlines"))?;
-    let k = match m.get(&crate::inputs::logical(crate::inputs::languages::UNIT)) {
-        Some(table) => h(&[names::spoken::RULES, outlines, &format!("table {table}")]),
-        None => h(&[names::spoken::RULES, outlines]),
-    };
+    let table = m.get(&crate::inputs::logical(crate::inputs::languages::UNIT))?;
+    let k = h(&[names::spoken::RULES, outlines, &format!("table {table}")]);
     (done.lo.get("spoken").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "spoken".into(), targets: vec![("spoken".into(), k)] })
 }
 
@@ -4516,15 +4513,11 @@ pub(crate) mod tests {
         assert_eq!((&v["someday"]["6/3/3"], &v["bldtiles"]["6/2/2"], &v["unit"]["6/4/4"]), (&serde_json::json!("s"), &serde_json::json!("b"), &serde_json::json!("k4")));
     }
 
-    /// The spoken job's key: the pass's outlines, and the languages' accepted version once there is
-    /// one (before it, the key the job had without the input, so nothing reruns at the publish).
+    /// The spoken job's key: the pass's outlines and the languages' accepted version (none: no job).
     #[test]
     fn the_spoken_job_follows_the_languages_accepted_version() {
         let mut m = BTreeMap::from([("sources/osm/d/outlines".to_string(), "o1".to_string())]);
         let mut done = Keys::default();
-        let w = spoken_work("d", &m, &done).unwrap();
-        assert_eq!(w.targets[0].1, h(&[names::spoken::RULES, "o1"]));
-        done.lo.insert("spoken".into(), w.targets[0].1.clone());
         assert!(spoken_work("d", &m, &done).is_none());
         m.insert(crate::inputs::logical(crate::inputs::languages::UNIT), "sources/inputs/languages/@index.0123456789abcdef.json".into());
         let w = spoken_work("d", &m, &done).unwrap();

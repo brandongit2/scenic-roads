@@ -6,9 +6,8 @@
 //!
 //! The languages spoken where a thing is come from the catalog's `global/spoken`; a catalog without
 //! one has them made from its outlines (the pass's) and the languages input's accepted table
-//! (docs/inputs.md §6.2: kept here as the translations are, crate::accepted; until there is one,
-//! the table compiled in), made into a raster once per outlines file and table and kept in the
-//! home (`names/spoken-<content>+<table>.bin`), so they hold offline too.
+//! (docs/inputs.md §6.2: kept here as the translations are, crate::accepted), made into a raster
+//! once per outlines file and table and kept in the home (`names/spoken-<content>+<table>.bin`), so they hold offline too.
 
 use crate::data::Data;
 use names::{Kind, Lang, Namer, Names, Spoken};
@@ -255,8 +254,8 @@ impl NamesState {
             }
         }
         let want = cat.global.get("outlines").and_then(|l| data.content(l));
-        let (table, tag) = self.table(data);
-        let want = want.map(|c| format!("{c}+{tag}"));
+        let table = self.table(data);
+        let want = want.zip(table.as_ref()).map(|(c, (_, tag))| format!("{c}+{tag}"));
         if want.is_some() && have == want {
             return;
         }
@@ -267,7 +266,7 @@ impl NamesState {
                 return;
             }
             let t = std::time::Instant::now();
-            match crate::regions::spoken_from_outlines(data, &table) {
+            match table.as_ref().map(|(t, _)| crate::regions::spoken_from_outlines(data, t)).unwrap_or(Ok(None)) {
                 Ok(Some(s)) => {
                     eprintln!("names: the spoken languages from {content} ({} regions, {:.1?})", s.regions().count(), t.elapsed());
                     std::fs::create_dir_all(&self.spoken_dir).ok();
@@ -308,8 +307,8 @@ impl NamesState {
 
     /// The languages table for a catalog without `global/spoken`, and what names it (its file's
     /// hash): the languages' accepted version, kept here (brought up to date first while the NAS is
-    /// there), else the table compiled in.
-    fn table(&self, data: &Data) -> (names::Table, String) {
+    /// there); None before there's one.
+    fn table(&self, data: &Data) -> Option<(names::Table, String)> {
         let unit = pipeline::inputs::languages::UNIT;
         if let Err(e) = crate::accepted::synced(data, unit, &self.languages) {
             eprintln!("names: {unit}: {e:#}");
@@ -317,11 +316,11 @@ impl NamesState {
         let kept = crate::accepted::files(&self.languages).and_then(|f| f.get(pipeline::inputs::languages::TABLE).cloned());
         if let Some((local, content)) = kept {
             match std::fs::read_to_string(&local) {
-                Ok(text) => return (names::Table::parse(&text), pipeline::inputs::hash_of(&content).unwrap_or("accepted").to_string()),
+                Ok(text) => return Some((names::Table::parse(&text), pipeline::inputs::hash_of(&content).unwrap_or("accepted").to_string())),
                 Err(e) => eprintln!("names: {}: {e}", local.display()),
             }
         }
-        (names::Table::embedded().clone(), "embedded".into())
+        None
     }
 
     /// Brings the local copy of the accepted version up to date: whether it changed.

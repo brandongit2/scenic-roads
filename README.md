@@ -349,7 +349,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
   - the elevation source: `crates/pipeline/src/dem/` (the `elev` program), with densification in `extract.rs`;
   - heritage registers: the snapshot; `dem/heritage_eu.py`, kinds in `dem/heritagetiers.py`;
-  - the languages spoken, for names: the languages input (`inputs/languages/territories.tsv` on the NAS, made by `producers/languages/cldr-languages.py`: CLDR's per territory, refined per subdivision; docs/inputs.md §6.2), with the table compiled in (`crates/names/src/territory-languages.tsv` and `REFINED` in `crates/names/src/spoken.rs`) standing in until its first accepted version;
+  - the languages spoken, for names: the languages input (`inputs/languages/territories.tsv` on the NAS, made by `producers/languages/cldr-languages.py`: CLDR's per territory, refined per subdivision; docs/inputs.md §6.2);
   - rail feeds: the catalogue's come by country, from the coverage; national operators' own, and those behind a key (in `inputs/keys.env` on the NAS), are listed in `dem/railfeeds.py` with their countries, as are the catalogue's feeds filed under another country and which of several copies of one timetable is read;
   - the credits: `crates/pipeline/src/rules.rs` (`CREDITS`, each source with its areas).
 

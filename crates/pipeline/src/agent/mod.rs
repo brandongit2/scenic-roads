@@ -4355,10 +4355,12 @@ impl Agent {
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
                 jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
-            if let Some(w) = build::spoken_work(date, &manifest, &keys) {
-                // (The languages' accepted version the key names, when there is one.)
-                let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT)).map(|i| vec!["--languages-index".to_string(), i.clone()]).unwrap_or_default();
-                jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", [p.clone(), table].concat(), Some(w)));
+            let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
+            if let (Some(w), Some(table)) = (build::spoken_work(date, &manifest, &keys), table) {
+                // (The languages' accepted version the key names.)
+                jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat(), Some(w)));
+            } else if table.is_none() && manifest.contains_key(&format!("sources/osm/{date}/outlines")) {
+                waiting.push(Waiting { step: Some("spoken".into()), what: "Mapping the languages spoken where, for names".into(), why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into() });
             }
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with

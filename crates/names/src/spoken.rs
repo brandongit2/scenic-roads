@@ -6,8 +6,7 @@
 //!   an ISO 3166-1 territory or ISO 3166-2 subdivision a line, its languages most spoken first:
 //!   CLDR's territory data, with the subdivisions and territories that read their names otherwise
 //!   (Quebec French then English, Catalonia Catalan then Spanish, Hong Kong Cantonese) folded in by
-//!   its producer (producers/languages/). Until a version of the input is accepted, the table
-//!   compiled in ([`Table::embedded`]) stands in.
+//!   its producer (producers/languages/).
 //! - **Read as:** the one rule kept in code ([`READ_AS`]): Chinese read as Cantonese where
 //!   Cantonese is spoken and Mandarin isn't.
 //! - **Where:** the pass's outlines of ISO 3166-1 territories and of the table's subdivisions, as a
@@ -18,7 +17,6 @@
 use anyhow::{bail, ensure, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
-use std::sync::LazyLock;
 
 /// Cells per degree, both ways.
 pub const RES: u32 = 128;
@@ -67,30 +65,6 @@ impl fmt::Display for Lang {
     }
 }
 
-/// Territories and subdivisions whose languages aren't CLDR's territory list as it is, folded into
-/// the table compiled in ([`Table::embedded`]); the languages input's producer folds the same in.
-const REFINED: &[(&str, &[&str])] = &[
-    // Canada: Quebec French first, New Brunswick both.
-    ("CA-QC", &["fr", "en"]),
-    ("CA-NB", &["en", "fr"]),
-    // Spain's co-official languages where they are.
-    ("ES-CT", &["ca", "es"]),
-    ("ES-IB", &["ca", "es"]),
-    ("ES-VC", &["es", "ca"]),
-    ("ES-GA", &["gl", "es"]),
-    ("ES-PV", &["es", "eu"]),
-    ("ES-NC", &["es", "eu"]),
-    // Britain: Wales Welsh after English; Scotland Gaelic.
-    ("GB-WLS", &["en", "cy"]),
-    ("GB-SCT", &["en", "gd"]),
-    // France: Brittany Breton after French.
-    ("FR-BRE", &["fr", "br"]),
-    // Hong Kong's and Macau's names are read in Cantonese (the government's romanisation), not
-    // Mandarin's Pinyin, which Chinese lines carry.
-    ("HK", &["yue", "en"]),
-    ("MO", &["yue", "pt"]),
-];
-
 /// Where OSM's language tag names a language whose names are read as another spoken there: a name
 /// tagged `name:zh` in Hong Kong is read in Cantonese.
 const READ_AS: &[(&str, &str)] = &[("zh", "yue")];
@@ -115,20 +89,6 @@ impl Table {
             m.insert(code.to_owned(), langs.split(',').filter_map(Lang::parse).collect());
         }
         Table(m)
-    }
-
-    /// The table compiled in: CLDR 47's languages per territory, then the refinements. It stands in
-    /// until the languages input has an accepted version (docs/inputs.md §6.2: the move's first
-    /// publish; the second deletes it).
-    pub fn embedded() -> &'static Table {
-        static T: LazyLock<Table> = LazyLock::new(|| {
-            let mut t = Table::parse(include_str!("territory-languages.tsv"));
-            for (code, langs) in REFINED {
-                t.0.insert((*code).to_owned(), langs.iter().filter_map(|l| Lang::parse(l)).collect());
-            }
-            t
-        });
-        &T
     }
 
     /// The table as a `territories.tsv` (`header`: its comment lines, without their `# `), a line a
@@ -468,17 +428,6 @@ mod tests {
         let u = Table::parse("FR fr\nDE\tde_AT,xx1\nDE\tde,fr\r\n");
         assert_eq!(u.get("FR"), None);
         assert_eq!(strs(u.get("DE").unwrap()), ["de", "fr"]);
-    }
-
-    #[test]
-    fn the_table_compiled_in_folds_the_refinements_in() {
-        let t = Table::embedded();
-        assert_eq!(strs(t.get("CA").unwrap()), ["en", "fr"]);
-        assert_eq!(strs(t.get("CA-QC").unwrap()), ["fr", "en"]);
-        assert_eq!(strs(t.get("HK").unwrap()), ["yue", "en"]);
-        assert_eq!(strs(t.get("SG").unwrap()), ["en", "zh", "ms", "ta"]);
-        assert_eq!(t.get("FR-IDF"), None);
-        assert_eq!(&Table::parse(&t.to_tsv(&[])), t);
     }
 
     #[test]

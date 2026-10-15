@@ -8,9 +8,8 @@ only regionally (Catalan in Spain, Welsh in Britain), and territories whose name
 (Hong Kong's and Macau's in Cantonese), are CLDR's list refined: REFINED below, a line of its own per
 subdivision (ISO 3166-2) or in place of the territory's, which also sets the order where it matters.
 
-With --base, the refinements are applied to a territories.tsv already made instead of to CLDR's
-JSON (its first line's "CLDR <version>" kept): how the input's first version was made from the
-table the app compiled in before #136 (crates/names/src/territory-languages.tsv).
+With --base, the refinements are applied to a territories.tsv already made (the drop box's)
+instead of to CLDR's JSON, its "CLDR <version>" comment kept.
 
 The files are written to --out; drop them into inputs/languages/ on the NAS, where the input check
 takes them in (scenic inputs).

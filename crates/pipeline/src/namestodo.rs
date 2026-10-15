@@ -225,24 +225,11 @@ fn sect(path: &Path) -> Result<SectReader<PlainFile>> {
 }
 
 /// The spoken languages the catalog was made with: its `global/spoken` (the `spoken` job's, from
-/// the languages input's accepted version). A catalog without one: made from its outlines with the
-/// table compiled in, kept in `scratch` by the outlines' content name (made in minutes from the
-/// NAS, read back in milliseconds).
-pub fn spoken_for(root: &Path, cat: &store::catalog::Catalog, scratch: &Path) -> Result<Spoken> {
-    if let Some(f) = cat.global.get("spoken").and_then(|l| cat.file(l)) {
-        let b = std::fs::read(root.join(&f.file)).with_context(|| format!("read {}", f.file))?;
-        return Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file));
-    }
-    let logical = cat.global.get("outlines").context("the catalog has no outlines")?;
-    let f = cat.file(logical).context("the outlines' file")?;
-    let kept = scratch.join(format!("spoken-{}.bin", f.file.replace('/', "_")));
-    if let Some(s) = std::fs::read(&kept).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
-        return Ok(s);
-    }
-    let s = crate::outlines::Outlines::open(&root.join(&f.file))?.spoken(names::Table::embedded())?;
-    std::fs::create_dir_all(scratch).ok();
-    std::fs::write(&kept, s.to_bytes()).ok();
-    Ok(s)
+/// the languages input's accepted version).
+pub fn spoken_for(root: &Path, cat: &store::catalog::Catalog) -> Result<Spoken> {
+    let f = cat.global.get("spoken").and_then(|l| cat.file(l)).context("the catalog has no global/spoken (the spoken job makes it from the languages' accepted version)")?;
+    let b = std::fs::read(root.join(&f.file)).with_context(|| format!("read {}", f.file))?;
+    Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
 /// The units' z6 tiles.
@@ -584,11 +571,11 @@ fn put(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Makes the lists from the newest catalog under `root` into `out` (the translations' and the
 /// descriptions' `todo/` under it: the root itself for the job, a scratch folder to look first),
 /// with the accepted versions of the translations and the descriptions the agent names.
-pub fn run(root: &Path, out: &Path, translations: &crate::inputs::Accepted, descriptions: &crate::inputs::Accepted, scratch: &Path, progress: &dyn Fn(&str, u64, u64)) -> Result<Report> {
+pub fn run(root: &Path, out: &Path, translations: &crate::inputs::Accepted, descriptions: &crate::inputs::Accepted, progress: &dyn Fn(&str, u64, u64)) -> Result<Report> {
     use crate::timings::{phase, Class};
     let p = phase("the catalog, the languages spoken and the translations read", Class::NasRead);
     let cat = store::catalog::latest(&root.join("catalog"))?.context("no catalog")?;
-    let spoken = spoken_for(root, &cat, scratch)?;
+    let spoken = spoken_for(root, &cat)?;
     let mut names = Names::from_files(&translation_files(translations));
     let failed = names.take_warnings();
     anyhow::ensure!(failed.is_empty(), "the translations' accepted files: {}", failed.join("; "));

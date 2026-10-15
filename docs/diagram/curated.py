@@ -80,7 +80,7 @@ GROUPS = [
         ('doc', None, 'base', 'Languages by territory',
          'the spoken job: which languages a name is looked up in, and which to-do list it goes on',
          'producers/languages/cldr-languages.py from CLDR 47, refinements folded in; the input check',
-         'inputs/languages/ (territories.tsv, about.toml); the table compiled in until accepted',
+         'inputs/languages/ (territories.tsv, about.toml)',
          'plan.md §7 (not CLDR’s download URL)',
          'the script on CLDR 47’s territoryInfo.json'),
         ('doc', None, 'net', 'Rail feeds’ hand lists',

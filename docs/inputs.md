@@ -1031,9 +1031,8 @@ Each is a choice made above, with the option picked and why; each is easy to cha
 
 **Kind:** declare, generated once and rarely touched. **Drop box:** `inputs/languages/`.
 
-**Built** (#136's first publish: crate::inputs::languages, on the input check; the `spoken` job
-reading the accepted version), with the table compiled into the app standing in until a version is
-accepted (Migration).
+**Built** (#136: crate::inputs::languages, on the input check; the `spoken` job reading the
+accepted version). The app holds no table of its own.
 
 **Shape:** `territories.tsv`, one territory a line, `<code>\t<language>,<language>…`, most spoken
 first:
@@ -1073,24 +1072,11 @@ digest is of its lines as read, so a comment edited reruns nothing.
 
 **Ingesting and rebuilding.** The `spoken` job (plan §7) is keyed on the outlines, `spoken::RULES`
 (the raster's code and format) and the languages' accepted index, which the agent hands it
-(`--languages-index`); it reads `territories.tsv` from the accepted version. Before any version is
-accepted its key is as it was before the input (the outlines and RULES) and it reads the table
-compiled in (`names::Table::embedded`). `global/spoken` carries the table in its head, so
-`names-todo` reads the catalog's `global/spoken` (a catalog without one: the outlines and the table
-compiled in), and the map's server needs the input only for its fallback (a catalog without
+(`--languages-index`); it reads `territories.tsv` from the accepted version, and waits while there
+is none. `global/spoken` carries the table in its head, so `names-todo` reads the catalog's
+`global/spoken`, and the map's server needs the input only for its fallback (a catalog without
 `global/spoken`), which reads the accepted table, kept on the Mac as the translations are
-(`accepted/languages/` in its home), else the table compiled in.
-
-**Migration.**
-1. Publish the input on the check, the `spoken` job reading the accepted version when there is one
-   and the table compiled in otherwise (built, #136's first publish).
-2. Write `inputs/languages/territories.tsv` and `about.toml` with the producer from the table
-   compiled in (`--base crates/names/src/territory-languages.tsv`, the refinements folded in), and
-   `how/` saying how to run the producer; check and accept (the codes no outline has are warnings,
-   accepted once). Proof: the `spoken` job's next `global/spoken` has the same content name (shown
-   beforehand on a copy, `cargo run -p pipeline --example spoken`).
-3. Then the second publish deletes the table compiled in (`territory-languages.tsv`, its
-   `include_str!`), `REFINED` and the test reading them (planned).
+(`accepted/languages/` in its home).
 
 ### 6.3 Translations (#137)
 
@@ -1960,10 +1946,8 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 
 ### 9.7 Names and languages [#136, #137]
 
-- `crates/names/src/territory-languages.tsv` (CLDR 47, 251 lines) and its `include_str!`
-  (`Table::embedded`), `spoken.rs` `REFINED`: D (the languages input; standing in until its first
-  accepted version, deleted by #136's second publish). `READ_AS`: G (a lookup rule).
-  `producers/languages/cldr-languages.py`: P (moved, #136).
+- The languages by territory: D, the languages input (#136). `spoken.rs` `READ_AS`: G (a lookup
+  rule). `producers/languages/cldr-languages.py`: P.
 - `tools/names/convert-tables.py` (the one-off conversion, its per-area tables at :32–42): P
   (`producers/translations/`, history). `tools/names/check.py`: G (the translations' checks, run by
   the input check).

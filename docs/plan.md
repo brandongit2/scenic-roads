@@ -1656,8 +1656,7 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
   territories.tsv`, made from CLDR 47's `territoryInfo.json` by
   `producers/languages/cldr-languages.py`): the languages official or de facto official there,
   most spoken first, script subtags dropped. Languages official only in a region are left to the
-  refinements. Until the input has an accepted version, the table compiled in stands in
-  (`names::Table::embedded`: `crates/names/src/territory-languages.tsv` and `spoken::REFINED`).
+  refinements.
 - **Refined** (lines of their own in the table, the producer's `REFINED`): Quebec French then English, New Brunswick English then French;
   Catalonia and the Balearics Catalan then Spanish, Valencia Spanish then Catalan, Galicia Galician
   then Spanish, the Basque Country and Navarre Spanish then Basque; Wales English then Welsh,
@@ -1678,13 +1677,12 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
     milliseconds, offline too.
   - **The server** reads the catalog's `global/spoken`. A catalog without it (made before the job
     first ran): the server makes the raster from the catalog's outlines and the languages' table
-    (the accepted version, kept in its home's `accepted/languages/`, else the table compiled in)
+    (the accepted version, kept in its home's `accepted/languages/`)
     on a thread of its own and keeps it in its home (`names/spoken-<outlines' content
     name>+<table>.bin`, its slashes as underscores), and offline uses the newest it kept.
   - **Names aren't loaded until it's there:** until then names show with their own English alone
     (as before the lines load), and `/api/catalog`'s `names.waiting` says what for. The
-    `names-todo` job reads the catalog's `global/spoken` (a catalog without one: made from its
-    outlines with the table compiled in, kept in its scratch).
+    `names-todo` job reads the catalog's `global/spoken`.
 - It's the only place location enters: it sets the lookup order and which to-do list a name goes on.
 
 **Files:** `inputs/translations/**/*.jsonl` (not `todo/` nor `how/`), one line per translation,
