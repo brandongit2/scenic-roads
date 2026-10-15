@@ -538,7 +538,7 @@ agent/shadow/           a shadow run beside the agent (`state/pool/shadow`; crat
                         member, and pool-shadow/ with saved.json, mail.json, members.json as pool/'s,
                         watch.json ({seq: the agent's history read up to, jobs: {id: the jobs under
                         way as seen}, started}) and shadow.jsonl (its log: a JSON line each, {t,
-                        kind: start, observed, handed, event, sent, list, gate, compare, restarted,
+                        kind: start, observed, handed, event, sent, list, `gate` (the lead's holds on new work and GC, pool.md §7: not the input check), compare, restarted,
                         …}); `scenic pool-shadow --home <dir>` keeps the same in <dir>/pool-shadow/
 pool-<id>.lock          (in the app's folder) the lock of this Mac's member `<id>`: one process runs
                         it (crate::pool::MemberLock); like `agent.lock` and the build manifest's

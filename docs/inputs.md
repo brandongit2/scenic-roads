@@ -662,7 +662,12 @@ The region is (∪ `outline`) ∩ (∪ `intersect`) − (∪ `minus`), in that o
 
 **Parts.** Each entry of `outline`, `minus` or `intersect` is one of:
 - `"osm:<relation>"`: an OSM relation's area (preferred: neighbours share borders exactly). As
-  today, a vertex within 1 km of an `osm:` outline counts as inside (plan §5), which covers coasts.
+  today, a vertex within 1 km of an `osm:` part counts as inside (plan §5), which covers coasts;
+  that tolerance applies only to `osm:` parts listed directly in `outline`. Anywhere else (in
+  `minus`, `intersect`, under `buffer` or `cut`, or reached through `region:`) an `osm:` part is the
+  relation's exact area, so subtracting a neighbour removes exactly its area, never 1 km beyond the
+  border. The stored geometry keeps the same rule: each direct `outline` `osm:` part is stored with
+  its 1 km tolerance flag, everything else as exact rings.
 - `"shape:<name>.geojson"`: a Polygon or MultiPolygon in a GeoJSON file of the folder (a Feature,
   or a FeatureCollection whose union is taken), for anything custom. No tolerance: the shape is
   exactly what it says.
@@ -671,9 +676,12 @@ The region is (∪ `outline`) ∩ (∪ `intersect`) − (∪ `minus`), in that o
   shape or a line, for instance a band of 3 or 12 nautical miles around a coast or an island.
   Distances are in `m`, `km` or `nmi` (1,852 m), measured on the ground.
 - `{ cut = <part>, by = "line:<name>", keep = "left" | "right" }`: the part of a shape on one side
-  of a line (left or right as the line is drawn, first point to last). The line must cross the
-  shape from edge to edge; where it runs on past the shape, the extra is ignored. A line that ends
-  inside the shape can't cut it, and that is an error.
+  of a line (left or right as the line is drawn, first point to last). A shape may be several
+  separate pieces (a country and its islands): each piece the line crosses from edge to edge is
+  split and its `keep` side kept; where the line runs on past a piece, the extra is ignored; a piece
+  the line doesn't meet is kept whole if it lies on the `keep` side (judged from the line extended
+  straight from its nearer end), else dropped. A line that ends inside a piece can't cut it, and
+  that is an error.
 
 `buffer` and `cut` take any part, so they nest (`{ cut = { buffer = "osm:…", by = "12 nmi" }, … }`).
 
@@ -702,6 +710,9 @@ What the check does with the pin:
   file names, whether the new pass still has it and whether its geometry changed, so the owner (or
   the generator below) can check the ids and move the pin. Changing `pins.toml`'s date re-checks
   every file that doesn't override it.
+- So with one folder-wide pin, each new OSM pass holds every region at once until `pins.toml` is
+  edited: meanwhile the map keeps its coverage, and no new or edited region is taken in either
+  (they fail the same check). Moving the pin is the first thing to do after a pass.
 
 **Not the app's concern.** Maritime boundaries, exclusive economic zones and the owner's global
 rules for which waters go with which region are worked out outside the app, by a generator written
@@ -715,16 +726,17 @@ name = "Azores"
 outline = [{ buffer = "osm:1629145", by = "12 nmi" }]
 ```
 ```toml
-# inputs/regions/europe/spain-north.toml: the part of Spain north of a hand-drawn line
+# inputs/regions/europe/spain-north.toml: mainland Spain north of a hand-drawn line
 id = "spain-north"
 name = "Northern Spain"
-outline = [{ cut = "region:spain", by = "line:split", keep = "left" }]
-minus = ["region:andorra"]
+outline = [{ cut = "region:spain-mainland", by = "line:split", keep = "left" }]
 
 [lines.split]
-coords = [[-9.6, 42.0], [3.6, 41.6]]
+coords = [[-9.8, 42.0], [3.6, 41.6]]   # west to east, past both coasts: "left" is north
 ```
-(The relation id and the line are illustrative.)
+(The relation id, the `spain-mainland` region and the line are illustrative. With a Spain
+that includes the Balearics and Canaries the same cut is valid too: both lie south of the line
+extended, so they'd be dropped.)
 
 **Checks** (all errors; regions have no warnings):
 - the TOML doesn't parse; `id` isn't the file's name or isn't valid; `name` or `outline` is empty;
@@ -1892,4 +1904,5 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
     set holds administrative and ISO 3166 relations only (plan §5). A region naming another
     relation, or a line naming ways, needs their geometry from the same pass: proposed, a small
     extract of exactly the ids the regions name, made from the pinned pass's planet once per pass
-    and per set of ids, content-named, which the check reads.
+    and per set of ids, content-named, which the check reads. A region naming a relation or way
+    not yet in the extract makes the check run the extract again against the pinned pass first.
