@@ -2924,9 +2924,16 @@ At each phase's end an Opus agent reviews the work against this plan.
      writes (the pageview months) count only through the scratch folder's look (the disk's fall,
      logged, is no floor); a unit's disk is what the accessor wrote while it was built here, its
      tail's writes after the next unit began counted to that one; a member's job's disk is learned,
-     but members are offered work by `helper_need`'s figures until batch 9 places every step by
-     measured room, and with the Mac shared by measure a member takes every job as a cold start
-     (pool.md §7.7, §12);
+     and with `state/pool/every-step` off members are offered work by `helper_need`'s figures (on,
+     by measured room: pool.md §12, batch 9); with the Mac shared by measure a member takes every
+     job as a cold start on its own slots (pool.md §7.7, §12);
+   - every step to every member (pool.md §12, batch 9): the pass's worldwide jobs (its sets, the
+     reach, the summits, the labels, the water, the lake fill, …), the catalogs and prune, GC, the
+     backup, the input checks and the steps keeping the pass's answers stay the lead's; a step's
+     time per target is its targets' cost lines alone (a step whose jobs note none, as the roads'
+     chain's steps but `pack` and `lo`, goes to a member one target a job); a member's room is what
+     it spares (three eighths of its memory, `helper_memory`), not its guard's limit; the forecast
+     doesn't model it;
    - a records snapshot, saved whole after each merge, holds the lease that last set each target
      (one per step and target, as the job keys are: about as large as the keys again) and every
      entry's key since the pool began: until GC is built nothing moves the forget horizon, so the

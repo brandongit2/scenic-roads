@@ -263,6 +263,9 @@ pub struct Shared {
     /// a cold start only to the one with the most room (this Mac's own room, `Every::own`, counted
     /// as a member's). None: as before (`pick`).
     pub every: Option<Every>,
+    /// The lead's round under way, while every step to every member is on: granted with a round's
+    /// step (`Grant::as_of`).
+    pub round: Option<AsOf>,
     /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
     /// just after it in plan order when it can (`pick_every`).
     pub last: BTreeMap<(String, String), String>,
@@ -674,6 +677,18 @@ pub struct Grant {
     pub ttl_s: u64,
     #[serde(flatten)]
     pub work: Granted,
+    /// A round's step (crate::agent::build::AS_OF_STEPS) granted with every step to every member
+    /// while a round is under way: the units as they were when it began, which its job reads
+    /// (crate::out::UNITS_AS_OF_ENV) as the lead's own would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<AsOf>,
+}
+
+/// A round's units as they were when it began (crate::agent::build::Round's `began` and `units`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AsOf {
+    pub began: u64,
+    pub units: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -820,7 +835,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, last: BTreeMap::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, round: None, last: BTreeMap::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -971,6 +986,17 @@ impl Coordinator {
     /// phase 4's ninth batch; crate::agent::every).
     pub fn set_every(&self, every: Option<Every>) {
         self.shared.lock().unwrap().every = every;
+    }
+
+    /// The lead's round under way (None: none), for a round's step granted with every step to
+    /// every member (`Grant::as_of`).
+    pub fn set_round(&self, round: Option<AsOf>) {
+        self.shared.lock().unwrap().round = round;
+    }
+
+    /// When the round it grants with began (`set_round`), if any.
+    pub fn round_began(&self) -> Option<u64> {
+        self.shared.lock().unwrap().round.as_ref().map(|r| r.began)
     }
 
     /// A resumable job offered to worker `worker` alone (crate::agent::resume: its Mac holds the
@@ -1614,7 +1640,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     eprintln!("coordinator: {} took {} {} (its progress is on its Mac)", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
                     s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
-                    let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass } };
+                    let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass }, as_of: None };
                     return Ok((200, serde_json::to_value(g)?));
                 }
             }
@@ -1637,7 +1663,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         s.save_leases();
                         eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
                         s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
-                        let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
+                        let as_of = if every && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) { s.round.clone() } else { None };
+                        let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() }, as_of };
                         return Ok((200, serde_json::to_value(g)?));
                     }
                 }
@@ -1649,7 +1676,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 let t = s.tasks.by_id.get_mut(&id).unwrap();
                 t.state = task::State::Leased { lease, worker: a.worker.clone() };
                 t.leased_at = Some(now);
-                let g = Grant { lease, term: 0, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
+                let g = Grant { lease, term: 0, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb }, as_of: None };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
             }

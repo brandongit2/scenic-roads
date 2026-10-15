@@ -1335,7 +1335,7 @@ impl Agent {
             self.know_pause(None);
         }
         match asked {
-            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if steps::SHARED.contains(&step.as_str()) || (every && every::offered(&step)) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) => {
+            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, as_of, .. })) if steps::SHARED.contains(&step.as_str()) || (every && every::offered(&step)) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) => {
                 // (A resumable job, its progress on this Mac: resumed in its own scratch folder,
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
                 // the pass's date, is no step's target. crate::agent::resume.)
@@ -1372,6 +1372,18 @@ impl Agent {
                     self.slots[0].lease = Some(lease_kept);
                     let what = format!("Reading the OpenStreetMap planet of {date} (resumed here, its progress on this Mac)");
                     return vec![JobSpec { id: format!("{step} {date}"), what, cmd, needs, restart_after_sleep: true, record: None }];
+                }
+                // (A round's step: the round's units, as the lead granted them, read from its folder
+                // as the lead's own job reads its round's file.)
+                if let Some(a) = as_of {
+                    let f = dir.join("round.json");
+                    let wrote = serde_json::to_vec(&serde_json::json!({ "began": a.began, "units": a.units })).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&f, &b));
+                    if let Err(e) = wrote {
+                        waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the round's units: {e:#}") });
+                        fail(self, lease, &format!("the round's units: {e:#}"));
+                        return Vec::new();
+                    }
+                    cmd.push(format!("{}={}#{}", crate::out::UNITS_AS_OF_ENV, f.display(), a.began));
                 }
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t)));
@@ -3047,8 +3059,18 @@ impl Agent {
     /// every member (crate::coord::Every): its memory guard's limit less what its jobs hold, its
     /// disk's free space less the reserve and the owner's room target.
     fn own_room(&self) -> (u64, u64) {
+        // (Free now: none while it can start no job, its slots full or a job running alone.)
+        let running: Vec<&JobSpec> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| &r.spec)).collect();
+        if running.len() >= SLOTS || running.iter().any(|j| self.runs_alone(j)) {
+            return (0, 0);
+        }
         let held: u64 = (0..SLOTS).filter_map(|k| self.held_mb(k)).sum();
-        let mem = memguard::limit_mb(self.total_mb()).saturating_sub(held);
+        // (Before the loop's first read of the Mac's memory, as the Mac says it now.)
+        let total = match self.total_mb() {
+            0 => self.mac_total_mb(),
+            t => t,
+        };
+        let mem = memguard::limit_mb(total).saturating_sub(held);
         let disk = self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20;
         (mem, disk)
     }
@@ -5388,9 +5410,14 @@ impl Agent {
             }
             self.every = on;
         }
-        // (The lead's coordinator told, with this Mac's room now, each loop.)
+        // (The lead's coordinator told, with this Mac's room now, each loop; and its round under
+        // way, which a member's job of a round's step reads as this Mac's own would.)
         if let Some(c) = &self.coord {
             c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
+            let round = self.round.borrow().as_ref().filter(|r| !r.over && self.every_on()).map(|r| (r.began, r.units.clone()));
+            if round.as_ref().map(|r| r.0) != c.round_began() {
+                c.set_round(round.map(|(began, units)| crate::coord::AsOf { began, units }));
+            }
         }
         if let Some(on) = pool::slots_on(r) {
             if on != self.slots_on {
@@ -7967,7 +7994,7 @@ mod pool_tests {
         let bin = d.join("app");
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
-            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
+            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\n[ -n \"$SCENIC_UNITS_AS_OF\" ] && cp \"${{SCENIC_UNITS_AS_OF%#*}}\" \"{bin}/as-of-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
             bin = bin.display()
         );
         for p in ["scenic", "scenic-build"] {
@@ -8176,8 +8203,11 @@ mod pool_tests {
         let asked = |l: &Agent| l.coord.as_ref().unwrap().workers().into_iter().find(|(_, w)| w.kind == "native").map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)));
         let (can, disk) = asked(&lead).unwrap();
         assert!(!can.iter().any(|s| s == "pack") && disk.is_none(), "{can:?}");
-        // On: the lead's coordinator told (with its own room), the member asking for every step.
+        // On: the lead's coordinator told (with its own room, and its round under way: `pack` is a
+        // round's step, its job reading the units as the round began), the member asking for every
+        // step.
         switch_on(&r, every::SWITCH);
+        *lead.round.borrow_mut() = Some(build::Round { began: 1_791_000_000, regions: Vec::new(), last: true, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false });
         lead.pool_switch(Some(&r));
         m.pool_switch(Some(&r));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_some_and(|e| e.own.is_some()));
@@ -8187,6 +8217,13 @@ mod pool_tests {
         assert!(can.iter().any(|s| s == "pack") && can.iter().any(|s| s == "lo") && !can.iter().any(|s| s == "catalog") && disk.is_some(), "{can:?}");
         let env = std::fs::read_to_string(bin.join("env-pack")).unwrap();
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
+        let as_of = env.lines().find_map(|l| l.strip_prefix(&format!("{}=", crate::out::UNITS_AS_OF_ENV))).expect("the round's units");
+        assert!(as_of.ends_with("/round.json#1791000000"), "{as_of}");
+        let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(bin.join("as-of-pack")).unwrap()).unwrap();
+        assert_eq!(kept["units"]["base/6-1-1"], "base/6-1-1.1111111111111111.base");
+        *lead.round.borrow_mut() = None;
+        lead.pool_switch(Some(&r));
+        assert!(lead.coord.as_ref().unwrap().round_began().is_none());
         assert!(!r.join("state/build/claims").exists() || std::fs::read_dir(r.join("state/build/claims")).unwrap().next().is_none(), "no claim made");
         // Its entry merged by the lead, within pack's write-set.
         until(&mut lead, |l| l.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/1/1") == Some("kp")));

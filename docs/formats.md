@@ -976,6 +976,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/resume`: the switch for resuming on a job's Mac and a pass complete by the records
     (docs/pool.md §7.2 Resuming, §7.4; crate::agent::resume). Present (or `on` in it) on, `off` in
     it or missing off. Read by every agent; it acts only in the pool.
+  - `state/pool/every-step`: the switch for every step to every member (docs/pool.md §7.2, §12
+    phase 4's ninth batch; crate::agent::every). Present (or `on` in it) on, `off` in it or missing
+    off. Read by every agent; it acts only in the pool. On, no agent makes or reads the claims
+    (`state/build/claims/`), and a member's ask carries `disk_mb` (the disk it has room for, MB); a
+    grant of a round's step carries `as_of: {began, units}`, which the member's job reads from its
+    lease's folder (`round.json`, through `SCENIC_UNITS_AS_OF`).
   - `state/pool/progress/<member>.json`: the jobs whose progress is on that member's Mac, written
     whole by it alone when that changes (a resumable job's start or end, an entry dropped):
     `{member, worker, jobs: {"osm-pass <date>": {at, since, done, scratch}}}` (`worker` the name

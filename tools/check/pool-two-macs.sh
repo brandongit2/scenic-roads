@@ -73,6 +73,9 @@
 #                                                   that member's progress file holding the pass of
 #                                                   <date>, noted now (as its Mac's agent notes a
 #                                                   pass stopped there mid-stage)
+#   pool-two-macs.sh every <folder> [off]           state/pool/every-step in the scratch folder:
+#                                                   every step of the plan offered to every member
+#                                                   by the measures (`off`: the switch removed)
 #   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -110,6 +113,11 @@
 # scratch folder with its unmerged file (`<scratch>/unmerged-<pid>`), the entry merged, the pass
 # complete by the records, the M1's file dropping it; the lead never starts the pass.
 #
+# With state/pool/every-step on (2026-10-15, `root`, `region`, `every`): the lead running its
+# pass's sets, alone, its free room none, the region's terrain and tree cover pieces (never run:
+# cold starts) went to the M1 one a job, both merged; no claim file made. (The fake jobs note what
+# each target took, SCENIC_COSTS, for the lead's offers by the measures.)
+#
 # For phase 4's fifth batch (planned: before `state/pool/by-measure` goes on for real): `measure`,
 # `region`, `jobs … 120`, `fill … 512`, both Macs. What to see: every job's disk floor in the lead's
 # `scenic pool floors` (its `disk` lines, the member's too, by its done), with the switch off and
@@ -121,7 +129,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, planet, progress or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -183,7 +191,24 @@ if [ "$wiki" -gt 0 ] && [ -n "$SCENIC_BUDGETS" ]; then
   done
   /usr/bin/nc -v -z -G 5 "$(cat "$d/../nas-ip" 2>/dev/null || echo 192.168.2.2)" 445 >> "$out" 2>&1; echo "nas-direct $?" >> "$out"
 fi
-sleep "$(cat "$d/../job-seconds" 2>/dev/null || echo 5)"
+secs=$(cat "$d/../job-seconds" 2>/dev/null || echo 5)
+sleep "$secs"
+# (What each target took, as a real step notes it (SCENIC_COSTS): the job's time shared among its
+# targets, 50 MB, the way its step runs now; for the lead's offers by the measures.)
+if [ -n "$SCENIC_COSTS" ]; then
+  ts=""; prev=""
+  for a in "$@"; do
+    case "$prev" in --root|--scratch|--pass|--dem|--raw|--cache|--cache-dir|--chm|--mirror|--date|--planet|--expect-same|--coarse-threads) prev="$a"; continue ;; esac
+    case "$a" in [0-9]*/[0-9]*/[0-9]*) ts="$ts $a" ;; esac
+    prev="$a"
+  done
+  n=$(echo $ts | wc -w | tr -d ' ')
+  case "$step" in terrain|slope) v=3 ;; trees) v=2 ;; unit|trees-lo|terrain-lo|slope-lo) v=1 ;; *) v=0 ;; esac
+  for t in $ts; do
+    if [ "$step" = unit ]; then k="$t"; else k="$step $t"; fi
+    echo "{\"unit\":\"$k\",\"peak_mb\":50,\"secs\":$((secs / n)),\"v\":$v,\"disk_mb\":1}" >> "$SCENIC_COSTS"
+  done
+fi
 [ -n "$scratch" ] && rm -f "$scratch/fill-$$.bin"
 if [ -n "$SCENIC_HANDOFF" ]; then
   mkdir -p "$SCENIC_HANDOFF"
@@ -266,6 +291,11 @@ EOF
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     if [[ ${3:-} == off ]]; then rm -f $r/state/pool/by-measure; else mkdir -p $r/state/pool; : > $r/state/pool/by-measure; fi
     ;;
+  every)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/every-step; else mkdir -p $r/state/pool; : > $r/state/pool/every-step; fi
+    ;;
   resume)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
@@ -298,5 +328,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, planet, progress or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, planet, progress or stop"; exit 2 ;;
 esac

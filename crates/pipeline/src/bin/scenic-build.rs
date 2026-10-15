@@ -815,6 +815,8 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
     for (k, t) in ts.iter().enumerate() {
         // (A safe point before each tile: with the build pausing, the job ends here.)
         pipeline::control::safe_point("pack");
+        // (What each tile takes, for the lead's offers by the measures: docs/pool.md §7.7.)
+        let c = cost_start("pack", &t.slash());
         at(k, 0.0);
         let tb = tile_bounds(t.z, t.x, t.y);
         let halo_b = grow(tb, 100.0);
@@ -827,6 +829,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         if in_t.is_empty() {
             // No ways here (any more): what an earlier build made for the tile goes.
             drop_entries(out, &[format!("hidata/{}", t.dash()), format!("layers/roads/hi/{}", t.dash()), format!("layers/rails/hi/{}", t.dash())])?;
+            note_cost("pack", &t.slash(), c);
             pipeline::control::done("pack", &t.slash());
             continue;
         }
@@ -876,6 +879,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         )?;
         drop(p);
         out.save()?;
+        note_cost("pack", &t.slash(), c);
         pipeline::control::done("pack", &t.slash());
         eprintln!("pack {} ({}/{}): {} ways, {} road tiles, {} parts, {} climbs ({:.0?})", t.slash(), k + 1, ts.len(), in_t.len(), roads.len(), hd.parts.len(), hd.climbs.len(), t0.elapsed());
     }
@@ -912,6 +916,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
     let at = |k: usize, f: f64| pipeline::agent::jobs::report_f(k as f64 + f, n, "zoomed-out tiles");
     for (k, q) in qs.iter().enumerate() {
         pipeline::control::safe_point("lo");
+        let c = cost_start("lo", &q.slash());
         at(k, 0.0);
         let qb = tile_bounds(q.z, q.x, q.y);
         let p = phase("ways gathered from the base packs", Class::Compute);
@@ -920,6 +925,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
         drop(p);
         if staged.is_empty() {
             drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
+            note_cost("lo", &q.slash(), c);
             pipeline::control::done("lo", &q.slash());
             continue;
         }
@@ -941,6 +947,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
         }
         drop(p);
         out.save()?;
+        note_cost("lo", &q.slash(), c);
         pipeline::control::done("lo", &q.slash());
         eprintln!("lo {} ({}/{}): {} ways, {} road tiles ({:.0?})", q.slash(), k + 1, qs.len(), staged.len(), roads.len(), t0.elapsed());
     }

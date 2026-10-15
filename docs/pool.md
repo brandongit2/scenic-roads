@@ -531,12 +531,21 @@ never beside a step that runs alone, nor beside `bldprep`, nor beside another ch
 
 What's planned of placement (phase 4, §12):
 
-- **Every step offered to every member's slots** whose Mac's measured room fits the target's
-  measures (§7.7: today a member takes the shared steps alone, and the lead the rest, the map
-  tiles' `pack` and `lo` among them).
-- **Order and locality.** A slot gets work as a contiguous run of targets (a slot walks a region in
-  spatial order, as one Mac does now, so what one unit fetches serves the next), with a preference
-  for work next to its Mac's last.
+- **Every step offered to every member** (crate::agent::every and crate::coord's `pick_every`,
+  built: phase 4's ninth batch, behind `state/pool/every-step`, §12): the plan's every step but
+  the lead's own (`every::LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch; and
+  the steps keeping the pass's answers), the map tiles' `pack` and `lo` among them, to a member
+  whose measured room fits each target's measures (memory against what it spares, disk against the
+  room its ask says, `disk_mb`); a cold start only to the member with the most room, the lead's own
+  counted (its guard's limit less what its jobs hold, its free disk less the reserve and the
+  owner's target; none while its slots are full or a job runs alone there), alone; a
+  round's step granted with the round's units (`as_of`), which its job reads as the lead's own
+  does. Off, a member takes the shared steps alone, and the lead the rest.
+- **Order and locality** (built with it): a member gets work as a contiguous run of the plan's
+  targets (a target held, done, kept from it or past its room ends the run), from the plan's front,
+  or just after its last target of the step when that one's open; as many targets as fit a quarter
+  of an hour by their measured times (`coord::JOB_S`: their cost lines, a target's own or its
+  step's 90th percentile; none measured, one a job).
 - **How crucial a job is** decides who takes it first, not plan order alone: each target scores by
   its slack in the forecast (the long poles highest), and the members' slots and the pages take the
   work on a sliding scale of their measured speed, as a weighted draw (a function of the target, the
@@ -804,7 +813,7 @@ Each of its columns, and what replaces it:
 | groups: heavy NAS reads | **nothing** (the group dropped with `state/pool/budgets`): two large reads at once measured only to slow each other (14 Oct 2026, the M4 reading 2 GB files of a scratch folder of the NAS uncached, `F_NOCACHE`: alone 81, 86 and 80 MB/s; two at once 78, 88 and 88 MB/s together, each half) | measured with plain reads of the share, not two `bldprep` (whose reads have work between them, so overlap the better): no accessor built |
 | answered | **built** (behind `state/pool/budgets`): a lease at the point of use, across the Macs: each sync and keep of a pass's answers with the NAS's (`crate::answers::Kept`) takes the answers' lease on the NAS (`state/pool/answers.lease`, create-new, renewed every 150 s by its holder, lapsing 10 minutes after; a lapsed one broken by moving it aside by a name of the taker's own, put back if it isn't the one the taker read: renewed meanwhile, its `until` moved on, or another's); a sync or keep checks the lease is still its holder's (the file names it and hasn't lapsed: a renewal that failed while a breaker had it aside decides nothing) before each write to the NAS, and stops, writing nothing, when it isn't; on a Mac, with writer preference: the steps that keep answers hold this Mac's copies shared for their run (`answers::Local::reader`, a flock in the agent's cache), the agent sending them as it starts (`seed`) holds them alone (`Local::writer`: it waits for the steps under way, and a step that starts while it waits waits for it) | no list of the steps that keep answers waits on the agent's seed with the switch on; a lapsed lease costs a wait, never a torn answers file (the answers are written whole by temporary name). What remains possible: a holder whose check passes and whose write then lands after its lease was broken (its Mac asleep between the two, or a write that takes past the lease's 10 minutes), and a put-back that fails because a third taker made the lease meanwhile (the holder put back loses it, and finds so at its next check or renewal, but a write already past its check lands): two writers to one archive for that moment, which costs a merge (answers fetched again by the next start), never a torn archive. As built, the cross-Mac lease is exclusive and short (a sync's or keep's minutes), and the long shared hold is the Mac's own lock: what the reader's hold protects (a step adding to this Mac's copies while the agent packs them) is on one Mac, and a merge across Macs is what the NAS lease serializes |
 | shared and its rank | every step offered to every member (§7.2); the order by how crucial a target is (the forecast's slack, measured times) | |
-| batch | measured: as many of a step's targets as fit a quarter of an hour by their measured times (a cold start: one target a job) | a wrong time makes a job longer or shorter, never wrong |
+| batch | measured: as many of a step's targets as fit a quarter of an hour by their measured times (a cold start: one target a job): **built** for a member's grants with `state/pool/every-step` (batch 9); the lead's own jobs keep the table's batches | a wrong time makes a job longer or shorter, never wrong |
 | write-set | derived from the code that writes, and enforced as it lands (the owner's choice: no soak): each step's output names are given by one function (`agent::steps::writes`, the steps table's row), which `Out` writes by and the lead's merge checks every entry by, so the writer and the check can't disagree; a job's `Out` refuses a name outside its step's (a put before it uploads; a set or removal fails the job's next save, and nothing of that save lands, though the targets it saved before stand), and the lint, best-effort (a scan of the source for what makes or writes a hand-off or an entry, or names the manifest's file or the journal's folder: nothing does but `Out` and the listed paths of the merge, the readers and the raw tiles' archives), gates publish; an entry from a member on a newer app than the lead's that its write-sets refuse is held, not refused (§7.3). The step's removals of stale names under its layer, a prune's of the pruned step's names, and the OSM pass's of older passes' are the same function's. Writes outside the manifest: the raw tiles' archives (named by their area, checked as today: crate::rawpack::named_for), the answers (`crate::answers`' own names, under its lease) and the 3D buildings' sources (bld-fetch's, under `sources/`, which nothing reads by the manifest) are outside the records, so outside the merge; each is written whole under a name its own module makes | **built** (phase 4's sixth batch): the function is a predicate over a name, not a type only it can construct (the design's first form): the same guarantee as the job runs, without rewriting every step's writes; entries of an app before it are refused as any outside is (their work done again) |
 | moves (planned) | derived: a job's progress on its Mac's disk is written through one accessor (the OSM pass's stages, a terrain area's raw tiles), which names the Mac holding it on the NAS (`state/pool/progress/<step>.json`) | |
 | floor of memory (planned) | not built: what a target held (its measured floor, §7.2) covers it, the Planetiler heap among it | |
@@ -815,7 +824,7 @@ and disk free now, the guard on; once a target of a step has run, the step's oth
 offered by the largest measured of the step's targets until their own run says (a prior learned, not
 kept by hand). Built for a Mac's own slots (crate::coord::Coordinator::measured: a run's measure or
 floor of the way its step runs now; a job of no targets of its own by its id); the member with the
-most room is batch 9's. As built, the prior is the step's targets' 90th percentile, not their most
+most room is batch 9's (built behind `state/pool/every-step`: crate::coord's `most_room`). As built, the prior is the step's targets' 90th percentile, not their most
 (one outlier holds no other target to its figure), and a target measured at 0 keeps its 0. A
 batch is reckoned by its targets' disks summed (cache writes add up over a batch) or by the most a
 job of its step took over its whole run (`job-disks.json`), the larger; what a running job has still
@@ -1335,15 +1344,28 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       with its unmerged file; the lease ended at the lead, the entry merged, the pass complete by
       the records (the status's checklist 6 of 6), the M1's file then dropping it; the lead never
       started the pass. (A member reads its own file once a process: only it writes it.)
-   9. **Every step to every member** (§7.2, §7.7): the lead's coordinator offers every step to
-      every member whose Mac's measured room fits the target's measures (a cold start to the
-      member with the most room, alone), the map tiles' `pack` and `lo` among them (each Mac's saves
-      reach the records only through the journal); a job's targets as many as fit a quarter of an
-      hour by their measured times; work in contiguous runs from the front of the plan, near the
-      Mac's last; claims no longer read with the pool on. Behind `state/pool/every-step`. Tests: a
-      member offered `pack` and its entry merged; a member short of a target's measures offered
-      none of it; a cold start placed alone on the largest; runs contiguous; batches by time.
-      **Scratch state (§13): both Macs.**
+   9. **Every step to every member: built** (§7.2, §7.7; crate::agent::every, crate::coord's
+      `pick_every`), behind `state/pool/every-step` (off while missing: the agent as it was; it acts
+      only in the pool). The lead's coordinator offers the plan's every step but its own
+      (`every::LEAD_ONLY`, and the steps keeping the pass's answers) to every member whose measured
+      room fits the target's measures, the map tiles' `pack` and `lo` among them (each Mac's saves
+      reach the records only through the journal; a round's step granted with the round's units,
+      `as_of`); a cold start only to the member with the most room, the lead counted, alone; a
+      job's targets as many as fit a quarter of an hour by their measured times (`pack` and `lo`
+      now note their targets' costs); contiguous runs from the front of the plan, or just after the
+      member's last; claims neither made nor read. The pass's worldwide jobs stay the lead's (they
+      aren't the plan's work; plan.md §10). Tests: a member offered `pack`, with the round's units,
+      no claim made, and its entry merged, two agents in one process, and off as before; a member
+      short of a target's measured memory or disk offered none of it; a cold start alone on the
+      largest asking, none while the lead has more; runs contiguous; batches by time, and one a job
+      with none measured. **Scratch state (§13): both Macs, run in part** (15 Oct 2026, the M4
+      leading, the M1 a member, `root`, `region`, `every`): the switch read on both, no claim file
+      made; the lead running its pass's sets (a step alone, so no room free now), the region's
+      terrain and tree cover pieces, never run, went to the M1 as cold starts, one target a job, and
+      both entries were merged. The scratch region's plan reached no round, so `pack` and `lo`
+      between the Macs, runs of several targets and the lead taking a cold start itself were shown
+      only by the tests (the scratch state's fake jobs build no units: planned, a scratch state
+      whose records hold a round's work).
    10. **Tasks brokered by every member, pages talking to members directly** (§8, §9): each member's
       coordinator brokers its own jobs' tasks, its heartbeat saying how many wait; the lead answers
       "where is work"; every member serves the page and the pool's API with CORS; a page finds the
