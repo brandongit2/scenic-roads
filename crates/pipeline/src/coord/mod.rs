@@ -1032,6 +1032,13 @@ impl Coordinator {
         s.leases.held(step, s.now())
     }
 
+    /// Whether a cold start of `step` (none of its targets measured) is under way on another worker
+    /// (a lease of it held by one): this Mac then starts none of its own, as none is granted to
+    /// another meanwhile (`pick_every`), so a cold start runs alone in the pool.
+    pub fn cold_under_way(&self, step: &str) -> bool {
+        self.shared.lock().unwrap().measured(step, "").is_none() && !self.held_by_others(step).is_empty()
+    }
+
     /// The targets of `step` leases of other workers than this Mac hold (its own jobs' aside).
     pub fn held_by_others(&self, step: &str) -> BTreeSet<String> {
         let s = self.shared.lock().unwrap();
@@ -1662,6 +1669,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 let passes = if every { &[false][..] } else { passes };
                 for &away in passes {
                     for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
+                        // (Switched off: the shared steps alone, whatever was offered before.)
+                        if !every && !crate::agent::steps::SHARED.contains(&o.step.as_str()) {
+                            continue;
+                        }
                         // (A round's step only with the round's units to grant it with.)
                         if every && s.round.is_none() && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
                             continue;
@@ -3302,6 +3313,20 @@ mod tests {
         assert_eq!(c.held("pack").len(), 2);
         assert_eq!(c.held_by_others("pack"), ["6/1/1".to_string()].into());
         c.finish(own, &[]);
+        // A cold start of it under way on m1: none of the lead's own meanwhile; once measured, any.
+        measured_offer(&c, "lo", &[("3/1/1", None), ("3/1/2", None)]);
+        assert!(!c.cold_under_way("lo"), "none under way");
+        let own = c.hold("lo", &[("3/1/2".into(), "k".into())]).unwrap();
+        assert!(!c.cold_under_way("lo"), "the lead's own isn't another's");
+        c.finish(own, &[]);
+        let _ = w.ask(&every_ask("m1", "lo", 4096, 10_000)).unwrap().unwrap();
+        assert!(c.cold_under_way("lo"));
+        c.add_costs(&[(cost_key("lo", "3/1/9"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo") })]);
+        assert!(!c.cold_under_way("lo"), "measured: not a cold start");
+        // Switched off: a step not shared, offered before, isn't granted.
+        c.set_every(None);
+        measured_offer(&c, "pack", &[("6/2/2", Some((500, 10, 60)))]);
+        assert!(w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap().is_none());
     }
 
     /// Runs are contiguous in plan order: a target held (by the lead's own job, or another worker's)

@@ -4072,8 +4072,6 @@ impl Agent {
         Ok(())
     }
 
-    /// The round under way is over (its catalog made, or nothing left it would publish): kept
-    /// without its units, for when it began.
     /// The round under way told to this Mac's coordinator, with the plan's offers made from the
     /// same round (every step to every member: a round's step is granted only with it).
     fn offer_round(&self, c: &crate::coord::Coordinator) {
@@ -4083,6 +4081,8 @@ impl Agent {
         }
     }
 
+    /// The round under way is over (its catalog made, or nothing left it would publish): kept
+    /// without its units, for when it began.
     fn end_round(&self) {
         // (Its units no longer granted with a round's step.)
         if let Some(c) = &self.coord {
@@ -4456,6 +4456,14 @@ impl Agent {
             for w in plan.iter_mut().filter(|w| !steps::SHARED.contains(&w.step.as_str())) {
                 let others = c.held_by_others(&w.step);
                 w.targets.retain(|t| !others.contains(&t.0));
+            }
+        }
+        // A cold start of a step another worker runs now: none of the lead's own beside it (every
+        // step to every member: a cold start runs alone in the pool).
+        if let (Some(c), true) = (&self.coord, every_on) {
+            for w in plan.iter_mut().filter(|w| !w.targets.is_empty() && c.cold_under_way(&w.step)) {
+                waiting.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).to_string(), why: "its first job, never measured, runs on another member now: its others wait for its measure".into() });
+                w.targets.clear();
             }
         }
         // (Every step to every member: the plan's every step offered but the lead's own,
