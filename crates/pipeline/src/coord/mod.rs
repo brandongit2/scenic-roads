@@ -258,6 +258,14 @@ pub struct Shared {
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (crate::inputs::apply_ask).
     pub inputs_asks: Vec<crate::inputs::Ask>,
+    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch: crate::agent::every),
+    /// while the lead's switch has it on: each worker's targets by the measures (`pick_every`), and
+    /// a cold start only to the one with the most room (this Mac's own room, `Every::own`, counted
+    /// as a member's). None: as before (`pick`).
+    pub every: Option<Every>,
+    /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
+    /// just after it in plan order when it can (`pick_every`).
+    pub last: BTreeMap<(String, String), String>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
     /// The time its leases, workers' paces and their being around are reckoned in (a test's
@@ -411,6 +419,87 @@ impl Shared {
         )
     }
 
+    /// `Coordinator::measured`, under its lock.
+    fn measured(&self, step: &str, target: &str) -> Option<Measured> {
+        let v = cost_version(step);
+        let key = cost_key(step, target);
+        let mem_of = |k: &str| self.costs.get(k).filter(|c| c.v >= v).map(|c| c.peak_mb).into_iter().chain(self.floors.get(k).filter(|f| f.v >= v).map(|f| f.mb)).max();
+        let of_step = |k: &String| crate::agent::memguard::step_of_key(k) == step;
+        let own_mem = mem_of(&key);
+        let keys: BTreeSet<&String> = self.costs.keys().chain(self.floors.keys()).filter(|k| of_step(k)).collect();
+        let prior_mem = high(keys.into_iter().filter_map(|k| mem_of(k)).collect());
+        let mem = own_mem.or(prior_mem)?;
+        let disk = self.disks.get(&key).copied().or_else(|| high(self.disks.iter().filter(|(k, _)| of_step(k)).map(|(_, d)| *d).collect())).unwrap_or(0);
+        Some(Measured { mem_mb: mem, disk_mb: disk, own: own_mem.is_some() })
+    }
+
+    /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
+    /// its step's other targets' (the 90th percentile, a prior learned as the memory's is); None when
+    /// none of its step's has run the way it runs now.
+    fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
+        job_secs(&self.costs, step, target, worker).or_else(|| high(self.costs.iter().filter(|(k, c)| crate::agent::memguard::step_of_key(k) == step && c.v >= cost_version(step)).map(|(_, c)| c.secs).collect()))
+    }
+
+    /// The worker that takes a cold start of `step` now (docs/pool.md §7.7): of the agents around
+    /// asking lately for it, the one with the most room (memory, then disk; by name between equals),
+    /// when it has more than this Mac's own (`Every::own`); None when this Mac has the most, or none
+    /// asks.
+    fn most_room(&self, step: &str, now: Instant) -> Option<String> {
+        let room = |w: &Worker| (w.mem_mb, w.ask.as_ref().and_then(|a| a.disk_mb).unwrap_or(0));
+        let best = self
+            .workers
+            .iter()
+            .filter(|(_, w)| !w.bad && w.kind == "native" && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|a| now.duration_since(a) < ASKING) && w.can.iter().any(|c| c == step))
+            .max_by(|(n1, w1), (n2, w2)| room(w1).cmp(&room(w2)).then(n2.cmp(n1)))?;
+        match self.every.and_then(|e| e.own) {
+            Some(own) if own >= room(best.1) => None,
+            _ => Some(best.0.clone()),
+        }
+    }
+
+    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): the targets of offer
+    /// `o` that `a`'s worker may do now, as a run contiguous in plan order (one held, done, kept from
+    /// it after it failed, or past its room ends the run), from the front of the plan, or just after
+    /// its last target of the step when that one's open; each measured (memory, disk) within what it
+    /// spares, as many as fit `JOB_S` by their measured times (`secs_of`: one with none ends the job
+    /// after its first), their disk summed (or the most a job of the step took, the larger) within
+    /// its room. A cold start (`measured` None) only to the worker with the most room
+    /// (`most_room`), alone.
+    fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+        let held = self.leases.held(&o.step, now);
+        let open = |t: &str, k: &str| {
+            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
+            !held.contains(t) && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k) && !backoff
+        };
+        let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d);
+        let cold_here = std::cell::OnceCell::new();
+        let takeable = |i: usize| {
+            let (t, k, _) = &o.targets[i];
+            open(t, k)
+                && match self.measured(&o.step, t) {
+                    Some(m) => fits(&m),
+                    None => *cold_here.get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str())),
+                }
+        };
+        let after = self.last.get(&(a.worker.clone(), o.step.clone())).and_then(|l| o.targets.iter().position(|t| t.0 == *l)).map(|i| i + 1);
+        let Some(start) = after.filter(|&i| i < o.targets.len() && takeable(i)).or_else(|| (0..o.targets.len()).find(|&i| takeable(i))) else { return Vec::new() };
+        let first = &o.targets[start];
+        let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
+        let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
+        let mut pick = vec![(first.0.clone(), first.1.clone())];
+        let (mut secs, mut disk) = (self.secs_of(&o.step, &first.0, &a.worker), m0.disk_mb);
+        for (t, k, _) in &o.targets[start + 1..] {
+            let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
+            let Some(more) = self.secs_of(&o.step, t, &a.worker) else { break };
+            if pick.len() >= JOB_MAX || !open(t, k) || !fits(&m) || s + more > JOB_S || a.disk_mb.is_some_and(|d| (disk + m.disk_mb).max(job_disk) > d) {
+                break;
+            }
+            pick.push((t.clone(), k.clone()));
+            (secs, disk) = (Some(s + more), disk + m.disk_mb);
+        }
+        pick
+    }
+
     /// Why a worker gets the shared steps' work it does, or doesn't: for each step it does that's
     /// offered, the targets offered, then those held by another, done, kept from it after it failed
     /// them, too large for the memory it spares, and those left that it may take (`pick`'s rules,
@@ -553,7 +642,27 @@ pub struct Ask {
     /// the lead's reckoning of the most any Mac in the pool has (an older worker says none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_mb: Option<u64>,
+    /// The disk it has room for a job on (MB: its free space and what its caches can free, less
+    /// its reserve and the owner's room target), measured as it asks: every step to every member
+    /// offers it only targets whose measured disk fits (`pick_every`). An older worker says none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_mb: Option<u64>,
 }
+
+/// Every step to every member, as the lead has it on (`Shared::every`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Every {
+    /// The lead's own room now (memory, disk: MB), a member's as any: a cold start goes to a worker
+    /// only when it has more. None: not known (the workers' alone compared).
+    pub own: Option<(u64, u64)>,
+}
+
+/// How long a job offered with every step to every member runs, at most, by its targets' measured
+/// times (s): a quarter of an hour (docs/pool.md §7.7, batch). Its first target is taken whatever
+/// its time.
+pub const JOB_S: u64 = 15 * 60;
+/// The most targets a job so offered takes, whatever their times (a step measured at no time).
+pub const JOB_MAX: usize = 256;
 
 /// Work granted.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -711,7 +820,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, last: BTreeMap::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -858,6 +967,12 @@ impl Coordinator {
         s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
     }
 
+    /// Every step to every member on (`Some`: the lead's own room in it) or off (docs/pool.md §12,
+    /// phase 4's ninth batch; crate::agent::every).
+    pub fn set_every(&self, every: Option<Every>) {
+        self.shared.lock().unwrap().every = every;
+    }
+
     /// A resumable job offered to worker `worker` alone (crate::agent::resume: its Mac holds the
     /// job's progress), or none: granted whole, its targets as `o` has them, to that worker only,
     /// while no lease holds them.
@@ -990,17 +1105,7 @@ impl Coordinator {
     /// learned, not kept by hand: what's offered or guessed counts for nothing); None for a cold
     /// start, a target of a step none of whose targets has been measured.
     pub fn measured(&self, step: &str, target: &str) -> Option<Measured> {
-        let s = self.shared.lock().unwrap();
-        let v = cost_version(step);
-        let key = cost_key(step, target);
-        let mem_of = |k: &str| s.costs.get(k).filter(|c| c.v >= v).map(|c| c.peak_mb).into_iter().chain(s.floors.get(k).filter(|f| f.v >= v).map(|f| f.mb)).max();
-        let of_step = |k: &String| crate::agent::memguard::step_of_key(k) == step;
-        let own_mem = mem_of(&key);
-        let keys: BTreeSet<&String> = s.costs.keys().chain(s.floors.keys()).filter(|k| of_step(k)).collect();
-        let prior_mem = high(keys.into_iter().filter_map(|k| mem_of(k)).collect());
-        let mem = own_mem.or(prior_mem)?;
-        let disk = s.disks.get(&key).copied().or_else(|| high(s.disks.iter().filter(|(k, _)| of_step(k)).map(|(_, d)| *d).collect())).unwrap_or(0);
-        Some(Measured { mem_mb: mem, disk_mb: disk, own: own_mem.is_some() })
+        self.shared.lock().unwrap().measured(step, target)
     }
 
     /// What a job of `step` over `targets` is measured to take (docs/pool.md §7.7): the most of
@@ -1516,11 +1621,17 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             if !s.pass.is_empty() {
                 let offers = s.offers.clone();
                 let passes: &[bool] = if a.more_mb.is_some() && a.max_secs.is_some() { &[false, true] } else { &[false] };
+                // (Every step to every member: by the measures alone, its owner away or not.)
+                let every = s.every.is_some();
+                let passes = if every { &[false][..] } else { passes };
                 for &away in passes {
                     for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
-                        let pick = s.pick(o, &a, now, away);
+                        let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
                         if pick.is_empty() {
                             continue;
+                        }
+                        if let Some(l) = pick.last() {
+                            s.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
                         }
                         let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
                         s.save_leases();
@@ -3013,6 +3124,116 @@ mod tests {
         c.finish(g.lease, &[]);
         c.offer_resume(None);
         assert!(w_step(&m1, &can(&["osm-pass"])).is_none());
+    }
+
+    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): a coordinator on a
+    /// clock of the test's (none moves it but the test), with every step on, this Mac's own room
+    /// `own`; a step's offer of `ts` (target, its measures: memory, disk, seconds; None: never run).
+    fn every(own: (u64, u64)) -> (tempfile::TempDir, Coordinator, client::Client, Arc<store::clock::Virtual>) {
+        let (d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        c.set_every(Some(Every { own: Some(own) }));
+        (d, c, w, clock)
+    }
+
+    fn measured_offer(c: &Coordinator, step: &str, ts: &[(&str, Option<(u64, u64, u64)>)]) {
+        for (t, m) in ts {
+            if let Some((mem, disk, secs)) = m {
+                // (Measured on m1: its own pace; another worker's run counts twice its time, job_secs.)
+                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: *mem, secs: *secs, worker: None, v: cost_version(step) })], "m1");
+                c.add_disks(&[(cost_key(step, t), *disk)]);
+            }
+        }
+        c.offer("p", vec![Offer { step: step.into(), targets: ts.iter().map(|(t, _)| (t.to_string(), format!("k {t}"), 0)).collect(), batch: 1 }]);
+    }
+
+    fn every_ask(worker: &str, can: &str, mem_mb: u64, disk_mb: u64) -> Ask {
+        Ask { worker: worker.into(), kind: "native".into(), can: vec![can.into()], mem_mb, cores: 8, disk_mb: Some(disk_mb), ..Default::default() }
+    }
+
+    fn granted(w: &client::Client, a: &Ask) -> Vec<String> {
+        match w.ask(a).unwrap().map(|g| g.work) {
+            Some(Granted::Job { targets, .. }) => targets.into_iter().map(|t| t.0).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A member offered the map tiles' `pack` (no shared step) by its measures: a run from the front
+    /// of the plan, as many targets as fit a quarter of an hour by their measured times (the run's
+    /// first whatever its time), and its next run just after its last.
+    #[test]
+    fn every_step_a_member_takes_pack_in_runs_of_a_quarter_hour_by_measured_time() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let m = Some((500, 100, 300));
+        measured_offer(&c, "pack", &[("6/1/1", m), ("6/1/2", m), ("6/1/3", m), ("6/1/4", m), ("6/1/5", Some((500, 100, 2000))), ("6/1/6", m)]);
+        let a = every_ask("m1", "pack", 4096, 10_000);
+        // Three of 300 s: 900 s, a quarter of an hour; a fourth would pass it.
+        assert_eq!(granted(&w, &a), ["6/1/1", "6/1/2", "6/1/3"]);
+        // Next, just after its last: 6/1/4, then 6/1/5's 2000 s past the quarter hour, so alone.
+        assert_eq!(granted(&w, &a), ["6/1/4"]);
+        assert_eq!(granted(&w, &a), ["6/1/5"], "a run's first whatever its time");
+        assert_eq!(granted(&w, &a), ["6/1/6"]);
+        assert!(granted(&w, &a).is_empty());
+        // A target measured of a step with no time: one a job.
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "lo", &[("3/1/1", Some((500, 0, 0))), ("3/1/2", Some((500, 0, 0)))]);
+        c.shared.lock().unwrap().costs.clear();
+        c.add_floors(&[(cost_key("lo", "3/1/1"), Floor { mb: 500, alone: true, v: 0 }), (cost_key("lo", "3/1/2"), Floor { mb: 500, alone: true, v: 0 })]);
+        assert_eq!(granted(&w, &every_ask("m1", "lo", 4096, 10_000)), ["3/1/1"]);
+    }
+
+    /// A member short of a target's measured memory or disk is offered none of it; its disk summed
+    /// over a run ends the run within its room.
+    #[test]
+    fn every_step_a_member_short_of_a_targets_measures_is_offered_none_of_it() {
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("6/1/1", Some((9000, 100, 60))), ("6/1/2", Some((500, 50_000, 60)))]);
+        assert!(granted(&w, &every_ask("m1", "pack", 4096, 10_000)).is_empty());
+        assert_eq!(granted(&w, &every_ask("m1", "pack", 10_000, 10_000)), ["6/1/1"], "one with the memory");
+        assert_eq!(granted(&w, &every_ask("m2", "pack", 10_000, 60_000)), ["6/1/2"], "one with the disk");
+        // Each fits, two together don't: the run ends at the disk.
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "lo", &[("3/1/1", Some((500, 6000, 60))), ("3/1/2", Some((500, 6000, 60)))]);
+        assert_eq!(granted(&w, &every_ask("m1", "lo", 4096, 10_000)), ["3/1/1"]);
+    }
+
+    /// A cold start (a step none of whose targets has run) goes alone to the worker with the most
+    /// room asking for it lately, and to none while this Mac (the lead) has more; one that hasn't
+    /// asked lately doesn't count.
+    #[test]
+    fn every_step_a_cold_start_goes_alone_to_the_member_with_the_most_room() {
+        let (_d, c, m1, clock) = every((1000, 1000));
+        let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
+        measured_offer(&c, "lo", &[("3/1/1", None), ("3/1/2", None), ("3/1/3", None)]);
+        assert_eq!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)), ["3/1/1"], "alone, the largest asking");
+        assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "the larger asked lately");
+        clock.advance(ASKING);
+        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2"], "the larger no longer asking");
+        // The lead with more room than any: it starts them itself.
+        c.set_every(Some(Every { own: Some((16_000, 200_000)) }));
+        assert!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)).is_empty());
+        // Once a target of the step has run, the others are offered by its measures, batched.
+        c.add_costs(&[(cost_key("lo", "3/1/1"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo") })]);
+        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/3"]);
+    }
+
+    /// Runs are contiguous in plan order: a target held (by the lead's own job, or another worker's)
+    /// ends a run, and the next starts at the front of what's open.
+    #[test]
+    fn every_step_runs_are_contiguous() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let m = Some((500, 10, 60));
+        measured_offer(&c, "pack", &[("6/1/1", m), ("6/1/2", m), ("6/1/3", m), ("6/1/4", m)]);
+        c.hold("pack", &[("6/1/2".into(), "k 6/1/2".into())]).unwrap();
+        let a = every_ask("m1", "pack", 4096, 10_000);
+        assert_eq!(granted(&w, &a), ["6/1/1"]);
+        assert_eq!(granted(&w, &a), ["6/1/3", "6/1/4"]);
+        // Off: as before (the far end, the offer's batch).
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "slope", &[("3/1/1", m), ("3/1/2", m)]);
+        c.set_every(None);
+        assert_eq!(granted(&w, &every_ask("m1", "slope", 4096, 10_000)), ["3/1/2"]);
     }
 
     fn w_step(w: &client::Client, a: &Ask) -> Option<String> {

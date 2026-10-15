@@ -37,6 +37,7 @@ const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 /// says (an anchor, so a common name like `new` exempts that line alone, and goes stale with it),
 /// with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
+    ("crates/pipeline/src/agent/every.rs", "LEAD_ONLY", "\"inputs\"", "the `inputs` step's name, kept to the lead, not a drop box"),
     ("crates/pipeline/src/coverage.rs", "file_rings", "\"inputs/outlines/{f}\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),

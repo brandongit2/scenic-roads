@@ -24,6 +24,7 @@ pub mod backup;
 pub mod build;
 pub mod claims;
 pub mod cond;
+pub mod every;
 pub mod forecast;
 pub mod gc;
 pub mod jobs;
@@ -816,6 +817,9 @@ pub struct Agent {
     /// `state/pool/resume`), in the pool: a resumable job's progress named on the NAS and offered to
     /// its Mac alone, its job given this member's unmerged hand-offs, a pass complete by the records.
     resume: bool,
+    /// Every step to every member (crate::agent::every, `state/pool/every-step`), as the switch was
+    /// last read: it acts only in the pool (`every_on`).
+    every: bool,
     /// This member's progress file as it last wrote it (or read it, as the process began).
     held_progress: Option<resume::Progress>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
@@ -1068,7 +1072,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1275,6 +1279,16 @@ impl Agent {
             }
         }
         let mut can = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap, self.floor());
+        // (Every step to every member: every step the lead may offer, its room by the measures at
+        // the lead's coordinator, this Mac's disk room said with the ask; crate::agent::every.)
+        let every = self.every_on();
+        if every {
+            for s in steps::TABLE.iter().map(|r| r.name).filter(|s| every::offered(s)) {
+                if !can.iter().any(|c| c == s) {
+                    can.push(s.to_string());
+                }
+            }
+        }
         // (Resuming on: a resumable job whose progress this Mac's file holds, asked for too; the
         // lead offers it to this Mac alone. Its scratch is here already: no room asked for it.)
         if self.resume_on() {
@@ -1306,6 +1320,7 @@ impl Agent {
             more_mb: away.then(|| helper_memory(true)),
             max_secs: away.then_some(AWAY_JOB),
             limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0),
+            disk_mb: every.then(|| self.disk_free().saturating_add(cheap).saturating_sub(HELPER_RESERVE + self.floor()) >> 20),
             ..Default::default()
         };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
@@ -1320,11 +1335,11 @@ impl Agent {
             self.know_pause(None);
         }
         match asked {
-            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if steps::SHARED.contains(&step.as_str()) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) => {
+            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if steps::SHARED.contains(&step.as_str()) || (every && every::offered(&step)) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) => {
                 // (A resumable job, its progress on this Mac: resumed in its own scratch folder,
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
                 // the pass's date, is no step's target. crate::agent::resume.)
-                let resumed = !steps::SHARED.contains(&step.as_str());
+                let resumed = resume::RESUMABLE.contains(&step.as_str()) && !every::offered(&step);
                 // (In the pool, its folder is its lease's, `<term>-<lease>`, handed to the journal.)
                 let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { term, n: lease });
                 let dir = match pooled {
@@ -1359,7 +1374,7 @@ impl Agent {
                     return vec![JobSpec { id: format!("{step} {date}"), what, cmd, needs, restart_after_sleep: true, record: None }];
                 }
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
-                cmd.extend(targets.iter().map(|t| t.0.clone()));
+                cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t)));
                 cmd.extend(self.step_args(&step, &pass));
                 // (Pieces made again as they are, by the build's records as read: expected the
                 // same. Records that can't be read now expect nothing.)
@@ -1428,6 +1443,16 @@ impl Agent {
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. })) if resume::RESUMABLE.contains(&step.as_str()) => {
                 if let Some(c) = &self.client {
                     if let Err(e) = c.give_back(lease, "resuming is off on this Mac now") {
+                        eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
+                    }
+                }
+                Vec::new()
+            }
+            // (A step of the plan granted as every step to every member was switched off here: given
+            // back, not failed.)
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. })) if every::offered(&step) => {
+                if let Some(c) = &self.client {
+                    if let Err(e) = c.give_back(lease, "every step to every member is off on this Mac now") {
                         eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
                     }
                 }
@@ -2858,7 +2883,9 @@ impl Agent {
                 }
             };
             let me = self.me_of(k);
-            if !claims::claim(r, &step, &ts, &me) {
+            // (Every step to every member: no claims, made or read; the lease alone holds it.)
+            let claiming = !self.every_on();
+            if claiming && !claims::claim(r, &step, &ts, &me) {
                 let_go(self);
                 waiting.push(Waiting { step: None, what: what.clone(), why: "another Mac took part of it; planning again".into() });
                 return false;
@@ -2868,13 +2895,15 @@ impl Agent {
             let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
             if done.unwrap_or(true) {
                 let_go(self);
-                claims::release(r, &step, &ts, &me);
+                if claiming {
+                    claims::release(r, &step, &ts, &me);
+                }
                 waiting.push(Waiting { step: None, what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
                 return false;
             }
             self.slots[k].lease = lease.map(Held::Own);
             self.slots[k].claims_fresh = Some(Instant::now());
-            self.slots[k].claimed = true;
+            self.slots[k].claimed = claiming;
         }
         // In the pool, every job of the lead's holds a lease of its coordinator, and saves into a
         // folder of its own (`<term>-<id>`), handed to the journal as it ends (docs/pool.md §7.3).
@@ -3012,6 +3041,16 @@ impl Agent {
             (Some(c), Some(w)) => w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| first_peak(&w.step)).max(c.floor(&w.step, t).map_or(0, |f| f.mb))).max().unwrap_or(0),
             _ => first_peak(&step),
         }
+    }
+
+    /// This Mac's room now, as a member's (MB: memory, disk), for a cold start with every step to
+    /// every member (crate::coord::Every): its memory guard's limit less what its jobs hold, its
+    /// disk's free space less the reserve and the owner's room target.
+    fn own_room(&self) -> (u64, u64) {
+        let held: u64 = (0..SLOTS).filter_map(|k| self.held_mb(k)).sum();
+        let mem = memguard::limit_mb(self.total_mb()).saturating_sub(held);
+        let disk = self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20;
+        (mem, disk)
     }
 
     /// This Mac's memory (MB): as a test sets it, else as read once this loop (`step`); 0 when it
@@ -4329,7 +4368,9 @@ impl Agent {
         // A round's catalog waits while another worker builds its regions' slope or tree cover (it
         // would go out without them, and they'd wait an hour), and while a helper's hand-offs wait
         // to be merged (its areas counted as built, their files not yet in the manifest).
-        let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t)) || claims::others(root, step, &self.me).contains(t);
+        // (Every step to every member: claims no longer read, the coordinator's leases alone.)
+        let every_on = self.every_on();
+        let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t)) || (!every_on && claims::others(root, step, &self.me).contains(t));
         let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
@@ -4372,10 +4413,13 @@ impl Agent {
         for w in plan.iter_mut() {
             w.targets.retain(|t| !holds.all.contains(&(w.step.clone(), t.0.clone())));
         }
-        for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str())) {
+        // (Every step to every member: the plan's every step offered but the lead's own,
+        // crate::agent::every.)
+        for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str()) || (every_on && every::offered(&w.step))) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
-            // coordinator, or claimed (a helper on an app from before it).
-            let mut others = claims::others(root, &w.step, &self.me);
+            // coordinator, or claimed (a helper on an app from before it; not read with every step
+            // to every member).
+            let mut others = if every_on { BTreeSet::new() } else { claims::others(root, &w.step, &self.me) };
             if let Some(c) = &self.coord {
                 others.extend(c.held(&w.step));
             }
@@ -4401,7 +4445,8 @@ impl Agent {
             }
         }
         let mut offers = merged;
-        offers.sort_by_key(|o| steps::SHARED.iter().position(|s| *s == o.step));
+        // (The shared steps by their rank, then the others in plan order.)
+        offers.sort_by_key(|o| steps::SHARED.iter().position(|s| *s == o.step).unwrap_or(usize::MAX));
         if let Some(c) = &self.coord {
             c.offer(date, offers);
         }
@@ -4462,7 +4507,7 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") && !t.ends_with("-root")).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t)).collect();
             extra.extend(self.step_args(&w.step, date));
             // (Tree cover pieces made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
@@ -5093,6 +5138,13 @@ impl Agent {
         self.resume && self.pool.is_some()
     }
 
+    /// Every step to every member (crate::agent::every, `state/pool/every-step`) acts: switched on,
+    /// in the pool. Off, or out of the pool, the agent is as it was (the shared steps alone offered,
+    /// claims read).
+    fn every_on(&self) -> bool {
+        self.every && self.pool.is_some()
+    }
+
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
     /// by the NAS's `pass.*.json` files, as before.
     fn latest_pass(&self, root: &Path) -> Option<String> {
@@ -5330,6 +5382,16 @@ impl Agent {
             self.resume = on;
         }
         self.tend_progress(r);
+        if let Some(on) = every::on(r) {
+            if on != self.every {
+                eprintln!("agent: every step to every member is {}", if on { "on (claims no longer read)" } else { "off" });
+            }
+            self.every = on;
+        }
+        // (The lead's coordinator told, with this Mac's room now, each loop.)
+        if let Some(c) = &self.coord {
+            c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
+        }
         if let Some(on) = pool::slots_on(r) {
             if on != self.slots_on {
                 eprintln!("agent: a part changing in this process is {}", if on { "on" } else { "off" });
@@ -7905,7 +7967,7 @@ mod pool_tests {
         let bin = d.join("app");
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
-            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
+            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
             bin = bin.display()
         );
         for p in ["scenic", "scenic-build"] {
@@ -8075,6 +8137,65 @@ mod pool_tests {
         assert!(lead.coord.as_ref().unwrap().held("slope").is_empty());
         let lid = LeaseId { term: 1, n: key.rsplit('-').next().unwrap().parse().unwrap() };
         assert_eq!(lid.term, 1);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
+    /// Every step to every member (`state/pool/every-step`, crate::agent::every): off, a member
+    /// asks for the shared steps alone, and the map tiles' `pack` offered isn't its; on, it asks for
+    /// every step the lead may offer with its disk's room, takes `pack` by its measures, runs it in
+    /// its lease's folder with no claim made, and its entry reaches the lead's records through the
+    /// journal. Off again, as before.
+    #[test]
+    fn every_step_a_member_takes_pack_and_its_entry_is_merged() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        let bin = app(d.path());
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let im = m.pool.as_ref().unwrap().side.member().id.clone();
+        lead.pool.as_mut().unwrap().side.know(&im);
+        // `pack` of 6/1/1 measured (a run of it said what it took), offered.
+        let c = lead.coord.as_ref().unwrap();
+        c.add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("pack") })]);
+        c.offer("2026-09-28", vec![crate::coord::Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "kp".into(), 100)], batch: 16 }]);
+        // Off: not the member's to take.
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_none());
+        for _ in 0..3 {
+            m.step().unwrap();
+        }
+        assert!(m.slots[0].running.is_none() && !bin.join("env-pack").exists());
+        let asked = |l: &Agent| l.coord.as_ref().unwrap().workers().into_iter().find(|(_, w)| w.kind == "native").map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)));
+        let (can, disk) = asked(&lead).unwrap();
+        assert!(!can.iter().any(|s| s == "pack") && disk.is_none(), "{can:?}");
+        // On: the lead's coordinator told (with its own room), the member asking for every step.
+        switch_on(&r, every::SWITCH);
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_some_and(|e| e.own.is_some()));
+        until(&mut m, |m| m.slots[0].running.is_some() || bin.join("env-pack").exists());
+        until(&mut m, |m| m.slots[0].running.is_none() && m.pool.as_ref().is_some_and(|p| p.entries.is_empty()));
+        let (can, disk) = asked(&lead).unwrap();
+        assert!(can.iter().any(|s| s == "pack") && can.iter().any(|s| s == "lo") && !can.iter().any(|s| s == "catalog") && disk.is_some(), "{can:?}");
+        let env = std::fs::read_to_string(bin.join("env-pack")).unwrap();
+        assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
+        assert!(!r.join("state/build/claims").exists() || std::fs::read_dir(r.join("state/build/claims")).unwrap().next().is_none(), "no claim made");
+        // Its entry merged by the lead, within pack's write-set.
+        until(&mut lead, |l| l.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/1/1") == Some("kp")));
+        let rec = lead.pool.as_ref().unwrap().side.driver().records().unwrap().clone();
+        assert_eq!(rec.manifest.get("layers/roads/hi/6-1-1").map(String::as_str), Some("layers/roads/hi/6-1-1.0123456789abcdef.pack"));
+        // Off again: the lead's coordinator told, as before.
+        std::fs::write(r.join(every::SWITCH), "off").unwrap();
+        lead.pool_switch(Some(&r));
+        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_none());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
