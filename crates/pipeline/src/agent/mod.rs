@@ -4245,7 +4245,9 @@ impl Agent {
                 jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
             if let Some(w) = build::spoken_work(date, &manifest, &keys) {
-                jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", p.clone(), Some(w)));
+                // (The languages' accepted version the key names, when there is one.)
+                let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT)).map(|i| vec!["--languages-index".to_string(), i.clone()]).unwrap_or_default();
+                jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", [p.clone(), table].concat(), Some(w)));
             }
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with

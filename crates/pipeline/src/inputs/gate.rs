@@ -306,6 +306,8 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
     let root = out.root().to_path_buf();
     let p = phase("the accepted version and the drop box listed", Class::NasRead);
+    let prepared = checks.prepared(&root, &out.manifest)?;
+    let checks: &dyn Checks = prepared.as_deref().unwrap_or(checks);
     let prev_name = out.get(&super::logical(unit)).map(str::to_string);
     let prev = prev_name.as_ref().map(|n| super::read_index(&root, n)).transpose()?;
     let state = super::read_listed(&root, &out.manifest, unit)?;

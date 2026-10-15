@@ -106,6 +106,7 @@ const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/railfeeds.py", "keys", "\"inputs/keys.env's keys (KEY=value lines; # comments).\"", "inputs/keys.env, not an input (§2): named in its docstring"),
     ("dem/bldfetch.py", "coverage", "\"inputs/outlines\"", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
     ("dem/bldfetch.py", "coverage", "\"inputs/outlines/geofabrik\"", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
+    ("dem/heritage_eu.py", "wd_search_labels", "\"languages\": \"|\".join(langs)", "Wikidata's API parameter `languages`, not the languages drop box"),
 ];
 
 /// Each gate unit's name as code would write it in a path.

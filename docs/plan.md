@@ -758,8 +758,8 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
   made by the trees job where a square is missing, not tagged complete, or not whole);
-- the languages spoken there, for names (§7: CLDR's per territory, refined per subdivision in
-  `names::spoken::REFINED`);
+- the languages spoken there, for names (§7: the languages input, docs/inputs.md §6.2: CLDR's per
+  territory, refined per subdivision);
 - credits (`pipeline::rules::CREDITS`, each with the areas whose data comes from its source; a
   catalog lists those meeting its coverage, 20 km around it, or its units' ways).
 
@@ -1649,34 +1649,39 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
   translated once in each.
 
 **Languages spoken where a thing is** (`names::spoken`), in order:
-- **Per territory:** CLDR's territory data (`crates/names/src/territory-languages.tsv`, made from
-  CLDR 47's `territoryInfo.json` by `tools/names/cldr-languages.py`): the languages official or de
-  facto official there, most spoken first, script subtags dropped. Languages official only in a
-  region are left to the refinements.
-- **Refined** (`spoken::REFINED`): Quebec French then English, New Brunswick English then French;
+- **Per territory:** the languages input's table (docs/inputs.md §6.2: `inputs/languages/
+  territories.tsv`, made from CLDR 47's `territoryInfo.json` by
+  `producers/languages/cldr-languages.py`): the languages official or de facto official there,
+  most spoken first, script subtags dropped. Languages official only in a region are left to the
+  refinements. Until the input has an accepted version, the table compiled in stands in
+  (`names::Table::embedded`: `crates/names/src/territory-languages.tsv` and `spoken::REFINED`).
+- **Refined** (lines of their own in the table, the producer's `REFINED`): Quebec French then English, New Brunswick English then French;
   Catalonia and the Balearics Catalan then Spanish, Valencia Spanish then Catalan, Galicia Galician
   then Spanish, the Basque Country and Navarre Spanish then Basque; Wales English then Welsh,
   Scotland English then Gaelic; Brittany French then Breton; Hong Kong Cantonese then English,
   Macau Cantonese then Portuguese (their names are read in Cantonese, the government's
   romanisation, not Mandarin's Pinyin).
 - **Where:** the pass's outlines of ISO 3166-1 territories (Hong Kong's `CN-HK` is HK) and of the
-  refined subdivisions, simplified (1 km for countries, 250 m for subdivisions), as a raster of
+  subdivisions with a line in the table, simplified (1 km for countries, 250 m for subdivisions), as a raster of
   1/128° cells (about 870 m at the equator), run-length coded by row, the smallest outline winning
   where they overlap (Hong Kong over China, Quebec over Canada). Beyond every territory (the high
   seas) no language is spoken: only OSM's tags lead to a line.
   - From the 2026-09-28 pass: 250 regions, 266,957 points, the raster 3.4 MB, made in 1–6 s
     (this Mac, busy); reading the outlines' records and simplified rings from the NAS took 20 s (five
     minutes while the NAS was busy).
-  - **Made once per pass** by the `spoken` job (worldwide, keyed by the outlines and
-    `spoken::RULES`): `global/spoken`, in the catalog and among the World download's files, so a Mac
-    that has downloaded the World reads it in milliseconds, offline too.
+  - **Made once per pass** by the `spoken` job (worldwide, keyed by the outlines, `spoken::RULES`
+    and the languages' accepted version, which it reads): `global/spoken`, in the catalog and
+    among the World download's files, so a Mac that has downloaded the World reads it in
+    milliseconds, offline too.
   - **The server** reads the catalog's `global/spoken`. A catalog without it (made before the job
-    first ran): the server makes the raster from the catalog's outlines on a thread of its own and
-    keeps it in its home (`names/spoken-<outlines' content name>.bin`, its slashes as
-    underscores), and offline uses the newest it kept.
+    first ran): the server makes the raster from the catalog's outlines and the languages' table
+    (the accepted version, kept in its home's `accepted/languages/`, else the table compiled in)
+    on a thread of its own and keeps it in its home (`names/spoken-<outlines' content
+    name>+<table>.bin`, its slashes as underscores), and offline uses the newest it kept.
   - **Names aren't loaded until it's there:** until then names show with their own English alone
     (as before the lines load), and `/api/catalog`'s `names.waiting` says what for. The
-    `names-todo` job keeps its own copy in its scratch.
+    `names-todo` job reads the catalog's `global/spoken` (a catalog without one: made from its
+    outlines with the table compiled in, kept in its scratch).
 - It's the only place location enters: it sets the lookup order and which to-do list a name goes on.
 
 **Files:** `translations/**/*.jsonl` (not `todo/`), one line per translation, wherever the file is:

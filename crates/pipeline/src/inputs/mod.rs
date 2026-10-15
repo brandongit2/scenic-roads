@@ -13,9 +13,10 @@
 //! `unaccept`); the status's entries (crate::inputs::view); the credits from the inputs'
 //! descriptions (crate::inputs::credits).
 //!
-//! On the gate (docs/inputs.md §4.10): the test unit `_gate-test` alone, while
-//! `state/inputs/gate-test` exists (`TEST_FLAG`). Each real input joins `UNITS` in its own task
-//! (#135–#145).
+//! On the gate (docs/inputs.md §4.10): the languages (#136, crate::inputs::languages), the
+//! translations and the descriptions (#137), and the test unit `_gate-test` while
+//! `state/inputs/gate-test` exists (`TEST_FLAG`). Each other input joins `UNITS` in its own task
+//! (#135, #138–#145).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ pub mod credits;
 pub mod descriptions;
 pub mod gate;
 pub mod gatetest;
+pub mod languages;
 pub mod lint;
 pub mod served;
 pub mod translations;
@@ -36,7 +38,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 2] = [translations::UNIT, descriptions::UNIT];
+pub const UNITS: [&str; 3] = [languages::UNIT, translations::UNIT, descriptions::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -78,6 +80,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
     match unit {
         TEST_UNIT => Some(&gatetest::GateTest(TEST_UNIT)),
         TEST_NESTED => Some(&gatetest::GateTest(TEST_NESTED)),
+        languages::UNIT => Some(&languages::Languages { codes: None }),
         translations::UNIT => Some(&translations::Translations),
         descriptions::UNIT => Some(&descriptions::Descriptions),
         _ => None,
@@ -269,6 +272,11 @@ pub trait Checks: Sync {
     /// the check's key.
     fn context(&self, _manifest: &BTreeMap<String, String>) -> Vec<String> {
         Vec::new()
+    }
+    /// The checks the check job runs, given what they read from the records `manifest` names (the
+    /// languages' the pass's outlines' codes); None: these as they are.
+    fn prepared(&self, _root: &Path, _manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+        Ok(None)
     }
 }
 

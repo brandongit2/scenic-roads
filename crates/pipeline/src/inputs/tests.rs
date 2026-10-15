@@ -857,3 +857,47 @@ fn parse_description_ok(b: &[u8]) -> (credits::Description, Vec<Finding>, String
     let (d, f, k) = credits::parse_description("qc.toml", b);
     (d.unwrap(), f, k)
 }
+
+/// The languages (docs/inputs.md §6.2): the table and its description taken in together; an edit
+/// with a line out of shape held, the version in use kept; a code the outlines don't have held
+/// until accepted; the table's removal an error.
+#[test]
+fn the_languages_table_is_checked_and_taken_in() {
+    let store = Store::default();
+    let la = languages::Languages { codes: Some(["CA", "CA-QC", "FR"].map(String::from).into()) };
+    let about = "credit = \"Unicode CLDR\"\nlicence = \"Unicode-3.0\"\nterritory = \"world\"\n";
+    let mut b = Box_::default();
+    b.put("territories.tsv", "# CLDR 47\nCA\ten,fr\nCA-QC\tfr,en\nFR\tfr\n", 100);
+    // The table alone: no description, held.
+    let d0 = check(&la, &b, None, &[], &store, false);
+    assert_eq!(held(&d0), ["territories.tsv"]);
+    assert!(d0.index.files.is_empty());
+    b.put("about.toml", about, 100);
+    let d1 = check(&la, &b, None, &[], &store, false);
+    assert!(d1.report.is_none(), "{:?}", d1.report);
+    assert_eq!(d1.index.files.keys().collect::<Vec<_>>(), ["about.toml", "territories.tsv"]);
+    assert_eq!(d1.index.files["territories.tsv"].facts["territories"], 3);
+    assert_eq!(d1.index.files["about.toml"].facts["extent"], "world");
+    // A line out of shape: held, the version in use kept.
+    b.put("territories.tsv", "# CLDR 47\nCA\ten,fr\nCA-QC\tfr,en\nFR\tfr,\n", 200);
+    let d2 = check(&la, &b, Some(&d1.index), &[], &store, false);
+    assert_eq!((held(&d2), d2.changed), (vec!["territories.tsv".to_string()], false));
+    assert_eq!(finding(&d2, "la-line").lines, [(4, "\"\" isn't a language subtag".to_string())]);
+    // A code the pass's outlines don't have: a warning, taken in once accepted.
+    b.put("territories.tsv", "# CLDR 47\nCA\ten,fr\nCA-QC\tfr,en\nFR\tfr\nXK\tsq,sr\n", 300);
+    let d3 = check(&la, &b, Some(&d1.index), &[], &store, false);
+    let w = finding(&d3, "la-outline").clone();
+    assert_eq!((w.level, w.lines.clone(), d3.changed), (Level::Warning, vec![(5, "XK: no outline".to_string())], false));
+    let d4 = check(&la, &b, Some(&d1.index), &[&w.id], &store, false);
+    assert!(d4.report.is_none() && d4.changed);
+    assert_eq!(d4.index.files["territories.tsv"].facts["territories"], 4);
+    // The table removed: an error, held.
+    b.files.remove("territories.tsv");
+    let d5 = check(&la, &b, Some(&d4.index), &[&w.id], &store, false);
+    assert_eq!((held(&d5), d5.changed), (vec!["territories.tsv".to_string()], false));
+    assert_eq!(finding(&d5, "la-missing").level, Level::Error);
+    // The accepted table, read back as the spoken job reads it.
+    let read = |p: &str| store.copies.borrow().get(&d4.index.files[p].file).cloned().unwrap();
+    let t = names::Table::parse(std::str::from_utf8(&read("territories.tsv")).unwrap());
+    assert_eq!(t.iter().map(|(c, _)| c).collect::<Vec<_>>(), ["CA", "CA-QC", "FR", "XK"]);
+}

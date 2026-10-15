@@ -736,7 +736,7 @@ mod tests {
         let n = Names::load(&d.0).expect("load");
         let p = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| crate::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]] };
-        let sp = Spoken::build([rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        let sp = Spoken::build(&crate::Table::parse("JP\tja\nFR\tfr\n"), [rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
         (d, n, sp)
     }
 

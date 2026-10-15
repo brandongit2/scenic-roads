@@ -163,9 +163,10 @@ What moves (each in its task; §11):
 
 ## 4. The input check (#134)
 
-**Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), with the
-test unit `_gate-test` the only unit it checks (§4.10): no real input goes through it until its own
-task (#135–#145) adds it to `inputs::UNITS`. What of this section isn't built yet is marked planned.
+**Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
+the languages (§6.2), the translations and the descriptions (§6.3, §6.4) and, while it's on, the
+test unit `_gate-test` (§4.10); each other input joins `inputs::UNITS` in its own task (#135,
+#138–#145). What of this section isn't built yet is marked planned.
 
 ### 4.1 Terms
 
@@ -793,17 +794,26 @@ region "held: <finding>".
 
 **Kind:** declare, generated once and rarely touched. **Drop box:** `inputs/languages/`.
 
+**Built** (#136's first publish: crate::inputs::languages, on the input check; the `spoken` job
+reading the accepted version), with the table compiled into the app standing in until a version is
+accepted (Migration).
+
 **Shape:** `territories.tsv`, one territory a line, `<code>\t<language>,<language>…`, most spoken
 first:
 - `<code>`: an ISO 3166-1 alpha-2 code (`FR`) or an ISO 3166-2 subdivision (`CA-QC`);
 - languages: ISO 639 base subtags (`fr`, `yue`), as `names::spoken::Lang` parses them.
-- A subdivision's line refines its country's where they overlap (today's `REFINED`); the smallest
+- A subdivision's line refines its country's where they overlap (the producer's `REFINED`); the smallest
   outline wins as today.
 - Lines starting with `#` are comments.
 
 Plus `about.toml` (§5.1): CLDR's version, the Unicode licence, its credit. The one rule kept in
 code, Chinese read as Cantonese where Cantonese is spoken and Mandarin isn't (`READ_AS`,
-crates/names/src/spoken.rs:93), is a rule of the names' lookup, not data about a territory: it stays.
+crates/names/src/spoken.rs), is a rule of the names' lookup, not data about a territory: it stays.
+
+Both are made by `producers/languages/cldr-languages.py` (§8): from CLDR's `territoryInfo.json`, or
+(`--base`) from a `territories.tsv` already made, with the refinements (its `REFINED`: Quebec,
+New Brunswick, Spain's co-official languages, Wales, Scotland, Brittany, Hong Kong, Macau) folded in
+as lines of their own.
 
 ```
 # CLDR 47 territoryInfo, official and de facto official languages, then the refinements
@@ -813,22 +823,37 @@ ES-CT	ca,es
 HK	yue,en
 ```
 
-**Checks.** Errors: a line that isn't two tab-separated fields; a code that isn't ISO 3166 syntax; a
-language that isn't a valid subtag; a code twice; an empty list. Warnings: a code the pass's
-outlines don't have (it would have no effect); a subdivision whose country has no line.
+**Checks** (crate::inputs::languages). Errors: a file other than those two; a line that isn't two
+tab-separated fields; a code that isn't ISO 3166 syntax (`FR`, `CA-QC`: only the syntax is checked,
+not that the code exists); a language that isn't a BCP 47 primary subtag (two or three lower-case
+letters, `fr`, `yue`); a code twice; an empty list (one finding per check listing the lines); a version without
+`territories.tsv` or without `about.toml` (so removing the table is an error, never accepted).
+Warnings: a code the newest pass's outlines don't have, which covers a well-formed code that doesn't
+exist (it would have no effect; the check job reads the outlines' codes, `outlines::spoken_codes`,
+and their content name is in the check's key, so a new pass checks the table again; outlines that
+can't be read are logged and the check goes on without this warning); a subdivision whose country has no line. The table's `keyed`
+digest is of its lines as read, so a comment edited reruns nothing.
 
-**Ingesting and rebuilding.** The `spoken` job (plan §7) is keyed on the outlines and
-`spoken::RULES` (crates/names/src/spoken.rs:28) today; its key names the accepted table instead of
-the table's part of RULES (RULES stays, for the raster's code and format). `global/spoken` already
-carries the table in its head (spoken.rs:331), so the map's server needs the input only for its
-fallback (a catalog without `global/spoken`), which reads the accepted table. `names-todo` follows
-through `global/spoken`.
+**Ingesting and rebuilding.** The `spoken` job (plan §7) is keyed on the outlines, `spoken::RULES`
+(the raster's code and format) and the languages' accepted index, which the agent hands it
+(`--languages-index`); it reads `territories.tsv` from the accepted version. Before any version is
+accepted its key is as it was before the input (the outlines and RULES) and it reads the table
+compiled in (`names::Table::embedded`). `global/spoken` carries the table in its head, so
+`names-todo` reads the catalog's `global/spoken` (a catalog without one: the outlines and the table
+compiled in), and the map's server needs the input only for its fallback (a catalog without
+`global/spoken`), which reads the accepted table, kept on the Mac as the translations are
+(`accepted/languages/` in its home), else the table compiled in.
 
-**Migration.** Write `territories.tsv` from today's `crates/names/src/territory-languages.tsv`
-(`include_str!`, spoken.rs:98) and `REFINED` (spoken.rs:69); proof: `global/spoken` comes out with
-the same content name. Then delete the embedded table, `REFINED` and the `is_refined` test that
-reads it (spoken.rs:158, made table-driven), and move `tools/names/cldr-languages.py` to
-`producers/languages/` (`inputs/languages/how/` says to run it there).
+**Migration.**
+1. Publish the input on the check, the `spoken` job reading the accepted version when there is one
+   and the table compiled in otherwise (built, #136's first publish).
+2. Write `inputs/languages/territories.tsv` and `about.toml` with the producer from the table
+   compiled in (`--base crates/names/src/territory-languages.tsv`, the refinements folded in), and
+   `how/` saying how to run the producer; check and accept (the codes no outline has are warnings,
+   accepted once). Proof: the `spoken` job's next `global/spoken` has the same content name (shown
+   beforehand on a copy, `cargo run -p pipeline --example spoken`).
+3. Then the second publish deletes the table compiled in (`territory-languages.tsv`, its
+   `include_str!`), `REFINED` and the test reading them (planned).
 
 ### 6.3 Translations (#137)
 
@@ -1666,8 +1691,9 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 ### 9.7 Names and languages [#136, #137]
 
 - `crates/names/src/territory-languages.tsv` (CLDR 47, 251 lines) and its `include_str!`
-  (spoken.rs:98), `spoken.rs:69` `REFINED`: D (the languages input). `:93` `READ_AS`: G (a lookup
-  rule). `tools/names/cldr-languages.py`: P (`producers/languages/`).
+  (`Table::embedded`), `spoken.rs` `REFINED`: D (the languages input; standing in until its first
+  accepted version, deleted by #136's second publish). `READ_AS`: G (a lookup rule).
+  `producers/languages/cldr-languages.py`: P (moved, #136).
 - `tools/names/convert-tables.py` (the one-off conversion, its per-area tables at :32–42): P
   (`producers/translations/`, history). `tools/names/check.py`: G (the translations' checks, run by
   the input check).

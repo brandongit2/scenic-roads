@@ -141,9 +141,9 @@ impl OutlineIndex {
     }
 }
 
-/// The languages spoken where (`names::spoken`), from the catalog's outlines: their simplified
-/// rings, read from the mirror or the NAS (None when the catalog has no outlines).
-pub fn spoken_from_outlines(data: &crate::data::Data) -> Result<Option<names::Spoken>> {
+/// The languages spoken where (`names::spoken`), from the catalog's outlines (their simplified
+/// rings, read from the mirror or the NAS) and `table` (None when the catalog has no outlines).
+pub fn spoken_from_outlines(data: &crate::data::Data, table: &names::Table) -> Result<Option<names::Spoken>> {
     let Some(ix) = OutlineIndex::open(data)? else { return Ok(None) };
     let polygons = |o: &OutlineRec| -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
         let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
@@ -155,8 +155,8 @@ pub fn spoken_from_outlines(data: &crate::data::Data) -> Result<Option<names::Sp
         }
         Ok(out)
     };
-    let areas = pipeline::outlines::spoken_areas(&ix.recs, |i| ix.string(i).to_owned(), polygons)?;
-    Ok(Some(names::Spoken::build(areas)))
+    let areas = pipeline::outlines::spoken_areas(table, &ix.recs, |i| ix.string(i).to_owned(), polygons)?;
+    Ok(Some(names::Spoken::build(table, areas)))
 }
 
 /// The outline index of the current catalog, opened once per catalog.

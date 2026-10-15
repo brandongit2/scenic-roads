@@ -1,7 +1,9 @@
-//! The languages spoken where, from a pass's outlines: builds the raster (`names::spoken`), times
-//! it, and prints what it gives at known places.
+//! The languages spoken where, from a pass's outlines and a languages table (the languages input's
+//! `territories.tsv`; `-`: the table compiled in): builds the raster (`names::spoken`), times it,
+//! prints what it gives at known places, and the hash its content name would have (as
+//! `global/spoken.<hash>.bin`).
 //!
-//! usage: cargo run --release -p pipeline --example spoken -- <outlines .sect> [<raster out>]
+//! usage: cargo run --release -p pipeline --example spoken -- <outlines .sect> <territories.tsv | -> [<raster out>]
 
 use std::time::Instant;
 
@@ -51,23 +53,29 @@ const PLACES: &[(&str, f64, f64)] = &[
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("usage: spoken <outlines> [<raster out>]");
+    let usage = "usage: spoken <outlines> <territories.tsv | -> [<raster out>]";
+    let path = args.get(1).expect(usage);
+    let table = match args.get(2).expect(usage).as_str() {
+        "-" => names::Table::embedded().clone(),
+        p => names::Table::parse(&std::fs::read_to_string(p)?),
+    };
     let t0 = Instant::now();
     let o = pipeline::outlines::Outlines::open(std::path::Path::new(path))?;
     eprintln!("{} outlines' records and names read in {:.1?}", o.recs.len(), t0.elapsed());
-    let areas = pipeline::outlines::spoken_areas(&o.recs, |i| o.string(i).to_owned(), |r| o.simple_polygons(r))?;
+    let areas = pipeline::outlines::spoken_areas(&table, &o.recs, |i| o.string(i).to_owned(), |r| o.simple_polygons(r))?;
     let points: usize = areas.iter().map(|a| a.polygons.iter().flatten().map(Vec::len).sum::<usize>()).sum();
     let read = t0.elapsed();
     let t1 = Instant::now();
-    let s = names::Spoken::build(areas);
+    let s = names::Spoken::build(&table, areas);
     let bytes = s.to_bytes();
+    eprintln!("content hash {}", store::naming::hash16(&bytes));
     eprintln!("{} regions, {points} points read in {read:.1?}; raster in {:.1?}, {:.1} MB", s.regions().count(), t1.elapsed(), bytes.len() as f64 / 1e6);
     println!("| Place | Region | Languages |\n|---|---|---|");
     for (name, lon, lat) in PLACES {
         let langs: Vec<&str> = s.langs_at(*lon, *lat).iter().map(|l| l.as_str()).collect();
         println!("| {name} | {} | {} |", s.code_at(*lon, *lat), langs.join(", "));
     }
-    if let Some(out) = args.get(2) {
+    if let Some(out) = args.get(3) {
         std::fs::write(out, &bytes)?;
     }
     Ok(())

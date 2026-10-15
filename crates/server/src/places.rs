@@ -1117,7 +1117,7 @@ mod tests {
         let n = names::Names::load(dir.path()).unwrap();
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![pt(w, s), pt(e, s), pt(e, n), pt(w, n)]]] };
-        let spoken = names::Spoken::build([rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        let spoken = names::Spoken::build(&names::Table::parse("JP\tja\nFR\tfr\n"), [rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
         (dir, names::Namer { names: n, spoken: Some(std::sync::Arc::new(spoken)) })
     }
 
@@ -1303,7 +1303,7 @@ mod tests {
         let s = crate::test_state(home.path(), nas.path());
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         let japan = names::spoken::Area { code: "JP".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(128.0, 30.0), pt(146.0, 30.0), pt(146.0, 46.0), pt(128.0, 46.0)]]] };
-        s.names.set_spoken(names::Spoken::build([japan]));
+        s.names.set_spoken(names::Spoken::build(&names::Table::parse("JP\tja\n"), [japan]));
         let (lon, lat) = names::mvt::tile_to_lonlat(8, x, y, 4096, 2048.0, 2048.0);
         assert_eq!(s.names.snapshot().map(|n| n.here(lon, lat).iter().map(|l| l.as_str().to_owned()).collect::<Vec<_>>()), None);
         s.names.reload();

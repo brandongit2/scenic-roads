@@ -3,7 +3,7 @@
 //! where it is, from the user's translation files (the server's local copy of the NAS folder).
 //! `mvt` attaches them to vector tiles as they're served.
 //!
-//! - [`spoken`]: the languages spoken where a thing is (CLDR's territory data, refined, over the
+//! - [`spoken`]: the languages spoken where a thing is (the languages input's table, over the
 //!   pass's ISO 3166 outlines).
 //! - [`display`]: the lines ([`Names`]: loading, refreshing, versions per language for ETags), the
 //!   kinds ([`Kind`]), and the display rule ([`Names::display`], [`same_name`]).
@@ -21,7 +21,7 @@ mod table;
 pub use table::{line_shape, LineShape};
 
 pub use display::{in_parts, same_name, Display, DisplayRef, Kind, Namer, Names, Summary, Translation, STABLE};
-pub use spoken::{Lang, Spoken};
+pub use spoken::{Lang, Spoken, Table};
 
 /// A temporary folder of translation files for tests.
 #[cfg(test)]

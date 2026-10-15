@@ -480,31 +480,47 @@ impl Outlines {
     }
 }
 
+/// The ISO 3166 code an outline is drawn under for the languages spoken where (`names::spoken`):
+/// an ISO 3166-1 territory's own code ([`territory_code`]: Hong Kong's `CN-HK` is HK), a
+/// subdivision's ISO 3166-2 code; None for one with neither.
+fn spoken_code(o: &OutlineRec, string: &impl Fn(u32) -> String) -> Option<String> {
+    let iso = string(o.iso);
+    if o.flags & flag::ISO1 != 0 {
+        territory_code(&iso).map(str::to_owned)
+    } else if o.flags & flag::ISO2 != 0 {
+        Some(iso)
+    } else {
+        None
+    }
+}
+
 /// The outlines the languages spoken where a thing is are drawn from (`names::spoken`): each ISO
-/// 3166-1 territory under its own code ([`territory_code`]: Hong Kong's `CN-HK` is HK), and the
-/// subdivisions `names::spoken::REFINED` names (Quebec, Wales, …), with their simplified polygons
-/// (`polygons`: an outer ring, then its holes).
-pub fn spoken_areas(recs: &[OutlineRec], string: impl Fn(u32) -> String, mut polygons: impl FnMut(&OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>>) -> Result<Vec<names::spoken::Area>> {
+/// 3166-1 territory under its own code, and the subdivisions with a line of their own in `table`
+/// (Quebec, Wales, …), with their simplified polygons (`polygons`: an outer ring, then its holes).
+pub fn spoken_areas(table: &names::Table, recs: &[OutlineRec], string: impl Fn(u32) -> String, mut polygons: impl FnMut(&OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>>) -> Result<Vec<names::spoken::Area>> {
     let mut out = Vec::new();
     for o in recs {
-        let iso = string(o.iso);
-        let code = if o.flags & flag::ISO1 != 0 {
-            territory_code(&iso).map(str::to_owned)
-        } else if o.flags & flag::ISO2 != 0 {
-            Some(iso.clone())
-        } else {
-            None
-        };
-        let Some(code) = code.filter(|c| names::spoken::wanted(c) && names::spoken::languages_of(c).is_some()) else { continue };
+        let Some(code) = spoken_code(o, &string).filter(|c| table.wanted(c) && table.get(c).is_some()) else { continue };
         out.push(names::spoken::Area { code, area_km2: f64::from(o.area_km2), polygons: polygons(o)? });
     }
     Ok(out)
 }
 
+/// Every code an outline of `recs` could be drawn under for the languages spoken where
+/// ([`spoken_areas`]): what a line of the languages input names to have an effect.
+pub fn spoken_codes(recs: &[OutlineRec], string: impl Fn(u32) -> String) -> std::collections::BTreeSet<String> {
+    recs.iter().filter_map(|o| spoken_code(o, &string)).collect()
+}
+
 impl Outlines {
-    /// The languages spoken where, from these outlines ([`spoken_areas`]).
-    pub fn spoken(&self) -> Result<names::Spoken> {
-        Ok(names::Spoken::build(spoken_areas(&self.recs, |i| self.string(i).to_owned(), |o| self.simple_polygons(o))?))
+    /// The languages spoken where, from these outlines and `table` ([`spoken_areas`]).
+    pub fn spoken(&self, table: &names::Table) -> Result<names::Spoken> {
+        Ok(names::Spoken::build(table, spoken_areas(table, &self.recs, |i| self.string(i).to_owned(), |o| self.simple_polygons(o))?))
+    }
+
+    /// The codes of these outlines ([`spoken_codes`]).
+    pub fn spoken_codes(&self) -> std::collections::BTreeSet<String> {
+        spoken_codes(&self.recs, |i| self.string(i).to_owned())
     }
 }
 

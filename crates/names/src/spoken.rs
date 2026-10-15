@@ -2,19 +2,21 @@
 //! names. They set the order a name's translations are looked up in, and which to-do list a name
 //! goes on.
 //!
-//! - **Per territory:** CLDR's territory data (`territory-languages.tsv`, made by
-//!   `tools/names/cldr-languages.py`): the languages official or de facto official there, most
-//!   spoken first.
-//! - **Refined** where a subdivision (ISO 3166-2) or a territory reads its names otherwise
-//!   ([`REFINED`]): Quebec French then English, Catalonia Catalan then Spanish, Wales English then
-//!   Welsh, Brittany French then Breton; Hong Kong and Macau Cantonese, not Mandarin.
-//! - **Where:** the pass's outlines of ISO 3166-1 territories and of the refined subdivisions, as a
+//! - **Per territory:** a [`Table`], the languages input's `territories.tsv` (docs/inputs.md §6.2):
+//!   an ISO 3166-1 territory or ISO 3166-2 subdivision a line, its languages most spoken first:
+//!   CLDR's territory data, with the subdivisions and territories that read their names otherwise
+//!   (Quebec French then English, Catalonia Catalan then Spanish, Hong Kong Cantonese) folded in by
+//!   its producer (producers/languages/). Until a version of the input is accepted, the table
+//!   compiled in ([`Table::embedded`]) stands in.
+//! - **Read as:** the one rule kept in code ([`READ_AS`]): Chinese read as Cantonese where
+//!   Cantonese is spoken and Mandarin isn't.
+//! - **Where:** the pass's outlines of ISO 3166-1 territories and of the table's subdivisions, as a
 //!   raster of [`RES`] cells a degree ([`Spoken`]), the smallest outline winning where they overlap
 //!   (Hong Kong over China, Quebec over Canada). Cells are about 870 m at the equator, finer than
 //!   the outlines' own simplification (1 km for countries).
 
 use anyhow::{bail, ensure, Result};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::LazyLock;
 
@@ -23,8 +25,9 @@ pub const RES: u32 = 128;
 const COLS: u32 = 360 * RES;
 const ROWS: u32 = 180 * RES;
 
-/// Bumped with any change to the table, the refinements or the raster, so versions made under the
-/// old ones stop matching.
+/// Bumped with any change to the raster's code or format, so versions made under the old ones stop
+/// matching (the table's changes are the languages input's: the `spoken` job's key names its
+/// accepted version).
 pub const RULES: &str = "spoken 1";
 
 /// A language: its base subtag (`fr`, `yue`), lower-case ASCII, at most four letters (NUL-padded).
@@ -64,9 +67,9 @@ impl fmt::Display for Lang {
     }
 }
 
-/// Territories and subdivisions whose languages aren't CLDR's territory list as it is: an ISO 3166
-/// code and its languages in lookup order.
-pub const REFINED: &[(&str, &[&str])] = &[
+/// Territories and subdivisions whose languages aren't CLDR's territory list as it is, folded into
+/// the table compiled in ([`Table::embedded`]); the languages input's producer folds the same in.
+const REFINED: &[(&str, &[&str])] = &[
     // Canada: Quebec French first, New Brunswick both.
     ("CA-QC", &["fr", "en"]),
     ("CA-NB", &["en", "fr"]),
@@ -92,26 +95,68 @@ pub const REFINED: &[(&str, &[&str])] = &[
 /// tagged `name:zh` in Hong Kong is read in Cantonese.
 const READ_AS: &[(&str, &str)] = &[("zh", "yue")];
 
-/// CLDR's languages per territory, then the refinements.
-static TABLE: LazyLock<HashMap<String, Vec<Lang>>> = LazyLock::new(|| {
-    let mut m: HashMap<String, Vec<Lang>> = HashMap::new();
-    for line in include_str!("territory-languages.tsv").lines() {
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-        let Some((code, langs)) = line.split_once('\t') else { continue };
-        m.insert(code.to_owned(), langs.split(',').filter_map(Lang::parse).collect());
-    }
-    for (code, langs) in REFINED {
-        m.insert((*code).to_owned(), langs.iter().filter_map(|l| Lang::parse(l)).collect());
-    }
-    m
-});
+/// The languages spoken per territory: an ISO 3166-1 code (`FR`) or ISO 3166-2 one (`CA-QC`), and
+/// its languages in lookup order, most spoken first. A subdivision's line refines its country's
+/// where its outline lies; one without a line has its country's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Table(BTreeMap<String, Vec<Lang>>);
 
-/// The languages for an ISO 3166-1 code or a refined ISO 3166-2 one (`None` for a subdivision that
-/// isn't refined: its country's apply).
-pub fn languages_of(code: &str) -> Option<&'static [Lang]> {
-    TABLE.get(code).map(Vec::as_slice)
+impl Table {
+    /// A `territories.tsv` read (`<code>\t<language>,<language>…` a line; `#` lines are comments),
+    /// as the input check takes it (pipeline::inputs::languages raises its faults): a line without
+    /// a tab is passed over, a language that can't be read left out, a code's last line kept.
+    pub fn parse(text: &str) -> Table {
+        let mut m = BTreeMap::new();
+        for line in text.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let Some((code, langs)) = line.split_once('\t') else { continue };
+            m.insert(code.to_owned(), langs.split(',').filter_map(Lang::parse).collect());
+        }
+        Table(m)
+    }
+
+    /// The table compiled in: CLDR 47's languages per territory, then the refinements. It stands in
+    /// until the languages input has an accepted version (docs/inputs.md §6.2: the move's first
+    /// publish; the second deletes it).
+    pub fn embedded() -> &'static Table {
+        static T: LazyLock<Table> = LazyLock::new(|| {
+            let mut t = Table::parse(include_str!("territory-languages.tsv"));
+            for (code, langs) in REFINED {
+                t.0.insert((*code).to_owned(), langs.iter().filter_map(|l| Lang::parse(l)).collect());
+            }
+            t
+        });
+        &T
+    }
+
+    /// The table as a `territories.tsv` (`header`: its comment lines, without their `# `), a line a
+    /// code in code order: what [`Table::parse`] reads back as this table.
+    pub fn to_tsv(&self, header: &[&str]) -> String {
+        let mut out: String = header.iter().map(|h| format!("# {h}\n")).collect();
+        for (code, langs) in &self.0 {
+            out += &format!("{code}\t{}\n", langs.iter().map(Lang::as_str).collect::<Vec<_>>().join(","));
+        }
+        out
+    }
+
+    /// The languages of an ISO 3166-1 code, or of an ISO 3166-2 one with a line of its own (`None`
+    /// for a subdivision without: its country's apply).
+    pub fn get(&self, code: &str) -> Option<&[Lang]> {
+        self.0.get(code).map(Vec::as_slice)
+    }
+
+    /// Whether an outline of code `code` is drawn: an ISO 3166-1 territory, or a subdivision with a
+    /// line of its own.
+    pub fn wanted(&self, code: &str) -> bool {
+        !code.contains('-') && code.len() == 2 || self.0.contains_key(code)
+    }
+
+    /// The codes in order, with their languages.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[Lang])> {
+        self.0.iter().map(|(c, l)| (c.as_str(), l.as_slice()))
+    }
 }
 
 /// The order a name's lines are looked up in: the languages OSM gives the name (`osm`, as read where
@@ -153,11 +198,6 @@ pub struct Area {
     pub polygons: Vec<Vec<Vec<[i32; 2]>>>,
 }
 
-/// Which outlines count: ISO 3166-1 territories, and the refined subdivisions.
-pub fn wanted(code: &str) -> bool {
-    !code.contains('-') && code.len() == 2 || REFINED.iter().any(|(c, _)| *c == code)
-}
-
 /// The languages spoken where, as a raster.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Spoken {
@@ -177,10 +217,10 @@ impl fmt::Debug for Spoken {
 }
 
 impl Spoken {
-    /// The raster of `areas` ([`wanted`] ones; others are passed over). Where outlines overlap the
-    /// smaller wins.
-    pub fn build(areas: impl IntoIterator<Item = Area>) -> Spoken {
-        let mut areas: Vec<Area> = areas.into_iter().filter(|a| wanted(&a.code) && languages_of(&a.code).is_some_and(|l| !l.is_empty())).collect();
+    /// The raster of `areas` with `table`'s languages (those [`Table::wanted`] with languages there;
+    /// others are passed over). Where outlines overlap the smaller wins.
+    pub fn build(table: &Table, areas: impl IntoIterator<Item = Area>) -> Spoken {
+        let mut areas: Vec<Area> = areas.into_iter().filter(|a| table.wanted(&a.code) && table.get(&a.code).is_some_and(|l| !l.is_empty())).collect();
         areas.sort_by(|a, b| a.area_km2.total_cmp(&b.area_km2).then_with(|| a.code.cmp(&b.code)));
         let mut regions: Vec<(String, Vec<Lang>)> = vec![(String::new(), Vec::new())];
         let mut region_of: HashMap<String, u16> = HashMap::new();
@@ -188,7 +228,7 @@ impl Spoken {
         let mut cross: Vec<(u32, u32, f64)> = Vec::new();
         for (rank, a) in areas.iter().enumerate() {
             let id = *region_of.entry(a.code.clone()).or_insert_with(|| {
-                regions.push((a.code.clone(), languages_of(&a.code).unwrap_or_default().to_vec()));
+                regions.push((a.code.clone(), table.get(&a.code).unwrap_or_default().to_vec()));
                 (regions.len() - 1) as u16
             });
             let _ = id;
@@ -408,26 +448,47 @@ mod tests {
         assert_eq!(format!("{:?}", [l("fr"), l("br")]), "[fr, br]");
     }
 
+    /// A table as the languages input has it.
+    fn table() -> Table {
+        Table::parse("# a test table\nCA\ten,fr\nCA-QC\tfr,en\nFR\tfr\nFR-BRE\tfr,br\nHK\tyue,en\nIT\tit\nJP\tja\nSM\tit\nTW\tzh,nan,hak\n")
+    }
+
     #[test]
-    fn table_and_refinements() {
-        assert_eq!(strs(languages_of("FR").unwrap()), ["fr"]);
-        assert_eq!(strs(languages_of("CA").unwrap()), ["en", "fr"]);
-        assert_eq!(strs(languages_of("CA-QC").unwrap()), ["fr", "en"]);
-        assert_eq!(strs(languages_of("TW").unwrap()), ["zh", "nan", "hak"]);
-        assert_eq!(strs(languages_of("HK").unwrap()), ["yue", "en"]);
-        assert_eq!(strs(languages_of("SG").unwrap()), ["en", "zh", "ms", "ta"]);
-        assert_eq!(strs(languages_of("JP").unwrap()), ["ja"]);
-        assert_eq!(languages_of("FR-IDF"), None);
-        assert!(wanted("FR") && wanted("FR-BRE") && !wanted("FR-IDF") && !wanted("FRA"));
+    fn the_table_reads_and_writes_its_lines() {
+        let t = table();
+        assert_eq!(strs(t.get("FR").unwrap()), ["fr"]);
+        assert_eq!(strs(t.get("CA").unwrap()), ["en", "fr"]);
+        assert_eq!(strs(t.get("CA-QC").unwrap()), ["fr", "en"]);
+        assert_eq!(strs(t.get("TW").unwrap()), ["zh", "nan", "hak"]);
+        assert_eq!(t.get("FR-IDF"), None);
+        assert!(t.wanted("FR") && t.wanted("DE") && t.wanted("FR-BRE") && !t.wanted("FR-IDF") && !t.wanted("FRA"));
+        assert_eq!(Table::parse(&t.to_tsv(&["again"])), t);
+        assert!(t.to_tsv(&["again"]).starts_with("# again\nCA\ten,fr\nCA-QC\tfr,en\n"));
+        // (A line without a tab passed over; a tag's base subtag; a code's last line kept.)
+        let u = Table::parse("FR fr\nDE\tde_AT,xx1\nDE\tde,fr\r\n");
+        assert_eq!(u.get("FR"), None);
+        assert_eq!(strs(u.get("DE").unwrap()), ["de", "fr"]);
+    }
+
+    #[test]
+    fn the_table_compiled_in_folds_the_refinements_in() {
+        let t = Table::embedded();
+        assert_eq!(strs(t.get("CA").unwrap()), ["en", "fr"]);
+        assert_eq!(strs(t.get("CA-QC").unwrap()), ["fr", "en"]);
+        assert_eq!(strs(t.get("HK").unwrap()), ["yue", "en"]);
+        assert_eq!(strs(t.get("SG").unwrap()), ["en", "zh", "ms", "ta"]);
+        assert_eq!(t.get("FR-IDF"), None);
+        assert_eq!(&Table::parse(&t.to_tsv(&[])), t);
     }
 
     #[test]
     fn lookup_order_puts_osm_first() {
-        let hk = languages_of("HK").unwrap();
+        let t = table();
+        let hk = t.get("HK").unwrap();
         assert_eq!(strs(&lookup_order(&[l("zh")], hk)), ["yue", "en"]);
-        let tw = languages_of("TW").unwrap();
+        let tw = t.get("TW").unwrap();
         assert_eq!(strs(&lookup_order(&[l("zh")], tw)), ["zh", "nan", "hak"]);
-        let fr = languages_of("FR-BRE").unwrap();
+        let fr = t.get("FR-BRE").unwrap();
         assert_eq!(strs(&lookup_order(&[l("br")], fr)), ["br", "fr"]);
         assert_eq!(strs(&lookup_order(&[l("de"), l("fr")], fr)), ["fr", "de", "br"]);
         // OSM's languages in the order they're spoken here, whatever the tags' order.
@@ -437,7 +498,7 @@ mod tests {
 
     #[test]
     fn raster_smaller_wins_and_round_trips() {
-        let s = Spoken::build([rect("CA", -80.0, 42.0, -60.0, 60.0), rect("CA-QC", -75.0, 45.0, -65.0, 55.0), rect("FR-IDF", 1.0, 48.0, 3.0, 49.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        let s = Spoken::build(&table(), [rect("CA", -80.0, 42.0, -60.0, 60.0), rect("CA-QC", -75.0, 45.0, -65.0, 55.0), rect("FR-IDF", 1.0, 48.0, 3.0, 49.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
         assert_eq!(s.code_at(-73.57, 45.5), "CA-QC");
         assert_eq!(strs(s.langs_at(-73.57, 45.5)), ["fr", "en"]);
         assert_eq!(s.code_at(-79.4, 43.7), "CA");
@@ -467,7 +528,7 @@ mod tests {
         let outer = vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0), p(0.0, 0.0)];
         let hole = vec![p(4.0, 4.0), p(6.0, 4.0), p(6.0, 6.0), p(4.0, 6.0)];
         let island = vec![p(20.0, 0.0), p(21.0, 0.0), p(21.0, 1.0)];
-        let s = Spoken::build([
+        let s = Spoken::build(&table(), [
             Area { code: "IT".into(), area_km2: 1e6, polygons: vec![vec![outer, hole], vec![island]] },
             Area { code: "SM".into(), area_km2: 1e4, polygons: vec![vec![vec![p(4.5, 4.5), p(5.5, 4.5), p(5.5, 5.5), p(4.5, 5.5)]]] },
         ]);

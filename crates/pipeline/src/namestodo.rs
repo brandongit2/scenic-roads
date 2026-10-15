@@ -224,16 +224,22 @@ fn sect(path: &Path) -> Result<SectReader<PlainFile>> {
     SectReader::open(PlainFile::open(path).with_context(|| format!("open {}", path.display()))?).with_context(|| format!("read {}", path.display()))
 }
 
-/// The spoken languages for the catalog's outlines, kept in `scratch` by the outlines' content
-/// name (made in minutes from the NAS, read back in milliseconds).
+/// The spoken languages the catalog was made with: its `global/spoken` (the `spoken` job's, from
+/// the languages input's accepted version). A catalog without one: made from its outlines with the
+/// table compiled in, kept in `scratch` by the outlines' content name (made in minutes from the
+/// NAS, read back in milliseconds).
 pub fn spoken_for(root: &Path, cat: &store::catalog::Catalog, scratch: &Path) -> Result<Spoken> {
+    if let Some(f) = cat.global.get("spoken").and_then(|l| cat.file(l)) {
+        let b = std::fs::read(root.join(&f.file)).with_context(|| format!("read {}", f.file))?;
+        return Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file));
+    }
     let logical = cat.global.get("outlines").context("the catalog has no outlines")?;
     let f = cat.file(logical).context("the outlines' file")?;
     let kept = scratch.join(format!("spoken-{}.bin", f.file.replace('/', "_")));
     if let Some(s) = std::fs::read(&kept).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
         return Ok(s);
     }
-    let s = crate::outlines::Outlines::open(&root.join(&f.file))?.spoken()?;
+    let s = crate::outlines::Outlines::open(&root.join(&f.file))?.spoken(names::Table::embedded())?;
     std::fs::create_dir_all(scratch).ok();
     std::fs::write(&kept, s.to_bytes()).ok();
     Ok(s)
@@ -699,7 +705,8 @@ mod tests {
     fn spoken() -> Spoken {
         let p = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]] };
-        Spoken::build([rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0), rect("CA", -80.0, 42.0, -60.0, 60.0), rect("CA-QC", -75.0, 45.0, -65.0, 55.0)])
+        let table = names::Table::parse("JP\tja\nFR\tfr\nCA\ten,fr\nCA-QC\tfr,en\n");
+        Spoken::build(&table, [rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0), rect("CA", -80.0, 42.0, -60.0, 60.0), rect("CA-QC", -75.0, 45.0, -65.0, 55.0)])
     }
 
     #[test]

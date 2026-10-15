@@ -389,13 +389,24 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "slope-lo" => slope_lo_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "spoken" => {
-            // spoken [--pass <date>]: the languages spoken where (names::spoken), from the pass's
-            // outlines, as global/spoken, which the servers read.
+            // spoken [--pass <date>] [--languages-index <index>]: the languages spoken where
+            // (names::spoken), from the pass's outlines and the languages input's accepted version
+            // the agent names (its index's content name; without one, the table compiled in), as
+            // global/spoken, which the servers read.
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let table = match opt(&args, "--languages-index") {
+                Some(index) => {
+                    let unit = pipeline::inputs::languages::UNIT;
+                    let m = std::collections::BTreeMap::from([(pipeline::inputs::logical(unit), index)]);
+                    let a = pipeline::inputs::open(out.root(), &m, unit)?.with_context(|| format!("no accepted version of {unit}"))?;
+                    pipeline::inputs::languages::table_of(&a)?
+                }
+                None => names::Table::embedded().clone(),
+            };
             let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
             // (The outlines read from the NAS as it works through them: one phase.)
             let p = phase("the languages spoken where worked out from the outlines", Class::NasRead);
-            let s = pipeline::outlines::Outlines::open(&outlines)?.spoken()?;
+            let s = pipeline::outlines::Outlines::open(&outlines)?.spoken(&table)?;
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("spoken.bin");
             std::fs::write(&local, s.to_bytes())?;
