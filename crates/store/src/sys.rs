@@ -97,6 +97,39 @@ pub fn disk_free(path: &Path) -> io::Result<u64> {
     }
 }
 
+/// The size of the (local) filesystem holding `path`, in bytes.
+pub fn disk_size(path: &Path) -> io::Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c = CString::new(path.as_os_str().as_bytes())?;
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: as disk_free.
+            let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+            if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(st.f_blocks.saturating_mul(u64::from(st.f_bsize)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // SAFETY: as disk_free.
+            let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+            if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok((st.f_blocks as u64).saturating_mul(st.f_frsize as u64))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "no disk-size query on this platform"))
+    }
+}
+
 /// A file's permission bits, where files have them.
 pub fn mode(path: &Path) -> Option<u32> {
     #[cfg(unix)]

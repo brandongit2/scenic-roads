@@ -207,7 +207,8 @@ struct State {
 /// The local copy of what this Mac has downloaded.
 pub struct Mirror {
     root: PathBuf,
-    reserve: u64,
+    /// The free space it leaves on the disk (bytes): the owner's setting, changed live.
+    reserve: std::sync::atomic::AtomicU64,
     state: Mutex<State>,
     free_space: Box<FreeSpace>,
     on_remove: Mutex<Option<Arc<OnRemove>>>,
@@ -271,7 +272,7 @@ fn unreachable(e: &anyhow::Error) -> bool {
 
 impl Mirror {
     /// Opens (creating as needed) the mirror under `root`, the app's folder. `reserve_bytes` of
-    /// the disk stay free (plan §4: 50 GB; 150 GB on the build Mac, so builds have room).
+    /// the disk stay free (plan §4: the owner's setting in the Regions panel, 30 GB unless set).
     pub fn open(root: PathBuf, reserve_bytes: u64) -> Result<Mirror> {
         for d in ["mirror", "idx", "catalog"] {
             let p = root.join(d);
@@ -284,7 +285,7 @@ impl Mirror {
         let (pieces, sizes) = scan_pieces(&root.join("mirror").join(BASEMAP));
         Ok(Mirror {
             root,
-            reserve: reserve_bytes,
+            reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
             state: Mutex::new(State { files, pieces, sizes, copying: None, last: None }),
             free_space: Box::new(disk_free),
             on_remove: Mutex::new(None),
@@ -297,7 +298,13 @@ impl Mirror {
 
     /// The free space the disk keeps (bytes).
     pub fn reserve(&self) -> u64 {
-        self.reserve
+        self.reserve.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Sets the free space the disk keeps, from the next check on: a copy waiting for room may go
+    /// when it's lowered; when it's raised past what's free, nothing is deleted, copies just wait.
+    pub fn set_reserve(&self, bytes: u64) {
+        self.reserve.store(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -519,8 +526,9 @@ impl Mirror {
                 None => unknown += 1,
             }
         }
-        let more = missing.saturating_sub(free.saturating_sub(self.reserve));
-        Ok(Room { free, reserve: self.reserve, missing, more, unknown })
+        let reserve = self.reserve();
+        let more = missing.saturating_sub(free.saturating_sub(reserve));
+        Ok(Room { free, reserve, missing, more, unknown })
     }
 
     /// Lets go of what `wanted` doesn't name: the files and pieces here, copies in progress, the
@@ -676,7 +684,7 @@ impl Mirror {
 
     /// Whether `need` more bytes fit above the reserve; when not, counted as waiting.
     fn fits(&self, need: u64, stats: &mut SyncStats) -> Result<bool> {
-        let room = self.free()?.saturating_sub(self.reserve);
+        let room = self.free()?.saturating_sub(self.reserve());
         if need <= room {
             return Ok(true);
         }

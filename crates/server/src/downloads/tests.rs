@@ -265,3 +265,24 @@ fn a_damaged_downloads_file_is_set_aside() {
     assert_eq!(d.asked(), Asked::default());
     assert!(home.path().join("downloads.json.bad").exists() && !home.path().join(FILE).exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    catalog(nas.path());
+    let data = Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve: crate::reserve::load(home.path()) * 1_000_000_000 }).unwrap();
+    let s = crate::test_state_from(home.path(), data);
+    let m = s.data.mirror.clone().unwrap();
+    assert_eq!(m.reserve(), 30_000_000_000, "unset: 30 GB");
+    let disk = 500_000_000_000;
+    for bad in [0, 4, 500, 900] {
+        assert!(tokio::task::block_in_place(|| set_reserve(&s, bad, disk)).is_err(), "{bad} GB");
+    }
+    assert_eq!(m.reserve(), 30_000_000_000, "refused: unchanged");
+    assert!(!home.path().join(crate::reserve::FILE).exists());
+    let v = tokio::task::block_in_place(|| set_reserve(&s, 12, disk)).unwrap();
+    assert_eq!(v["reserve"].as_u64(), Some(12_000_000_000));
+    assert_eq!(m.reserve(), 12_000_000_000, "the mirror's, without a restart");
+    assert_eq!(get(&s).await["reserve"].as_u64(), Some(12_000_000_000));
+    assert_eq!(crate::reserve::load(home.path()), 12, "kept for the next start");
+}

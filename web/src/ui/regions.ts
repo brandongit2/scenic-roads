@@ -7,7 +7,7 @@
 // Downloads (docs/plan.md §4, "Mirror, per Mac"): nothing is copied to this Mac unless it's
 // downloaded here: the World, zoomed out, and each region or view, each with its size, its state
 // and a Download or Remove button; this Mac's room (downloads.ts).
-import { dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type RegionDl, type ViewDl } from '../downloads';
+import { dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type RegionDl, type ViewDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
   QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
@@ -83,6 +83,13 @@ export class RegionsPanel {
   private worldOn: boolean | null = null;
   /** What's going on: the copy under way, waiting for room, away. */
   private dlNow = h('div', { class: 'kp-sum' });
+  /** The reserve: the free space downloads leave on this Mac's disk (the server's setting). */
+  private resIn = h('input', { class: 'rg-in kp-res-in', type: 'number', min: '5', step: '1', inputmode: 'numeric', 'aria-label': 'Free space to keep, GB' }) as HTMLInputElement;
+  private resBtn = h('button', { class: 'pill', type: 'button', title: 'Keep this much free' }, 'Set') as HTMLButtonElement;
+  private resSay = h('span', { class: 'kp-res-say' });
+  private resRow = h('div', { class: 'kp-line kp-res', title: 'The free space map downloads leave on this Mac’s disk: a download that would go past it waits. Lowered, waiting downloads may start; raised, nothing is deleted. (Apart from the build’s own room target in the menu bar.)' },
+    h('span', {}, 'Keep free'), this.resIn, h('span', {}, 'GB'), this.resBtn, this.resSay);
+  private resBusy = false;
   private dlBtn = h('button', { class: 'pill', type: 'button', title: 'Download the area in view to this Mac, for when it’s away from the NAS' }, 'Download this view');
   private dlViews = h('div', { class: 'rg-list kp-views' });
   private dlMsg = h('div', { class: 'rg-msg' });
@@ -158,10 +165,22 @@ export class RegionsPanel {
     this.draftBox.hidden = true;
     this.dlAsk.hidden = true;
     this.dlBtn.addEventListener('click', () => void this.downloadThisView());
+    this.resBtn.hidden = true;
+    this.resRow.hidden = true;
+    this.resIn.addEventListener('input', () => this.resEdited());
+    this.resIn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') void this.saveReserve();
+      if (e.key === 'Escape') {
+        this.resIn.value = String(Math.round((this.dl?.reserve ?? 0) / 1e9));
+        this.resEdited();
+      }
+    });
+    this.resBtn.addEventListener('click', () => void this.saveReserve());
     this.nodes = [
       h('label', { class: 'tog', title: 'Every region’s outline on the map: the map is built within them' }, this.covBox, h('span', {}, 'Coverage on the map'), this.covCount),
       h('div', { class: 'subhd', title: 'What’s downloaded to this Mac, for when it’s away from the NAS: nothing else is copied here' }, 'Downloads on this Mac'),
       this.dlSum,
+      this.resRow,
       this.worldRow,
       this.dlNow,
       this.dlViews,
@@ -503,10 +522,12 @@ export class RegionsPanel {
       this.dlSum.replaceChildren(this.dlErr ? h('div', { class: 'kp-line warn' }, this.dlErr) : h('div', { class: 'kp-line faint' }, h('span', { class: 'spin' }), ' Asking the map server…'));
       this.dlBtn.hidden = true;
       this.worldRow.hidden = true;
+      this.resRow.hidden = true;
       return;
     }
     this.dlBtn.hidden = !k.mirror;
     this.worldRow.hidden = !k.mirror;
+    this.resRow.hidden = !k.mirror;
     if (!k.mirror) {
       this.dlSum.replaceChildren(h('div', { class: 'kp-line faint' }, 'This server keeps no copy of the map (it runs without a mirror)'));
       this.renderViews([]);
@@ -518,7 +539,7 @@ export class RegionsPanel {
       lines.push(h('div', { class: 'kp-line faint', title: this.dlErr }, `As of ${at}: the map server isn’t answering`));
     }
     const free = k.free ?? 0, reserve = k.reserve ?? 0;
-    lines.push(h('div', { class: 'kp-line', title: 'What’s downloaded to this Mac, the disk’s free space, and the free space downloads leave (a download that would go past it doesn’t start)' },
+    lines.push(h('div', { class: 'kp-line', title: 'What’s downloaded to this Mac, and the disk’s free space' },
       'This Mac: ', h('b', {}, size(k.here ?? 0)), ' downloaded · ', h('b', {}, size(free)), ` free · reserve ${size(reserve)}`));
     this.dlSum.replaceChildren(...lines);
     this.renderWorld(k);
@@ -623,6 +644,67 @@ export class RegionsPanel {
     const m = h('div', { class: `rg-rowmsg${warn ? ' warn' : ''}` }, text);
     row.append(m);
     if (!warn) window.setTimeout(() => m.remove(), 8000);
+  }
+
+  /** The reserve's control from the status: its value unless it's being edited, its bounds. */
+  private renderReserve(k: DlStatus) {
+    const gb = Math.round((k.reserve ?? 0) / 1e9);
+    const max = k.disk ? Math.floor(k.disk / 1e9) - 1 : null;
+    this.resIn.min = String(Math.round((k.reserve_min ?? 5e9) / 1e9));
+    if (max != null) this.resIn.max = String(max);
+    if (document.activeElement !== this.resIn && !this.resBusy && this.resIn.value !== String(gb) && this.resBtn.hidden) this.resIn.value = String(gb);
+    this.resEdited();
+  }
+
+  /** What the typed reserve would be: GB, or why it can't be. */
+  private resCheck(): number | string {
+    const v = this.resIn.value.trim();
+    const n = Number(v);
+    const min = Number(this.resIn.min || 5), max = this.resIn.max ? Number(this.resIn.max) : Infinity;
+    if (!v || !Number.isInteger(n)) return 'whole GB';
+    if (n < min) return `at least ${min} GB`;
+    if (n > max) return `at most ${max} GB (the disk is ${max + 1} GB)`;
+    return n;
+  }
+
+  private resEdited() {
+    if (this.resBusy) return;
+    const cur = Math.round((this.dl?.reserve ?? 0) / 1e9);
+    const c = this.resCheck();
+    const changed = this.resIn.value.trim() !== String(cur);
+    this.resBtn.hidden = !changed;
+    this.resBtn.disabled = typeof c === 'string';
+    this.resIn.classList.toggle('bad', changed && typeof c === 'string');
+    if (changed && typeof c === 'string') this.sayRes(c, true);
+    else if (changed) this.sayRes('');
+    else if (this.resSay.classList.contains('warn')) this.sayRes('');
+  }
+
+  private sayRes(text: string, warn = false) {
+    this.resSay.textContent = text;
+    this.resSay.className = `kp-res-say${warn ? ' warn' : text ? ' ok' : ''}`;
+  }
+
+  private async saveReserve() {
+    const c = this.resCheck();
+    if (typeof c === 'string') return this.sayRes(c, true);
+    if (this.resBusy || c === Math.round((this.dl?.reserve ?? 0) / 1e9)) return;
+    this.resBusy = true;
+    this.resBtn.disabled = true;
+    this.sayRes('saving…');
+    try {
+      const r = await setReserve(c);
+      if (this.dl) this.dl.reserve = r.reserve;
+      this.resBusy = false;
+      this.resBtn.hidden = true;
+      this.sayRes('✓ saved');
+      window.setTimeout(() => { if (this.resSay.textContent === '✓ saved') this.sayRes(''); }, 4000);
+    } catch (e) {
+      this.resBusy = false;
+      this.sayRes(says(e), true);
+      this.resBtn.disabled = false;
+    }
+    void this.pollDl();
   }
 
   private sayDl(text: string, warn = false) {

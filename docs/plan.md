@@ -599,8 +599,12 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   have the NAS first, and the panel says why a download is slower; the rest of the time, at full
   speed. A copy is checked (a file against its content hash, a piece tile by tile) before it's
   moved into place.
-- **Room.** The disk keeps a reserve free (50 GB; 150 GB on the build Mac: the server's
-  `--reserve-gb`, in GB of 10⁹ bytes). A download that wouldn't fit (all that's downloaded and not
+- **Room.** The disk keeps a reserve free: a per-Mac setting in the Regions panel ("Keep free",
+  whole GB of 10⁹ bytes, from 5 GB to less than the disk's size; 30 GB while unset), kept in the
+  app's folder (`reserve.json`) and set through `PUT /api/downloads/reserve`. A change counts at
+  once, without a restart: lowered, downloads waiting for room may start; raised past what's free,
+  nothing is deleted, downloads wait. (The server's old `--reserve-gb` is taken and ignored, with a
+  warning, for run files written before.) A download that wouldn't fit (all that's downloaded and not
   here yet, more than the free space above the reserve) is refused, saying so. When the disk
   fills later, what doesn't fit waits ("waiting for room"), and nothing downloaded goes for it.
 - **The build Mac:** its jobs don't need the mirror. The pack and lo jobs read a base pack from it
@@ -2182,8 +2186,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       isn't reachable (what goes must be kept there); it's logged and, when it freed anything, in
       the history. Until the target is lowered or off, nothing else refills the caches.
     - It never deletes what a job uses: what a job holds stays (Mid-job, above).
-    - **With the mirror's reserve** (`--reserve-gb` in `tools/app/install.sh`: 50 GB on the M1,
-      150 GB on the build Mac): the server's mirror copies downloads only while that much stays
+    - **With the mirror's reserve** (the Regions panel's "Keep free" per Mac, 30 GB unless set,
+      §4 Room): the server's mirror copies downloads only while that much stays
       free (nothing downloaded goes for it). The two floors are apart: the mirror never frees for
       the agent's target, and the agent never touches the mirror. A target at or under the
       mirror's reserve is the agent's alone to make. Above it, a download may fill the room between

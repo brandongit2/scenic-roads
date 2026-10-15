@@ -13,6 +13,8 @@
 //!                                         important place in it unless named
 //!   PUT    /api/downloads/views/{id}      {name}: rename a downloaded view
 //!   DELETE /api/downloads/views/{id}      remove it
+//!   PUT    /api/downloads/reserve         {gb}: the free space downloads leave on the disk
+//!                                         (crate::reserve)
 //!
 //! A download that wouldn't fit (all that's downloaded, less what's here, more than the free space
 //! above the reserve) is refused, with the numbers. What's downloaded is this Mac's alone:
@@ -251,10 +253,15 @@ impl Downloads {
         *g = next;
         self.version.fetch_add(1, Ordering::SeqCst);
         drop(g);
+        self.poke();
+        Ok(out)
+    }
+
+    /// Wakes the mirror thread for another round (the reserve changed).
+    pub fn poke(&self) {
         let (lock, cv) = &self.wake;
         *lock.lock().unwrap() = true;
         cv.notify_all();
-        Ok(out)
     }
 
     /// Waits until the downloads change, or `timeout`.
@@ -665,6 +672,8 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         "rate": store::mirror::SLOW_RATE,
         "free": room.free,
         "reserve": room.reserve,
+        "reserve_min": crate::reserve::MIN_GB * 1_000_000_000,
+        "disk": store::sys::disk_size(m.root()).ok(),
         "here": m.usage().1,
         "world": world,
         "wanted": { "bytes": room.missing + wanted_here, "here": wanted_here, "more": room.more, "unknown": room.unknown },
@@ -763,6 +772,32 @@ fn check_fits(s: &crate::AppState, next: &Asked, what: &str) -> Result<()> {
         size(m.reserve())
     );
     Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct Reserve {
+    gb: u64,
+}
+
+/// Sets the reserve to `gb` on a disk of `disk_bytes`: kept in the home, the mirror told, and its
+/// thread woken (downloads waiting for room may start; raised, nothing is deleted).
+fn set_reserve(s: &crate::AppState, gb: u64, disk_bytes: u64) -> Result<Value> {
+    let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
+    crate::reserve::check(gb, disk_bytes)?;
+    crate::reserve::save(&s.home, gb)?;
+    m.set_reserve(gb * 1_000_000_000);
+    s.downloads.poke();
+    Ok(json!({ "ok": true, "reserve": m.reserve() }))
+}
+
+/// Sets the reserve (crate::reserve), bounded by the size of the mirror's disk.
+pub async fn put_reserve(State(s): State<S>, Json(r): Json<Reserve>) -> Response {
+    blocking(s, move |s| {
+        let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
+        let disk = store::sys::disk_size(m.root()).context("the disk's size")?;
+        set_reserve(s, r.gb, disk)
+    })
+    .await
 }
 
 #[derive(Deserialize)]

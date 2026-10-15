@@ -505,3 +505,33 @@ fn saved_catalogs() {
     assert_eq!(m.saved_catalog().unwrap().unwrap().n, 5);
     assert_eq!(catalog::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
 }
+
+#[test]
+fn a_changed_reserve_counts_from_the_next_sync_and_raising_it_deletes_nothing() {
+    let nas = nas();
+    let home = tempfile::tempdir().unwrap();
+    let cat = two_areas(&nas, 1, 0, 1);
+    let cap = Arc::new(AtomicU64::new(1 << 40));
+    let m = mirror_on(home.path(), &cap, 0);
+    let w1 = wanted(&[world(&cat)]);
+    sync(&m, &cat, &w1, &nas);
+    // 1 MB free from here on: the area waits under a 1 MB reserve.
+    cap.store(used(&home.path().join("mirror")) + 1_000_000, SeqCst);
+    m.set_reserve(1_000_000);
+    assert_eq!(m.reserve(), 1_000_000);
+    let w2 = wanted(&[world(&cat), area(&cat, "6-33-21")]);
+    let s = sync(&m, &cat, &w2, &nas);
+    assert_eq!((s.copied, s.removed), (0, 0), "{s:?}");
+    assert!(s.waiting > 0);
+    assert_eq!(m.room(&w2).unwrap().reserve, 1_000_000);
+    // Raised past all that's free: nothing downloaded goes.
+    m.set_reserve(u64::MAX / 4);
+    let s = sync(&m, &cat, &w2, &nas);
+    assert_eq!((s.copied, s.removed), (0, 0), "{s:?}");
+    assert!(w1.items.iter().all(|i| m.is_here(i)), "nothing downloaded went");
+    // Lowered: what waited comes.
+    m.set_reserve(0);
+    let s = sync(&m, &cat, &w2, &nas);
+    assert_eq!((s.waiting, s.pending), (0, 0), "{s:?}");
+    assert!(w2.items.iter().all(|i| m.is_here(i)));
+}

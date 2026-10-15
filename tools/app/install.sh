@@ -35,12 +35,10 @@ if (( agent && helper )); then
   echo "--agent or --helper, not both" >&2
   exit 2
 fi
-# The build Mac keeps room for its builds (the OSM pass starts with 80 GB free, the pack cache holds
-# the base packs): its mirror fills only what's left past 150 GB. (Apart from the agent's disk room
-# target, `scenic room`: the mirror never frees for it, nor the agent for the mirror; docs/plan.md §8.)
-reserve=50
-if (( agent )); then reserve=150; fi
-printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" --reserve-gb $reserve > "$HOME_S/run/server"
+# The mirror's reserve (the free space downloads leave) is the Regions panel's setting, kept in the
+# app's folder (reserve.json; 30 GB unless set), not the run file's. (Apart from the agent's disk
+# room target, `scenic room`: the mirror never frees for it, nor the agent for the mirror; §8.)
+printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" > "$HOME_S/run/server"
 launchctl kickstart -k gui/$(id -u)/local.scenic.server
 if (( agent || helper )); then
   # The agent's jobs run osmium (Homebrew), Planetiler (Java 21) and the Python steps (uv, wherever

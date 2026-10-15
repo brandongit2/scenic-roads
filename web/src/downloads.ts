@@ -48,6 +48,9 @@ export interface DlStatus {
   rate?: number;
   free?: number;
   reserve?: number;
+  /** The least the reserve can be set to, and the disk's size (bytes; null when unknown). */
+  reserve_min?: number;
+  disk?: number | null;
   /** What's here in all. */
   here?: number;
   world?: WorldDl;
@@ -86,6 +89,9 @@ export const dlView = (outline: [number, number][], name?: string) => call<{ id:
  * missing when it isn't downloaded (`with_world`), all that would still be copied (`need`) and the
  * free space above the reserve (`room`). */
 export const viewSize = (outline: [number, number][]) => call<{ bytes: number; here: number; with_world: number; need: number; room: number; fits: boolean }>('/api/downloads/views/size', json('POST', { outline }));
+/** Sets the free space downloads leave on this Mac's disk (whole GB; refused, with why, out of
+ * bounds). */
+export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number }>('/api/downloads/reserve', json('PUT', { gb }));
 export const renameView = (id: string, name: string) => call<{ ok: boolean; name: string }>(`/api/downloads/views/${encodeURIComponent(id)}`, json('PUT', { name }));
 export const dropView = (id: string) => call<{ ok: boolean }>(`/api/downloads/views/${encodeURIComponent(id)}`, { method: 'DELETE' });
 

@@ -1,13 +1,13 @@
 //! The map's server: tiles, layers and the APIs over the catalog's data (docs/plan.md §4).
 //!
 //! usage: server [--port 7311] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
-//!               [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]
+//!               [--no-mirror | --mirror] [--listen <IPv4 address>]
 //!
 //! Data comes from the NAS project folder (found and mounted by itself), read from this Mac's mirror
 //! when it's there. `--root` serves a local folder laid out like the project folder instead
 //! (development, tests), without a mirror unless `--mirror` (then copied into `--home`'s as from
-//! the NAS: a `--home` of its own, never this Mac's app folder). `--reserve-gb`: the free space the
-//! mirror leaves on the disk, in GB (10⁹ bytes). `--listen`: the one address to answer on (a test
+//! the NAS: a `--home` of its own, never this Mac's app folder). The free space the mirror leaves on
+//! the disk is the owner's setting in the Regions panel (crate::reserve). `--listen`: the one address to answer on (a test
 //! server's 127.0.0.1), else every IPv4 address and IPv6's loopback. Nothing is loaded at start:
 //! the catalog says where everything is, and files are opened on first use.
 
@@ -26,6 +26,7 @@ mod places;
 mod query;
 mod regions;
 mod remote;
+mod reserve;
 mod terrain;
 mod tiles;
 mod updater;
@@ -352,7 +353,10 @@ fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
 }
 
 /// The options it takes, with a value or not (the usage above).
-const VALUED: [&str; 7] = ["--port", "--web", "--fonts", "--home", "--root", "--reserve-gb", "--listen"];
+const VALUED: [&str; 7] = ["--port", "--web", "--fonts", "--home", "--root", OLD_RESERVE, "--listen"];
+/// Taken and ignored (warned): a run file written before the reserve became the Regions panel's
+/// setting still passes it until tools/app/install.sh writes it again.
+const OLD_RESERVE: &str = "--reserve-gb";
 const FLAGS: [&str; 2] = ["--no-mirror", "--mirror"];
 
 /// Why the arguments are refused, if they are: `--help`, `-h` or anything it doesn't take. Checked
@@ -404,7 +408,7 @@ async fn main() -> Result<()> {
         if !why.is_empty() {
             eprintln!("server: {why}");
         }
-        eprintln!("usage: server [--port {}] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]\n              [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]", pipeline::net::DEFAULT_PORT);
+        eprintln!("usage: server [--port {}] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]\n              [--no-mirror | --mirror] [--listen <IPv4 address>]", pipeline::net::DEFAULT_PORT);
         std::process::exit(if why.is_empty() { 0 } else { 2 });
     }
     raise_open_files();
@@ -412,8 +416,9 @@ async fn main() -> Result<()> {
     let fonts = PathBuf::from(arg("--fonts").unwrap_or_else(|| "data/fonts".into()));
     let port: u16 = arg("--port").map(|p| p.parse()).transpose()?.unwrap_or(pipeline::net::DEFAULT_PORT);
     let home = arg("--home").map(PathBuf::from).unwrap_or_else(data::default_home);
-    let reserve_gb: f64 = arg("--reserve-gb").map(|v| v.parse()).transpose()?.unwrap_or(50.0);
-    anyhow::ensure!(reserve_gb.is_finite() && reserve_gb >= 0.0, "--reserve-gb: a number of GB");
+    if arg(OLD_RESERVE).is_some() {
+        eprintln!("server: {OLD_RESERVE} is ignored: the reserve is set in the Regions panel ({} GB now)", reserve::load(&home));
+    }
     let no_mirror = std::env::args().any(|a| a == "--no-mirror");
     let root = arg("--root").map(PathBuf::from);
     let mirror_root = std::env::args().any(|a| a == "--mirror");
@@ -425,7 +430,7 @@ async fn main() -> Result<()> {
             eprintln!("nsmb.conf: {e:#}");
         }
     }
-    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror, reserve: (reserve_gb * 1e9) as u64 })?;
+    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror, reserve: reserve::load(&home) * 1_000_000_000 })?;
     eprintln!("catalog {} · NAS {}", d.catalog().n, d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into()));
     if root.is_none() {
         d.spawn_background();
@@ -528,6 +533,7 @@ async fn main() -> Result<()> {
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))
         .route("/api/downloads/views", axum::routing::post(downloads::post_view))
+        .route("/api/downloads/reserve", axum::routing::put(downloads::put_reserve))
         .route("/api/downloads/views/size", axum::routing::post(downloads::post_view_size))
         .route("/api/downloads/views/{id}", axum::routing::put(downloads::put_view).delete(downloads::delete_view))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
@@ -1019,6 +1025,8 @@ mod tests {
         assert_eq!(v(&["--port", "18150", "--home", "/tmp/h", "--root", "/tmp/r", "--no-mirror"]), None);
         assert_eq!(v(&["--help"]), Some(String::new()));
         assert_eq!(v(&["-h"]), Some(String::new()));
+        // An old run file's reserve: taken (and ignored), never a server that won't start.
+        assert_eq!(v(&["--web", "w", "--reserve-gb", "150"]), None);
         assert!(v(&["--verbose"]).is_some_and(|w| w.contains("unknown")));
         assert!(v(&["--home"]).is_some_and(|w| w.contains("needs a value")));
         assert!(v(&["--home", "--root", "/tmp/r"]).is_some_and(|w| w.contains("needs a value")));
