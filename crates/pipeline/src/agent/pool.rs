@@ -410,6 +410,10 @@ pub struct Side {
     pub broker: Option<crate::coord::brokers::Broker>,
     /// Whom it reached and whom it couldn't, for its heartbeat (crate::pool::reachable).
     pub reach: Vec<crate::pool::reachable::Reach>,
+    /// The members' heartbeats (their pool's fields, shadow runs' left out) as `Run::tend_reach`
+    /// last read them: handed to each step (`Heard::reports`), so the driver's `hand_to` reads
+    /// none from the NAS.
+    pub beats: Vec<Beat>,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -440,7 +444,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -558,7 +562,7 @@ impl Side {
         let msgs = self.take_mail();
         let (entries, folders): (Vec<Entry>, Vec<Option<PathBuf>>) = give.entries.into_iter().unzip();
         self.folders.extend(folders.into_iter().flatten());
-        let heard = Heard { msgs, asks: give.asks, entries, listed: self.made.pop_front(), settled: give.settled, able: give.able, reassert: give.reassert, members: self.members.iter().cloned().collect() };
+        let heard = Heard { msgs, asks: give.asks, entries, listed: self.made.pop_front(), settled: give.settled, able: give.able, reassert: give.reassert, members: self.members.iter().cloned().collect(), reports: self.beats.clone() };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
         let Some(driver) = self.driver.as_mut() else { return Out { stop: self.stopped.clone(), ..Default::default() } };
@@ -994,6 +998,9 @@ pub struct Run {
     pub ticking: Ticking,
     /// The members' coordinators tried (crate::pool::reachable).
     pub prober: Prober,
+    /// The current term, and when this Mac first saw it (its own clock): a request that failed
+    /// before then was another lead's.
+    term_seen: Option<(u64, u64)>,
 }
 
 /// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
@@ -1213,7 +1220,7 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None, prober: Prober::default() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None, prober: Prober::default(), term_seen: None }
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for
@@ -1325,12 +1332,17 @@ impl Run {
         let me = self.side.member().id.clone();
         let cur = self.side.driver().current().lead.clone().filter(|t| t.member != me);
         let lead = cur.as_ref().map(|t| t.member.clone());
+        let term = self.side.driver().current().term;
+        if self.term_seen.is_none_or(|(t, _)| t != term) {
+            self.term_seen = Some((term, now));
+        }
+        let seen = self.term_seen.map_or(now, |(_, at)| at);
         if let Some(l) = &lead {
             if let Some(a) = self.cx.lead_answered {
                 self.prober.tracker.seen(l, "coordinator", Ok(()), a);
             }
-            // (A failure since its term began: one before was another lead's.)
-            if let Some((at, why)) = self.cx.lead_failed.as_ref().filter(|(at, _)| cur.as_ref().is_some_and(|t| *at >= t.since)) {
+            // (A failure since this Mac first saw its term: one before was another lead's.)
+            if let Some((at, why)) = self.cx.lead_failed.as_ref().filter(|(at, _)| *at >= seen) {
                 let cause = crate::pool::reachable::cause_of(why);
                 self.prober.tracker.seen(l, "coordinator", Err((cause, why.clone())), *at);
             }
@@ -1342,6 +1354,12 @@ impl Run {
         }
         if self.prober.going.is_none() && self.prober.last.is_none_or(|l| now.abs_diff(l) >= PROBE_S) {
             let mut targets: Vec<(String, String, Vec<String>)> = Vec::new();
+            // (The members' heartbeats, read once a round: the driver's `hand_to` goes by them.)
+            let mut ids: Vec<String> = self.side.members().iter().cloned().collect();
+            if let Some(l) = lead.as_ref().filter(|l| !ids.contains(l)) {
+                ids.push(l.clone());
+            }
+            self.side.beats = ids.iter().filter_map(|id| self.side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
             if let Some(l) = &lead {
                 let urls = self.side.heartbeat(l).and_then(|h| h.broker).map(|b| b.urls).filter(|u| !u.is_empty()).unwrap_or_else(|| self.cx.lead_urls.clone());
                 if !urls.is_empty() {
@@ -1374,6 +1392,11 @@ impl Run {
             }
         }
         self.side.reach = self.prober.tracker.report(now);
+        // (Its own report as it stands now, not as last read.)
+        let own = self.side.reach.clone();
+        if let Some(b) = self.side.beats.iter_mut().find(|b| b.member == me) {
+            b.reach = own;
+        }
     }
 
     /// Leading term 2 or later, today's records files not yet written from its records: not caught

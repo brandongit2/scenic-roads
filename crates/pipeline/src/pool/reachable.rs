@@ -153,8 +153,8 @@ pub fn cause_of(text: &str) -> Cause {
 /// A report's failure in words, for target `host`: the cause and what's likely behind it.
 pub fn words(r: &Reach, host: &str) -> String {
     match r.cause {
-        Some(Cause::TimedOut) => format!("connection timed out (likely the firewall on {host}: allow Scenic in System Settings › Network › Firewall there)"),
-        Some(Cause::Refused) => format!("connection refused (nothing listens on {host}'s port: its agent stopped, or is restarting)"),
+        Some(Cause::TimedOut) => format!("connection timed out ({host} asleep, off the network, or its firewall blocking Scenic: allow Scenic in System Settings › Network › Firewall there)"),
+        Some(Cause::Refused) => format!("connection refused ({host}'s agent stopped or restarting, or its firewall refusing Scenic: allow Scenic in System Settings › Network › Firewall there)"),
         Some(Cause::NoName) => format!("{host}'s address doesn't resolve"),
         _ if r.why.is_empty() => "no answer".into(),
         _ => r.why.clone(),
@@ -163,6 +163,7 @@ pub fn words(r: &Reach, host: &str) -> String {
 
 /// The reports in heartbeats `beats` (in touch at the reader's `now`, not `to`'s own) that `to`
 /// can't be reached: each with its reporter's heartbeat.
+/// (Shadow runs' heartbeats are left out by the callers, which read the agent's whole heartbeat.)
 pub fn unreached<'a>(beats: &'a [Beat], to: &str, now: u64) -> Vec<(&'a Beat, &'a Reach)> {
     beats.iter().filter(|b| b.member != to && b.beat > 0 && !b.out_of_touch(now)).flat_map(|b| b.reach.iter().filter(|r| r.member == to && !r.ok).map(move |r| (b, r))).collect()
 }
@@ -229,7 +230,7 @@ mod tests {
         let bad = Reach { member: A.into(), what: "coordinator".into(), ok: false, at: 5000, since: 4000, cause: Some(Cause::TimedOut), why: "timed out".into() };
         let good = Reach { member: C.into(), what: "broker".into(), ok: true, at: 5000, since: 0, cause: None, why: String::new() };
         let beats = vec![rep(B, "m4", 5010, vec![bad.clone(), good.clone()]), rep(A, "m1", 5010, vec![Reach { member: A.into(), ..good.clone() }])];
-        assert!(why_unreachable(&beats, A, "m1", 5020).is_some_and(|w| w.starts_with("unreachable from m4: connection timed out (likely the firewall on m1")));
+        assert!(why_unreachable(&beats, A, "m1", 5020).is_some_and(|w| w.starts_with("unreachable from m4: connection timed out (m1 asleep, off the network, or its firewall blocking Scenic")));
         assert_eq!(unreachable_for(&beats, A, 5020), Some(1010));
         assert_eq!(why_unreachable(&beats, B, "m4", 5020), None);
         assert!(reached(&beats, C, 5020) && !reached(&beats, A, 5020), "its own report of itself doesn't count");

@@ -231,6 +231,9 @@ pub struct Heard {
     /// The pool's members, by id, as the agent knows them (the lead's status names them): who may
     /// take over a lead that stood down, and in what order.
     pub members: Vec<String>,
+    /// The members' heartbeats as the agent last read them (shadow runs' left out): whom they
+    /// report they can't reach (crate::pool::reachable), for `hand_to`.
+    pub reports: Vec<Beat>,
 }
 
 /// A listing of the journal to make, off the loop (crate::pool::journal::list).
@@ -462,9 +465,9 @@ pub struct Driver {
     /// Since when (awake clock) a take-up has found term 1 with no snapshot that reads whole (its
     /// lead's, or its first).
     first_unread: Option<u64>,
-    /// The pool's members as its last step heard them (`Heard::members`): whose heartbeats say
-    /// whether a member is reachable (`hand_to`).
-    members: Vec<String>,
+    /// The members' heartbeats its last step heard (`Heard::reports`): whether a member is
+    /// reachable (`hand_to`).
+    reports: Vec<Beat>,
 }
 
 /// Whether the clocks went `was` → `now` (wall, awake) with more than `GAP_S` unaccounted for: the
@@ -504,7 +507,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, unread: None, first_unread: None, members: Vec::new() }
+        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, unread: None, first_unread: None, reports: Vec::new() }
     }
 
     /// What to keep for the next process: saved after every step that changed it, before that
@@ -545,7 +548,7 @@ impl Driver {
     /// One step (see the module's doc: the contract).
     pub fn step(&mut self, io: &dyn Io, heard: Heard, check: Check) -> Out {
         let mut out = Out::default();
-        self.members = heard.members.clone();
+        self.reports = heard.reports.clone();
         // One process per member: its lock still held, or it stops, writing nothing more (another
         // process holds it). A check that can't tell holds this step's duties, and is tried again.
         let mut unsure = None;
@@ -1460,8 +1463,7 @@ impl Driver {
             return Err(format!("its app {} is older than term {}'s {}", b.app, t.term, t.app));
         }
         // (§6.8: a member another reports it can't reach would grant nobody else work.)
-        let beats: Vec<Beat> = self.members.iter().filter(|m| **m != to).filter_map(|m| Beat::read(io, m).ok().flatten()).collect();
-        if let Some(why) = super::reachable::why_unreachable(&beats, to, if b.host.is_empty() { to } else { &b.host }, now) {
+        if let Some(why) = super::reachable::why_unreachable(&self.reports, to, if b.host.is_empty() { to } else { &b.host }, now) {
             return Err(why);
         }
         Ok(())
@@ -2969,11 +2971,11 @@ mod tests {
         let mut bc = Beat::read(&mem, C).unwrap().unwrap();
         let clean = bc.clone();
         bc.reach = vec![super::super::reachable::Reach { member: B.into(), what: "broker".into(), ok: false, at: bc.beat, since: bc.beat - 300, cause: Some(super::super::reachable::Cause::TimedOut), why: "timeout: connect".into() }];
-        bc.write(&mem).unwrap();
+        (a.reports, b.reports) = (vec![bc.clone()], vec![bc]);
         let why = a.hand_to(&ia, B).unwrap_err();
-        assert!(why.starts_with("unreachable from iMac: connection timed out (likely the firewall on MacBook-Air"), "{why}");
+        assert!(why.starts_with("unreachable from iMac: connection timed out (MacBook-Air asleep, off the network, or its firewall blocking Scenic"), "{why}");
         assert_eq!(b.hand_to(&ib, B).map_err(|w| w.starts_with("unreachable")), Err(true));
-        clean.write(&mem).unwrap();
+        a.reports = vec![clean];
         assert_eq!(a.hand_to(&ia, B), Ok(()));
         assert!(a.takeover(&ia).refused.is_some());
         let t = b.takeover(&ib);

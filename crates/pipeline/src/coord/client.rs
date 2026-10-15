@@ -52,6 +52,18 @@ pub struct Answered {
     pub member: Option<String>,
 }
 
+/// Whether a request failed while connecting (resolving the name, or the connection timed out,
+/// refused or unreachable), rather than once connected.
+fn connect_phase(e: &ureq::Error) -> bool {
+    use std::io::ErrorKind as K;
+    match e {
+        ureq::Error::Timeout(t) => matches!(t, ureq::Timeout::Resolve | ureq::Timeout::Connect),
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => true,
+        ureq::Error::Io(io) => matches!(io.kind(), K::ConnectionRefused | K::TimedOut | K::HostUnreachable | K::NetworkUnreachable | K::AddrNotAvailable),
+        _ => false,
+    }
+}
+
 /// Whether a coordinator (or a broker) answers at any of `urls`, trying each in turn with a short
 /// timeout (crate::pool::reachable::PROBE_TIMEOUT_S): any HTTP answer counts, whatever its status
 /// (it needs no token); else the last failure, its cause read from it.
@@ -105,7 +117,7 @@ impl Client {
         self.answered.lock().unwrap().clone()
     }
 
-    /// When a request last reached none of its addresses, and why; None: none has failed so.
+    /// When a request last failed to connect to any of its addresses, and why; None: none has.
     pub fn failed(&self) -> Option<(u64, String)> {
         self.failed.lock().unwrap().clone()
     }
@@ -130,6 +142,9 @@ impl Client {
     /// again when none did or the token was refused.
     fn request(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<(u16, Vec<u8>)> {
         let mut last = None;
+        // (Whether every address failed while connecting: only that says it can't be reached, not
+        // a long request that ran past its time.)
+        let mut connecting = None;
         for fresh in [false, true] {
             if fresh {
                 let Some(root) = &self.root else { break };
@@ -167,14 +182,16 @@ impl Client {
                         }
                         return Ok((code, b));
                     }
-                    Err(e) => last = Some(anyhow::Error::from(e).context(format!("reach the coordinator at {url}"))),
+                    Err(e) => {
+                        connecting = Some(connecting.unwrap_or(true) && connect_phase(&e));
+                        last = Some(anyhow::Error::from(e).context(format!("reach the coordinator at {url}")));
+                    }
                 }
             }
         }
         let e = last.unwrap_or_else(|| anyhow::anyhow!("the coordinator has no address"));
-        let why = format!("{e:#}");
-        if !why.contains("refused the token") {
-            *self.failed.lock().unwrap() = Some((crate::agent::jobs::now_s(), why));
+        if connecting == Some(true) {
+            *self.failed.lock().unwrap() = Some((crate::agent::jobs::now_s(), format!("{e:#}")));
         }
         Err(e)
     }

@@ -671,7 +671,7 @@ fn span(s: u64) -> String {
 }
 
 /// What the owner does about a coordinator members can't reach (docs/pool.md §6.8).
-pub const OWNER_STEPS: &str = "On the Mac named: allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off; until then the lead stays off it";
+pub const OWNER_STEPS: &str = "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off. Until then the lead stays off it";
 
 /// The proactive offer (§6.5): the lead's heartbeat says it's away from home or on battery, no
 /// handover is under way, and another member is home on power, able to lead, and the lead can be
@@ -1202,7 +1202,7 @@ mod tests {
             pass_all(&mut [&mut a, &mut b], 40);
             (a.go(), b.go());
             for v in [a.view(), b.view()] {
-                assert!(v.unreached.len() == 1 && v.unreached[0].contains("coordinator is unreachable from") && v.unreached[0].contains("connection timed out (likely the firewall on") && v.unreached[0].contains("gets no work while"), "{:?}", v.unreached);
+                assert!(v.unreached.len() == 1 && v.unreached[0].contains("coordinator is unreachable from") && v.unreached[0].contains("connection timed out (") && v.unreached[0].contains("asleep, off the network, or its firewall blocking Scenic") && v.unreached[0].contains("gets no work while"), "{:?}", v.unreached);
                 let ma = v.members.iter().find(|m| m.member == ia).unwrap();
                 assert!(ma.unreached.as_deref().is_some_and(|w| w.starts_with("unreachable from")), "{ma:?}");
                 assert!(v.members.iter().find(|m| m.member == ib).is_some_and(|m| m.unreached.is_none() && m.can_lead));
@@ -1252,7 +1252,7 @@ mod tests {
             b.run.prober.probe = Arc::new(|_: &[String]| Err((Cause::Refused, "connection refused".into())));
             pass_all(&mut [&mut a, &mut b], REPORT_S + AWAY_S + 3600);
             let v = a.view();
-            assert!(v.unreached.len() == 1 && v.unreached[0].contains("connection refused (nothing listens"), "{:?}", v.unreached);
+            assert!(v.unreached.len() == 1 && v.unreached[0].contains("connection refused (") && v.unreached[0].contains("firewall refusing Scenic"), "{:?}", v.unreached);
             assert_eq!(a.run.side.driver().leads(), Some(1));
             assert_eq!(a.run.controls.kept.away_at, 0);
             assert!(v.members.iter().any(|m| m.member == ia && m.leads));

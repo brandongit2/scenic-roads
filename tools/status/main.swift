@@ -333,7 +333,7 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
         out.append(Line(text: u, style: .plain))
     }
     if !(v.unreached ?? []).isEmpty {
-        out.append(Line(text: "On the Mac named: allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off", style: .small))
+        out.append(Line(text: "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off", style: .small))
     }
     if let a = v.asked, ["done", "failed", "refused"].contains(a.state) {
         out.append(Line(text: "\(a.state == "done" ? "Done" : a.state == "refused" ? "Refused" : "Came to nothing"): \(a.said) (\(clock(a.since)))", style: .small))
