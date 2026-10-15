@@ -74,6 +74,12 @@ impl Placement {
     }
 }
 
+/// The workers `names` measured against the lead (`lead`) by the build's history
+/// (super::forecast::speeds: the shared steps both did), those measured alone.
+pub fn measured_speeds(events: &[crate::coord::history::Event], lead: &str, names: &[String]) -> BTreeMap<String, f64> {
+    super::forecast::speeds(events, lead, names, 1.0).into_iter().filter(|(_, (_, m))| *m).map(|(n, (s, _))| (n, s)).collect()
+}
+
 /// Each step's slack in forecast `f` (s): the build's end less the step's (0 when it ends last).
 pub fn slack(f: &super::forecast::Forecast) -> BTreeMap<String, u64> {
     let Some(end) = f.done_at.or_else(|| f.steps.iter().filter_map(|s| s.done_at).max()) else { return BTreeMap::new() };
@@ -159,6 +165,20 @@ mod tests {
         // A new window, another draw (no target held by one forever).
         assert_ne!(key("t", 0), key("t", DRAW_S));
         assert_eq!(key("t", 0), key("t", DRAW_S - 1));
+    }
+
+    /// A member's speed under the name it asks with, from the history's runs of a shared step by
+    /// it and by the lead; one with too few runs, unmeasured (left out: weighed as the lead).
+    #[test]
+    fn a_members_speed_is_measured_under_its_own_name() {
+        use crate::coord::history::Event;
+        let run = |w: &str, secs: f64| Event { worker: Some(w.into()), step: Some("peaks".into()), targets: vec!["6/1/1".into()], secs: Some(secs), ok: Some(true), ..Event::new("done") };
+        let mut ev: Vec<Event> = (0..3).map(|_| run("MacBook-Pro-de-Brandon", 300.0)).collect();
+        ev.extend((0..3).map(|_| run("m4", 100.0)));
+        ev.push(run("ipad", 50.0));
+        let s = measured_speeds(&ev, "m4", &["MacBook-Pro-de-Brandon".into(), "ipad".into()]);
+        assert_eq!(s.len(), 1);
+        assert!((s["MacBook-Pro-de-Brandon"] - 1.0 / 3.0).abs() < 1e-9);
     }
 
     #[test]

@@ -54,12 +54,15 @@ pub trait Nas {
 #[derive(Clone, Debug)]
 pub struct Share {
     root: PathBuf,
+    /// The folders this process has made (or found made) under it: the writes' hot path makes no
+    /// folder twice (`parent_made`); one dropped again when a write into it fails (`forget`).
+    made: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
 }
 
 impl Share {
     /// The share at `root`, the NAS project folder.
     pub fn new(root: &Path) -> Share {
-        Share { root: root.to_path_buf() }
+        Share { root: root.to_path_buf(), made: Default::default() }
     }
 
     /// The folder the paths are under.
@@ -71,22 +74,43 @@ impl Share {
         self.root.join(path)
     }
 
-    fn parent_made(p: &Path) -> Result<()> {
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d).with_context(|| format!("make {}", d.display()))?;
+    /// `p`'s folder made, once a process. On SMB `create_dir_all` may fail with EEXIST when its
+    /// follow-up stat of a folder another Mac just made is stale: taken as made (the write that
+    /// follows fails if the folder truly is missing), but not remembered.
+    fn parent_made(&self, p: &Path) -> Result<()> {
+        let Some(d) = p.parent() else { return Ok(()) };
+        if self.made.lock().unwrap().contains(d) {
+            return Ok(());
         }
-        Ok(())
+        match std::fs::create_dir_all(d) {
+            Ok(()) => {
+                self.made.lock().unwrap().insert(d.to_path_buf());
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("make {}", d.display())),
+        }
+    }
+
+    /// A write into `p`'s folder failed: it's made again next time (it may have gone).
+    fn forget(&self, p: &Path) {
+        if let Some(d) = p.parent() {
+            self.made.lock().unwrap().remove(d);
+        }
     }
 }
 
 impl Nas for Share {
     fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
         let p = self.at(path);
-        Share::parent_made(&p)?;
+        self.parent_made(&p)?;
         let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Created::There),
-            Err(e) => return Err(e).with_context(|| format!("create {}", p.display())),
+            Err(e) => {
+                self.forget(&p);
+                return Err(e).with_context(|| format!("create {}", p.display()));
+            }
         };
         let r = (|| -> Result<()> {
             f.write_all(bytes)?;
@@ -103,8 +127,12 @@ impl Nas for Share {
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let p = self.at(path);
-        Share::parent_made(&p)?;
-        crate::whole::write(&p, bytes)
+        self.parent_made(&p)?;
+        let r = crate::whole::write(&p, bytes);
+        if r.is_err() {
+            self.forget(&p);
+        }
+        r
     }
 
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -200,6 +228,30 @@ impl Nas for Mem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder's make that says it exists (SMB's stale stat after another Mac made it) isn't an
+    /// error: the write that follows says whether it's there. A folder made is made once a
+    /// process, and made again after a write into it fails (it went).
+    #[test]
+    fn the_share_takes_a_folder_said_to_exist_and_makes_one_once() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Share::new(d.path());
+        // (A file where the folder would be: create_dir_all says AlreadyExists, as SMB's stale stat
+        // does; the write then fails, not the make.)
+        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
+        std::fs::write(d.path().join("state/pool/members"), b"x").unwrap();
+        let e = s.write_whole("state/pool/members/m-1.json", b"a").unwrap_err();
+        assert!(!format!("{e:#}").starts_with("make "), "{e:#}");
+        assert!(s.create_new("state/pool/members/m-2.json", b"a").is_err());
+        std::fs::remove_file(d.path().join("state/pool/members")).unwrap();
+        s.write_whole("state/pool/members/m-1.json", b"a").unwrap();
+        assert!(s.made.lock().unwrap().contains(&d.path().join("state/pool/members")));
+        // Gone: the next write fails and forgets it; the one after makes it again.
+        std::fs::remove_dir_all(d.path().join("state/pool/members")).unwrap();
+        assert!(s.write_whole("state/pool/members/m-1.json", b"b").is_err());
+        s.write_whole("state/pool/members/m-1.json", b"b").unwrap();
+        assert_eq!(s.read("state/pool/members/m-1.json").unwrap().as_deref(), Some(&b"b"[..]));
+    }
 
     #[test]
     fn the_share_makes_once_writes_whole_and_lists_without_temporary_files() {

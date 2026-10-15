@@ -2916,8 +2916,8 @@ At each phase's end an Opus agent reviews the work against this plan.
      §12 batch 11): it orders and draws only the members' asks and the tasks: the lead's own jobs
      take the plan in its order; the plan's targets are placed only with every step to every member
      on; a step's slack is its whole step's in the forecast (not each target's), and the forecast
-     doesn't model the draws; a draw's speeds are the forecast's, measured on the shared steps
-     (crate::agent::forecast's `speeds`), whatever the step drawn; a member drawn a target and not
+     doesn't model the draws; a draw's speeds are measured on the shared steps alone (crate::agent::forecast's `speeds`
+     over the build's history), whatever the step drawn; a member drawn a target and not
      asking for it holds it from the others until the minute's window turns; slope has no tasks, so
      nothing of it is offered ahead; a head start is reckoned at this Mac's time per task of its kind
      (its tiles or blocks counted, not timed);

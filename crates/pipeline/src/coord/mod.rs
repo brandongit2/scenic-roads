@@ -505,7 +505,7 @@ impl Shared {
         let after = self.last.get(&(a.worker.clone(), o.step.clone())).and_then(|l| o.targets.iter().position(|t| t.0 == *l)).map(|i| i + 1);
         let start = match &self.placement {
             // (Placement on: from the target measured to take longest that's drawn to this worker.)
-            Some((p, since)) => self.placed_start(o, a, p, *since, now, &takeable),
+            Some((p, since)) => self.placed_start(o, a, p, *since, now, &held, &takeable),
             None => after.filter(|&i| i < o.targets.len() && takeable(i)).or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
         };
         let Some(start) = start else { return Vec::new() };
@@ -531,7 +531,18 @@ impl Shared {
     /// asking lately whose room fits it (`placement::draw`, by their measured speeds, in the window
     /// `now` is in since `since`); a cold start (none of its step measured) as `most_room` decides,
     /// undrawn.
-    fn placed_start(&self, o: &Offer, a: &Ask, p: &crate::agent::placement::Placement, since: Instant, now: Instant, takeable: &dyn Fn(usize) -> bool) -> Option<usize> {
+    /// Whether `a`'s worker could take measured target `t` (its key `k`) of offer `o` now, by
+    /// `pick_every`'s rules: not held (`held`), not done, not kept from it after it failed it, and
+    /// its measures within the room its ask says.
+    #[allow(clippy::too_many_arguments)]
+    fn may_take_measured(&self, o: &Offer, a: &Ask, t: &str, k: &str, m: &Measured, held: &BTreeSet<String>, now: Instant) -> bool {
+        let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
+        let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
+        !held.contains(t) && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k) && !backoff && m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn placed_start(&self, o: &Offer, a: &Ask, p: &crate::agent::placement::Placement, since: Instant, now: Instant, held: &BTreeSet<String>, takeable: &dyn Fn(usize) -> bool) -> Option<usize> {
         use crate::agent::placement;
         let mut order: Vec<(Option<u64>, usize)> = (0..o.targets.len()).map(|i| (self.secs_of(&o.step, &o.targets[i].0, &a.worker), i)).collect();
         order.sort_by(|x, y| y.0.is_some().cmp(&x.0.is_some()).then(y.0.cmp(&x.0)).then(x.1.cmp(&y.1)));
@@ -540,14 +551,14 @@ impl Shared {
             if !takeable(i) {
                 return false;
             }
-            let t = &o.targets[i].0;
+            let (t, k, _) = &o.targets[i];
             let Some(m) = self.measured(&o.step, t) else { return true };
+            // (Each other member by the rules its own ask would meet: not one that couldn't take it.)
             let mut who: Vec<(String, f64)> = self
                 .workers
                 .iter()
-                .filter(|(n, w)| {
-                    *n != &a.worker && !w.bad && w.kind == "native" && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING) && w.can.iter().any(|c| c == &o.step) && w.mem_mb >= m.mem_mb && w.ask.as_ref().and_then(|x| x.disk_mb).is_none_or(|d| m.disk_mb <= d)
-                })
+                .filter(|(n, w)| *n != &a.worker && !w.bad && w.kind == "native" && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING) && w.app.as_ref().is_none_or(|x| *x == self.app))
+                .filter(|(_, w)| w.ask.as_ref().is_some_and(|x| x.can.contains(&o.step) && self.may_take_measured(o, x, t, k, &m, held, now)))
                 .map(|(n, _)| (n.clone(), p.weight(n)))
                 .collect();
             who.push((a.worker.clone(), p.weight(&a.worker)));
@@ -566,14 +577,15 @@ impl Shared {
         let window = now.saturating_duration_since(*since).as_secs();
         let mut ids: Vec<&task::Task> = self.tasks.by_id.values().filter(|t| self.tasks.may_take(t, &a.worker, &a.can, a.mem_mb, now)).collect();
         ids.sort_by_key(|t| (t.offered, t.id));
+        // (The others around and asking, once an ask: each task then by its kind and memory.)
+        let around: Vec<(&String, &Worker)> = self.workers.iter().filter(|(n, w)| *n != &a.worker && !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)).collect();
         ids.into_iter()
             .find(|t| {
-                let mut who: Vec<(String, f64)> = self
-                    .takers(t, now)
+                let mut who: Vec<(String, f64)> = around
                     .iter()
-                    .filter_map(|w| w["worker"].as_str().map(str::to_string))
-                    .filter(|n| n != &a.worker && self.tasks.may_take(t, n, &[t.kind.clone()], u64::MAX, now))
-                    .map(|n| {
+                    .filter(|(n, w)| self.tasks.may_take(t, n, &w.can, w.mem_mb, now))
+                    .map(|(n, _)| {
+                        let n = n.to_string();
                         let w = self.tasks.pace(&n, &t.kind).map_or(1.0, |p| 1.0 / p.max(1e-6));
                         (n, w)
                     })
@@ -3658,6 +3670,24 @@ mod tests {
         assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
         let next = picks(&c);
         assert!(next.iter().all(|&(x, y)| x != y) && next != first);
+        // A target m2 couldn't take itself (it failed it lately, or it's past its room) isn't drawn
+        // to it: m1 takes it.
+        {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for t in &ts[..200] {
+                s.failed.insert(("m2".into(), cost_key("pack", t)), (now, 1));
+            }
+        }
+        let after = picks(&c);
+        assert!(after[..200].iter().all(|&(x, y)| x && !y), "failed on m2: m1's");
+        assert_eq!(&after[200..], &next[200..]);
+        let small = every_ask("m2", "pack", 100, 10_000);
+        assert!(w2.ask(&small).unwrap().is_none());
+        assert!(picks(&c).iter().all(|&(x, _)| x), "past m2's room: m1's");
+        // (The lead isn't drawn: its own jobs take the plan as they did, its room whatever it is.)
+        c.set_every(Some(Every { own: Some((1 << 20, 1 << 30)) }));
+        assert!(picks(&c).iter().all(|&(x, _)| x));
         // The other no longer asking: the one asking takes any.
         clock.advance(ASKING);
         assert!(w1.ask(&a1).unwrap().is_none());

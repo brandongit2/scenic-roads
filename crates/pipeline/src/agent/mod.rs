@@ -5368,10 +5368,22 @@ impl Agent {
         self.placement && self.pool.is_some()
     }
 
-    /// What this Mac's coordinator and broker place by, placement on: the forecast's slack and
-    /// measured speeds (none yet: no slack, every speed the lead's).
+    /// What this Mac's coordinator and broker place by, placement on: the forecast's slack (none
+    /// yet: no slack), and each worker its coordinator knows measured against this Mac by the
+    /// build's history (`forecast::speeds`, under the names they ask with: the forecast's own
+    /// machines are the helpers' status files', not the pool's members), one not measured the
+    /// lead's.
     fn placement_now(&self) -> Option<placement::Placement> {
-        self.placement_on().then(|| self.forecast.borrow().as_ref().map(placement::Placement::from_forecast).unwrap_or_default())
+        if !self.placement_on() {
+            return None;
+        }
+        let mut p = self.forecast.borrow().as_ref().map(placement::Placement::from_forecast).unwrap_or_default();
+        if let Some(c) = &self.coord {
+            let names: Vec<String> = c.workers().into_iter().map(|(n, _)| n).filter(|n| *n != self.host).collect();
+            let events = c.for_forecast().2;
+            p.speed = placement::measured_speeds(&events, &self.host, &names);
+        }
+        Some(p)
     }
 
     /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`) act: switched on,

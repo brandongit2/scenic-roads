@@ -1522,13 +1522,17 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       coordinator as they were; it acts only in the pool, and its order and draws of the plan's
       targets only with every step to every member on, `pick_every`). The lead tells its
       coordinator each loop each step's slack in its forecast (the build's end less the step's: the
-      long poles none) and the speeds the forecast measured (not those it guessed). A member's ask
+      long poles none) and each worker its coordinator knows measured against the lead by the
+      build's history, under the name it asks with (`placement::measured_speeds`: the shared steps
+      both ran; the forecast's own machines are the helpers' status files', not the members). A member's ask
       is tried on the offers by their steps' slack, least first (plan order between equals), and
       within a step from the target measured to take longest (its cost lines, `secs_of`; plan order
       between equals, those never measured last), its run contiguous from there as before; each
       such start is drawn (`placement::draw`: a stable hash of the step, the target and the minute's
-      window since the coordinator was told, `DRAW_S`) among the members asking lately whose room
-      fits it, weighted by measured speed (one not measured, the lead's), and a member passes by a
+      window since the coordinator was told, `DRAW_S`) among the members asking lately that could
+      take it by their own asks (not held, done or failed by them lately, within the room their
+      asks say), weighted by measured speed (one not measured, the lead's), the lead never among
+      them, and a member passes by a
       target drawn to another; a cold start stays the most room's, undrawn. A page's or worker's
       task is drawn likewise among those that could take it, weighted by one over their measured
       pace at its kind. Every job is told to offer ahead (`SCENIC_OFFER_AHEAD`): a terrain job
