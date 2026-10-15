@@ -104,6 +104,12 @@
 # contact left alone, nothing granted; a lead killed (-9) mid-job relaunched, re-asserting, its
 # coordinator up, the job its process left stopped and started again.
 #
+# With state/pool/resume on (2026-10-15, `resume`, then `progress` naming the M1's member and host
+# once its heartbeat is there, its agent restarted so it reads its file, then `planet`): the lead
+# waits ("its progress is on <host>'s disk … offered to it alone"), the M1 runs the pass in its own
+# scratch folder with its unmerged file (`<scratch>/unmerged-<pid>`), the entry merged, the pass
+# complete by the records, the M1's file dropping it; the lead never starts the pass.
+#
 # For phase 4's fifth batch (planned: before `state/pool/by-measure` goes on for real): `measure`,
 # `region`, `jobs … 120`, `fill … 512`, both Macs. What to see: every job's disk floor in the lead's
 # `scenic pool floors` (its `disk` lines, the member's too, by its done), with the switch off and

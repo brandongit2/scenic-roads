@@ -1256,7 +1256,14 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       planet unmerged; a pass complete by its records, the same as by the files when they agree;
       and two agents: the lead not planning it, the member resuming it with the switch's
       environment, finished held, then a day on and a release giving it back to the lead, the
-      switch off planning as before. **Scratch state (§13): both Macs.**
+      switch off planning as before. **Scratch state (§13): both Macs, run** (15 Oct 2026, the M4
+      leading, the M1 a member, `resume`, `planet`, `progress`): the M1's file holding the pass
+      (its filter marked done in its scratch folder, its agent restarted, as after a stop
+      mid-stage), the lead waiting with "its progress is on MacBook-Pro-de-Brandon's disk … offered
+      to it alone", its coordinator granting it to the M1, which ran it in its own scratch folder
+      with its unmerged file; the lease ended at the lead, the entry merged, the pass complete by
+      the records (the status's checklist 6 of 6), the M1's file then dropping it; the lead never
+      started the pass. (A member reads its own file once a process: only it writes it.)
    9. **Every step to every member** (§7.2, §7.7): the lead's coordinator offers every step to
       every member whose Mac's measured room fits the target's measures (a cold start to the
       member with the most room, alone), the map tiles' `pack` and `lo` among them (each Mac's saves
@@ -1429,7 +1436,8 @@ on a scratch state where marked above, then the live switch.
   drained, the lead's jobs and a sweep, the member's entry merged and acknowledged by mail, the lead
   restarted re-asserting, then standing down on an older app and the member taking over by itself
   and leading. Run on 2026-10-14 for phase 4's seventh batch (§12, item 7: the shared Wikimedia
-  budget, a 429's hold across the Macs, the answers' lease). Planned: phase 4's fifth batch with `state/pool/by-measure` (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
+  budget, a 429's hold across the Macs, the answers' lease), and on 2026-10-15 for its eighth (§12,
+  item 8: an OSM pass held by the member's progress, resumed there alone, complete by the records). Planned: phase 4's fifth batch with `state/pool/by-measure` (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
   rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it; run on
   one Mac with two scratch agents: §13, the controls) and load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
   reads between clients.)
