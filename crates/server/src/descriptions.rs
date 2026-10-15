@@ -85,10 +85,13 @@ impl Descriptions {
             .name("popup-descriptions".into())
             .spawn(move || {
                 me.load();
+                // (Once at the start whatever the use: a Mac idle since would never copy.)
+                let mut first = true;
                 loop {
-                    if crate::updater::in_use(600) && me.sync(&data) {
+                    if (first || crate::updater::in_use(600)) && me.sync(&data) {
                         me.load();
                     }
+                    first = false;
                     std::thread::sleep(Duration::from_secs(60));
                 }
             })

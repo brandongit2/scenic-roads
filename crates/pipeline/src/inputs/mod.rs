@@ -500,7 +500,10 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
                 }
                 let path = format!("{rel}/{name}");
                 if e.file_type().with_context(|| format!("stat {}", e.path().display()))?.is_dir() {
-                    stack.push((e.path(), path));
+                    // (An older app's to-do lists, `todo/` at its top: the app's, not a drop.)
+                    if !(rel == old && name == "todo") {
+                        stack.push((e.path(), path));
+                    }
                 } else {
                     l.misplaced.push(path);
                 }

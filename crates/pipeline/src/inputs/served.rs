@@ -20,6 +20,9 @@ pub const RECORDS: &str = "state/build/manifest.json";
 /// The local copy's index.
 const LOCAL: &str = "@index.json";
 
+/// Accepted files by drop-box path: the local copy and its content name.
+pub type Files = BTreeMap<String, (PathBuf, String)>;
+
 /// The local copy's index: the accepted index's content name, and the index.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Kept {
@@ -29,7 +32,7 @@ pub struct Kept {
 
 /// The accepted files kept in `local`: by drop-box path, the local copy and its content name. None
 /// before a version was kept.
-pub fn files(local: &Path) -> Option<(String, BTreeMap<String, (PathBuf, String)>)> {
+pub fn files(local: &Path) -> Option<(String, Files)> {
     let k: Kept = serde_json::from_slice(&std::fs::read(local.join(LOCAL)).ok()?).ok()?;
     let files = k.index.files.iter().map(|(p, f)| (p.clone(), (local.join(&f.file), f.file.clone()))).collect();
     Some((k.version, files))

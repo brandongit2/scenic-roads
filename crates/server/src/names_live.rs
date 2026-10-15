@@ -424,6 +424,13 @@ mod tests {
         assert!(s.names.sync(&s.data));
         s.names.reload();
         assert_eq!(sub(&s).as_deref(), Some("Blue Lake"));
+        // The old folder emptied before this Mac has an accepted copy: its old copy kept whole.
+        let old = nas.path().join("translations/answers/fr-001.jsonl");
+        std::fs::rename(&old, nas.path().join("moved.jsonl")).unwrap();
+        s.names.sync(&s.data);
+        s.names.reload();
+        assert_eq!(sub(&s).as_deref(), Some("Blue Lake"));
+        std::fs::rename(nas.path().join("moved.jsonl"), &old).unwrap();
         // The drop box's copy checked and taken in while the old folder still has its files: the
         // old folder's still read.
         crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Azure Lake"))]);

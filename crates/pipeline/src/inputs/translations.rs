@@ -145,4 +145,10 @@ impl Checks for Translations {
         let refs: Vec<&str> = raw.iter().map(String::as_str).collect();
         Ok(vec![about_lines(CHECK, Level::Warning, path, &refs, shown, format!("{path}: {} the translators' checker (check.py) flags", plural(flags.len(), "line", "lines")))])
     }
+
+    fn context(&self, _manifest: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+        // (The checker and the Python it runs in: a change to either checks the unit again, so a
+        // held or changed file is read again under it; files already taken in stay as they are.)
+        vec![format!("check.py {}", store::naming::hash16(super::lint::CHECK.as_bytes())), format!("python {}", super::lint::PYTHON_VERSION.trim())]
+    }
 }

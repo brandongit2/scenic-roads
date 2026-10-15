@@ -636,10 +636,38 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
 const TR: &translations::Translations = &translations::Translations;
 const DE: &descriptions::Descriptions = &descriptions::Descriptions;
 
-/// The translators' checker run on this thread as the job runs it (`uv run` in the repository's
-/// `dem/`, the pinned Python), its files in `scratch`.
-fn with_checker(scratch: &Path) {
-    lint::set(lint::Python::uv(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem"), scratch));
+/// A stand-in for check.py on this thread, flagging as it does the cases these tests use: a macron
+/// (its `macron` rule) and English in the original's word order (its `order` rule). No Python run.
+fn with_stub_checker() {
+    lint::stub(|bytes| {
+        let text = std::str::from_utf8(bytes).unwrap();
+        text.split('\n')
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let p = if l.contains('ō') { "no macrons" } else if l.contains("\"Lake Long\"") || l.contains("\"Lake Round\"") { "the original's word order" } else { return None };
+                Some(lint::Flag { from: i + 1, to: i + 1, problem: p.into() })
+            })
+            .collect()
+    });
+}
+
+/// check.py itself, as the job runs it (`uv run` in the repository's `dem/`, the pinned Python):
+/// the one test that runs it, under the condition publish.sh's Python checks need (uv there);
+/// without uv, passed over, said.
+#[test]
+fn check_py_flags_lines_in_its_flagged_mode() {
+    if !store::spawn::output(std::process::Command::new("uv").arg("--version")).is_ok_and(|o| o.status.success()) {
+        eprintln!("uv isn't here: check.py not run");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    lint::set(lint::Python::uv(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem"), d.path()));
+    let text = [tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake")), tr_line("東京", "ja", Some("東京"), Some("Tōkyō")), tr_line("Lac Long", "fr", Some("Lake Long"), None)].concat();
+    let f = lint::flagged(text.as_bytes()).unwrap();
+    assert_eq!(f.iter().map(|f| (f.from, f.to)).collect::<Vec<_>>(), [(2, 2), (3, 3)]);
+    assert!(f[0].problem.contains("macrons") && f[1].problem.contains("word order"), "{f:?}");
+    // Its scratch keeps the script alone.
+    assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
 }
 
 fn tr_line(n: &str, langs: &str, main: Option<&str>, sub: Option<&str>) -> String {
@@ -686,8 +714,7 @@ fn translation_lines_out_of_shape_and_the_area_tables_lines_are_errors() {
 
 #[test]
 fn the_translators_checker_warns_once_a_file_and_accepting_takes_exactly_its_lines() {
-    let d = tempfile::tempdir().unwrap();
-    with_checker(d.path());
+    with_stub_checker();
     let store = Store::default();
     let mut b = Box_::default();
     let fine = tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake"));
@@ -801,6 +828,8 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
     };
     put("descriptions/heritage/late.jsonl");
     put("descriptions/.DS_Store");
+    // (An older app's to-do lists: the app's, not a drop.)
+    put("descriptions/todo/landmarks.jsonl");
     // Before the drop box is there (the move's first publish): not yet.
     assert!(list(d.path(), "descriptions", true).unwrap().misplaced.is_empty());
     put("inputs/descriptions/a.jsonl");

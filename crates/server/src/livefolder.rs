@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 /// One pass over `rel` (under the NAS project folder) into `local`: whether anything changed, and
 /// how many `.jsonl` files the NAS folder holds; None while the NAS is away.
-pub fn sync(data: &Data, rel_dir: &str, local_dir: &Path) -> anyhow::Result<Option<(bool, usize)>> {
+pub fn sync(data: &Data, rel_dir: &str, local_dir: &Path, remove: bool) -> anyhow::Result<Option<(bool, usize)>> {
     let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(None) };
     if !pool.is_online() {
         return Ok(None);
@@ -66,7 +66,11 @@ pub fn sync(data: &Data, rel_dir: &str, local_dir: &Path) -> anyhow::Result<Opti
             changed = true;
         }
     }
-    // Local files the NAS no longer has.
+    // Local files the NAS no longer has (only when `remove`: while nothing else holds the input on
+    // this Mac, a file gone from the NAS is kept, so an emptied folder never leaves it with none).
+    if !remove {
+        return Ok(Some((changed, seen.len())));
+    }
     let mut stack = vec![PathBuf::new()];
     while let Some(rel) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(local_dir.join(&rel)) else { continue };

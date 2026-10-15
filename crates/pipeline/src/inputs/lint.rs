@@ -16,6 +16,10 @@ use std::cell::RefCell;
 /// The checker, as the to-do lists carry it beside the translators' brief.
 pub const CHECK: &str = include_str!("../../../../tools/names/check.py");
 
+/// The Python it runs in, as `dem/.python-version` pins it (the app's copy of `dem/` is this
+/// repository's, so the pin read here is the one `uv run` honours there).
+pub const PYTHON_VERSION: &str = include_str!("../../../../dem/.python-version");
+
 /// How to run Python: the program and its first arguments, where, and where to put the files.
 #[derive(Clone, Debug)]
 pub struct Python {
@@ -32,15 +36,24 @@ impl Python {
     }
 }
 
+/// A stand-in for the checker (tests: what it would flag in a file's bytes, with no Python run).
+pub type Stub = fn(&[u8]) -> Vec<Flag>;
+
 thread_local! {
     /// How the checker runs on this thread: the check job's (it checks on the thread that set it),
     /// or a test's own.
     static PYTHON: RefCell<Option<Python>> = const { RefCell::new(None) };
+    static STUB: RefCell<Option<Stub>> = const { RefCell::new(None) };
 }
 
 /// Sets how the checker runs on this thread (`scenic-build inputs --dem`).
 pub fn set(p: Python) {
     PYTHON.with(|c| *c.borrow_mut() = Some(p));
+}
+
+/// Puts a stand-in for the checker on this thread (the gate's tests).
+pub fn stub(s: Stub) {
+    STUB.with(|c| *c.borrow_mut() = Some(s));
 }
 
 /// A line, or a stretch of lines, the checker flags (line numbers from 1).
@@ -54,6 +67,9 @@ pub struct Flag {
 /// What the checker flags in a file's bytes. An error when it can't be run (no Python set, or it
 /// fails): the check job fails, and runs again, rather than take a file unchecked.
 pub fn flagged(bytes: &[u8]) -> Result<Vec<Flag>> {
+    if let Some(s) = STUB.with(|c| *c.borrow()) {
+        return Ok(s(bytes));
+    }
     let Some(py) = PYTHON.with(|c| c.borrow().clone()) else { bail!("the translations' checker has no Python to run in (scenic-build inputs --dem)") };
     std::fs::create_dir_all(&py.scratch).with_context(|| format!("create {}", py.scratch.display()))?;
     // (Named without a quoted `.py`: publish.sh takes every quoted one in the pipeline for a Python

@@ -61,7 +61,9 @@ pub fn choose(data: &Data, unit: &str, acc_local: &Path, old_rel: &str, old_loca
     if have && !old_local.exists() {
         return (From::Accepted, changed);
     }
-    match crate::livefolder::sync(data, old_rel, old_local) {
+    // (The old copy never loses a file during the move: one emptied while this Mac's accepted copy
+    // is unfinished leaves it with the old lines, never none; the copy goes whole at the switch.)
+    match crate::livefolder::sync(data, old_rel, old_local, false) {
         Ok(Some((_, 0))) if have => {
             eprintln!("{unit}: the old folder is empty and there's an accepted version: read from it from now on");
             std::fs::remove_dir_all(old_local).ok();

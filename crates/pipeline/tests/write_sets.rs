@@ -52,6 +52,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "rekey_records", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): re-keying with the pool off (its writes through Out)"),
     ("crates/pipeline/src/agent/mod.rs", "as_read", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan's keys"),
     ("crates/pipeline/src/agent/mod.rs", "tend_gate", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the gate's plan"),
+    ("crates/pipeline/src/inputs/served.rs", "RECORDS", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the map server's copy of the translations' and descriptions' accepted versions"),
     ("crates/pipeline/src/agent/room.rs", "heritage_remade", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): room-making's look at the heritage chain"),
     ("crates/pipeline/src/agent/shadow.rs", "compare", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the shadow run's comparison"),
     ("crates/pipeline/src/agent/shadow.rs", "files_of", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the shadow run's look at a job's files"),
