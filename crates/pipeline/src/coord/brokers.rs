@@ -81,9 +81,22 @@ pub fn origin(url: &str) -> Option<String> {
     Some(format!("{scheme}://{}", host.to_ascii_lowercase()))
 }
 
-/// The origins of a broker's pages: each of its addresses.
+/// Whether an origin is a tailnet address's (100.64.0.0/10, or a name under .ts.net).
+fn tailnet(o: &str) -> bool {
+    let host = o.split_once("://").map_or(o, |(_, h)| h);
+    let name = host.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(n, _)| n);
+    name.ends_with(".ts.net") || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
+}
+
+/// The origins of a broker's pages: each of its addresses, but its LAN names (`.local`) when it has
+/// a tailnet address (a page calls it there; a LAN name is any device's on the network to claim).
 pub fn origins_of(b: &Broker) -> BTreeSet<String> {
-    b.urls.iter().chain(b.https.iter()).filter_map(|u| origin(u)).collect()
+    let all: BTreeSet<String> = b.urls.iter().chain(b.https.iter()).filter_map(|u| origin(u)).collect();
+    if all.iter().any(|o| tailnet(o)) {
+        all.into_iter().filter(|o| !o.ends_with(".local") && !o.contains(".local:")).collect()
+    } else {
+        all
+    }
 }
 
 /// A broker's base address for a page: over HTTPS when the page is (a secure page can't call a
@@ -114,7 +127,8 @@ pub struct Ask {
 
 /// The answer (`/work/where`): the brokers to ask, most waiting first (by host after); the lead's
 /// address (its page: the build at a glance, pausing, the lead's asks); and every member's (a page
-/// whose own member goes away reloads from the next that answers).
+/// whose own member goes away reloads from the next that answers): addresses and counts alone, no
+/// member's id or host (a page needs none: it names a member by its address).
 pub fn answer(b: &Brokers, a: &Ask) -> serde_json::Value {
     let mut asks: Vec<(u32, &Peer, String)> = b
         .peers
@@ -126,8 +140,8 @@ pub fn answer(b: &Brokers, a: &Ask) -> serde_json::Value {
         })
         .collect();
     asks.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.host.cmp(&y.1.host)));
-    let brokers: Vec<serde_json::Value> = asks.iter().map(|(n, p, base)| serde_json::json!({ "member": p.member, "host": p.host, "base": base, "waiting": n })).collect();
-    let members: Vec<serde_json::Value> = b.peers.iter().filter_map(|p| Some(serde_json::json!({ "member": p.member, "host": p.host, "lead": p.lead, "base": base(p.broker.as_ref()?, a.https)? }))).collect();
+    let brokers: Vec<serde_json::Value> = asks.iter().map(|(n, p, base)| serde_json::json!({ "base": base, "waiting": n })).collect();
+    let members: Vec<String> = b.peers.iter().filter_map(|p| base(p.broker.as_ref()?, a.https)).collect();
     let lead = b.peers.iter().find(|p| p.lead).and_then(|p| base(p.broker.as_ref()?, a.https));
     serde_json::json!({ "brokers": brokers, "members": members, "lead": lead })
 }
@@ -156,8 +170,11 @@ mod tests {
         let m1 = Peer { member: "m-1".into(), host: "m1".into(), lead: false, broker: Some(broker(&["http://100.93.150.29:8090"], None, &[])) };
         let old = Peer { member: "m-2".into(), host: "old".into(), lead: false, broker: None };
         let b = Brokers::new(vec![m1, old], &own);
-        let want: BTreeSet<String> = ["http://100.70.85.80:8090", "http://m4.local:8090", "https://m4.tail1.ts.net", "http://100.93.150.29:8090"].iter().map(|s| s.to_string()).collect();
+        // (The LAN's name left out: a tailnet address is there.)
+        let want: BTreeSet<String> = ["http://100.70.85.80:8090", "https://m4.tail1.ts.net", "http://100.93.150.29:8090"].iter().map(|s| s.to_string()).collect();
         assert_eq!(b.origins, want);
+        // With no tailnet address, the LAN's name is the page's.
+        assert_eq!(origins_of(&broker(&["http://m4.local:8090"], None, &[])), ["http://m4.local:8090".to_string()].into());
     }
 
     #[test]
@@ -172,8 +189,9 @@ mod tests {
         ];
         let b = Brokers::new(peers, &Broker::default());
         let v = answer(&b, &Ask { can: can.clone(), mem_mb: 1000, https: false });
-        let order: Vec<&str> = v["brokers"].as_array().unwrap().iter().map(|x| x["host"].as_str().unwrap()).collect();
-        assert_eq!(order, ["b", "a"]);
+        let order: Vec<&str> = v["brokers"].as_array().unwrap().iter().map(|x| x["base"].as_str().unwrap()).collect();
+        assert_eq!(order, ["http://100.1.1.2:8090", "http://100.1.1.1:8090"]);
+        assert!(!v.to_string().contains("m-a") && !v.to_string().contains("\"host\""), "no member's id or host: {v}");
         assert_eq!(v["brokers"][0]["waiting"], 5);
         assert_eq!(v["brokers"][0]["base"], "http://100.1.1.2:8090");
         assert_eq!(v["lead"], "http://100.1.1.1:8090");

@@ -924,6 +924,17 @@ take it: a page, any member's slot. Jobs are for Macs; tasks are for everyone.
   forwards anything: no streaming proxy for uploads, no file crossing the network twice, no
   forwarding loops while Macs disagree about who leads. (Worth checking first: Tailscale Services, one
   name for several hosts, would give the iPad's home-screen app one address and no cross-site calls.)
+- **What a page is told, and what it can't count on** (built: §12 phase 4's tenth batch).
+  `/work/where` answers addresses and counts alone (no member's id or host: a page names a member
+  by its address). A member's LAN name (`.local`) is no page's origin when it has a tailnet
+  address. A page's hand-back as it closes (`pagehide`) to another member's broker needs a
+  preflight (JSON, `X-Worker`), which a browser may not send for a request kept alive past the
+  page: the JSON-only routes stay so (a simple request is what a page elsewhere can send), and such
+  a task comes back by the next page's look at its notes (they keep the broker's address) or by
+  its lease lapsing. Chrome's Local Network Access (its successor to Private Network Access) may
+  prompt for, or block, a page's calls to another member's LAN or tailnet address whatever the
+  preflight's `Access-Control-Allow-Private-Network` says: on such a browser the page's own
+  member, over HTTPS where `tailscale serve` is on, is the one sure way.
 - **One page, any member.** The page loads from any member; it knows every member's address from the
   pool (the lead's answer, its heartbeats); when its member goes away it reloads from the next that
   answers (a page carries no key). The agents' token is the pool's (`state/coord/token`, the same
@@ -1424,7 +1435,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       no job lease held), its jobs given its address (`SCENIC_COORD`), their tasks closed as they
       end; its heartbeat's `broker` says its addresses (and its HTTPS one, when `tailscale serve`
       proxies it) and its tasks waiting by kind (how many, the least memory), given at once when work
-      comes or goes, else at most every half minute. Each agent reads the members' heartbeats every
+      comes (none waiting to some, ten seconds after its last change at least), any other change
+      at most every half minute. Each agent reads the members' heartbeats every
       half minute and tells its coordinator or broker: every member (not the lead alone: a page's
       own member answers it) answers `/work/where` (the brokers whose work fits, most waiting first;
       the lead's address; every member's) and allows the members' own pages (CORS: the preflight

@@ -354,6 +354,16 @@ const CAN = ["tail", "bldtile", "treeblock", "terrainsub"];
 const AWAY_MS = 120000;
 const away = new Map();
 let peers = store.get("peers", null), peersAt = -Infinity, ownFails = 0, moveTo = null;
+// (The member a page moved from, passed over for a while: it didn't answer.)
+{
+  const q = new URLSearchParams(location.search);
+  const from = q.get("from");
+  if (from) {
+    away.set(from, Date.now() + AWAY_MS);
+    q.delete("from");
+    history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : ""));
+  }
+}
 const hostOf = (base) => { try { return new URL(base).host; } catch { return base; } };
 const reachable = (base) => base && base !== location.origin && !(away.get(base) > Date.now());
 function unreachable(base, e) {
@@ -396,14 +406,14 @@ async function elsewhere(ask, free) {
 async function failover() {
   if (moveTo) return;
   for (const m of peers?.members || []) {
-    if (!reachable(m.base)) continue;
+    if (!reachable(m)) continue;
     try {
-      await call("/work/where", { can: CAN, mem_mb: 0, https: location.protocol === "https:" }, m.base);
-      moveTo = m.base;
-      log(`This page's member doesn't answer: moving to ${esc(m.host || hostOf(m.base))}${slots.some((s) => s.lease && s.base) ? " once the tasks taken elsewhere finish" : ""}.`);
+      await call("/work/where", { can: CAN, mem_mb: 0, https: location.protocol === "https:" }, m);
+      moveTo = m;
+      log(`This page's member doesn't answer: moving to ${esc(hostOf(m))}${slots.some((s) => s.lease && s.base) ? " once the tasks taken elsewhere finish" : ""}.`);
       fill();
       return;
-    } catch (e) { unreachable(m.base, e); }
+    } catch (e) { unreachable(m, e); }
   }
 }
 // The dashboard's calls: the build at a glance and the lead's controls at the lead's address when
@@ -421,7 +431,13 @@ async function dashCall(path, body) {
 // version installed: none asked for; reloaded into it once every slot is idle.)
 let asking = false, lastNone = -Infinity, update = false;
 async function fill() {
-  if (moveTo && slots.every((s) => !s.lease || !s.base)) { location.href = `${moveTo}/work/${location.search}`; return; }
+  if (moveTo && slots.every((s) => !s.lease || !s.base)) {
+    // (The member it leaves named, so the next page passes over it a while too.)
+    const q = new URLSearchParams(location.search);
+    q.set("from", location.origin);
+    location.href = `${moveTo}/work/?${q}`;
+    return;
+  }
   if (update && slots.every((s) => !s.lease)) {
     try { sessionStorage.setItem("paused", paused ? "1" : ""); } catch {}
     location.reload();

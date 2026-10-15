@@ -13,8 +13,9 @@
 //!   coord's `load_pool_state`).
 //! - **Its heartbeat says how many wait** (crate::agent::pool::Heartbeat's `broker`): its
 //!   addresses, and its tasks waiting by kind, how many and the least memory one takes; given to its
-//!   heartbeat at once when work comes or goes (none to some, some to none) or its addresses
-//!   change, else at most every half minute (`due`): a heartbeat is a whole write on the NAS.
+//!   heartbeat at once (but not within `FLOOR` of the last) only when work comes (none to some);
+//!   any other change, work going among them, at most every half minute (`due`): a heartbeat is a
+//!   whole write on the NAS, and a task offered and taken again and again mustn't write each time.
 //! - **Where is work**: each coordinator is told the members in touch and their brokers (`peers`,
 //!   read from their heartbeats every half minute), and answers a page's `/work/where` with the
 //!   brokers whose work fits it, most waiting first, the lead's address and every member's; and
@@ -42,6 +43,9 @@ pub fn on(root: &Path) -> Option<bool> {
 /// its heartbeat at most (but for work coming or going).
 pub const EVERY: Duration = Duration::from_secs(30);
 
+/// The least time between two of a broker's heartbeat changes, work coming or not.
+pub const FLOOR: Duration = Duration::from_secs(10);
+
 /// How often a broker's address over HTTPS (`tailscale serve`, the owner's) is looked for again.
 pub const HTTPS_EVERY: Duration = Duration::from_secs(300);
 
@@ -60,15 +64,16 @@ pub fn peers(beats: &[(String, Heartbeat)], lead: Option<&str>, now: u64, own: (
 }
 
 /// Whether a broker's heartbeat should say `now_b` in place of `was` (given `since` ago, None:
-/// never): at once when its addresses change or work comes or goes; else when it differs and
-/// `EVERY` has passed.
+/// never): at once when work comes (none waited, some do), `FLOOR` after the last at least; any
+/// other change once `EVERY` has passed.
 pub fn due(was: Option<&Broker>, now_b: &Broker, since: Option<Duration>) -> bool {
     let Some(w) = was else { return true };
     if w == now_b {
         return false;
     }
     let some = |b: &Broker| b.waiting.values().any(|x| x.n > 0);
-    w.urls != now_b.urls || w.https != now_b.https || some(w) != some(now_b) || since.is_none_or(|s| s >= EVERY)
+    let after = |d: Duration| since.is_none_or(|s| s >= d);
+    (!some(w) && some(now_b) && after(FLOOR)) || after(EVERY)
 }
 
 /// When the last of something was done, and whether `every` has passed since (never done: yes).
@@ -111,14 +116,27 @@ mod tests {
     }
 
     #[test]
-    fn a_brokers_heartbeat_changes_at_once_only_when_work_comes_or_goes() {
-        let s = Some(Duration::from_secs(5));
+    fn a_brokers_heartbeat_changes_at_once_only_when_work_comes() {
+        let s = Some(FLOOR);
         assert!(due(None, &b(&["u"], 0), None));
         assert!(!due(Some(&b(&["u"], 2)), &b(&["u"], 2), s));
         assert!(due(Some(&b(&["u"], 0)), &b(&["u"], 2), s), "work came");
-        assert!(due(Some(&b(&["u"], 2)), &b(&["u"], 0), s), "work went");
-        assert!(due(Some(&b(&["u"], 2)), &b(&["v"], 2), s), "its address");
+        assert!(!due(Some(&b(&["u"], 0)), &b(&["u"], 2), Some(FLOOR - Duration::from_secs(1))), "not within the floor");
+        assert!(!due(Some(&b(&["u"], 2)), &b(&["u"], 0), s), "work went: it waits");
+        assert!(!due(Some(&b(&["u"], 2)), &b(&["v"], 2), s), "its address waits too");
         assert!(!due(Some(&b(&["u"], 2)), &b(&["u"], 3), s), "a count alone waits");
-        assert!(due(Some(&b(&["u"], 2)), &b(&["u"], 3), Some(EVERY)));
+        assert!(due(Some(&b(&["u"], 2)), &b(&["u"], 0), Some(EVERY)));
+        // A task offered and taken again and again, a second apart for ten minutes: work going is
+        // written only half a minute on, and work coming ten seconds after that at least: two
+        // writes each 40 s at most (not 600).
+        let (mut told, mut at, mut writes) = (b(&["u"], 0), 0u64, 0);
+        for t in 1..=600u64 {
+            let now_b = b(&["u"], (t % 2) as u32);
+            if due(Some(&told), &now_b, Some(Duration::from_secs(t - at))) {
+                (told, at, writes) = (now_b, t, writes + 1);
+            }
+        }
+        let most = 2 * 600 / (EVERY + FLOOR).as_secs() as usize + 2;
+        assert!(writes <= most, "{writes} writes in ten minutes of flapping (at most {most})");
     }
 }

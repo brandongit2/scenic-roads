@@ -9035,8 +9035,9 @@ mod pool_tests {
         };
         let (code, w, _) = call(lport, "/work/where", serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }));
         assert_eq!(code, 200);
-        let at: Vec<&str> = w["brokers"].as_array().unwrap().iter().map(|b| b["member"].as_str().unwrap()).collect();
-        assert!(at.contains(&im.as_str()) && at.contains(&il.as_str()), "{w}");
+        let at: Vec<&str> = w["brokers"].as_array().unwrap().iter().map(|b| b["base"].as_str().unwrap()).collect();
+        let base_of = |c: &crate::coord::Coordinator| crate::coord::brokers::base(&crate::coord::brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() }, false).unwrap();
+        assert!(at.contains(&base_of(m.broker.as_ref().unwrap()).as_str()) && at.contains(&base_of(lead.coord.as_ref().unwrap()).as_str()), "{w}");
         assert_eq!(w["lead"].as_str(), crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).as_deref());
         // The page takes the member's task from the member's broker (another Mac's page: CORS),
         // and the lead's from the lead.

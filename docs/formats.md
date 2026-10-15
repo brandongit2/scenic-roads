@@ -994,8 +994,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `broker: {urls, https, waiting: {<kind>: {n, mb}}, out}` (its coordinator's or broker's
     addresses, its HTTPS one when `tailscale serve` proxies it, its tasks waiting by kind with the
     least memory one takes, and those out); every coordinator answers `POST /work/where`
-    (`{can, mem_mb, https}` → `{brokers: [{member, host, base, waiting}], lead, members: [{member,
-    host, lead, base}]}`) and the members' pages with CORS.
+    (`{can, mem_mb, https}` → `{brokers: [{base, waiting}], lead, members: [<base>]}`)
+    and the members' pages with CORS.
   - `state/pool/progress/<member>.json`: the jobs whose progress is on that member's Mac, written
     whole by it alone when that changes (a resumable job's start or end, an entry dropped):
     `{member, worker, jobs: {"osm-pass <date>": {at, since, done, scratch}}}` (`worker` the name
