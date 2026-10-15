@@ -60,6 +60,13 @@ export class TerrainTileManager extends Evented {
      * used to determine whether the depth framebuffer needs updating
      */
     _lastTilesetChange: number = now();
+    /**
+     * Scenic Roads: whether the render-to-texture tiles' zoom counts the terrain's elevations and
+     * their depth along the view (covering_tiles.ts), as every source's cover does, so the drapes
+     * near the camera and at the screen's sides are as sharp as what stands on them. True by default;
+     * false gives upstream's zoom (a switch for comparing the two).
+     */
+    terrainAwareZoom: boolean = true;
 
     constructor(tileManager: TileManager) {
         super();
@@ -104,8 +111,7 @@ export class TerrainTileManager extends Evented {
             maxzoom: this.maxzoom,
             reparseOverscaled: false,
             terrain,
-            // (Scenic Roads: the drapes' tiles at upstream's zoom: covering_tiles.ts.)
-            terrainAwareZoom: false
+            terrainAwareZoom: this.terrainAwareZoom
         })) {
             keys[tileID.key] = true;
             this._renderableTilesKeys.push(tileID.key);

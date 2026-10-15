@@ -68,10 +68,9 @@ export type CoveringTilesOptionsInternal = CoveringTilesOptions & {
      */
     maxContentElevation?: number;
     /**
-     * Scenic Roads: whether a tile's zoom counts the terrain's elevations (default true; see
-     * coveringTiles). The terrain's own render-to-texture tiles keep upstream's zoom: each redraws
-     * every draped layer, and finer ones near the camera cost the GPU about 3x as much a moving
-     * frame in a tilted Chamonix view, for drapes no one asked to sharpen.
+     * Scenic Roads: whether a tile's zoom counts the terrain's elevations and its depth along the
+     * view (default true; see coveringTiles); false gives upstream's zoom
+     * (TerrainTileManager.terrainAwareZoom).
      */
     terrainAwareZoom?: boolean;
 };
@@ -364,8 +363,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     // line of sight (√(depth² − height²): what makes its distance its depth), so its terms stay as
     // they were for the tiles on the line of sight. On the globe, the tile's corners as the flat
     // map has them (the same near the camera, where the zooms are fine).
-    // (Not the terrain's own render-to-texture tiles, `terrainAwareZoom: false`, as for the zoom over
-    // the terrain below: each redraws every draped layer, for drapes no one asked to sharpen.)
+    // (Both off with `terrainAwareZoom: false`.)
     const byDepth = options.terrainAwareZoom !== false;
     const depthDistance2d = (tileID: {x: number; y: number; z: number}, wrap: number, d2: number) =>
         byDepth ? tileDepthDistance2d(cameraCoord, distanceZ, transform.pitchInRadians, transform.bearingInRadians, tileID, wrap, d2) : d2;
