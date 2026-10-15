@@ -86,9 +86,9 @@ pub const TABLE: [Step; 45] = [
     Step { alone: true, ..base("buildings", w_buildings) },
     Step { alone: true, ..base("summits", w_summits) },
     Step { alone: true, ..base("labels", w_labels) },
-    // (The lakes filled from Canada's own data: a band's lakes and their pieces held, 1.8–7.2 GB
-    // measured, 2026-10-09; its runs' files, under a GB each, here.)
-    Step { mem_mb: 8192, disk: RESERVE + 5 * GB, alone: true, ..base("lakefill", w_lakefill) },
+    // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
+    // merged fill's, 10.4 GB at most measured, 2026-10-15; its runs' files, under a GB each, here.)
+    Step { mem_mb: 11264, disk: RESERVE + 5 * GB, alone: true, ..base("lakefill", w_lakefill) },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
     // 2026-10-08; its tiles' archive, 1.8 GB worldwide, and their packs written here first.)
     Step { mem_mb: 8192, disk: RESERVE + 5 * GB, alone: true, ..base("water", w_water) },
@@ -670,7 +670,7 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
         // by the former), the batches, the disk.
-        let mem: [(&str, u64); 20] = [("lakefill", 8192), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
+        let mem: [(&str, u64); 20] = [("lakefill", 11264), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
         }

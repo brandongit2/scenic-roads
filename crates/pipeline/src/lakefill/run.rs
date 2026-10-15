@@ -428,7 +428,7 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
                             continue;
                         }
                         let class = class_key
-                            .and_then(|ck| f.tags.chunks_exact(2).find(|kv| kv[0] as usize == ck))
+                            .and_then(|ck| f.tags.as_chunks::<2>().0.iter().find(|kv| kv[0] as usize == ck))
                             .and_then(|kv| l.values.get(kv[1] as usize))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
@@ -659,7 +659,7 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
     }
     anyhow::ensure!(!files.is_empty(), "no {layer} shapefiles in {srcs:?}");
     let mut pieces = Vec::new();
-    let mut inputs = Vec::new();
+    let mut read = Vec::new();
     let mut by_value: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     // (Four files at a time: each streams through its own unzip; the NAS gives more than one stream
     // takes. Pieces kept in the files' order.)
@@ -715,16 +715,16 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
         Ok((pieces, by_value, serde_json::json!({"file": from, "records": records, "taken": n, "far": far})))
     };
     let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
-    let read: Vec<Read1> = pool.install(|| {
+    let got: Vec<Read1> = pool.install(|| {
         use rayon::prelude::*;
         files.par_iter().map(read_one).collect::<Result<_>>()
     })?;
-    for (p, v, i) in read {
+    for (p, v, i) in got {
         pieces.extend(p);
         for (k, n) in v {
             *by_value.entry(k).or_default() += n;
         }
-        inputs.push(i);
+        read.push(i);
     }
     eprintln!("lakefill: {} pieces read in {:.0} s; {field} values: {by_value:?}", pieces.len(), t.elapsed().as_secs_f64());
     let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(base)?), 4096)?;
@@ -769,7 +769,7 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
         .map(|(k, c)| serde_json::json!({"sheet": nts::name(*k), "bounds": nts::bounds(*k), "source": c.source, "touching": c.touching, "kept": c.kept, "completed": c.completed, "filled": confirmed(k)}))
         .collect();
     let kept_by_sheet = sel.sheet_of.len();
-    let report = serde_json::json!({"fill": name, "bytes": std::fs::metadata(out.join(&name))?.len(), "lakes": f.lakes().len(), "kept_after_confirm": kept_by_sheet, "too_big": too_big, "stats": sel.stats, "confirm": confirm, "inputs": inputs, "values": by_value, "sheets": sheets, "secs": t.elapsed().as_secs_f64()});
+    let report = serde_json::json!({"fill": name, "bytes": std::fs::metadata(out.join(&name))?.len(), "lakes": f.lakes().len(), "kept_after_confirm": kept_by_sheet, "too_big": too_big, "stats": sel.stats, "confirm": confirm, "read": read, "values": by_value, "sheets": sheets, "secs": t.elapsed().as_secs_f64()});
     std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
     eprintln!("lakefill: {name}, {} lakes, in {:.0} s", f.lakes().len(), t.elapsed().as_secs_f64());
     Ok(report)
@@ -784,7 +784,7 @@ pub fn merge(runs: &[PathBuf], out: &Path) -> Result<(PathBuf, serde_json::Value
     let mut seen = std::collections::HashSet::new();
     let mut meta = serde_json::Value::Null;
     let mut sheets = Vec::new();
-    let mut inputs = Vec::new();
+    let mut read = Vec::new();
     let mut stats: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for r in runs {
         let dir = r.as_path();
@@ -800,7 +800,7 @@ pub fn merge(runs: &[PathBuf], out: &Path) -> Result<(PathBuf, serde_json::Value
         }
         let rep: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("report.json"))?)?;
         sheets.extend(rep["sheets"].as_array().cloned().unwrap_or_default());
-        inputs.push(serde_json::json!({"run": r.display().to_string(), "inputs": rep["inputs"], "band": fill.meta()["band"], "too_big": rep["too_big"]}));
+        read.push(serde_json::json!({"run": r.display().to_string(), "read": rep["read"], "band": fill.meta()["band"], "too_big": rep["too_big"]}));
     }
     // (Totals from the sheets: each band's are its own, where its stats count its neighbours' too.)
     for sh in &sheets {
@@ -820,7 +820,7 @@ pub fn merge(runs: &[PathBuf], out: &Path) -> Result<(PathBuf, serde_json::Value
     let name = format!("lakefill.{h}.sect");
     std::fs::rename(&tmpf, out.join(&name))?;
     let f = lf::Fill::open(&out.join(&name), &name)?;
-    let report = serde_json::json!({"fill": name, "bytes": std::fs::metadata(out.join(&name))?.len(), "lakes": f.lakes().len(), "stats": stats, "runs": inputs, "sheets": sheets});
+    let report = serde_json::json!({"fill": name, "bytes": std::fs::metadata(out.join(&name))?.len(), "lakes": f.lakes().len(), "stats": stats, "runs": read, "sheets": sheets});
     std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
     eprintln!("lakefill: {name}, {} lakes from {} runs", f.lakes().len(), runs.len());
     Ok((out.join(&name), report))

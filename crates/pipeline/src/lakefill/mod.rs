@@ -1117,7 +1117,7 @@ pub mod shp {
                 widths.push(rest[o + 16] as usize);
                 o += 32;
             }
-            ensure!(1 + widths.iter().sum::<usize>() <= rlen, "a dBASE table's fields wider than its records");
+            ensure!(widths.iter().sum::<usize>() < rlen, "a dBASE table's fields wider than its records");
             Ok(DbfReader { r, fields, widths, rlen, records, read: 0, buf: vec![0; rlen] })
         }
 
@@ -1321,7 +1321,9 @@ pub mod zip {
             std::fs::write(dir.join("a.bin"), &big).unwrap();
             std::fs::write(dir.join("b.txt"), b"hello").unwrap();
             let z = d.path().join("t.zip");
-            let ok = std::process::Command::new("/usr/bin/zip").arg("-q").arg("-j").arg(&z).arg(dir.join("a.bin")).arg(dir.join("b.txt")).status().unwrap();
+            let mut zip = std::process::Command::new("/usr/bin/zip");
+            zip.arg("-q").arg("-j").arg(&z).arg(dir.join("a.bin")).arg(dir.join("b.txt"));
+            let ok = store::spawn::status(&mut zip).unwrap();
             assert!(ok.success());
             let ms = members(&z).unwrap();
             assert_eq!(ms.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["a.bin", "b.txt"]);
