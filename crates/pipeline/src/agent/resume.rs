@@ -118,7 +118,8 @@ pub fn read(root: &Path, member: &str) -> Result<Option<Progress>> {
 
 /// Writes this member's progress file whole (its own alone).
 pub fn write(root: &Path, p: &Progress) -> Result<()> {
-    crate::whole::write(&root.join(path(&p.member)), &serde_json::to_vec_pretty(p)?)
+    std::fs::create_dir_all(root.join(DIR))?;
+    crate::whole::write(&root.join(path(&p.member)),&serde_json::to_vec_pretty(p)?)
 }
 
 /// Whether the owner released `member`'s progress of `job` noted at `at`.

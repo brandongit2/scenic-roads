@@ -1314,11 +1314,12 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
 /// A pooled job's end (its hand-off in the pool's journal, docs/pool.md §7.3, which the lead's
 /// merge checks): what it says it did is its lease's step and some of its targets; any step, the
 /// lead's own as a member's (a job running across a handover ends with the new lead); a job of no
-/// targets of its own (the OSM pass, pass-sets) with no done record.
+/// targets of its own (the OSM pass, pass-sets) with no done record, as a resumed one granted its
+/// pass as its target (crate::agent::resume).
 fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     match &h.done {
         Some((s, ts)) => anyhow::ensure!(s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)), "its done record isn't its lease's"),
-        None => anyhow::ensure!(targets.is_empty(), "no done record"),
+        None => anyhow::ensure!(targets.is_empty() || crate::agent::resume::RESUMABLE.contains(&step), "no done record"),
     }
     Ok(())
 }

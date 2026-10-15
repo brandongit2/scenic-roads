@@ -4017,7 +4017,6 @@ impl Agent {
     /// The work there is, in order (docs/plan.md §8, Order).
     fn plan(&self, root: &Path, _c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let mut out = Vec::new();
-        let build = self.o.bin.join("scenic-build");
         let me = self.o.bin.join("scenic");
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
@@ -7984,16 +7983,17 @@ mod pool_tests {
         switch_on(&r, pool::ENABLED);
         let date = "2026-10-01";
         let pass = format!("osm-pass {date}");
-        std::fs::create_dir_all(r.join(format!("sources/osm/{date}"))).unwrap();
-        std::fs::write(r.join(format!("sources/osm/{date}/planet.osm.pbf")), "planet").unwrap();
-        std::fs::create_dir_all(r.join("sources/basemap")).unwrap();
-        std::fs::write(r.join("sources/basemap/planetiler.jar"), "jar").unwrap();
         let bin = app(d.path());
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.free_set = Some(400 << 30);
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
+        // (The planet after the lead's first step: only the test's plans below see it.)
+        std::fs::create_dir_all(r.join(format!("sources/osm/{date}"))).unwrap();
+        std::fs::write(r.join(format!("sources/osm/{date}/planet.osm.pbf")), "planet").unwrap();
+        std::fs::create_dir_all(r.join("sources/basemap")).unwrap();
+        std::fs::write(r.join("sources/basemap/planetiler.jar"), "jar").unwrap();
         let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         let im = m.pool.as_ref().unwrap().side.member().id.clone();
         lead.pool.as_mut().unwrap().side.know(&im);
@@ -8027,6 +8027,8 @@ mod pool_tests {
         until(&mut m, |m| m.slots[0].running.is_none());
         let env = std::fs::read_to_string(bin.join("env-osm-pass")).unwrap();
         assert!(env.contains("SCENIC_RESUME=1") && env.contains("SCENIC_UNMERGED=") && env.contains("SCENIC_HANDOFF="), "{env}");
+        assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
+        assert!(lead.coord.as_ref().unwrap().held("osm-pass").is_empty(), "its lease ended at the lead, not lapsing");
         // Finished there: held, unoffered, until merged.
         let p = resume::read(&r, &im).unwrap().unwrap();
         assert!(p.jobs[&pass].done, "{p:?}");

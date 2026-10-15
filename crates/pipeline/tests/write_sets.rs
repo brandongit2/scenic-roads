@@ -63,6 +63,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "send_outbox", "Handoff::default()", "a helper's outbox job (pool off): the hand-offs its job's Out wrote, gathered for the coordinator"),
     ("crates/pipeline/src/agent/pool.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the journal"),
     ("crates/pipeline/src/osmpass.rs", "latest_pass_by", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a pass complete by the records (docs/pool.md §7.4)"),
+    ("crates/pipeline/src/agent/resume.rs", "unmerged", "-> Handoff {", "its signature: the member's unacknowledged entries laid together for its job's Out to read (never handed off)"),
+    ("crates/pipeline/src/agent/mod.rs", "unmerged_for", "-> crate::handoff::Handoff {", "its signature: a resumable job's member's unacknowledged entries, for its Out to read over the snapshot (never handed off)"),
     ("crates/pipeline/src/agent/resume.rs", "unmerged", "Handoff::default()", "a resumable job's member's unacknowledged entries laid together, for its Out to read over the snapshot (never handed off: its own saves are)"),
     ("crates/pipeline/src/agent/shadow.rs", "look_outbox", "Handoff::default()", "the shadow run's look at a helper's outbox: the hand-offs its Out wrote"),
 ];
