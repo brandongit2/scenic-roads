@@ -67,7 +67,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "registers_extract", "the registers' snapshot, which room-making never deletes"),
     ("crates/pipeline/src/agent/mod.rs", "plan", "counts the pack cache's bytes"),
     ("crates/pipeline/src/agent/mod.rs", "osm_pass_cmd", "names the pack cache for the OSM pass to clear (its job clears it through the accessor: store::cachefile::remove_tree)"),
-    ("crates/pipeline/src/agent/mod.rs", "region_work", "a job's arguments: where its caches are"),
+    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "a job's arguments: where its caches are"),
     ("crates/pipeline/src/treepacks.rs", "*", "a test bench's own squares folder"),
     ("crates/pipeline/src/bin/scenic-metrics.rs", "canopy", "chooses the canopy folder; fetch_file holds each square"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_snap", "the unit's tools' arguments"),

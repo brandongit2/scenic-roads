@@ -397,6 +397,11 @@ pub fn water_waits_for_lakefill(lakefill: bool, failures: u32) -> bool {
     lakefill && failures < LAKEFILL_HOLDS
 }
 
+/// The steps that read the pass's lake fill, which wait for it (agent's `hold_for_lakefill`).
+pub fn reads_lakefill(step: &str) -> bool {
+    matches!(step, "water" | "terrain-water" | "catalog" | "catalog-held")
+}
+
 /// The water layer (crate::water), worldwide, once per pass (or layer version, or fill): drawn
 /// from the pass's basemap's z14 water, and the lakes filled from Canada's own data made from that
 /// basemap when the manifest has them (the agent runs it once the lakefill step is done:

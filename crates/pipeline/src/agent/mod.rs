@@ -4097,6 +4097,14 @@ impl Agent {
     /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
     /// waiting out a failure, so one failing job doesn't hold up the others.
     fn region_work(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        let mut held = false;
+        let jobs = self.region_jobs(root, pass, newer, waiting, &mut held);
+        hold_for_lakefill(jobs, held, waiting)
+    }
+
+    /// `region_work`'s jobs before the lake fill's hold; `held` set when the pass's lake fill holds
+    /// the jobs that read it (`hold_for_lakefill`).
+    fn region_jobs(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>, held: &mut bool) -> Vec<JobSpec> {
         let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
@@ -4163,30 +4171,31 @@ impl Agent {
             if let Some(w) = build::spoken_work(date, &manifest, &keys) {
                 jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", p.clone(), Some(w)));
             }
-            // (The water after the lakes filled from Canada's own data, which it draws: while the
-            // lakefill job has work, unless it has failed LAKEFILL_HOLDS times in a row; then the
-            // water is drawn with the pass's fill as the manifest has it, or none. While the
-            // source's folder can't be read, neither runs.)
+            // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
+            // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
+            // a new app), the jobs that read the fill wait (`hold_for_lakefill`: the water, the
+            // terrain's water digests, the catalog), so the pass's water, terrain and map all have
+            // the new fill, or after that many failures all go without it. While the source's folder
+            // can't be read, they wait too.)
             match crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)) {
-                Err(e) => waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("its source's folder can't be read now ({e}); the water waits too") }),
+                Err(e) => {
+                    *held = true;
+                    waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("its source's folder can't be read now ({e})") });
+                }
                 Ok(source) => {
                     let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
                     let failures = self.mem.retry.get(&format!("lakefill {date}")).map_or(0, |r| r.0);
-                    let holds = build::water_waits_for_lakefill(lakefill.is_some(), failures);
+                    *held = build::water_waits_for_lakefill(lakefill.is_some(), failures);
                     if let Some(w) = lakefill {
+                        if failures >= build::LAKEFILL_HOLDS {
+                            waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
+                        }
                         jobs.push(job(format!("lakefill {date}"), "Filling in Canada's lakes missing from OpenStreetMap", "lakefill", p.clone(), Some(w)));
                     }
-                    if let Some(w) = build::water_work(date, &manifest, &keys) {
-                        if holds {
-                            waiting.push(Waiting { step: Some("water".into()), what: "Drawing the world's water at every zoom".into(), why: "waits for Canada's missing lakes to be filled (the lakefill job)".into() });
-                        } else {
-                            if failures >= build::LAKEFILL_HOLDS {
-                                waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("failed {failures} times in a row: the water is drawn without this pass's fill meanwhile") });
-                            }
-                            jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
-                        }
-                    }
                 }
+            }
+            if let Some(w) = build::water_work(date, &manifest, &keys) {
+                jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
             }
         }
         // After each catalog the map serves: the names to translate and descriptions to write.
@@ -4664,7 +4673,8 @@ impl Agent {
             !manifest.contains_key(&crate::buildtiles::index_logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
-            build::lakefill_work(&date, &manifest, &keys, crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)).ok().flatten().as_deref()).is_some(),
+            // (A source folder that can't be read: held, left, as the jobs see it.)
+            crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)).map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
             build::water_work(&date, &manifest, &keys).is_some(),
         ]
         .iter()
@@ -5882,6 +5892,22 @@ fn room_past(target: u64, goal: u64) -> String {
 /// A job's step: its id's first word ("unit 6/31/20": "unit").
 fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// The jobs that read the pass's lake fill (crate::lakefill: the water, which draws it; the terrain's
+/// water digests, whose pin names it; the catalogs, which name it to the server), taken out of
+/// `jobs` while it `held`s them (the lakefill job has work and hasn't failed
+/// build::LAKEFILL_HOLDS times in a row, or its source can't be read), each said in `waiting`.
+/// Nothing reads a fill made from an older basemap meanwhile, and nothing is made twice.
+fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    if !held {
+        return jobs;
+    }
+    let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) = jobs.into_iter().partition(|j| !build::reads_lakefill(&step_of(&j.id).unwrap_or_default()));
+    for j in out {
+        waiting.push(Waiting { step: step_of(&j.id), what: j.what, why: "waits for Canada's missing lakes to be filled (the lakefill job)".into() });
+    }
+    kept
 }
 
 /// The checklist as the status shows it. A step with work left that isn't this Mac's job now (`now`,
@@ -7750,6 +7776,26 @@ mod tests {
         let names = key_names(&p).unwrap();
         assert_eq!(names, "LTA_ACCOUNT_KEY,TDX_CLIENT_ID", "the keys with values, by name");
         assert!(!names.contains("s3cr3t") && !names.contains("abc"));
+    }
+
+    /// While the pass's lake fill is being made, the jobs that read it wait, said in the checklist;
+    /// once it's made, or after its failures, they're queued.
+    #[test]
+    fn the_jobs_reading_the_lake_fill_wait_for_it() {
+        let spec = |id: &str| JobSpec { id: id.into(), what: format!("doing {id}"), cmd: Vec::new(), needs: Needs { nas: true }, restart_after_sleep: true, record: None };
+        let jobs = || ["lakefill 2026-09-28", "labels 2026-09-28", "water 2026-09-28", "terrain-water terrain-water", "terrain 6/18/20", "catalog catalog", "catalog-held catalog-held", "unit 6/1/2"].map(spec).to_vec();
+        let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
+        let mut waiting = Vec::new();
+        let kept = hold_for_lakefill(jobs(), true, &mut waiting);
+        assert_eq!(ids(&kept), ["lakefill 2026-09-28", "labels 2026-09-28", "terrain 6/18/20", "unit 6/1/2"]);
+        assert_eq!(waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(), ["water", "terrain-water", "catalog", "catalog-held"]);
+        assert!(waiting.iter().all(|w| w.why.contains("lakefill")));
+        // Not held (the fill made, or failed LAKEFILL_HOLDS times): all queued, nothing said.
+        let mut waiting = Vec::new();
+        assert_eq!(ids(&hold_for_lakefill(jobs(), false, &mut waiting)), ids(&jobs()));
+        assert!(waiting.is_empty());
+        // What holds: the lakefill job's work, until its failures reach LAKEFILL_HOLDS.
+        assert!(build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS - 1) && !build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS));
     }
 
     #[test]

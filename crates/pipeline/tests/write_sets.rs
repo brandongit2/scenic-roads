@@ -46,7 +46,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),
     ("crates/pipeline/src/bin/scenic.rs", "inputs", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): `scenic inputs`'s report"),
     ("crates/pipeline/src/agent/gc.rs", "run", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): GC's live set"),
-    ("crates/pipeline/src/agent/mod.rs", "region_work", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan"),
+    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan"),
     ("crates/pipeline/src/agent/mod.rs", "checklist", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's checklist"),
     ("crates/pipeline/src/agent/mod.rs", "region_progress", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's progress"),
     ("crates/pipeline/src/agent/mod.rs", "rekey_records", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): re-keying with the pool off (its writes through Out)"),

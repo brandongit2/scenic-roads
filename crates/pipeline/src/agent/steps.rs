@@ -75,7 +75,7 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
-pub const TABLE: [Step; 45] = [
+pub const TABLE: [Step; 46] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
     // planet with room to spare, less the pack cache it clears).
     Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },

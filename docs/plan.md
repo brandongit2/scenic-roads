@@ -556,8 +556,10 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   (`downloads.json` in its home, never the NAS).
 - **The World, zoomed out:** the essentials, and the basemap's zooms 0–10. The essentials are the
   build's worldwide files (`global/`: rail frequencies, the road → units index, landmark totals,
-  heritage summaries, roads' English names, the spoken languages), every layer's root and lo packs (zooms 0–8), and the landmark points and area
-  details (markdata, ovdata): 7.8 GB of catalog 14's 251 GB (2026-10-06). Not the pass's area
+  heritage summaries, roads' English names, the spoken languages), the lakes filled from Canada's
+  own data (`work/lakefill/<date>`, 0.8 GB: the water's deeper zooms read it anywhere in Canada),
+  every layer's root and lo packs (zooms 0–8), and the landmark points and area details (markdata,
+  ovdata): 7.8 GB of catalog 14's 251 GB (2026-10-06), 8.6 GB with the fill. Not the pass's area
   outlines (2.7 GB, read only to make regions). The basemap's zooms 0–10 are 1.7 GB of its 28.5.
 - **A region, or a view** (the ground on screen when it was downloaded): every layer's hi pack,
   and the base pack and road values, of each z6 tile within 2 km of it (outlines are simplified);
@@ -1216,10 +1218,13 @@ they treat any raster.
     - The `lakefill` step (`run::all`, alone, in this Mac's scratch) makes one file a pass,
       `work/lakefill/<date>.<h>.sect` (docs/formats.md), the other passes' removed; its key names
       the pass's basemap and outlines and the source's zips by name, size and time
-      (`run::source_pin`; a folder that can't be read holds both it and the water). Only the fill
-      made from the latest pass's basemap is drawn (`lakefill::current`). The water layer waits for
-      it, until it has failed 3 times in a row (`water_waits_for_lakefill`): then the water is drawn
-      without this pass's fill and the checklist says so.
+      (`run::source_pin`). Only the fill made from the latest pass's basemap is drawn
+      (`lakefill::current`). The jobs that read it wait for it (the agent's `hold_for_lakefill`:
+      the water, the terrain's water digests and the catalogs; also while the source's folder can't
+      be read), until it has failed 3 times in a row (`water_waits_for_lakefill`; counted on the
+      Mac that runs it, from nought again with a new app): then the pass's water, terrain and map
+      all go without its fill, and the checklist says so. So a pass's water, terrain and map have
+      the same fill, or none, and a fill made from an older basemap is never drawn.
     - The water layer draws its lakes as a z14 tile of their own beside the basemap's
       (`water::Extra`), in the build and in the server's deeper zooms (the catalog's
       `global.lakefill`, the file among the mirror's essentials; the server memory-maps it from the
@@ -2709,7 +2714,7 @@ everything is rebuilt.
 | sources kept per pass | ~200 GB | the same |
 | roadside buildings (the world's, once per Overture release; ~2.5 billion boxes) | ~40 GB | the same |
 | 3D buildings (`docs/buildings3d.md` §2.5): their sources (62 GB, on the NAS since 2026-10-06), the normalized files (~440 M buildings in the coverage's 380 z6 tiles, at the 38–50 B each B1 and B2 measured) and the packs (~342 M, 13.5–20 B each) | 62 + 17–22 + 4.6–6.9 GB; a mirror the packs alone | not planned |
-| an app Mac's mirror | what's downloaded: the World ~9.5 GB (the essentials 7.8, the basemap's zooms 0–10 1.7), a region from tens of MB to ~20 GB | as downloaded |
+| an app Mac's mirror | what's downloaded: the World ~10.3 GB (the essentials 8.6 with the lake fill's 0.8, the basemap's zooms 0–10 1.7), a region from tens of MB to ~20 GB | as downloaded |
 
 A retired pass's sources go 14 days after the next pass completes, so the NAS holds about two
 passes' sources at most.
