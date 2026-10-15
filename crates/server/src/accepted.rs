@@ -19,15 +19,16 @@ pub fn local_dir(home: &Path, unit: &str) -> PathBuf {
     home.join("accepted").join(unit)
 }
 
-/// Keeps unit `unit`'s accepted version in `local` in step with the records: whether it changed.
-/// Nothing (false) while the NAS is away.
-pub fn sync(data: &Data, unit: &str, local: &Path) -> anyhow::Result<bool> {
-    let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(false) };
+/// Keeps unit `unit`'s accepted version in `local` in step with the records.
+/// How it ended: None while the NAS is away; `Synced::Kept` once the copy here is the version the
+/// records name now (whether it was copied now: `true`); `Synced::None` when they name none.
+pub fn synced(data: &Data, unit: &str, local: &Path) -> anyhow::Result<Option<Synced>> {
+    let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(None) };
     if !pool.is_online() {
-        return Ok(false);
+        return Ok(None);
     }
     let read = |p: &str| -> anyhow::Result<Vec<u8>> { Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?) };
-    Ok(served::sync(&read, unit, local)? == Synced::Kept(true))
+    served::sync(&read, unit, local).map(Some)
 }
 
 /// The accepted files kept for unit `unit` in `local` (by drop-box path: the copy and its content
@@ -47,20 +48,24 @@ pub enum From {
 
 /// Which to read unit `unit` from, the copies brought up to date first (`old_rel`: its old folder
 /// on the NAS, copied into `old_local`), and whether what it says to read changed. The old copy is
-/// read until there's an accepted version and the old folder on the NAS holds no `.jsonl` file:
-/// then it's removed, and from then on (offline too) the accepted version is read.
+/// read until the copy here is the accepted version the records name now and the old folder on the
+/// NAS holds no `.jsonl` file: then it's removed, and from then on (offline too) the accepted
+/// version is read.
 pub fn choose(data: &Data, unit: &str, acc_local: &Path, old_rel: &str, old_local: &Path) -> (From, bool) {
-    let changed = match sync(data, unit, acc_local) {
-        Ok(c) => c,
+    let (changed, current) = match synced(data, unit, acc_local) {
+        Ok(Some(Synced::Kept(c))) => (c, true),
+        Ok(_) => (false, false),
         Err(e) => {
             eprintln!("{unit}: the accepted version: {e:#}");
-            false
+            (false, false)
         }
     };
-    let have = files(acc_local).is_some();
-    if have && !old_local.exists() {
+    if files(acc_local).is_some() && !old_local.exists() {
         return (From::Accepted, changed);
     }
+    // (Switched to only with the copy here the records' version now, just synced: one behind, or
+    // unfinished, keeps the old copy read.)
+    let have = current && files(acc_local).is_some();
     // (The old copy never loses a file during the move: one emptied while this Mac's accepted copy
     // is unfinished leaves it with the old lines, never none; the copy goes whole at the switch.)
     match crate::livefolder::sync(data, old_rel, old_local, false) {
@@ -70,7 +75,7 @@ pub fn choose(data: &Data, unit: &str, acc_local: &Path, old_rel: &str, old_loca
             (From::Accepted, true)
         }
         Ok(Some((c, _))) => (From::Old, changed | c),
-        Ok(None) => (if have && !old_local.exists() { From::Accepted } else { From::Old }, changed),
+        Ok(None) => (From::Old, changed),
         Err(e) => {
             eprintln!("{unit}: the old folder: {e:#}");
             (From::Old, changed)

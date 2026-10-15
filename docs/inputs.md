@@ -872,9 +872,12 @@ a drop to the map grows from about a minute and a half to the next listing plus 
 minutes; §12).
 
 **Migration.**
-1. Publish a server that reads the accepted copies, and the old folder while there are none
-   (§4.11); once every Mac runs it, move `translations/` to `inputs/translations/` (one rename on the
-   share), while no translator runs (§3).
+1. Publish a server that reads the old folder until the copy on its Mac is the accepted version
+   the records name and the old folder holds no `.jsonl` file, then the accepted copy alone (§4.11;
+   built, #137's first publish). Once every Mac runs it, **copy** (never move) the files into
+   `inputs/translations/` while no translator runs (§3); empty the old folder only after each Mac's
+   accepted copy is confirmed to be the records' version (the task's runbook). Then the second
+   publish removes the old folder's reading (planned).
 2. Run the input check on today's files. The converted tables (2.78 M lines) are expected to raise
    check.py warnings; they're accepted once, at migration, each listed in the task's report, each
    acceptance covering exactly the lines it lists (§4.4).

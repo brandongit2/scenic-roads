@@ -438,8 +438,27 @@ mod tests {
         s.names.reload();
         assert_eq!(sub(&s).as_deref(), Some("Blue Lake"));
         let before = s.names.version_for_tile(10, 517, 360, 0.0);
-        // The old folder emptied: the accepted version from then on, the old copy gone.
-        std::fs::remove_file(nas.path().join("translations/answers/fr-001.jsonl")).unwrap();
+        // A newer version named that this Mac can't copy yet (its copy's bytes not its name's), and
+        // the old folder emptied: the copy here is behind the records, so the old copy's still read.
+        let v1 = crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Azure Lake"))]);
+        let manifest = std::fs::read(nas.path().join("state/build/manifest.json")).unwrap();
+        let v2 = crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Teal Lake"))]);
+        let index: pipeline::inputs::Index = serde_json::from_slice(&std::fs::read(nas.path().join(&v2)).unwrap()).unwrap();
+        let copy = nas.path().join(&index.files["answers/fr-001.jsonl"].file);
+        let good = std::fs::read(&copy).unwrap();
+        std::fs::write(&copy, line("Wrong Lake")).unwrap();
+        let old = nas.path().join("translations/answers/fr-001.jsonl");
+        std::fs::rename(&old, nas.path().join("moved.jsonl")).unwrap();
+        s.names.sync(&s.data);
+        s.names.reload();
+        assert_eq!(sub(&s).as_deref(), Some("Blue Lake"));
+        assert!(home.path().join("translations").exists());
+        // (Back to the version this Mac has, for the rest.)
+        std::fs::write(&copy, good).unwrap();
+        std::fs::write(nas.path().join("state/build/manifest.json"), manifest).unwrap();
+        assert_ne!(v1, v2);
+        // The old folder emptied, the copy here the records' version: the accepted version from
+        // then on, the old copy gone.
         assert!(s.names.sync(&s.data));
         s.names.reload();
         assert_eq!(sub(&s).as_deref(), Some("Azure Lake"));

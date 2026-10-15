@@ -657,6 +657,8 @@ fn with_stub_checker() {
 #[test]
 fn check_py_flags_lines_in_its_flagged_mode() {
     if !store::spawn::output(std::process::Command::new("uv").arg("--version")).is_ok_and(|o| o.status.success()) {
+        // (Before a publish, which sets SCENIC_PUBLISH, a missing uv fails: the app's check needs it.)
+        assert!(std::env::var_os("SCENIC_PUBLISH").is_none(), "uv isn't here, and publishing needs it: the translations' checker runs in it");
         eprintln!("uv isn't here: check.py not run");
         return;
     }
