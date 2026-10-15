@@ -107,17 +107,9 @@ impl OutlineIndex {
         Ok(out)
     }
 
-    /// A country's English (else own) name, from its ISO 3166-1 code's string index.
-    fn country_name(&self, code: u32) -> String {
-        let c = self.string(code);
-        if c.is_empty() {
-            return String::new();
-        }
-        self.recs
-            .iter()
-            .find(|r| r.flags & flag::ISO1 != 0 && self.string(r.iso) == c)
-            .map(|r| if self.string(r.name_en).is_empty() { self.string(r.name).to_string() } else { self.string(r.name_en).to_string() })
-            .unwrap_or_default()
+    /// The country or territory an outline lies in, as its summary's `in` and `in_name`.
+    fn lies_in(&self, o: &OutlineRec) -> (String, String) {
+        lies_in(&self.recs, |i| self.string(i), o)
     }
 
     pub fn by_id(&self, id: u64) -> Option<&OutlineRec> {
@@ -125,6 +117,7 @@ impl OutlineIndex {
     }
 
     fn summary(&self, o: &OutlineRec) -> Value {
+        let (in_code, in_name) = self.lies_in(o);
         json!({
             "id": o.id,
             "name": self.string(o.name),
@@ -132,13 +125,33 @@ impl OutlineIndex {
             "level": o.level,
             "iso": self.string(o.iso),
             "country": o.flags & flag::ISO1 != 0,
-            // The country it lies in (its ISO 3166-1 code, and the country's English or own name).
-            "in": self.string(o.country),
-            "in_name": self.country_name(o.country),
+            // The country it lies in (its ISO 3166-1 code, and the country's English or own name):
+            // none for a country or territory itself.
+            "in": in_code,
+            "in_name": in_name,
             "km2": o.area_km2.round(),
             "bbox": o.bbox.map(|v| v as f64 * 1e-7),
         })
     }
+}
+
+/// The country or territory `o` lies in: its ISO 3166-1 code and its English (else own) name,
+/// the name that of the outline whose own code it is (`pipeline::outlines::own_code_of`: GP's
+/// outline is coded FR-971 but is Guadeloupe's), the lowest level first. Both "" for a country or
+/// territory itself, and for an outline in none.
+fn lies_in<'a>(recs: &[OutlineRec], string: impl Fn(u32) -> &'a str, o: &OutlineRec) -> (String, String) {
+    use pipeline::outlines::{country_of_string, own_code_of};
+    if o.flags & flag::ISO1 != 0 {
+        return (String::new(), String::new());
+    }
+    let Some(code) = country_of_string(string(o.country)) else { return (String::new(), String::new()) };
+    let name = recs
+        .iter()
+        .filter(|r| own_code_of(r.flags, string(r.iso), string(r.country)) == Some(code))
+        .min_by_key(|r| (r.level, r.id))
+        .map(|r| if string(r.name_en).is_empty() { string(r.name) } else { string(r.name_en) })
+        .unwrap_or("");
+    (code.to_string(), name.to_string())
 }
 
 /// The languages spoken where (`names::spoken`), from the catalog's outlines (their simplified
@@ -920,5 +933,33 @@ mod tests {
         for old in [json!({"regions": []}), Value::Null, json!({"regions": ["northumberland"]})] {
             assert!(recorded(&catalog(old.clone())).is_empty() && recorded_list(&catalog(old)).is_empty());
         }
+    }
+
+    #[test]
+    fn what_an_outline_lies_in() {
+        // France holding Guadeloupe (GP, coded FR-971) holding a town; a district of France.
+        let sq = |id: u64, lvl: u8, tags: &str, x0: f64, x1: f64| {
+            format!(
+                r#"{{"type":"Feature","geometry":{{"type":"Polygon","coordinates":[[[{x0},{x0}],[{x1},{x0}],[{x1},{x1}],[{x0},{x1}],[{x0},{x0}]]]}},"properties":{{"@type":"relation","@id":{id},"boundary":"administrative","admin_level":"{lvl}",{tags}}}}}"#
+            )
+        };
+        let d = tempfile::tempdir().unwrap();
+        let geo = d.path().join("o.geojsonseq");
+        let lines = [
+            sq(1, 2, r#""ISO3166-1":"FR","name":"France""#, 0.0, 10.0),
+            sq(2, 3, r#""ISO3166-1":"GP","ISO3166-2":"FR-971","name":"Guadeloupe""#, 1.0, 2.0),
+            sq(3, 8, r#""name":"Town""#, 1.2, 1.4),
+            sq(4, 6, r#""name":"District""#, 5.0, 6.0),
+        ];
+        std::fs::write(&geo, lines.iter().map(|l| format!("\u{1e}{l}\n")).collect::<String>()).unwrap();
+        let out = d.path().join("o.sect");
+        pipeline::outlines::assemble_geojsonseq(&geo, &out).unwrap();
+        let o = pipeline::outlines::Outlines::open(&out).unwrap();
+        let at = |id| lies_in(&o.recs, |i| o.string(i), o.by_id(id).unwrap());
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(at(1), s("", ""), "a country lies in none");
+        assert_eq!(at(2), s("", ""), "nor a territory");
+        assert_eq!(at(3), s("GP", "Guadeloupe"));
+        assert_eq!(at(4), s("FR", "France"));
     }
 }

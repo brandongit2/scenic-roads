@@ -513,6 +513,18 @@ fn end_part() {
     drop(p);
 }
 
+/// The content name of the newest pass's outlines before `date`'s, in `manifest`.
+pub fn previous_outlines<'a>(manifest: &'a std::collections::BTreeMap<String, String>, date: &str) -> Option<&'a str> {
+    manifest
+        .iter()
+        .filter_map(|(k, v)| match k.split('/').collect::<Vec<_>>()[..] {
+            ["sources", "osm", d, "outlines"] if d < date => Some((d, v.as_str())),
+            _ => None,
+        })
+        .max_by_key(|(d, _)| *d)
+        .map(|(_, v)| v)
+}
+
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
 pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extract_bin: &Path, planetiler: &Path) -> Result<()> {
     use crate::agent::jobs::{report, stage};
@@ -576,11 +588,16 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         let set = if set.exists() { set } else { out.path(out.get(&set_name(date, "outlines")).context("the outline set")?) };
         let file = scratch.join("outlines.sect");
         let p = crate::timings::sub("assembled", crate::timings::Class::Compute);
-        let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file)?;
+        // (The previous pass's: what a country this pass can't assemble keeps.)
+        let previous = previous_outlines(&out.manifest, date).map(|c| out.path(c));
+        let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file, previous.as_deref())?;
         drop(p);
         eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
         for (id, iso, gap) in &s.repaired {
             eprintln!("outlines: relation {id} ({iso}) left out by osmium's export, assembled here (widest gap closed {gap:.0} m)");
+        }
+        for (id, iso, why) in &s.stale {
+            eprintln!("outlines: WARNING: relation {id} ({iso}) can't be assembled from this planet ({why}): kept as the previous pass's outline (stale)");
         }
         if !s.unassembled.is_empty() {
             eprintln!("outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}", s.unassembled.len(), s.unassembled);
@@ -1001,6 +1018,22 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_previous_outlines_are_the_newest_before() {
+        let m: std::collections::BTreeMap<String, String> = [
+            ("sources/osm/2026-08-01/outlines", "a"),
+            ("sources/osm/2026-09-01/outlines", "b"),
+            ("sources/osm/2026-09-28/outlines", "c"),
+            ("sources/osm/2026-09-15/sets/outlines", "x"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(previous_outlines(&m, "2026-09-28"), Some("b"));
+        assert_eq!(previous_outlines(&m, "2026-10-26"), Some("c"));
+        assert_eq!(previous_outlines(&m, "2026-08-01"), None);
+    }
 
     /// A pass complete by its records (docs/pool.md §7.4): the newest the manifest names complete,
     /// whatever `pass.*.json` files the NAS holds; by the files, as before.

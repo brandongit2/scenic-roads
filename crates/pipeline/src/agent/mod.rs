@@ -4909,6 +4909,15 @@ impl Agent {
         };
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let keys = build::Keys::load(root);
+        // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
+        // pass's line until a pass has them whole (crate::outlines::assemble).
+        if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
+            if let Ok(stale) = crate::outlines::Outlines::stale_in(&root.join(c)) {
+                if !stale.is_empty() {
+                    out[0].note = Some(format!("Kept from the previous pass (their outlines broken in this planet's OpenStreetMap): relations {}", stale.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")));
+                }
+            }
+        }
         // The pass's worldwide jobs.
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),

@@ -2381,7 +2381,8 @@ pub struct Step {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
     /// While it has work left and isn't this Mac's job now: why (another Mac is on it, it waits
-    /// for the home network or out a failure, for the steps above).
+    /// for the home network or out a failure, for the steps above). The pass's: the countries it
+    /// kept as the previous pass's outlines, done or not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Which of its jobs a helper may do (crate::agent::steps::SHARED, `mark_shared`): "all", or

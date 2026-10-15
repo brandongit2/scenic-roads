@@ -741,7 +741,7 @@ class, id) within a tile. The client sends the id with the clicked point.
 
 - **The OSM pass** (`sources/osm/<date>/`): `planet.osm.pbf`; `filtered`; `pieces/<u>` and
   `pieces.json`; `sets/<name>[-v<n>]`; `roads/<u>.bin` (32 B a way: u64 way id and its road values);
-  `outlines` (sectioned, meta `fmt` "outlines-1": `recs` (64 B `OutlineRec`), `rings`, `points`,
+  `outlines` (sectioned, meta `fmt` "outlines-1" and the `repaired`, `stale` and `unassembled` relations: `recs` (64 B `OutlineRec`), `rings`, `points`,
   `srings`, `spoints`, `strings`); `reach.json.zst` (zstd JSON `{fmt, date, units: {"6/x/y": {owned:
   [w, s, e, n] or null, long: [{owned, ferry, verts: [[lon, lat], …]}]}}}`, E7: the box of the ways a
   unit owns within its tile + 20 km, and every way of its piece reaching further, whole;

@@ -814,9 +814,15 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      (`pipeline::outlines::assemble`):
      - **Countries and territories** (`boundary=administrative` with `ISO3166-1`): assembled by the pass itself, their ways
        joined end to end and the gaps left joined nearest first with a straight line, each up to
-       1 km (`MAX_GAP_M`); the log names each. One that still can't be (a wider gap, a missing
-       way) **stops the pass**, naming it: every country in OSM has its outline, or the spoken
-       languages and the coverage's countries would silently lose it.
+       1 km (`MAX_GAP_M`) and crossing none of its ways; the record is flagged `REPAIRED` with the
+       widest gap (`gap_m`), and the log names each. Refused (not guessed): a node where more than
+       two way ends meet. Holes go in the smallest outer ring holding them.
+     - One that still can't be (a wider gap, a missing way, a crossing, a junction) keeps the
+       previous pass's outline of the same relation, flagged `STALE` (its names and codes this
+       planet's), with a warning in the log and on the status's pass line (the outlines' meta
+       lists it). With no previous outline of it, the pass **stops**, naming it: every country in
+       OSM has an outline, or the spoken languages and the coverage's countries would silently
+       lose it.
      - **Others** (subdivisions, districts, a country's other relations such as Thailand's `land_area`): left out, their ids in the log as a warning. Hundreds
        are broken in OSM at any time; stopping on them would stop every pass.
    - A country's or territory's code is its own `ISO3166-1` tag where that's an assigned code

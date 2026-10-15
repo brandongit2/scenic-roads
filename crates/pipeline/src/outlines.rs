@@ -17,7 +17,7 @@
 //! | `strings` | names, `\n`-separated; index 0 is "" |
 
 use det::Det;
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rayon::prelude::*;
 use serde_json::Value;
@@ -50,7 +50,9 @@ pub struct OutlineRec {
     pub level: u8,
     /// [`flag`]s.
     pub flags: u8,
-    pub _pad: [u8; 2],
+    /// With [`flag::REPAIRED`]: the widest gap (m, rounded) the assembly closed with a straight
+    /// line. 0 otherwise.
+    pub gap_m: u16,
     /// Strings: for a country or territory ([`flag::ISO1`]), its own ISO 3166-1 code; for others,
     /// that of the smallest country or territory it lies in; "" when none is known. (Files written
     /// before 2026-10-15 have "" for a country and the containing one's `iso` for others: both
@@ -63,6 +65,12 @@ pub mod flag {
     pub const ISO1: u8 = 1;
     /// Has `ISO3166-2` (a subdivision).
     pub const ISO2: u8 = 2;
+    /// osmium's export left it out (its rings open in OSM) and it was assembled here, its gaps
+    /// closed with straight lines ([`super::OutlineRec::gap_m`]).
+    pub const REPAIRED: u8 = 4;
+    /// Neither the export nor the repair could assemble it from this pass: its rings are the
+    /// previous pass's outline of the same relation (its names and codes this pass's).
+    pub const STALE: u8 = 8;
 }
 
 /// A ring: `count` points of `points` from `start`. A polygon is an outer ring followed by its
@@ -89,6 +97,8 @@ struct Parsed {
     iso: String,
     /// `ISO3166-1` ("" when none).
     iso1: String,
+    /// [`OutlineRec::gap_m`].
+    gap_m: u16,
     /// Polygons: rings (the first outer, the rest inner), E7.
     polys: Vec<Vec<Vec<[i32; 2]>>>,
 }
@@ -139,6 +149,7 @@ fn outline<'a>(id: u64, get: impl Fn(&str) -> Option<&'a str>, polys: Vec<Vec<Ve
         name_en: get("name:en").unwrap_or("").to_string(),
         iso: if t.iso2.is_empty() { t.iso1 } else { t.iso2 }.to_string(),
         iso1: t.iso1.to_string(),
+        gap_m: 0,
         polys,
     })
 }
@@ -262,6 +273,9 @@ pub struct Summary {
     /// Countries and territories the export couldn't assemble, assembled here ([`repair`]):
     /// relation, its `ISO3166-1`, and the widest gap closed (m).
     pub repaired: Vec<(u64, String, f64)>,
+    /// Countries and territories neither the export nor the repair could assemble, kept as the
+    /// previous pass's outline ([`flag::STALE`]): relation, its `ISO3166-1`, and why.
+    pub stale: Vec<(u64, String, String)>,
     /// Other kept relations (subdivisions, administrative areas) the export couldn't assemble:
     /// left out, by relation id.
     pub unassembled: Vec<u64>,
@@ -279,12 +293,14 @@ fn osmium(args: &mut Command, what: &str) -> Result<()> {
 /// osmium's export leaves out, without naming it, a relation whose rings don't close (OSM's data
 /// broken for a while: the 2026-09-28 planet's Poland and Ukraine, a way missing from their shared
 /// border). So the relations kept ([`Tags::kept`]) the export didn't give are found from the set's
-/// relations. Countries and territories (`boundary=administrative` and `ISO3166-1`) among them are assembled here
-/// ([`repair`]: their ways joined, gaps up to [`MAX_GAP_M`] closed), and one that can't be fails
-/// the assembly: every country present in OSM has its outline, or the pass stops. Others are left
-/// out and counted ([`Summary::unassembled`]): a few hundred subdivisions broken in OSM at any
-/// time would otherwise stop every pass.
-pub fn assemble(set: &Path, work: &Path, out: &Path) -> Result<Summary> {
+/// relations. Countries and territories (`boundary=administrative` and `ISO3166-1`) among them
+/// are assembled here ([`repair`]: their ways joined, gaps up to [`MAX_GAP_M`] closed;
+/// [`flag::REPAIRED`]). One that can't be keeps the `previous` pass's outline of the same
+/// relation ([`flag::STALE`], [`Summary::stale`]); one without fails the assembly: every country
+/// present in OSM has an outline, or the pass stops. Others are left out and counted
+/// ([`Summary::unassembled`]): a few dozen subdivisions broken in OSM at any time would otherwise
+/// stop every pass. The file's meta lists all three.
+pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<&Path>) -> Result<Summary> {
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
     osmium(Command::new("osmium").args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"]).arg(&rels_opl).arg(set), "osmium cat (the outline set's relations)")?;
@@ -312,7 +328,7 @@ pub fn assemble(set: &Path, work: &Path, out: &Path) -> Result<Summary> {
     let have: std::collections::HashSet<u64> = parsed.iter().map(|p| p.id).collect();
     let missing: Vec<&opl::Relation> = rels.iter().filter(|r| !have.contains(&r.id)).collect();
     let (countries, others): (Vec<&opl::Relation>, Vec<&opl::Relation>) = missing.into_iter().partition(|r| r.country());
-    let mut repaired = Vec::new();
+    let mut sum = Summary { unassembled: others.iter().map(|r| r.id).collect(), ..Default::default() };
     if !countries.is_empty() {
         // Their ways and nodes from the set.
         let ids = work.join("outlines-repair.ids");
@@ -329,37 +345,60 @@ pub fn assemble(set: &Path, work: &Path, out: &Path) -> Result<Summary> {
         std::fs::remove_file(&ids).ok();
         std::fs::remove_file(&members).ok();
         let (ok, failed) = repair_all(&countries, &geom);
-        ensure!(
-            failed.is_empty(),
-            "outlines: countries and territories osmium's export left out and that can't be assembled here either (fix OSM's relation or wait for a planet where it's whole): {}",
-            failed.join("; ")
-        );
         for (p, gap) in ok {
-            repaired.push((p.id, p.iso1.clone(), gap));
+            sum.repaired.push((p.id, p.iso1.clone(), gap));
+            parsed.push(p);
+        }
+        let prev = previous.map(Outlines::open).transpose().context("the previous pass's outlines")?;
+        let (stale, lost) = keep_previous(failed, prev.as_ref())?;
+        ensure!(
+            lost.is_empty(),
+            "outlines: countries and territories osmium's export left out, that can't be assembled here either, and that no previous pass has an outline of (fix OSM's relation or wait for a planet where it's whole): {}",
+            lost.join("; ")
+        );
+        for (p, why) in stale {
+            sum.stale.push((p.id, p.iso1.clone(), why));
             parsed.push(p);
         }
     }
-    let mut sum = write(parsed, out)?;
-    sum.repaired = repaired;
-    sum.unassembled = others.iter().map(|r| r.id).collect();
-    Ok(sum)
+    write(parsed, out, sum)
 }
 
 /// Repairs each of `rels` ([`repair`]) with the ways and nodes of `geom`: the outlines made, with
-/// the widest gap each closed, and a line for each that couldn't be.
-fn repair_all(rels: &[&opl::Relation], geom: &opl::Geometry) -> (Vec<(Parsed, f64)>, Vec<String>) {
+/// the widest gap each closed, and each that couldn't be with why.
+fn repair_all<'a>(rels: &[&'a opl::Relation], geom: &opl::Geometry) -> (Vec<(Parsed, f64)>, Vec<(&'a opl::Relation, String)>) {
     let (mut ok, mut failed) = (Vec::new(), Vec::new());
-    for r in rels {
+    for &r in rels {
         let res = repair(r, geom).and_then(|(polys, gap)| {
-            let get = |k: &str| r.tags.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
-            outline(r.id, get, polys).map(|p| (p, gap)).context("not an outline kept")
+            let mut p = outline(r.id, |k| r.get(k), polys).context("not an outline kept")?;
+            p.flags |= flag::REPAIRED;
+            p.gap_m = gap.round().min(u16::MAX as f64) as u16;
+            Ok((p, gap))
         });
         match res {
             Ok(x) => ok.push(x),
-            Err(e) => failed.push(format!("relation {} ({}): {e:#}", r.id, r.iso1())),
+            Err(e) => failed.push((r, format!("{e:#}"))),
         }
     }
     (ok, failed)
+}
+
+/// The relations that couldn't be repaired, each as the `previous` pass's outline of it (its
+/// rings; its names and codes this pass's tags), [`flag::STALE`], with why; and a line for each
+/// with no previous outline.
+fn keep_previous(failed: Vec<(&opl::Relation, String)>, previous: Option<&Outlines>) -> Result<(Vec<(Parsed, String)>, Vec<String>)> {
+    let (mut kept, mut lost) = (Vec::new(), Vec::new());
+    for (r, why) in failed {
+        let old = previous.and_then(|o| o.by_id(r.id).map(|rec| (o, rec)));
+        let Some((o, rec)) = old else {
+            lost.push(format!("relation {} ({}): {why}", r.id, r.iso1()));
+            continue;
+        };
+        let mut p = outline(r.id, |k| r.get(k), o.polygons(rec)?).context("not an outline kept")?;
+        p.flags |= flag::STALE;
+        kept.push((p, why));
+    }
+    Ok((kept, lost))
 }
 
 /// The widest gap between two ends of a relation's ways [`repair`] closes with a straight line.
@@ -375,15 +414,20 @@ fn dist_m(a: [i32; 2], b: [i32; 2]) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-/// Rings from ways (node ids and points, in order): ways joined end to end where they share an
-/// end node (the lowest way id first, so the same ways give the same rings), then the chains left
-/// open joined nearest ends first, each gap up to [`MAX_GAP_M`]. The widest gap closed with them.
+/// Rings from ways (node ids and points, in the relation's member order, so the same relation gives
+/// the same rings): ways joined end to end where they share an end node, then the chains left open
+/// joined nearest ends first, each gap up to [`MAX_GAP_M`] and its line crossing no way's segment.
+/// The widest gap closed with them. Refused: a node where more than two way ends meet (which way
+/// a ring takes there is a guess that can make it cross itself).
 fn rings_of(ways: &[Vec<(u64, [i32; 2])>]) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
     let mut ends: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
     for (i, w) in ways.iter().enumerate() {
         ensure!(w.len() >= 2, "a way of fewer than two nodes");
         ends.entry(w[0].0).or_default().push(i);
         ends.entry(w[w.len() - 1].0).or_default().push(i);
+    }
+    if let Some((n, v)) = ends.iter().find(|(_, v)| v.len() > 2) {
+        bail!("{} way ends meet at node {n}", v.len());
     }
     let mut used = vec![false; ways.len()];
     let mut chains: Vec<Vec<(u64, [i32; 2])>> = Vec::new();
@@ -432,7 +476,13 @@ fn rings_of(ways: &[Vec<(u64, [i32; 2])>]) -> Result<(Vec<Vec<[i32; 2]>>, f64)> 
             }
         }
         let (d, a, b, rev) = best.expect("an open chain");
-        ensure!(d <= MAX_GAP_M, "a gap of {d:.0} m in its rings, near {:?} (wider than {MAX_GAP_M} m)", open[a][open[a].len() - 1].1);
+        let from = open[a][open[a].len() - 1].1;
+        ensure!(d <= MAX_GAP_M, "a gap of {d:.0} m in its rings, near {from:?} (wider than {MAX_GAP_M} m)");
+        let to = if rev { open[b][open[b].len() - 1].1 } else { open[b][0].1 };
+        let crossed = ways.iter().flat_map(|w| w.windows(2)).find(|s| crosses((from, to), (s[0].1, s[1].1)));
+        if let Some(s) = crossed {
+            bail!("the line closing a gap of {d:.0} m at {from:?} would cross the segment {:?}–{:?}", s[0].1, s[1].1);
+        }
         widest = widest.max(d);
         if a == b {
             let mut c = open.swap_remove(a);
@@ -452,9 +502,18 @@ fn rings_of(ways: &[Vec<(u64, [i32; 2])>]) -> Result<(Vec<Vec<[i32; 2]>>, f64)> 
     Ok((rings.into_iter().map(|r| r.into_iter().map(|(_, p)| p).collect()).collect(), widest))
 }
 
+/// Whether segments `a` and `b` cross at a point inside both (sharing an end, or touching, isn't).
+fn crosses(a: ([i32; 2], [i32; 2]), b: ([i32; 2], [i32; 2])) -> bool {
+    let o = |p: [i32; 2], q: [i32; 2], r: [i32; 2]| -> i128 {
+        let v = (q[0] as i128 - p[0] as i128) * (r[1] as i128 - p[1] as i128) - (q[1] as i128 - p[1] as i128) * (r[0] as i128 - p[0] as i128);
+        v.signum()
+    };
+    o(a.0, a.1, b.0) * o(a.0, a.1, b.1) < 0 && o(b.0, b.1, a.0) * o(b.0, b.1, a.1) < 0
+}
+
 /// A relation's polygons from its ways (role `outer` or none: outer; `inner`: inner), assembled
-/// here ([`rings_of`]), each inner ring in the outer holding its first point; with the widest gap
-/// closed.
+/// here ([`rings_of`]), each inner ring in the smallest outer holding its first point; with the
+/// widest gap closed.
 fn repair(r: &opl::Relation, geom: &opl::Geometry) -> Result<(Vec<Vec<Vec<[i32; 2]>>>, f64)> {
     let mut outer = Vec::new();
     let mut inner = Vec::new();
@@ -470,12 +529,19 @@ fn repair(r: &opl::Relation, geom: &opl::Geometry) -> Result<(Vec<Vec<Vec<[i32; 
     ensure!(!outer.is_empty(), "no outer ways");
     let (outers, g1) = rings_of(&outer)?;
     let (inners, g2) = if inner.is_empty() { (Vec::new(), 0.0) } else { rings_of(&inner)? };
+    Ok((nest(outers, inners)?, g1.max(g2)))
+}
+
+/// Polygons from outer and inner rings: each inner ring in the smallest outer one holding its
+/// first point (a pond on an island in a lake goes in the island, not the mainland).
+fn nest(outers: Vec<Vec<[i32; 2]>>, inners: Vec<Vec<[i32; 2]>>) -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
+    let areas: Vec<f64> = outers.iter().map(|r| ring_area_m2(r).abs()).collect();
     let mut polys: Vec<Vec<Vec<[i32; 2]>>> = outers.into_iter().map(|o| vec![o]).collect();
     for h in inners {
-        let p = polys.iter_mut().find(|p| inside(&[&p[0]], h[0])).context("an inner ring in no outer one")?;
-        p.push(h);
+        let k = (0..polys.len()).filter(|&k| inside(&[&polys[k][0]], h[0])).min_by(|&x, &y| areas[x].total_cmp(&areas[y]).then(x.cmp(&y))).context("an inner ring in no outer one")?;
+        polys[k].push(h);
     }
-    Ok((polys, g1.max(g2)))
+    Ok(polys)
 }
 
 /// Reading osmium's OPL: the set's relations and the repaired ones' ways and nodes.
@@ -487,6 +553,7 @@ mod opl {
 
     /// A relation kept ([`Tags::kept`]) that's an area (`type=boundary` or `multipolygon`, with
     /// ways): its tags that matter, and, for a country, its ways and their roles.
+    #[derive(Debug)]
     pub struct Relation {
         pub id: u64,
         pub tags: Vec<(String, String)>,
@@ -497,7 +564,7 @@ mod opl {
     const KEYS: [&str; 7] = ["admin_level", "boundary", "ISO3166-1", "ISO3166-1:alpha2", "ISO3166-2", "name", "name:en"];
 
     impl Relation {
-        fn get(&self, k: &str) -> Option<&str> {
+        pub fn get(&self, k: &str) -> Option<&str> {
             self.tags.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str())
         }
         /// A country or territory: tagged `ISO3166-1` and `boundary=administrative`. (Not the
@@ -619,9 +686,12 @@ fn read_export(geo: &Path) -> Result<Vec<Parsed>> {
     Ok(parsed)
 }
 
-/// The outlines of an existing export, stored at `out` (no repairs: the set isn't at hand).
+/// The outlines of an existing export, stored at `out`. Only what the export holds: none of
+/// [`assemble`]'s checks or repairs (the set isn't at hand), so a country the export left out is
+/// missing here, silently. For tests and probes, not a pass.
 pub fn assemble_geojsonseq(geo: &Path, out: &Path) -> Result<Summary> {
-    write(read_export(geo)?, out)
+    eprintln!("outlines: {} as exported, without the repairs of countries the export left out", geo.display());
+    write(read_export(geo)?, out, Summary::default())
 }
 
 /// A country's or territory's own ISO 3166-1 code: its `ISO3166-1` tag where that's an assigned
@@ -635,7 +705,8 @@ fn own_code(iso1: &str, iso: &str) -> Option<String> {
 /// Canaries, `EA` Ceuta and Melilla, …) but name no country of their own.
 const RESERVED: [&str; 13] = ["AC", "CP", "CQ", "DG", "EA", "EU", "EZ", "FX", "IC", "SU", "TA", "UK", "UN"];
 
-fn write(mut parsed: Vec<Parsed>, out: &Path) -> Result<Summary> {
+/// Stores `parsed` at `out`, with `sum`'s repaired, stale and unassembled relations in its meta.
+fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summary> {
     // One record per relation (osmium writes each once; a repeat would be a bug upstream).
     parsed.sort_by_key(|p| p.id);
     parsed.dedup_by_key(|p| p.id);
@@ -683,7 +754,6 @@ fn write(mut parsed: Vec<Parsed>, out: &Path) -> Result<Summary> {
         .collect();
     let mut recs = Vec::with_capacity(parsed.len());
     let (mut rings, mut points, mut srings, mut spoints): (Vec<Ring>, Vec<[i32; 2]>, Vec<Ring>, Vec<[i32; 2]>) = Default::default();
-    let mut sum = Summary::default();
     for (pi, (p, simple)) in parsed.iter().zip(simplified).enumerate() {
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         let mut area = 0.0;
@@ -727,7 +797,7 @@ fn write(mut parsed: Vec<Parsed>, out: &Path) -> Result<Summary> {
             nsrings: (srings.len() - s0) as u32,
             level: p.level,
             flags: p.flags,
-            _pad: [0; 2],
+            gap_m: p.gap_m,
             country: intern(&country),
         });
     }
@@ -737,7 +807,8 @@ fn write(mut parsed: Vec<Parsed>, out: &Path) -> Result<Summary> {
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let meta = serde_json::json!({ "fmt": FORMAT, "outlines": recs.len(), "points": points.len(), "spoints": spoints.len() });
+    let stale: Vec<u64> = sum.stale.iter().map(|s| s.0).collect();
+    let meta = serde_json::json!({ "fmt": FORMAT, "outlines": recs.len(), "points": points.len(), "spoints": spoints.len(), "repaired": sum.repaired, "stale": stale, "unassembled": sum.unassembled });
     let mut w = store::sect::SectWriter::create(out, meta)?;
     w.add_pod("recs", &recs)?;
     w.add_pod("rings", &rings)?;
@@ -809,6 +880,26 @@ impl Outlines {
     }
 
     /// The simplified rings grouped as polygons (an outer ring, then its holes).
+    /// Its full rings as polygons: an outer ring, then its holes.
+    pub fn polygons(&self, o: &OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
+        let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
+        for (kind, pts) in self.read_rings("rings", "points", o.rings, o.nrings)? {
+            match out.last_mut() {
+                Some(p) if kind == 1 => p.push(pts),
+                _ => out.push(vec![pts]),
+            }
+        }
+        Ok(out)
+    }
+
+    /// The countries and territories of the file at `path` kept as the previous pass's outlines
+    /// ([`flag::STALE`]), by relation id, from its meta alone (none in a file made before they were
+    /// recorded).
+    pub fn stale_in(path: &Path) -> Result<Vec<u64>> {
+        let r = store::sect::SectReader::open(store::range::PlainFile::open(path)?)?;
+        Ok(r.meta().get("stale").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default())
+    }
+
     pub fn simple_polygons(&self, o: &OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
         let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
         for (kind, pts) in self.read_rings("srings", "spoints", o.srings, o.nsrings)? {
@@ -863,8 +954,7 @@ impl Outlines {
 fn spoken_code(o: &OutlineRec, string: &impl Fn(u32) -> String) -> Option<String> {
     let iso = string(o.iso);
     if o.flags & flag::ISO1 != 0 {
-        let own = string(o.country);
-        territory_code(&own).or_else(|| territory_code(&iso)).map(str::to_owned)
+        own_code_of(o.flags, &iso, &string(o.country)).map(str::to_owned)
     } else if o.flags & flag::ISO2 != 0 {
         Some(iso)
     } else {
@@ -915,6 +1005,22 @@ fn two_letters(s: &str) -> bool {
 /// `ISO3166-1`): that code; or, when the outline has a subdivision code too (which `iso` then
 /// holds), the code's end where it's a territory's own ("US-PR": PR), else its start ("ES-CN": ES,
 /// not China). None when that isn't two capital letters.
+/// A country's or territory's own ISO 3166-1 code from its record's `flags` and strings `iso` and
+/// `country` (the code stored there, [`own_code`]; a file from before: read from `iso`); None for
+/// an outline that isn't one ([`flag::ISO1`]).
+pub fn own_code_of<'a>(flags: u8, iso: &'a str, country: &'a str) -> Option<&'a str> {
+    if flags & flag::ISO1 == 0 {
+        return None;
+    }
+    territory_code(country).or_else(|| territory_code(iso))
+}
+
+/// The two-letter country code in a record's `country` string: the code itself, or (a file from
+/// before the codes were stored) the containing territory's ISO code read ([`territory_code`]).
+pub fn country_of_string(country: &str) -> Option<&str> {
+    territory_code(country)
+}
+
 fn territory_code(iso: &str) -> Option<&str> {
     match iso.split_once('-') {
         None => two_letters(iso).then_some(iso),
@@ -1076,7 +1182,7 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         assert!(failed.is_empty(), "{failed:?}");
         let (p, gap) = &ok[0];
         assert!((gap - 55.7).abs() < 1.0, "{gap}");
-        assert_eq!((p.id, p.level, p.iso1.as_str(), p.flags, p.name_en.as_str()), (100, 2, "PL", flag::ISO1, "Poland (test)"));
+        assert_eq!((p.id, p.level, p.iso1.as_str(), p.flags, p.gap_m, p.name_en.as_str()), (100, 2, "PL", flag::ISO1 | flag::REPAIRED, 56, "Poland (test)"));
         assert_eq!(p.polys.len(), 1);
         assert_eq!(p.polys[0].len(), 2, "the outer ring and its hole");
         let outer = &p.polys[0][0];
@@ -1088,9 +1194,11 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         // Stored, it's Poland's outline, and it's drawn under PL.
         let d = tempfile::tempdir().unwrap();
         let out = d.path().join("o.sect");
-        write(ok.into_iter().map(|(p, _)| p).collect(), &out).unwrap();
+        write(ok.into_iter().map(|(p, _)| p).collect(), &out, Summary::default()).unwrap();
         let o = Outlines::open(&out).unwrap();
         assert_eq!(o.country_code(o.by_id(100).unwrap()), "PL");
+        let rec = o.by_id(100).unwrap();
+        assert_eq!((rec.flags, rec.gap_m), (flag::ISO1 | flag::REPAIRED, 56), "the repair is in the record");
         assert_eq!(o.spoken_codes().into_iter().collect::<Vec<_>>(), vec!["PL"]);
         assert_eq!(o.iso_at([20_000, 20_000]).unwrap().0, "PL");
         assert_eq!(o.iso_at([500_000, 500_000]).unwrap().0, "", "in the hole");
@@ -1103,10 +1211,77 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         let g = opl::Geometry::read(NODES.replace("x0.0005 y0", "x0.02 y0").as_bytes()).unwrap();
         let (ok, failed) = repair_all(&[&rels[0]], &g);
         assert!(ok.is_empty());
-        assert!(failed[0].starts_with("relation 100 (PL): a gap of 2226 m"), "{failed:?}");
+        assert!(failed[0].1.starts_with("a gap of 2226 m"), "{failed:?}");
         let g = opl::Geometry::read(NODES.replace("w2 ", "w20 ").as_bytes()).unwrap();
         let (_, failed) = repair_all(&[&rels[0]], &g);
-        assert_eq!(failed, vec!["relation 100 (PL): way 2 not in the set".to_string()]);
+        assert_eq!(failed[0].1, "way 2 not in the set");
+    }
+
+    #[test]
+    fn an_unrepairable_country_keeps_the_previous_outline() {
+        let rels = opl::kept_relations(BROKEN.as_bytes()).unwrap();
+        let g = opl::Geometry::read(NODES.replace("x0.0005 y0", "x0.02 y0").as_bytes()).unwrap();
+        // The previous pass had relation 100 (a square, named otherwise), not 104.
+        let d = tempfile::tempdir().unwrap();
+        let geo = d.path().join("prev.geojsonseq");
+        let prev_square = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":100").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PL\"");
+        std::fs::write(&geo, format!("\u{1e}{prev_square}\n")).unwrap();
+        let prev_file = d.path().join("prev.sect");
+        assemble_geojsonseq(&geo, &prev_file).unwrap();
+        let prev = Outlines::open(&prev_file).unwrap();
+        let (_, failed) = repair_all(&[&rels[0]], &g);
+        let (kept, lost) = keep_previous(failed, Some(&prev)).unwrap();
+        assert!(lost.is_empty());
+        let (p, why) = &kept[0];
+        assert!(why.starts_with("a gap of 2226 m"), "{why}");
+        assert_eq!((p.id, p.flags, p.name_en.as_str()), (100, flag::ISO1 | flag::STALE, "Poland (test)"), "this pass's tags");
+        assert_eq!(p.polys, prev.polygons(prev.by_id(100).unwrap()).unwrap(), "the previous pass's rings");
+        // Stored: flagged, and listed in the meta.
+        let out = d.path().join("o.sect");
+        let sum = Summary { stale: vec![(100, "PL".into(), why.clone())], ..Default::default() };
+        write(kept.into_iter().map(|(p, _)| p).collect(), &out, sum).unwrap();
+        assert_eq!(Outlines::stale_in(&out).unwrap(), vec![100]);
+        assert_eq!(Outlines::stale_in(&prev_file).unwrap(), Vec::<u64>::new());
+        let o = Outlines::open(&out).unwrap();
+        assert_eq!(o.by_id(100).unwrap().flags, flag::ISO1 | flag::STALE);
+        // None before it (the first pass, or a country new to OSM): the pass fails, naming it.
+        for prev in [None, Some(&Outlines::open(&out).unwrap())] {
+            let rels = opl::kept_relations(BROKEN.replace("r100 ", "r105 ").as_bytes()).unwrap();
+            let (_, failed) = repair_all(&[&rels[rels.len() - 1]], &g);
+            let (kept, lost) = keep_previous(failed, prev).unwrap();
+            assert!(kept.is_empty());
+            assert!(lost[0].starts_with("relation 105 (PL): a gap of 2226 m"), "{lost:?}");
+        }
+    }
+
+    #[test]
+    fn a_gap_line_never_crosses_a_way() {
+        // One way that turns back past its start: closing it straight from (2, 0) to (0, 0) would
+        // cut through its own segment (1, 5)–(1, −1).
+        let p = |i: u64, x: i32, y: i32| (i, [x * 1000, y * 1000]);
+        let way = vec![p(1, 0, 0), p(2, 0, 5), p(3, 1, 5), p(4, 1, -1), p(5, 2, -1), p(6, 2, 0)];
+        let e = rings_of(&[way]).unwrap_err().to_string();
+        assert!(e.starts_with("the line closing a gap of"), "{e}");
+        assert!(crosses(([0, 0], [2, 0]), ([1, -1], [1, 1])));
+        assert!(!crosses(([0, 0], [2, 0]), ([2, 0], [3, 1])), "sharing an end");
+        assert!(!crosses(([0, 0], [2, 0]), ([3, -1], [3, 1])));
+    }
+
+    #[test]
+    fn three_ways_at_a_node_are_refused() {
+        let w = |ids: &[u64]| ids.iter().map(|&i| (i, [i as i32 * 1000, (i % 3) as i32 * 1000])).collect::<Vec<_>>();
+        let e = rings_of(&[w(&[1, 2, 3]), w(&[3, 4, 1]), w(&[3, 5])]).unwrap_err().to_string();
+        assert_eq!(e, "3 way ends meet at node 3");
+    }
+
+    #[test]
+    fn a_hole_goes_in_the_smallest_outer_holding_it() {
+        // Mainland 0–100, a lake in it 10–90 (a hole), an island in the lake 20–80, a pond on the
+        // island 40–60: the pond is the island's hole, though the mainland holds it too.
+        let sq = |a: i32, b: i32| vec![[a, a], [b, a], [b, b], [a, b], [a, a]];
+        let polys = nest(vec![sq(0, 100), sq(20, 80)], vec![sq(10, 90), sq(40, 60)]).unwrap();
+        assert_eq!(polys, vec![vec![sq(0, 100), sq(10, 90)], vec![sq(20, 80), sq(40, 60)]]);
+        assert!(nest(vec![sq(0, 10)], vec![sq(20, 30)]).is_err(), "a hole in no outer ring");
     }
 
     #[test]
