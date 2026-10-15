@@ -8,6 +8,12 @@ rayon = "1.10"
 memmap2 = "0.9"
 bytemuck = { version = "1.19", features = ["derive", "extern_crate_alloc"] }
 
+# Tests and debug builds keep only line tables (panics and backtraces still name file and line).
+# Full debug info on macOS stays in each build's object files beside the binaries, and they
+# piled up to 38 GB in target/debug by 15 Oct 2026.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
