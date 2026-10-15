@@ -457,6 +457,9 @@ fn materialize(dir: &Path, names: &Names, n: u64, have: Option<&Catalog>, read: 
             }
         }
     };
+    if chain.len() >= MAX_CHAIN / 2 {
+        eprintln!("catalog: {n} is read through {} deltas (at most {MAX_CHAIN}): its writer should have written a whole one", chain.len());
+    }
     let mut cat = base;
     for d in chain.iter().rev() {
         match d.apply(&cat) {
@@ -528,7 +531,12 @@ impl Delta {
     /// Whether the next catalog is written whole rather than as a delta of `size` bytes: when the
     /// deltas since the last whole one (`since`, their sizes) and it add up to the whole one's size
     /// (`whole`) or more, so a reader starting afresh never reads more than two whole catalogs' worth.
+    /// A run of deltas as long as MAX_CHAIN, whatever their sizes, is due too (readers stop there).
     pub fn due_whole(since: &[u64], size: u64, whole: u64) -> bool {
+        if since.len() + 1 >= MAX_CHAIN / 2 {
+            eprintln!("catalog: {} deltas since the last whole catalog (readers stop at {MAX_CHAIN}): a whole one now", since.len());
+            return true;
+        }
         since.iter().sum::<u64>() + size >= whole
     }
 }
@@ -887,5 +895,8 @@ mod tests {
         assert!(!Delta::due_whole(&[40, 40], 19, 100));
         assert!(Delta::due_whole(&[40, 40], 20, 100));
         assert!(Delta::due_whole(&[], 100, 100));
+        // (However small, before the readers' limit.)
+        assert!(Delta::due_whole(&vec![1; MAX_CHAIN / 2 - 1], 1, u64::MAX));
+        assert!(!Delta::due_whole(&vec![1; MAX_CHAIN / 2 - 2], 1, u64::MAX));
     }
 }

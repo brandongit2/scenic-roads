@@ -643,7 +643,8 @@ What's planned of placement (phase 4, §12):
   over the other agents that asked for that step in the last half minute, `Coordinator::members_asking`,
   plus one; at most the step's batch), from the front of the plan, so the rest stay offered to the
   members with the round's units rather than going into the lead's batch before a member asks.
-  Off: the step's batch, as before. **Scratch state (§13): both Macs, run in part** (15 Oct 2026,
+  Off: the step's batch, as before. (Of the five switches, `delta-catalog` goes on only once every
+  Mac's server runs an app that reads delta catalogs: plan.md §8.) **Scratch state (§13): both Macs, run in part** (15 Oct 2026,
   `root`, `round`, `every` and the five switches of plan.md §8's faster publishing, the M4 leading,
   the M1 a member): the switches read (`agent: faster publishing: …`), the round begun at once (its
   region the last), its slope and tree cover pieces, then `pack` (a cold start, one tile, then the

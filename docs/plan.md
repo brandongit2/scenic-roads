@@ -2581,6 +2581,14 @@ between jobs into the other way. On:
        the last low zooms' round, the rest as of this round. A region new since shows its roads from
        z9 until the next low zooms' round, then below too. The catalog says nothing of it: each pack
        it lists is whole and named by its content, so the app draws what it lists as it always has.
+       What else points there (traced, nothing fixed): the place search reads the labels' packs (the
+       pass's, made apart from the rounds, not lagging), so a hit in a region new since flies to its
+       zoom, below 9 for a city, a big lake or a park, where that region's roads aren't drawn yet;
+       they come at z9. The road → units index (`roadunits`, every round) only joins a road found by
+       a click or hover on a drawn line with its ways in other units: below z9 that line is in a lo
+       pack, so it's a road drawn there, and ways of it in a unit new since are listed in its profile
+       but not highlighted (the highlight marks lines of the tiles drawn). Nothing shows a road the
+       overview lacks as if it were drawn.
      - `round-share`: with every step to every member on (docs/pool.md §7.2), the lead's own job of
        a round's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the
        targets over the members asking for that step in the last half minute plus one, at most the
@@ -2595,9 +2603,15 @@ between jobs into the other way. On:
        the NAS again (measured, 15 Oct: that look was 59–139 s of a 66–158 s catalog, 8,800–9,000
        files; only the files new since are looked at). `scenic-build catalog --whole` writes one
        whole on demand. The server and each Mac's mirror read the deltas after the catalog they
-       serve and apply them to it (`store::catalog::latest_nas_from`); an app from before reads only
-       whole catalogs, so it serves the last whole one until the next: switched on once every Mac
-       runs an app that reads them. Held catalogs are always whole.
+       serve and apply them to it (`store::catalog::latest_nas_from`). Switched on only once every
+       Mac's server runs an app that reads deltas: an app from before reads only whole catalogs and
+       serves the last whole one, but GC keeps only what the catalogs of its window name, so the files
+       of that older whole catalog can be collected under an older server once it's past two weeks.
+       Held catalogs are always whole. A catalog whose deltas would run past half the readers' limit
+       (`MAX_CHAIN`, 1,000) is written whole whatever its size (logged), and a reader reading one
+       through 500 or more says so.
+       A whole catalog (asked for, due, or the first) looks at every file on the NAS; only one that
+       goes out as a delta takes sizes from the last.
      - `near-slope`: a round's slope and tree cover are the pieces near its regions (`Publishing::near`:
        the slope pieces whose z6 tile is within 20 km of one, what its slope reads; the tree cover
        pieces meeting one), not every stale piece of the z3 tiles around it, so a round whose regions

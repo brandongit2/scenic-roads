@@ -1179,13 +1179,15 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     drop(p);
     let p = phase("every file checked on the NAS", Class::NasRead);
     let mut files: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    // (With `--delta`, a file the last catalog lists by the same content name has its size: only
-    // the others are looked at. The last one's files are on the NAS while it's within GC's two weeks,
-    // and the manifest names them besides.)
-    let known: BTreeMap<&str, u64> = if delta { last.iter().flat_map(|c| c.files.values().map(|f| (f.file.as_str(), f.size))).collect() } else { BTreeMap::new() };
+    // (With `--delta`, a catalog that may go out as a delta (not asked whole, with a whole one to
+    // start from): a file the last catalog lists by the same content name has its size, only the
+    // others looked at. One that goes out whole after all (`due_whole`) looks at those too before
+    // it's written: a whole catalog checks every file.)
+    let may_delta = delta && !way.whole && last.is_some() && store::catalog::since_whole(&dir)?.1.is_some();
+    let known: BTreeMap<&str, u64> = if may_delta { last.iter().flat_map(|c| c.files.values().map(|f| (f.file.as_str(), f.size))).collect() } else { BTreeMap::new() };
     let all: Vec<(&String, &String)> = out.manifest.iter().filter(|(l, _)| served(l)).collect();
     let listed: Vec<(&String, &String)> = all.iter().copied().filter(|(_, n)| !known.contains_key(n.as_str())).collect();
-    if delta {
+    if may_delta {
         eprintln!("catalog: {} of {} files' sizes from catalog {}", all.len() - listed.len(), all.len(), last.as_ref().map_or(0, |c| c.n));
     }
     // (Many at once: over SMB each look waits a round trip, 5 to 17 ms, and the share answers
@@ -1257,6 +1259,13 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
         }
         None => None,
     };
+    if as_delta.is_none() {
+        // (Whole: the files whose sizes came from the last catalog looked at on the NAS too.)
+        for (l, n) in all.iter().filter(|(_, n)| known.contains_key(n.as_str())) {
+            let size = std::fs::metadata(out.path(n)).with_context(|| format!("{l}: {n} is missing on the NAS"))?.len();
+            anyhow::ensure!(size == known[n.as_str()], "{l}: {n} is {size} bytes on the NAS, {} in the last catalog", known[n.as_str()]);
+        }
+    }
     let path = match as_delta {
         Some((base, d, size)) => {
             eprintln!("catalog: {n} as a delta over {} ({size} bytes; changed: {})", base.n, store::catalog::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", "));
@@ -4514,6 +4523,22 @@ mod tests {
         std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
         run(&roots[0], super::CatalogWay { delta: true, whole: true });
         assert!(roots[0].join("catalog/3.json.zst").exists());
+        // A whole one checks every file: one the last catalog lists, gone from the NAS, stops it.
+        std::fs::remove_file(roots[0].join(&gone)).unwrap();
+        put(&roots[0], "layers/roads/hi/6-1-5", b"five");
+        for way in [super::CatalogWay { delta: true, whole: true }, super::CatalogWay::default()] {
+            let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
+            let e = super::catalog(&mut out, false, None, way).unwrap_err();
+            assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
+        }
+        // Due whole after all (so much new that the delta is as big as the whole one): the files
+        // whose sizes came from the last looked at too.
+        for i in 0..3000 {
+            put(&roots[0], &format!("layers/roads/hi/6-9-{i}"), format!("new {i}").as_bytes());
+        }
+        let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
+        let e = super::catalog(&mut out, false, None, delta).unwrap_err();
+        assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
     }
 
     #[test]
