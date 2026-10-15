@@ -472,15 +472,14 @@ pub fn walk_all(units: &mut [UnitLinks]) -> (Vec<(u64, f32)>, Vec<RoadVal>) {
 }
 
 /// Stage list, in order.
-pub const STAGES: &[&str] = &["copy", "filter", "sets", "outlines", "basemap", "cut", "roads"];
+pub const STAGES: &[&str] = &["copy", "filter", "sets", "basemap", "cut", "roads"];
 
 /// The pass's parts, for the status (crate::agent::jobs::part): each says how far it is.
-const PARTS: [&str; 10] = [
+const PARTS: [&str; 9] = [
     "Copying the planet here from the NAS",
     "Filtering the planet to the build's tags (osmium)",
     "Uploading the filtered planet to the NAS",
     "Making the worldwide sets (osmium)",
-    "Assembling the outlines",
     "Filtering the basemap's input (osmium)",
     "Drawing the worldwide basemap (Planetiler)",
     "Cutting the planet into areas",
@@ -490,9 +489,9 @@ const PARTS: [&str; 10] = [
 
 /// What each part of the pass mostly waits on (crate::timings: its phase's class; a mixed part's
 /// sub-phases say).
-const PART_CLASSES: [crate::timings::Class; 10] = {
+const PART_CLASSES: [crate::timings::Class; 9] = {
     use crate::timings::Class::*;
-    [NasRead, Compute, NasWrite, Mixed, Mixed, Compute, Compute, Mixed, Disk, Mixed]
+    [NasRead, Compute, NasWrite, Mixed, Compute, Compute, Mixed, Disk, Mixed]
 };
 
 /// The part under way's phase (crate::timings), ended as the next begins (`part`) or the pass ends
@@ -522,6 +521,43 @@ pub fn previous_outlines<'a>(manifest: &'a std::collections::BTreeMap<String, St
             _ => None,
         })
         .max_by_key(|(d, _)| *d)
+}
+
+/// The pass's administrative and ISO 3166 outlines (crate::outlines::assemble) from its outline
+/// set, as `sources/osm/<date>/outlines`: the outlines step's work (crate::agent::build::
+/// outlines_work, keyed on the set, the previous outlines and `OUTLINES_V`). The set is copied
+/// into `scratch` first (osmium reads it twice); the previous pass's outlines
+/// (`previous_outlines`) are what a country this planet can't assemble keeps.
+pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate::outlines::Summary> {
+    use crate::timings::{phase, Class};
+    std::fs::create_dir_all(scratch)?;
+    let nas = out.path(out.get(&set_name(date, "outlines")).context("the pass's outline set")?);
+    let set = scratch.join("set-outlines.osm.pbf");
+    let p = phase("the outline set copied here", Class::NasRead);
+    p.count(store::sys::copy_data(&nas, &set).with_context(|| format!("copy {}", nas.display()))?, 1);
+    drop(p);
+    let file = scratch.join("outlines.sect");
+    let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
+    let p = phase("assembled", Class::Compute);
+    let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file, previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())))?;
+    drop(p);
+    std::fs::remove_file(&set).ok();
+    eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
+    for (id, iso, gap) in &s.repaired {
+        eprintln!("outlines: relation {id} ({iso}) left out by osmium's export, assembled here (widest gap closed {gap:.0} m)");
+    }
+    for (id, iso, why, from) in &s.stale {
+        eprintln!("outlines: WARNING: relation {id} ({iso}) can't be assembled from this planet ({why}): kept as the {from} pass's outline (stale)");
+    }
+    if !s.unassembled.is_empty() {
+        eprintln!("outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}", s.unassembled.len(), s.unassembled);
+    }
+    let p = phase("uploaded", Class::NasWrite);
+    out.put_file(&format!("sources/osm/{date}/outlines"), "sect", &file)?;
+    drop(p);
+    out.save()?;
+    std::fs::remove_file(&file).ok();
+    Ok(s)
 }
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
@@ -562,9 +598,9 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             let p = crate::timings::sub("sets filtered (osmium)", crate::timings::Class::Compute);
             run_osmium(c, &format!("osmium tags-filter (set {name})"))?;
             drop(p);
-            // (Kept: the outlines stage below reads its set from here.)
             let _p = crate::timings::sub("sets uploaded", crate::timings::Class::NasWrite);
             out.put_file(&set_name(date, name), "osm.pbf", &o)?;
+            std::fs::remove_file(&o).ok();
         }
         report(SETS.len() as u64, SETS.len() as u64, "sets made");
         out.save()?;
@@ -580,38 +616,14 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         }
         mark(scratch, "sets-added")?;
     }
-    if !done(scratch, "outlines").exists() {
-        part(4, "the outlines assembled");
-        // Administrative and ISO 3166 outlines from the outline set (crate::outlines).
-        let set = scratch.join("set-outlines.osm.pbf");
-        let set = if set.exists() { set } else { out.path(out.get(&set_name(date, "outlines")).context("the outline set")?) };
-        let file = scratch.join("outlines.sect");
-        let p = crate::timings::sub("assembled", crate::timings::Class::Compute);
-        // (The previous pass's: what a country this pass can't assemble keeps.)
-        let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
-        let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file, previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())))?;
-        drop(p);
-        eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
-        for (id, iso, gap) in &s.repaired {
-            eprintln!("outlines: relation {id} ({iso}) left out by osmium's export, assembled here (widest gap closed {gap:.0} m)");
-        }
-        for (id, iso, why, from) in &s.stale {
-            eprintln!("outlines: WARNING: relation {id} ({iso}) can't be assembled from this planet ({why}): kept as the {from} pass's outline (stale)");
-        }
-        if !s.unassembled.is_empty() {
-            eprintln!("outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}", s.unassembled.len(), s.unassembled);
-        }
-        let _p = crate::timings::sub("uploaded", crate::timings::Class::NasWrite);
-        out.put_file(&format!("sources/osm/{date}/outlines"), "sect", &file)?;
-        out.save()?;
-        mark(scratch, "outlines")?;
-    }
+    // (The outlines are their own step, from the outline set uploaded above: `make_outlines`,
+    // crate::agent::build::outlines_work.)
     // From here the filtered file is read twice more (the basemap's filter, the first cut): from
     // the local copy while there's room, else from the NAS's.
     let free = |p: &Path| crate::agent::cond::free_bytes(p).unwrap_or(0);
     if !done(scratch, "basemap").exists() {
         check_planetiler(planetiler)?;
-        part(5, "the basemap's input filtered (osmium)");
+        part(4, "the basemap's input filtered (osmium)");
         if filtered.exists() && free(scratch) < BASEMAP_ROOM {
             eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
             std::fs::remove_file(&filtered)?;
@@ -625,7 +637,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             run_osmium(c, "osmium tags-filter (basemap)")?;
             mark(scratch, "basemap-input")?;
         }
-        part(6, "the basemap drawn (Planetiler)");
+        part(5, "the basemap drawn (Planetiler)");
         // Planetiler's room: the local filtered file goes first (the cut reads the NAS's copy then).
         let need = planetiler_room(std::fs::metadata(&b)?.len());
         if free(scratch) < need && filtered.exists() {
@@ -687,7 +699,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         let total_mb = std::fs::metadata(&src)?.len() >> 20;
         let prefix = format!("sources/osm/{date}/pieces/");
         let mut done_mb: u64 = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok()).map(|m| m.len() >> 20).sum();
-        part(7, "the planet cut into areas");
+        part(6, "the planet cut into areas");
         let cut_report = |mb: u64| report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into areas");
         cut_report(done_mb);
         cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
@@ -731,7 +743,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         // worldwide walk; values sliced by owner unit.
         let mut all: Vec<(Unit, UnitLinks)> = Vec::new();
         let n = pieces.pieces.len() as u64;
-        part(8, "areas' road links read");
+        part(7, "areas' road links read");
         for (k, (u, _)) in pieces.pieces.iter().enumerate() {
             report(k as u64, n, "areas' road links read");
             let unit = Unit::parse(u).context("unit")?;
@@ -747,7 +759,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         }
         report(n, n, "areas' road links read");
         let (units, mut lists): (Vec<Unit>, Vec<UnitLinks>) = all.into_iter().unzip();
-        part(9, "the roads walked");
+        part(8, "the roads walked");
         let p = crate::timings::sub("walked", crate::timings::Class::Compute);
         let (ways, vals) = walk_all(&mut lists);
         drop(p);
@@ -800,9 +812,13 @@ pub fn is_date(s: &str) -> bool {
 /// pass is complete: every job reads the newest pass, so nothing reads them again. (Their files
 /// go with GC: its sweep of retired passes' sources, agent::gc.) How many went.
 pub fn retire_older(out: &mut Out, date: &str) -> usize {
+    // (The newest older pass's outlines stay: what `date`'s outlines step reads and is keyed on,
+    // the outlines a country this planet can't assemble keeps. They go with the next pass.)
+    let previous = previous_outlines(&out.manifest, date).map(|(d, _)| format!("sources/osm/{d}/outlines"));
     let old: Vec<String> = out
         .manifest
         .keys()
+        .filter(|l| Some(l.as_str()) != previous.as_deref())
         .filter(|l| {
             let s: Vec<&str> = l.split('/').collect();
             match s.as_slice() {
@@ -1143,6 +1159,7 @@ mod tests {
         for l in [
             "sources/osm/2026-03-28/pieces/6-1-2",
             "sources/osm/2026-03-28/sets/summits",
+            "sources/osm/2026-01-01/outlines",
             "sources/osm/2026-03-28/outlines",
             "sources/osm/2026-09-28/pieces/6-1-2",
             "sources/osm/2026-09-28/outlines",
@@ -1159,7 +1176,8 @@ mod tests {
         }
         assert_eq!(retire_older(&mut out, "2026-09-28"), 7);
         let left: Vec<&str> = out.manifest.keys().map(String::as_str).collect();
-        assert_eq!(left, ["base/6-1-2", "global/roads/6-1-2", "sources/osm/2026-09-28/outlines", "sources/osm/2026-09-28/pieces/6-1-2", "work/pois/6-1-2", "work/summits/2026-09-28"]);
+        // (The newest older pass's outlines stay, for the outlines step: the older ones go.)
+        assert_eq!(left, ["base/6-1-2", "global/roads/6-1-2", "sources/osm/2026-03-28/outlines", "sources/osm/2026-09-28/outlines", "sources/osm/2026-09-28/pieces/6-1-2", "work/pois/6-1-2", "work/summits/2026-09-28"]);
         assert!(is_date("2026-09-28") && !is_date("2026-9-28") && !is_date("6-1-2"));
     }
 

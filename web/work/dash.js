@@ -39,7 +39,7 @@ const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 
 // A step's name, short (lanes, legends) and its colour.
 const STEP = {
-  "osm-pass": ["OpenStreetMap pass", "#8fa2b5"], "pass-sets": ["The pass's sets", "#8fa2b5"], trailends: ["Route ends", "#8fa2b5"], reach: ["Roads' reach", "#8fa2b5"],
+  "osm-pass": ["OpenStreetMap pass", "#8fa2b5"], "pass-sets": ["The pass's sets", "#8fa2b5"], outlines: ["Outlines", "#8fa2b5"], trailends: ["Route ends", "#8fa2b5"], reach: ["Roads' reach", "#8fa2b5"],
   "terrain-z8": ["World terrain", "#c98b4a"], buildings: ["Roadside buildings", "#8fa2b5"], summits: ["Summits", "#8fa2b5"], labels: ["Place labels", "#8fa2b5"],
   "heritage-sites": ["Heritage sites", "#c47fb5"], terrain: ["Terrain", "#c98b4a"], "terrain-lo": ["Zoomed-out terrain", "#c98b4a"], slope: ["Slope", "#d9c35a"], "slope-lo": ["Zoomed-out slope", "#d9c35a"], trees: ["Tree cover", "#5fae6b"], "trees-lo": ["Zoomed-out tree cover", "#5fae6b"],
   unit: ["Areas", "#5b8fd8"], tail: ["Areas' last steps", "#6cc28a"], pack: ["Map tiles", "#4fb3c6"], lo: ["Zoomed-out tiles", "#4fb3c6"], prune: ["Pruning", "#8fa2b5"],

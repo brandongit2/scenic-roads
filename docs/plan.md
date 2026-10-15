@@ -117,13 +117,13 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - the filtered planet;
    - the worldwide sets (rail, ferries, designated areas, places, outlines, labels, summits, hiking
      routes, heritage-named objects, water);
-   - the administrative and ISO 3166 outlines;
    - the worldwide basemap;
    - pieces: filtered OSM per unit, with a 10 km buffer and ways kept whole;
    - worldwide road values: each way's road id, road length, and offset and direction along its
      road (§6), sliced per unit.
 2. **Worldwide jobs, once per pass:**
    - a finished pass's missing sets;
+   - the administrative and ISO 3166 outlines (again whenever their assembly changes);
    - hiking routes' ends;
    - each unit's reach: where the roads, rail and ferries of its piece go (§5);
    - summits;
@@ -810,13 +810,22 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      leaves room for the sets and the agent's reserve (its size, 20 GB and 30: 111 GB for the
      2026-09-28 pass's 60.6 GB), else read from the NAS, two or three times a set. The build Mac
      (~40 GB free) reads it from the NAS: the water set took 65 min so (2026-10-06).
-5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons. They go in a
-   sectioned file, with simplified copies for the panel.
+5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons from the
+   outline set. They go in a sectioned file, with simplified copies for the panel.
+   - Made by their own step once the pass is complete (`outlines`, `osmpass::make_outlines`), not
+     inside the pass, so a change to their assembly goes live without waiting for the next pass:
+     its key is `OUTLINES_V`, the pass's date, the outline set's content name and the previous
+     outlines' (`agent::build::outlines_key`). The step copies the set to the SSD first (osmium
+     reads it twice).
+   - While it has work nothing else is planned (the coverage, the spoken languages, the lake fill,
+     the rail feeds and the catalog read the outlines), so nothing is made from outlines about to
+     be replaced; after three failures in a row (counted on the Mac) the rest goes on with the
+     pass's outlines, if it has some.
    - osmium's export leaves out, without naming it, a relation whose rings don't close in OSM (the
      2026-09-28 planet's Poland and Ukraine: a way missing from their shared border, a 150 m gap).
      The relations kept that it left out are found from the set's relations
      (`pipeline::outlines::assemble`):
-     - **Countries and territories** (`boundary=administrative` with `ISO3166-1`): assembled by the pass itself, their ways
+     - **Countries and territories** (`boundary=administrative` with `ISO3166-1`): assembled by the step itself, their ways
        joined end to end and the gaps left joined nearest first with a straight line, each up to
        1 km (`MAX_GAP_M`) and crossing none of its ways (outer or inner) nor gap lines drawn before; the record is flagged `REPAIRED` with the
        widest gap (`gap_m`), and the log names each. Refused (not guessed): a node where more than
@@ -826,7 +835,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
        planet's), with a warning in the log and on the status's pass line naming the pass its
        rings are from (the outlines' meta lists it with that date, carried over while it stays
        broken pass after pass). The previous pass's file is read only then. With no previous
-       outline of it (none, or a file that can't be read), the pass **stops**, naming it: every
+       outline of it (none, or a file that can't be read), the step **fails**, naming it: every
        country in OSM has an outline, or the spoken languages and the coverage's countries would
        silently lose it.
      - **Others** (subdivisions, districts, a country's other relations such as Thailand's `land_area`): left out, their ids in the log as a warning. Hundreds
@@ -859,7 +868,8 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      farther tile, which owns it.
 8. **Road values** (below).
 9. **Finish:** the pass's summary is written, and older passes retire: their entries leave the
-   manifest.
+   manifest, but the newest older pass's outlines, which the new pass's outlines step reads and is
+   keyed on (they go with the next pass).
 
 ### Global-source layers
 
@@ -2488,6 +2498,7 @@ between jobs into the other way. On:
 1. **The OSM pass**, when the NAS holds a newer planet than the newest pass.
 2. **The pass's worldwide jobs:**
    - `pass-sets`;
+   - the outlines (`outlines`; the rest waits for them);
    - hiking routes' ends;
    - the units' reach (`reach`);
    - `terrain-z8` (once);
@@ -2766,7 +2777,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    - Descriptions moved to `descriptions/`. The menu bar item.
 3. **The OSM pass and global-source layers: mostly done.**
    - **Built:**
-     - the pass (filter, sets, outlines, the worldwide basemap, the cut, road values);
+     - the pass (filter, sets, the worldwide basemap, the cut, road values) and its outlines;
      - terrain, slope and tree cover per z6 tile (pieces) and their z3 tiles' assemblies (terrain's
        and slope's 2026-10-08, not yet published);
      - the worldwide z8 terrain;

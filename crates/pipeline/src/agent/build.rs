@@ -257,7 +257,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "inputs" | "labels" | "spoken" | "names-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
+        if step.ends_with("-root") || matches!(step, "inputs" | "outlines" | "labels" | "spoken" | "names-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -311,6 +311,40 @@ pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
         }
     }
     by_q
+}
+
+/// The outlines step's version (crate::osmpass::make_outlines, crate::outlines::assemble): bumped
+/// with any change to what the assembly makes, so the pass's outlines are made again then, not at
+/// the next pass. 1: assembled inside the OSM pass. 2: #199's (countries osmium's export leaves
+/// out assembled here, a territory by its own ISO code, a country kept from the previous pass's
+/// outlines when it can't be), the first made by the step.
+pub const OUTLINES_V: u32 = 2;
+
+/// The outlines step's key for the pass of `date`: its version, the date, the pass's outline set and
+/// the previous outlines it may keep a country from (crate::osmpass::previous_outlines), by content
+/// name. None without the set (pass-sets makes it).
+pub fn outlines_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
+    let set = m.get(&crate::osmpass::set_name(date, "outlines"))?;
+    let previous = crate::osmpass::previous_outlines(m, date).map_or("previous -".to_string(), |(d, c)| format!("previous {d} {c}"));
+    Some(h(&[&format!("outlines {OUTLINES_V}"), date, set, &previous]))
+}
+
+/// The pass's administrative and ISO 3166 outlines (`sources/osm/<date>/outlines`), once per pass,
+/// outline set, previous outlines or `OUTLINES_V`; made again when missing.
+pub fn outlines_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let k = outlines_key(date, m)?;
+    let made = m.contains_key(&format!("sources/osm/{date}/outlines"));
+    (!made || done.lo.get("outlines").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "outlines".into(), targets: vec![("outlines".into(), k)] })
+}
+
+/// Failures in a row of the outlines job after which the rest of the build no longer waits for it
+/// (`outlines_hold`), while the pass has outlines to go on with.
+pub const OUTLINES_HOLDS: u32 = 3;
+
+/// Whether the rest of the build waits for the outlines job (which has work): while the pass has
+/// no outlines (`made`), or until the job has failed `OUTLINES_HOLDS` times in a row.
+pub fn outlines_hold(made: bool, failures: u32) -> bool {
+    !made || failures < OUTLINES_HOLDS
 }
 
 /// Every hiking route's ends, worldwide, once per pass (crate::trailends): what the units' extract
@@ -2433,6 +2467,7 @@ pub fn label(step: &str) -> &'static str {
         // (The worldwide jobs and the daily ones, as their jobs say them: crate::agent's plan.)
         "osm-pass" => "Reading the newest OpenStreetMap planet",
         "pass-sets" => "Cutting the OpenStreetMap sets the newest pass lacks",
+        "outlines" => "Assembling the countries' and regions' outlines",
         "trailends" => "Finding the ends of the world's hiking routes",
         "reach" => "Working out how far each area's roads reach, worldwide",
         "terrain-z8" => "Building coarse terrain for the whole world",
@@ -4527,6 +4562,44 @@ pub(crate) mod tests {
         m.insert(crate::inputs::logical(crate::inputs::languages::UNIT), "sources/inputs/languages/@index.fedcba9876543210.json".into());
         assert!(spoken_work("d", &m, &done).is_some());
         assert!(spoken_work("e", &m, &done).is_none());
+    }
+
+    /// The outlines step's key: its version, the pass, its outline set and the previous outlines;
+    /// made again when missing, never without the set.
+    #[test]
+    fn the_outlines_step_follows_its_set_previous_and_version() {
+        let mut m = BTreeMap::new();
+        let mut done = Keys::default();
+        assert!(outlines_work("2026-09-28", &m, &done).is_none(), "no set, no job");
+        m.insert("sources/osm/2026-09-28/sets/outlines".to_string(), "s1".to_string());
+        let w = outlines_work("2026-09-28", &m, &done).unwrap();
+        assert_eq!((w.step.as_str(), w.targets[0].0.as_str()), ("outlines", "outlines"));
+        // Made under its key (the outlines and the record): nothing to do.
+        let k = w.targets[0].1.clone();
+        m.insert("sources/osm/2026-09-28/outlines".to_string(), "o1".to_string());
+        done.record("outlines", &w.targets);
+        assert_eq!(done.lo.get("outlines"), Some(&k));
+        assert!(outlines_work("2026-09-28", &m, &done).is_none());
+        // Outlines made before the step (by the pass, no record): made again, once.
+        assert!(outlines_work("2026-09-28", &m, &Keys::default()).is_some());
+        // Missing again, or another set, or another previous pass's outlines: made again.
+        let gone = BTreeMap::from([("sources/osm/2026-09-28/sets/outlines".to_string(), "s1".to_string())]);
+        assert!(outlines_work("2026-09-28", &gone, &done).is_some());
+        let mut set = m.clone();
+        set.insert("sources/osm/2026-09-28/sets/outlines".to_string(), "s2".to_string());
+        assert!(outlines_work("2026-09-28", &set, &done).is_some());
+        let mut prev = m.clone();
+        prev.insert("sources/osm/2026-03-28/outlines".to_string(), "p1".to_string());
+        assert!(outlines_work("2026-09-28", &prev, &done).is_some());
+        // A newer pass's outlines aren't this one's previous ones.
+        let mut newer = m.clone();
+        newer.insert("sources/osm/2027-03-28/outlines".to_string(), "n1".to_string());
+        assert_eq!(outlines_key("2026-09-28", &newer), Some(k.clone()));
+        // The version and the date are in the key.
+        assert_ne!(outlines_key("2026-09-29", &BTreeMap::from([("sources/osm/2026-09-29/sets/outlines".to_string(), "s1".to_string())])), Some(k.clone()));
+        assert_eq!(k, h(&[&format!("outlines {OUTLINES_V}"), "2026-09-28", "s1", "previous -"]));
+        // The rest waits for it while the pass has none, else until it has failed OUTLINES_HOLDS times.
+        assert!(outlines_hold(false, 99) && outlines_hold(true, 0) && outlines_hold(true, OUTLINES_HOLDS - 1) && !outlines_hold(true, OUTLINES_HOLDS));
     }
 
     /// The plan's phases timed on a real root, read only (`SCENIC_BENCH_ROOT`: the NAS's project

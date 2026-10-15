@@ -301,7 +301,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 1. **The OSM pass:**
    - the planet, filtered with `osmium`;
    - worldwide sets: rail, ferries, designated areas, places, outlines, labels, summits, hiking routes and more;
-   - the administrative outlines;
+   - the administrative outlines, as their own step after it (made again whenever their assembly changes);
    - the worldwide basemap (Planetiler);
    - pieces per z6 tile, with a 10 km buffer;
    - every way's whole road, from one chaining of the planet.

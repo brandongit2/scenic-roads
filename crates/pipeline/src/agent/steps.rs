@@ -75,11 +75,15 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
-pub const TABLE: [Step; 46] = [
+pub const TABLE: [Step; 47] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
     // planet with room to spare, less the pack cache it clears).
     Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },
     Step { alone: true, ..base("pass-sets", w_pass_sets) },
+    // (osmium's export of the outline set and the assembly: 8.3 GB at most measured, the
+    // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15; its export's files and the outlines,
+    // 2.7 GB, here.)
+    Step { mem_mb: 9216, disk: RESERVE + 10 * GB, alone: true, ..base("outlines", w_outlines) },
     Step { alone: true, ..base("trailends", w_trailends) },
     Step { alone: true, ..base("reach", w_reach) },
     Step { alone: true, groups: &[Group::Raw], ..base("terrain-z8", w_terrain_z8) },
@@ -303,7 +307,7 @@ pub const SHARED: [&str; 8] = set_of(Set::Shared);
 /// The steps a Mac's second job takes, in its order of preference.
 pub const SECOND: [&str; 14] = set_of(Set::Beside);
 /// The steps that run alone, never beside another job.
-pub const ALONE: [&str; 12] = set_of(Set::Alone);
+pub const ALONE: [&str; 13] = set_of(Set::Alone);
 /// The steps that read AWS's raw terrain tiles here: never two at once.
 pub const RAW: [&str; 5] = set_of(Set::Raw);
 /// The steps that ask Wikidata and Wikipedia a great deal from this Mac's address: never two at once.
@@ -442,6 +446,11 @@ fn w_osm_pass(l: &str, removal: bool) -> bool {
 /// The sets a pass lacks in their current filters.
 fn w_pass_sets(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["sources", "osm", d, "sets", _] if date(d))
+}
+
+/// The pass's outlines, written (never removed: the pass retires them).
+fn w_outlines(l: &str, removal: bool) -> bool {
+    !removal && matches!(parts(l).as_slice(), ["sources", "osm", d, "outlines"] if date(d))
 }
 
 fn w_trailends(l: &str, _: bool) -> bool {
@@ -641,7 +650,7 @@ mod tests {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
         assert_eq!(SECOND, ["inputs", "heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
-        assert_eq!(ALONE, ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "heritage-sites", "gc"]);
+        assert_eq!(ALONE, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "heritage-sites", "gc"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&RAW), set(&["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"]));
         assert_eq!(set(&WIKI), set(&["items", "heritage"]));
@@ -671,7 +680,7 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
         // by the former), the batches, the disk.
-        let mem: [(&str, u64); 20] = [("lakefill", 12288), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
+        let mem: [(&str, u64); 21] = [("lakefill", 12288), ("outlines", 9216), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
         }
@@ -758,11 +767,12 @@ mod tests {
 
     #[test]
     fn entries_within_their_write_sets() {
-        let ok: [(&str, &[(&str, bool)]); 26] = [
+        let ok: [(&str, &[(&str, bool)]); 27] = [
             ("lakefill", &[("work/lakefill/2026-09-28", false), ("work/lakefill/2026-03-01", true)]),
             ("inputs", &[("sources/inputs/_gate-test/@index", false), ("sources/inputs/_gate-test/@held", true), ("sources/inputs/_gate-test/@listed", false), ("sources/inputs/_gate-nest/inner/@index", false), ("sources/inputs/_gate-nest/inner/@listed", false)]),
             ("osm-pass", &[("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-09-28/pass", false), ("layers/basemap/world-2026-09-28", false), ("sources/osm/2026-08-01/sets/water", true), ("work/heritage/2026-08-01/base/heritage", true), ("work/summits/2026-08-01", true)]),
             ("pass-sets", &[("sources/osm/2026-09-28/sets/water-v2", false)]),
+            ("outlines", &[("sources/osm/2026-09-28/outlines", false)]),
             ("water", &[("layers/water/root/0-0-0", false), ("layers/water/lo/3-1-2", false), ("layers/water/hi/6-1-2", false), ("layers/smallwater/hi/6-1-2", true)]),
             ("labels", &[("layers/labels/hi/6-1-2", false), ("layers/labels/root/0-0-0", true)]),
             ("spoken", &[("global/spoken", false)]),
@@ -795,7 +805,7 @@ mod tests {
         // Outside: another step's files, a name of the wrong zoom, another layer, a pass's files
         // removed by a step that doesn't retire passes, a prune that writes, a removal the step
         // doesn't make.
-        let bad: [(&str, &[(&str, bool)]); 11] = [
+        let bad: [(&str, &[(&str, bool)]); 12] = [
             ("lakefill", &[("work/lakefill", false), ("work/lakefill/x", false)]),
             ("inputs", &[("sources/inputs/_gate-test/a", false), ("sources/inputs/_gate-test/index", false), ("sources/inputs/x/y/@other", false)]),
             ("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false)]),
@@ -804,6 +814,7 @@ mod tests {
             ("labels", &[("layers/stations/hi/6-1-2", false)]),
             ("items", &[("sources/items/2026-08-01/facts", false), ("work/summits/2026-08-01", true)]),
             ("prune", &[("base/6-1-2", false)]),
+            ("outlines", &[("sources/osm/2026-09-28/sets/outlines", false), ("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-08-01/outlines", true)]),
             ("water", &[("layers/smallwater/hi/6-1-2", false)]),
             ("catalog", &[("catalog/1", false)]),
             ("unit", &[("base/6-64-2", false)]),

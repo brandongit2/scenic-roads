@@ -6,6 +6,8 @@
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
 //!   osm-pass --planet <p> --date <d>  the OSM pass (pieces, sets, basemap, road values); resumable
+//!   outlines [--pass d]          the pass's administrative and ISO 3166 outlines from its outline
+//!                                set (pipeline::osmpass::make_outlines)
 //!   patch-ferries [--pass d] [--near-coverage]  the pass's pieces given the standalone ferry ways
 //!                                its filtered planet lacked (pipeline::osmpass::patch_ferries), all
 //!                                or those meeting the regions (10 km round); run by hand
@@ -442,6 +444,13 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             std::fs::remove_file(&local).ok();
             drop(p);
             eprintln!("pass-sets: {n} made");
+        }
+        "outlines" => {
+            // outlines [--pass <date>]: the pass's administrative and ISO 3166 outlines from its
+            // outline set (pipeline::osmpass::make_outlines), as sources/osm/<date>/outlines.
+            let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let s = pipeline::osmpass::make_outlines(&mut out, &date, &scratch)?;
+            eprintln!("outlines: {} made ({} repaired, {} stale)", s.outlines, s.repaired.len(), s.stale.len());
         }
         "trailends" => {
             // trailends [--pass <date>]: every hiking route's ends, worldwide, from the hikes set.

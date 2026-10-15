@@ -122,8 +122,8 @@ const ROUND_FILE: &str = "round.json";
 pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
 /// The pass's worldwide jobs, as the checklist says them.
-const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, Canada's missing lakes, water";
-const WORLDWIDE_STEPS: [&str; 9] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water"];
+const WORLDWIDE: &str = "Preparing the worldwide data: sets, outlines, route ends, roads' reach, buildings, summits, labels, Canada's missing lakes, water";
+const WORLDWIDE_STEPS: [&str; 10] = ["pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water"];
 
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
 /// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
@@ -4351,6 +4351,22 @@ impl Agent {
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
                 jobs.push(job(format!("pass-sets {date}"), "Cutting the OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
             }
+            // The pass's outlines (their own step: made again when their assembly changes, not at
+            // the next pass). While they have work, nothing else is planned (the regions' coverage,
+            // the languages spoken, the lake fill, the rail feeds and the catalog read them), so
+            // nothing is made from the outlines they replace; unless the job has failed
+            // `build::OUTLINES_HOLDS` times in a row (counted on this Mac) and the pass has
+            // outlines: the rest then goes on with those.
+            if let Some(w) = build::outlines_work(date, &manifest, &keys) {
+                let failures = self.mem.retry.get(&format!("outlines {date}")).map_or(0, |r| r.0);
+                let made = manifest.contains_key(&format!("sources/osm/{date}/outlines"));
+                jobs.push(job(format!("outlines {date}"), "Assembling the countries' and regions' outlines", "outlines", p.clone(), Some(w)));
+                if build::outlines_hold(made, failures) {
+                    waiting.push(Waiting { step: None, what: "Building".into(), why: "waits for the pass's outlines to be assembled (the outlines job)".into() });
+                    return jobs;
+                }
+                waiting.push(Waiting { step: Some("outlines".into()), what: "Assembling the countries' and regions' outlines".into(), why: format!("failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile") });
+            }
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
                 jobs.push(job(format!("trailends {date}"), "Finding the ends of the world's hiking routes", "trailends", p.clone(), Some(w)));
             }
@@ -4900,7 +4916,7 @@ impl Agent {
         let mut out = Vec::new();
         let have = self.latest_pass(root);
         // The pass: a newer planet's under way (or waiting), else done.
-        let pass_stages = ["filter", "sets", "outlines", "basemap", "cut", "roads"];
+        let pass_stages = ["filter", "sets", "basemap", "cut", "roads"];
         let mut pass = build::Step { what: "Reading the newest OpenStreetMap planet".into(), steps: vec!["osm-pass".into()], total: Some(pass_stages.len()), unit: "stages".into(), ..Default::default() };
         match crate::osmpass::newer_planet(root, have.as_deref()) {
             Ok(Some((_, date))) => {
@@ -4930,6 +4946,7 @@ impl Agent {
         // The pass's worldwide jobs.
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
+            build::outlines_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("sources/osm/{date}/outlines")),
             build::trailends_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
             !manifest.contains_key(&crate::terrain_z8::logical()),
@@ -6680,6 +6697,7 @@ fn secs_key(step: &str) -> String {
 fn first_secs(step: &str) -> f64 {
     match step {
         "pass-sets" => 5000.0,
+        "outlines" => 330.0,
         "trailends" => 15.0,
         "reach" => 1800.0,
         "terrain-z8" | "buildings" | "items" => 3600.0,
@@ -8011,6 +8029,38 @@ mod tests {
         assert!(plan.work.iter().any(|w| w.step == "unit" && w.targets[0].0 == "6/28/17"), "{:?}", plan.work);
         keys.save(root).unwrap();
         old.1
+    }
+
+    #[test]
+    fn the_passs_outlines_come_first_and_hold_the_rest() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        rekey_root(&root);
+        let date = "2026-09-28";
+        let mf = root.join("state/build/manifest.json");
+        let mut m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&mf).unwrap()).unwrap();
+        m.insert(crate::osmpass::set_name(date, "outlines"), format!("sources/osm/{date}/sets/outlines.2323232323232323.osm.pbf"));
+        // (Outlines the pass made itself, before the step: no record of the step's.)
+        m.insert(format!("sources/osm/{date}/outlines"), format!("sources/osm/{date}/outlines.2424242424242424.sect"));
+        put(&mf, &serde_json::to_vec(&m).unwrap());
+        let a = agent(&root, &d.path().join("home"));
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let ids = |plan: &[JobSpec]| plan.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
+        let mut w = Vec::new();
+        let plan = a.plan(&root, &cond, &mut w);
+        let o = plan.iter().find(|j| j.id == format!("outlines {date}")).unwrap_or_else(|| panic!("{:?}", ids(&plan)));
+        assert_eq!(o.record.as_ref().map(|r| r.step.as_str()), Some("outlines"));
+        assert!(o.cmd[1] == "outlines" && o.cmd.windows(2).any(|p| p == ["--pass", date]), "{:?}", o.cmd);
+        // Nothing else of the build meanwhile (the z8 terrain, which waits for nothing else, among it).
+        assert!(!ids(&plan).iter().any(|i| i.starts_with("terrain-z8") || i.starts_with("unit ") || i.starts_with("spoken") || i.starts_with("lakefill")), "{:?}", ids(&plan));
+        assert!(w.iter().any(|x| x.why.contains("outlines job")), "{w:?}");
+        // Made under its key: the rest comes back, and no outlines job.
+        let mut keys = build::Keys::load(&root);
+        keys.record("outlines", &build::outlines_work(date, &m, &keys).unwrap().targets);
+        keys.save(&root).unwrap();
+        let plan = a.plan(&root, &cond, &mut Vec::new());
+        assert!(!ids(&plan).iter().any(|i| i.starts_with("outlines")) && ids(&plan).iter().any(|i| i.starts_with("terrain-z8")), "{:?}", ids(&plan));
     }
 
     #[test]
