@@ -1075,15 +1075,13 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
   zooms 3–8 from lo packs), encoding `field5-webp` (§4.8.1's 8-bit coding, lossless WebP, a class
   a block of rows; then a block a class of the offsets from each texel to its buildings' centroid,
   so the field's roofs are level, at their own building's ground as the meshes' are: the owner's
-  pick, 15 Oct; the march takes a roof's ground at texel + offset (the offsets premultiplied by the share on
-  the GPU, RG16F, and divided by the share read there: a filtered or mipmapped read is the
-  share-weighted mean, not diluted by empty texels; `web/src/bldfield.offsets.ts`,
-  `tools/bldcheck/offmip.mjs`), so its runs in a cell start
-  as much higher as the highest ground where the cell's reads can put a roof's centroid is over its
-  lowest: the box of its and its neighbours' texels' centroids, grown by how far a read mixes texels,
-  one box for reads to level 2 and one to level 4, a coarser read's ground clamped to the latter's
-  (the worker's boxes; offmip.mjs checks no run starts below a roof, at the tile's edges too), and colours and
-  shades a wall by its building's own height, as fill-extrusion does); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
+  pick, 15 Oct; once the tile's elevations are known the worker makes each class texel's roof
+  ground, how much higher the ground at its centroid is than at its centre, which the GPU holds
+  premultiplied by the share (R16F, filtered and mipmapped as the class textures, divided by the share
+  read there: a read is the share-weighted mean); each cell's runs start as much higher as its texels'
+  (and the texel around them) largest roof ground, and a roof is clamped under that start, so none is
+  ever above it at any level (`web/src/bldfield.offsets.ts`, `tools/bldcheck/offmip.mjs`); walls
+  coloured and shaded by their building's own height, as fill-extrusion does); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
   before the GPU's mipmaps (the coding's square root and log would bias them).
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
   point (the heritage chain's slices of T, its World Heritage components left out: the map's dots

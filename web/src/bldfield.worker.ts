@@ -5,16 +5,24 @@
 // offset to its buildings' centroid + 128), and, on a level-8 tile, its heritage list after it.
 // Decoded here to linear values (before the GPU's mipmaps: the coding's square root and log would
 // bias them), with what the march reads beside them: each 1/32 and 1/128 of the tile's tallest mean
-// top (with the texel around), the class mask pyramid, and the offsets premultiplied by the share
-// with each cell's centroid boxes (bldfield.offsets.ts).
+// top (with the texel around), the class mask pyramid, and each class texel's share code and offset
+// to its buildings' centroid; and, asked again with the tile's elevation grid, each texel's roof
+// ground (bldfield.offsets.ts).
 
-import { premultiplied, centroidBoxes } from './bldfield.offsets';
+import { roofGround } from './bldfield.offsets';
 
-export type FieldIn = { type: 'load'; key: string; url: string } | { type: 'cancel'; key: string };
+export type FieldIn =
+  | { type: 'load'; key: string; url: string }
+  | { type: 'cancel'; key: string }
+  /** Each texel's roof ground for the elevations `ver` (the grid GE × GE, M cells beyond the tile). */
+  | { type: 'dg'; key: string; ver: string; texels: Uint8Array; n: number; ee: Float32Array; GE: number; M: number };
 
 export type FieldOut =
   | { type: 'done'; key: string; empty: true }
   | { type: 'failed'; key: string; error: string }
+  /** Share × each texel's roof ground (R16F's, a layer a class held), each cell's largest (32 × 32);
+   * the texels handed back. */
+  | { type: 'dg'; key: string; ver: string; dg: Float32Array; dgc: Float32Array; texels: Uint8Array }
   | {
       type: 'done';
       key: string;
@@ -30,13 +38,10 @@ export type FieldOut =
       cmask: Uint8Array;
       bytes: number;
       heritage: Uint8Array | null;
-      /** Share × the offset to the buildings' centroids: RG (level-0 texels), a layer a class held
-       * (bldfield.offsets.ts). */
-      offsets: Float32Array;
-      /** Each 16 × 16-texel cell's boxes of where a read in it can put a roof's centroid (a 32 × 32
-       * grid, 4 floats a cell; bldfield.offsets.ts's centroidBoxes). */
-      near: Float32Array;
-      far: Float32Array;
+      /** Each class texel held (a layer each, layer-major): its share's code (√f × 255) and its offset
+       * to its buildings' centroid + 128 (x, y), 3 bytes: for its roof ground, once the elevations are
+       * known. */
+      texels: Uint8Array;
     };
 
 const T = 512;
@@ -73,16 +78,16 @@ async function load(key: string, url: string): Promise<FieldOut> {
     cx.drawImage(bmp, 0, 0);
     bmp.close();
     const px = cx.getImageData(0, 0, T, 2 * T * n).data;
-    // (the offsets' blocks after the classes': R and G, + 128)
-    const offsets = new Uint8Array(n * N * 2);
+    // (each class texel's share code, then its offset from the offsets' blocks after the classes')
+    const texels = new Uint8Array(n * N * 3);
     for (let l = 0; l < n; l++) {
-      const base = (n + l) * N * 4;
+      const base = l * N * 4, ob = (n + l) * N * 4;
       for (let i = 0; i < N; i++) {
-        offsets[(l * N + i) * 2] = px[base + i * 4];
-        offsets[(l * N + i) * 2 + 1] = px[base + i * 4 + 1];
+        texels[(l * N + i) * 3] = px[base + i * 4];
+        texels[(l * N + i) * 3 + 1] = px[ob + i * 4];
+        texels[(l * N + i) * 3 + 2] = px[ob + i * 4 + 1];
       }
     }
-    const shares: Float32Array[] = [];
     const classes: (Float32Array | null)[] = [];
     const hmax = new Float32Array(N);
     const m = new Uint8Array(N);
@@ -94,8 +99,6 @@ async function load(key: string, url: string): Promise<FieldOut> {
         continue;
       }
       const o = new Float32Array(N * 3);
-      const sh = new Float32Array(N);
-      shares.push(sh);
       const base = row * N * 4;
       for (let i = 0; i < N; i++) {
         const R = px[base + i * 4], G = px[base + i * 4 + 1], B = px[base + i * 4 + 2];
@@ -108,7 +111,6 @@ async function load(key: string, url: string): Promise<FieldOut> {
         o[i * 3] = toMantissa(f * h, 6);
         o[i * 3 + 1] = toMantissa(w, 6);
         o[i * 3 + 2] = toMantissa(f, 5);
-        sh[i] = o[i * 3 + 2];
         m[i] |= 1 << c;
         if (f > 0) {
           if (h > hmax[i]) hmax[i] = h;
@@ -155,7 +157,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets: premultiplied(offsets, shares, T), ...centroidBoxes(offsets, shares, T) };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, texels };
   } finally {
     inflight.delete(key);
   }
@@ -181,10 +183,15 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
     inflight.get(msg.key)?.abort();
     return;
   }
+  if (msg.type === 'dg') {
+    const { dg, dgc } = roofGround(msg.texels, msg.n, T, msg.ee, msg.GE, msg.M);
+    (self as unknown as Worker).postMessage({ type: 'dg', key: msg.key, ver: msg.ver, dg, dgc, texels: msg.texels } satisfies FieldOut, [dg.buffer, dgc.buffer, msg.texels.buffer]);
+    return;
+  }
   load(msg.key, msg.url).then(
     (out) => {
       if (out.type === 'done' && !out.empty) {
-        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.offsets.buffer, out.near.buffer, out.far.buffer];
+        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.texels.buffer];
         for (const c of out.classes) if (c) tr.push(c.buffer);
         (self as unknown as Worker).postMessage(out, tr);
       } else (self as unknown as Worker).postMessage(out);

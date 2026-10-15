@@ -1,81 +1,79 @@
-// The field's offsets read at coarser levels (task #102 B5's review), against web/src/bldfield.offsets.ts:
-//  1. a small building's thin tail alone on a slope, its offsets as field5-webp stores them, mipmapped
-//     as the GPU does (box means) and read at each level as the march does (premultiplied by the
-//     share, divided by the share read there), against the offsets filtered as stored: the ground at
-//     the centroid each read finds;
+// The field's roof ground read at coarser levels (task #102 B5), against web/src/bldfield.offsets.ts:
+//  1. a small building's thin tail alone on a slope: its roof ground premultiplied by the share,
+//     mipmapped as the GPU does (box means) and divided by the share read there, against filtered as
+//     is: the roof's ground each level finds against its centroid's;
 //  2. no run starts below a roof: a synthetic tile (random buildings, some across its edges, offsets
 //     rounded and clamped as the builder's, shares rounded to R11F's 5-bit mantissa at every level),
-//     reads at random points (and at the tile's edges, clamped as the GPU clamps) at levels 0–4,
-//     bilinear: the ground at each read's centroid never above the read's cell's box's highest
-//     ground (the near box to level 2, the far one to 4), which is what the march adds to the start
-//     of the cell's runs.
-// Exits 1 on a failure.
-//   node tools/bldcheck/offmip.mjs
-import { premultiplied, centroidBoxes, boxGroundMax, boxMip, NEAR_LEVEL, FAR_LEVEL } from '../../web/src/bldfield.offsets.ts';
+//     reads at random points and along the tile's edges at levels 0–4, bilinear, clamped to the edge,
+//     as the march makes them: each roof (its top plus its roof ground, clamped under the cell's
+//     start) never above the start (its cell's tallest top plus largest roof ground). And, unclamped,
+//     a level-0 read never above it either (the cells' bound is right where the march reads finest);
+//     coarser reads need the clamp, counted.
+// `--mutate nodilate` leaves the texel around a cell out of its largest roof ground: level-0 reads
+// then come out above, and the check fails. Exits 1 on a failure.
+//   node tools/bldcheck/offmip.mjs [--mutate nodilate]
+import { roofGround, groundAt, shareOf, boxMip } from '../../web/src/bldfield.offsets.ts';
 
+const mutate = process.argv.includes('--mutate') ? process.argv[process.argv.indexOf('--mutate') + 1] : '';
 let failed = 0;
-const toMantissa = (x, bits) => {
-  if (!(x > 0)) return 0;
-  const q = 2 ** (Math.floor(Math.log2(x)) - bits);
-  return Math.round(x / q) * q;
-};
 const roundAway = (d) => Math.sign(d) * Math.round(Math.abs(d));
+const mant = (x) => (x > 0 ? (() => { const q = 2 ** (Math.floor(Math.log2(x)) - 5); return Math.round(x / q) * q; })() : 0);
+const code = (f) => Math.round(Math.sqrt(f) * 255);
 
 // 1. The tail.
 {
-  const T = 64, N = T * T, slope = 0.5;
-  const ground = (x) => slope * x;
-  // (a thin tail in texel x 20 of row 20, a share of 0.1, its body in x 24–31, a share of 1: the
-  // centroid at x ≈ 27.9, the tail's offset 7 texels)
-  const f = new Float32Array(N), raw = new Uint8Array(N * 2).fill(128);
+  const T = 64, N = T * T, M = 8, C = T / 16, GE = C + 1 + 2 * M;
+  // (ground rising 8 m a texel east: a cell of 16 texels 128 m)
+  const ee = new Float32Array(GE * GE).map((_, k) => 128 * ((k % GE) - M));
+  const g = (x, y) => groundAt(ee, GE, M, x, y);
+  // (a thin tail in texel x 20 of row 20, a share of 0.1, its body in x 24–31, a share of 1)
+  const texels = new Uint8Array(N * 3);
   const y0 = 20, parts = [[20, 0.1], ...Array.from({ length: 8 }, (_, j) => [24 + j, 1])];
   const cx = parts.reduce((s, [x, w]) => s + w * (x + 0.5), 0) / parts.reduce((s, [, w]) => s + w, 0);
   for (const [x, w] of parts) {
     const i = y0 * T + x;
-    f[i] = w;
-    raw[i * 2] = 128 + roundAway(cx - (x + 0.5));
+    texels[i * 3] = code(w);
+    texels[i * 3 + 1] = 128 + roundAway(cx - (x + 0.5));
+    texels[i * 3 + 2] = 128;
   }
-  const pre = premultiplied(raw, [f], T);
-  const old = new Float32Array(N * 2);
-  for (let i = 0; i < N * 2; i++) old[i] = raw[i] - 128;
-  let fs = f, ps = pre, os = old, size = T;
-  console.log('1. a tail on a slope: level, true ground, premultiplied (ground, error), as stored (ground, error)');
-  for (let L = 0; L <= FAR_LEVEL; L++) {
+  const { dg } = roofGround(texels, 1, T, ee, GE, M);
+  const f = new Float32Array(N), raw = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    f[i] = shareOf(texels[i * 3]);
+    raw[i] = f[i] ? dg[i] / f[i] : 0;
+  }
+  let fs = f, ps = dg, rs = raw, size = T;
+  console.log('1. a tail on a slope (8 m a texel): level, the centroid\'s ground over the read\'s, premultiplied, filtered as is');
+  for (let L = 0; L <= 4; L++) {
     const tx = 20 >> L, k = (y0 >> L) * size + tx, at = (tx + 0.5) * 2 ** L;
-    const gNew = ground(at + (fs[k] > 0 ? ps[k * 2] / fs[k] : 0)), gOld = ground(at + os[k * 2]);
-    const tol = slope * Math.max(0.5, 2 ** (L - 1)) + 1e-6;
-    if (Math.abs(gNew - ground(cx)) > tol) failed++;
-    console.log(`   ${L}  ${ground(cx).toFixed(2)}  ${gNew.toFixed(2)} ${(gNew - ground(cx)).toFixed(2)}  ${gOld.toFixed(2)} ${(gOld - ground(cx)).toFixed(2)}`);
+    const truth = g(cx, y0 + 0.5) - g(at, y0 + 0.5);
+    const pre = fs[k] > 0 ? ps[k] / mant(fs[k]) : 0;
+    // (premultiplied: within the slope over half the read's texel, plus the share's rounding)
+    if (Math.abs(pre - truth) > 8 * Math.max(0.5, 2 ** (L - 1)) + 0.04 * Math.abs(truth) + 1e-6) failed++;
+    console.log(`   ${L}  ${truth.toFixed(1)}  ${pre.toFixed(1)}  ${rs[k].toFixed(1)}`);
     fs = boxMip(fs, size, 1);
-    ps = boxMip(ps, size, 2);
-    os = boxMip(os, size, 2);
+    ps = boxMip(ps, size, 1);
+    rs = boxMip(rs, size, 1);
     size >>= 1;
   }
 }
 
-// 2. No run starts below a roof.
+// 2. No run below a roof.
 {
   let seed = 12345;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
   const T = 128, N = T * T, C = T / 16, M = 8, GE = C + 1 + 2 * M;
-  // (a slope, 30 m a cell east and 20 north (a cell 16 texels: ~1 in 3 at z14), and 5 m of noise:
-  // steep enough that a box a few texels short shows, smooth enough that the boxes' ground is tight)
-  const ee = new Float32Array(GE * GE).map((_, k) => 30 * (k % GE) + 20 * Math.floor(k / GE) + rnd() * 5);
-  const ground = (px, py) => {
-    const gx = Math.min(Math.max(px / 16 + M, 0), GE - 1 - 0.001), gy = Math.min(Math.max(py / 16 + M, 0), GE - 1 - 0.001);
-    const i = Math.floor(gx), j = Math.floor(gy), fx = gx - i, fy = gy - j;
-    const a = ee[j * GE + i], b = ee[j * GE + i + 1], c = ee[(j + 1) * GE + i], d = ee[(j + 1) * GE + i + 1];
-    return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
-  };
+  // (a slope, 30 m a cell east and 20 north, with 40 m of noise)
+  const ee = new Float32Array(GE * GE).map((_, k) => 30 * (k % GE) + 20 * Math.floor(k / GE) + rnd() * 40);
   // (buildings: rectangles 1–40 texels a side, some across the tile's edges, each texel's share
-  // random; their centroids from their whole rectangles, so an edge's offsets point out of the tile)
-  const f = new Float32Array(N), raw = new Uint8Array(N * 2).fill(128);
+  // random, a height each; their centroids from their whole rectangles)
+  const texels = new Uint8Array(N * 3), h = new Float32Array(N);
   for (let b = 0; b < 120; b++) {
-    const w = 1 + Math.floor(rnd() * (rnd() < 0.2 ? 40 : 8)), h = 1 + Math.floor(rnd() * (rnd() < 0.2 ? 40 : 8));
-    const x0 = Math.floor(rnd() * (T + 20)) - 10, y0 = Math.floor(rnd() * (T + 20)) - 10;
+    const w = 1 + Math.floor(rnd() * (rnd() < 0.2 ? 40 : 8)), hh = 1 + Math.floor(rnd() * (rnd() < 0.2 ? 40 : 8));
+    const x0 = Math.floor(rnd() * (T + 20)) - 10, y0 = Math.floor(rnd() * (T + 20)) - 10, top = 3 + rnd() * 60;
     const sh = [];
     let sw = 0, sx = 0, sy = 0;
-    for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) {
+    for (let y = y0; y < y0 + hh; y++) for (let x = x0; x < x0 + w; x++) {
       const s = 0.05 + rnd() * 0.95;
       sh.push([x, y, s]);
       sw += s; sx += s * (x + 0.5); sy += s * (y + 0.5);
@@ -84,61 +82,78 @@ const roundAway = (d) => Math.sign(d) * Math.round(Math.abs(d));
     for (const [x, y, s] of sh) {
       if (x < 0 || y < 0 || x >= T || y >= T) continue;
       const i = y * T + x;
-      f[i] = toMantissa(s, 5);
-      raw[i * 2] = 128 + Math.max(-127, Math.min(127, roundAway(cx - (x + 0.5))));
-      raw[i * 2 + 1] = 128 + Math.max(-127, Math.min(127, roundAway(cy - (y + 0.5))));
+      texels[i * 3] = code(s);
+      texels[i * 3 + 1] = 128 + Math.max(-127, Math.min(127, roundAway(cx - (x + 0.5))));
+      texels[i * 3 + 2] = 128 + Math.max(-127, Math.min(127, roundAway(cy - (y + 0.5))));
+      h[i] = top;
     }
   }
-  const { near, far } = centroidBoxes(raw, [f], T);
-  const own = (x, y) => Math.max(ee[(y + M) * GE + x + M], ee[(y + M) * GE + x + M + 1], ee[(y + M + 1) * GE + x + M], ee[(y + M + 1) * GE + x + M + 1]);
-  const hiNear = [], hiFar = [];
-  for (let y = 0; y < C; y++) for (let x = 0; x < C; x++) {
-    const k = y * C + x;
-    hiNear[k] = boxGroundMax(near, k, ee, GE, M, own(x, y));
-    hiFar[k] = Math.max(hiNear[k], boxGroundMax(far, k, ee, GE, M, own(x, y)));
+  const { dg, dgc } = roofGround(texels, 1, T, ee, GE, M);
+  if (mutate === 'nodilate') {
+    // (each cell's largest roof ground over its own texels alone)
+    dgc.fill(0);
+    for (let i = 0; i < N; i++) {
+      const f = shareOf(texels[i * 3]);
+      if (!f) continue;
+      const k = (((i / T) | 0) >> 4) * C + ((i % T) >> 4);
+      dgc[k] = Math.max(dgc[k], dg[i] / f);
+    }
   }
-  // (the levels as the GPU holds them: share × offset box means; the shares' means rounded to
-  // R11F's mantissa at every level, as the class texture's mipmaps are)
+  // (each cell's tallest top, its texels' and the texel around them, as the worker's pool)
+  const top = new Float32Array(C * C);
+  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+    if (!shareOf(texels[(y * T + x) * 3])) continue;
+    for (let cy = Math.max(0, (y - 1) >> 4); cy <= Math.min(C - 1, (y + 1) >> 4); cy++)
+      for (let cx = Math.max(0, (x - 1) >> 4); cx <= Math.min(C - 1, (x + 1) >> 4); cx++) top[cy * C + cx] = Math.max(top[cy * C + cx], h[y * T + x]);
+  }
+  // (the levels as the GPU holds them: shares, share × top, share × roof ground, box means; the
+  // shares rounded to R11F's mantissa at every level)
+  const f0 = new Float32Array(N), v0 = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    f0[i] = shareOf(texels[i * 3]);
+    v0[i] = f0[i] * h[i];
+  }
   const levels = [];
-  let fs = f, ps = premultiplied(raw, [f], T), size = T;
-  for (let L = 0; L <= FAR_LEVEL; L++) {
-    levels.push({ fs: fs.map((v) => toMantissa(v, 5)), ps, size });
+  let fs = f0, vs = v0, ps = dg, size = T;
+  for (let L = 0; L <= 4; L++) {
+    levels.push({ fs: fs.map(mant), vs, ps, size });
     fs = boxMip(fs, size, 1);
-    ps = boxMip(ps, size, 2);
+    vs = boxMip(vs, size, 1);
+    ps = boxMip(ps, size, 1);
     size >>= 1;
   }
-  const bilinear = (a, comps, size, u, v, c) => {
-    // (clamped to the edge, as CLAMP_TO_EDGE)
+  const bilinear = (a, size, u, v) => {
     const x = u - 0.5, y = v - 0.5, i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j;
-    const at = (ii, jj) => a[(Math.min(size - 1, Math.max(0, jj)) * size + Math.min(size - 1, Math.max(0, ii))) * comps + c];
+    const at = (ii, jj) => a[Math.min(size - 1, Math.max(0, jj)) * size + Math.min(size - 1, Math.max(0, ii))];
     return (at(i, j) * (1 - fx) + at(i + 1, j) * fx) * (1 - fy) + (at(i, j + 1) * (1 - fx) + at(i + 1, j + 1) * fx) * fy;
   };
-  let reads = 0, bad = 0;
-  const worst = [-Infinity, -Infinity];
   const points = [];
   for (let n = 0; n < 40000; n++) points.push([rnd() * T, rnd() * T]);
-  // (and along the tile's edges)
   for (let n = 0; n < 4000; n++) {
     const s = rnd() * T, e = rnd() * 0.5;
     points.push([e, s], [T - e, s], [s, e], [s, T - e]);
   }
-  for (let L = 0; L <= FAR_LEVEL; L++) {
-    const { fs, ps, size } = levels[L], k2 = 2 ** L;
+  let reads = 0, above = 0;
+  const unclamped = [0, 0, 0, 0, 0], perLevel = [0, 0, 0, 0, 0];
+  for (let L = 0; L <= 4; L++) {
+    const { fs, vs, ps, size } = levels[L], k2 = 2 ** L;
     for (const [px, py] of points) {
-      const u = px / k2, v = py / k2;
-      const share = bilinear(fs, 1, size, u, v, 0);
+      const u = px / k2, v = py / k2, share = bilinear(fs, size, u, v);
       if (share < 1e-5) continue;
-      const ex = px + bilinear(ps, 2, size, u, v, 0) / share, ey = py + bilinear(ps, 2, size, u, v, 1) / share;
       const cell = Math.min(C - 1, Math.floor(py / 16)) * C + Math.min(C - 1, Math.floor(px / 16));
-      const hi = L <= NEAR_LEVEL ? hiNear[cell] : hiFar[cell];
-      const over = ground(ex, ey) - hi;
+      const start = top[cell] + dgc[cell];
+      const H0 = Math.max(bilinear(vs, size, u, v) / share, 0.5);
+      const raw = H0 + bilinear(ps, size, u, v) / share;
+      const roof = Math.min(Math.max(raw, 0.5), Math.max(start, 0.5));
       reads++;
-      worst[L <= NEAR_LEVEL ? 0 : 1] = Math.max(worst[L <= NEAR_LEVEL ? 0 : 1], over);
-      if (over > 1e-3) bad++;
+      perLevel[L]++;
+      if (roof > start + 1e-3 && start > 0.5) above++;
+      if (raw > start + 1e-3) unclamped[L]++;
     }
   }
-  console.log(`2. no run below a roof: ${reads} reads at levels 0–${FAR_LEVEL} (${points.length} points, edges included): a roof's ground at least ${(-worst[0]).toFixed(1)} m (levels 0–${NEAR_LEVEL}) and ${(-worst[1]).toFixed(1)} m (to ${FAR_LEVEL}) under the cell's start, ${bad} above it`);
-  if (bad) failed++;
+  console.log(`2. no run below a roof: ${reads} reads at levels 0–4 (${points.length} points, edges included): ${above} roofs above their cell's start`);
+  console.log(`   unclamped reads above it, by level: ${unclamped.map((u, L) => `${L}: ${u} of ${perLevel[L]}`).join(', ')}`);
+  if (above || unclamped[0]) failed++;
 }
 if (failed) {
   console.log(`${failed} failed`);

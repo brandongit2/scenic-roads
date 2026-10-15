@@ -1,106 +1,67 @@
-// The field's offsets to the buildings' centroids (field5-webp's second block a class) made ready
-// for the GPU: premultiplied by each texel's share, so filtered reads (bilinear taps, the mipmaps'
-// box means) are sums of share × offset, and the march divides them by the share it reads there from
-// the class's texture (same place, same level): the share-weighted mean offset. Filtered as stored
-// (not premultiplied), a texel's offset was diluted by its empty or other buildings' neighbours: a
-// small building filling 1 of 4 texels kept a quarter of its offset at mip 1. What stays: the mean
-// is of offsets from each texel's own centre, taken from the read's point, so a read at level L can
-// put a centroid up to half its texel (2^(L−1) level-0 texels) from where the builder's level-L
-// texel would (that level's offsets are from its own texels' centres); within the pixel's own
-// footprint. (A position instead of an offset would avoid that, but its ratio to a share read from
-// another texture, R11F's 5-bit mantissa, errs by up to 3 % of the position: texels, not a few
-// hundredths of one; and a share of its own beside it doubles the texture.) And each 16 × 16-texel
-// cell's centroid boxes: where a read in it can put a roof's centroid, by the read's level, so the
-// march starts a cell's runs only as high as the ground there can lift a roof. Pure functions (the
-// worker's, and tools/bldcheck/offmip.mjs's check).
-
-/** The levels whose reads the near box covers (0–2: a read mixes texels under 2^(L+1) = 8 texels
- * away) and the far box (to 4: under 32); a read at a coarser level is clamped to the far box's
- * highest ground by the march (a 16-texel cell is then under a texel of the read: a few pixels). */
-export const NEAR_LEVEL = 2, FAR_LEVEL = 4;
+// The field's roofs at their buildings' centroids (field5-webp's second block a class: each texel's
+// offset to its buildings' centroid), made into what the march reads: each texel's roof ground, `dg`,
+// how much higher the ground at its centroid is than at the texel's centre (the terrain as drawn,
+// the tile's elevation grid), worked out off the main thread once the elevations are known.
+//
+// On the GPU (R16F, a layer a class held) dg is premultiplied by the texel's share, so filtered and
+// mipmapped reads are sums of share × dg, and the march divides them by the share it reads from the
+// class's texture at the same place and level: the share-weighted mean, as the class's own top is.
+// (Filtered as is, an empty or other buildings' texel would dilute it toward 0.) A mean is no more
+// than the largest it mixes, but a read at level L mixes texels up to 2^(L+1) texels away, so no cell
+// bound short of the whole tile holds every level; instead the march clamps a roof to its cell's
+// start: each cell's runs start at its tallest top plus its largest dg (its texels' and the texel
+// around them: what a level-0 read mixes), and a roof is never higher than that. So no run starts
+// below a roof, at any level (tools/bldcheck/offmip.mjs), and a coarse read near a building with more
+// lift lowers a roof a little at a distance instead. (A max-filtered chain would bound coarse reads
+// too, but needs its own texture and mipmaps built by hand, and then the roof would be the max, not
+// the mean.) Pure functions (the worker's, and the check's).
 
 /**
- * Share × offset, RG a texel (level-0 texels), a layer a class held (layer-major).
- * @param offsets the stored offsets, RG + 128 a texel, layer-major (`n` layers of T × T)
- * @param shares each layer's shares (T × T), as the class textures hold them
+ * The march's ground, as the shader's: bilinear in the elevation grid (GE × GE vertices, `M` cells
+ * beyond the tile, a cell 16 texels), the point (level-0 texels from the tile's corner) clamped to it.
  */
-export function premultiplied(offsets: Uint8Array, shares: Float32Array[], T: number): Float32Array {
-  const N = T * T;
-  const out = new Float32Array(offsets.length);
-  shares.forEach((f, l) => {
-    for (let i = 0; i < N; i++) {
-      const s = f[i];
-      if (!s) continue;
-      const k = (l * N + i) * 2;
-      out[k] = s * (offsets[k] - 128);
-      out[k + 1] = s * (offsets[k + 1] - 128);
-    }
-  });
-  return out;
+export function groundAt(ee: Float32Array, GE: number, M: number, px: number, py: number): number {
+  const gx = Math.min(Math.max(px / 16 + M, 0), GE - 1 - 0.001), gy = Math.min(Math.max(py / 16 + M, 0), GE - 1 - 0.001);
+  const i = Math.floor(gx), j = Math.floor(gy), fx = gx - i, fy = gy - j;
+  const a = ee[j * GE + i], b = ee[j * GE + i + 1], c = ee[(j + 1) * GE + i], d = ee[(j + 1) * GE + i + 1];
+  return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+}
+
+/** A share as the class texture holds it: (R / 255)², rounded to R11F's 5-bit mantissa. */
+export function shareOf(r: number): number {
+  const f = (r / 255) ** 2;
+  if (!(f > 0)) return 0;
+  const q = 2 ** (Math.floor(Math.log2(f)) - 5);
+  return Math.round(f / q) * q;
 }
 
 /**
- * Each 16 × 16-texel cell's boxes of where a read in it can put a roof's centroid (level-0 texels
- * from the tile's corner, may run past its edges): `near` for reads at levels to NEAR_LEVEL, `far`
- * to FAR_LEVEL; 4 floats a cell (x0, y0, x1, y1), x0 > x1 where no roof can be read. A read's
- * centroid is p + Σ f o ÷ Σ f over the texels it mixes, p its point: Σ f (c + (p − t)) ÷ Σ f, c a
- * texel's centroid and t its centre, so it lies in the box of those texels' centroids grown by how
- * far p is from them (under 2^(L+1) texels), and by the divide's error (the share read from the class
- * texture, R11F's 5-bit mantissa, mipmapped apart: 4 % of the largest offset, + a texel).
+ * Each texel's roof ground, premultiplied by its share (a layer a class held, layer-major), and each
+ * 16 × 16-texel cell's largest dg (≥ 0) over its texels and the texel around them (a 32 × 32 grid for
+ * T = 512), where a share is held.
+ * @param texels each layer's texels, 3 bytes each: the share's code (√f × 255), the offset + 128 (x, y)
  */
-export function centroidBoxes(offsets: Uint8Array, shares: Float32Array[], T: number): { near: Float32Array; far: Float32Array } {
+export function roofGround(texels: Uint8Array, n: number, T: number, ee: Float32Array, GE: number, M: number): { dg: Float32Array; dgc: Float32Array } {
   const N = T * T, C = T / 16;
-  const own = new Float32Array(C * C * 5).fill(NaN); // x0 y0 x1 y1, largest |offset|
-  for (let k = 0; k < C * C; k++) { own[k * 5] = Infinity; own[k * 5 + 1] = Infinity; own[k * 5 + 2] = -Infinity; own[k * 5 + 3] = -Infinity; own[k * 5 + 4] = 0; }
-  shares.forEach((f, l) => {
+  const dg = new Float32Array(n * N);
+  const big = new Float32Array(N); // (each texel's largest dg over the classes, ≥ 0)
+  for (let l = 0; l < n; l++)
     for (let i = 0; i < N; i++) {
-      if (!f[i]) continue;
-      const x = i % T, y = (i / T) | 0, j = (l * N + i) * 2;
-      const ox = offsets[j] - 128, oy = offsets[j + 1] - 128;
-      const cx = x + 0.5 + ox, cy = y + 0.5 + oy, k = ((y >> 4) * C + (x >> 4)) * 5;
-      if (cx < own[k]) own[k] = cx;
-      if (cy < own[k + 1]) own[k + 1] = cy;
-      if (cx > own[k + 2]) own[k + 2] = cx;
-      if (cy > own[k + 3]) own[k + 3] = cy;
-      own[k + 4] = Math.max(own[k + 4], Math.abs(ox), Math.abs(oy));
+      const k = (l * N + i) * 3, f = shareOf(texels[k]);
+      if (!f) continue;
+      const x = (i % T) + 0.5, y = ((i / T) | 0) + 0.5;
+      const d = groundAt(ee, GE, M, x + texels[k + 1] - 128, y + texels[k + 2] - 128) - groundAt(ee, GE, M, x, y);
+      dg[l * N + i] = f * d;
+      if (d > big[i]) big[i] = d;
     }
-  });
-  const grow = (cells: number, reach: number) => {
-    const out = new Float32Array(C * C * 4);
-    for (let y = 0; y < C; y++) for (let x = 0; x < C; x++) {
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, om = 0;
-      for (let yy = Math.max(0, y - cells); yy <= Math.min(C - 1, y + cells); yy++)
-        for (let xx = Math.max(0, x - cells); xx <= Math.min(C - 1, x + cells); xx++) {
-          const k = (yy * C + xx) * 5;
-          if (!(own[k] <= own[k + 2])) continue;
-          x0 = Math.min(x0, own[k]); y0 = Math.min(y0, own[k + 1]); x1 = Math.max(x1, own[k + 2]); y1 = Math.max(y1, own[k + 3]);
-          om = Math.max(om, own[k + 4]);
-        }
-      const g = reach + 0.04 * om + 1, k = (y * C + x) * 4;
-      if (x0 <= x1) { out[k] = x0 - g; out[k + 1] = y0 - g; out[k + 2] = x1 + g; out[k + 3] = y1 + g; }
-      else { out[k] = 1; out[k + 1] = 1; out[k + 2] = 0; out[k + 3] = 0; }
-    }
-    return out;
-  };
-  // (a read at level L mixes texels under 2^(L+1) texels from its point: within 1 cell to level 2,
-  // 2 cells to level 4)
-  return { near: grow(1, 2 ** (NEAR_LEVEL + 1)), far: grow(2, 2 ** (FAR_LEVEL + 1)) };
-}
-
-/**
- * The highest ground a cell's box can put a roof's centroid on: the largest of the elevation grid's
- * vertices (GE × GE, `M` cells beyond the tile, a cell 16 texels) around the box's grid squares (the
- * march's ground is bilinear between them, its point clamped to the grid as these indexes are), and
- * `own` (the cell's own corners'); `own` alone where the box is empty.
- */
-export function boxGroundMax(box: Float32Array, k: number, ee: Float32Array, GE: number, M: number, own: number): number {
-  if (!(box[k * 4] <= box[k * 4 + 2])) return own;
-  const vi = (v: number) => Math.min(GE - 1, Math.max(0, v));
-  const i0 = vi(Math.floor(box[k * 4] / 16 + M)), i1 = vi(Math.floor(box[k * 4 + 2] / 16 + M) + 1);
-  const j0 = vi(Math.floor(box[k * 4 + 1] / 16 + M)), j1 = vi(Math.floor(box[k * 4 + 3] / 16 + M) + 1);
-  let m = own;
-  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) m = Math.max(m, ee[j * GE + i]);
-  return m;
+  const dgc = new Float32Array(C * C);
+  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+    const d = big[y * T + x];
+    if (!d) continue;
+    for (let cy = Math.max(0, (y - 1) >> 4); cy <= Math.min(C - 1, (y + 1) >> 4); cy++)
+      for (let cx = Math.max(0, (x - 1) >> 4); cx <= Math.min(C - 1, (x + 1) >> 4); cx++) if (d > dgc[cy * C + cx]) dgc[cy * C + cx] = d;
+  }
+  return { dg, dgc };
 }
 
 /** A level's box mean, as generateMipmap makes one (for the check): `comps` floats a texel. */
