@@ -495,13 +495,22 @@ pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
     Ok(tiles.len())
 }
 
-/// T's heritage sites (its markdata's, `field::sites_of_markdata`), for the field's heritage lists;
-/// none without its markdata.
+/// T's heritage sites for the field's heritage lists: the newest pass's slice of T's sites
+/// (`crate::heritage::pos_logical`) less its World Heritage components (`parts_logical`), as the
+/// map's dots are; none without a slice.
 pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
-    match out.get(&field::markdata_logical(t.x, t.y)) {
-        Some(c) => field::sites_of_markdata(&out.path(c)),
-        None => Ok(Vec::new()),
-    }
+    let Some(d) = crate::heritage::latest_date(&out.manifest) else { return Ok(Vec::new()) };
+    let read = |l: String| -> Result<Vec<[i32; 2]>> {
+        match out.get(&l) {
+            Some(c) => Ok(serde_json::from_slice(&std::fs::read(out.path(c))?).with_context(|| format!("{l}"))?),
+            None => Ok(Vec::new()),
+        }
+    };
+    let parts: std::collections::BTreeSet<[i32; 2]> = read(crate::heritage::parts_logical(&d, t.x, t.y))?.into_iter().collect();
+    let mut s: Vec<[i32; 2]> = read(crate::heritage::pos_logical(&d, t.x, t.y))?.into_iter().filter(|p| !parts.contains(p)).collect();
+    s.sort_unstable();
+    s.dedup();
+    Ok(s)
 }
 
 /// Runs `bldtiles T`: its hi pack, its field's hi pack and its field's mid made and uploaded (or,

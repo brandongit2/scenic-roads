@@ -2675,7 +2675,7 @@ fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&s
 /// What heritage.py fetched goes to the NAS as it ends, finished or not, or at the next start when
 /// it was stopped (`Epoch`).
 fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
-    use pipeline::heritage::{base_logical, cover_tiles, put_slices, slice_areas, slice_sites, tiles_bytes, tiles_geojson, COVER_Z};
+    use pipeline::heritage::{base_logical, cover_tiles, put_parts, put_slices, slice_areas, slice_parts, slice_sites, tiles_bytes, tiles_geojson, COVER_Z};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
@@ -2704,11 +2704,16 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     parts.start(3);
     // The units' slices, then the whole files.
     let p = phase("the sites and areas sliced per area", Class::Compute);
-    let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;
+    let her = std::fs::read(b.join("heritage.json"))?;
+    let sites = slice_sites(&her)?;
+    // (The World Heritage components apart: the 3D buildings' heritage lists leave them out.)
+    let parts_of = slice_parts(&her)?;
+    drop(her);
     let areas = slice_areas(&std::fs::read_to_string(b.join("area-shapes.geojsonseq"))?)?;
     drop(p);
     let p = phase("the slices uploaded", Class::NasWrite);
     let (ns, na) = put_slices(out, &date, &sites, &areas)?;
+    put_parts(out, &date, &parts_of)?;
     drop(p);
     parts.start(4);
     let _p = phase("uploaded", Class::NasWrite);

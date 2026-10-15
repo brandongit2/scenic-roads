@@ -1065,7 +1065,8 @@ texel is 1.2 m at the equator), five height classes a texel (§4.8.1):
   edge, in i64 fixed point, so the sums don't depend on their order (the same bytes on any number
   of threads, tested); then level 13 from 14 and levels 12–9 by means of four in a fixed order. The
   same task for pages and helper Macs (`bldtile`); the key `BUILDINGS_V` (3) and, for the heritage
-  list, T's markdata's content name.
+  list, the content names of the newest pass's heritage slices of T (its sites' `pos` and their World
+  Heritage components' `parts`: a marks rebuild doesn't run it again).
 - each z8 area's level-8 planes kept exactly, with its heritage list, in T's mid
   (`work/bldfield-mid/6-x-y`), and a step `bldfield-lo` per z3 tile makes levels 8–4 from its z6
   tiles' mids (as `terrain-lo` and `trees-lo`), its key the mids' content names; it runs once
@@ -1075,7 +1076,8 @@ texel is 1.2 m at the equator), five height classes a texel (§4.8.1):
   a block of rows); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
   before the GPU's mipmaps (the coding's square root and log would bias them).
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
-  point (T's markdata), its height, base and footprint (16 points at most). Built; not drawn yet.
+  point (the heritage chain's slices of T, its World Heritage components left out: the map's dots
+  but for a few sites per tile its layer has and the slices don't, 0–9 in the pilot's tiles), its height, base and footprint (16 points at most). Built; not drawn yet.
 - Not done: the catalog's layer is listed by `scenic-build catalog` (encoding `field3-webp`, zooms
   4–14) but the field isn't in the mirror's groups nor the World download, and the agent's forecast
   has no measured cost for `bldfield-lo` yet.

@@ -477,7 +477,7 @@ fn w_water(l: &str, removal: bool) -> bool {
 /// removed), and the base files the chain reads.
 fn w_heritage_sites(l: &str, _: bool) -> bool {
     match parts(l).as_slice() {
-        ["work", "heritage", d, "pos" | "areas", t] => date(d) && tile(t, 6),
+        ["work", "heritage", d, "pos" | "areas" | "parts", t] => date(d) && tile(t, 6),
         ["work", "heritage", d, "base", _] => date(d),
         _ => false,
     }

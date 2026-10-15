@@ -127,6 +127,38 @@ pub fn slice_sites(heritage_json: &[u8]) -> Result<BTreeMap<(u32, u32), Vec<[i32
     Ok(out)
 }
 
+/// heritage.json's World Heritage Sites' components (`component` set, as JavaScript reads it: the
+/// app's and markdata's `pt`), by the z6 tile holding them, each list sorted, no repeats: what the
+/// map shows as a site's one dot, not each (the 3D buildings' heritage lists leave them out).
+pub fn slice_parts(heritage_json: &[u8]) -> Result<BTreeMap<(u32, u32), Vec<[i32; 2]>>> {
+    let fc: serde_json::Value = serde_json::from_slice(heritage_json).context("heritage.json")?;
+    let mut out: BTreeMap<(u32, u32), Vec<[i32; 2]>> = BTreeMap::new();
+    for f in fc["features"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        if f["geometry"]["type"] != "Point" || !truthy(&f["properties"]["component"]) {
+            continue;
+        }
+        let c = &f["geometry"]["coordinates"];
+        let (Some(lon), Some(lat)) = (c[0].as_f64(), c[1].as_f64()) else { continue };
+        out.entry(z6_of(lon, lat)).or_default().push([(lon * 1e7).round() as i32, (lat * 1e7).round() as i32]);
+    }
+    for v in out.values_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
+    Ok(out)
+}
+
+/// JavaScript's truthiness of a JSON value.
+fn truthy(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|x| x != 0.0 && !x.is_nan()),
+        serde_json::Value::String(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
 /// A GeoJSON geometry's bounding box (w, s, e, n), from every position in it.
 fn bbox(coords: &serde_json::Value, b: &mut [f64; 4]) {
     match coords {
@@ -217,6 +249,14 @@ pub fn slice_areas(area_shapes: &str) -> Result<BTreeMap<(u32, u32), Vec<(String
 pub fn pos_logical(date: &str, x: u32, y: u32) -> String {
     format!("work/heritage/{date}/pos/6-{x}-{y}")
 }
+/// A pass's World Heritage components' slice (`slice_parts`).
+pub fn parts_logical(date: &str, x: u32, y: u32) -> String {
+    format!("work/heritage/{date}/parts/6-{x}-{y}")
+}
+/// The newest pass with heritage slices in manifest `m`.
+pub fn latest_date(m: &BTreeMap<String, String>) -> Option<String> {
+    m.range("work/heritage/".to_string()..).take_while(|(l, _)| l.starts_with("work/heritage/")).filter(|(l, _)| l.contains("/pos/")).filter_map(|(l, _)| l.split('/').nth(2).map(str::to_string)).max()
+}
 pub fn areas_logical(date: &str, x: u32, y: u32) -> String {
     format!("work/heritage/{date}/areas/6-{x}-{y}")
 }
@@ -247,6 +287,22 @@ pub fn put_slices(out: &mut Out, date: &str, sites: &BTreeMap<(u32, u32), Vec<[i
         }
     }
     Ok((sites.len(), areas.len()))
+}
+
+/// Uploads the components' slices, removing the pass's this run didn't write. How many went up.
+pub fn put_parts(out: &mut Out, date: &str, parts: &BTreeMap<(u32, u32), Vec<[i32; 2]>>) -> Result<usize> {
+    let mut wrote: BTreeSet<String> = BTreeSet::new();
+    for (&(x, y), pts) in parts {
+        let l = parts_logical(date, x, y);
+        out.put_bytes(&l, "json", &serde_json::to_vec(pts)?)?;
+        wrote.insert(l);
+    }
+    let prefix = format!("work/heritage/{date}/parts/");
+    let stale: Vec<String> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, _)| l.clone()).filter(|l| !wrote.contains(l)).collect();
+    for l in stale {
+        out.remove(&l);
+    }
+    Ok(parts.len())
 }
 
 /// A unit's heritage inputs for its box `b` (degrees), into its folder: `heritage.json` (the sites
@@ -382,6 +438,17 @@ mod tests {
             {"type":"Feature","geometry":{"type":"Point","coordinates":[2.35,48.85]},"properties":{"name":"b"}}]}"#;
         let sites = slice_sites(her).unwrap();
         assert_eq!(sites.len(), 2);
+        // The components (`component` truthy, as JavaScript reads it): none here; one below.
+        assert!(slice_parts(her).unwrap().is_empty());
+        let with = br#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[2.35,48.85]},"properties":{"component":"Part 2"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[2.36,48.85]},"properties":{"component":""}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[2.37,48.85]},"properties":{"component":null}}]}"#;
+        let parts = slice_parts(with).unwrap();
+        assert_eq!(parts.values().flatten().copied().collect::<Vec<_>>(), vec![[23_500_000, 488_500_000]]);
+        assert_eq!(put_parts(&mut out, "d", &parts).unwrap(), 1);
+        assert!(out.get(&parts_logical("d", 32, 22)).is_some());
+        assert_eq!(latest_date(&out.manifest), None, "no pos slices yet");
         assert_eq!(sites[&(31, 20)], vec![[-16_000_000, 550_000_000]]);
         // One polygon across the z6 border at 0°, one inside a tile.
         let shapes = concat!(

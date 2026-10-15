@@ -22,7 +22,8 @@
 //!   the one before: R `f` as √f, G `w` as log2(1 + w) ÷ log2(4097) (to 4096), B the class's mean top
 //!   linearly in its class's range ([`LO_M`], [`HI_M`]), each × 255 rounded. A class whose `f` and `w`
 //!   both round to 0 everywhere is left out; a tile with none isn't written. A level-8 tile (a z8
-//!   area) may carry its heritage list after the WebP ([`heritage`]).
+//!   area) may carry its heritage list after the WebP ([`heritage`]: of T's heritage sites as the
+//!   heritage chain slices them, its World Heritage components left out, `job::sites`).
 
 use super::world7;
 use anyhow::{ensure, Context, Result};
@@ -704,21 +705,6 @@ pub fn heritage(a: (u32, u32), feet: &[Foot], sites: &[[i32; 2]]) -> Vec<u8> {
     b
 }
 
-/// A z6 tile's heritage sites from its markdata (`marks::KINDS`' heritage, a World Heritage Site's
-/// components left out: they aren't dots), E7.
-pub fn sites_of_markdata(path: &std::path::Path) -> Result<Vec<[i32; 2]>> {
-    let f = store::range::PlainFile::open(path).with_context(|| format!("open {}", path.display()))?;
-    let r = store::sect::SectReader::open(f)?;
-    let kinds: Vec<[u32; 2]> = r.read_pod("kinds")?;
-    let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts")?;
-    let k = crate::marks::kind_index("heritage").unwrap();
-    let Some(&[first, n]) = kinds.get(k) else { return Ok(Vec::new()) };
-    let mut out: Vec<[i32; 2]> = pts.get(first as usize..(first + n) as usize).context("markdata's kinds past its points")?.iter().filter(|p| p.flags & crate::marks::flag::COMPONENT == 0).map(|p| [p.lon, p.lat]).collect();
-    out.sort_unstable();
-    out.dedup();
-    Ok(out)
-}
-
 // ---- mids and the lo levels ------------------------------------------------------------------------
 
 const MID_MAGIC: &[u8; 8] = b"BFMID02\0";
@@ -833,10 +819,6 @@ pub fn mid_logical(x: u32, y: u32) -> String {
 }
 pub fn lo_logical(x: u32, y: u32) -> String {
     format!("layers/{LAYER}/lo/3-{x}-{y}")
-}
-/// Z6 tile T's markdata (its heritage sites).
-pub fn markdata_logical(x: u32, y: u32) -> String {
-    format!("markdata/6-{x}-{y}")
 }
 
 #[cfg(test)]

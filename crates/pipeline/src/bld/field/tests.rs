@@ -215,6 +215,56 @@ fn region_sizes_tried() {
     eprintln!("{} tiles of {}: {tot:?}", idx.entries.len().div_ceil(every), idx.entries.len());
 }
 
+/// A z6 tile's heritage sites from its markdata (`marks::KINDS`' heritage, a World Heritage Site's
+/// components left out: they aren't dots), E7.
+fn sites_of_markdata(path: &std::path::Path) -> Result<Vec<[i32; 2]>> {
+    let f = store::range::PlainFile::open(path).with_context(|| format!("open {}", path.display()))?;
+    let r = store::sect::SectReader::open(f)?;
+    let kinds: Vec<[u32; 2]> = r.read_pod("kinds")?;
+    let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts")?;
+    let k = crate::marks::kind_index("heritage").unwrap();
+    let Some(&[first, n]) = kinds.get(k) else { return Ok(Vec::new()) };
+    let mut out: Vec<[i32; 2]> = pts.get(first as usize..(first + n) as usize).context("markdata's kinds past its points")?.iter().filter(|p| p.flags & crate::marks::flag::COMPONENT == 0).map(|p| [p.lon, p.lat]).collect();
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// The heritage chain's per-tile slices against markdata's heritage points on a project folder
+/// (BLDFIELD_ROOT, read only): how many of each, and how many differ. By hand: -- --ignored.
+#[test]
+#[ignore]
+fn heritage_slices_against_markdata() {
+    let Ok(root) = std::env::var("BLDFIELD_ROOT") else { return };
+    let root = std::path::Path::new(&root);
+    let m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
+    let base = m[&format!("work/heritage/{}/base/heritage", crate::heritage::latest_date(&m).unwrap())].clone();
+    let parts_all = crate::heritage::slice_parts(&std::fs::read(root.join(base)).unwrap()).unwrap();
+    let date = m.keys().filter_map(|k| k.strip_prefix("work/heritage/")).filter(|k| k.contains("/pos/")).map(|k| k.split('/').next().unwrap().to_string()).max().unwrap();
+    for t in ["6-33-22", "6-18-24", "6-56-25", "6-17-23", "6-31-18", "6-32-22"] {
+        let md = m.get(&format!("markdata/{t}")).map(|c| sites_of_markdata(&root.join(c)).unwrap()).unwrap_or_default();
+        let all = m.get(&format!("markdata/{t}")).map(|c| {
+            let f = store::range::PlainFile::open(&root.join(c)).unwrap();
+            let r = store::sect::SectReader::open(f).unwrap();
+            let kinds: Vec<[u32; 2]> = r.read_pod("kinds").unwrap();
+            let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts").unwrap();
+            let k = kinds[crate::marks::kind_index("heritage").unwrap()];
+            pts[k[0] as usize..(k[0] + k[1]) as usize].iter().map(|p| [p.lon, p.lat]).collect::<std::collections::BTreeSet<_>>()
+        }).unwrap_or_default();
+        let pos: std::collections::BTreeSet<[i32; 2]> = m.get(&format!("work/heritage/{date}/pos/{t}")).map(|c| serde_json::from_slice::<Vec<[i32; 2]>>(&std::fs::read(root.join(c)).unwrap()).unwrap().into_iter().collect()).unwrap_or_default();
+        let md: std::collections::BTreeSet<[i32; 2]> = md.into_iter().collect();
+        let parts: std::collections::BTreeSet<[i32; 2]> = parts_all.iter().filter(|(k, _)| format!("6-{}-{}", k.0, k.1) == t).flat_map(|(_, v)| v.iter().copied()).collect();
+        let kept: std::collections::BTreeSet<[i32; 2]> = pos.difference(&parts).copied().collect();
+        eprintln!("{t}: the slice less the components {}, differing from markdata's: {} only there, {} only in markdata", kept.len(), kept.difference(&md).count(), md.difference(&kept).count());
+        let anywhere: std::collections::BTreeSet<[i32; 2]> = m.iter().filter(|(k, _)| k.starts_with(&format!("work/heritage/{date}/pos/"))).flat_map(|(_, c)| serde_json::from_slice::<Vec<[i32; 2]>>(&std::fs::read(root.join(c)).unwrap()).unwrap()).collect();
+        for p in md.difference(&kept) {
+            let near = anywhere.iter().filter(|q| (q[0] - p[0]).abs() < 20 && (q[1] - p[1]).abs() < 20).count();
+            eprintln!("  only in markdata: {p:?}, in another slice {}, a slice point within 2e-6° {near}", anywhere.contains(p));
+        }
+        eprintln!("{t}: markdata {} ({} with components), slice {}, in markdata not slice {}, in slice not markdata {}, components in slice {}", md.len(), all.len(), pos.len(), md.difference(&pos).count(), pos.difference(&md).count(), all.difference(&md).filter(|p| pos.contains(*p)).count());
+    }
+}
+
 #[test]
 fn a_courtyard_and_overlaps() {
     // A courtyard building (its hole wound either way) covers its outer square less the yard; two

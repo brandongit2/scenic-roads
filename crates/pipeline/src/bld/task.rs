@@ -12,7 +12,7 @@
 //!   each whole with its buffer and country: a building's shape is then the same shape (another
 //!   index), so its country and the first-match order are the same.
 //!
-//! - `heritage.bin`: T's heritage sites (`field::sites_of_markdata`), E7 pairs (i32 LE), sorted.
+//! - `heritage.bin`: T's heritage sites (`job::sites`), E7 pairs (i32 LE), sorted.
 //!
 //! What the program writes there: `area.tiles` (an RDTILES archive of the area's z14 tiles, as
 //! `job::area_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES

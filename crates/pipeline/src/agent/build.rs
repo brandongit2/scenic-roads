@@ -2113,8 +2113,9 @@ pub struct BldTargets {
     /// `bldtiles T`: the z6 tiles meeting the coverage (its buffers included). Its key: the version,
     /// the content names of T's and its 8 neighbours' normalized files ("-" none), the coverage's
     /// shapes over T grown by 1 km in the recipes' order with their countries
-    /// (`Coverage::shapes_key`: which shape a building is in sets its country's fits), and T's
-    /// markdata's content name (its heritage sites, for the field's heritage lists; "-" none).
+    /// (`Coverage::shapes_key`: which shape a building is in sets its country's fits), and the
+    /// content names of the newest pass's heritage slices of T, its sites and its World Heritage
+    /// components (for the field's heritage lists; "-" none).
     pub tiles: Vec<(String, String)>,
     /// `bldfield-lo Q`: the z3 tiles holding a `bldtiles` target, each with its key (the version,
     /// Q, and its z6 tiles' mids' content names, "-" none) and its `bldtiles` targets.
@@ -2127,6 +2128,7 @@ pub fn bld_targets(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeM
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let sources = bld_sources(inputs) == Some(true);
     let mut out = BldTargets::default();
+    let her = crate::heritage::latest_date(m);
     for (x, y, shapes) in bld_tiles(cov).iter() {
         let t = format!("6/{x}/{y}");
         if let Some(d) = inputs.get(&format!("bldprep {t}")).filter(|_| sources) {
@@ -2141,7 +2143,8 @@ pub fn bld_targets(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeM
                 });
             }
             ins.push(shapes.clone());
-            ins.push(get(&field::markdata_logical(*x, *y)).to_string());
+            ins.push(her.as_deref().map_or("-", |d| get(&crate::heritage::pos_logical(d, *x, *y))).to_string());
+            ins.push(her.as_deref().map_or("-", |d| get(&crate::heritage::parts_logical(d, *x, *y))).to_string());
             let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
             out.tiles.push((t, h(&refs)));
         }

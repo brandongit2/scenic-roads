@@ -469,6 +469,8 @@ part, layers.py) runs in Python.
     polygons with their flag bits instead of rasterising them.
   - **Outputs:** `work/heritage/<d>/base/<file>`, and per z6 tile:
     - the sites' positions: `pos/6-x-y`, E7, sorted;
+    - those of World Heritage Sites' components among them: `parts/6-x-y` (the 3D buildings'
+      heritage lists leave them out, as the map's dots do);
     - the polygons whose bounding box meets the tile: `areas/6-x-y`, keyed by content.
   - **Key:** the step's version, the pass, its areas set, the snapshot, the coverage. It took 96 s for
     the 34 regions of 2026-10-03.

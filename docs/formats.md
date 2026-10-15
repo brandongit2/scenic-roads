@@ -332,7 +332,8 @@ under it.
   class's range lo–hi 0–8, 8–20, 20–40, 40–100, 100–1000 m (0 where R and G are). A class whose R
   and G are 0 everywhere is left out; a tile with none isn't stored. A level-8 tile (a z8 area's)
   may have after the WebP its heritage list: u32 n, then n buildings or parts holding a heritage
-  site's point (T's markdata's heritage kind, a World Heritage Site's components left out), each
+  site's point (the newest pass's `pos` slice of T less its `parts` slice: the map's heritage dots,
+  a World Heritage Site's components left out), each
   u16 top (dm), u16 base (dm), u8 m, m points (u16 x, u16 y: the z8 tile's 65,536 a side) of its
   first polygon's exterior, simplified (Douglas–Peucker, the tolerance doubled from half a unit)
   to 16 at most. The served `/tiles/buildings-field/{z}/{x}/{y}` answers a tile as stored, 204 for
@@ -727,7 +728,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   or root) and `sources/terrain-z8-v3-max` (each tile's maximum, f32).
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>,
-  pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (an area in each z6 tile its box meets, whole; one
+  pos/6-x-y.json, parts/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (`parts`: the World Heritage
+  Sites' components among `pos`, by `component` as JavaScript reads it; E7, sorted) (an area in each z6 tile its box meets, whole; one
   across the antimeridian, in those its parts' boxes meet); `work/marks/heritage-dots.json`;
   `work/rail/used.json` (railgtfs.py's report: per feed, `id`, `provider`, `url`, `licence`,
   `fetched`, and `status` with, when "ok", `day`, `trips`, `duplicates`, `rail_routes`);
