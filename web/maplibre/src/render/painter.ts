@@ -790,7 +790,11 @@ export class Painter {
 
     acquireRTT(size: number): RTTObject {
         const gl = this.context.gl;
-        const obj = this._rttObjectRecyclePool.pop();
+        // Scenic Roads: a pooled texture of the size asked for first (the drapes' sizes differ,
+        // TerrainTileManager.footprintSizing), else any, resized.
+        const pool = this._rttObjectRecyclePool;
+        const same = pool.findLastIndex(o => o.size === size);
+        const obj = same >= 0 ? pool.splice(same, 1)[0] : pool.pop();
         if (obj) {
             if (obj.size !== size) {
                 obj.texture.update({width: size, height: size, data: null}, {premultiply: false, useMipmap: true});

@@ -3,7 +3,7 @@
 // TerrainTileManager.terrainAwareZoom), in the app as it is (?checks), in a windowed Chrome (CDP 5293,
 // chrome-win.sh; nothing else open in it):
 //   node drape.mjs <views.json> <out.json> [--reps 4] [--frames 300] [--shots <dir>] [--allow-busy]
-//     [--app http://127.0.0.1:5291] [--maxz <deepest render-to-texture zoom>]
+//     [--app http://127.0.0.1:5291] [--maxz <deepest render-to-texture zoom>] [--sizing 0|1]
 // Each view: the app opened at it, then for each repetition both settings in a rotated order (A B,
 // B A, …) in the same tab: the cover switched, the map left to settle (idle), then the camera moved
 // one step a requestAnimationFrame for `--frames` frames, turning (0.02° a frame) and then gliding
@@ -24,7 +24,7 @@ const argv = process.argv.slice(2);
 const opt = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
 const [viewsFile, outFile] = argv;
 const REPS = Number(opt('reps', 4)), MAXZ = opt('maxz', ''), N = Number(opt('frames', 300));
-const SHOTS = opt('shots', '');
+const SHOTS = opt('shots', ''), SIZING = opt('sizing', '');
 const CDP = Number(opt('cdp', 5293)), APP = opt('app', 'http://127.0.0.1:5291');
 const ALLOW_BUSY = argv.includes('--allow-busy');
 let views = JSON.parse(fs.readFileSync(viewsFile, 'utf8'));
@@ -97,12 +97,12 @@ const SETUP = `
     });
     d.held = () => {
       const tm = m.terrain.tileManager;
-      let n = 0, bytes = 0, zs = {};
+      let n = 0, bytes = 0, zs = {}, sizes = {};
       for (const k of tm._renderableTilesKeys) { const t = tm._tiles[k]; zs[t.tileID.canonical.z] = (zs[t.tileID.canonical.z] ?? 0) + 1; }
-      for (const k in tm._tiles) for (const o of tm._tiles[k].rttObjects) if (o) { n++; bytes += o.size * o.size * 4 * 4 / 3; }
+      for (const k in tm._tiles) for (const o of tm._tiles[k].rttObjects) if (o) { n++; bytes += o.size * o.size * 4 * 4 / 3; sizes[o.size] = (sizes[o.size] ?? 0) + 1; }
       let pool = 0;
       for (const o of p._rttObjectRecyclePool) { pool++; bytes += o.size * o.size * 4 * 4 / 3; }
-      return { tiles: tm._renderableTilesKeys.length, zooms: zs, textures: n, pooled: pool, mb: bytes / 2 ** 20, size: p.renderToTexture?.rttSize };
+      return { tiles: tm._renderableTilesKeys.length, zooms: zs, textures: n, pooled: pool, mb: bytes / 2 ** 20, size: p.renderToTexture?.rttSize, sizes };
     };
   }
   return 1;`;
@@ -164,6 +164,8 @@ for (const v of views) {
   }
   await t.ev(SETUP);
   // (--maxz: the render-to-texture tiles' deepest zoom, TerrainTileManager.maxzoom, 22 by default)
+  // (--sizing 0: every render-to-texture tile at the full size, TerrainTileManager.footprintSizing off)
+  if (SIZING !== '') await t.ev(`window.__app.map.terrain.tileManager.footprintSizing = ${SIZING !== '0'}; return 1`);
   if (MAXZ) await t.ev(`window.__app.map.terrain.tileManager.maxzoom = ${Number(MAXZ)}; return 1`);
   // (the view framed as the app frames a place, camera3d.frame, as bldcmp's place(): the target at the
   // centre over its ground, the camera kept 150 m or more above the terrain under it, farther out by

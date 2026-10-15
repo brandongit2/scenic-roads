@@ -142,18 +142,29 @@ now source changes:
   comparing): the terrain's render-to-texture tiles, into which every draped layer (roads, water,
   fills, lines) is drawn, take both zooms above, so the drapes near the camera and at the screen's
   sides are as fine as what stands on them. Each tile is a 1024² RGBA8 texture with mipmaps
-  (5.3 MB a texture a stack of draped layers), so its GPU memory is the tile count times that.
-  Measured on the build Mac (windowed Chrome, 120 Hz, 2880 × 1626, quiet gate,
-  `tools/bldcheck/drape.mjs`, upstream's zoom → this one), the median GPU time of a moving frame:
-  Chamonix at 65° 2.96 → 3.94 ms turning, 3.25 → 3.55 gliding; Annecy at 70° 1.84 → 2.28 and
-  2.16 → 2.29; Tokyo at 65° 7.88 → 8.00 and 8.10 → 8.68. Few textures are drawn a moving frame
-  (0.4–1.6), the rest kept from earlier frames. The textures held at rest: Chamonix at 65° 13 → 49
-  tiles (69 → 261 MB), Annecy 18 → 30 (96 → 160 MB), Tokyo 16 → 24 (85 → 128 MB); with the camera
-  low over the Chamonix valley (400 m above the ground, the map's zoom 11.6 on the globe's sea-level
-  pivot) 25 → 734 tiles, 585 of them z19 (133 MB → 3.9 GB): the zoom over the terrain lifts the
-  tiles near the camera to the map's highest zoom, and the render-to-texture tiles have no source
-  maxzoom to cap them. Capping them (`maxzoom`) at z16 there gives 98 tiles (523 MB), at z17 161
-  (859 MB). No cap nor tile budget is built.
+  (5.3 MB a texture a stack of draped layers) at most. The zoom over the terrain alone lifted the
+  tiles near a low camera to the map's highest zoom, far finer than the screen's pixels (the camera
+  400 m above the Chamonix valley, the map's zoom 11.6 on the globe's sea-level pivot: 734 tiles,
+  585 of them z19, 3.9 GB). Two rules, by the screen's pixels, keep the sharpness and not the waste
+  (`TerrainTileManager.footprintSizing`, true by default; false for comparing). A tile's footprint
+  is the device pixels its edge would span seen face-on at its nearest point (its square between
+  its elevations' minimum and maximum; `tileFootprintPx`): the most its texture could need. The
+  terrain's gain stops splitting a tile once its footprint is within its full-size texture, never
+  coarser than upstream's zoom (`covering_tiles.ts`, `texelParity`); and each tile's texture is the
+  power of two at or above its footprint, from 128² to 1024² (`Tile.rttTargetSize`). A texture
+  coarser than its tile now wants, or more than twice as fine, is drawn again as one at another
+  zoom is (kept while moving, then a tile a frame); the pool hands out a texture of the size asked
+  for first. No tile or byte budget, and no maxzoom. The textures held at rest (build Mac, windowed
+  Chrome, 2880 × 1626 device pixels, `tools/bldcheck/drape.mjs --sizing 0|1`; upstream's zoom → the
+  zoom over the terrain without the two rules → with them): the low Chamonix camera 25 → 734 → 110
+  tiles (133 MB → 3.9 GB → 495 MB; 87 at 1024², 23 at 512²), Chamonix at 65° 17 → 42 → 40 (91 →
+  224 → 213 MB), Annecy at 72° 26 → 49 → 47 (139 → 261 → 231 MB), Tokyo at 70° 25 → 31 → 31 (133 →
+  165 → 165 MB). At these views almost every tile's footprint is over 512 device pixels, so the
+  sizes cut little there; the parity stop is what removes the low camera's z19 tiles. Close-ups
+  of the near drapes with and without the rules match. The median GPU time of a moving frame
+  for the zoom over the terrain without the two rules (quiet gate, upstream's → this): Chamonix at
+  65° 2.96 → 3.94 ms turning, 3.25 → 3.55 gliding; Annecy at 70° 1.84 → 2.28 and 2.16 → 2.29;
+  Tokyo at 65° 7.88 → 8.00 and 8.10 → 8.68. With the two rules: not measured yet.
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser

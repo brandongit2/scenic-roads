@@ -3,7 +3,9 @@ import {EXTENT} from '../data/extent.ts';
 import {mat4} from 'gl-matrix';
 import {Evented} from '../util/evented.ts';
 import {now} from '../util/time_control.ts';
-import {coveringTiles} from '../geo/projection/covering_tiles.ts';
+import {coveringTiles, focalLengthPx, tileFootprintPx} from '../geo/projection/covering_tiles.ts';
+import {cameraMercatorCoordinate} from '../geo/projection/mercator_utils.ts';
+import {mercatorZfromAltitude} from '../geo/mercator_coordinate.ts';
 import {createMat4f64} from '../util/util.ts';
 
 import type {Terrain} from '../render/terrain.ts';
@@ -12,6 +14,17 @@ import type {Source} from '../source/source.ts';
 import type {TileManager} from './tile_manager.ts';
 import type {OverscaledTileID} from './tile_id.ts';
 import type {ITransform} from '../geo/transform_interface.ts';
+
+/**
+ * Scenic Roads: the texture size for a tile spanning `px` device pixels: the power of two at or above
+ * it, between `min` and `max`.
+ */
+export function rttSizeForFootprint(px: number, min: number, max: number): number {
+    if (!(px < max)) return max;
+    let size = min;
+    while (size < px) size *= 2;
+    return Math.min(size, max);
+}
 
 /**
  * @internal
@@ -67,6 +80,16 @@ export class TerrainTileManager extends Evented {
      * false gives upstream's zoom (a switch for comparing the two).
      */
     terrainAwareZoom: boolean = true;
+    /**
+     * Scenic Roads: whether each render-to-texture tile's texture is sized by its footprint on screen
+     * (`Tile.rttTargetSize`, the power of two at or above the device pixels its edge spans at its
+     * nearest point, from `minRttSize` to the full size) and the terrain's gain stops splitting a tile
+     * once its full-size texture is no coarser than the screen's pixels (covering_tiles' texelParity).
+     * True by default with terrainAwareZoom; false gives every tile the full size (for comparing).
+     */
+    footprintSizing: boolean = true;
+    /** Scenic Roads: the smallest texture footprintSizing gives a tile. */
+    minRttSize: number = 128;
 
     constructor(tileManager: TileManager) {
         super();
@@ -105,13 +128,18 @@ export class TerrainTileManager extends Evented {
         this._renderableTilesKeys = [];
         const keys = {};
         let changed = false;
+        const painter = this.tileManager.map?.painter;
+        const pixelRatio = painter?.pixelRatio ?? 1;
+        const fullSize = this.tileSize * (terrain?.qualityFactor ?? 1);
+        const sizing = !!terrain && this.footprintSizing && this.terrainAwareZoom;
         for (const tileID of coveringTiles(transform, {
             tileSize: this.tileSize,
             minzoom: this.minzoom,
             maxzoom: this.maxzoom,
             reparseOverscaled: false,
             terrain,
-            terrainAwareZoom: this.terrainAwareZoom
+            terrainAwareZoom: this.terrainAwareZoom,
+            texelParity: sizing ? {texels: fullSize, pixelRatio} : undefined
         })) {
             keys[tileID.key] = true;
             this._renderableTilesKeys.push(tileID.key);
@@ -122,6 +150,18 @@ export class TerrainTileManager extends Evented {
                 this._lastTilesetChange = now();
                 changed = true;
             }
+        }
+        // Scenic Roads: each tile's texture size by its footprint (footprintSizing)
+        const camera = sizing ? cameraMercatorCoordinate(transform) : null;
+        const focal = sizing ? focalLengthPx(transform, pixelRatio) : 0;
+        const perMeter = sizing ? mercatorZfromAltitude(1, transform.center.lat) : 0;
+        for (const key of this._renderableTilesKeys) {
+            const tile = this._tiles[key];
+            if (!sizing) { tile.rttTargetSize = fullSize; continue; }
+            const {minElevation, maxElevation} = terrain.getMinMaxElevation(tile.tileID);
+            const px = tileFootprintPx(camera, tile.tileID.canonical, tile.tileID.wrap,
+                (minElevation ?? 0) * perMeter, (maxElevation ?? 0) * perMeter, focal);
+            tile.rttTargetSize = rttSizeForFootprint(px, this.minRttSize, fullSize);
         }
         // free unused tiles
         for (const key in this._tiles) {

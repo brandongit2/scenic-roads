@@ -198,6 +198,12 @@ export class RenderToTexture {
      */
     _textureDifference(tile: Tile): RTTDifference {
         let worst: RTTDifference = 'none';
+        // Scenic Roads: a texture coarser than the tile's footprint wants, or more than twice as fine
+        // (TerrainTileManager.footprintSizing), is drawn again as a zoom change's is: kept while
+        // moving, then one tile a frame (the factor of two keeps a size from flickering).
+        const held = tile.rttObjects.find(o => o);
+        const want = tile.rttTargetSize ?? this.rttSize;
+        if (held && (held.size < want || held.size > 2 * want)) worst = 'zoom';
         for (const source in this._rttFingerprints) {
             const frameFingerprint = this._rttFingerprints[source][tile.tileID.key];
             if (!frameFingerprint) continue;
@@ -251,7 +257,7 @@ export class RenderToTexture {
                 this._rttTiles.push(tile);
                 // Cache hit: this tile already has a RTT object for this stack from a previous frame.
                 if (tile.getRTT(stack)) continue;
-                const obj = tile.acquireRTT(painter, stack, this.rttSize);
+                const obj = tile.acquireRTT(painter, stack, tile.rttTargetSize ?? this.rttSize);
                 painter.bindRTT(obj);
                 painter.context.clear({color: Color.transparent, stencil: 0});
                 painter.currentStencilSource = undefined;
@@ -259,7 +265,7 @@ export class RenderToTexture {
                 for (const layerId of layers) {
                     const layer = painter.style._layers[layerId];
                     const coords = layer.source ? this._coordsAscending[layer.source][tile.tileID.key] : [tile.tileID];
-                    painter.context.viewport.set([0, 0, this.rttSize, this.rttSize]);
+                    painter.context.viewport.set([0, 0, obj.size, obj.size]);
                     painter.renderTileClippingMasks(layer, coords);
                     painter.renderLayer(painter, painter.style.tileManagers[layer.source], layer, coords, renderContext);
                     if (layer.source) tile.rttFingerprint[layer.source] = this._rttFingerprints[layer.source][tile.tileID.key];

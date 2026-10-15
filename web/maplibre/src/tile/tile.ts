@@ -132,6 +132,11 @@ export class Tile {
      */
     rttObjects: Array<RTTObject | undefined>;
     rttFingerprint: Record<string, RTTFingerprint>;
+    /**
+     * Scenic Roads: the size of the render-to-texture textures this tile wants
+     * (TerrainTileManager.footprintSizing); undefined for the renderer's full size.
+     */
+    rttTargetSize?: number;
 
     featureStateRevision: number;
 

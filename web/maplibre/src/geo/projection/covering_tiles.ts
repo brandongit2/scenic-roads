@@ -73,7 +73,42 @@ export type CoveringTilesOptionsInternal = CoveringTilesOptions & {
      * (TerrainTileManager.terrainAwareZoom).
      */
     terrainAwareZoom?: boolean;
+    /**
+     * Scenic Roads: the render-to-texture tiles' (TerrainTileManager's) screen-pixel parity. When set,
+     * a tile the terrain's gain would split further is kept whole once its texture
+     * (`texels` across) is already no coarser than the screen's pixels at its nearest point
+     * (tileFootprintPx, with the canvas's `pixelRatio`); never coarser than upstream's zoom.
+     */
+    texelParity?: {texels: number; pixelRatio: number};
 };
+
+/**
+ * Scenic Roads: the distance, in mercator units, from the camera to the nearest point of a tile's box
+ * (its square at `wrap`, between the mercator heights `zMin` and `zMax`).
+ */
+export function tileNearestDistance(camera: {x: number; y: number; z: number}, tileID: {x: number; y: number; z: number}, wrap: number, zMin: number, zMax: number): number {
+    const s = 1 / (1 << tileID.z);
+    const x0 = tileID.x * s + wrap, y0 = tileID.y * s;
+    const dx = Math.max(x0 - camera.x, 0, camera.x - (x0 + s));
+    const dy = Math.max(y0 - camera.y, 0, camera.y - (y0 + s));
+    const dz = Math.max(zMin - camera.z, 0, camera.z - zMax);
+    return Math.hypot(dx, dy, dz);
+}
+
+/**
+ * Scenic Roads: how many device pixels a tile's edge spans on screen at most, seen at its nearest
+ * point (tileNearestDistance) face-on: the texels across its texture beyond which they are finer
+ * than the screen's pixels. `focalPx` is the camera's focal length in device pixels.
+ */
+export function tileFootprintPx(camera: {x: number; y: number; z: number}, tileID: {x: number; y: number; z: number}, wrap: number, zMin: number, zMax: number, focalPx: number): number {
+    const d = tileNearestDistance(camera, tileID, wrap, zMin, zMax);
+    return d > 0 ? focalPx / (1 << tileID.z) / d : Infinity;
+}
+
+/** Scenic Roads: the camera's vertical focal length in device pixels. */
+export function focalLengthPx(transform: IReadonlyTransform, pixelRatio: number): number {
+    return transform.height * pixelRatio / 2 / Math.tan(transform.fovInRadians / 2);
+}
 
 /**
  * Function to define how tiles are loaded at high pitch angles
@@ -370,6 +405,8 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
     const terrainLod = allowVariableZoom && !!options.terrain && options.terrainAwareZoom !== false;
     const mercatorPerMeter = terrainLod ? mercatorZfromAltitude(1, transform.center.lat) : 0;
     const maxTerrainLodZoom = transform.maxZoom + scaleZoom(transform.tileSize / options.tileSize);
+    const parity = terrainLod ? options.texelParity : undefined;
+    const parityFocal = parity ? focalLengthPx(transform, parity.pixelRatio) : 0;
 
     const newRootTile = (wrap: number): CoveringTilesStackEntry => {
         return {
@@ -418,6 +455,8 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
         let thisTileDesiredZ = desiredZ;
         // (the zoom the terrain's gain may raise a reparsed tile's layout to: see below)
         let layoutZCap = Infinity;
+        // (the render-to-texture tiles' parity stop: see texelParity)
+        let parityStop = false;
         if (allowVariableZoom) {
             const tileZoomFunc = options.calculateTileZoom || defaultCalculateTileZoom;
             thisTileDesiredZ = tileZoomFunc(transform.zoom + scaleZoom(transform.tileSize / options.tileSize),
@@ -431,6 +470,11 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                 const toGroundZ = Math.max(0, cameraCoord.z - ground * mercatorPerMeter);
                 const assumed = Math.hypot(distToTile2d, distanceZ);
                 const actual = Math.max(Math.hypot(distToTile2d, toGroundZ), mercatorPerMeter);
+                const upstreamZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
+                if (parity && it.zoom >= upstreamZ &&
+                    tileFootprintPx(cameraCoord, tileID, it.wrap, range[0] * mercatorPerMeter, range[1] * mercatorPerMeter, parityFocal) <= parity.texels) {
+                    parityStop = true;
+                }
                 if (actual < assumed) {
                     // Scenic Roads: the gain picks finer tiles, but lays a reparsed (vector) tile
                     // out no deeper than the source's maxzoom + 1 beyond what upstream would: a
@@ -442,7 +486,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
         }
         thisTileDesiredZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
         thisTileDesiredZ = Math.max(0, thisTileDesiredZ);
-        const z = Math.min(thisTileDesiredZ, maxZoom);
+        const z = parityStop ? Math.min(thisTileDesiredZ, maxZoom, it.zoom) : Math.min(thisTileDesiredZ, maxZoom);
 
         // We need to compute a valid wrap value for the tile to keep globe compatibility with mercator
         it.wrap = detailsProvider.getWrap(centerCoord, tileID, it.wrap);
