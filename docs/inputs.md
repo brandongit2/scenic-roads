@@ -707,17 +707,12 @@ What the check does with the pin:
   ("pinned to OSM 2026-03-30; the build's pass is 2026-09-29"). Errors can't be accepted, so those
   files are held and the map keeps the coverage it had: the last accepted geometry stays in use,
   and nothing is rebuilt because of the new pass. The finding lists, for each relation and way the
-  file names, whether the new pass still has it and whether its geometry changed, so the owner (or
-  the generator below) can check the ids and move the pin. Changing `pins.toml`'s date re-checks
+  file names, whether the new pass still has it and whether its geometry changed, so the owner can
+  check the ids and move the pin. Changing `pins.toml`'s date re-checks
   every file that doesn't override it.
 - So with one folder-wide pin, each new OSM pass holds every region at once until `pins.toml` is
   edited: meanwhile the map keeps its coverage, and no new or edited region is taken in either
   (they fail the same check). Moving the pin is the first thing to do after a pass.
-
-**Not the app's concern.** Maritime boundaries, exclusive economic zones and the owner's global
-rules for which waters go with which region are worked out outside the app, by a generator written
-later (not part of this group). Its output is ordinary region files: OSM relations, GeoJSON shapes
-and the operations above, pinned like any other.
 
 ```toml
 # inputs/regions/europe/portugal/azores.toml
@@ -1900,9 +1895,9 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
 20. **Popups name their source by register id (decided),** resolved against the catalog's credits,
     and the catalog's key carries the credits' digest, so a credit edit reaches the map with the next
     catalog and nothing else reruns (§4.8).
-21. **Where `osm:` parts and lines' ways come from (open, for #135's review).** The pass's outline
+21. **Where `osm:` parts and lines' ways come from (decided by the owner, 14 Oct).** The pass's outline
     set holds administrative and ISO 3166 relations only (plan §5). A region naming another
-    relation, or a line naming ways, needs their geometry from the same pass: proposed, a small
+    relation, or a line naming ways, needs their geometry from the same pass: a small
     extract of exactly the ids the regions name, made from the pinned pass's planet once per pass
     and per set of ids, content-named, which the check reads. A region naming a relation or way
     not yet in the extract makes the check run the extract again against the pinned pass first.
