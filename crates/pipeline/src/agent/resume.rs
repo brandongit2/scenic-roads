@@ -52,6 +52,13 @@ pub const DIR: &str = "state/pool/progress";
 /// How long a job's progress is offered to its Mac alone, from when its job last started or ended
 /// there (§7.2: 24 hours).
 pub const HOLD_S: u64 = 24 * 3600;
+/// A member's progress noted this recently and not finished may be its job running now (a lease
+/// granted less than a loop before a lead was lost isn't in the state the next lead restores): the
+/// lead doesn't run the job itself meanwhile (`running_elsewhere`). Its agent notes it again every
+/// `REFRESH_S` while the job runs.
+pub const FRESH_S: u64 = 2 * crate::coord::TTL.as_secs();
+/// How often a running resumable job's `at` is noted again (half a lease's time to live).
+pub const REFRESH_S: u64 = crate::coord::TTL.as_secs() / 2;
 /// The steps whose jobs resume from their progress on their Mac's disk: the OSM pass (its stages'
 /// markers in its scratch folder, crate::osmpass). (A terrain area's raw tiles, the buildings
 /// scan's parts and a rail-feeds run's zips are planned: their jobs are a shared step's, offered by
@@ -193,6 +200,12 @@ pub fn decide(job: &str, me: &str, files: &[Progress], now: u64, released: &dyn 
     }
 }
 
+/// Another member whose file shows job `job` not finished and noted within `FRESH_S` of `now`: it
+/// may be running it now, so the lead doesn't run it too.
+pub fn running_elsewhere<'a>(job: &str, me: &str, files: &'a [Progress], now: u64) -> Option<&'a Progress> {
+    files.iter().filter(|p| p.member != me).find(|p| p.jobs.get(job).is_some_and(|h| !h.done && now < h.at.saturating_add(FRESH_S)))
+}
+
 /// The jobs member file `p` holds for its own Mac to ask for at `now` (live, not finished).
 pub fn asks(p: &Progress, now: u64, released: &dyn Fn(&str, u64) -> bool) -> Vec<String> {
     p.jobs.iter().filter(|(j, h)| !h.done && live(h, now, released(j, h.began()))).map(|(j, _)| j.clone()).collect()
@@ -281,6 +294,20 @@ mod tests {
         assert!(asks(&p, T + HOLD_S, &|_, _| false).is_empty());
         let rel = |m: &str, at: u64| m == "m-b" && at == T;
         assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + 60, &rel), Decision::Plan, "released by when it began");
+    }
+
+    /// A member's progress noted lately, not finished: maybe running, whatever its day or a
+    /// release says; older, or finished, or the lead's own: not.
+    #[test]
+    fn a_member_noted_lately_may_be_running_it() {
+        let mut p = file("m-b", "mac-b", &[]);
+        p.jobs.insert(PASS.into(), Held { at: T, since: T - HOLD_S, ..Default::default() });
+        assert!(running_elsewhere(PASS, "m-lead", std::slice::from_ref(&p), T + FRESH_S - 1).is_some());
+        assert!(running_elsewhere(PASS, "m-lead", std::slice::from_ref(&p), T + FRESH_S).is_none());
+        assert!(running_elsewhere(PASS, "m-b", std::slice::from_ref(&p), T).is_none());
+        p.jobs.get_mut(PASS).unwrap().done = true;
+        assert!(running_elsewhere(PASS, "m-lead", &[p], T).is_none());
+        assert!(REFRESH_S * 4 == FRESH_S);
     }
 
     /// The journal's entries a resumed job lays: its step's, a refused one left out.

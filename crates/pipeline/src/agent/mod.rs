@@ -5108,8 +5108,10 @@ impl Agent {
         let Some(root) = self.last_root.clone() else { return };
         let scratch = scratch_of(spec).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let at = self.resume_now();
-        // (Its day from when its progress began here, however often it starts again.)
-        let since = self.held_progress.as_ref().and_then(|p| p.jobs.get(&spec.id)).filter(|h| !h.done).map_or(at, resume::Held::began);
+        // (Its day from when its progress began here, however often it starts again: the file read
+        // first, so a read that failed before doesn't begin it anew.)
+        let Some(mine) = self.own_progress(&root) else { return };
+        let since = mine.jobs.get(&spec.id).filter(|h| !h.done).map_or(at, resume::Held::began);
         self.note_progress(&root, &spec.id, Some(resume::Held { at, since, done: false, scratch }));
     }
 
@@ -5144,6 +5146,10 @@ impl Agent {
         let latest = p.jobs.values().any(|h| h.done).then(|| self.latest_pass(root)).flatten();
         for (job, h) in &p.jobs {
             if running.contains(job) {
+                // (Noted again while it runs, so the lead sees it may be running: `at` alone.)
+                if now >= h.at.saturating_add(resume::REFRESH_S) {
+                    self.note_progress(root, job, Some(resume::Held { at: now, ..h.clone() }));
+                }
                 continue;
             }
             let complete = h.done && job.strip_prefix("osm-pass ").is_some_and(|d| latest.as_deref().is_some_and(|l| l >= d));
@@ -5200,7 +5206,9 @@ impl Agent {
         match resume::decide(&id, &me, &files, now, &|m, at| resume::released(root, m, &id, at)) {
             resume::Decision::Plan => {
                 offer(None);
-                None
+                // (A member that noted it lately may be running it under a lease the restored
+                // state lacks: not run here too until its note is old.)
+                resume::running_elsewhere(&id, &me, &files, now).map(|p| Waiting { step: Some("osm-pass".into()), what, why: format!("may be running on {} ({}): its progress noted {} min ago", p.worker, p.member, now.saturating_sub(p.jobs[&id].at) / 60) })
             }
             resume::Decision::Offer { member, worker, until } => {
                 let key = planet.strip_prefix(root).unwrap_or(planet.as_path()).to_string_lossy().into_owned();
@@ -8056,11 +8064,18 @@ mod pool_tests {
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("under its lease")), "{w:?}");
         lead.coord.as_ref().unwrap().finish(lease, &[]);
+        // Its day out or released, but noted lately and not finished: maybe running under a lease the
+        // lead lost, so not run here too.
+        let mut lately = held(now_s() - 60, false);
+        lately.jobs.get_mut(&pass).unwrap().since = now_s() - resume::HOLD_S - 1;
+        resume::write(&r, &lately).unwrap();
+        let (here, w) = planned(&lead);
+        assert!(!here && w.iter().any(|w| w.why.contains("may be running")), "{w:?}");
         // A day on with nothing more there: the lead's to run.
         resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
         assert!(planned(&lead).0);
-        // Released by the owner: the same.
-        let at = now_s() - 60;
+        // Released by the owner: the same. (Noted half an hour ago: not maybe running now.)
+        let at = now_s() - 1800;
         resume::write(&r, &held(at, false)).unwrap();
         assert!(!planned(&lead).0);
         resume::release(&r, &im, &pass).unwrap();

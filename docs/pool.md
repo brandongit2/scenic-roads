@@ -519,7 +519,12 @@ What's planned of placement (phase 4, §12):
   lead's coordinator holds the job, the lead doesn't run it whatever the files say (released, the
   day out, or read stale). The lead's own live progress comes before a member's (it runs the job
   itself). A member in the pool but asleep, away or with its agent stopped holds the job up to the
-  day (the status says so; a release is the way to place it now). One finished there is held,
+  day (the status says so; a release is the way to place it now). A member's progress not finished
+  and noted within two leases' time to live (20 minutes) may be its job running under a lease the
+  next lead's restored state lacks (granted less than a loop before the lead was lost): the lead
+  doesn't run the job itself meanwhile, whatever the day or a release says; a running job's
+  progress is noted again every five minutes (its `at`, not its `since`). A member notes a job's
+  start only once its own file has been read, so a failed read never begins its day anew. One finished there is held,
   unoffered, until the records hold it, and if its entry is refused, until the day is out. Built
   for the OSM pass (its stages' markers); a terrain area's raw tiles and the other progress in §2's
   table are done again elsewhere (planned).
