@@ -96,15 +96,17 @@ export class Painter {
      */
     _rttObjectRecyclePool: RTTObject[];
     /**
-     * Shared FBO used by all RTT render passes. The color attachment is
-     * swapped to the target RTTObject's texture via {@link bindRTT}.
-     * Created lazily on first use.
+     * The FBOs the RTT render passes draw through, one per texture size (Scenic Roads: the drapes'
+     * sizes differ, TerrainTileManager.footprintSizing; a depth-stencil larger than the colour
+     * attachment isn't portable, and resizing one shared buffer reallocated it on nearly every bind).
+     * The color attachment is swapped to the target RTTObject's texture via {@link bindRTT}. Each
+     * created lazily on first use, kept until {@link destroyRTTResources} (at most the four sizes,
+     * 128² to 1024², 5.6 MB of depth-stencil).
      */
-    _rttSharedFbo: {
+    _rttFbos: Map<number, {
         fbo: Framebuffer;
         depthRenderbuffer: WebGLRenderbuffer;
-        size: number;
-    } | null;
+    }>;
     /**
      * Shared scratch FBO (color + depth-stencil) used by `{line,fill}-layer-opacity`.
      * The layer is rendered into this FBO, then composited into whatever framebuffer was previously bound
@@ -169,7 +171,7 @@ export class Painter {
         this.layerOpacityFbo = null;
         this._tileTextures = {};
         this._rttObjectRecyclePool = [];
-        this._rttSharedFbo = null;
+        this._rttFbos = new Map();
         this.terrainFacilitator = {depthDirty: true, matrix: mat4.identity(new Float64Array(16)), renderTime: 0};
 
         this.setup();
@@ -820,30 +822,18 @@ export class Painter {
      * renderbuffer lazily.
      */
     bindRTT(obj: RTTObject): void {
-        const gl = this.context.gl;
         const size = obj.size;
-
-        // Lazy-create the shared FBO + depth-stencil renderbuffer
-        if (!this._rttSharedFbo) {
+        let target = this._rttFbos.get(size);
+        if (!target) {
             const fbo = this.context.createFramebuffer(size, size, true, true);
-            const depthRenderbuffer = this.context.createRenderbuffer(gl.DEPTH_STENCIL, size, size);
+            const depthRenderbuffer = this.context.createRenderbuffer(this.context.gl.DEPTH_STENCIL, size, size);
             fbo.depthAttachment.set(depthRenderbuffer);
-            this._rttSharedFbo = {fbo, depthRenderbuffer, size};
+            target = {fbo, depthRenderbuffer};
+            this._rttFbos.set(size, target);
         }
-
-        // Resize the shared depth-stencil renderbuffer if needed
-        if (this._rttSharedFbo.size !== size) {
-            this.context.bindRenderbuffer.set(this._rttSharedFbo.depthRenderbuffer);
-            gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, size, size);
-            this.context.bindRenderbuffer.set(null);
-            this._rttSharedFbo.fbo.width = size;
-            this._rttSharedFbo.fbo.height = size;
-            this._rttSharedFbo.size = size;
-        }
-
         // Swap in the target texture and bind
-        this._rttSharedFbo.fbo.colorAttachment.set(obj.texture.texture);
-        this.context.bindFramebuffer.set(this._rttSharedFbo.fbo.framebuffer);
+        target.fbo.colorAttachment.set(obj.texture.texture);
+        this.context.bindFramebuffer.set(target.fbo.framebuffer);
     }
 
     releaseRTT(obj: RTTObject): void {
@@ -862,20 +852,21 @@ export class Painter {
     }
 
     /**
-     * Frees the pooled drapes and the shared render-to-texture FBO. Called when terrain is removed, after its tiles
+     * Frees the pooled drapes and the render-to-texture FBOs. Called when terrain is removed, after its tiles
      * released their drapes.
      */
     destroyRTTResources(): void {
         this.clearRTTPool();
-        if (!this._rttSharedFbo) return;
-        // Detach so Framebuffer.destroy() doesn't delete the texture/renderbuffer
-        // that we already manage separately.
-        this._rttSharedFbo.fbo.colorAttachment.set(null);
-        this._rttSharedFbo.fbo.depthAttachment.set(null);
         const gl = this.context.gl;
-        gl.deleteRenderbuffer(this._rttSharedFbo.depthRenderbuffer);
-        gl.deleteFramebuffer(this._rttSharedFbo.fbo.framebuffer);
-        this._rttSharedFbo = null;
+        for (const {fbo, depthRenderbuffer} of this._rttFbos.values()) {
+            // Detach so Framebuffer.destroy() doesn't delete the texture/renderbuffer
+            // that we already manage separately.
+            fbo.colorAttachment.set(null);
+            fbo.depthAttachment.set(null);
+            gl.deleteRenderbuffer(depthRenderbuffer);
+            gl.deleteFramebuffer(fbo.framebuffer);
+        }
+        this._rttFbos.clear();
     }
 
     /**

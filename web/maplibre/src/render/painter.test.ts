@@ -189,22 +189,35 @@ describe('RTT pool', () => {
         expect(b.texture.size).toEqual([512, 512]);
     });
 
-    test('bindRTT lazily creates shared FBO and binds texture', () => {
-        expect(painter._rttSharedFbo).toBeNull();
+    test('bindRTT lazily creates an FBO for the size and binds texture', () => {
+        expect(painter._rttFbos.size).toBe(0);
         const obj = painter.acquireRTT(256);
         painter.bindRTT(obj);
-        expect(painter._rttSharedFbo).toBeTruthy();
-        expect(painter._rttSharedFbo.size).toBe(256);
+        expect([...painter._rttFbos.keys()]).toEqual([256]);
+        expect(painter._rttFbos.get(256).fbo.width).toBe(256);
     });
 
-    test('bindRTT resizes shared depth-stencil when size changes', () => {
+    test('bindRTT keeps one FBO and depth-stencil a size, reused, never resized', () => {
+        const gl = painter.context.gl;
         const a = painter.acquireRTT(256);
-        painter.bindRTT(a);
-        expect(painter._rttSharedFbo.size).toBe(256);
-
         const b = painter.acquireRTT(512);
-        painter.bindRTT(b);
-        expect(painter._rttSharedFbo.size).toBe(512);
+        for (let i = 0; i < 3; i++) {
+            painter.bindRTT(a);
+            painter.bindRTT(b);
+        }
+        expect([...painter._rttFbos.keys()].sort()).toEqual([256, 512]);
+        expect(gl.createFramebuffer).toHaveBeenCalledTimes(2);
+        expect(painter._rttFbos.get(512).fbo.width).toBe(512);
+        expect(painter._rttFbos.get(256).fbo.width).toBe(256);
+    });
+
+    test('acquireRTT hands out a pooled texture of the size asked for first', () => {
+        const small = painter.acquireRTT(256);
+        const big = painter.acquireRTT(1024);
+        painter.releaseRTT(small);
+        painter.releaseRTT(big);
+        expect(painter.acquireRTT(256)).toBe(small);
+        expect(small.size).toBe(256);
     });
 
     test('clearRTTPool destroys the pooled textures and leaves the ones tiles hold', () => {
@@ -230,6 +243,7 @@ describe('RTT pool', () => {
 
         painter.destroyRTTResources();
 
+        expect(painter._rttFbos.size).toBe(0);
         expect(obj.texture.destroy).toHaveBeenCalledTimes(1);
         expect(gl.deleteFramebuffer).toHaveBeenCalledTimes(1);
         expect(gl.deleteRenderbuffer).toHaveBeenCalledTimes(1);
@@ -252,7 +266,7 @@ describe('RTT pool', () => {
         painter.destroy();
         const destroyed = objs.filter(o => o.texture.destroy.mock.calls.length > 0).length;
         expect(destroyed).toBe(10);
-        expect(painter._rttSharedFbo).toBeNull();
+        expect(painter._rttFbos.size).toBe(0);
     });
 
     // Scenic Roads (second review 5): the scene target is refused on a multisampled canvas, known by
