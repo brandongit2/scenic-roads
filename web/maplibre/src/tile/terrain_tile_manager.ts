@@ -3,7 +3,7 @@ import {EXTENT} from '../data/extent.ts';
 import {mat4} from 'gl-matrix';
 import {Evented} from '../util/evented.ts';
 import {now} from '../util/time_control.ts';
-import {coveringTiles, focalLengthPx, tileFootprintPx} from '../geo/projection/covering_tiles.ts';
+import {coveringTiles, coveringZoomLevel, focalLengthPx, tileFootprintPx} from '../geo/projection/covering_tiles.ts';
 import {cameraMercatorCoordinate} from '../geo/projection/mercator_utils.ts';
 import {mercatorZfromAltitude} from '../geo/mercator_coordinate.ts';
 import {createMat4f64} from '../util/util.ts';
@@ -83,7 +83,8 @@ export class TerrainTileManager extends Evented {
     /**
      * Scenic Roads: whether each render-to-texture tile's texture is sized by its footprint on screen
      * (`Tile.rttTargetSize`, the power of two at or above the device pixels its edge spans at its
-     * nearest point, from `minRttSize` to the full size) and the terrain's gain stops splitting a tile
+     * nearest point, from `minRttSize` to the full size; only tiles deeper than the view's own zoom,
+     * the lifted ones) and the terrain's gain stops splitting a tile
      * once its full-size texture is no coarser than the screen's pixels (covering_tiles' texelParity).
      * True by default with terrainAwareZoom; false gives every tile the full size (for comparing).
      */
@@ -155,9 +156,12 @@ export class TerrainTileManager extends Evented {
         const camera = sizing ? cameraMercatorCoordinate(transform) : null;
         const focal = sizing ? focalLengthPx(transform, pixelRatio) : 0;
         const perMeter = sizing ? mercatorZfromAltitude(1, transform.center.lat) : 0;
+        // (only tiles finer than the view's own zoom, the ones the zoom over the terrain and by depth
+        // lifted, are sized: a tile at or above it keeps the full size upstream gives it)
+        const centerZ = sizing ? coveringZoomLevel(transform, {tileSize: this.tileSize}) : 0;
         for (const key of this._renderableTilesKeys) {
             const tile = this._tiles[key];
-            if (!sizing) { tile.rttTargetSize = fullSize; continue; }
+            if (!sizing || tile.tileID.canonical.z <= centerZ) { tile.rttTargetSize = fullSize; continue; }
             const {minElevation, maxElevation} = terrain.getMinMaxElevation(tile.tileID);
             const px = tileFootprintPx(camera, tile.tileID.canonical, tile.tileID.wrap,
                 (minElevation ?? 0) * perMeter, (maxElevation ?? 0) * perMeter, focal);
