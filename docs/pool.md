@@ -1217,7 +1217,15 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       Wikidata steps side by side, no job without the proxy, and off again as before; the answers'
       lease one holder's, a lapsed one broken, a holder whose lease was broken unable to renew or
       remove the new one's; a sender waiting for the readers under way, a reader that starts
-      meanwhile waiting for it; the lint. **Scratch state (§13): both Macs**, run: see §13.
+      meanwhile waiting for it; the lint. **Scratch state (§13): both Macs, run** (14 Oct 2026, the
+      M4 leading, the M1 a member, `budgets`, `wiki`, `upstream`: the proxies opening every
+      connection to a server on their own Mac, so nothing reached Wikimedia): both agents' proxies
+      up, every fake job's requests through them, its try at the NAS's SMB port around the proxy
+      denied by the sandbox; the windows both Macs leased in at once never past five slots (20
+      tokens) between them; a 429 told to the M1's proxy (60 s) holding the M4's jobs (their next
+      answer at the first window after the hold ended, a batch already leased spent before); two
+      processes, one a Mac, taking the answers' lease five times each, holding it three seconds:
+      no two holds overlapping, the second Mac waiting while the first held it.
    8. **Resuming, and planning from the records alone** (§7.2 Resuming, §7.4): a job's progress on
       its Mac's disk written through one accessor that names the Mac on the NAS
       (`state/pool/progress/<step>.json`), offered to that Mac only for 24 hours or until the owner
@@ -1397,7 +1405,8 @@ on a scratch state where marked above, then the live switch.
   hands off. Run on 2026-10-08: term 1 the build Mac's, both Macs' hand-offs from before the pool
   drained, the lead's jobs and a sweep, the member's entry merged and acknowledged by mail, the lead
   restarted re-asserting, then standing down on an older app and the member taking over by itself
-  and leading. Planned: phase 4's fifth batch with `state/pool/by-measure` (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
+  and leading. Run on 2026-10-14 for phase 4's seventh batch (§12, item 7: the shared Wikimedia
+  budget, a 429's hold across the Macs, the answers' lease). Planned: phase 4's fifth batch with `state/pool/by-measure` (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
   rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it; run on
   one Mac with two scratch agents: §13, the controls) and load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
   reads between clients.)
