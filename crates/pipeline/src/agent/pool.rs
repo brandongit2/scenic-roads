@@ -408,6 +408,8 @@ pub struct Side {
     conds: Option<Conds>,
     /// Its broker, for its heartbeat (crate::agent::brokers; None: the switch off).
     pub broker: Option<crate::coord::brokers::Broker>,
+    /// Whom it reached and whom it couldn't, for its heartbeat (crate::pool::reachable).
+    pub reach: Vec<crate::pool::reachable::Reach>,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -438,7 +440,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -689,16 +691,20 @@ impl Side {
 
     /// Its heartbeat, when it changed or every two minutes: stamped as it's written.
     fn write_beat(&mut self, out: &Out) {
-        let hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow, conds: self.conds, broker: self.broker.clone() };
+        let mut hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow, conds: self.conds, broker: self.broker.clone() };
         if hb.pool.member.is_empty() {
             return;
         }
+        // (The reports' times alone changed: written with the next beat due, not at once.)
+        let reach = self.reach.clone();
+        hb.pool.reach = reach.iter().map(|r| crate::pool::reachable::Reach { at: 0, ..r.clone() }).collect();
         let now = self.clock.now();
         if self.beat.as_ref().is_some_and(|(b, at, ahead)| *b == hb && now.saturating_duration_since(*at) + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY) {
             return;
         }
         let mut stamped = hb.clone();
         stamped.pool.beat = self.now();
+        stamped.pool.reach = reach;
         match serde_json::to_vec(&stamped).map_err(anyhow::Error::from).and_then(|b| self.nas.write_whole(&crate::pool::beat::path(&self.me.id), &b)) {
             Ok(()) => self.beat = Some((hb, now, self.ahead)),
             Err(e) => eprintln!("pool: heartbeat: {e:#}"),
@@ -986,6 +992,8 @@ pub struct Run {
     pub broker_told: Option<Instant>,
     /// Whether a tick holds the run, and since when: read without the lock (`Ticking`).
     pub ticking: Ticking,
+    /// The members' coordinators tried (crate::pool::reachable).
+    pub prober: Prober,
 }
 
 /// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
@@ -1060,6 +1068,38 @@ pub struct Cx {
     /// `tailscale serve` proxies it.
     pub broker: Option<Arc<crate::coord::Coordinator>>,
     pub broker_https: Option<String>,
+    /// Where this Mac's client reaches the lead's coordinator (its contact on the NAS), and when a
+    /// request of its last reached none of them, and why: what it tries, and a failure it counts
+    /// (crate::pool::reachable).
+    pub lead_urls: Vec<String>,
+    pub lead_failed: Option<(u64, String)>,
+}
+
+/// How a member tries another's coordinator: at its addresses, reached or not and why
+/// (crate::coord::client::probe; a test's own).
+pub type ProbeFn = Arc<dyn Fn(&[String]) -> std::result::Result<(), (crate::pool::reachable::Cause, String)> + Send + Sync>;
+
+/// A round of tries' outcomes: (member, what, reached or not and why).
+type Tries = Vec<(String, String, std::result::Result<(), (crate::pool::reachable::Cause, String)>)>;
+
+/// The members' coordinators tried (`Run::tend_reach`): on a thread of its own, one round at a
+/// time, every `PROBE_S`; or in the step itself (`inline`: the tests', with a probe that answers at
+/// once).
+pub struct Prober {
+    pub probe: ProbeFn,
+    pub inline: bool,
+    /// The last round's start (this Mac's clock), and the round under way.
+    last: Option<u64>,
+    going: Option<(u64, std::thread::JoinHandle<Tries>)>,
+    /// The outcomes so far.
+    pub tracker: crate::pool::reachable::Tracker,
+}
+
+impl Default for Prober {
+    fn default() -> Prober {
+        let probe: ProbeFn = Arc::new(|u: &[String]| crate::coord::client::probe(u));
+        Prober { probe, inline: false, last: None, going: None, tracker: Default::default() }
+    }
 }
 
 /// A run shared by the agent's loop and the pool's own thread (`Ticker`).
@@ -1173,7 +1213,7 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None, prober: Prober::default() }
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for
@@ -1213,6 +1253,7 @@ impl Run {
         }
         super::lead::take(self, &home);
         self.tend_brokers();
+        self.tend_reach();
         let out = self.step(self.cx.able);
         for e in &out.events {
             let Event::TookUp { term, handed, .. } = e else { continue };
@@ -1269,6 +1310,70 @@ impl Run {
             c.set_brokers(Some(crate::coord::brokers::Brokers::new(peers, &own)));
             self.brokers_read = Some(now);
         }
+    }
+
+    /// Whom this Mac reaches (docs/pool.md §6.8, crate::pool::reachable), in each of its steps,
+    /// before its heartbeat is written: the outcome of its client's requests to the lead's
+    /// coordinator counted (an answer from it, as the current term's: `Cx::lead_answered`; a
+    /// request that reached none of its addresses: `Cx::lead_failed`), and every `PROBE_S` a round
+    /// of tries, off the loop, of the current lead's coordinator (its broker's addresses in its
+    /// heartbeat, else the contact's) and the other members' brokers in touch; the round before's
+    /// outcomes taken in. The heartbeat says what the tracker reports.
+    pub fn tend_reach(&mut self) {
+        use crate::pool::reachable::PROBE_S;
+        let now = self.side.now();
+        let me = self.side.member().id.clone();
+        let cur = self.side.driver().current().lead.clone().filter(|t| t.member != me);
+        let lead = cur.as_ref().map(|t| t.member.clone());
+        if let Some(l) = &lead {
+            if let Some(a) = self.cx.lead_answered {
+                self.prober.tracker.seen(l, "coordinator", Ok(()), a);
+            }
+            // (A failure since its term began: one before was another lead's.)
+            if let Some((at, why)) = self.cx.lead_failed.as_ref().filter(|(at, _)| cur.as_ref().is_some_and(|t| *at >= t.since)) {
+                let cause = crate::pool::reachable::cause_of(why);
+                self.prober.tracker.seen(l, "coordinator", Err((cause, why.clone())), *at);
+            }
+        }
+        if let Some((at, h)) = self.prober.going.take_if(|(_, h)| h.is_finished()) {
+            for (m, what, r) in h.join().unwrap_or_default() {
+                self.prober.tracker.seen(&m, &what, r, at);
+            }
+        }
+        if self.prober.going.is_none() && self.prober.last.is_none_or(|l| now.abs_diff(l) >= PROBE_S) {
+            let mut targets: Vec<(String, String, Vec<String>)> = Vec::new();
+            if let Some(l) = &lead {
+                let urls = self.side.heartbeat(l).and_then(|h| h.broker).map(|b| b.urls).filter(|u| !u.is_empty()).unwrap_or_else(|| self.cx.lead_urls.clone());
+                if !urls.is_empty() {
+                    targets.push((l.clone(), "coordinator".into(), urls));
+                }
+            }
+            for id in self.side.members().iter().filter(|m| **m != me && Some(*m) != lead.as_ref()) {
+                let Some(h) = self.side.heartbeat(id) else { continue };
+                if h.pool.beat == 0 || h.pool.out_of_touch(now) {
+                    continue;
+                }
+                if let Some(b) = h.broker.filter(|b| !b.urls.is_empty()) {
+                    targets.push((id.clone(), "broker".into(), b.urls));
+                }
+            }
+            let keep: BTreeSet<String> = targets.iter().map(|t| t.0.clone()).collect();
+            self.prober.tracker.retain(|m| keep.contains(m));
+            self.prober.last = Some(now);
+            let probe = self.prober.probe.clone();
+            let run = move || -> Tries { targets.into_iter().map(|(m, what, urls)| { let r = probe(&urls); (m, what, r) }).collect() };
+            if self.prober.inline {
+                for (m, what, r) in run() {
+                    self.prober.tracker.seen(&m, &what, r, now);
+                }
+            } else {
+                match std::thread::Builder::new().name("pool-reach".into()).spawn(run) {
+                    Ok(h) => self.prober.going = Some((now, h)),
+                    Err(e) => eprintln!("pool: trying the members' coordinators: {e}"),
+                }
+            }
+        }
+        self.side.reach = self.prober.tracker.report(now);
     }
 
     /// Leading term 2 or later, today's records files not yet written from its records: not caught

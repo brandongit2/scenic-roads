@@ -43,6 +43,10 @@ pub struct Beat {
     /// Where it answers the pool's API: Tailscale's addresses, then the LAN's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<String>,
+    /// Whom it reached lately, and whom it has failed to reach, and why (crate::pool::reachable):
+    /// the lead's coordinator and the other members' brokers. Written by the agent, not the driver.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reach: Vec<super::reachable::Reach>,
 }
 
 /// A handover under way, as its lead's heartbeat says it.

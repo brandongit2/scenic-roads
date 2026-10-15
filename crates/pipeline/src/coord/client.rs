@@ -19,6 +19,9 @@ pub struct Client {
     /// When the coordinator last answered (this Mac's clock, unix s; any answer but a refused
     /// token), and the pool's term and member it said it is (crate::coord::POOL_TERM, POOL_MEMBER).
     answered: Mutex<Option<Answered>>,
+    /// When a request last reached none of the coordinator's addresses (this Mac's clock, unix s),
+    /// and why (crate::pool::reachable: its cause read from it).
+    failed: Mutex<Option<(u64, String)>>,
 }
 
 /// What the coordinator answered: its status and its JSON (Null for none).
@@ -49,6 +52,33 @@ pub struct Answered {
     pub member: Option<String>,
 }
 
+/// Whether a coordinator (or a broker) answers at any of `urls`, trying each in turn with a short
+/// timeout (crate::pool::reachable::PROBE_TIMEOUT_S): any HTTP answer counts, whatever its status
+/// (it needs no token); else the last failure, its cause read from it.
+pub fn probe(urls: &[String]) -> std::result::Result<(), (crate::pool::reachable::Cause, String)> {
+    use crate::pool::reachable::{cause_of, Cause, PROBE_TIMEOUT_S};
+    let t = Duration::from_secs(PROBE_TIMEOUT_S);
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(Some(t)).timeout_global(Some(t)).http_status_as_error(false).build().into();
+    let mut last = (Cause::Other, "no address".to_string());
+    for url in urls {
+        match agent.get(&format!("{url}/")).call() {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let why = format!("{url}: {e}");
+                let cause = match &e {
+                    ureq::Error::Timeout(_) => Cause::TimedOut,
+                    ureq::Error::HostNotFound => Cause::NoName,
+                    ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused => Cause::Refused,
+                    ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::TimedOut => Cause::TimedOut,
+                    _ => cause_of(&why),
+                };
+                last = (cause, why);
+            }
+        }
+    }
+    Err(last)
+}
+
 /// What became of work handed back (`Client::done`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Handed {
@@ -62,17 +92,22 @@ impl Client {
     /// the file can't be read now (an SMB hiccup: not the same as none).
     pub fn from_nas(root: &Path, worker: &str) -> Result<Option<Client>> {
         let Some(c) = read_contact(root)? else { return Ok(None) };
-        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string(), answered: Mutex::new(None) }))
+        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None) }))
     }
 
     /// A coordinator at fixed addresses.
     pub fn at(urls: Vec<String>, token: String, worker: &str) -> Client {
-        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None) }
+        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None) }
     }
 
     /// When the coordinator last answered a request, and as what (`Answered`); None: not yet.
     pub fn answered(&self) -> Option<Answered> {
         self.answered.lock().unwrap().clone()
+    }
+
+    /// When a request last reached none of its addresses, and why; None: none has failed so.
+    pub fn failed(&self) -> Option<(u64, String)> {
+        self.failed.lock().unwrap().clone()
     }
 
     pub fn urls(&self) -> Vec<String> {
@@ -136,7 +171,12 @@ impl Client {
                 }
             }
         }
-        Err(last.unwrap_or_else(|| anyhow::anyhow!("the coordinator has no address")))
+        let e = last.unwrap_or_else(|| anyhow::anyhow!("the coordinator has no address"));
+        let why = format!("{e:#}");
+        if !why.contains("refused the token") {
+            *self.failed.lock().unwrap() = Some((crate::agent::jobs::now_s(), why));
+        }
+        Err(e)
     }
 
     /// A JSON request: the status and the answer's JSON.

@@ -27,6 +27,8 @@ interface PoolView {
   /** No lead for an hour or more: why, and what to do. */
   alert?: string;
   handing?: { host: string; stage: string; since: number };
+  /** Who can't reach whom, each with why (docs/pool.md §6.8). */
+  unreached?: string[];
   asked?: { by: string; at: number; state: string; said: string };
   change?: { at: number; said: string };
 }
@@ -165,6 +167,7 @@ export class BuildStatus {
     if (v.alert) out.push(h('div', { class: 'bs-row warn' }, v.alert));
     else if (v.no_lead) out.push(h('div', { class: 'bs-row warn' }, `No lead: ${v.no_lead}`));
     else if (v.lead) out.push(h('div', { class: 'bs-row' }, `${v.lead.host}${v.leading ? ' (this Mac)' : ''} leads, since ${ago(v.lead.since)} · ${v.lead.how}`));
+    for (const u of v.unreached ?? []) out.push(h('div', { class: 'bs-row warn' }, u));
     if (v.handing) out.push(h('div', { class: 'bs-row' }, `Handing over to ${v.handing.host}: ${v.handing.stage}, ${ago(v.handing.since)}`));
     for (const m of v.members) {
       const heard = m.out_of_touch && m.beat ? `, last heard ${ago(m.beat)}` : '';

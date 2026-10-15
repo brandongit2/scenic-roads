@@ -462,6 +462,9 @@ pub struct Driver {
     /// Since when (awake clock) a take-up has found term 1 with no snapshot that reads whole (its
     /// lead's, or its first).
     first_unread: Option<u64>,
+    /// The pool's members as its last step heard them (`Heard::members`): whose heartbeats say
+    /// whether a member is reachable (`hand_to`).
+    members: Vec<String>,
 }
 
 /// Whether the clocks went `was` → `now` (wall, awake) with more than `GAP_S` unaccounted for: the
@@ -501,7 +504,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, unread: None, first_unread: None }
+        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, unread: None, first_unread: None, members: Vec::new() }
     }
 
     /// What to keep for the next process: saved after every step that changed it, before that
@@ -542,6 +545,7 @@ impl Driver {
     /// One step (see the module's doc: the contract).
     pub fn step(&mut self, io: &dyn Io, heard: Heard, check: Check) -> Out {
         let mut out = Out::default();
+        self.members = heard.members.clone();
         // One process per member: its lock still held, or it stops, writing nothing more (another
         // process holds it). A check that can't tell holds this step's duties, and is tried again.
         let mut unsure = None;
@@ -1455,6 +1459,11 @@ impl Driver {
         if !term::app_at_least(&b.app, &t.app) {
             return Err(format!("its app {} is older than term {}'s {}", b.app, t.term, t.app));
         }
+        // (§6.8: a member another reports it can't reach would grant nobody else work.)
+        let beats: Vec<Beat> = self.members.iter().filter(|m| **m != to).filter_map(|m| Beat::read(io, m).ok().flatten()).collect();
+        if let Some(why) = super::reachable::why_unreachable(&beats, to, if b.host.is_empty() { to } else { &b.host }, now) {
+            return Err(why);
+        }
         Ok(())
     }
 
@@ -1509,7 +1518,7 @@ impl Driver {
             }
         }
         let stood_down = self.saved.stood_down.filter(|&e| e == self.cur.term && self.lead.is_none());
-        Beat { member: self.me.id.clone(), host: self.me.host.clone(), app: self.me.app.clone(), beat: io.now(), leads, handing_to, ready_for, stood_down, addresses: Vec::new() }
+        Beat { member: self.me.id.clone(), host: self.me.host.clone(), app: self.me.app.clone(), beat: io.now(), leads, handing_to, ready_for, stood_down, addresses: Vec::new(), reach: Vec::new() }
     }
 }
 
@@ -2955,6 +2964,17 @@ mod tests {
         assert!(a.hand_to(&ia, A).unwrap_err().contains("leads term 1"));
         assert_eq!(a.hand_to(&ia, "m-000000000000000d"), Err("no heartbeat".to_string()));
         assert_eq!(b.hand_to(&ib, B), Ok(()), "asked of another member: the same answer");
+        // (§6.8) C reports it can't reach B's broker: B isn't handed the lead, saying why; its
+        // report gone, it is again.
+        let mut bc = Beat::read(&mem, C).unwrap().unwrap();
+        let clean = bc.clone();
+        bc.reach = vec![super::super::reachable::Reach { member: B.into(), what: "broker".into(), ok: false, at: bc.beat, since: bc.beat - 300, cause: Some(super::super::reachable::Cause::TimedOut), why: "timeout: connect".into() }];
+        bc.write(&mem).unwrap();
+        let why = a.hand_to(&ia, B).unwrap_err();
+        assert!(why.starts_with("unreachable from iMac: connection timed out (likely the firewall on MacBook-Air"), "{why}");
+        assert_eq!(b.hand_to(&ib, B).map_err(|w| w.starts_with("unreachable")), Err(true));
+        clean.write(&mem).unwrap();
+        assert_eq!(a.hand_to(&ia, B), Ok(()));
         assert!(a.takeover(&ia).refused.is_some());
         let t = b.takeover(&ib);
         assert!(t.force.is_some_and(|w| w.contains("in touch")) && t.downgrade.is_none() && t.refused.is_none());

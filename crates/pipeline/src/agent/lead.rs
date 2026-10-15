@@ -30,7 +30,7 @@ use crate::control::{LeadAsk, LeadRequest};
 use crate::coord::history;
 use crate::pool::beat::Stage;
 use crate::pool::driver::{Ask, Event, Out};
-use crate::pool::term;
+use crate::pool::{reachable, term};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -110,6 +110,10 @@ pub struct Kept {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offered: Option<(String, u64)>,
     pub auto_at: u64,
+    /// The last time this Mac, leading while members couldn't reach it, asked to hand the lead
+    /// away (`away`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub away_at: u64,
     /// The term with no lead anyone can reach, as first seen so (its number, since when): for the
     /// alert (`ALERT_S`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,6 +159,14 @@ pub struct Member {
     pub why_not: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conds: Option<Conds>,
+    /// Another member in touch reports it can't reach its coordinator (docs/pool.md §6.8), in
+    /// words: "unreachable from m4: connection timed out (…)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreached: Option<String>,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 /// What a takeover from this Mac needs (`Driver::takeover`): refused, or the owner's force or
@@ -222,6 +234,10 @@ pub struct View {
     pub short: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handing: Option<Handing>,
+    /// Who can't reach whom (docs/pool.md §6.8), each in words with what the owner can do: "m1's
+    /// coordinator is unreachable from m4: connection timed out (…)".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreached: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offer: Option<Offer>,
     /// The offer is taken by itself (`AUTO`).
@@ -382,6 +398,20 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
         run.controls.view = Some(v);
         run.controls.stale = false;
     }
+    // Leading while members can't reach this Mac: the lead to one they reach (§6.8).
+    if let Some(v) = run.controls.view.as_ref().filter(|v| v.leading) {
+        let ids: Vec<String> = v.members.iter().map(|m| m.member.clone()).collect();
+        let beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| run.side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
+        let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed)) || v.handing.is_some();
+        let unreached = Unreached { for_s: reachable::unreachable_for(&beats, &me, now), by: reachable::unreached(&beats, &me, now).len(), of: beats.iter().filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(now)).count() };
+        let last_change = v.lead.as_ref().map_or(0, |l| l.since);
+        if let Some(to) = away(v, unreached, &mut run.controls.kept, now, last_change, going, &|id| reachable::reached(&beats, id, now)) {
+            let host = host_of(run, &to);
+            let why = v.members.iter().find(|m| m.me).and_then(|m| m.unreached.clone()).unwrap_or_default();
+            run.controls.page.push(LeadRequest { ask: LeadAsk::Give { to: to.clone() }, by: format!("the pool by itself (this Mac is {why})"), at: now });
+            eprintln!("pool: members can't reach this Mac's coordinator ({why}): handing the lead to {host}, which they reach");
+        }
+    }
     // The offer, taken by itself (the lead's, the switch on).
     if let Some(v) = run.controls.view.clone() {
         let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed));
@@ -494,6 +524,7 @@ fn view(run: &Run, auto: bool) -> View {
             ids.push(t.member.clone());
         }
     }
+    let pool_beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
     let mut beats: Vec<(String, Heartbeat)> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
     for id in ids {
@@ -512,6 +543,7 @@ fn view(run: &Run, auto: bool) -> View {
             }
         };
         let host = if h.pool.host.is_empty() { if id == me { side.member().host.clone() } else { id.clone() } } else { h.pool.host.clone() };
+        let unreached = reachable::why_unreachable(&pool_beats, &id, &host, now);
         members.push(Member {
             member: id.clone(),
             host,
@@ -525,6 +557,7 @@ fn view(run: &Run, auto: bool) -> View {
             can_lead: can,
             why_not: why,
             conds: h.conds,
+            unreached,
         });
         beats.push((id, h));
     }
@@ -552,7 +585,13 @@ fn view(run: &Run, auto: bool) -> View {
         Takeover { refused: t.refused, force: t.force, downgrade: t.downgrade }
     });
     let offer = offer(lead_beat.as_ref(), &members);
-    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, quiet, alert: None, short: side.driver().unread_since().is_some(), handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
+    let unreached = members.iter().flat_map(|m| reachable::unreached(&pool_beats, &m.member, now).into_iter().map(move |(b, r)| (m, b, r))).map(|(m, b, r)| {
+        let by = if b.host.is_empty() { b.member.clone() } else { b.host.clone() };
+        let what = if r.what == "coordinator" { "coordinator" } else { "broker" };
+        let lost = if m.leads && r.what == "coordinator" { format!(": {by} gets no work while {} leads", m.host) } else { String::new() };
+        format!("{}'s {what} is unreachable from {by} for {}: {}{lost}", m.host, span(b.beat.saturating_sub(r.since)), reachable::words(r, &m.host))
+    }).collect();
+    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, quiet, alert: None, short: side.driver().unread_since().is_some(), handing, unreached, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
 }
 
 /// The alert (`View::alert`): no lead for `ALERT_S` or more, since the lead was last heard from or
@@ -595,6 +634,33 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
     v.alert = Some(format!("No lead for {}: {why}{auto}. Nothing builds until a Mac leads: {what}.", span(now.saturating_sub(since))));
 }
 
+/// How the members in touch report this Mac's coordinator: the longest any has failed to reach it
+/// (s, by its clock), how many fail to, and of how many (the members in touch but this Mac).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Unreached {
+    pub for_s: Option<u64>,
+    pub by: usize,
+    pub of: usize,
+}
+
+/// The lead hands itself away (docs/pool.md §6.8) when at least half the members in touch, one at
+/// least, report they can't reach its coordinator, one of them for `reachable::AWAY_S` or more;
+/// nothing under way (`busy`: a handover, an ask); its term `AWAY_S` old or more (`last_change`)
+/// and its last such ask `CALM_S` ago or more (`kept.away_at`). To the member that can lead
+/// (`Member::can_lead`: which no member reports unreachable), that another member reached lately
+/// (`reached`), home on power first, then by host; none: nothing. The ask's time is kept.
+pub fn away(v: &View, u: Unreached, kept: &mut Kept, now: u64, last_change: u64, busy: bool, reached: &dyn Fn(&str) -> bool) -> Option<String> {
+    let long = u.for_s.is_some_and(|s| s >= reachable::AWAY_S);
+    let enough = u.by >= 1 && u.by * 2 >= u.of;
+    let calm = now.saturating_sub(last_change) >= reachable::AWAY_S && now.saturating_sub(kept.away_at) >= CALM_S;
+    if !v.leading || !long || !enough || busy || !calm {
+        return None;
+    }
+    let to = v.members.iter().filter(|m| !m.me && !m.leads && m.can_lead && reached(&m.member)).min_by_key(|m| (!m.conds.is_some_and(|c| c.home && c.ac), m.host.clone()))?;
+    kept.away_at = now;
+    Some(to.member.clone())
+}
+
 /// A span of seconds in words: "75 min", "5 h", "3 days".
 fn span(s: u64) -> String {
     match s {
@@ -603,6 +669,9 @@ fn span(s: u64) -> String {
         _ => format!("{} days", s / 86400),
     }
 }
+
+/// What the owner does about a coordinator members can't reach (docs/pool.md §6.8).
+pub const OWNER_STEPS: &str = "On the Mac named: allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off; until then the lead stays off it";
 
 /// The proactive offer (§6.5): the lead's heartbeat says it's away from home or on battery, no
 /// handover is under way, and another member is home on power, able to lead, and the lead can be
@@ -766,6 +835,12 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
         };
         out.push(format!("  {}{tags}: {}{heard}, app {}{can}", m.host, m.state, if m.app.is_empty() { "?" } else { &m.app }));
     }
+    for u in &v.unreached {
+        out.push(u.clone());
+    }
+    if !v.unreached.is_empty() {
+        out.push(OWNER_STEPS.to_string());
+    }
     if let Some(o) = &v.offer {
         out.push(format!("Offer: hand the build to {} ({}){}", o.host, o.why, if v.auto { "; taken by itself after five minutes (auto on)" } else { "" }));
     }
@@ -903,6 +978,34 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_hands_itself_away_only_reported_long_by_half_calm_and_to_a_member_reached() {
+        use crate::pool::reachable::AWAY_S;
+        let m = |host: &str, me: bool, can: bool, conds: Conds| Member { member: format!("m-{host}"), host: host.into(), me, leads: me, can_lead: can, conds: Some(conds), ..Default::default() };
+        let home = Conds { home: true, ac: true, battery: None, able: true };
+        let batt = Conds { ac: false, battery: Some(80), ..home };
+        let v = View { leading: true, members: vec![m("m1", true, false, home), m("air", false, true, batt), m("mini", false, true, home), m("old", false, false, home)], ..Default::default() };
+        let t0 = 1_000_000;
+        let u = |for_s, by, of| Unreached { for_s: Some(for_s), by, of };
+        let all = |_: &str| true;
+        let mut k = Kept::default();
+        // Reported too briefly, by too few, the term too young, something under way: nothing.
+        assert_eq!(away(&v, u(AWAY_S - 1, 1, 1), &mut k, t0, 0, false, &all), None);
+        assert_eq!(away(&v, u(AWAY_S, 1, 3), &mut k, t0, 0, false, &all), None);
+        assert_eq!(away(&v, u(AWAY_S, 1, 1), &mut k, t0, t0 - AWAY_S + 1, false, &all), None);
+        assert_eq!(away(&v, u(AWAY_S, 1, 1), &mut k, t0, 0, true, &all), None);
+        assert_eq!(away(&v, Unreached::default(), &mut k, t0, 0, false, &all), None);
+        // No member another reached: nothing.
+        assert_eq!(away(&v, u(AWAY_S, 1, 1), &mut k, t0, 0, false, &|_| false), None);
+        // Half of them, long enough: to the one home on power that can lead, then not again for CALM_S.
+        assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0, 0, false, &all), Some("m-mini".into()));
+        assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0 + CALM_S - 1, 0, false, &all), None);
+        assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0 + CALM_S, 0, false, &|id| id == "m-air"), Some("m-air".into()));
+        // Not leading: never.
+        let mut k = Kept::default();
+        assert_eq!(away(&View { leading: false, ..v.clone() }, u(AWAY_S, 1, 1), &mut k, t0, 0, false, &all), None);
+    }
+
+    #[test]
     fn the_terms_events_in_the_history() {
         let events = [
             Event::Made { term: 4, how: "handed over by mini".into() },
@@ -948,7 +1051,12 @@ mod tests {
                 // (Its clocks virtual: time passes as the test says, `pass`, however slowly a busy
                 // Mac steps it.)
                 side.set_clock(store::clock::Virtual::new());
-                Mac { conds: HOME, run: Run::new(side, Role::Member, Gates::default()), home, root: r.clone() }
+                let mut run = Run::new(side, Role::Member, Gates::default());
+                // (Its tries of the others' coordinators in its step, answered at once: reached,
+                // unless a test says otherwise.)
+                run.prober.inline = true;
+                run.prober.probe = Arc::new(|_: &[String]| Ok(()));
+                Mac { conds: HOME, run, home, root: r.clone() }
             };
             let (mut a, mut b) = (mac("a"), mac("b"));
             assert_eq!(a.go().leads, Some(1));
@@ -965,6 +1073,7 @@ mod tests {
             pub fn go(&mut self) -> Out {
                 self.run.conds = Some(self.conds);
                 take(&mut self.run, &self.home);
+                self.run.tend_reach();
                 let out = self.run.step(true);
                 if out.settle {
                     self.run.settled = Some(serde_json::json!({ "leases": { "next": 1, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 }));
@@ -1068,6 +1177,85 @@ mod tests {
             until(&mut [&mut a, &mut b], |m| m[1].asked().state == State::Done);
             until(&mut [&mut a, &mut b], |m| m[0].run.side.driver().leads() == Some(3));
             assert!(a.view().leading && a.view().members.iter().any(|m| m.member == ib && m.can_lead));
+        }
+
+        /// A's coordinator can't be reached from B (the firewall on A: B's tries time out), while A
+        /// reaches B's broker: B reports it; A, leading, is reported and hands the lead to B, which
+        /// A reaches; B leads from then on, A never handed the lead back while B can't reach it.
+        #[test]
+        fn a_lead_members_cannot_reach_is_reported_and_hands_the_lead_to_one_they_reach() {
+            use crate::pool::reachable::{Cause, AWAY_S, REPORT_S};
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = pool(d.path());
+            let (ia, ib) = (a.id(), b.id());
+            let broker = |u: &str| crate::coord::brokers::Broker { urls: vec![u.to_string()], ..Default::default() };
+            a.run.side.broker = Some(broker("http://mac-a:8090"));
+            b.run.side.broker = Some(broker("http://mac-b:8090"));
+            b.run.cx.lead_urls = vec!["http://mac-a:8090".into()];
+            b.run.prober.probe = Arc::new(|u: &[String]| if u.iter().any(|u| u.contains("mac-a")) { Err((Cause::TimedOut, "timeout: connect".into())) } else { Ok(()) });
+            // Less than REPORT_S of failures: nothing said yet.
+            pass_all(&mut [&mut a, &mut b], 60);
+            assert!(a.view().unreached.is_empty() && b.view().unreached.is_empty());
+            // Past it: both views say who can't reach whom, and why; A's member can't be handed
+            // the lead (it leads now, so it says that).
+            pass_all(&mut [&mut a, &mut b], REPORT_S + 60);
+            pass_all(&mut [&mut a, &mut b], 40);
+            (a.go(), b.go());
+            for v in [a.view(), b.view()] {
+                assert!(v.unreached.len() == 1 && v.unreached[0].contains("coordinator is unreachable from") && v.unreached[0].contains("connection timed out (likely the firewall on") && v.unreached[0].contains("gets no work while"), "{:?}", v.unreached);
+                let ma = v.members.iter().find(|m| m.member == ia).unwrap();
+                assert!(ma.unreached.as_deref().is_some_and(|w| w.starts_with("unreachable from")), "{ma:?}");
+                assert!(v.members.iter().find(|m| m.member == ib).is_some_and(|m| m.unreached.is_none() && m.can_lead));
+            }
+            assert!(said(&b.view(), b.run.side.now()).iter().any(|l| l.contains("System Settings › Network › Firewall")));
+            assert_eq!(a.run.side.driver().leads(), Some(1), "not yet: reported for less than AWAY_S");
+            // Reported AWAY_S: A hands the lead to B by itself.
+            pass_all(&mut [&mut a, &mut b], AWAY_S);
+            until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().leads() == Some(2));
+            let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+            assert!(term2.member == ib && term2.how.starts_with("handed over by"), "{term2:?}");
+            assert!(a.run.controls.kept.away_at > 0);
+            // B leads; A, a member whose broker B can't reach, can't be handed the lead: not by the
+            // views, the asks, nor the driver.
+            until(&mut [&mut a, &mut b], |m| m[1].view().members.iter().any(|x| x.member == ia && !x.can_lead && x.why_not.as_deref().is_some_and(|w| w.starts_with("unreachable from"))));
+            let why = b.run.side.hand_to(&ia).unwrap_err();
+            assert!(why.contains("connection timed out"), "{why}");
+            b.ask(LeadAsk::Give { to: ia.clone() });
+            b.go();
+            assert!(b.asked().state == State::Refused && b.asked().said.contains("unreachable from"), "{:?}", b.asked());
+            a.ask(LeadAsk::Give { to: ia.clone() });
+            a.go();
+            assert_eq!(a.asked().state, State::Refused, "{:?}", a.asked());
+            // Hours on, B still leads: no flapping back.
+            pass_all(&mut [&mut a, &mut b], 4 * 3600);
+            assert_eq!((b.run.side.driver().leads(), a.run.side.driver().leads()), (Some(2), None));
+            assert!(!a.root.join("state/build/terms/3.json").exists());
+            // A reachable again (its firewall allows Scenic): the report clears at the first try
+            // that answers, and A can lead again.
+            b.run.prober.probe = Arc::new(|_: &[String]| Ok(()));
+            pass_all(&mut [&mut a, &mut b], 60);
+            until(&mut [&mut a, &mut b], |m| m[1].view().members.iter().any(|x| x.member == ia && x.can_lead));
+            assert!(b.view().unreached.is_empty());
+        }
+
+        /// A lead others reach, though one member can't reach a third's broker: nothing moves; and a
+        /// lead reported with no member others reach to take it keeps it.
+        #[test]
+        fn a_lead_keeps_the_lead_with_no_member_others_reach() {
+            use crate::pool::reachable::{Cause, AWAY_S, REPORT_S};
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = pool(d.path());
+            let ia = a.id();
+            // B has no broker: A tries nothing of it, so nobody reached it lately.
+            a.run.side.broker = Some(crate::coord::brokers::Broker { urls: vec!["http://mac-a:8090".into()], ..Default::default() });
+            b.run.cx.lead_urls = vec!["http://mac-a:8090".into()];
+            b.run.prober.probe = Arc::new(|_: &[String]| Err((Cause::Refused, "connection refused".into())));
+            pass_all(&mut [&mut a, &mut b], REPORT_S + AWAY_S + 3600);
+            let v = a.view();
+            assert!(v.unreached.len() == 1 && v.unreached[0].contains("connection refused (nothing listens"), "{:?}", v.unreached);
+            assert_eq!(a.run.side.driver().leads(), Some(1));
+            assert_eq!(a.run.controls.kept.away_at, 0);
+            assert!(v.members.iter().any(|m| m.member == ia && m.leads));
         }
 
         #[test]

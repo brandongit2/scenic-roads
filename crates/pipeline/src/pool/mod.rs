@@ -36,6 +36,7 @@ pub mod driver;
 pub mod handover;
 pub mod journal;
 pub mod nas;
+pub mod reachable;
 pub mod records;
 pub mod term;
 

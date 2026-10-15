@@ -497,6 +497,46 @@ nobody reads: invariant 5.
   dozed off with no job of its own (with the part changing in its process: §12, phase 4's fourth
   batch).
 
+### 6.8 Reaching the lead
+
+A lead whose coordinator the members can't reach (a Mac's application firewall dropping incoming
+connections to `scenic`: found live in #191, the M1's) grants them nothing: their asks, beats and
+hand-backs time out and their leases lapse. So the members say so, and the lead moves off it
+(crate::pool::reachable; crate::agent::pool's `Run::tend_reach`; crate::agent::lead's `away`):
+
+- **Tried, and counted.** Every member tries the current lead's coordinator (its broker's addresses
+  in its heartbeat, else the contact on the NAS) and the other members' brokers in touch (§8) every
+  `PROBE_S` (60 s), each a GET with a 3 s timeout on a thread of its own: any HTTP answer is
+  reached. Its client's own requests to the lead count too: an answer from the current term's lead
+  is reached, a request that reached none of its addresses (since the term began) is not.
+- **Reported in the heartbeat** (`Beat::reach`): whom it reached within `REACHED_S` (5 min), and
+  whom it failed to reach across `REPORT_S` (2 min, three tries) with no success between, with the
+  cause (connection timed out, refused, no such name) and the error. The first success clears it.
+  Times are the reporter's clock, compared only with its own heartbeat's.
+- **Not handed the lead.** A member that another member in touch reports unreachable can't be
+  handed the lead (`Driver::hand_to`, so the controls, `scenic lead give`, the update's handover
+  and the proactive offer all refuse it, saying "unreachable from m4: connection timed out (…)").
+- **Leading, it hands the lead away**, by itself, when at least half the other members in touch
+  (one at least) report it, one for `AWAY_S` (10 min) or more; nothing under way; its term
+  `AWAY_S` old or more and its last such ask `CALM_S` (30 min) ago or more. To a member that can
+  lead, that another member reached within `REACHED_S` and none reports unreachable, home on power
+  first, then by host; with none such (no member's broker tried: brokers off), it keeps the lead and
+  the views say why the members get no work. A target must be reached to be handed the lead, and
+  an unreachable Mac can't be handed it back, so the lead can't flap between them.
+- **Said:** each view (`View::unreached`: `scenic lead`, `scenic status`, the menu bar, the worker
+  page, the map's build panel) says "m1's coordinator is unreachable from m4 for 12 min: connection
+  timed out (likely the firewall on m1: allow Scenic in System Settings › Network › Firewall
+  there): m4 gets no work while m1 leads", and what the owner does; a member's waiting line says
+  the cause, naming the lead, rather than that the build Mac isn't coordinating.
+- **What the owner does:** on the Mac named, System Settings › Network › Firewall › Options…: allow
+  incoming connections for `scenic` (or turn the firewall off). The installed `scenic` is signed ad
+  hoc by the linker (identifier `scenic-<hash>`, no certificate) at a new path per version
+  (`app/<version>/scenic`), and the firewall keys an ad-hoc signed program's allow by its code
+  hash, so an allow lasts until the next update; neither a stable path nor a stable ad-hoc
+  identifier changes that. One that survives updates needs a signing identity: a code-signing
+  certificate in the publishing Mac's keychain that publish.sh signs `scenic` with: not built (the
+  owner's to make; publish.sh signs only the menu bar's app, ad hoc).
+
 ## 7. The work: slots on every member
 
 ### 7.1 Slots and asks

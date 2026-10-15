@@ -67,6 +67,7 @@ export function poolSection(agent, now, ask) {
     top.push(h("div", "pool-ctl warnline", h("span", null, v.alert || `No lead: ${v.no_lead}`),
       h("button", { class: "primary", disabled: !can, title: can ? "" : t.refused || `needs the owner's ${t.force ? "force" : "downgrade"} (the Mac's menu, or scenic lead take): ${t.force || t.downgrade}`, onclick: take }, "Take it")));
   }
+  for (const u of v.unreached || []) top.push(h("div", "pool-ctl warnline", h("span", null, u)));
   if (v.offer) {
     top.push(h("div", "pool-ctl", h("span", null, `${v.offer.why}; ${v.offer.host} is home on power${v.auto ? " (handed over by itself after five minutes)" : ""}`),
       h("button", { onclick: () => confirm(`Hand the build to ${v.offer.host}?`) && ask({ to: v.offer.to }) }, `Hand it to ${v.offer.host}`)));

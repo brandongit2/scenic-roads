@@ -1145,11 +1145,33 @@ impl Agent {
         if self.client.is_none() {
             match crate::coord::client::Client::from_nas(root, &self.host) {
                 Ok(Some(c)) => self.client = Some(c),
-                Ok(None) => waiting.push(Waiting { step: None, what: "Building".into(), why: "the build Mac isn't coordinating (its agent isn't running, or is on an older app)".into() }),
+                Ok(None) => {
+                    // (In the pool, the lead is known: its contact not written yet, not "isn't running".)
+                    let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
+                    let why = match lead {
+                        Some(l) => format!("{} leads term {}, but its coordinator's address isn't on the NAS yet (it's taking up the term, or its agent stopped)", l.host, l.term),
+                        None => "the build Mac isn't coordinating (its agent isn't running, or is on an older app)".into(),
+                    };
+                    waiting.push(Waiting { step: None, what: "Building".into(), why });
+                }
                 Err(e) => waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e:#}") }),
             }
         }
         self.client.as_ref()
+    }
+
+    /// Why a request to the lead's coordinator failed, in words (docs/pool.md §6.8): its cause (timed
+    /// out, refused) and what's likely behind it, naming the lead when the pool says who it is.
+    fn unreached_why(&self, e: &anyhow::Error) -> String {
+        let text = format!("{e:#}");
+        let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
+        let host = lead.as_ref().map_or("the build Mac".to_string(), |l| l.host.clone());
+        let cause = crate::pool::reachable::cause_of(&text);
+        let r = crate::pool::reachable::Reach { member: String::new(), what: "coordinator".into(), ok: false, at: 0, since: 0, cause: Some(cause), why: text.clone() };
+        match cause {
+            crate::pool::reachable::Cause::Other => format!("{host}'s coordinator can't be reached: {text}"),
+            _ => format!("{host}'s coordinator can't be reached from this Mac: {} ({text})", crate::pool::reachable::words(&r, &host)),
+        }
     }
 
     /// Hands a helper's finished jobs back: each leased job's saves (merged into one hand-off, in the
@@ -1538,7 +1560,7 @@ impl Agent {
                         }
                         r.why.clone()
                     }
-                    None => format!("the build Mac can't be reached: {e:#}"),
+                    None => self.unreached_why(&e),
                 };
                 // (Paused: the start loop says so.)
                 if self.pause.is_none() {
@@ -5850,6 +5872,7 @@ impl Agent {
         self.hand_for_update();
         let duty = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|j| is_duty(&j.spec.id)));
         let answered = self.client.as_ref().and_then(|c| c.answered());
+        let (lead_urls, lead_failed) = self.client.as_ref().map(|c| (c.urls(), c.failed())).unwrap_or_default();
         let mut run = self.pooled()?;
         // (Only an answer from the current term's lead's coordinator, as it said it is.)
         let cur = run.side.driver().current().lead.clone();
@@ -5857,7 +5880,7 @@ impl Agent {
         if let Some(co) = &self.coord {
             co.set_member(&run.side.member().id);
         }
-        run.cx = pool::Cx { root: Some(r.to_path_buf()), home: home.clone(), coord: self.coord.clone(), able, duty, starting: false, lead_answered, broker: self.brokering(), broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()) };
+        run.cx = pool::Cx { root: Some(r.to_path_buf()), home: home.clone(), coord: self.coord.clone(), able, duty, starting: false, lead_answered, broker: self.brokering(), broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()), lead_urls, lead_failed };
         // (The jobs an earlier process left, once `run` stopped any still running.)
         run.take_left(&home);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), lead.then(|| crate::handoff::nas_base(r)).as_deref(), &home.join("outbox"));
@@ -5868,6 +5891,7 @@ impl Agent {
         }
         lead::take(&mut run, &home);
         run.tend_brokers();
+        run.tend_reach();
         let out = run.step(able);
         // (Its part changed, in this process: its coordinator started or stopped, its jobs going on;
         // not tried again once a restart is asked for, its coordinator failing to start.)

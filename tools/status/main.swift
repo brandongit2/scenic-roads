@@ -196,6 +196,8 @@ struct PoolView: Decodable {
     /// No lead for an hour or more: since when, why, and what to do (agents from #195 on).
     let alert: String?
     let handing: Handing?
+    /// Who can't reach whom, each with why (agents from #198 on: docs/pool.md §6.8).
+    let unreached: [String]?
     let offer: PoolOffer?
     let auto: Bool?
     let asked: LeadAsked?
@@ -326,6 +328,12 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
         let heard = m.out_of_touch == true && m.beat > 0 ? ", last heard \(duration(now - m.beat)) ago" : ""
         let why = m.leads != true && !m.can_lead ? " · can't lead: \(m.why_not ?? "")" : ""
         out.append(Line(text: "\(who)\(lead): \(m.state)\(heard)\(why)", style: .small))
+    }
+    for u in v.unreached ?? [] {
+        out.append(Line(text: u, style: .plain))
+    }
+    if !(v.unreached ?? []).isEmpty {
+        out.append(Line(text: "On the Mac named: allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off", style: .small))
     }
     if let a = v.asked, ["done", "failed", "refused"].contains(a.state) {
         out.append(Line(text: "\(a.state == "done" ? "Done" : a.state == "refused" ? "Refused" : "Came to nothing"): \(a.said) (\(clock(a.since)))", style: .small))
