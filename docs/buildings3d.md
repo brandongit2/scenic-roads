@@ -1079,8 +1079,10 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
   the GPU, RG16F, and divided by the share read there: a filtered or mipmapped read is the
   share-weighted mean, not diluted by empty texels; `web/src/bldfield.offsets.ts`,
   `tools/bldcheck/offmip.mjs`), so its runs in a cell start
-  as much higher as the cell's highest ground within its reach (the cells its texels' offsets, and
-  their neighbours', can take a roof to) is over its lowest, and colours and
+  as much higher as the highest ground where the cell's reads can put a roof's centroid is over its
+  lowest: the box of its and its neighbours' texels' centroids, grown by how far a read mixes texels,
+  one box for reads to level 2 and one to level 4, a coarser read's ground clamped to the latter's
+  (the worker's boxes; offmip.mjs checks no run starts below a roof, at the tile's edges too), and colours and
   shades a wall by its building's own height, as fill-extrusion does); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
   before the GPU's mipmaps (the coding's square root and log would bias them).
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's

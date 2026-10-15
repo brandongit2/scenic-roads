@@ -190,7 +190,7 @@ for (const v of views) {
       // (quiet.mjs): the z14 mesh tiles loaded, the source's buffers, and whole frames (`__bld.frames`).
       rec.cost = [];
       for (let r = 0; r < (v.reps ?? 3); r++) {
-        // (`--rules`: also pad0, the reach unpadded; readonly, the offsets read but no ground taken
+        // (`--rules`: also readonly, the offsets read but no ground taken
         // from them nor runs started higher, `fdbg` 36; startonly, the runs started higher but no
         // offsets read, `fdbg` 37)
         const rules = opt('rules', 'distance,zoom14,flatroof').split(',');
@@ -198,7 +198,7 @@ for (const v of views) {
         for (const rule of rules.slice(r % n).concat(rules.slice(0, r % n))) {
           // (the quiet-Mac gate before each, its findings kept with it; and the processes after)
           const gate = await waitQuiet({ log: () => {} });
-          const c = await tab.evaluate(`const b = window.__bld; const m = b.map; for (const id of ['buildings', 'buildings-flat', 'buildings-pick']) if (m.getLayer(id)) m.setLayerZoomRange(id, ${rule === 'zoom14' ? 14 : 0}, 24); b.field.on = true; b.field.dbg = ${({ flatroof: 32, readonly: 36, startonly: 37 })[rule] ?? 0}; b.field.reachPad = ${rule === 'pad0' ? 0 : 2}; await b.ready(); const tm = m.style.tileManagers.bld; const ts = tm?._inViewTiles?.getAllTiles?.() ?? []; let bytes = 0; for (const t of ts) for (const bk of Object.values(t.buckets ?? {})) for (const k of ['layoutVertexBuffer', 'indexBuffer']) bytes += bk[k]?.byteLength ?? (bk[k]?.length ?? 0) * 0; const f = await b.frames(${v.frames ?? 120}); return { rule: '${rule}', zoom: m.getZoom(), meshTiles: ts.filter((t) => t.state === 'loaded').length, fieldTiles: new Set(b.field.drawn).size, frame: f }`, 600);
+          const c = await tab.evaluate(`const b = window.__bld; const m = b.map; for (const id of ['buildings', 'buildings-flat', 'buildings-pick']) if (m.getLayer(id)) m.setLayerZoomRange(id, ${rule === 'zoom14' ? 14 : 0}, 24); b.field.on = true; b.field.dbg = ${({ flatroof: 32, readonly: 36, startonly: 37 })[rule] ?? 0}; await b.ready(); const tm = m.style.tileManagers.bld; const ts = tm?._inViewTiles?.getAllTiles?.() ?? []; let bytes = 0; for (const t of ts) for (const bk of Object.values(t.buckets ?? {})) for (const k of ['layoutVertexBuffer', 'indexBuffer']) bytes += bk[k]?.byteLength ?? (bk[k]?.length ?? 0) * 0; const f = await b.frames(${v.frames ?? 120}); return { rule: '${rule}', zoom: m.getZoom(), meshTiles: ts.filter((t) => t.state === 'loaded').length, fieldTiles: new Set(b.field.drawn).size, frame: f }`, 600);
           rec.cost.push({ ...c, gate, after: snapshot('post') });
         }
       }

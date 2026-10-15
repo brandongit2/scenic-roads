@@ -6,9 +6,9 @@
 // Decoded here to linear values (before the GPU's mipmaps: the coding's square root and log would
 // bias them), with what the march reads beside them: each 1/32 and 1/128 of the tile's tallest mean
 // top (with the texel around), the class mask pyramid, and the offsets premultiplied by the share
-// with each cell's reach (bldfield.offsets.ts).
+// with each cell's centroid boxes (bldfield.offsets.ts).
 
-import { premultiplied, reachOf } from './bldfield.offsets';
+import { premultiplied, centroidBoxes } from './bldfield.offsets';
 
 export type FieldIn = { type: 'load'; key: string; url: string } | { type: 'cancel'; key: string };
 
@@ -33,9 +33,10 @@ export type FieldOut =
       /** Share × the offset to the buildings' centroids: RG (level-0 texels), a layer a class held
        * (bldfield.offsets.ts). */
       offsets: Float32Array;
-      /** Each 16 × 16-texel cell's reach (cells, a 32 × 32 grid): how far a read in it can put a
-       * roof's centroid. */
-      reach: Uint8Array;
+      /** Each 16 × 16-texel cell's boxes of where a read in it can put a roof's centroid (a 32 × 32
+       * grid, 4 floats a cell; bldfield.offsets.ts's centroidBoxes). */
+      near: Float32Array;
+      far: Float32Array;
     };
 
 const T = 512;
@@ -81,7 +82,6 @@ async function load(key: string, url: string): Promise<FieldOut> {
         offsets[(l * N + i) * 2 + 1] = px[base + i * 4 + 1];
       }
     }
-    const reach = reachOf(offsets, n, T, 0);
     const shares: Float32Array[] = [];
     const classes: (Float32Array | null)[] = [];
     const hmax = new Float32Array(N);
@@ -155,7 +155,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets: premultiplied(offsets, shares, T), reach };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets: premultiplied(offsets, shares, T), ...centroidBoxes(offsets, shares, T) };
   } finally {
     inflight.delete(key);
   }
@@ -184,7 +184,7 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
   load(msg.key, msg.url).then(
     (out) => {
       if (out.type === 'done' && !out.empty) {
-        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.offsets.buffer, out.reach.buffer];
+        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.offsets.buffer, out.near.buffer, out.far.buffer];
         for (const c of out.classes) if (c) tr.push(c.buffer);
         (self as unknown as Worker).postMessage(out, tr);
       } else (self as unknown as Worker).postMessage(out);
