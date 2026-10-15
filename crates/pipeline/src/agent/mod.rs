@@ -4914,7 +4914,7 @@ impl Agent {
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
             if let Ok(stale) = crate::outlines::Outlines::stale_in(&root.join(c)) {
                 if !stale.is_empty() {
-                    out[0].note = Some(format!("Kept from the previous pass (their outlines broken in this planet's OpenStreetMap): relations {}", stale.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")));
+                    out[0].note = Some(format!("Outlines kept from an earlier pass (broken in this planet's OpenStreetMap): {}", stale.iter().map(|(id, from)| format!("relation {id} (the {from} pass's)")).collect::<Vec<_>>().join(", ")));
                 }
             }
         }

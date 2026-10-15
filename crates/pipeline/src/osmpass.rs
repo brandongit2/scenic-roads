@@ -513,8 +513,8 @@ fn end_part() {
     drop(p);
 }
 
-/// The content name of the newest pass's outlines before `date`'s, in `manifest`.
-pub fn previous_outlines<'a>(manifest: &'a std::collections::BTreeMap<String, String>, date: &str) -> Option<&'a str> {
+/// The newest pass before `date`'s with outlines in `manifest`: its date and their content name.
+pub fn previous_outlines<'a>(manifest: &'a std::collections::BTreeMap<String, String>, date: &str) -> Option<(&'a str, &'a str)> {
     manifest
         .iter()
         .filter_map(|(k, v)| match k.split('/').collect::<Vec<_>>()[..] {
@@ -522,7 +522,6 @@ pub fn previous_outlines<'a>(manifest: &'a std::collections::BTreeMap<String, St
             _ => None,
         })
         .max_by_key(|(d, _)| *d)
-        .map(|(_, v)| v)
 }
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
@@ -589,15 +588,15 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         let file = scratch.join("outlines.sect");
         let p = crate::timings::sub("assembled", crate::timings::Class::Compute);
         // (The previous pass's: what a country this pass can't assemble keeps.)
-        let previous = previous_outlines(&out.manifest, date).map(|c| out.path(c));
-        let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file, previous.as_deref())?;
+        let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
+        let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file, previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())))?;
         drop(p);
         eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
         for (id, iso, gap) in &s.repaired {
             eprintln!("outlines: relation {id} ({iso}) left out by osmium's export, assembled here (widest gap closed {gap:.0} m)");
         }
-        for (id, iso, why) in &s.stale {
-            eprintln!("outlines: WARNING: relation {id} ({iso}) can't be assembled from this planet ({why}): kept as the previous pass's outline (stale)");
+        for (id, iso, why, from) in &s.stale {
+            eprintln!("outlines: WARNING: relation {id} ({iso}) can't be assembled from this planet ({why}): kept as the {from} pass's outline (stale)");
         }
         if !s.unassembled.is_empty() {
             eprintln!("outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}", s.unassembled.len(), s.unassembled);
@@ -1030,8 +1029,8 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        assert_eq!(previous_outlines(&m, "2026-09-28"), Some("b"));
-        assert_eq!(previous_outlines(&m, "2026-10-26"), Some("c"));
+        assert_eq!(previous_outlines(&m, "2026-09-28"), Some(("2026-09-01", "b")));
+        assert_eq!(previous_outlines(&m, "2026-10-26"), Some(("2026-09-28", "c")));
         assert_eq!(previous_outlines(&m, "2026-08-01"), None);
     }
 

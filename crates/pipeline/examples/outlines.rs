@@ -1,5 +1,5 @@
 //! Assemble outlines from an outline set and look up points:
-//!   [PREVIOUS=<previous outlines.sect>] cargo run --release -p pipeline --example outlines -- <set.osm.pbf> <out.sect> [lon,lat …]
+//!   [PREVIOUS=<previous outlines.sect> PREVIOUS_DATE=<its pass's date>] cargo run --release -p pipeline --example outlines -- <set.osm.pbf> <out.sect> [lon,lat …]
 use pipeline::outlines::{assemble, Outlines};
 use std::path::PathBuf;
 
@@ -8,7 +8,8 @@ fn main() -> anyhow::Result<()> {
     let (set, out) = (PathBuf::from(&a[1]), PathBuf::from(&a[2]));
     let t = std::time::Instant::now();
     let previous = std::env::var_os("PREVIOUS").map(PathBuf::from);
-    let s = assemble(&set, &std::env::temp_dir().join("outlines-work"), &out, previous.as_deref())?;
+    let date = std::env::var("PREVIOUS_DATE").unwrap_or_default();
+    let s = assemble(&set, &std::env::temp_dir().join("outlines-work"), &out, previous.as_deref().map(|p| (p, date.as_str())))?;
     println!("repaired {:?}, stale {:?}, unassembled {:?}", s.repaired, s.stale, s.unassembled);
     println!("{} outlines, {} points, {} simplified, by level {:?} ({:.1?})", s.outlines, s.points, s.simplified_points, s.by_level, t.elapsed());
     let o = Outlines::open(&out)?;

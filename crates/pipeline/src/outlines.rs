@@ -274,8 +274,9 @@ pub struct Summary {
     /// relation, its `ISO3166-1`, and the widest gap closed (m).
     pub repaired: Vec<(u64, String, f64)>,
     /// Countries and territories neither the export nor the repair could assemble, kept as the
-    /// previous pass's outline ([`flag::STALE`]): relation, its `ISO3166-1`, and why.
-    pub stale: Vec<(u64, String, String)>,
+    /// previous pass's outline ([`flag::STALE`]): relation, its `ISO3166-1`, why, and the date
+    /// of the pass its rings are from.
+    pub stale: Vec<(u64, String, String, String)>,
     /// Other kept relations (subdivisions, administrative areas) the export couldn't assemble:
     /// left out, by relation id.
     pub unassembled: Vec<u64>,
@@ -300,7 +301,7 @@ fn osmium(args: &mut Command, what: &str) -> Result<()> {
 /// present in OSM has an outline, or the pass stops. Others are left out and counted
 /// ([`Summary::unassembled`]): a few dozen subdivisions broken in OSM at any time would otherwise
 /// stop every pass. The file's meta lists all three.
-pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<&Path>) -> Result<Summary> {
+pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &str)>) -> Result<Summary> {
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
     osmium(Command::new("osmium").args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"]).arg(&rels_opl).arg(set), "osmium cat (the outline set's relations)")?;
@@ -349,19 +350,43 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<&Path>) ->
             sum.repaired.push((p.id, p.iso1.clone(), gap));
             parsed.push(p);
         }
-        let prev = previous.map(Outlines::open).transpose().context("the previous pass's outlines")?;
-        let (stale, lost) = keep_previous(failed, prev.as_ref())?;
+        // (The previous pass's file read only when one is needed.)
+        let prev = if failed.is_empty() { None } else { previous.and_then(|(p, d)| Previous::open(p, d)) };
+        let (stale, lost) = keep_previous(failed, prev.as_ref());
         ensure!(
             lost.is_empty(),
             "outlines: countries and territories osmium's export left out, that can't be assembled here either, and that no previous pass has an outline of (fix OSM's relation or wait for a planet where it's whole): {}",
             lost.join("; ")
         );
-        for (p, why) in stale {
-            sum.stale.push((p.id, p.iso1.clone(), why));
+        for (p, why, from) in stale {
+            sum.stale.push((p.id, p.iso1.clone(), why, from));
             parsed.push(p);
         }
     }
     write(parsed, out, sum)
+}
+
+/// The previous pass's outlines, with its date and the relations it had itself kept from a pass
+/// before (by id: that pass's date).
+struct Previous {
+    outlines: Outlines,
+    date: String,
+    stale: HashMap<u64, String>,
+}
+
+impl Previous {
+    /// The file at `path`, made by the pass of `date`; None (said in the log) when it can't be
+    /// read: a country it would have given is then lost, and the assembly fails naming it.
+    fn open(path: &Path, date: &str) -> Option<Previous> {
+        let r = Outlines::open(path).and_then(|o| Ok((o, Outlines::stale_in(path)?)));
+        match r {
+            Ok((outlines, stale)) => Some(Previous { outlines, date: date.to_string(), stale: stale.into_iter().collect() }),
+            Err(e) => {
+                eprintln!("outlines: the previous pass's ({date}) can't be read: {e:#}");
+                None
+            }
+        }
+    }
 }
 
 /// Repairs each of `rels` ([`repair`]) with the ways and nodes of `geom`: the outlines made, with
@@ -384,21 +409,25 @@ fn repair_all<'a>(rels: &[&'a opl::Relation], geom: &opl::Geometry) -> (Vec<(Par
 }
 
 /// The relations that couldn't be repaired, each as the `previous` pass's outline of it (its
-/// rings; its names and codes this pass's tags), [`flag::STALE`], with why; and a line for each
-/// with no previous outline.
-fn keep_previous(failed: Vec<(&opl::Relation, String)>, previous: Option<&Outlines>) -> Result<(Vec<(Parsed, String)>, Vec<String>)> {
+/// rings; its names and codes this pass's tags), [`flag::STALE`], with why and the date of the
+/// pass its rings are from (the previous pass's, or the one it had them from in turn); and a line
+/// for each with no previous outline (none, or one that can't be read).
+fn keep_previous(failed: Vec<(&opl::Relation, String)>, previous: Option<&Previous>) -> (Vec<(Parsed, String, String)>, Vec<String>) {
     let (mut kept, mut lost) = (Vec::new(), Vec::new());
     for (r, why) in failed {
-        let old = previous.and_then(|o| o.by_id(r.id).map(|rec| (o, rec)));
-        let Some((o, rec)) = old else {
-            lost.push(format!("relation {} ({}): {why}", r.id, r.iso1()));
-            continue;
-        };
-        let mut p = outline(r.id, |k| r.get(k), o.polygons(rec)?).context("not an outline kept")?;
-        p.flags |= flag::STALE;
-        kept.push((p, why));
+        let got = previous.and_then(|pv| pv.outlines.by_id(r.id).map(|rec| (pv, rec))).map(|(pv, rec)| {
+            let polys = pv.outlines.polygons(rec)?;
+            let mut p = outline(r.id, |k| r.get(k), polys).context("not an outline kept")?;
+            p.flags |= flag::STALE;
+            anyhow::Ok((p, pv.stale.get(&r.id).unwrap_or(&pv.date).clone()))
+        });
+        match got {
+            Some(Ok((p, from))) => kept.push((p, why, from)),
+            Some(Err(e)) => lost.push(format!("relation {} ({}): {why}; the previous pass's outline can't be read: {e:#}", r.id, r.iso1())),
+            None => lost.push(format!("relation {} ({}): {why}", r.id, r.iso1())),
+        }
     }
-    Ok((kept, lost))
+    (kept, lost)
 }
 
 /// The widest gap between two ends of a relation's ways [`repair`] closes with a straight line.
@@ -416,10 +445,12 @@ fn dist_m(a: [i32; 2], b: [i32; 2]) -> f64 {
 
 /// Rings from ways (node ids and points, in the relation's member order, so the same relation gives
 /// the same rings): ways joined end to end where they share an end node, then the chains left open
-/// joined nearest ends first, each gap up to [`MAX_GAP_M`] and its line crossing no way's segment.
+/// joined nearest ends first, each gap up to [`MAX_GAP_M`] and its line crossing none of `segments`
+/// (all of the relation's ways', outer and inner, and the gap lines drawn so far, which this adds
+/// its own to).
 /// The widest gap closed with them. Refused: a node where more than two way ends meet (which way
 /// a ring takes there is a guess that can make it cross itself).
-fn rings_of(ways: &[Vec<(u64, [i32; 2])>]) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
+fn rings_of(ways: &[Vec<(u64, [i32; 2])>], segments: &mut Vec<([i32; 2], [i32; 2])>) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
     let mut ends: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
     for (i, w) in ways.iter().enumerate() {
         ensure!(w.len() >= 2, "a way of fewer than two nodes");
@@ -479,10 +510,10 @@ fn rings_of(ways: &[Vec<(u64, [i32; 2])>]) -> Result<(Vec<Vec<[i32; 2]>>, f64)> 
         let from = open[a][open[a].len() - 1].1;
         ensure!(d <= MAX_GAP_M, "a gap of {d:.0} m in its rings, near {from:?} (wider than {MAX_GAP_M} m)");
         let to = if rev { open[b][open[b].len() - 1].1 } else { open[b][0].1 };
-        let crossed = ways.iter().flat_map(|w| w.windows(2)).find(|s| crosses((from, to), (s[0].1, s[1].1)));
-        if let Some(s) = crossed {
-            bail!("the line closing a gap of {d:.0} m at {from:?} would cross the segment {:?}–{:?}", s[0].1, s[1].1);
+        if let Some(s) = segments.iter().find(|s| crosses((from, to), **s)) {
+            bail!("the line closing a gap of {d:.0} m at {from:?} would cross the segment {:?}–{:?}", s.0, s.1);
         }
+        segments.push((from, to));
         widest = widest.max(d);
         if a == b {
             let mut c = open.swap_remove(a);
@@ -500,6 +531,11 @@ fn rings_of(ways: &[Vec<(u64, [i32; 2])>]) -> Result<(Vec<Vec<[i32; 2]>>, f64)> 
         }
     }
     Ok((rings.into_iter().map(|r| r.into_iter().map(|(_, p)| p).collect()).collect(), widest))
+}
+
+/// The segments of `ways`.
+fn segments_of<'a>(ways: impl IntoIterator<Item = &'a Vec<(u64, [i32; 2])>>) -> Vec<([i32; 2], [i32; 2])> {
+    ways.into_iter().flat_map(|w| w.windows(2).map(|s| (s[0].1, s[1].1))).collect()
 }
 
 /// Whether segments `a` and `b` cross at a point inside both (sharing an end, or touching, isn't).
@@ -527,8 +563,9 @@ fn repair(r: &opl::Relation, geom: &opl::Geometry) -> Result<(Vec<Vec<Vec<[i32; 
         }
     }
     ensure!(!outer.is_empty(), "no outer ways");
-    let (outers, g1) = rings_of(&outer)?;
-    let (inners, g2) = if inner.is_empty() { (Vec::new(), 0.0) } else { rings_of(&inner)? };
+    let mut segments = segments_of(outer.iter().chain(&inner));
+    let (outers, g1) = rings_of(&outer, &mut segments)?;
+    let (inners, g2) = if inner.is_empty() { (Vec::new(), 0.0) } else { rings_of(&inner, &mut segments)? };
     Ok((nest(outers, inners)?, g1.max(g2)))
 }
 
@@ -807,7 +844,7 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let stale: Vec<u64> = sum.stale.iter().map(|s| s.0).collect();
+    let stale: Vec<(u64, &str)> = sum.stale.iter().map(|s| (s.0, s.3.as_str())).collect();
     let meta = serde_json::json!({ "fmt": FORMAT, "outlines": recs.len(), "points": points.len(), "spoints": spoints.len(), "repaired": sum.repaired, "stale": stale, "unassembled": sum.unassembled });
     let mut w = store::sect::SectWriter::create(out, meta)?;
     w.add_pod("recs", &recs)?;
@@ -878,9 +915,9 @@ impl Outlines {
     pub fn rings(&self, o: &OutlineRec) -> Result<Vec<Vec<[i32; 2]>>> {
         Ok(self.read_rings("rings", "points", o.rings, o.nrings)?.into_iter().map(|r| r.1).collect())
     }
-
     /// The simplified rings grouped as polygons (an outer ring, then its holes).
-    /// Its full rings as polygons: an outer ring, then its holes.
+    /// Its full rings as polygons, as stored: an outer ring, then its holes. (Outlines from passes
+    /// before ring kinds were recorded have every ring outer: each its own polygon.)
     pub fn polygons(&self, o: &OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
         let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
         for (kind, pts) in self.read_rings("rings", "points", o.rings, o.nrings)? {
@@ -893,13 +930,14 @@ impl Outlines {
     }
 
     /// The countries and territories of the file at `path` kept as the previous pass's outlines
-    /// ([`flag::STALE`]), by relation id, from its meta alone (none in a file made before they were
-    /// recorded).
-    pub fn stale_in(path: &Path) -> Result<Vec<u64>> {
+    /// ([`flag::STALE`]): relation id and the date of the pass its rings are from, from its meta
+    /// alone (none in a file made before they were recorded).
+    pub fn stale_in(path: &Path) -> Result<Vec<(u64, String)>> {
         let r = store::sect::SectReader::open(store::range::PlainFile::open(path)?)?;
         Ok(r.meta().get("stale").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default())
     }
 
+    /// The simplified rings grouped as polygons (an outer ring, then its holes).
     pub fn simple_polygons(&self, o: &OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
         let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
         for (kind, pts) in self.read_rings("srings", "spoints", o.srings, o.nsrings)? {
@@ -1228,30 +1266,56 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         std::fs::write(&geo, format!("\u{1e}{prev_square}\n")).unwrap();
         let prev_file = d.path().join("prev.sect");
         assemble_geojsonseq(&geo, &prev_file).unwrap();
-        let prev = Outlines::open(&prev_file).unwrap();
+        let prev = Previous::open(&prev_file, "2026-08-01").unwrap();
         let (_, failed) = repair_all(&[&rels[0]], &g);
-        let (kept, lost) = keep_previous(failed, Some(&prev)).unwrap();
+        let (kept, lost) = keep_previous(failed, Some(&prev));
         assert!(lost.is_empty());
-        let (p, why) = &kept[0];
+        let (p, why, from) = &kept[0];
         assert!(why.starts_with("a gap of 2226 m"), "{why}");
+        assert_eq!(from, "2026-08-01");
         assert_eq!((p.id, p.flags, p.name_en.as_str()), (100, flag::ISO1 | flag::STALE, "Poland (test)"), "this pass's tags");
-        assert_eq!(p.polys, prev.polygons(prev.by_id(100).unwrap()).unwrap(), "the previous pass's rings");
-        // Stored: flagged, and listed in the meta.
+        assert_eq!(p.polys, prev.outlines.polygons(prev.outlines.by_id(100).unwrap()).unwrap(), "the previous pass's rings");
+        // Stored: flagged, and listed in the meta with the pass its rings are from.
         let out = d.path().join("o.sect");
-        let sum = Summary { stale: vec![(100, "PL".into(), why.clone())], ..Default::default() };
-        write(kept.into_iter().map(|(p, _)| p).collect(), &out, sum).unwrap();
-        assert_eq!(Outlines::stale_in(&out).unwrap(), vec![100]);
-        assert_eq!(Outlines::stale_in(&prev_file).unwrap(), Vec::<u64>::new());
+        let sum = Summary { stale: vec![(100, "PL".into(), why.clone(), from.clone())], ..Default::default() };
+        write(kept.into_iter().map(|(p, ..)| p).collect(), &out, sum).unwrap();
+        assert_eq!(Outlines::stale_in(&out).unwrap(), vec![(100, "2026-08-01".to_string())]);
+        assert!(Outlines::stale_in(&prev_file).unwrap().is_empty());
         let o = Outlines::open(&out).unwrap();
         assert_eq!(o.by_id(100).unwrap().flags, flag::ISO1 | flag::STALE);
+        // Broken again in the pass after: still the 2026-08-01 pass's rings, and said so.
+        let prev2 = Previous::open(&out, "2026-09-28").unwrap();
+        let (_, failed) = repair_all(&[&rels[0]], &g);
+        let (kept, _) = keep_previous(failed, Some(&prev2));
+        assert_eq!(kept[0].2, "2026-08-01", "carried over, not the stale pass's own date");
+        assert_eq!(kept[0].0.polys, p_polys(&prev));
         // None before it (the first pass, or a country new to OSM): the pass fails, naming it.
-        for prev in [None, Some(&Outlines::open(&out).unwrap())] {
+        for prev in [None, Some(&prev2)] {
             let rels = opl::kept_relations(BROKEN.replace("r100 ", "r105 ").as_bytes()).unwrap();
             let (_, failed) = repair_all(&[&rels[rels.len() - 1]], &g);
-            let (kept, lost) = keep_previous(failed, prev).unwrap();
+            let (kept, lost) = keep_previous(failed, prev);
             assert!(kept.is_empty());
             assert!(lost[0].starts_with("relation 105 (PL): a gap of 2226 m"), "{lost:?}");
         }
+    }
+
+    fn p_polys(prev: &Previous) -> Vec<Vec<Vec<[i32; 2]>>> {
+        prev.outlines.polygons(prev.outlines.by_id(100).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_previous_file_that_cant_be_read_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(Previous::open(&d.path().join("missing.sect"), "2026-08-01").is_none(), "missing");
+        let junk = d.path().join("junk.sect");
+        std::fs::write(&junk, b"not a sectioned file").unwrap();
+        assert!(Previous::open(&junk, "2026-08-01").is_none(), "unreadable");
+        // So a country that needed it is lost (the pass fails naming it), not an error of the file.
+        let rels = opl::kept_relations(BROKEN.as_bytes()).unwrap();
+        let g = opl::Geometry::read(NODES.replace("x0.0005 y0", "x0.02 y0").as_bytes()).unwrap();
+        let (_, failed) = repair_all(&[&rels[0]], &g);
+        let (kept, lost) = keep_previous(failed, Previous::open(&junk, "2026-08-01").as_ref());
+        assert!(kept.is_empty() && lost.len() == 1);
     }
 
     #[test]
@@ -1260,8 +1324,20 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         // cut through its own segment (1, 5)–(1, −1).
         let p = |i: u64, x: i32, y: i32| (i, [x * 1000, y * 1000]);
         let way = vec![p(1, 0, 0), p(2, 0, 5), p(3, 1, 5), p(4, 1, -1), p(5, 2, -1), p(6, 2, 0)];
-        let e = rings_of(&[way]).unwrap_err().to_string();
+        let ways = [way];
+        let e = rings_of(&ways, &mut segments_of(&ways)).unwrap_err().to_string();
         assert!(e.starts_with("the line closing a gap of"), "{e}");
+        // A way of the other role in the way (an inner way across the outer ring's gap), and a gap
+        // line already drawn, block it alike.
+        let open = [vec![p(1, 0, 0), p(2, 0, 5), p(3, 2, 5), p(4, 2, 0)]];
+        let across = (p(9, 1, -1).1, p(10, 1, 1).1);
+        assert!(rings_of(&open, &mut segments_of(&open)).is_ok());
+        let mut segs = segments_of(&open);
+        segs.push(across);
+        assert!(rings_of(&open, &mut segs).unwrap_err().to_string().starts_with("the line closing"));
+        let mut segs = segments_of(&open);
+        rings_of(&open, &mut segs).unwrap();
+        assert_eq!(segs.last(), Some(&(p(4, 2, 0).1, p(1, 0, 0).1)), "its gap line added");
         assert!(crosses(([0, 0], [2, 0]), ([1, -1], [1, 1])));
         assert!(!crosses(([0, 0], [2, 0]), ([2, 0], [3, 1])), "sharing an end");
         assert!(!crosses(([0, 0], [2, 0]), ([3, -1], [3, 1])));
@@ -1270,7 +1346,8 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
     #[test]
     fn three_ways_at_a_node_are_refused() {
         let w = |ids: &[u64]| ids.iter().map(|&i| (i, [i as i32 * 1000, (i % 3) as i32 * 1000])).collect::<Vec<_>>();
-        let e = rings_of(&[w(&[1, 2, 3]), w(&[3, 4, 1]), w(&[3, 5])]).unwrap_err().to_string();
+        let ways = [w(&[1, 2, 3]), w(&[3, 4, 1]), w(&[3, 5])];
+        let e = rings_of(&ways, &mut segments_of(&ways)).unwrap_err().to_string();
         assert_eq!(e, "3 way ends meet at node 3");
     }
 
@@ -1288,12 +1365,13 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
     fn rings_join_ways_in_any_direction() {
         let w = |ids: &[u64]| ids.iter().map(|&i| (i, [i as i32 * 1000, (i % 2) as i32 * 1000])).collect::<Vec<_>>();
         // A ring of three ways, the middle one reversed; and a closed way on its own.
-        let (rings, gap) = rings_of(&[w(&[1, 2, 3]), w(&[5, 4, 3]), w(&[5, 6, 1]), w(&[10, 11, 12, 10])]).unwrap();
+        let ways = [w(&[1, 2, 3]), w(&[5, 4, 3]), w(&[5, 6, 1]), w(&[10, 11, 12, 10])];
+        let (rings, gap) = rings_of(&ways, &mut segments_of(&ways)).unwrap();
         assert_eq!(gap, 0.0);
         assert_eq!(rings.len(), 2);
         assert_eq!(rings[0].len(), 7);
         assert_eq!(rings[1].len(), 4);
-        assert!(rings_of(&[w(&[1])]).is_err());
+        assert!(rings_of(&[w(&[1])], &mut Vec::new()).is_err());
     }
 
     #[test]
