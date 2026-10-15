@@ -65,7 +65,9 @@ export function roofGround(texels: Uint8Array, n: number, T: number, ee: Float32
 }
 
 /** A mesh tile as the z14 (`maxZoom`) tile it's of: itself, or its ancestor at that zoom when it's
- * deeper; null when it's coarser (it isn't one: the source has z14 alone). */
+ * deeper; null when it's coarser (it isn't one: the source has z14 alone). (This relies on the
+ * source being kept whole above z14, buildings.ts's keepWhole: one loaded slice deeper than z14 would
+ * key its whole z14 tile, the field left out over the rest of it, its other slices not loaded.) */
 export function meshKey(z: number, x: number, y: number, maxZoom: number): string | null {
   if (z < maxZoom) return null;
   const d = z - maxZoom;

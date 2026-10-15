@@ -280,10 +280,13 @@ export function expandCullingToContentElevation(frustum: Frustum, plane: vec4, c
 }
 
 /**
- * Scenic Roads: the horizontal distance the zoom function is given for a tile (see `coveringTiles`):
- * where a point at the tile's least depth along the camera's forward vector would lie on the line of
- * sight's vertical plane, √(depth² − height²); never more than `d2` (its distance as upstream has
- * it). `camera` in mercator units, `distanceZ` the camera's height over the center's elevation.
+ * Scenic Roads: the horizontal distance the zoom function is given for a tile (see `coveringTiles`).
+ * The tile's least depth: the distance along the camera's forward axis of its ground points (at the
+ * centre's elevation) nearest the camera and at its corners, those in front of it. Then the horizontal
+ * distance of a ground point that far from the camera, √(depth² − distanceZ²) (0 where the depth is
+ * under the camera's height); never more than `d2` (its distance as upstream has it), and `d2` when
+ * none of those points is in front. `camera` in mercator units, `distanceZ` the camera's height over
+ * the centre's elevation.
  */
 export function tileDepthDistance2d(camera: {x: number; y: number}, distanceZ: number, pitch: number, bearing: number,
     tileID: {x: number; y: number; z: number}, wrap: number, d2: number): number {

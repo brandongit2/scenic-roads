@@ -3,22 +3,42 @@
 //     mipmapped as the GPU does (box means) and divided by the share read there, against filtered as
 //     is: the roof's ground each level finds against its centroid's;
 //  2. no run starts below a roof: a synthetic tile (random buildings, some across its edges, offsets
-//     rounded and clamped as the builder's, shares rounded to R11F's 5-bit mantissa at every level),
-//     reads at random points and along the tile's edges at levels 0–4, bilinear, clamped to the edge,
-//     as the march makes them: each roof (its top plus its roof ground, clamped under the cell's
-//     start) never above the start (its cell's tallest top plus largest roof ground). And, unclamped,
-//     a level-0 read never above it either (the cells' bound is right where the march reads finest);
-//     coarser reads need the clamp, counted;
+//     rounded and clamped as the builder's), its levels as the GPU holds them (each level's box
+//     means of the one before as stored: shares to B10F's 5-bit mantissa, share × top to R11F's 6,
+//     share × roof ground to R16F's 10), reads at random points and along the tile's edges at levels
+//     0–4, bilinear, clamped to the edge, with the march's share threshold (its share clamped to
+//     0.999, at least 1e-5). Level 0 is bounded by the cells' dilation (each cell's largest roof
+//     ground over its texels and the texel around them): tested here, unclamped, none above the
+//     start but for the GPU's rounding (under 2.4 % of it, which the clamp takes). Levels 1–4 are bounded by the march's clamp, by construction (a roof is clamped under its
+//     cell's start); the reads that need it are counted, and `--mutate noclamp` (the clamp removed)
+//     shows they come out above it and the check fails;
 //  3. the hand-over's mesh tiles taken by their z14 tile, slices deeper than z14 too.
 // `--mutate nodilate` leaves the texel around a cell out of its largest roof ground: level-0 reads
 // then come out above, and the check fails. Exits 1 on a failure.
-//   node tools/bldcheck/offmip.mjs [--mutate nodilate]
+//   node tools/bldcheck/offmip.mjs [--mutate nodilate | --mutate noclamp]
 import { roofGround, groundAt, shareOf, boxMip, meshKey } from '../../web/src/bldfield.offsets.ts';
 
 const mutate = process.argv.includes('--mutate') ? process.argv[process.argv.indexOf('--mutate') + 1] : '';
 let failed = 0;
 const roundAway = (d) => Math.sign(d) * Math.round(Math.abs(d));
-const mant = (x) => (x > 0 ? (() => { const q = 2 ** (Math.floor(Math.log2(x)) - 5); return Math.round(x / q) * q; })() : 0);
+// (a float rounded to `bits` of mantissa, as the GPU stores it: B10F 5, R11F 6, R16F 10)
+const round = (x, bits) => {
+  if (!x) return 0;
+  const q = 2 ** (Math.floor(Math.log2(Math.abs(x))) - bits);
+  return Math.round(x / q) * q;
+};
+const B10F = (a) => a.map((x) => round(x, 5)), R11F = (a) => a.map((x) => round(x, 6)), R16F = (a) => a.map((x) => round(x, 10));
+// (each level the box means of the one before as stored, then stored)
+const chain = (a0, size0, store, levels) => {
+  const out = [];
+  let a = store(a0), size = size0;
+  for (let L = 0; L <= levels; L++) {
+    out.push(a);
+    if (L < levels) a = store(boxMip(a, size, 1));
+    size >>= 1;
+  }
+  return out;
+};
 const code = (f) => Math.round(Math.sqrt(f) * 255);
 
 // 1. The tail.
@@ -43,18 +63,16 @@ const code = (f) => Math.round(Math.sqrt(f) * 255);
     f[i] = shareOf(texels[i * 3]);
     raw[i] = f[i] ? dg[i] / f[i] : 0;
   }
-  let fs = f, ps = dg, rs = raw, size = T;
+  const F = chain(f, T, B10F, 4), P = chain(dg, T, R16F, 4), R = chain(raw, T, R16F, 4);
+  let size = T;
   console.log('1. a tail on a slope (8 m a texel): level, the centroid\'s ground over the read\'s, premultiplied, filtered as is');
   for (let L = 0; L <= 4; L++) {
     const tx = 20 >> L, k = (y0 >> L) * size + tx, at = (tx + 0.5) * 2 ** L;
     const truth = g(cx, y0 + 0.5) - g(at, y0 + 0.5);
-    const pre = fs[k] > 0 ? ps[k] / mant(fs[k]) : 0;
+    const pre = F[L][k] > 0 ? P[L][k] / F[L][k] : 0;
     // (premultiplied: within the slope over half the read's texel, plus the share's rounding)
     if (Math.abs(pre - truth) > 8 * Math.max(0.5, 2 ** (L - 1)) + 0.04 * Math.abs(truth) + 1e-6) failed++;
-    console.log(`   ${L}  ${truth.toFixed(1)}  ${pre.toFixed(1)}  ${rs[k].toFixed(1)}`);
-    fs = boxMip(fs, size, 1);
-    ps = boxMip(ps, size, 1);
-    rs = boxMip(rs, size, 1);
+    console.log(`   ${L}  ${truth.toFixed(1)}  ${pre.toFixed(1)}  ${R[L][k].toFixed(1)}`);
     size >>= 1;
   }
 }
@@ -114,15 +132,8 @@ const code = (f) => Math.round(Math.sqrt(f) * 255);
     f0[i] = shareOf(texels[i * 3]);
     v0[i] = f0[i] * h[i];
   }
-  const levels = [];
-  let fs = f0, vs = v0, ps = dg, size = T;
-  for (let L = 0; L <= 4; L++) {
-    levels.push({ fs: fs.map(mant), vs, ps, size });
-    fs = boxMip(fs, size, 1);
-    vs = boxMip(vs, size, 1);
-    ps = boxMip(ps, size, 1);
-    size >>= 1;
-  }
+  const F = chain(f0, T, B10F, 4), V = chain(v0, T, R11F, 4), P = chain(dg, T, R16F, 4);
+  const levels = F.map((fs, L) => ({ fs, vs: V[L], ps: P[L], size: T >> L }));
   const bilinear = (a, size, u, v) => {
     const x = u - 0.5, y = v - 0.5, i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j;
     const at = (ii, jj) => a[Math.min(size - 1, Math.max(0, jj)) * size + Math.min(size - 1, Math.max(0, ii))];
@@ -134,26 +145,32 @@ const code = (f) => Math.round(Math.sqrt(f) * 255);
     const s = rnd() * T, e = rnd() * 0.5;
     points.push([e, s], [T - e, s], [s, e], [s, T - e]);
   }
-  let reads = 0, above = 0;
+  let reads = 0, above = 0, over0 = 0, rel0 = 0;
   const unclamped = [0, 0, 0, 0, 0], perLevel = [0, 0, 0, 0, 0];
   for (let L = 0; L <= 4; L++) {
     const { fs, vs, ps, size } = levels[L], k2 = 2 ** L;
     for (const [px, py] of points) {
       const u = px / k2, v = py / k2, share = bilinear(fs, size, u, v);
-      if (share < 1e-5) continue;
+      // (the march's coverage: the share clamped to 0.999, a class read where it's at least 1e-5;
+      // its top and roof ground divided by the share as read)
+      if (Math.min(Math.max(share, 0), 0.999) < 1e-5) continue;
       const cell = Math.min(C - 1, Math.floor(py / 16)) * C + Math.min(C - 1, Math.floor(px / 16));
       const start = top[cell] + dgc[cell];
       const H0 = Math.max(bilinear(vs, size, u, v) / share, 0.5);
       const raw = H0 + bilinear(ps, size, u, v) / share;
-      const roof = Math.min(Math.max(raw, 0.5), Math.max(start, 0.5));
+      const roof = mutate === 'noclamp' ? Math.max(raw, 0.5) : Math.min(Math.max(raw, 0.5), Math.max(start, 0.5));
       reads++;
       perLevel[L]++;
-      if (roof > start + 1e-3 && start > 0.5) above++;
-      if (raw > start + 1e-3) unclamped[L]++;
+      if (roof > Math.max(start, 0.5) + 1e-3) above++;
+      // (level 0 against the start grown by the GPU's rounding, a share to 2^-6 and share × top to
+      // 2^-7 of its value, and the 0.25 m the march's runs start above it; the others against the
+      // start itself: the reads the clamp lowers)
+      if (raw > (L === 0 ? start * (1 + 2 ** -6 + 2 ** -7) + 0.25 : start + 1e-3)) unclamped[L]++;
+      if (L === 0 && raw > start) { over0 = Math.max(over0, raw - start); rel0 = Math.max(rel0, (raw - start) / start); }
     }
   }
-  console.log(`2. no run below a roof: ${reads} reads at levels 0–4 (${points.length} points, edges included): ${above} roofs above their cell's start`);
-  console.log(`   unclamped reads above it, by level: ${unclamped.map((u, L) => `${L}: ${u} of ${perLevel[L]}`).join(', ')}`);
+  console.log(`2. no run below a roof: ${reads} reads at levels 0–4 (${points.length} points, edges included): ${above} roofs above their cell's start${mutate === 'noclamp' ? ' (the clamp removed)' : ''}`);
+  console.log(`   level 0 by the dilation, unclamped: ${unclamped[0]} of ${perLevel[0]} above the start but for the GPU's rounding (the most over it ${over0.toFixed(2)} m, ${(100 * rel0).toFixed(2)} % of it, which the clamp takes); levels 1–4 by the clamp, the reads it lowers: ${unclamped.slice(1).map((u, L) => `${L + 1}: ${u} of ${perLevel[L + 1]}`).join(', ')}`);
   if (above || unclamped[0]) failed++;
 }
 // 3. The hand-over's mesh tiles: a z14 tile itself, a deeper slice by its z14 ancestor, a coarser

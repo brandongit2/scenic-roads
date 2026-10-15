@@ -876,6 +876,14 @@ export class FieldLayer implements CustomLayerInterface {
       this.roofGround(m);
       return;
     }
+    if (m.type === 'dgfailed') {
+      // (the texels kept: asked again when the elevations next change; meanwhile the roofs over the
+      // ground under each texel)
+      const t = this.tiles.get(m.key);
+      if (t && t.state === 'ready') t.texels = m.texels;
+      console.warn(`bldfield: ${m.key}: roof ground: ${m.error}`);
+      return;
+    }
     this.flying.delete(m.key);
     const t = this.tiles.get(m.key);
     if (t) {

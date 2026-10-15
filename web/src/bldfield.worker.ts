@@ -23,6 +23,8 @@ export type FieldOut =
   /** Share × each texel's roof ground (R16F's, a layer a class held), each cell's largest (32 × 32);
    * the texels handed back. */
   | { type: 'dg'; key: string; ver: string; dg: Float32Array; dgc: Float32Array; texels: Uint8Array }
+  /** The roof ground not made: the texels handed back all the same. */
+  | { type: 'dgfailed'; key: string; ver: string; texels: Uint8Array; error: string }
   | {
       type: 'done';
       key: string;
@@ -184,8 +186,12 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
     return;
   }
   if (msg.type === 'dg') {
-    const { dg, dgc } = roofGround(msg.texels, msg.n, T, msg.ee, msg.GE, msg.M);
-    (self as unknown as Worker).postMessage({ type: 'dg', key: msg.key, ver: msg.ver, dg, dgc, texels: msg.texels } satisfies FieldOut, [dg.buffer, dgc.buffer, msg.texels.buffer]);
+    try {
+      const { dg, dgc } = roofGround(msg.texels, msg.n, T, msg.ee, msg.GE, msg.M);
+      (self as unknown as Worker).postMessage({ type: 'dg', key: msg.key, ver: msg.ver, dg, dgc, texels: msg.texels } satisfies FieldOut, [dg.buffer, dgc.buffer, msg.texels.buffer]);
+    } catch (err) {
+      (self as unknown as Worker).postMessage({ type: 'dgfailed', key: msg.key, ver: msg.ver, texels: msg.texels, error: String(err) } satisfies FieldOut, [msg.texels.buffer]);
+    }
     return;
   }
   load(msg.key, msg.url).then(

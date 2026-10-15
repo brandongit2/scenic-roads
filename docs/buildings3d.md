@@ -222,7 +222,7 @@ the fits and the defaults are B0's, from the hold-out below:
 neighbours' rule without the held-out heights) and scored against their measured height: the median
 / 90th percentile of |estimate − measured| in metres, and the share of them a rule answers.
 
-| | held out | 1 floors | 3 neighbours | GHSL, any cell | size, the first defaults | 5 size, fitted | 4–5 | 1–5, the first order | 1–5 |
+| | held out | 1 floors | 3 neighbours | GHSL, any cell | size, the first defaults | 5 size, fitted | 4–5 | 1–5, the other order | 1–5 |
 |---|---|---|---|---|---|---|---|---|---|
 | US | 1.76 M | 0.9 / 3.0 (9 %) | 0.6 / 2.7 (99 %) | 2.4 / 5.8 | 2.0 / 4.1 | 1.5 / 4.3 | 1.5 / 4.4 | 0.6 / 2.9 | 0.6 / 2.8 |
 | Japan | 421 k | 0.9 / 3.1 (50 %) | 0.9 / 3.5 (100 %) | 2.8 / 9.0 | 1.4 / 3.8 | 1.0 / 4.2 | 1.1 / 4.7 | 0.9 / 3.4 | 0.9 / 3.4 |
@@ -233,7 +233,7 @@ neighbours' rule without the held-out heights) and scored against their measured
 | Taiwan | 1 k | 0.6 / 5.7 (75 %) | 3.0 / 13.7 (96 %) | 5.4 / 23.0 | 5.5 / 31.0 | 5.0 / 26.4 | 6.0 / 23.1 | 0.6 / 8.0 | 0.6 / 8.3 |
 | all | 2.25 M | 0.9 / 3.0 (18 %) | 0.6 / 3.0 (99 %) | 2.5 / 6.4 | 1.9 / 4.1 | 1.5 / 4.3 | 1.5 / 4.5 | 0.7 / 3.0 | 0.7 / 2.9 |
 
-The first order (the plan before B0) was measured, floors, neighbours, GHSL in any cell with
+The other order scored is measured, floors, neighbours, GHSL in any cell with
 buildings, then size and kind at 3, 6.5, 9, 10 and 15 m, Microsoft's estimates counted as measured;
 scored here with B0's floors. Spain's measured heights are OSM's floors × 3 m, so its floors fit them
 exactly (left out above). Every country and rule, by the true height, and against Microsoft's
@@ -258,8 +258,8 @@ estimates too: `dem/bldmeasure.py`'s report phase. What set the rules:
 - **The hold-out flatters the neighbours:** a measured building's neighbours are measured more often
   than an unmeasured one's. Rule 3 answers 99 % of the held-out buildings but 52 % of the buildings
   with no height or floors; the size rule fills a quarter of the coverage.
-- Scored against Microsoft's estimates as well (14.8 M held out, as the plan first had it), the
-  chain is 0.65 / 2.4 m, the first order 0.63 / 2.2: Microsoft's flat estimates agree with flat
+- Scored against Microsoft's estimates as well (14.8 M held out), the
+  chain is 0.65 / 2.4 m, the other order 0.63 / 2.2: Microsoft's flat estimates agree with flat
   guesses, which is why they aren't the yardstick.
 
 Every building in the coverage, by the rule that gives its height:
@@ -1074,13 +1074,15 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
 - served as `layers/buildings-field/hi/6-x-y` (levels 9–14) and `lo/3-x-y` (4–8: the server takes
   zooms 3–8 from lo packs), encoding `field5-webp` (§4.8.1's 8-bit coding, lossless WebP, a class
   a block of rows; then a block a class of the offsets from each texel to its buildings' centroid,
-  so the field's roofs are level, at their own building's ground as the meshes' are: the owner's
-  pick, 15 Oct; once the tile's elevations are known the worker makes each class texel's roof
+  so the field's roofs are level, at their own building's ground as the meshes' are; once the tile's elevations are known the worker makes each class texel's roof
   ground, how much higher the ground at its centroid is than at its centre, which the GPU holds
   premultiplied by the share (R16F, filtered and mipmapped as the class textures, divided by the share
   read there: a read is the share-weighted mean); each cell's runs start as much higher as its texels'
   (and the texel around them) largest roof ground, and a roof is clamped under that start, so none is
-  ever above it at any level (`web/src/bldfield.offsets.ts`, `tools/bldcheck/offmip.mjs`); walls
+  ever above it. A level-0 read is under it by that bound alone, but for the GPU's rounding (tested,
+  `tools/bldcheck/offmip.mjs`); a read at levels 1–4 mixes texels further away and is kept under it
+  by the clamp, by construction (the check's mutation without the clamp finds reads above it);
+  `web/src/bldfield.offsets.ts`; walls
   coloured and shaded by their building's own height, as fill-extrusion does); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
   before the GPU's mipmaps (the coding's square root and log would bias them).
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
@@ -1516,9 +1518,8 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   - the walls' gradient taken at the height where the ray meets them;
   - the light turned with the bearing when it's anchored to the viewport.
 
-  Tokyo straight down: −1.16 L* at z11 (was −2.2), −0.90 at z12 (was −1.5), −0.31 at z9 (was
-  −1.1). Annecy and Chamonix within ±0.6. Checks: A ≤ 0.34; B ≤ 1.3 (Annecy at a visual z15
-  −0.25); C biases −0.71 to +0.09; the hand-over seam +0.57.
+  Straight down, the bias against full detail: Tokyo −1.25 L* at z13, −1.14 at z12, −1.03 at z11,
+  −0.23 at z9; Annecy and Chamonix within ±0.8. Check B (σ8 |ΔL*|) ≤ 0.82.
 - **Tried and dropped:**
   - walls entered at the open share's rate (÷ (1 − F)): wrong where a texel is smaller than a
     building (level 14 near an edge: walls ×20, Annecy z15 −1.16);
@@ -1649,9 +1650,10 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):
 - GPU memory: the class textures R11F_G11F_B10F (v, w, f: 4 bytes a texel, half RGBA16F's; with
-  mipmaps 1.4 MB a class, up to 5 a tile, and 0.4 MB of masks and tops), so a view's tiles take
-  210–580 MB (Tokyo at 13.5 and 60°: 260 MB, was 503; at 13.0 and 70°, 91 tiles, 575 MB, was
-  1,044); the dense straight-down views 0.2 L* darker than with RGBA16F, elsewhere the same. The
+  mipmaps 1.4 MB a class), each class's roof ground R16F (0.7 MB with mipmaps), up to 5 classes a
+  tile, and 0.4 MB of masks and tops, so a view's tiles take 310–850 MB (Tokyo at 13.5 and 60°,
+  38 tiles: 382 MB; at 13.0 and 70°, 91 tiles: 843 MB); the dense straight-down views 0.2 L* darker
+  than with RGBA16F, elsewhere the same. The
   tiles off screen are kept while all the tiles' GPU memory is under the off-screen cache's target,
   a soft target (`GPU_CACHE_TARGET_MB`: 1,024 MB on a desktop, 512 on a touch device, told apart by
   `pointer: coarse`), the least recently wanted freed first; the tiles on screen are kept whatever
