@@ -13,8 +13,8 @@
 //     cores; a single background process (the installed app's own agent works in bursts at one core)
 //     is let through, and recorded;
 //   - before a view only (phase 'pre', the harness idle): the 1-minute load average under MAX_LOAD
-//     (BLD_MAX_LOAD, 3): the Mac has 14 cores (10 performance, 4 efficiency); idle with the desktop
-//     apps it sits around 1–2, a single rustc adds 1, a cargo build 8 or more. After a measurement the
+//     (BLD_MAX_LOAD, 5, the owner's limit): the Mac has 14 cores (10 performance, 4 efficiency); idle
+//     with the desktop apps it sits around 2–4, a single rustc adds 1, a cargo build 8 or more. After a measurement the
 //     average holds the harness's own load (Chrome drawing at 120 Hz lifts it to ~4.5 for a minute),
 //     so it isn't tested then: the processes are;
 //   - `pmset -g therm` records no thermal or performance warning (and a CPU speed limit, where it's
@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
-export const MAX_LOAD = Number(process.env.BLD_MAX_LOAD ?? 3);
+export const MAX_LOAD = Number(process.env.BLD_MAX_LOAD ?? 5);
 export const BUSY_CPU = Number(process.env.BLD_BUSY_CPU ?? 150);
 export const OTHER_CPU = Number(process.env.BLD_OTHER_CPU ?? 250);
 const BUILD = [/^cargo$/, /^rustc$/, /^ld$/, /^ld64(\.lld)?$/, /^pipeline-[0-9a-f]{8,}$/];
