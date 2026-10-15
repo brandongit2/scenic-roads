@@ -93,6 +93,11 @@
 #                                                   broker that doesn't answer in 8 s passed over
 #   pool-two-macs.sh page-done <origin> <file>      that page beats its lease and hands its task
 #                                                   back, where it took it
+#   pool-two-macs.sh round <folder>                 after `root`: a region done that the map hasn't
+#                                                   (the agent's test `seed_a_scratch_round`, from
+#                                                   this repository), so the lead begins a round;
+#                                                   then `every` and the switches of faster
+#                                                   publishing (plan.md §8), each `: > state/pool/<s>`
 #   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -146,7 +151,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
+cmd=${1:?root, region, round, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -290,6 +295,11 @@ EOF
       wait $! || true
       sleep 3
     done
+    ;;
+  round)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    SCENIC_SCRATCH_ROUND=$r cargo test -p pipeline --lib -- --ignored seed_a_scratch_round
     ;;
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
   outside) : > ${2:?its folder}/v/app/job-outside ;;

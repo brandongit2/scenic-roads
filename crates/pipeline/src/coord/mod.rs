@@ -1165,6 +1165,14 @@ impl Coordinator {
         self.shared.lock().unwrap().measured(step, "").is_none() && !self.held_by_others(step).is_empty()
     }
 
+    /// How many other agents asked for work in the last half minute and can take `step` (a round
+    /// shared: crate::agent::publish::lead_share).
+    pub fn members_asking(&self, step: &str) -> usize {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.workers.iter().filter(|(n, w)| **n != self.me && !w.bad && w.kind == "native" && w.asked.is_some_and(|at| now.duration_since(at) < ASKING) && w.can.iter().any(|c| c == step)).count()
+    }
+
     /// The targets of `step` leases of other workers than this Mac hold (its own jobs' aside).
     pub fn held_by_others(&self, step: &str) -> BTreeSet<String> {
         let s = self.shared.lock().unwrap();
@@ -3600,6 +3608,19 @@ mod tests {
         measured_offer(&c, "slope", &[("3/1/1", m)]);
         let g = w.ask(&every_ask("m1", "slope", 4096, 10_000)).unwrap().unwrap();
         assert!(g.as_of.is_none());
+    }
+
+    /// A round shared (crate::agent::publish::lead_share): the other members asking lately that can
+    /// take the step, counted.
+    #[test]
+    fn the_members_asking_for_a_step_are_counted() {
+        let (_d, c, w, clock) = every((0, 0));
+        assert_eq!(c.members_asking("pack"), 0);
+        measured_offer(&c, "slope", &[("3/1/1", Some((500, 10, 60)))]);
+        let _ = w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap();
+        assert_eq!((c.members_asking("pack"), c.members_asking("lo")), (1, 0));
+        clock.advance(ASKING);
+        assert_eq!(c.members_asking("pack"), 0);
     }
 
     fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {

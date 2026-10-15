@@ -297,10 +297,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let n = out.verify(&SSH, NAS_ROOT)?;
             eprintln!("verified {n} uploads");
         }
-        // catalog [--held] [--ready <ids>]: held, it goes to catalog-held/, which no server reads (a
-        // build to compare before it's switched to: inputs/hold-catalog); `--ready`, the regions it
-        // records as built (comma-separated; the agent's plan says which), the others as the last
-        // catalog had them (without it: every region as its recipe is now).
+        // catalog [--held] [--ready <ids>] [--delta] [--whole]: held, it goes to catalog-held/, which
+        // no server reads (a build to compare before it's switched to: inputs/hold-catalog);
+        // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
+        // the others as the last catalog had them (without it: every region as its recipe is now).
+        // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalog written as
+        // what changed over the last (docs/formats.md, Delta catalogs) unless a whole one is due or
+        // `--whole` asks for one, and the sizes of the files the last one lists taken from it, not
+        // looked at on the NAS again.
         "catalog" => {
             // (`<id>=<outline digest>` each, or a bare id: a region built with the outline it has now.)
             let ready: Option<BTreeMap<String, Option<String>>> = opt(&args, "--ready").map(|v| {
@@ -309,7 +313,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     None => (e.to_string(), None),
                 }).collect()
             });
-            catalog(&mut out, args.iter().any(|a| a == "--held"), ready.as_ref())?
+            let has = |f: &str| args.iter().any(|a| a == f);
+            catalog(&mut out, has("--held"), ready.as_ref(), CatalogWay { delta: has("--delta"), whole: has("--whole") })?
         }
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "unit-snap" => unit_snap(&out, &args)?,
@@ -1069,7 +1074,18 @@ fn served_file(l: &str, basemap: &[String], global: &BTreeMap<String, String>) -
         || global.values().any(|g| g == l)
 }
 
-fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>) -> Result<()> {
+/// How a catalog is written (`--delta`, `--whole`).
+#[derive(Clone, Copy, Default)]
+struct CatalogWay {
+    /// Served (not held): as a delta over the last, unless a whole one is due
+    /// (store::catalog::Delta::due_whole) or asked for; the sizes of the files the last one lists
+    /// (by content name: the same name, the same bytes) taken from it.
+    delta: bool,
+    whole: bool,
+}
+
+fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>, way: CatalogWay) -> Result<()> {
+    let delta = way.delta && !held;
     let p = phase("the manifest's files sorted into the catalog's", Class::Compute);
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
@@ -1145,7 +1161,12 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
     // its data comes from: where the coverage is, and where the units' ways are.
     let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
-    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, &dir)?;
+    // The last catalog there, whole (the first held one goes by the served one).
+    let mut last = store::catalog::latest(&dir).with_context(|| format!("the last catalog in {}", dir.display()))?;
+    if last.is_none() && held {
+        last = store::catalog::latest(&out.root().join("catalog")).context("the last catalog")?;
+    }
+    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, last.as_ref())?;
     // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits;
     // one that can't be read now fails the catalog, as the agent's plan waits then, rather than
     // publish credits without it.)
@@ -1158,7 +1179,15 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     drop(p);
     let p = phase("every file checked on the NAS", Class::NasRead);
     let mut files: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    let listed: Vec<(&String, &String)> = out.manifest.iter().filter(|(l, _)| served(l)).collect();
+    // (With `--delta`, a file the last catalog lists by the same content name has its size: only
+    // the others are looked at. The last one's files are on the NAS while it's within GC's two weeks,
+    // and the manifest names them besides.)
+    let known: BTreeMap<&str, u64> = if delta { last.iter().flat_map(|c| c.files.values().map(|f| (f.file.as_str(), f.size))).collect() } else { BTreeMap::new() };
+    let all: Vec<(&String, &String)> = out.manifest.iter().filter(|(l, _)| served(l)).collect();
+    let listed: Vec<(&String, &String)> = all.iter().copied().filter(|(_, n)| !known.contains_key(n.as_str())).collect();
+    if delta {
+        eprintln!("catalog: {} of {} files' sizes from catalog {}", all.len() - listed.len(), all.len(), last.as_ref().map_or(0, |c| c.n));
+    }
     // (Many at once: over SMB each look waits a round trip, 5 to 17 ms, and the share answers
     // thirty-odd together about as fast as one; the first missing, in the manifest's order, stops it.)
     let total = listed.len() as u64;
@@ -1182,6 +1211,10 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
         let size = size.into_inner().context("not checked")?.with_context(|| format!("{l}: {n} is missing on the NAS"))?;
         files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
         p.count(0, 1);
+    }
+    let from_last: Vec<(&String, &String)> = all.iter().copied().filter(|(l, _)| !files.contains_key(*l)).collect();
+    for (l, n) in from_last {
+        files.insert(l.clone(), serde_json::json!({"file": n, "size": known[n.as_str()], "fmt": 1}));
     }
     drop(p);
     let _p = phase("the catalog written", Class::NasWrite);
@@ -1210,7 +1243,27 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
         "coverage": {"regions": regions, "recorded": true},
     });
     let catalog: store::catalog::Catalog = serde_json::from_value(cat)?;
-    let path = store::catalog::write(&dir, &catalog)?;
+    // (As a delta over the last whole-read catalog, while the deltas since the last whole one
+    // don't add up to a whole one: store::catalog::Delta::due_whole.)
+    let as_delta = match last.as_ref().filter(|_| delta && !way.whole) {
+        Some(base) => {
+            let d = store::catalog::Delta::between(base, &catalog)?;
+            let (since, whole) = store::catalog::since_whole(&dir)?;
+            let size = d.encode()?.len() as u64;
+            match whole {
+                Some(w) if !store::catalog::Delta::due_whole(&since, size, w) => Some((base, d, size)),
+                _ => None,
+            }
+        }
+        None => None,
+    };
+    let path = match as_delta {
+        Some((base, d, size)) => {
+            eprintln!("catalog: {n} as a delta over {} ({size} bytes; changed: {})", base.n, store::catalog::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", "));
+            store::catalog::write_delta_of(&dir, base, &catalog, &d)?
+        }
+        None => store::catalog::write(&dir, &catalog)?,
+    };
     eprintln!("published {}", path.display());
     Ok(())
 }
@@ -1223,7 +1276,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
 /// panel shows a recipe it lacks, or has with another outline, as still to come.
 /// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
 /// without its outline or leave a region out.
-fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeMap<String, Option<String>>>, catalogs: &Path) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
+fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeMap<String, Option<String>>>, last: Option<&store::catalog::Catalog>) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
     let dir = out.root().join("inputs/regions");
     std::fs::read_dir(&dir).with_context(|| format!("the regions ({})", dir.display()))?;
     let (recipes, bad) = pipeline::agent::recipes::load(&dir);
@@ -1241,11 +1294,7 @@ fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeMap<S
     let is_ready = |r: &pipeline::agent::recipes::Recipe| ready.get(&r.id).is_some_and(|d| d.as_ref().is_none_or(|d| *d == pipeline::agent::recipes::outline_digest(&r.outline)));
     let built: Vec<_> = recipes.iter().filter(|r| is_ready(r)).cloned().collect();
     let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> = pipeline::coverage::drawn(&built, outlines.as_ref(), &out.root().join("inputs/outlines"))?.into_iter().map(|d| (d.id.clone(), d)).collect();
-    // (The first held catalog keeps the regions as the served one has them.)
-    let mut last = store::catalog::latest(catalogs).with_context(|| format!("the last catalog in {}", catalogs.display()))?;
-    if last.is_none() && catalogs.ends_with("catalog-held") {
-        last = store::catalog::latest(&out.root().join("catalog")).context("the last catalog")?;
-    }
+    // (The first held catalog keeps the regions as the served one has them: `last`, the caller's.)
     let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
         .and_then(|c| c.coverage.get("regions").and_then(|v| serde_json::from_value::<Vec<pipeline::coverage::DrawnRegion>>(v.clone()).ok()))
         .unwrap_or_default()
@@ -1472,14 +1521,14 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     let mut cats: Vec<(i64, String, store::catalog::Catalog)> = Vec::new();
     for dir in ["catalog", "catalog-held"] {
         for n in store::catalog::list(&root.join(dir))? {
-            match store::catalog::read(&root.join(dir).join(store::catalog::file_name(n))) {
+            match store::catalog::read_n(&root.join(dir), n) {
                 Ok(c) => cats.push((epoch_of(&c.created).unwrap_or(i64::MAX), format!("{dir} {n}"), c)),
                 Err(e) => println!("  ({dir}/{n} not read: {e:#})"),
             }
         }
     }
     cats.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    let first = store::catalog::list(&root.join("catalog"))?.into_iter().min().map(|n| store::catalog::read(&root.join("catalog").join(store::catalog::file_name(n)))).transpose()?.context("no catalog")?;
+    let first = store::catalog::list(&root.join("catalog"))?.into_iter().min().map(|n| store::catalog::read_n(&root.join("catalog"), n)).transpose()?.context("no catalog")?;
     let lo_of = |c: &store::catalog::Catalog, q: &str| -> Option<String> { Some(c.files.get(c.layers.get("terrain")?.lo.get(q)?)?.file.clone()) };
     let mtime = |content: &str| std::fs::metadata(root.join(content)).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
     let mut first_new: BTreeMap<String, (i64, String)> = BTreeMap::new();
@@ -4407,6 +4456,64 @@ mod tests {
         // Not held: the packs' prune takes it once the manifest no longer names it.
         super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
         assert!(!cache.join(&name).exists());
+    }
+
+    /// Delta catalogs (`--delta`): written as what changed over the last, read back whole as the
+    /// catalog written whole would be (its time and app aside), with the sizes of the files the last
+    /// one lists taken from it (one gone from the NAS since isn't looked at; a whole one's check
+    /// would stop on it).
+    #[test]
+    fn a_delta_catalog_is_the_whole_one_and_takes_the_last_ones_sizes() {
+        let d = tempfile::tempdir().unwrap();
+        let roots = [d.path().join("delta"), d.path().join("whole")];
+        let put = |root: &std::path::Path, logical: &str, bytes: &[u8]| -> String {
+            let name = store::naming::content_name(logical, &format!("{:016x}", bytes.len() * 7 + logical.len()), "pack");
+            std::fs::create_dir_all(root.join(&name).parent().unwrap()).unwrap();
+            std::fs::write(root.join(&name), bytes).unwrap();
+            let p = root.join("state/build/manifest.json");
+            let mut m: std::collections::BTreeMap<String, String> = pipeline::out::read_record(&p).unwrap();
+            m.insert(logical.into(), name.clone());
+            std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
+            name
+        };
+        let run = |root: &std::path::Path, way: super::CatalogWay| {
+            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            super::catalog(&mut out, false, None, way).unwrap();
+        };
+        let delta = super::CatalogWay { delta: true, whole: false };
+        let mut gone = String::new();
+        for root in &roots {
+            std::fs::create_dir_all(root.join("state/build")).unwrap();
+            std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
+            put(root, "layers/roads/hi/6-1-2", b"one");
+            gone = put(root, "layers/roads/lo/3-0-0", b"lo pack");
+            // (Enough files that a change is small beside the whole.)
+            for i in 0..40 {
+                put(root, &format!("layers/roads/hi/6-2-{i}"), format!("tile {i}").as_bytes());
+            }
+            run(root, super::CatalogWay::default());
+        }
+        // A tile drawn again and one added; the lo pack gone from the NAS (its size from the last).
+        for root in &roots {
+            put(root, "layers/roads/hi/6-1-2", b"one again");
+            put(root, "layers/roads/hi/6-1-3", b"three");
+        }
+        std::fs::remove_file(roots[0].join(&gone)).unwrap();
+        run(&roots[0], delta);
+        run(&roots[1], super::CatalogWay::default());
+        assert!(roots[0].join("catalog/2.delta.json.zst").exists() && !roots[0].join("catalog/2.json.zst").exists());
+        let strip = |mut c: store::catalog::Catalog| {
+            c.created.clear();
+            c
+        };
+        let (a, b) = (store::catalog::latest(&roots[0].join("catalog")).unwrap().unwrap(), store::catalog::latest(&roots[1].join("catalog")).unwrap().unwrap());
+        assert_eq!(a.n, 2);
+        assert_eq!(strip(a), strip(b));
+        // Asked for whole: whole, whatever.
+        put(&roots[0], "layers/roads/hi/6-1-4", b"four");
+        std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
+        run(&roots[0], super::CatalogWay { delta: true, whole: true });
+        assert!(roots[0].join("catalog/3.json.zst").exists());
     }
 
     #[test]

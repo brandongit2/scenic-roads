@@ -1308,6 +1308,33 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
 /// what changed, the road index, rail stops, a catalog). After the last unit, at once.
 pub const PUBLISH_EVERY_S: u64 = 3600;
 
+/// With the low zooms later (`Publishing::low_later`): how long after a round last made them a
+/// round makes them again, while units are still being built (the owner's "every few hours"; a
+/// policy, not a measure). Sooner when much has changed (`low_due`), and always in the last round.
+pub const LOW_EVERY_S: u64 = 3 * PUBLISH_EVERY_S;
+
+/// How the rounds go, as the switches under `state/pool/` say (crate::agent::publish): all off,
+/// as before.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Publishing {
+    /// A round for a region done this long (seconds) after the last round began, not
+    /// PUBLISH_EVERY_S (`state/pool/round-per-region`: crate::agent::publish::round_gap, from the
+    /// rounds' measured times). None: PUBLISH_EVERY_S.
+    pub gap: Option<u64>,
+    /// The low zooms later (`state/pool/low-zoom-later`): a round before the last makes the roads'
+    /// and rails' lo packs and the terrain's and slope's roots only when it's the low zooms' round
+    /// (`Round::low`: `LOW_EVERY_S` after the last that made them, or once half the lo packs are
+    /// stale); the others publish the map tiles (z9 up) with the low zooms as the last made them.
+    pub low_later: bool,
+    /// Seconds since the last round that made the low zooms began (None: none kept).
+    pub since_low: Option<u64>,
+    /// A round's slope and tree cover by the pieces near its regions (`state/pool/near-slope`): the
+    /// slope pieces whose z6 tile is within 20 km of one (what its slope reads), the tree cover pieces
+    /// meeting one; not every stale piece of the z3 tiles around it. Their assemblies (z3–8) go with
+    /// the low zooms' round (every round without `low_later`), and a region is done with its pieces.
+    pub near: bool,
+}
+
 /// A round under way: what it publishes is fixed as it begins, so the regions done and the units
 /// built meanwhile wait for the next. The agent keeps it (its folder's `round.json`) from when it
 /// begins until its catalog (or held catalog) is made: then it's over, whatever changed meanwhile
@@ -1329,6 +1356,17 @@ pub struct Round {
     /// when it began.
     #[serde(default)]
     pub over: bool,
+    /// It makes the low zooms (`Publishing::low_later`): every round did before.
+    #[serde(default = "yes")]
+    pub low: bool,
+    /// When the last round that made the low zooms began (this one's `began` if it does; the agent
+    /// carries it from round to round).
+    #[serde(default)]
+    pub low_at: Option<u64>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// The steps a round alone plans after its slope and tree cover (the roads' chain and its
@@ -1353,6 +1391,8 @@ pub struct Rounds<'a> {
     /// Catalogs are held for review (`inputs/hold-catalog`): what's new is weighed against the last
     /// held one's.
     pub held: bool,
+    /// How the rounds go (the switches: all off, as before).
+    pub way: Publishing,
 }
 
 /// The work there is, in order, and the regions a catalog made now records as built (`ready`: every
@@ -1534,6 +1574,8 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         tree_areas: BTreeSet<String>,
         tree_pieces: BTreeSet<String>,
         terrain: BTreeSet<String>,
+        /// Its slope pieces left whose z6 tile is within 20 km of it (`Publishing::near`).
+        slope_near: BTreeSet<String>,
     }
     let regions: Vec<Region> = rounds
         .each
@@ -1545,7 +1587,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
             let tree_areas: BTreeSet<String> = areas.iter().filter(|a| crate::legacy::Unit::parse(a).is_some_and(|q| rc.meets_rect(crate::hipack::tile_bounds(3, q.x, q.y)))).cloned().collect();
             let tree_pieces: BTreeSet<String> = tree_areas.iter().flat_map(|q| tt.pieces_of(q)).filter(|p| Unit::parse(&p.0).is_some_and(|u| rc.meets_rect(crate::hipack::tile_bounds(6, u.x, u.y)))).map(|p| p.0.clone()).collect();
             let terrain = areas.iter().cloned().chain(stale.iter().flat_map(|&i| reads[i].iter().cloned())).filter(|a| terrain_left.contains(a)).collect();
-            Region { id, all, stale, areas, tree_areas, tree_pieces, terrain }
+            // (Its stale slope pieces whose z6 tile is within 20 km of it: what its slope reads, the
+            // near way's.)
+            let slope_near = tw.slope_pieces_left.iter().filter(|t| Unit::parse(t).is_some_and(|u| u.z == 6 && rc.meets_rect(grown_e7(6, u.x, u.y, 20.0)))).cloned().collect();
+            Region { id, all, stale, areas, tree_areas, tree_pieces, terrain, slope_near }
         })
         .collect();
     // A unit built since the round under way began (rebuilt, or new): the round has it as it was.
@@ -1568,7 +1613,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // wants it, and their areas' slope and tree cover; while a round is under way, of those only its
     // own and those on the map as they are (the others' units may be newer than the round's).
     let in_round = |r: &Region| rounds.current.is_none() || of_round(r) || rounds.on_map.get(r.id) == Some(&true);
-    let ready: Vec<String> = regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty() && r.areas.is_disjoint(&slope_left) && r.tree_pieces.is_disjoint(&trees_left) && r.tree_areas.is_disjoint(&trees_lo_left) && in_round(r)).map(|r| r.id.to_string()).collect();
+    // (The near way: its slope and tree cover pieces near it, their assemblies later.)
+    let near = rounds.way.near;
+    let slope_done = |r: &Region| if near { r.slope_near.is_empty() } else { r.areas.is_disjoint(&slope_left) };
+    let ready: Vec<String> = regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty() && slope_done(r) && r.tree_pieces.is_disjoint(&trees_left) && (near || r.tree_areas.is_disjoint(&trees_lo_left)) && in_round(r)).map(|r| r.id.to_string()).collect();
 
     // A region at a time: those the map hasn't at all first, then those it has (redrawn, or their
     // units' keys changed: on the map as they were meanwhile); of each, the one with the fewest units
@@ -1659,10 +1707,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // fetch doesn't count: it changes nothing served, and one failing and tried again (the release
     // gone from S3) would keep the catalogs hourly for good.)
     let hourly = rounds.since_last.is_none_or(|s| s >= PUBLISH_EVERY_S);
+    // (A region's round: an hour after the last began, or, a round per region, the gap its measured
+    // rounds make: crate::agent::publish::round_gap.)
+    let region_due = rounds.since_last.is_none_or(|s| s >= rounds.way.gap.unwrap_or(PUBLISH_EVERY_S));
     let raising = bld.iter().any(|w| w.step != "bld-fetch");
-    if rounds.current.is_none() && ((last_now && (!raising || hourly || !to_publish.is_empty())) || (!to_publish.is_empty() && hourly)) {
+    if rounds.current.is_none() && ((last_now && (!raising || hourly || !to_publish.is_empty())) || (!to_publish.is_empty() && region_due)) {
         let units_now = m.iter().filter(|(l, _)| crate::out::AS_OF_OUTPUTS.iter().any(|p| l.starts_with(p))).map(|(l, c)| (l.clone(), c.clone())).collect();
-        let begun = Round { began: 0, regions: to_publish.iter().map(|r| r.id.to_string()).collect(), last: last_now, units: units_now, over: false };
+        let low = last_now || !rounds.way.low_later || rounds.way.since_low.is_none_or(|s| s >= LOW_EVERY_S) || low_due(m, done, Some(reach));
+        let begun = Round { began: 0, regions: to_publish.iter().map(|r| r.id.to_string()).collect(), last: last_now, units: units_now, over: false, low, low_at: None };
         let p = plan(cov, date, m, done, inputs, Some(reach), tiles, Rounds { current: Some(&begun), ..rounds });
         // (One with nothing to publish that isn't out already, after the last: none.)
         if !p.ends {
@@ -1672,8 +1724,11 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // The slope and tree cover of the regions done and waiting for a round (not this one): before
     // the regions' work, so their round only draws.
     let waiting = |r: &&&Region| rounds.current.is_none_or(|rd| !rd.regions.iter().any(|x| x == r.id));
-    let slope_waits = |t: &(String, String)| to_publish.iter().filter(waiting).any(|r| r.areas.contains(&area(t)));
-    let trees_waits = |t: &(String, String)| to_publish.iter().filter(waiting).any(|r| r.tree_areas.contains(&tree_area(t)));
+    // (The near way: their pieces near them; the assemblies later, in their order.)
+    let slope_waits = |t: &(String, String)| to_publish.iter().filter(waiting).any(|r| if near { r.slope_near.contains(&t.0) } else { r.areas.contains(&area(t)) });
+    let slope_lo_waits = |t: &(String, String)| !near && to_publish.iter().filter(waiting).any(|r| r.areas.contains(&area(t)));
+    let trees_waits = |t: &(String, String)| to_publish.iter().filter(waiting).any(|r| if near { r.tree_pieces.contains(&t.0) } else { r.tree_areas.contains(&tree_area(t)) });
+    let trees_lo_waits = |t: &(String, String)| !near && to_publish.iter().filter(waiting).any(|r| r.tree_areas.contains(&tree_area(t)));
     let mut publish_waits = Vec::new();
     let mut ends = false;
     let mut round_left = Vec::new();
@@ -1682,16 +1737,23 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         // (A region of it no longer done, its recipe edited since, or done again with units built
         // since, waits for another.)
         let publish: Vec<&Region> = regions.iter().filter(|r| done_now(r) && of_round(r)).collect();
+        // (The low zooms: in every round, or with them later, in the low zooms' round.)
+        let low = last || !rounds.way.low_later || rd.low;
         let now = |t: &(String, String)| last || publish.iter().any(|r| r.areas.contains(&area(t)));
         let trees_due = |t: &(String, String)| last || publish.iter().any(|r| r.tree_areas.contains(&tree_area(t)));
+        // (The near way: the pieces near its regions; their areas' assemblies with the low zooms.)
+        let pieces_now = |t: &(String, String)| if near { last || publish.iter().any(|r| r.slope_near.contains(&t.0)) } else { now(t) };
+        let tree_pieces_now = |t: &(String, String)| if near { last || publish.iter().any(|r| r.tree_pieces.contains(&t.0)) } else { trees_due(t) };
+        let slope_lo_due = |t: &(String, String)| (!near || low) && now(t);
+        let trees_lo_due = |t: &(String, String)| (!near || low) && trees_due(t);
         let slope_now: Vec<(String, String)>;
         let slope_lo_now: Vec<(String, String)>;
         let trees_now: Vec<(String, String)>;
         let lo_now: Vec<(String, String)>;
-        (slope_now, slope) = slope.into_iter().partition(now);
-        (slope_lo_now, slope_lo) = slope_lo.into_iter().partition(now);
-        (trees_now, trees) = trees.into_iter().partition(trees_due);
-        (lo_now, trees_lo) = trees_lo.into_iter().partition(trees_due);
+        (slope_now, slope) = slope.into_iter().partition(pieces_now);
+        (slope_lo_now, slope_lo) = slope_lo.into_iter().partition(slope_lo_due);
+        (trees_now, trees) = trees.into_iter().partition(tree_pieces_now);
+        (lo_now, trees_lo) = trees_lo.into_iter().partition(trees_lo_due);
         publish_waits = slope_now.iter().map(|t| ("slope".to_string(), t.0.clone())).chain(slope_lo_now.iter().map(|t| ("slope-lo".to_string(), t.0.clone()))).chain(trees_now.iter().map(|t| ("trees".to_string(), t.0.clone()))).chain(lo_now.iter().map(|t| ("trees-lo".to_string(), t.0.clone()))).collect();
         let before = work.len();
         push(&mut work, "slope", slope_now);
@@ -1715,43 +1777,46 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         // the terrain left (its pieces' mids, its assemblies), slope's for that and the slope left,
         // so a root isn't made while an assembly runs (or waits to be merged) and again after it.
         let roots_held = [!tw.terrain_left.is_empty(), !tw.terrain_left.is_empty() || !tw.slope_left.is_empty()];
+        // (The low zooms later: the roads' and rails' lo packs and the roots only in the low zooms'
+        // round.)
+        let roots_held = if low { roots_held } else { [true, true] };
         // (Listed after them, not held back: while one waits out a failure, the others publish.)
         match prune_units(cov, date, m, &units) {
             Some(w) => work.push(w),
-            None => match roads_chain_drawing(date, &m_then, done, inputs, Some(reach), &keep, roots_held) {
+            None => match roads_chain_drawing_low(date, &m_then, done, inputs, Some(reach), &keep, roots_held, low) {
                 Some(w) => work.push(w),
                 None => work.extend(catalog_work(&m_then, done, inputs, &ready, rounds.held)),
             },
         }
         // (Not while the regions can't be read: its catalog waits for them.)
         ends = work.len() == before && inputs.get("regions").map(String::as_str) != Some("?");
-        round_left = remaining(done, |d| roads_chain_drawing(date, &m_then, d, inputs, Some(reach), &keep, roots_held).or_else(|| catalog_work(&m_then, d, inputs, &ready, rounds.held)));
+        round_left = remaining(done, |d| roads_chain_drawing_low(date, &m_then, d, inputs, Some(reach), &keep, roots_held, low).or_else(|| catalog_work(&m_then, d, inputs, &ready, rounds.held)));
         // The regions done meanwhile: their slope and tree cover; then the regions' terrain and
         // units: a helper's, and this Mac's while the round's work is another's or waits out a
         // failure.
         let (prep, rest): (Vec<_>, Vec<_>) = slope.into_iter().partition(slope_waits);
         push(&mut work, "slope", prep);
         slope = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_waits);
+        let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_lo_waits);
         push(&mut work, "slope-lo", prep);
         slope_lo = rest;
         let (prep, rest): (Vec<_>, Vec<_>) = trees.into_iter().partition(trees_waits);
         push(&mut work, "trees", prep);
         trees = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_waits);
+        let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_lo_waits);
         push(&mut work, "trees-lo", prep);
         trees_lo = rest;
     } else {
         let (prep, rest): (Vec<_>, Vec<_>) = slope.into_iter().partition(slope_waits);
         push(&mut work, "slope", prep);
         slope = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_waits);
+        let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_lo_waits);
         push(&mut work, "slope-lo", prep);
         slope_lo = rest;
         let (prep, rest): (Vec<_>, Vec<_>) = trees.into_iter().partition(trees_waits);
         push(&mut work, "trees", prep);
         trees = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_waits);
+        let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_lo_waits);
         push(&mut work, "trees-lo", prep);
         trees_lo = rest;
     }
@@ -1892,13 +1957,24 @@ fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<
 /// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
 /// the terrain and slope roots; its first stale step.
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
-    roads_chain_drawing(date, m, done, inputs, reach, &|_, _| true, [false, false])
+    roads_chain_drawing_low(date, m, done, inputs, reach, &|_, _| true, [false, false], true)
+}
+
+/// Whether so much of the low zooms is stale that a round makes them however long since the last
+/// did (`Publishing::low_later`): half the roads' lo packs or more (a z3 tile's, by its key: what
+/// the units near it are now).
+pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> bool {
+    let (_, lo) = pack_lo_targets(m, reach);
+    let stale = lo.iter().filter(|(t, k)| done.lo.get(t) != Some(k)).count();
+    !lo.is_empty() && stale * 2 >= lo.len()
 }
 
 /// `roads_chain`, drawing the map tiles (pack(T)) `keep` says, by their z6 tile, and those whose
 /// owners changed (`owners_changed`); the rest wait.
 #[allow(clippy::too_many_arguments)]
-fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool, roots_held: [bool; 2]) -> Option<Work> {
+/// `low` false: the low zooms later (`Publishing::low_later`): no lo packs (the roots are held by
+/// `roots_held`).
+fn roads_chain_drawing_low(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool, roots_held: [bool; 2], low: bool) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
     if let Some(w) = prune_tiles(m, reach) {
@@ -1927,7 +2003,7 @@ fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, in
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
     }
-    let lo: Vec<(String, String)> = lo.into_iter().filter(|(t, k)| stale(&done.lo, t, k)).collect();
+    let lo: Vec<(String, String)> = lo.into_iter().filter(|(t, k)| low && stale(&done.lo, t, k)).collect();
     if !lo.is_empty() {
         return Some(Work { step: "lo".into(), targets: lo });
     }
@@ -2738,7 +2814,7 @@ pub(crate) mod tests {
     }
     fn plan_with(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, on_map: &BTreeMap<String, bool>, since_publish: Option<u64>) -> Plan {
         let each = c.by_region();
-        super::plan(c, date, m, done, inputs, Some(&reach()), &tiles_for(m), Rounds { each: &each, on_map, since_last: since_publish, current: None, held: false })
+        super::plan(c, date, m, done, inputs, Some(&reach()), &tiles_for(m), Rounds { each: &each, on_map, since_last: since_publish, current: None, held: false, way: Default::default() })
     }
     fn unit_keys(c: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
         ukeys(c, date, m, Some(&reach()))
@@ -2974,7 +3050,7 @@ pub(crate) mod tests {
     fn run_all(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<String> {
         let mut ran = Vec::new();
         for _ in 0..60 {
-            let w = super::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), &tiles_for(m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+            let w = super::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), &tiles_for(m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() }).work;
             let Some(w) = w.into_iter().next() else { return ran };
             ran.extend(w.targets.iter().map(|t| format!("{} {}", w.step, t.0)));
             match w.step.as_str() {
@@ -3025,7 +3101,7 @@ pub(crate) mod tests {
         assert!(uk[0].1 != done.unit["6/28/16"] && pk[0].1 != done.peaks["6/28/16"], "their keys see the packs");
         done.record("unit", &[("6/28/16".to_string(), uk[0].1.clone())]);
         done.record("peaks", &[("6/28/16".to_string(), pk[0].1.clone())]);
-        let w = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+        let w = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() }).work;
         let steps: Vec<String> = w.iter().flat_map(|w| w.targets.iter().map(|t| format!("{} {}", w.step, t.0))).collect();
         assert!(steps.contains(&"terrain 6/29/16".to_string()) && steps.contains(&"slope 6/29/16".to_string()), "{steps:?}");
         assert!(!steps.iter().any(|s| s.starts_with("unit ") || s.starts_with("peaks ")), "they wait for the terrain: {steps:?}");
@@ -3052,7 +3128,7 @@ pub(crate) mod tests {
         let mut done = Keys::default();
         run_all(&c, &reach, &mut m, &mut done);
         let plan = |m: &BTreeMap<String, String>, done: &Keys| -> Vec<Work> {
-            super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work
+            super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() }).work
         };
         assert!(plan(&m, &done).is_empty());
         // An assembly made again (its version bumped, say): its new lo pack written, its job not
@@ -3213,7 +3289,7 @@ pub(crate) mod tests {
         unit_inputs(&mut m, "d");
         let mut done = Keys::default();
         loop {
-            let w = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+            let w = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() }).work;
             match w[0].step.as_str() {
                 "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
                 "terrain" | "terrain-lo" => terrain_did(&mut m, &mut done, &w[0]),
@@ -3228,7 +3304,7 @@ pub(crate) mod tests {
     fn regions_are_built_one_at_a_time_those_the_map_lacks_first() {
         let (c, reach, m, done) = three();
         let each = c.by_region();
-        let plan = |on_map: &BTreeMap<String, bool>| super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &each, on_map, since_last: None, current: None, held: false });
+        let plan = |on_map: &BTreeMap<String, bool>| super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &each, on_map, since_last: None, current: None, held: false, way: Default::default() });
         let units = |p: &Plan| p.work.iter().filter(|w| w.step == "unit").flat_map(|w| w.targets.iter().map(|t| t.0.clone())).collect::<Vec<_>>();
         // Nothing on the map: the regions with the fewest units left first (a and c, one each: by
         // place), then b's two together; their slope and tree cover after them.
@@ -3245,7 +3321,7 @@ pub(crate) mod tests {
     fn a_region_done_is_published_in_a_round_at_most_hourly() {
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current: None, held: false });
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current: None, held: false, way: Default::default() });
         // (A step's works one after another, as one: the plan lists a step's by region.)
         let steps = |p: &Plan| {
             let mut v: Vec<String> = p.work.iter().map(|w| w.step.clone()).collect();
@@ -3309,7 +3385,7 @@ pub(crate) mod tests {
         // publishes meets, and where b's eastern unit (6/30/16) is still to build.
         reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -16.5, 64.16)), long: vec![] });
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: None, current: None, held: false });
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: None, current: None, held: false, way: Default::default() });
         let key = |m: &BTreeMap<String, String>, u: &str| ukeys(&c, "d", m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1;
         let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
             done.record("unit", &[(u.to_string(), key(m, u))]);
@@ -3349,7 +3425,7 @@ pub(crate) mod tests {
     fn a_rounds_work_is_fixed_when_it_begins() {
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held: false });
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held: false, way: Default::default() });
         let key = |m: &BTreeMap<String, String>, u: &str| ukeys(&c, "d", m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1;
         let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
             done.record("unit", &[(u.to_string(), key(m, u))]);
@@ -3419,7 +3495,7 @@ pub(crate) mod tests {
     /// The tests' plan with a round under way, and a unit of theirs built (as `content`).
     fn rplan(c: &Coverage, reach: &Reaches, m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>, held: bool) -> Plan {
         let each = c.by_region();
-        super::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held })
+        super::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held, way: Default::default() })
     }
     fn rbuild(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str, content: &str) {
         let k = ukeys(c, "d", m, Some(reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1;
@@ -3499,6 +3575,123 @@ pub(crate) mod tests {
         assert!(rplan(&c, &reach, &m, &done, &on, Some(5), None, false).begins.is_some());
     }
 
+    /// `rplan` with the switches' way (`Publishing`).
+    #[allow(clippy::too_many_arguments)]
+    fn wplan(c: &Coverage, reach: &Reaches, m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>, way: Publishing) -> Plan {
+        let each = c.by_region();
+        super::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held: false, way })
+    }
+
+    /// A round's work to its catalog with the switches' way, each step done as the plan lists it
+    /// (the round's own: its slope and tree cover, its chain): the steps run, and the plan the
+    /// catalog came in.
+    fn through_with(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys, r: &Round, way: Publishing) -> (Vec<Work>, Plan) {
+        let mut ran = Vec::new();
+        for _ in 0..30 {
+            let p = wplan(c, reach, m, done, &BTreeMap::new(), None, Some(r), way);
+            let w = p.work.iter().find(|w| AS_OF_STEPS.contains(&w.step.as_str()) || w.step == "prune" || p.publish_waits.iter().any(|(s, t)| *s == w.step && w.targets.iter().any(|x| x.0 == *t))).cloned().expect("the round's work");
+            ran.push(w.clone());
+            if w.step == "catalog" {
+                done.record("catalog", &w.targets);
+                return (ran, p);
+            }
+            if w.step.starts_with("slope") {
+                terrain_did(m, done, &w);
+            } else {
+                did(m, done, &w);
+            }
+        }
+        panic!("no catalog");
+    }
+
+    #[test]
+    fn a_round_per_region_begins_after_the_gap_its_measured_rounds_make() {
+        let (c, reach, mut m, mut done) = three();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let r = rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a round begins");
+        let mut r = Round { began: 1, ..r };
+        through_with(&c, &reach, &mut m, &mut done, &r, Publishing::default());
+        r.over = true;
+        // c done: with the switch off, an hour after the last began; with it, the gap (300 s here).
+        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
+        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
+        let way = Publishing { gap: Some(300), ..Default::default() };
+        assert!(wplan(&c, &reach, &m, &done, &on, Some(300), None, Publishing::default()).begins.is_none());
+        assert!(wplan(&c, &reach, &m, &done, &on, Some(299), None, way).begins.is_none());
+        assert_eq!(wplan(&c, &reach, &m, &done, &on, Some(300), None, way).begins.map(|r| r.regions), Some(vec!["c".to_string()]));
+        // (Nothing to publish: no round, whatever the gap.)
+        let on: BTreeMap<String, bool> = [("a".to_string(), true), ("c".to_string(), true)].into();
+        assert!(wplan(&c, &reach, &m, &done, &on, Some(5000), None, way).begins.is_none());
+    }
+
+    #[test]
+    fn with_the_low_zooms_later_a_round_draws_the_map_tiles_and_leaves_the_low_zooms() {
+        let (c, reach, mut m, mut done) = three();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let way = Publishing { low_later: true, since_low: Some(60), ..Default::default() };
+        // (The first round: everything's lo pack stale, so it makes the low zooms; so does one with
+        // none made, or made long ago.)
+        let r = wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, way).begins.expect("a round begins");
+        assert!(r.low);
+        assert!(wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, Publishing { since_low: None, ..way }).begins.unwrap().low);
+        let steps = |ran: &[Work]| ran.iter().map(|w| w.step.clone()).collect::<Vec<_>>();
+        // A round that doesn't make the low zooms: the map tiles, no lo packs nor roots, its catalog.
+        let mut m2 = m.clone();
+        let mut done2 = done.clone();
+        let (ran, p) = through_with(&c, &reach, &mut m2, &mut done2, &Round { began: 1, low: false, ..r.clone() }, way);
+        let s = steps(&ran);
+        assert!(s.contains(&"pack".to_string()) && !s.iter().any(|x| ["lo", "terrain-root", "slope-root"].contains(&x.as_str())), "{s:?}");
+        assert_eq!(p.ready, ["a"]);
+        // The same round making them (or the switch off): the lo packs and roots too.
+        for (low, way) in [(true, way), (false, Publishing::default())] {
+            let (mut m2, mut done2) = (m.clone(), done.clone());
+            let (ran, _) = through_with(&c, &reach, &mut m2, &mut done2, &Round { began: 1, low, ..r.clone() }, way);
+            let s = steps(&ran);
+            assert!(["pack", "lo", "terrain-root", "slope-root"].iter().all(|x| s.contains(&x.to_string())), "{s:?}");
+        }
+        // The last round makes them whatever.
+        for u in ["6/29/16", "6/30/16", "6/31/16"] {
+            rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
+        }
+        let r = wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, way).begins.expect("the last round");
+        assert!(r.last && r.low);
+    }
+
+    #[test]
+    fn the_low_zooms_are_due_once_half_the_lo_packs_are_stale() {
+        let (c, reach, mut m, mut done) = three();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let (_, lo) = pack_lo_targets(&m, Some(&reach));
+        assert!(!lo.is_empty() && low_due(&m, &done, Some(&reach)));
+        done.record("lo", &lo);
+        assert!(!low_due(&m, &done, Some(&reach)));
+        // (Nothing built: none due.)
+        assert!(!low_due(&BTreeMap::new(), &Keys::default(), Some(&reach)));
+    }
+
+    #[test]
+    fn near_a_rounds_slope_is_the_pieces_near_its_regions_their_assemblies_later() {
+        let (c, reach, mut m, mut done) = three();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let r = Round { began: 1, ..rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a round begins") };
+        let near = Publishing { near: true, low_later: true, ..Default::default() };
+        let slope_of = |p: &Plan| p.work.iter().filter(|w| w.step == "slope").flat_map(|w| w.targets.iter().map(|t| t.0.clone())).filter(|t| p.publish_waits.iter().any(|(s, x)| s == "slope" && x == t)).collect::<BTreeSet<_>>();
+        let before = slope_of(&wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, Some(&r), Publishing::default()));
+        let now = slope_of(&wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, Some(&r), near));
+        // (The pieces within 20 km of a: fewer than its z3 tiles' stale pieces, none left out that it reads.)
+        let a = &c.by_region().into_iter().find(|(id, _)| id == "a").unwrap().1;
+        assert!(!now.is_empty() && now.is_subset(&before) && now.len() < before.len(), "{now:?} of {before:?}");
+        assert!(now.iter().all(|t| Unit::parse(t).is_some_and(|u| a.meets_rect(grown_e7(6, u.x, u.y, 20.0)))));
+        assert!(before.iter().filter(|t| !now.contains(*t)).all(|t| Unit::parse(t).is_some_and(|u| !a.meets_rect(grown_e7(6, u.x, u.y, 20.0)))));
+        // Through to its catalog: a goes out with its near pieces made; no assembly in the round
+        // (it isn't the low zooms'), and the far pieces still to make.
+        let (ran, p) = through_with(&c, &reach, &mut m, &mut done, &Round { low: false, ..r }, near);
+        assert_eq!(p.ready, ["a"]);
+        assert!(!ran.iter().any(|w| w.step == "slope-lo" || w.step == "trees-lo"), "{:?}", ran.iter().map(|w| &w.step).collect::<Vec<_>>());
+        let left = wplan(&c, &reach, &m, &done, &[("a".to_string(), true)].into(), Some(60), None, near);
+        assert!(left.work.iter().any(|w| w.step == "slope" && w.targets.iter().any(|t| before.contains(&t.0) && !now.contains(&t.0))));
+    }
+
     #[test]
     fn a_region_done_waits_for_its_round_with_its_slope_and_tree_cover_made() {
         let (c, reach, mut m, mut done) = three();
@@ -3507,7 +3700,7 @@ pub(crate) mod tests {
         done.record("unit", &[("6/28/16".to_string(), k)]);
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
         // A round began ten minutes ago: a's slope and tree cover first, then the units; no round.
-        let p = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: Some(600), current: None, held: false });
+        let p = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: Some(600), current: None, held: false, way: Default::default() });
         assert!(p.begins.is_none() && p.publish_waits.is_empty());
         let steps: Vec<&str> = p.work.iter().map(|w| w.step.as_str()).collect();
         assert_eq!(&steps[..3], ["slope", "trees", "unit"]);
@@ -3530,7 +3723,7 @@ pub(crate) mod tests {
         let drawn = |done: &mut Keys| -> Vec<String> {
             let mut m = m.clone();
             loop {
-                let p = super::plan(&c, "d", &m, done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
+                let p = super::plan(&c, "d", &m, done, &BTreeMap::new(), Some(&reach), &tiles_for(&m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
                 let w = &p.work[0];
                 match w.step.as_str() {
                     "pack" => return w.targets.iter().map(|t| t.0.clone()).collect(),
@@ -3576,7 +3769,7 @@ pub(crate) mod tests {
         }
         unit_inputs(&mut m, "d");
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+        let plan = |m: &BTreeMap<String, String>, done: &Keys| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() }).work;
         let mut done = Keys::default();
         let w = plan(&m, &done);
         heritage_done(&mut m, &mut done, "d", &w[0]);
@@ -3754,7 +3947,7 @@ pub(crate) mod tests {
     fn a_unit_whose_terrain_cant_be_read_now_waits() {
         let (c, reach, m, done) = three();
         let each = c.by_region();
-        let plan = |t: &TerrainTiles| super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), t, Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
+        let plan = |t: &TerrainTiles| super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), t, Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
         // The terrain's lo pack's index not read: no unit is built, nor counted as built, nor pruned.
         let p = plan(&TerrainTiles::new(None));
         assert!(!p.work.iter().any(|w| matches!(w.step.as_str(), "unit" | "prune")), "{:?}", p.work);
@@ -3848,7 +4041,7 @@ pub(crate) mod tests {
     fn tree_cover_pieces_their_mids_and_their_assembly() {
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
+        let plan = |m: &BTreeMap<String, String>, done: &Keys| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
         let ts = |v: &[(String, String)]| v.iter().map(|t| t.0.clone()).collect::<Vec<_>>();
         // Iceland's regions: z3 tile 3/3/2's pieces 6/28/16, 6/28/17 and 6/29/16.
         let tt = crate::treepacks::targets(&c, &m);
@@ -4286,7 +4479,7 @@ pub(crate) mod tests {
         m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false }).work;
+        let plan = |m: &BTreeMap<String, String>, done: &Keys| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), &tiles_for(m), Rounds { each: &each, on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() }).work;
         let line = |w: &[Work]| w.iter().map(|x| format!("{} {}", x.step, x.targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(","))).collect::<Vec<_>>();
         let mut done = Keys::default();
         // Before the heritage sites (the units wait for them): the candidates already, after the
@@ -4500,7 +4693,7 @@ pub(crate) mod tests {
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
         let inputs = bld_inputs(&c, "a");
-        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>| super::plan(&c, "d", m, done, &inputs, Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held: false });
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>| super::plan(&c, "d", m, done, &inputs, Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held: false, way: Default::default() });
         for u in ["6/28/16", "6/29/16", "6/30/16", "6/31/16"] {
             rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
         }
@@ -4645,7 +4838,7 @@ pub(crate) mod tests {
             let n = dg(format!("{:?}", super::checklist(&cov, &date, &m, &k, &inputs, false, reach.as_ref(), &[], &tiles)));
             lap(&format!("[{round}] checklist ({n})"), &mut t);
             let on_map = BTreeMap::new();
-            let p = super::plan(&cov, &date, &m, &k, &inputs, reach.as_ref(), &tiles, Rounds { each: &each, on_map: &on_map, since_last: Some(0), current: None, held: false });
+            let p = super::plan(&cov, &date, &m, &k, &inputs, reach.as_ref(), &tiles, Rounds { each: &each, on_map: &on_map, since_last: Some(0), current: None, held: false, way: Default::default() });
             lap(&format!("[{round}] plan ({}; keys {})", dg(format!("{p:?}")), dg(format!("{k:?}"))), &mut t);
             eprintln!("bench: [{round}] the coverage's memos hold {} KB", crate::coverage::memo_bytes() >> 10);
         }

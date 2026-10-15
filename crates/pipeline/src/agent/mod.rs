@@ -33,6 +33,7 @@ pub mod lead;
 pub mod memguard;
 pub mod placement;
 pub mod pool;
+pub mod publish;
 pub mod recipes;
 pub mod rekey;
 pub mod room;
@@ -958,6 +959,10 @@ pub struct Agent {
     /// The last round of publishing (build::Round, its folder's `round.json`): the one under way,
     /// which its jobs read the units of, or the last one over, for when it began.
     round: std::cell::RefCell<Option<build::Round>>,
+    /// Faster publishing's switches as last read (crate::agent::publish), and the rounds' measured
+    /// time (forecast::round_secs, as the last forecast read the history): a round per region's gap.
+    publishing: std::cell::Cell<publish::Switches>,
+    round_measured: std::cell::Cell<Option<f64>>,
     /// The pool (docs/pool.md §12, crate::agent::pool): its switch on the NAS as this process
     /// started (None: the NAS wasn't reached then; the agent is as it was until it is, then restarts
     /// if the pool is on or shadowed), its part while it's on, a shadow run beside it, and why this
@@ -1124,7 +1129,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), publishing: Default::default(), round_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -4204,7 +4209,10 @@ impl Agent {
 
     /// A round begun (build::Plan::begins, its `began` set): written to its file, which its jobs read,
     /// before any of them starts.
-    fn keep_round(&self, r: build::Round) -> Result<()> {
+    fn keep_round(&self, mut r: build::Round) -> Result<()> {
+        // (When the low zooms were last made: this one's beginning if it makes them, else the
+        // round before's.)
+        r.low_at = if r.low { Some(r.began) } else { self.round.borrow().as_ref().and_then(|p| p.low_at) };
         if self.keeps_rounds() {
             crate::whole::write(&self.o.home.join(ROUND_FILE), &serde_json::to_vec(&r)?)?;
             self.note(crate::coord::history::Event { targets: r.regions.clone(), note: if r.last { "the last".into() } else { String::new() }, ..crate::coord::history::Event::new("round") });
@@ -4503,6 +4511,18 @@ impl Agent {
         // The round under way, if one is; the next an hour after the last began (before the agent
         // kept rounds, after the last catalog went out).
         let since_last = self.round.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_publish);
+        // (Faster publishing's switches: crate::agent::publish; all off, the rounds as before.)
+        let sw = publish::Switches::read(root, self.publishing.get());
+        if sw != self.publishing.get() {
+            eprintln!("agent: faster publishing: {sw:?}");
+        }
+        self.publishing.set(sw);
+        let way = build::Publishing {
+            gap: sw.per_region.then(|| publish::round_gap(self.round_measured.get())),
+            low_later: sw.low_later,
+            since_low: self.round.borrow().as_ref().and_then(|r| r.low_at).map(|t| now_s().saturating_sub(t)),
+            near: sw.near,
+        };
         let mut planned = {
             let kept = self.round.borrow();
             let tiles = self.terrain_tiles(root, &manifest);
@@ -4510,7 +4530,7 @@ impl Agent {
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
             rekey::as_read(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
+            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held, way })
         };
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
         if !planned.unknown.is_empty() {
@@ -4708,7 +4728,15 @@ impl Agent {
             }
         }
         plan.retain(|w| !w.targets.is_empty());
-        for (w, total) in batches(plan) {
+        // (A round shared: the lead's own job of a round's map tiles takes its share, the rest left
+        // to the members asking: crate::agent::publish.)
+        let share_on = self.publishing.get().share && self.every_on() && self.round.borrow().as_ref().is_some_and(|r| !r.over);
+        let coord = self.coord.as_ref().filter(|_| share_on);
+        let size = |step: &str, total: usize, n: usize| match coord.filter(|_| publish::SHARED_IN_ROUND.contains(&step)) {
+            Some(c) => publish::lead_share(total, n, c.members_asking(step)),
+            None => n,
+        };
+        for (w, total) in batches_sized(plan, &size) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
@@ -4733,6 +4761,10 @@ impl Agent {
             // (The regions a catalog records as built: the plan's.)
             if w.step == "catalog" {
                 extra.extend(["--ready".to_string(), ready_arg.clone()]);
+                // (Delta catalogs: crate::agent::publish.)
+                if self.publishing.get().delta {
+                    extra.push("--delta".into());
+                }
             }
             let n = w.targets.len();
             // "3 areas", or "8 of 480 areas" for a batch.
@@ -4827,6 +4859,7 @@ impl Agent {
         // goes out with it).
         let [roads, rail, landmarks, buildings] = chains;
         let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if steps::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
+        self.round_measured.set(forecast::round_secs(&events));
         let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
         let ahead = under_way.as_ref().map_or(0.0, |u| chain_s(&u.2));
         let last_round_s = if roads.is_empty() { 0.0 } else { round_s.max(chain_s(&roads) - ahead) };
@@ -4907,7 +4940,9 @@ impl Agent {
         let under_way = under_way.map(|(ids, last, left)| (ids, last, chain_s(&left).max(60.0)));
         // (The pieces' mids made in idle time, last.)
         let idle: Vec<forecast::Job> = backfill.iter().flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t)))).collect();
-        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, idle, since_last, under_way, machines, running })
+        // (A region's round an hour after the last began, or a round per region's gap.)
+        let gap_s = if self.publishing.get().per_region { publish::round_gap(self.round_measured.get()) } else { build::PUBLISH_EVERY_S } as f64;
+        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, idle, since_last, gap_s, under_way, machines, running })
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
@@ -5137,10 +5172,11 @@ impl Agent {
         let mut cached = self.last_catalog.borrow_mut();
         let mut at = None;
         for n in store::catalog::list(dir).unwrap_or_default() {
-            let path = dir.join(store::catalog::file_name(n));
+            // (Whole, or what changed over the one before: store::catalog::read_n.)
+            let Some(path) = store::catalog::path_n(dir, n) else { continue };
             let Ok(t) = std::fs::metadata(&path).and_then(|m| m.modified()) else { continue };
             if cached.as_ref().is_none_or(|c| c.0 != (dir.to_path_buf(), n)) {
-                let Ok(cat) = store::catalog::read(&path) else { continue };
+                let Ok(cat) = store::catalog::read_n(dir, n) else { continue };
                 let regions: BTreeMap<String, Vec<String>> = cat.coverage.get("regions").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(|r| Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))).collect();
                 *cached = Some(((dir.to_path_buf(), n), regions));
             }
@@ -6633,11 +6669,19 @@ fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
 
 /// A step's targets in batches, each its own job recording its own targets (a failure or a restart
 /// into a new app costs one batch, not the whole wave), with the step's total.
+#[cfg(test)]
 fn batches(plan: Vec<build::Work>) -> Vec<(build::Work, usize)> {
+    batches_sized(plan, &|_, _, n| n)
+}
+
+/// `batches`, each step's batch as `size` says from its step, its total and its batch (a round
+/// shared: the lead's share of a round's map tiles, crate::agent::publish::lead_share).
+fn batches_sized(plan: Vec<build::Work>, size: &dyn Fn(&str, usize, usize) -> usize) -> Vec<(build::Work, usize)> {
     let regions = regions_left(&plan);
     let mut out = Vec::new();
     for w in plan {
-        let (n, total) = (job_size(&w.step, regions), w.targets.len());
+        let total = w.targets.len();
+        let n = size(&w.step, total, job_size(&w.step, regions)).max(1);
         if total <= n {
             out.push((w, total));
             continue;
@@ -6669,14 +6713,20 @@ fn shared_targets(spec: &JobSpec) -> Option<(String, Vec<String>)> {
 }
 
 /// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
-/// serves (a damaged one passed over, as it does).
+/// serves (a damaged one passed over, as it does). (One read whole once: by its file and time, the
+/// last that read is remembered, so a delta's chain isn't read again each loop.)
 fn served_catalog(dir: &Path) -> Option<CatalogSeen> {
+    static READ: std::sync::Mutex<Option<(PathBuf, std::time::SystemTime)>> = std::sync::Mutex::new(None);
     let mut ns = store::catalog::list(dir).ok()?;
     ns.sort_unstable();
     ns.into_iter().rev().find_map(|n| {
-        let path = dir.join(store::catalog::file_name(n));
+        let path = store::catalog::path_n(dir, n)?;
         let t = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-        store::catalog::read(&path).ok()?;
+        let seen = Some((path.clone(), t));
+        if *READ.lock().unwrap_or_else(|e| e.into_inner()) != seen {
+            store::catalog::read_n(dir, n).ok()?;
+            *READ.lock().unwrap_or_else(|e| e.into_inner()) = seen;
+        }
         Some(CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) })
     })
 }
@@ -7607,10 +7657,11 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
-        let r = build::Round { began: 100, regions: vec!["a".into()], last: false, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false };
+        let r = build::Round { began: 100, regions: vec!["a".into()], last: false, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false, low: true, low_at: None };
         a.keep_round(r.clone()).unwrap();
         let file = || -> build::Round { serde_json::from_slice(&std::fs::read(home.join(ROUND_FILE)).unwrap()).unwrap() };
-        assert_eq!(file(), r);
+        // (It makes the low zooms: noted as when they were last made.)
+        assert_eq!(file(), build::Round { low_at: Some(100), ..r.clone() });
         // Another step's keys recorded: still under way. Its catalog's: over, kept without its
         // units (whatever changed meanwhile goes out with the next).
         assert!(a.record_done(Some(&root), "pack", &[("6/1/1".into(), "k".into())]));
@@ -7621,8 +7672,26 @@ mod tests {
         // A dry run beside it (a second agent on this Mac, planning only): its rounds its own, never
         // the file the real one's jobs read.
         let dry = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
-        dry.keep_round(build::Round { began: 200, ..r }).unwrap();
+        dry.keep_round(build::Round { began: 200, ..r.clone() }).unwrap();
         assert_eq!(file().began, 100);
+        // The next round leaving the low zooms (crate::agent::publish): when they were last made carried.
+        a.keep_round(build::Round { began: 300, low: false, ..r.clone() }).unwrap();
+        assert_eq!((file().began, file().low_at), (300, Some(100)));
+        a.keep_round(build::Round { began: 400, ..r }).unwrap();
+        assert_eq!(file().low_at, Some(400));
+        // (A round.json from before: it made the low zooms, none noted.)
+        let old: build::Round = serde_json::from_str(r#"{"began":1,"regions":[],"last":false,"units":{}}"#).unwrap();
+        assert!(old.low && old.low_at.is_none());
+    }
+
+    #[test]
+    fn a_round_shared_the_leads_own_job_of_its_map_tiles_takes_its_share() {
+        let w = |step: &str, n: usize| build::Work { step: step.into(), targets: (0..n).map(|i| (format!("6/1/{i}"), "k".into())).collect() };
+        let sizes = |b: Vec<(build::Work, usize)>| b.into_iter().map(|(w, t)| (w.step, w.targets.len(), t)).collect::<Vec<_>>();
+        // (One member asking: half each, the lead's from the front; the other steps as they were.)
+        let share = |step: &str, total: usize, n: usize| if publish::SHARED_IN_ROUND.contains(&step) { publish::lead_share(total, n, 1) } else { n };
+        assert_eq!(sizes(batches_sized(vec![w("pack", 10), w("roadunits", 1)], &share)), [("pack".to_string(), 5, 10), ("pack".to_string(), 5, 10), ("roadunits".to_string(), 1, 1)]);
+        assert_eq!(sizes(batches(vec![w("pack", 10)])), [("pack".to_string(), 10, 10)]);
     }
 
     /// An agent that runs jobs (no dry run), the NAS at `root`: the build Mac's, or a helper's.
@@ -7970,6 +8039,11 @@ mod tests {
     /// Reykjavik's unit (6/28/17) for region a, the heritage sites and the terrain made (the area's
     /// lo pack a real pack), and the unit built under the old keys, with its outputs. Its old key.
     fn rekey_root(root: &Path) -> String {
+        rekey_root_with(root, [-220_000_000, 640_000_000, -217_000_000, 641_600_000])
+    }
+
+    /// `rekey_root`, the unit's ways where `owned` says (E7).
+    fn rekey_root_with(root: &Path, owned: [i32; 4]) -> String {
         let date = "2026-09-28";
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         put(&root.join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
@@ -7980,7 +8054,7 @@ mod tests {
         let piece = format!("sources/osm/{date}/pieces/6-28-17");
         m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
         let mut reaches = crate::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
-        reaches.units.insert("6/28/17".into(), crate::reach::Reach { owned: Some([-220_000_000, 640_000_000, -217_000_000, 641_600_000]), long: vec![] });
+        reaches.units.insert("6/28/17".into(), crate::reach::Reach { owned: Some(owned), long: vec![] });
         let rc = format!("{}.5555555555555555.json.zst", crate::reach::logical(date));
         put(&root.join(&rc), &reaches.encode().unwrap());
         m.insert(crate::reach::logical(date), rc);
@@ -8025,10 +8099,40 @@ mod tests {
         // (Terrain's z3 record read as its pieces and assembly, as every reader reads it.)
         let mut read = keys.clone();
         rekey::derive(&mut read, &cov, &m, &tiles);
-        let plan = build::plan(&cov, date, &m, &read, &input_digests(root), Some(&reaches), &tiles, build::Rounds { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
+        let plan = build::plan(&cov, date, &m, &read, &input_digests(root), Some(&reaches), &tiles, build::Rounds { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
         assert!(plan.work.iter().any(|w| w.step == "unit" && w.targets[0].0 == "6/28/17"), "{:?}", plan.work);
         keys.save(root).unwrap();
         old.1
+    }
+
+    /// Not a test: seeds the scratch folder `SCENIC_SCRATCH_ROUND` names (never the project's) with
+    /// a region done that the map hasn't, so its lead begins a round (tools/check/pool-two-macs.sh
+    /// `round`): `rekey_root`'s state, the unit's ways across four z6 tiles (map tiles to share), and
+    /// the unit built as the plan wants it now.
+    #[test]
+    #[ignore = "seeds a scratch folder for tools/check/pool-two-macs.sh round"]
+    fn seed_a_scratch_round() {
+        let Some(root) = std::env::var_os("SCENIC_SCRATCH_ROUND").map(PathBuf::from) else { return };
+        assert!(!root.to_string_lossy().contains("projects/scenic-roads"), "not the project folder");
+        let date = "2026-09-28";
+        rekey_root_with(&root, [-220_000_000, 640_000_000, -10_000_000, 641_600_000]);
+        let (recipes, _) = recipes::load(&root.join("inputs/regions"));
+        let cov = crate::coverage::Coverage::from_recipes(&recipes, None, &root.join("inputs/outlines")).unwrap();
+        let m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
+        let reaches = crate::reach::Reaches::load(&root, &m, date).ok().flatten().expect("the reaches");
+        let mut keys = build::Keys::load(&root);
+        let tiles = {
+            let mut t = tiles::TerrainTiles::new(None);
+            t.load(&root, &m);
+            t
+        };
+        let mut read = keys.clone();
+        rekey::derive(&mut read, &cov, &m, &tiles);
+        let plan = build::plan(&cov, date, &m, &read, &input_digests(&root), Some(&reaches), &tiles, build::Rounds { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
+        let unit = plan.work.iter().find(|w| w.step == "unit").expect("the unit to build").targets.clone();
+        keys.record("unit", &unit);
+        keys.save(&root).unwrap();
+        eprintln!("seeded {}: unit {:?} built", root.display(), unit);
     }
 
     #[test]
@@ -8818,7 +8922,7 @@ mod pool_tests {
         // round's step, its job reading the units as the round began), the member asking for every
         // step.
         switch_on(&r, every::SWITCH);
-        *lead.round.borrow_mut() = Some(build::Round { began: 1_791_000_000, regions: Vec::new(), last: true, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false });
+        *lead.round.borrow_mut() = Some(build::Round { began: 1_791_000_000, regions: Vec::new(), last: true, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false, low: true, low_at: None });
         lead.pool_switch(Some(&r));
         // (Told with the plan's offers, as the lead's planning does.)
         lead.offer_round(lead.coord.as_ref().unwrap());

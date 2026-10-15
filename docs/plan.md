@@ -79,7 +79,8 @@ nothing built depends on how the coverage is divided into regions.
 - Coverage is drawn on the map. The status bar shows the build Mac's state and offers to reload when
   new data or a new app is in.
 - New areas appear when the build publishes its catalog: a round of publishing goes out as regions
-  are done, about every hour while the build goes on (§8, A round).
+  are done, about every hour while the build goes on, or (switched on: §8, Faster publishing) a few
+  minutes after a region is done (§8, A round).
 
 **Translations and descriptions** (§7). Two drop boxes of the input check (docs/inputs.md §6.3,
 §6.4):
@@ -2553,6 +2554,57 @@ between jobs into the other way. On:
      round as their neighbours' units are built, and wait for a later one, or the last. A round
      with nothing to publish that isn't out already (after the last; with catalogs held, weighed
      against the last held one) is none.
+   - **Faster publishing** (crate::agent::publish, task #203): five switches under `state/pool/`,
+     each off while missing or `off` in it (the rounds exactly as above), on when present. Built,
+     all off on the live state. Regions stay the publishing unit.
+     - `round-per-region`: a region's round begins `publish::round_gap` after the last began instead
+       of the hour: twice the rounds' measured time (`forecast::round_secs`, the last five rounds'
+       chains and catalogs, from the history), at most the hour, the hour while none is measured.
+       So the next round begins at least one round's length after the last ended: the regions done
+       meanwhile go out together, and at most about half the time goes to rounds. (Measured on the
+       live history, 15 Oct: the catalog alone 66–158 s, a round's map tiles 201 s a job on
+       average, so a gap of minutes rather than an hour.) The forecast takes the same gap.
+     - `low-zoom-later`: what may lag is the low zooms alone: the roads' and rails' lo packs (z3–8)
+       and the terrain's and slope's roots (z0–2), and with `near-slope` the slope and tree cover
+       assemblies (their lo packs, z3–8). A round makes them only when it's the low zooms' round
+       (`Round::low`, fixed as it begins): `build::LOW_EVERY_S` (three hours, the owner's "every few
+       hours") after the last that made them (`Round::low_at`, carried round to round in
+       `round.json`), when half the roads' lo packs or more are stale (`build::low_due`: their keys,
+       so it follows what changed), and in the last round. Every other round draws the map tiles
+       (z9–14) and the hi packs as before. How the map stays coherent: zoom ranges don't overlap
+       (root z0–2, lo z3–8, hi z9–14), so at any one zoom a layer's tiles are all of one kind; the
+       lo packs a catalog lists are those the last low zooms' round made, each a whole drawing of
+       the units as they were then (they're in the manifest under the keys they were made with, so
+       the catalog lists them, and GC keeps them, until they're made again), all of them made in
+       the same round (the low zooms' round makes every stale one); so the roads and rails below z9,
+       the z0–2 terrain and slope (and with `near-slope` the slope and tree cover below z9) are as of
+       the last low zooms' round, the rest as of this round. A region new since shows its roads from
+       z9 until the next low zooms' round, then below too. The catalog says nothing of it: each pack
+       it lists is whole and named by its content, so the app draws what it lists as it always has.
+     - `round-share`: with every step to every member on (docs/pool.md §7.2), the lead's own job of
+       a round's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the
+       targets over the members asking for that step in the last half minute plus one, at most the
+       step's batch), so the rest stay offered to the members (the round's units with them,
+       `Grant::as_of`) rather than the lead taking a whole batch before a member asks. The offers
+       are made in the same loop the round begins in (`offer_round`, then `offer`), before the lead
+       starts its own job.
+     - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes the served catalog
+       as what changed over the last (docs/formats.md, Delta catalogs), whole again once the deltas
+       since the last whole one add up to its size, and takes the sizes of the files the last one
+       lists (by content name: the same name, the same bytes) from it instead of looking at each on
+       the NAS again (measured, 15 Oct: that look was 59–139 s of a 66–158 s catalog, 8,800–9,000
+       files; only the files new since are looked at). `scenic-build catalog --whole` writes one
+       whole on demand. The server and each Mac's mirror read the deltas after the catalog they
+       serve and apply them to it (`store::catalog::latest_nas_from`); an app from before reads only
+       whole catalogs, so it serves the last whole one until the next: switched on once every Mac
+       runs an app that reads them. Held catalogs are always whole.
+     - `near-slope`: a round's slope and tree cover are the pieces near its regions (`Publishing::near`:
+       the slope pieces whose z6 tile is within 20 km of one, what its slope reads; the tree cover
+       pieces meeting one), not every stale piece of the z3 tiles around it, so a round whose regions
+       changed no terrain or tree cover near them remakes none (the pieces' keys are their inputs').
+       Their assemblies go with the low zooms (every round without `low-zoom-later`, only those that
+       can run), and a region counts as done with its pieces; the regions' work makes the rest in
+       its order, as before.
 4. **Four chains:**
    - **Roads**, in every round and after the last unit, its first stale step: a prune of map tiles
      no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.

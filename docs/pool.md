@@ -637,6 +637,20 @@ What's planned of placement (phase 4, §12):
   or just after its last target of the step when that one's open; as many targets as fit a quarter
   of an hour by their measured times (`coord::JOB_S`: their cost lines, a target's own or its
   step's 90th percentile; none measured, one a job).
+- **A round shared** (crate::agent::publish, built behind `state/pool/round-share`, task #203;
+  plan.md §8, Faster publishing): with every step to every member on, the lead's own job of a
+  round's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the targets
+  over the other agents that asked for that step in the last half minute, `Coordinator::members_asking`,
+  plus one; at most the step's batch), from the front of the plan, so the rest stay offered to the
+  members with the round's units rather than going into the lead's batch before a member asks.
+  Off: the step's batch, as before. **Scratch state (§13): both Macs, run in part** (15 Oct 2026,
+  `root`, `round`, `every` and the five switches of plan.md §8's faster publishing, the M4 leading,
+  the M1 a member): the switches read (`agent: faster publishing: …`), the round begun at once (its
+  region the last), its slope and tree cover pieces, then `pack` (a cold start, one tile, then the
+  other three in one job) and `lo` granted to the M1 with the round's units. The lead's own share
+  wasn't seen: its fake pass-sets job, run alone and never satisfied, held it throughout, so the
+  roots and the catalog (the lead's) never ran there; the share, the delta catalog and the low
+  zooms' rounds are shown by the tests.
 - **How crucial a job is** (crate::agent::placement, built: phase 4's eleventh batch, behind
   `state/pool/placement`, §12) decides who takes it first, not plan order alone: a member's ask
   is tried on the steps by their slack in the forecast (the long poles first), within a step from

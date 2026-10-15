@@ -91,6 +91,9 @@ pub struct Input<'a> {
     pub idle: Vec<Job>,
     /// Seconds since the last round began (None: none has).
     pub since_last: Option<u64>,
+    /// How long after the last round began a region's round begins (build::PUBLISH_EVERY_S; a round
+    /// per region's gap: crate::agent::publish::round_gap).
+    pub gap_s: f64,
     /// The round under way (crate::agent::build::Round): its regions, whether it's the last, and its
     /// chain's time left (the map tiles, road index, rail stops and catalog it has still to make).
     pub under_way: Option<(Vec<String>, bool, f64)>,
@@ -253,8 +256,6 @@ struct Sim {
     region_items: Vec<Vec<usize>>,
     done: bool,
 }
-
-const HOUR: f64 = 3600.0;
 
 /// The share of a region's units reading stale terrain, built as the coverage wants them now, taken
 /// to go stale once that terrain is built (`RegionLeft::expected`; which ones is known only then).
@@ -489,7 +490,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         // (Only a region the map hasn't as it is now makes a round due, as the plan's: one on it
         // that's rebuilt (a new pass) goes out with another's round, or the last.)
         let due: Vec<usize> = ready.iter().copied().filter(|&k| inp.regions[k].on_map != Some(true)).collect();
-        if regional_left && !due.is_empty() && t - last_round >= HOUR {
+        if regional_left && !due.is_empty() && t - last_round >= inp.gap_s {
             let mut at = t;
             let mut wait = t;
             for &k in &due {
@@ -758,7 +759,7 @@ mod tests {
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
-        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], idle: Vec::new(), since_last: None, under_way: None, machines, running: BTreeMap::new() }
+        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], idle: Vec::new(), since_last: None, gap_s: 3600.0, under_way: None, machines, running: BTreeMap::new() }
     }
 
     #[test]
