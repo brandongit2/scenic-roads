@@ -3,7 +3,8 @@
 // filesystem holding its inputs; what they write in the unit's folder goes back to the
 // coordinator, then the task is done. Its memory is what the coordinator predicted for it: the
 // files take theirs, a program gets the rest, and one that needs more fails as out of memory (the
-// coordinator then gives it to a worker that spares more).
+// coordinator then gives it to a worker that spares more). A task taken from another member's
+// broker (docs/pool.md §8) runs against that broker's address (`base`), straight, with CORS.
 import { filesystem, run, bytes, changes, Net } from "./runtime.js";
 
 let worker = "";
@@ -13,16 +14,16 @@ function headers(extra = {}) {
   return { "X-Worker": worker, ...extra };
 }
 
-async function post(path, body) {
-  const r = await fetch(path, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
+async function post(path, body, base = "") {
+  const r = await fetch(base + path, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${(await r.text()).slice(0, 200)}`);
   return r.status;
 }
 
-async function program(prog, version) {
+async function program(prog, version, base) {
   const key = `${prog}@${version}`;
   if (!modules.has(key)) {
-    const r = await fetch(`/work/prog/${prog}.wasm?v=${encodeURIComponent(version)}`, { headers: headers() });
+    const r = await fetch(`${base}/work/prog/${prog}.wasm?v=${encodeURIComponent(version)}`, { headers: headers() });
     if (!r.ok) throw new Error(`${prog}.wasm: ${r.status}`);
     modules.set(key, await WebAssembly.compile(await r.arrayBuffer()));
   }
@@ -103,7 +104,7 @@ function fill(v, places) {
   return /\{[a-z]+\}/.test(out) ? null : out;
 }
 
-async function exec({ lease, task, mem_mb }) {
+async function exec({ lease, task, mem_mb, base = "" }) {
   const say = (state, frac) => postMessage({ state: `${task.unit}: ${state}`, frac });
   const timings = new Timings(`task ${taskKind(task)}`, `task ${lease}`);
   const t0 = performance.now();
@@ -117,7 +118,7 @@ async function exec({ lease, task, mem_mb }) {
     Array.from({ length: 4 }, async () => {
       while (queue.length) {
         const [path, size] = queue.shift();
-        const r = await fetch(`/work/in/${lease}/${path}`, { headers: headers() });
+        const r = await fetch(`${base}/work/in/${lease}/${path}`, { headers: headers() });
         // (Not an input of this lease any more: the job took its task back and ended it.)
         if (r.status === 404 || r.status === 410) throw new Error("taken back");
         if (!r.ok) throw new Error(`input ${path}: ${r.status}`);
@@ -136,7 +137,7 @@ async function exec({ lease, task, mem_mb }) {
   files.length = 0;
   // What it reads where it lies (`/net`: the NAS's data and the data servers' files, through the
   // coordinator), when a place names it.
-  const net = Object.values(task.places || {}).some((p) => typeof p === "string" && p.startsWith("/net")) ? new Net(`/work/net/${lease}`, headers()) : null;
+  const net = Object.values(task.places || {}).some((p) => typeof p === "string" && p.startsWith("/net")) ? new Net(`${base}/work/net/${lease}`, headers()) : null;
   let peak = 0;
   const t1 = performance.now();
   for (const [i, r] of task.runs.entries()) {
@@ -146,7 +147,7 @@ async function exec({ lease, task, mem_mb }) {
     const env = Object.fromEntries(r.env.map(([k, v]) => [k, fill(v, task.places)]).filter(([, v]) => v !== null));
     const held = bytes(root) / 1048576;
     const tc = performance.now();
-    const module = await program(r.prog, task.version);
+    const module = await program(r.prog, task.version, base);
     const tr = performance.now();
     timings.add("the programs fetched and compiled", "net", tr - tc);
     const res = run(module, args, env, root, mem_mb - held, net);
@@ -169,14 +170,14 @@ async function exec({ lease, task, mem_mb }) {
   let sentBytes = 0;
   for (const [i, [path, data]] of written.entries()) {
     say(`sending ${path}`, 0.9 + (0.1 * i) / written.length);
-    const r = await fetch(`/work/out/${lease}/${path}`, { method: "PUT", headers: headers({ "Content-Type": "application/octet-stream" }), body: data });
+    const r = await fetch(`${base}/work/out/${lease}/${path}`, { method: "PUT", headers: headers({ "Content-Type": "application/octet-stream" }), body: data });
     if (r.status === 410) throw new Error("taken back");
     if (!r.ok) throw new Error(`sending ${path}: ${r.status}`);
     outputs.push({ path, size: data.byteLength });
     sentBytes += data.byteLength;
   }
   timings.add("what they wrote sent back", "net", performance.now() - ts, sentBytes, outputs.length);
-  const status = await post("/work/done", { worker, lease, outputs, removed, secs: runS, fetch_s: fetchS, peak_mb: Math.round(peak), timings: timings.done() });
+  const status = await post("/work/done", { worker, lease, outputs, removed, secs: runS, fetch_s: fetchS, peak_mb: Math.round(peak), timings: timings.done() }, base);
   if (status === 410) throw new Error("taken back");
   return { peak: Math.round(peak), runS };
 }
@@ -192,7 +193,7 @@ onmessage = async (e) => {
     postMessage({ done: job.lease, ok: true, peak_mb: r.peak });
   } catch (err) {
     if (err.message !== "taken back") {
-      await post("/work/fail", { worker, lease: job.lease, error: String(err.message).slice(0, 3000), oom_mb: err.oom ?? null }).catch(() => {});
+      await post("/work/fail", { worker, lease: job.lease, error: String(err.message).slice(0, 3000), oom_mb: err.oom ?? null }, job.base || "").catch(() => {});
     }
     postMessage({ done: job.lease, ok: false, error: err.message, oom: err.oom ?? null });
   }

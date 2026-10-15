@@ -180,8 +180,8 @@ function reap() {
   try { localStorage.removeItem("running"); } catch {}
   if (!died.length && !hidden.length && !gone.length) return false;
   // (Given back again, or for the first time: a lease already given back is gone, and that's all.)
-  for (const t of gone) call("/work/fail", { worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }).catch(() => {});
-  for (const t of hidden) call("/work/fail", { worker, lease: t.lease, error: "the page was closed in the background", interrupted: true }).catch(() => {});
+  for (const t of gone) call("/work/fail", { worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }, t.base || "").catch(() => {});
+  for (const t of hidden) call("/work/fail", { worker, lease: t.lease, error: "the page was closed in the background", interrupted: true }, t.base || "").catch(() => {});
   if (hidden.length) log(`The page was closed in the background with ${hidden.length > 1 ? `${hidden.length} tasks` : "a task"} under way: given back.`);
   if (!died.length) return false;
   const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
@@ -189,15 +189,18 @@ function reap() {
   store.set("ceiling", ceiling);
   store.set("lowered", true);
   log(`<span class="bad">A page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
-  for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }).catch(() => {});
+  for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }, t.base || "").catch(() => {});
   return true;
 }
 reap();
 let nearMisses = store.get("near", 0);
 
-async function call(path, body) {
+// A POST of JSON to this page's own member (`base` ""), or straight to another member's broker
+// (docs/pool.md §8: its address, with CORS), given up after eight seconds there: a member whose
+// firewall drops connections mustn't hold the page up.
+async function call(path, body, base = "") {
   const headers = { "Content-Type": "application/json", "X-Worker": worker };
-  const r = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
+  const r = await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body), signal: base && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
   if (r.status === 204) return [204, null];
   const text = await r.text();
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
@@ -226,7 +229,7 @@ function spawn(s) {
   s.w.postMessage({ init: { worker } });
 }
 function makeSlot(i) {
-  const s = { i, w: null, lease: null, task: null, mem: 0, started: 0, state: "idle", detail: "", frac: 0 };
+  const s = { i, w: null, lease: null, base: "", task: null, mem: 0, started: 0, state: "idle", detail: "", frac: 0 };
   spawn(s);
   const row = document.createElement("div");
   row.className = "slot";
@@ -262,7 +265,7 @@ function show() {
 // this one dies can give them back, and lower its ceiling if it died on screen. (Not once it's
 // leaving: its note then says so, `pagehide`.)
 let leaving = false;
-const leased = () => slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
+const leased = () => slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem, base: s.base || "" }));
 function remember() {
   if (!helping || leaving) return;
   const r = leased();
@@ -282,7 +285,7 @@ window.addEventListener("pagehide", () => {
   const r = leased();
   for (const t of r) {
     try {
-      fetch("/work/fail", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
+      fetch((t.base || "") + "/work/fail", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
     } catch {}
   }
   try {
@@ -339,10 +342,86 @@ function finish(s, ok, m = {}) {
   setTimeout(fill, 100);
 }
 
+// ---- Tasks brokered by every member (docs/pool.md §8) -------------------------------------------
+// With the pool's brokers on, each member brokers its own jobs' tasks: this page asks its own
+// member first, then the members `/work/where` names (most waiting first), straight at their
+// addresses (CORS; over HTTPS when this page is). A member that doesn't answer (asleep, gone, or its
+// firewall dropping the connection) is passed over for two minutes. The build at a glance and the
+// lead's controls come from the lead's address when it answers, else from this page's member.
+// When this page's own member stops answering, the page moves to the next member that does (once no
+// task it took elsewhere is running). Off (`/work/where` refused): as before, its own member alone.
+const CAN = ["tail", "bldtile", "treeblock", "terrainsub"];
+const AWAY_MS = 120000;
+const away = new Map();
+let peers = store.get("peers", null), peersAt = -Infinity, ownFails = 0, moveTo = null;
+const hostOf = (base) => { try { return new URL(base).host; } catch { return base; } };
+const reachable = (base) => base && base !== location.origin && !(away.get(base) > Date.now());
+function unreachable(base, e) {
+  if (!(away.get(base) > Date.now())) log(`<span class="bad">${esc(hostOf(base))} doesn't answer (${esc(e.message)}): passed over for two minutes</span>`);
+  away.set(base, Date.now() + AWAY_MS);
+}
+// A call to this page's own member, its failures counted: the third in a row, with another member
+// that answers, moves the page there.
+async function own(f) {
+  try {
+    const r = await f();
+    ownFails = 0;
+    return r;
+  } catch (e) {
+    if (e instanceof TypeError && ++ownFails >= 3) failover();
+    throw e;
+  }
+}
+async function where(free) {
+  if (performance.now() - peersAt < 15000) return peers;
+  peersAt = performance.now();
+  try {
+    const [code, w] = await call("/work/where", { can: CAN, mem_mb: free, https: location.protocol === "https:" });
+    peers = code === 200 ? w : null;
+  } catch { /* (Its own member away: the members kept from before.) */ }
+  store.set("peers", peers && { members: peers.members, lead: peers.lead });
+  return peers;
+}
+async function elsewhere(ask, free) {
+  const w = await where(free);
+  for (const b of w?.brokers || []) {
+    if (!reachable(b.base)) continue;
+    try {
+      const [code, g] = await call("/work/ask", ask, b.base);
+      if (code === 200 && g) return [code, g, b.base];
+    } catch (e) { unreachable(b.base, e); }
+  }
+  return [204, null, ""];
+}
+async function failover() {
+  if (moveTo) return;
+  for (const m of peers?.members || []) {
+    if (!reachable(m.base)) continue;
+    try {
+      await call("/work/where", { can: CAN, mem_mb: 0, https: location.protocol === "https:" }, m.base);
+      moveTo = m.base;
+      log(`This page's member doesn't answer: moving to ${esc(m.host || hostOf(m.base))}${slots.some((s) => s.lease && s.base) ? " once the tasks taken elsewhere finish" : ""}.`);
+      fill();
+      return;
+    } catch (e) { unreachable(m.base, e); }
+  }
+}
+// The dashboard's calls: the build at a glance and the lead's controls at the lead's address when
+// it answers (the lead knows the whole build), else this page's member's.
+const LEADS = new Set(["/work/swarm", "/work/history", "/work/pause", "/work/lead", "/work/inputs"]);
+async function dashCall(path, body) {
+  const lead = peers?.lead;
+  if (LEADS.has(path) && reachable(lead)) {
+    try { return await call(path, body, lead); } catch (e) { unreachable(lead, e); }
+  }
+  return own(() => call(path, body));
+}
+
 // Asks for work while a slot is idle and memory is free; the coordinator picks what fits. (A new
 // version installed: none asked for; reloaded into it once every slot is idle.)
 let asking = false, lastNone = -Infinity, update = false;
 async function fill() {
+  if (moveTo && slots.every((s) => !s.lease || !s.base)) { location.href = `${moveTo}/work/${location.search}`; return; }
   if (update && slots.every((s) => !s.lease)) {
     try { sessionStorage.setItem("paused", paused ? "1" : ""); } catch {}
     location.reload();
@@ -354,13 +433,18 @@ async function fill() {
   if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
   asking = true;
   try {
-    const [code, g] = await call("/work/ask", { worker, kind: "web", label, can: ["tail", "bldtile", "treeblock", "terrainsub"], mem_mb: free, cores, visible: document.visibilityState === "visible" });
+    const ask = { worker, kind: "web", label, can: CAN, mem_mb: free, cores, visible: document.visibilityState === "visible" };
+    let [code, g] = await own(() => call("/work/ask", ask));
+    let base = "";
+    // (None here: the brokers whose work fits, most waiting first, straight: docs/pool.md §8.)
+    if (code === 204 || !g) [code, g, base] = await elsewhere(ask, free);
     if (code === 204 || !g) { lastNone = performance.now(); $("state").textContent = "waiting for work"; return; }
-    Object.assign(idle, { lease: g.lease, task: g.task, mem: g.mem_mb, started: performance.now(), state: "run", detail: `${g.task.unit}: fetching`, frac: 0 });
+    if (base) log(`${esc(g.task.unit || g.task.kind)}: taken from ${esc(hostOf(base))}`);
+    Object.assign(idle, { lease: g.lease, base, task: g.task, mem: g.mem_mb, started: performance.now(), state: "run", detail: `${g.task.unit}: fetching`, frac: 0 });
     reserved += g.mem_mb;
     remember();
     $("state").textContent = "working";
-    idle.w.postMessage({ run: { lease: g.lease, task: g.task, mem_mb: g.mem_mb } });
+    idle.w.postMessage({ run: { lease: g.lease, task: g.task, mem_mb: g.mem_mb, base } });
     show();
   } catch (e) {
     lastNone = performance.now();
@@ -382,7 +466,7 @@ setInterval(async () => {
     // (The answer for this lease: by the time it comes, the slot may have finished and taken another.)
     const lease = s.lease;
     try {
-      const [, r] = await call("/work/beat", { worker, lease, progress: s.detail, frac: s.frac });
+      const [, r] = await call("/work/beat", { worker, lease, progress: s.detail, frac: s.frac }, s.base || "");
       if (r && r.ok === false && s.lease === lease) {
         log(`${esc(s.task.unit)}: taken back (another worker or the build Mac has it)`);
         spawn(s);
@@ -426,7 +510,7 @@ function startHelping() {
 }
 function stopHelping() {
   for (const s of slots) {
-    if (s.lease) call("/work/fail", { worker, lease: s.lease, error: "this device stopped helping", interrupted: true }).catch(() => {});
+    if (s.lease) call("/work/fail", { worker, lease: s.lease, error: "this device stopped helping", interrupted: true }, s.base || "").catch(() => {});
     s.w?.terminate();
     s.row.remove();
   }
@@ -499,7 +583,7 @@ try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStor
 // ---- The whole build at a glance (dash.js) -------------------------------------------------------
 let buildState = "";
 dashboard({
-  root: $("dash"), call, label, store,
+  root: $("dash"), call: dashCall, label, store,
   // (The header says how the build goes; while this device helps, how its own work goes.)
   onState: (st) => { buildState = st; if (!helping) $("state").textContent = st; },
   onError: (m) => log(`<span class="bad">${esc(m)}</span>`),

@@ -21,6 +21,7 @@
 //! stopping it at any time loses at most its current stage.
 
 pub mod backup;
+pub mod brokers;
 pub mod build;
 pub mod claims;
 pub mod cond;
@@ -637,6 +638,8 @@ fn coord_port() -> u16 {
 #[cfg(test)]
 thread_local! {
     static TEST_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
+    /// A member's broker's port, beside its lead's coordinator in the same process (`broker_port`).
+    static TEST_BROKER_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
     /// Whether this Mac can lead, whatever its conditions say (the pool's tests).
     static TEST_ABLE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
@@ -833,6 +836,15 @@ pub struct Agent {
     /// Every step to every member (crate::agent::every, `state/pool/every-step`), as the switch was
     /// last read: it acts only in the pool (`every_on`).
     every: bool,
+    /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`), as the switch
+    /// was last read: it acts only in the pool (`brokers_on`).
+    brokers: bool,
+    /// A member's broker: its coordinator for its own jobs' tasks alone (the lead's are its
+    /// coordinator's, `coord`), and when one last failed to start.
+    broker: Option<std::sync::Arc<crate::coord::Coordinator>>,
+    broker_failed: Option<Instant>,
+    /// Its address over HTTPS last looked for, and what it was.
+    broker_https: Option<(Instant, Option<String>)>,
     /// This member's progress file as it last wrote it (or read it, as the process began).
     held_progress: Option<resume::Progress>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
@@ -1107,7 +1119,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1566,6 +1578,10 @@ impl Agent {
         let guard_stopped = self.slots[k].guard_stopped;
         // An own job's timings, taken whichever way it ends (none left for the slot's next job).
         let own_timings = self.slots[k].timings_out.take();
+        // (A member's job's tasks, at this Mac's broker: gone with it.)
+        if let (Some(b), Some(p)) = (&self.broker, pid) {
+            b.close_tasks(p);
+        }
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
@@ -3992,7 +4008,7 @@ impl Agent {
             }
             env.push(("SCENIC_COSTS".into(), self.costs_path(k).to_string_lossy().into_owned()));
             if let Some(c) = &self.coord {
-                env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", coord_port())));
+                env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", c.port())));
                 env.push(("SCENIC_COORD_TOKEN".into(), c.job_token.clone()));
             }
             // A round's step that reads the units: as they were when the round began.
@@ -4000,6 +4016,10 @@ impl Agent {
             if let Some(r) = self.round.borrow().as_ref().filter(|r| !r.over && build::AS_OF_STEPS.contains(&step)) {
                 env.push((crate::out::UNITS_AS_OF_ENV.into(), format!("{}#{}", self.o.home.join(ROUND_FILE).display(), r.began)));
             }
+        } else if let Some(b) = &self.broker {
+            // (A member's job offers its tasks through this Mac's broker, docs/pool.md §8.)
+            env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", b.port())));
+            env.push(("SCENIC_COORD_TOKEN".into(), b.job_token.clone()));
         }
         // This Mac's cache, where a job keeps what it reads again and again (the coverage:
         // pipeline::coverage::Coverage::load).
@@ -5299,6 +5319,69 @@ impl Agent {
         self.every && self.pool.is_some()
     }
 
+    /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`) act: switched on,
+    /// in the pool. Off, or out of the pool, the agent is as it was (a member brokers nothing).
+    fn brokers_on(&self) -> bool {
+        self.brokers && self.pool.is_some()
+    }
+
+    /// Tasks brokered by every member, each loop (no wait on the pool's run: a tick may hold it): a
+    /// member's broker started (its jobs' tasks its own) or, switched off, stopped; its leases
+    /// lapsing, its pause the lead's; its address over HTTPS looked for. The heartbeat's `broker` and
+    /// the members' brokers read from theirs are the run's, under its lock, in its steps (the loop's
+    /// pool step and the ticks: `pool::Run::tend_brokers`, told this Mac's broker through `Cx`).
+    /// Off: nothing of it, every coordinator told none.
+    fn tend_brokers(&mut self) {
+        if !self.brokers_on() {
+            if let Some(b) = self.broker.take() {
+                eprintln!("agent: this Mac's broker stopped (tasks brokered by every member are off): its jobs run their tasks themselves");
+                b.stop();
+            }
+            if let Some(c) = self.coord.as_ref().filter(|c| c.shared.lock().unwrap().brokers.is_some()) {
+                c.set_brokers(None);
+            }
+            return;
+        }
+        let now = Instant::now();
+        // A member's broker, for its own jobs' tasks (tried again five minutes after it failed; not
+        // while a tick holds the run: the next loop).
+        if self.coord.is_none() && self.broker.is_none() && self.o.helper && !self.o.dry_run && self._lock.is_some() && brokers::stale(self.broker_failed, now, brokers::HTTPS_EVERY) {
+            let tried = match self.try_pooled() {
+                Some(Some(run)) => Some(make_coordinator_on(&self.o, Some(&run), &self.app, &self.host, broker_port())),
+                _ => None,
+            };
+            if let Some(made) = tried {
+                match made {
+                    Some(b) => {
+                        b.become_broker();
+                        eprintln!("agent: this Mac's broker started at {}: its jobs' tasks are offered there", b.contact.urls.join(", "));
+                        self.broker = Some(std::sync::Arc::new(b));
+                    }
+                    None => self.broker_failed = Some(now),
+                }
+            }
+        }
+        let Some(c) = self.coord.as_ref().or(self.broker.as_ref()) else { return };
+        if let Some(b) = &self.broker {
+            for l in b.expire() {
+                eprintln!("agent: {}'s lease of {} lapsed at this Mac's broker (no word for {} min); offered again", l.worker, l.what(), crate::coord::TTL.as_secs() / 60);
+            }
+            // (Its pages paused as the build is: the lead's pause, as this member knows it.)
+            if b.pause() != self.pause {
+                b.set_pause(self.pause.clone(), now_s());
+            }
+        }
+        if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
+            self.broker_https = Some((now, served_https(c.port())));
+        }
+    }
+
+    /// The coordinator brokering this Mac's tasks, for the run's steps (`Cx::broker`): the lead's,
+    /// or a member's broker; None with tasks brokered by every member off.
+    fn brokering(&self) -> Option<std::sync::Arc<crate::coord::Coordinator>> {
+        self.brokers_on().then(|| self.coord.clone().or_else(|| self.broker.clone())).flatten()
+    }
+
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
     /// by the NAS's `pass.*.json` files, as before.
     fn latest_pass(&self, root: &Path) -> Option<String> {
@@ -5557,6 +5640,13 @@ impl Agent {
             }
             self.every = on;
         }
+        if let Some(on) = brokers::on(r) {
+            if on != self.brokers {
+                eprintln!("agent: tasks brokered by every member are {}", if on { "on (this Mac's jobs' tasks its own broker's; pages from the members' addresses answered)" } else { "off" });
+            }
+            self.brokers = on;
+        }
+        self.tend_brokers();
         // (The lead's coordinator told, with this Mac's room now, each loop; its round with the
         // plan's offers: `offer_round`.)
         if let Some(c) = &self.coord {
@@ -5664,6 +5754,7 @@ impl Agent {
         let g = self.pool_step_in(root, c, waiting);
         let mut run = pool::lock(&shared);
         run.cx.coord = self.coord.clone();
+        run.cx.broker = self.brokering();
         run.stepped_full();
         self.pool_seen = Some(run.pool_view());
         g
@@ -5758,7 +5849,7 @@ impl Agent {
         if let Some(co) = &self.coord {
             co.set_member(&run.side.member().id);
         }
-        run.cx = pool::Cx { root: Some(r.to_path_buf()), home: home.clone(), coord: self.coord.clone(), able, duty, starting: false, lead_answered };
+        run.cx = pool::Cx { root: Some(r.to_path_buf()), home: home.clone(), coord: self.coord.clone(), able, duty, starting: false, lead_answered, broker: self.brokering(), broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()) };
         // (The jobs an earlier process left, once `run` stopped any still running.)
         run.take_left(&home);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), lead.then(|| crate::handoff::nas_base(r)).as_deref(), &home.join("outbox"));
@@ -5768,6 +5859,7 @@ impl Agent {
             run.controls.page.extend(co.take_lead_asks());
         }
         lead::take(&mut run, &home);
+        run.tend_brokers();
         let out = run.step(able);
         // (Its part changed, in this process: its coordinator started or stopped, its jobs going on;
         // not tried again once a restart is asked for, its coordinator failing to start.)
@@ -5787,6 +5879,7 @@ impl Agent {
         pool::took_up(&mut run, self.coord.as_deref(), &took, out.leads, &self.host, &keep);
         lead::after(&mut run, &out, r, &home, self.coord.as_deref());
         run.cx.coord = self.coord.clone();
+        run.cx.broker = self.brokering();
         for e in &out.events {
             if let crate::pool::driver::Event::Failed { what, why } | crate::pool::driver::Event::Waits { what, why } = e {
                 waiting.push(Waiting { step: None, what: "The pool".into(), why: format!("couldn't {what} yet: {why}") });
@@ -5820,7 +5913,7 @@ impl Agent {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
         match (role, out.leads) {
             (pool::Role::Member, Some(term)) => {
-                let made = make_coordinator(&self.o, self.pooled().as_deref(), &self.app, &self.host);
+                let made = self.broker.take().or_else(|| make_coordinator(&self.o, self.pooled().as_deref(), &self.app, &self.host).map(std::sync::Arc::new));
                 match made {
                     Some(c) => {
                         eprintln!("agent: this Mac leads term {term}: its coordinator started, its jobs going on");
@@ -5830,7 +5923,7 @@ impl Agent {
                             run.role = pool::Role::Lead;
                         }
                         self.o.helper = false;
-                        self.coord = Some(std::sync::Arc::new(c));
+                        self.coord = Some(c);
                         self.published = None;
                     }
                     None => {
@@ -5841,18 +5934,30 @@ impl Agent {
                 }
             }
             (pool::Role::Lead, None) if out.stop.is_none() => {
-                eprintln!("agent: this Mac no longer leads: its coordinator stopped, its jobs going on through the lead");
+                eprintln!("agent: this Mac no longer leads: its jobs going on through the lead");
                 if let Some(mut run) = self.pooled() {
                     run.role = pool::Role::Member;
                     // (Nothing of the coordinator's for a tick from here.)
                     run.cx.coord = None;
+                    run.cx.broker = None;
                 }
                 // (Its coordinator first: what ends from here, the duties stopped below too, ends
                 // through the new lead, `end_lease`.)
-                let old = self.coord.take();
+                let mut old = self.coord.take();
                 if let Some(c) = &old {
                     c.unpublish(root);
-                    c.stop();
+                    // (Tasks brokered by every member: kept on as this Mac's broker, its tasks and
+                    // the pages holding them going on; the jobs' leases the new lead's.)
+                    if self.brokers_on() {
+                        c.become_broker();
+                        eprintln!("agent: its coordinator kept on as this Mac's broker");
+                    } else {
+                        eprintln!("agent: its coordinator stopped");
+                        c.stop();
+                    }
+                }
+                if self.brokers_on() {
+                    self.broker = old.take();
                 }
                 self.o.helper = true;
                 self.client = None;
@@ -6325,12 +6430,16 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
 /// (its token copied from the pool first: the same on every lead); None when it can't start (this
 /// Mac then builds alone, or, a member that took the lead in its process, restarts into it).
 fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str) -> Option<crate::coord::Coordinator> {
+    make_coordinator_on(o, run, app, host, coord_port())
+}
+
+/// `make_coordinator`, on `port` (a member's broker's: `broker_port`).
+fn make_coordinator_on(o: &Options, run: Option<&pool::Run>, app: &str, host: &str, port: u16) -> Option<crate::coord::Coordinator> {
     if let Some(r) = run {
         if let Err(e) = pool::seed(r.side.nas(), &o.home.join("coord")) {
             eprintln!("agent: the pool's token: {e:#}");
         }
     }
-    let port = coord_port();
     // (A test's port, held open by it from the start: no other process can take it between.)
     #[cfg(test)]
     let held = crate::coord::take_test_listener(port);
@@ -6350,6 +6459,29 @@ fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str)
             None
         }
     }
+}
+
+/// The port a member's broker answers on (docs/pool.md §8): the coordinator's (one runs at a time
+/// on a Mac: the lead's, or a member's broker); a unit test's own (`TEST_BROKER_PORT`), beside
+/// its lead's in the same process.
+fn broker_port() -> u16 {
+    #[cfg(test)]
+    if let Some(p) = TEST_BROKER_PORT.with(|p| p.get()) {
+        return p;
+    }
+    coord_port()
+}
+
+/// A port's address over HTTPS, when `tailscale serve` proxies it (crate::net::served_https); none
+/// in a unit test (no Mac's own Tailscale decides it) nor in WebAssembly.
+#[cfg(not(any(test, target_os = "wasi")))]
+fn served_https(port: u16) -> Option<String> {
+    crate::net::served_https(port)
+}
+
+#[cfg(any(test, target_os = "wasi"))]
+fn served_https(_port: u16) -> Option<String> {
+    None
 }
 
 /// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
@@ -8831,6 +8963,151 @@ mod pool_tests {
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));
+    }
+
+    /// Tasks brokered by every member (`state/pool/brokers`, crate::agent::brokers), two agents in
+    /// one process, a part changing in its process: the member runs a broker and gives its job its
+    /// address; its heartbeat says a task waits there, and the lead answers a page's "where is
+    /// work" with it; a page from the lead's address takes it straight from the member's broker,
+    /// and the lead's own task from the lead. The lead handed to the member: its broker becomes its
+    /// coordinator, the old lead's coordinator its broker, and neither page's task is dropped (both
+    /// beat and hand back where they were taken). Off: the old lead's broker stops.
+    #[test]
+    fn brokers_a_members_task_is_taken_by_a_page_from_it_and_a_handover_drops_no_task() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let bport = free_port();
+        TEST_BROKER_PORT.with(|p| p.set(Some(bport)));
+        TEST_ABLE.with(|c| c.set(Some(true)));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, pool::SLOTS);
+        switch_on(&r, brokers::SWITCH);
+        let bin = app(d.path());
+        let gate = d.path().join("gate");
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
+        std::fs::write(bin.join("scenic-build"), script).unwrap();
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let lport = lead.coord.as_ref().unwrap().port();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.step().unwrap();
+        let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
+        lead.pooled().unwrap().side.know(&im);
+        m.pooled().unwrap().side.know(&il);
+        // The member's broker, on a port of its own; the lead's coordinator brokers the lead's.
+        assert!(m.coord.is_none() && m.broker.as_ref().is_some_and(|b| b.port() == bport) && lead.broker.is_none());
+        // Its job given its broker's address (it waits at the gate meanwhile).
+        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        until(&mut m, |m| m.slots[0].running.is_some());
+        // A task each: the member's job's at its broker, the lead's own at its coordinator.
+        let offer = |port: u16, token: &str, unit: &str| -> u64 {
+            let job = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], token.to_string(), "job");
+            let root = d.path().join(format!("task-{port}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let o = crate::coord::task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": unit }), root, inputs: Default::default(), mem_mb: 300 };
+            job.post_json("/task/offer", &serde_json::to_value(&o).unwrap()).unwrap().1["id"].as_u64().unwrap()
+        };
+        let mt = offer(bport, &m.broker.as_ref().unwrap().job_token, "6/1/1");
+        let lt = offer(lport, &lead.coord.as_ref().unwrap().job_token, "6/1/2");
+        // The heartbeats say so, and each reads the other's (now: not waiting the half minute).
+        let fresh = |a: &mut Agent| {
+            a.pooled().unwrap().brokers_read = None;
+            a.step().unwrap();
+        };
+        let told = |a: &Agent, who: &str| a.coord.as_ref().or(a.broker.as_ref()).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| b.peers.iter().any(|p| p.member == who && p.broker.as_ref().is_some_and(|b| b.waiting.get("tail").is_some_and(|w| w.n == 1))));
+        let end = Instant::now() + WATCHDOG;
+        while !(told(&lead, &im) && told(&m, &il)) {
+            fresh(&mut lead);
+            fresh(&mut m);
+            assert!(Instant::now() < end, "the brokers' heartbeats not read");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        // A page from the lead's address: where is work? The member's broker and the lead's.
+        let page_origin = crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).unwrap();
+        let call = |port: u16, path: &str, body: serde_json::Value| -> (u16, serde_json::Value, Option<String>) {
+            let b = body.to_string();
+            let (code, json, acao) = http_post(port, path, &[("Origin", &page_origin), ("X-Worker", "ipad")], &b);
+            (code, json, acao)
+        };
+        let (code, w, _) = call(lport, "/work/where", serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }));
+        assert_eq!(code, 200);
+        let at: Vec<&str> = w["brokers"].as_array().unwrap().iter().map(|b| b["member"].as_str().unwrap()).collect();
+        assert!(at.contains(&im.as_str()) && at.contains(&il.as_str()), "{w}");
+        assert_eq!(w["lead"].as_str(), crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).as_deref());
+        // The page takes the member's task from the member's broker (another Mac's page: CORS),
+        // and the lead's from the lead.
+        let ask = serde_json::json!({ "worker": "ipad", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 });
+        let (code, g, acao) = call(bport, "/work/ask", ask.clone());
+        assert_eq!((code, g["id"].as_u64(), acao.as_deref()), (200, Some(mt), Some(page_origin.as_str())));
+        let ml = g["lease"].as_u64().unwrap();
+        let (code, g, _) = call(lport, "/work/ask", ask);
+        assert_eq!((code, g["id"].as_u64()), (200, Some(lt)));
+        let ll = g["lease"].as_u64().unwrap();
+        // The lead handed to the member, in their processes.
+        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        let end = Instant::now() + WATCHDOG;
+        while !(m.pooled().unwrap().side.driver().leads() == Some(2) && m.coord.is_some() && lead.coord.is_none()) {
+            lead.step().unwrap();
+            m.step().unwrap();
+            assert!(Instant::now() < end, "not handed over");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
+        // The member's broker is its coordinator now, the old lead's coordinator its broker.
+        assert!(m.broker.is_none() && m.coord.as_ref().unwrap().port() == bport);
+        assert_eq!(lead.broker.as_ref().map(|b| b.port()), Some(lport));
+        // Neither task dropped: each page's lease beats and hands back where it was taken.
+        for (port, lease, id) in [(bport, ml, mt), (lport, ll, lt)] {
+            let (code, b, _) = call(port, "/work/beat", serde_json::json!({ "worker": "ipad", "lease": lease }));
+            assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "task {id}'s lease at {port}");
+            let (code, _, _) = call(port, "/work/done", serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [], "secs": 1.0, "peak_mb": 100 }));
+            assert_eq!(code, 200, "task {id} handed back at {port}");
+        }
+        assert_eq!(lead.broker.as_ref().unwrap().brokered().1, 0);
+        // The member's job (granted in term 1) had its broker's address, and ends through it, the
+        // new lead.
+        std::fs::write(&gate, b"").unwrap();
+        let end = Instant::now() + WATCHDOG;
+        while !(m.slots[0].running.is_none() && m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))) {
+            lead.step().unwrap();
+            m.step().unwrap();
+            assert!(Instant::now() < end, "the job's end not merged");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let env = std::fs::read_to_string(bin.join("env-slope")).unwrap();
+        assert!(env.contains(&format!("SCENIC_COORD=http://127.0.0.1:{bport}")), "{env}");
+        // Off: the old lead's broker stops, the new lead's coordinator told none, and the heartbeat
+        // says none from the run's next step.
+        std::fs::write(r.join(brokers::SWITCH), "off").unwrap();
+        lead.step().unwrap();
+        m.step().unwrap();
+        assert!(lead.broker.is_none() && lead.pooled().unwrap().side.broker.is_none());
+        assert!(m.coord.as_ref().unwrap().shared.lock().unwrap().brokers.is_none());
+        assert_eq!(http_post(bport, "/work/where", &[("Origin", &page_origin)], "{}").0, 403);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        TEST_ABLE.with(|c| c.set(None));
+        TEST_BROKER_PORT.with(|p| p.set(None));
+    }
+
+    /// A POST of JSON to this process's coordinator on `port`, as a page sends it: its status, its
+    /// JSON, and the origin its answer allows (CORS).
+    fn http_post(port: u16, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, serde_json::Value, Option<String>) {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let head: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        s.write_all(format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        let mut r = Vec::new();
+        s.read_to_end(&mut r).unwrap();
+        let text = String::from_utf8_lossy(&r).to_string();
+        let (h, b) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+        let code = h.split(' ').nth(1).unwrap().parse().unwrap();
+        let acao = h.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("access-control-allow-origin")).map(|(_, v)| v.trim().to_string()));
+        (code, serde_json::from_str(b.trim()).unwrap_or_default(), acao)
     }
 
     #[test]

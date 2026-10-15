@@ -24,6 +24,7 @@
 //! naming this Mac and from no web page elsewhere (crate::net::ours, from_the_page); a running job's
 //! (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
 
+pub mod brokers;
 pub mod client;
 pub mod history;
 pub mod lease;
@@ -273,6 +274,11 @@ pub struct Shared {
     /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
     /// just after it in plan order when it can (`pick_every`).
     pub last: BTreeMap<(String, String), String>,
+    /// Tasks brokered by every member (docs/pool.md §8; crate::agent::brokers): the members and
+    /// their brokers, as the agent last read their heartbeats. None: the switch off, the
+    /// coordinator as it was (no `/work/where`, no page from elsewhere, a take-up's leases in place
+    /// of its own).
+    pub brokers: Option<brokers::Brokers>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
     /// The time its leases, workers' paces and their being around are reckoned in (a test's
@@ -602,6 +608,9 @@ pub struct Coordinator {
     /// takes it to write, so it returns only once none runs, and none starts after (`http::json`):
     /// no request writes its state (leases, costs, …) into its folder once `stop` has returned.
     routes: Arc<std::sync::RwLock<bool>>,
+    /// The origins whose pages may call it from elsewhere (CORS: the members' addresses, while
+    /// tasks are brokered by every member; None: none, as before).
+    cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>>,
 }
 
 impl Drop for Coordinator {
@@ -844,7 +853,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, round: None, last: BTreeMap::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, round: None, last: BTreeMap::new(), brokers: None, dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -854,9 +863,10 @@ impl Coordinator {
         let wake: Arc<tokio::sync::Notify> = Default::default();
         let (closed_tx, closed) = std::sync::mpsc::channel();
         let routes: Arc<std::sync::RwLock<bool>> = Default::default();
-        let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default(), routes: routes.clone() };
+        let cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>> = Default::default();
+        let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default(), routes: routes.clone(), cors: cors.clone() };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
-        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped, wake, closed: Mutex::new(Some(closed)), routes };
+        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped, wake, closed: Mutex::new(Some(closed)), routes, cors };
         c.write_page();
         Ok(c)
     }
@@ -1302,7 +1312,17 @@ impl Coordinator {
     pub fn load_pool_state(&self, p: &PoolState) -> Result<usize> {
         let mut s = self.shared.lock().unwrap();
         let (now, unix) = (s.now(), unix_now());
+        // (A broker's own tasks' leases kept: its pages go on with them, docs/pool.md §8. One whose
+        // id a restored lease has is lapsed, its task offered again.)
+        let kept = if s.brokers.is_some() { s.leases.tasks() } else { Vec::new() };
         let n = s.leases.restore(&p.leases, now)?;
+        for l in kept {
+            let id = l.id;
+            if !s.leases.put_back(l) {
+                eprintln!("coordinator: task lease {id}'s id is a lease taken up: its task offered again");
+                s.tasks.lapsed(id);
+            }
+        }
         // (Its measures, each in place of a floor kept here that the other lead had none of: its
         // measure took that floor's place there.)
         for k in p.costs.keys() {
@@ -1333,6 +1353,61 @@ impl Coordinator {
     /// The history's events after number `seq` (the pool's history per writer: docs/pool.md §7.5).
     pub fn history_since(&self, seq: u64) -> Vec<history::Event> {
         self.shared.lock().unwrap().history.since(seq, usize::MAX)
+    }
+
+    /// Its port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Tasks brokered by every member (docs/pool.md §8, crate::agent::brokers): the members in
+    /// touch and their brokers, as its agent read their heartbeats, and so the origins whose pages
+    /// may call it (CORS). None: the switch off, the coordinator as it was.
+    pub fn set_brokers(&self, b: Option<brokers::Brokers>) {
+        *self.cors.write().unwrap_or_else(|e| e.into_inner()) = b.as_ref().map(|b| b.origins.clone());
+        self.shared.lock().unwrap().brokers = b;
+    }
+
+    /// The tasks its jobs offer, for its Mac's heartbeat: those waiting for a worker by kind (how
+    /// many, the least memory one takes), and how many a worker holds.
+    pub fn brokered(&self) -> (BTreeMap<String, brokers::Waiting>, u32) {
+        let s = self.shared.lock().unwrap();
+        let mut waiting: BTreeMap<String, brokers::Waiting> = BTreeMap::new();
+        let mut out = 0;
+        for t in s.tasks.by_id.values() {
+            match t.state {
+                task::State::Offered => {
+                    let w = waiting.entry(t.kind.clone()).or_insert(brokers::Waiting { n: 0, mb: u64::MAX });
+                    w.n += 1;
+                    w.mb = w.mb.min(t.mem_mb);
+                }
+                task::State::Leased { .. } => out += 1,
+                _ => {}
+            }
+        }
+        (waiting, out)
+    }
+
+    /// A coordinator kept on as its Mac's broker alone (docs/pool.md §8): a lead's that no longer
+    /// leads (its tasks, and the pages holding them, going on), or a member's started for its own
+    /// jobs' tasks. Nothing of the plan offered nor held: the jobs' leases are the lead's (handed
+    /// over with the term), the asks its.
+    pub fn become_broker(&self) {
+        let mut s = self.shared.lock().unwrap();
+        s.pass.clear();
+        s.offers.clear();
+        s.resume = None;
+        s.every = None;
+        s.round = None;
+        s.moving = None;
+        s.lead_asks.clear();
+        s.inputs_asks.clear();
+        s.done.clear();
+        let gone = s.leases.drop_where(|l| matches!(l.work, Work::Job { .. }));
+        if !gone.is_empty() {
+            eprintln!("coordinator: a broker now: {} job lease{} left to the lead", gone.len(), if gone.len() == 1 { "" } else { "s" });
+        }
+        s.save_leases();
     }
 
     /// The workers around now (asked within two minutes), for the heartbeat: (name, worker).
@@ -1725,6 +1800,16 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 return Ok((200, serde_json::to_value(g)?));
             }
             Ok((204, serde_json::Value::Null))
+        }
+        "/work/where" => {
+            // Where work that fits a page waits (docs/pool.md §8): the brokers to ask, most waiting
+            // first, the lead's address and every member's, from the members' heartbeats.
+            let a: brokers::Ask = serde_json::from_slice(body)?;
+            let s = shared.lock().unwrap();
+            Ok(match &s.brokers {
+                Some(b) => (200, brokers::answer(b, &a)),
+                None => (404, serde_json::json!({ "error": "tasks aren't brokered by every member (state/pool/brokers)" })),
+            })
         }
         "/work/beat" => {
             let mut b: Beat = serde_json::from_slice(body)?;
@@ -2161,7 +2246,7 @@ mod http {
     use super::*;
     use axum::body::Body;
     use axum::extract::{ConnectInfo, Path as Url, Request, State};
-    use axum::http::{header, HeaderMap, Method, StatusCode};
+    use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
     use axum::middleware::Next;
     use axum::response::{IntoResponse, Response};
     use axum::routing::{any, get, put};
@@ -2229,6 +2314,8 @@ mod http {
         /// Held read by each request's `route`, true once the coordinator has stopped
         /// (Coordinator::stop): then none runs.
         pub routes: Arc<std::sync::RwLock<bool>>,
+        /// The origins whose pages may call it from elsewhere (Coordinator::set_brokers).
+        pub cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>>,
     }
 
     /// The data servers' files opened for tasks, kept (the most recent `REMOTE_FILES`), each with
@@ -2291,6 +2378,7 @@ mod http {
             .route("/work/watch/", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
+            .route("/work/where", any(json))
             .route("/work/beat", any(json))
             .route("/work/pause", any(json))
             .route("/work/lead", any(json))
@@ -2313,6 +2401,7 @@ mod http {
         let app = routes
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), gate))
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), stamp))
+            .layer(axum::middleware::from_fn_with_state(ctx.clone(), cors))
             .layer(tower_http::catch_panic::CatchPanicLayer::new())
             .with_state(ctx);
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).thread_name("coordinator").enable_all().build()?;
@@ -2479,7 +2568,7 @@ mod http {
         if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !crate::net::ours(h)) {
             return error(StatusCode::FORBIDDEN, "not this build Mac's address");
         }
-        if !crate::net::from_the_page(req.headers()) {
+        if !crate::net::from_the_page(req.headers()) && member_page(&c, req.headers()).is_none() {
             return error(StatusCode::FORBIDDEN, "not from the build page");
         }
         let path = req.uri().path().to_string();
@@ -2509,7 +2598,7 @@ mod http {
         // A page: its own tasks, and pausing.
         let files = ["/work/in/", "/work/net/", "/work/out/"].iter().any(|p| path.starts_with(p));
         let theirs = match *req.method() {
-            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause" | "/work/lead" | "/work/inputs"),
+            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/where" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause" | "/work/lead" | "/work/inputs"),
             Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
             Method::PUT => path.starts_with("/work/out/"),
             _ => false,
@@ -2527,6 +2616,44 @@ mod http {
             }
         }
         next.run(req).await
+    }
+
+    /// A request's page when it's one of the pool's members' (its `Origin` one of their addresses,
+    /// `Coordinator::set_brokers`): tasks brokered by every member, docs/pool.md §8. None: no such
+    /// page, or the switch off.
+    fn member_page(c: &Ctx, h: &HeaderMap) -> Option<HeaderValue> {
+        let o = h.get(header::ORIGIN)?;
+        let s = o.to_str().ok()?.to_ascii_lowercase();
+        c.cors.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|set| set.contains(&s)).then(|| o.clone())
+    }
+
+    /// CORS for the members' pages (docs/pool.md §8), around the gate: a preflight from one
+    /// answered (the methods and headers a page sends: `Authorization`, `X-Worker`, `Range`, `PUT`;
+    /// and a private network's ask, a browser's for a page calling a LAN or tailnet address), and
+    /// every answer to one allowed to it. Any other request, as before: no CORS header, and a
+    /// preflight unanswered.
+    async fn cors(State(c): State<Ctx>, req: Request, next: Next) -> Response {
+        let Some(origin) = member_page(&c, req.headers()) else { return next.run(req).await };
+        let allow = |r: &mut Response| {
+            let h = r.headers_mut();
+            h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+            h.append(header::VARY, HeaderValue::from_static("Origin"));
+        };
+        if req.method() == Method::OPTIONS && req.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
+            let mut r = StatusCode::NO_CONTENT.into_response();
+            allow(&mut r);
+            let h = r.headers_mut();
+            h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static(super::brokers::ALLOW_METHODS));
+            h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static(super::brokers::ALLOW_HEADERS));
+            h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from(super::brokers::MAX_AGE_S));
+            if req.headers().contains_key("access-control-request-private-network") {
+                h.insert("access-control-allow-private-network", HeaderValue::from_static("true"));
+            }
+            return r;
+        }
+        let mut r = next.run(req).await;
+        allow(&mut r);
+        r
     }
 
     async fn page(Url(file): Url<String>) -> Response {
@@ -4000,5 +4127,131 @@ mod tests {
         let g = phone.ask(&Ask { worker: "phone".into(), ..web(500) }).unwrap().unwrap();
         let Granted::Task { id: tid, mem_mb, .. } = g.work else { panic!() };
         assert_eq!((tid, mem_mb), (id3, 330));
+    }
+
+    /// A request as `send` makes it, its answer whole (status line, headers, body), with the
+    /// usual headers but `X-Worker` (a preflight sends none).
+    fn raw(addr: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> String {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        let head: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        req.extend_from_slice(body);
+        s.write_all(&req).unwrap();
+        let mut r = Vec::new();
+        s.read_to_end(&mut r).unwrap();
+        String::from_utf8_lossy(&r).to_string()
+    }
+
+    fn status(r: &str) -> u16 {
+        r.split(' ').nth(1).unwrap().parse().unwrap()
+    }
+
+    fn header_of<'a>(r: &'a str, name: &str) -> Option<&'a str> {
+        r.split("\r\n\r\n").next().unwrap().lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
+    }
+
+    /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
+    /// a task this Mac's job offered, straight from this Mac's coordinator (its broker), with CORS:
+    /// the preflight answered for `Authorization`, `X-Worker`, `Range` and `PUT` (and a private
+    /// network's ask), every answer allowed to that page. Switched off, the same page is refused as
+    /// before, its preflight unanswered.
+    #[test]
+    fn a_members_page_takes_a_brokers_task_with_cors_and_off_is_refused() {
+        let (d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let page = "http://100.93.150.29:8090";
+        let preflight = |method: &str, headers: &str| raw(&addr, "OPTIONS", "/work/ask", &[("Origin", page), ("Access-Control-Request-Method", method), ("Access-Control-Request-Headers", headers), ("Access-Control-Request-Private-Network", "true")], b"");
+        let ask = serde_json::json!({ "worker": "ipad", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 }).to_string();
+        let post = |path: &str, body: &str| raw(&addr, "POST", path, &[("Origin", page), ("Content-Type", "application/json"), ("X-Worker", "ipad")], body.as_bytes());
+        // Off: refused, the preflight not answered for it.
+        assert_eq!(status(&post("/work/ask", &ask)), 403);
+        assert_eq!(header_of(&preflight("POST", "content-type,x-worker"), "access-control-allow-origin"), None);
+        assert_eq!(status(&post("/work/where", "{}")), 403);
+        // On: the members' addresses told (this Mac's own among them).
+        let own = brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() };
+        let m1 = brokers::Peer { member: "m-1".into(), host: "m1".into(), lead: true, broker: Some(brokers::Broker { urls: vec![page.into()], ..Default::default() }) };
+        c.set_brokers(Some(brokers::Brokers::new(vec![m1], &own)));
+        let root = d.path().join("job");
+        std::fs::create_dir_all(root.join("u")).unwrap();
+        std::fs::write(root.join("u/in.bin"), b"input").unwrap();
+        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
+        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800 };
+        let id = job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        // Its heartbeat's counts: one waiting, none out.
+        let (waiting, out) = c.brokered();
+        assert_eq!((waiting.get("tail").copied(), out), (Some(brokers::Waiting { n: 1, mb: 800 }), 0));
+        for (method, headers) in [("POST", "content-type,x-worker"), ("GET", "x-worker,range"), ("PUT", "authorization,x-worker,content-type")] {
+            let r = preflight(method, headers);
+            assert_eq!(status(&r), 204, "{r}");
+            assert_eq!(header_of(&r, "access-control-allow-origin"), Some(page));
+            assert_eq!(header_of(&r, "access-control-allow-methods"), Some(brokers::ALLOW_METHODS));
+            assert_eq!(header_of(&r, "access-control-allow-headers"), Some(brokers::ALLOW_HEADERS));
+            assert_eq!(header_of(&r, "access-control-allow-private-network"), Some("true"));
+        }
+        // Another page elsewhere: as before.
+        let evil = raw(&addr, "OPTIONS", "/work/ask", &[("Origin", "https://evil.example"), ("Access-Control-Request-Method", "POST")], b"");
+        assert_eq!(header_of(&evil, "access-control-allow-origin"), None);
+        assert_eq!(status(&raw(&addr, "POST", "/work/ask", &[("Origin", "https://evil.example"), ("Content-Type", "application/json")], ask.as_bytes())), 403);
+        // Where work waits: this Mac's broker, the one with work that fits.
+        let r = post("/work/where", &serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }).to_string());
+        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)));
+        // The task, taken by the page, its input fetched, its output sent, done: each answer allowed.
+        let r = post("/work/ask", &ask);
+        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
+        let g: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(g["id"].as_u64(), Some(id));
+        let lease = g["lease"].as_u64().unwrap();
+        let r = raw(&addr, "GET", &format!("/work/in/{lease}/u/in.bin"), &[("Origin", page), ("X-Worker", "ipad"), ("Range", "bytes=0-4")], b"");
+        assert!(matches!(status(&r), 200 | 206) && r.ends_with("input"), "{r}");
+        assert_eq!(header_of(&r, "access-control-allow-origin"), Some(page));
+        let r = raw(&addr, "PUT", &format!("/work/out/{lease}/u/out.bin"), &[("Origin", page), ("X-Worker", "ipad"), ("Content-Type", "application/octet-stream")], b"output!");
+        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
+        assert_eq!(c.brokered().1, 1, "one out");
+        let r = post("/work/done", &serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [{ "path": "u/out.bin", "size": 7 }], "secs": 2.0, "peak_mb": 300 }).to_string());
+        assert_eq!(status(&r), 200, "{r}");
+        let st = job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1;
+        assert_eq!(st["state"], "done");
+        assert_eq!(std::fs::read(PathBuf::from(st["out"].as_str().unwrap()).join("u/out.bin")).unwrap(), b"output!");
+        // Off again: refused as before.
+        c.set_brokers(None);
+        assert_eq!(status(&post("/work/ask", &ask)), 403);
+        assert_eq!(status(&post("/work/where", "{}")), 403);
+        // (Asked from this Mac's own page, off: none to tell.)
+        assert_eq!(send(&addr, "POST", "/work/where", None, &[], &serde_json::json!({})).0, 404);
+    }
+
+    /// A broker that takes the lead keeps its own tasks' leases as it takes up the term's jobs'
+    /// (docs/pool.md §8: a handover drops no task); switched off, the term's leases replace them,
+    /// as before. A lead's coordinator that becomes a broker leaves the jobs' leases and offers to
+    /// the new lead.
+    #[test]
+    fn a_broker_taking_the_lead_keeps_its_tasks_leases_and_a_lead_becoming_one_leaves_its_jobs() {
+        for on in [true, false] {
+            let (d, c, w) = start();
+            if on {
+                c.set_brokers(Some(brokers::Brokers::default()));
+            }
+            let root = d.path().join("job");
+            std::fs::create_dir_all(&root).unwrap();
+            let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
+            let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root, inputs: Default::default(), mem_mb: 100 };
+            job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
+            let page = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
+            let g = page.ask(&Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: 1000, cores: 4, ..Default::default() }).unwrap().unwrap();
+            // Another lead's state: a job's lease.
+            let other = {
+                let mut l = lease::Leases::new(TTL);
+                l.grant("m1", Work::Job { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into())] }, Instant::now());
+                PoolState { leases: l.snapshot(), ..Default::default() }
+            };
+            assert_eq!(c.load_pool_state(&other).unwrap(), 1);
+            assert_eq!(page.beat(g.lease, None).unwrap(), on, "its task's lease kept only with the switch on");
+            assert_eq!(c.held("slope").len(), 1);
+            // No longer leading: a broker, its job lease the new lead's.
+            c.become_broker();
+            assert!(c.held("slope").is_empty());
+            assert_eq!(c.leases_out(), usize::from(on));
+        }
     }
 }

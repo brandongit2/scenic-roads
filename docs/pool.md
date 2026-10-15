@@ -917,7 +917,8 @@ take it: a page, any member's slot. Jobs are for Macs; tasks are for everyone.
   then leases from that broker directly: `/work/ask`, `/work/in`, `/work/net`, `/work/out`,
   `/work/done` on the broker's own address. The lead isn't on a task's path, so a handover drops
   nothing.
-- **Pages talk to members directly,** over HTTPS (`tailscale serve` on each Mac, the owner's to turn
+- **Pages talk to members directly** (built, behind `state/pool/brokers`: §12 phase 4's tenth
+  batch), over HTTPS (`tailscale serve` on each Mac, the owner's to turn
   on) with CORS: every member answers the pool's own pages (`Access-Control-Allow-Origin` for the
   members' addresses; preflight for `Authorization`, `X-Worker`, `Range` and `PUT`). No gateway
   forwards anything: no streaming proxy for uploads, no file crossing the network twice, no
@@ -1416,13 +1417,42 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       between the Macs, runs of several targets and the lead taking a cold start itself were shown
       only by the tests (the scratch state's fake jobs build no units: planned, a scratch state
       whose records hold a round's work).
-   10. **Tasks brokered by every member, pages talking to members directly** (§8, §9): each member's
-      coordinator brokers its own jobs' tasks, its heartbeat saying how many wait; the lead answers
-      "where is work"; every member serves the page and the pool's API with CORS; a page finds the
-      members from the pool and reloads from the next when its own goes. Behind `state/pool/brokers`
-      (and each member's `tailscale serve`, the owner's: §14). Tests: a member's job's task taken by
-      a page from that member; a handover dropping no task; the preflight and the headers.
-      **Scratch state (§13): both Macs, and a page** (tasks across a handover).
+   10. **Tasks brokered by every member, pages talking to members directly: built** (§8, §9;
+      crate::agent::brokers, crate::coord::brokers), behind `state/pool/brokers` (off while missing:
+      the agent as it was; it acts only in the pool). A member's agent runs a coordinator of its own
+      for its jobs' tasks alone (its broker, on the pool's port; `become_broker`: no plan offered,
+      no job lease held), its jobs given its address (`SCENIC_COORD`), their tasks closed as they
+      end; its heartbeat's `broker` says its addresses (and its HTTPS one, when `tailscale serve`
+      proxies it) and its tasks waiting by kind (how many, the least memory), given at once when work
+      comes or goes, else at most every half minute. Each agent reads the members' heartbeats every
+      half minute and tells its coordinator or broker: every member (not the lead alone: a page's
+      own member answers it) answers `/work/where` (the brokers whose work fits, most waiting first;
+      the lead's address; every member's) and allows the members' own pages (CORS: the preflight
+      for `Authorization`, `X-Worker`, `Range`, `PUT`, and a private network's ask; every answer
+      allowed to that origin; any other page refused as before). With a part changing in its
+      process (`state/pool/slots`), a handover drops no task: the old lead's coordinator stays on as
+      its broker (the jobs' leases left to the new lead), and the member's broker becomes its
+      coordinator, its tasks' leases kept as it takes up the term's. The page (web/work) asks its
+      own member, then the brokers `/work/where` names, straight; runs a task against the broker it
+      took it from; reads the build at a glance and the lead's controls at the lead's address,
+      falling back to its own member's; passes over a member that doesn't answer in 8 s for two
+      minutes; and after three failed calls to its own member moves to the next member that answers
+      (once no task it took elsewhere runs). Tests: a page from another member's address taking a
+      broker's task with CORS (and refused, switched off); the brokers' answer, the origins, the
+      heartbeat's timing; a broker taking the lead keeping its tasks' leases (not, switched off);
+      and two agents in one process: the member's job given its broker, the lead answering where
+      with it, a page taking the member's task from its broker and the lead's from the lead, the lead
+      handed over, both tasks beating and handed back where they were taken, then off.
+      **Scratch state (§13): both Macs, run** (15 Oct 2026, `root … slots`, `region`, `brokers`,
+      `task`, `jobs … 240`; a page played by curl): each job's task offered at its own Mac's
+      coordinator or broker, the heartbeats saying so, `/work/where` naming them; the M4's page
+      taking the lead's task, the lead handed to the M1 mid-task (the M4's coordinator kept on as its
+      broker, the M1's broker its coordinator, two job leases handed over), the task then beaten
+      and handed back at the M4's broker; the M1's task named by the M4's `/work/where` but its
+      broker never answering over the tailnet (the M1's application firewall drops the connection:
+      passed over after 8 s), taken on the M1 at 127.0.0.1 by a page of the M4's origin (CORS allowed)
+      and handed back; switched off, the M4's broker stopped. A browser page across Macs over
+      HTTPS: not run (no member has `tailscale serve` for the pool's port).
    11. **Placement by how crucial a job is, and work offered ahead** (§7.2, workers.md §3): each
       target's score from the forecast's slack, the long poles highest, by measured times; members'
       slots and pages chosen on a sliding scale of measured speed, as a weighted draw that repeats
@@ -1598,7 +1628,11 @@ Taken (the owner may revise them):
   and stood down** (its re-assertion refused by the app rule, its heartbeat saying so) has declared
   it won't lead: after two minutes, any member the app rule lets takes over by itself (§6.5).
 - **`tailscale serve` on every Mac** (HTTPS for pages talking to members directly): the owner's to
-  turn on, one command per Mac. Until then, a page opened over plain HTTP on the tailnet reaches
+  turn on, one command per Mac (`tailscale serve --bg 8090`, proxying the pool's port at the root;
+  the agent finds it by `tailscale serve status --json` every five minutes and puts it in its
+  heartbeat), and to let the agent take incoming connections (macOS's application firewall, on
+  the M1 on 15 Oct 2026, drops them: its broker can't be reached from another Mac, and pages pass
+  it over; task #198 makes that visible). Until then, a page opened over plain HTTP on the tailnet reaches
   every member (WireGuard encrypts it anyway); one opened over HTTPS reaches only members with HTTPS
   (browsers block plain HTTP from it), and takes their tasks alone.
 - **Work order:** every slot from the front of the plan, in contiguous runs, in place of today's

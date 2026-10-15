@@ -2880,6 +2880,16 @@ At each phase's end an Opus agent reviews the work against this plan.
      job's unmerged hand-offs are read from the journal by the keys its lead hasn't acknowledged,
      and laid only for a resumable step's job; a job stopped without its end seen (the agent
      killed) keeps the day from its start;
+   - tasks brokered by every member (`state/pool/brokers`, off while missing; crate::agent::brokers,
+     pool.md §8, §12 batch 10): a handover drops no task only with a part changing in its process
+     (`state/pool/slots`); otherwise the agent restarts between jobs and its tasks go with its
+     coordinator (the jobs run them themselves). A broker no page can reach (a Mac's firewall
+     dropping incoming connections) is found only by a page's calls timing out (8 s, then passed over
+     two minutes): no member probes another's broker, and the views don't show it (task #198). The
+     page moves to another member only by a page's own failures, and its kept choices (helping, its
+     memory ceiling) are its origin's, so they don't follow it; pausing from a member's own page
+     falls back to that member's coordinator when the lead doesn't answer, which pauses only its
+     broker's pages;
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents

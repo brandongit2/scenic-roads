@@ -988,6 +988,14 @@ class, id) within a tile. The client sends the id with the clicked point.
     room target, MB); a
     grant of a round's step carries `as_of: {began, units}`, which the member's job reads from its
     lease's folder (`round.json`, through `SCENIC_UNITS_AS_OF`).
+  - `state/pool/brokers`: the switch for tasks brokered by every member (docs/pool.md §8, §12
+    phase 4's tenth batch; crate::agent::brokers). Present (or `on` in it) on, `off` in it or
+    missing off. Read by every agent; it acts only in the pool. On, a member's heartbeat carries
+    `broker: {urls, https, waiting: {<kind>: {n, mb}}, out}` (its coordinator's or broker's
+    addresses, its HTTPS one when `tailscale serve` proxies it, its tasks waiting by kind with the
+    least memory one takes, and those out); every coordinator answers `POST /work/where`
+    (`{can, mem_mb, https}` → `{brokers: [{member, host, base, waiting}], lead, members: [{member,
+    host, lead, base}]}`) and the members' pages with CORS.
   - `state/pool/progress/<member>.json`: the jobs whose progress is on that member's Mac, written
     whole by it alone when that changes (a resumable job's start or end, an entry dropped):
     `{member, worker, jobs: {"osm-pass <date>": {at, since, done, scratch}}}` (`worker` the name

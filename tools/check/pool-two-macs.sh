@@ -76,6 +76,19 @@
 #   pool-two-macs.sh every <folder> [off]           state/pool/every-step in the scratch folder:
 #                                                   every step of the plan offered to every member
 #                                                   by the measures (`off`: the switch removed)
+#   pool-two-macs.sh brokers <folder> [off]         state/pool/brokers in the scratch folder: each
+#                                                   member brokers its own jobs' tasks, pages call
+#                                                   the members directly (`off`: the switch removed)
+#   pool-two-macs.sh task <dir> [off]               each fake job offers a task through its Mac's
+#                                                   coordinator or broker (SCENIC_COORD) before it
+#                                                   sleeps, and notes the task's state as it ends
+#                                                   (<dir>/v/app/task-<step>-<pid>)
+#   pool-two-macs.sh page <base> <origin> <file>    a page (curl, its Origin <origin>): asks <base>
+#                                                   where work is, then each broker it names for a
+#                                                   task (its lease and broker kept in <file>), a
+#                                                   broker that doesn't answer in 8 s passed over
+#   pool-two-macs.sh page-done <origin> <file>      that page beats its lease and hands its task
+#                                                   back, where it took it
 #   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -129,7 +142,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, planet, progress or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, task, page, page-done, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -191,8 +204,18 @@ if [ "$wiki" -gt 0 ] && [ -n "$SCENIC_BUDGETS" ]; then
   done
   /usr/bin/nc -v -z -G 5 "$(cat "$d/../nas-ip" 2>/dev/null || echo 192.168.2.2)" 445 >> "$out" 2>&1; echo "nas-direct $?" >> "$out"
 fi
+# (A task offered through its Mac's coordinator or broker: `task`.)
+tid=""
+if [ -e "$d/../job-task" ] && [ -n "$SCENIC_COORD" ]; then
+  troot="$d/../tasks/$step-$$"; mkdir -p "$troot/u"; printf in > "$troot/u/in.bin"
+  tid=$(/usr/bin/curl -sS -X POST -H "Authorization: Bearer $SCENIC_COORD_TOKEN" -H 'Content-Type: application/json' -d "{\"owner\":$$,\"kind\":\"tail\",\"spec\":{\"unit\":\"$step-$$\",\"runs\":[]},\"root\":\"$troot\",\"inputs\":{\"u/in.bin\":2},\"mem_mb\":100}" "$SCENIC_COORD/task/offer" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+  echo "offered $tid at $SCENIC_COORD $(date +%s)" >> "$d/task-$step-$$"
+fi
 secs=$(cat "$d/../job-seconds" 2>/dev/null || echo 5)
 sleep "$secs"
+if [ -n "$tid" ]; then
+  echo "ended $(/usr/bin/curl -sS -X POST -H "Authorization: Bearer $SCENIC_COORD_TOKEN" -H 'Content-Type: application/json' -d '{}' "$SCENIC_COORD/task/$tid") $(date +%s)" >> "$d/task-$step-$$"
+fi
 # (What each target took, as a real step notes it (SCENIC_COSTS): the job's time shared among its
 # targets, 50 MB, the way its step runs now; for the lead's offers by the measures.)
 if [ -n "$SCENIC_COSTS" ]; then
@@ -296,6 +319,34 @@ EOF
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     if [[ ${3:-} == off ]]; then rm -f $r/state/pool/every-step; else mkdir -p $r/state/pool; : > $r/state/pool/every-step; fi
     ;;
+  brokers)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/brokers; else mkdir -p $r/state/pool; : > $r/state/pool/brokers; fi
+    ;;
+  task)
+    d=${2:?its folder}
+    if [[ ${3:-} == off ]]; then rm -f $d/v/app/job-task; else : > $d/v/app/job-task; fi
+    ;;
+  page)
+    base=${2:?the member of the page} origin=${3:?its origin} f=${4:?its lease file}
+    ask='{"worker":"page two-macs","kind":"web","can":["tail"],"mem_mb":1000,"cores":2}'
+    w=$(/usr/bin/curl -sS -m 8 -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d '{"can":["tail"],"mem_mb":1000}' $base/work/where)
+    print "where: $w"
+    for b in $(print -r -- $w | /usr/bin/python3 -c 'import json,sys; [print(b["base"]) for b in json.load(sys.stdin)["brokers"]]'); do
+      g=$(/usr/bin/curl -sS -m 8 -D $f.h -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d $ask $b/work/ask) || { print "$b: no answer in 8 s, passed over"; continue; }
+      print "$b: $(grep -i '^access-control-allow-origin' $f.h | tr -d '\r') $g"
+      [[ $g == *'"lease"'* ]] || continue
+      print -r -- "$b $(print -r -- $g | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])')" > $f
+      break
+    done
+    ;;
+  page-done)
+    origin=${2:?its origin} f=${3:?its lease file}
+    read b lease < $f
+    print "beat at $b: $(/usr/bin/curl -sS -m 8 -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d "{\"worker\":\"page two-macs\",\"lease\":$lease}" $b/work/beat)"
+    print "done at $b: $(/usr/bin/curl -sS -m 8 -o /dev/null -w '%{http_code}' -X POST -H "Origin: $origin" -H 'Content-Type: application/json' -H 'X-Worker: page two-macs' -d "{\"worker\":\"page two-macs\",\"lease\":$lease,\"outputs\":[],\"secs\":1,\"peak_mb\":10}" $b/work/done)"
+    ;;
   resume)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
@@ -328,5 +379,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, planet, progress or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, task, page, page-done, planet, progress or stop"; exit 2 ;;
 esac

@@ -306,6 +306,11 @@ pub struct Heartbeat {
     /// whether it can lead now). Left out by apps before phase 3, and ignored by them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conds: Option<Conds>,
+    /// Its broker (docs/pool.md §8, crate::agent::brokers: `state/pool/brokers` on): where a page
+    /// reaches it, and how many of its jobs' tasks wait, of which kinds, how large. Left out with
+    /// the switch off, and by apps before it (ignored by them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker: Option<crate::coord::brokers::Broker>,
 }
 
 /// A member's conditions, as its heartbeat says them (§10, §11).
@@ -401,6 +406,8 @@ pub struct Side {
     pub stopped: Option<String>,
     /// Its Mac's conditions as last given, for its heartbeat.
     conds: Option<Conds>,
+    /// Its broker, for its heartbeat (crate::agent::brokers; None: the switch off).
+    pub broker: Option<crate::coord::brokers::Broker>,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -431,7 +438,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -682,7 +689,7 @@ impl Side {
 
     /// Its heartbeat, when it changed or every two minutes: stamped as it's written.
     fn write_beat(&mut self, out: &Out) {
-        let hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow, conds: self.conds };
+        let hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow, conds: self.conds, broker: self.broker.clone() };
         if hb.pool.member.is_empty() {
             return;
         }
@@ -973,6 +980,10 @@ pub struct Run {
     /// Terms a tick took up whose coordinator's part is the agent's (`took_up`: the state handed
     /// over loaded, its own host's leases from before dropped), at its loop's next step.
     pub pending_took_up: Vec<Event>,
+    /// Tasks brokered by every member: when the members' brokers were last read from their
+    /// heartbeats, and this Mac's last given to its own (`tend_brokers`).
+    pub brokers_read: Option<Instant>,
+    pub broker_told: Option<Instant>,
     /// Whether a tick holds the run, and since when: read without the lock (`Ticking`).
     pub ticking: Ticking,
 }
@@ -1044,6 +1055,11 @@ pub struct Cx {
     /// When this Mac last had an answer from the lead's coordinator (its clock, unix s): a member's
     /// client's (crate::coord::client::Client::answered).
     pub lead_answered: Option<u64>,
+    /// This Mac's broker (docs/pool.md §8, crate::agent::brokers): the lead's coordinator, or a
+    /// member's broker; None with tasks brokered by every member off. Its address over HTTPS, when
+    /// `tailscale serve` proxies it.
+    pub broker: Option<Arc<crate::coord::Coordinator>>,
+    pub broker_https: Option<String>,
 }
 
 /// A run shared by the agent's loop and the pool's own thread (`Ticker`).
@@ -1157,7 +1173,7 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None }
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for
@@ -1196,6 +1212,7 @@ impl Run {
             self.controls.page.extend(co.take_lead_asks());
         }
         super::lead::take(self, &home);
+        self.tend_brokers();
         let out = self.step(self.cx.able);
         for e in &out.events {
             let Event::TookUp { term, handed, .. } = e else { continue };
@@ -1219,6 +1236,39 @@ impl Run {
         }
         self.write_view();
         Some(out)
+    }
+
+    /// Tasks brokered by every member, in each of its steps (the loop's and the ticks'), before its
+    /// heartbeat is written: this Mac's broker (`Cx::broker`) given to the heartbeat as
+    /// crate::agent::brokers::due says, and every half minute the members' heartbeats read for
+    /// theirs and the broker told. No broker (the switch off): none in the heartbeat.
+    pub fn tend_brokers(&mut self) {
+        use crate::agent::brokers;
+        let Some(c) = self.cx.broker.clone() else {
+            self.side.broker = None;
+            (self.brokers_read, self.broker_told) = (None, None);
+            return;
+        };
+        let now = Instant::now();
+        let (waiting, out) = c.brokered();
+        let own = crate::coord::brokers::Broker { urls: c.contact.urls.clone(), https: self.cx.broker_https.clone(), waiting, out };
+        if brokers::due(self.side.broker.as_ref(), &own, self.broker_told.map(|t| now.saturating_duration_since(t))) {
+            self.side.broker = Some(own.clone());
+            self.broker_told = Some(now);
+        }
+        if brokers::stale(self.brokers_read, now, brokers::EVERY) {
+            let side = &self.side;
+            let me = side.member().clone();
+            let lead = side.driver().current().lead.as_ref().map(|t| t.member.clone());
+            let mut ids: Vec<String> = side.members().iter().cloned().collect();
+            if let Some(l) = lead.as_ref().filter(|l| !ids.contains(l)) {
+                ids.push(l.clone());
+            }
+            let beats: Vec<(String, Heartbeat)> = ids.into_iter().filter(|id| *id != me.id).filter_map(|id| side.heartbeat(&id).map(|h| (id, h))).collect();
+            let peers = brokers::peers(&beats, lead.as_deref(), side.now(), (&me.id, &me.host, &own));
+            c.set_brokers(Some(crate::coord::brokers::Brokers::new(peers, &own)));
+            self.brokers_read = Some(now);
+        }
     }
 
     /// Leading term 2 or later, today's records files not yet written from its records: not caught
@@ -1784,7 +1834,7 @@ mod tests {
             shadow: bool,
         }
         let pool = Beat { member: "m-000000000000000a".into(), host: "Mac-mini".into(), app: "20261008-1500-1fa03d8".into(), beat: 1000, leads: Some(3), ..Default::default() };
-        let new = Heartbeat { pool: pool.clone(), members: vec!["m-000000000000000b".into()], shadow: false, conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false }) };
+        let new = Heartbeat { pool: pool.clone(), members: vec!["m-000000000000000b".into()], shadow: false, conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false }), broker: None };
         let b = serde_json::to_vec(&new).unwrap();
         // An older app reads the newer's: its fields, the conditions passed over.
         let old: Before = serde_json::from_slice(&b).unwrap();

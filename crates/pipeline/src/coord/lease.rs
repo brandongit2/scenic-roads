@@ -143,6 +143,23 @@ impl Leases {
         Ok(n)
     }
 
+    /// The tasks' leases (a broker's own: kept across a take-up of another lead's jobs' leases,
+    /// docs/pool.md §8).
+    pub fn tasks(&self) -> Vec<Lease> {
+        self.by_id.values().filter(|l| matches!(l.work, Work::Task { .. })).cloned().collect()
+    }
+
+    /// Puts a lease `tasks` gave back, as it was; false when its id is taken now (by a lease
+    /// restored: it isn't put back).
+    pub fn put_back(&mut self, l: Lease) -> bool {
+        if self.by_id.contains_key(&l.id) {
+            return false;
+        }
+        self.next = self.next.max(l.id + 1);
+        self.by_id.insert(l.id, l);
+        true
+    }
+
     fn live(&self, now: Instant) -> impl Iterator<Item = &Lease> {
         self.by_id.values().filter(move |l| l.deadline > now)
     }
