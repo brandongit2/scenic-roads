@@ -112,7 +112,7 @@ uniform highp sampler2D u_c3;
 uniform highp sampler2D u_c4;
 uniform int u_mask;               // the classes present in the tile (bits)
 uniform float u_tmin;
-uniform highp sampler2D u_top32;   // the tallest mean top in each 1/32 of the tile and the cells around it (m)
+uniform highp sampler2D u_top32;   // each 1/32 of the tile: r its (and the cells around its) tallest mean top, g its highest ground within its reach, b that over its lowest ground (m)
 uniform highp sampler2D u_elev;    // the tile's ground, (33 + 2M)² (m), M cells beyond each edge
 uniform highp sampler2DArray u_off;   // each class held (a layer each, in order): the offset to its buildings' centroid, + 128 (level-0 texels)
 uniform float u_dgMax;   // the tile's ground's range (m): how much higher a roof's centroid's ground can be
@@ -287,16 +287,12 @@ void main() {
     if (abs(dT.x) > 1e-12) te = min(te, t + ((dT.x > 0.0 ? float(cell.x + 1) : float(cell.x)) * ${EXTENT / 32}.0 - p.x) / dT.x);
     if (abs(dT.y) > 1e-12) te = min(te, t + ((dT.y > 0.0 ? float(cell.y + 1) : float(cell.y)) * ${EXTENT / 32}.0 - p.y) / dT.y);
     te = min(max(te, t + 0.01), tmax);
-    vec2 tg = texelFetch(u_top32, cell, 0).rg;
+    vec3 tg = texelFetch(u_top32, cell, 0).rgb;
     // (a little above the cell's tallest roof: a run starting at a roof's height would take it as
     // already below it, its walls met, its roof never; over the ground here, so as high again as the
     // ground at a roof's centroid can be over it, or the roofs over higher ground came out hollow:
-    // the cell's highest ground within M cells over its lowest, its grid square's corners)
-    float dgc = 0.0;
-    if (u_dbg != 32 && u_dbg != 33) {
-      ivec2 gc = cell + ivec2(${M});
-      dgc = max(tg.g - min(min(texelFetch(u_elev, gc, 0).r, texelFetch(u_elev, gc + ivec2(1, 0), 0).r), min(texelFetch(u_elev, gc + ivec2(0, 1), 0).r, texelFetch(u_elev, gc + ivec2(1, 1), 0).r)), 0.0);
-    }
+    // the cell's highest ground within its reach over its lowest, its grid square's corners)
+    float dgc = u_dbg == 32 || u_dbg == 33 ? 0.0 : tg.b;
     float topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25) + dgc;
     // The hull: each cell holding buildings a column from the ground to its highest ground plus its
     // tallest roof (+ 0.5 m), as the faces are drawn; the ray leaves it going into a column below it
@@ -538,6 +534,8 @@ interface FTile {
   gmax: number;
   /** The same on the CPU, and the cells' highest ground with it (RG32F: top, ground). */
   top32cpu: Float32Array | null;
+  /** Each cell's reach (cells): how far its roofs' centroids can be (the worker's, from the offsets). */
+  reach: Uint8Array | null;
   elev: WebGLBuffer | null;
   vao: WebGLVertexArrayObject | null;
   elevFor: string;
@@ -823,7 +821,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, off: null, dgMax: 0 };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, reach: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, off: null, dgMax: 0 };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -912,16 +910,18 @@ export class FieldLayer implements CustomLayerInterface {
       return x;
     };
     t.top128 = r32(m.top128, 128);
-    // (RG32F: the cells' tallest top, and their highest ground once the elevations are known)
-    const rg = new Float32Array(32 * 32 * 2);
-    for (let i = 0; i < 32 * 32; i++) rg[i * 2] = m.top32[i];
+    // (RGBA32F: the cells' tallest top, and, once the elevations are known, their highest ground
+    // within their reach and how much higher that is than their own lowest)
+    const rg = new Float32Array(32 * 32 * 4);
+    for (let i = 0; i < 32 * 32; i++) rg[i * 4] = m.top32[i];
     const t32 = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, t32);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 32, 32, 0, gl.RGBA, gl.FLOAT, rg);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     t.top32 = t32;
     t.top32cpu = m.top32;
+    t.reach = m.reach;
     const cm = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, cm);
     gl.texStorage2D(gl.TEXTURE_2D, 10, gl.R8UI, 512, 512);
@@ -956,7 +956,7 @@ export class FieldLayer implements CustomLayerInterface {
     t.mask = m.mask;
     t.top = Math.min(1000, m.top + 2);
     t.bytes = m.bytes;
-    t.gpu = gpu + 128 * 128 * 4 + 32 * 32 * 8 * 2 + (512 * 512 * 4) / 3;
+    t.gpu = gpu + 128 * 128 * 4 + 32 * 32 * 16 + 32 * 32 * 8 + (512 * 512 * 4) / 3;
     t.state = 'ready';
   }
 
@@ -1008,33 +1008,32 @@ export class FieldLayer implements CustomLayerInterface {
     const e = new Float32Array((G + 1) * (G + 1));
     for (let j = 0; j <= G; j++) for (let i = 0; i <= G; i++) e[j * (G + 1) + i] = ee[(j + M) * GE + i + M];
     t.gmin = e.reduce((m, x) => Math.min(m, x), Infinity);
-    // Each cell's highest ground within M cells: where its roofs can stand (at their centroids').
-    const hi = new Float32Array(32 * 32);
-    {
-      const rowMax = new Float32Array(GE * GE);
-      for (let j = 0; j < GE; j++) for (let i = 0; i < GE; i++) {
-        let m = -Infinity;
-        for (let k = Math.max(0, i - M); k <= Math.min(GE - 1, i + M + 1); k++) m = Math.max(m, ee[j * GE + k]);
-        rowMax[j * GE + i] = m;
-      }
-      for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
-        let m = -Infinity;
-        for (let j = y; j <= y + 2 * M + 1; j++) m = Math.max(m, rowMax[j * GE + x + M]);
-        hi[y * 32 + x] = m;
-      }
+    // Each cell's highest ground within its reach (the cells its roofs' centroids can be in, from
+    // the offsets; M at most): where its roofs can stand. And how much higher that is than the cell's
+    // own lowest ground (its grid square's corners): how much higher than the ground under it a roof
+    // can be over its own height.
+    const hi = new Float32Array(32 * 32), dgc = new Float32Array(32 * 32);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      const r = Math.min(M, t.reach ? t.reach[y * 32 + x] : M);
+      let m = -Infinity;
+      for (let j = y + M - r; j <= y + M + 1 + r; j++) for (let i = x + M - r; i <= x + M + 1 + r; i++) m = Math.max(m, ee[j * GE + i]);
+      const lo = Math.min(ee[(y + M) * GE + x + M], ee[(y + M) * GE + x + M + 1], ee[(y + M + 1) * GE + x + M], ee[(y + M + 1) * GE + x + M + 1]);
+      hi[y * 32 + x] = m;
+      dgc[y * 32 + x] = Math.max(0, m - lo);
     }
     t.dgMax = Math.max(0, ee.reduce((m, x) => Math.max(m, x), -Infinity) - t.gmin);
     // Each cell's highest ground (the grid's corners around it: G = 32 cells, one a grid square), with
     // its tallest top: the march skips a cell from its absolute heights alone.
     if (t.top32 && t.top32cpu) {
-      const rg = new Float32Array(32 * 32 * 2);
+      const rg = new Float32Array(32 * 32 * 4);
       for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
         const k = y * 32 + x;
-        rg[k * 2] = t.top32cpu[k];
-        rg[k * 2 + 1] = hi[k];
+        rg[k * 4] = t.top32cpu[k];
+        rg[k * 4 + 1] = hi[k];
+        rg[k * 4 + 2] = dgc[k];
       }
       gl.bindTexture(gl.TEXTURE_2D, t.top32);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 32, 32, 0, gl.RGBA, gl.FLOAT, rg);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
     if (!t.elevTex) t.elevTex = gl.createTexture()!;

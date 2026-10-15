@@ -29,6 +29,8 @@ export type FieldOut =
       heritage: Uint8Array | null;
       /** The offsets to the buildings' centroids: RG (+ 128, level-0 texels), a layer a class held. */
       offsets: Uint8Array;
+      /** Each 32 × 32 cell's reach (cells): how far its roofs' centroids can be. */
+      reach: Uint8Array;
     };
 
 const T = 512;
@@ -73,6 +75,21 @@ async function load(key: string, url: string): Promise<FieldOut> {
         offsets[(l * N + i) * 2] = px[base + i * 4];
         offsets[(l * N + i) * 2 + 1] = px[base + i * 4 + 1];
       }
+    }
+    // Each 16 × 16 cell's reach: how many cells away its roofs' centroids can be (the largest
+    // offset of its texels and its neighbours' — filtered reads mix them — rounded up, + 1 cell).
+    const own = new Uint8Array(32 * 32);
+    for (let l = 0; l < n; l++)
+      for (let i = 0; i < N; i++) {
+        const d = Math.max(Math.abs(offsets[(l * N + i) * 2] - 128), Math.abs(offsets[(l * N + i) * 2 + 1] - 128));
+        const k = ((i / T / 16) | 0) * 32 + (((i % T) / 16) | 0);
+        if (d > own[k]) own[k] = d;
+      }
+    const reach = new Uint8Array(32 * 32);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      let d = 0;
+      for (let yy = Math.max(0, y - 1); yy <= Math.min(31, y + 1); yy++) for (let xx = Math.max(0, x - 1); xx <= Math.min(31, x + 1); xx++) d = Math.max(d, own[yy * 32 + xx]);
+      reach[y * 32 + x] = d ? Math.ceil(d / 16) + 1 : 0;
     }
     const classes: (Float32Array | null)[] = [];
     const hmax = new Float32Array(N);
@@ -143,7 +160,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets, reach };
   } finally {
     inflight.delete(key);
   }
@@ -172,7 +189,7 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
   load(msg.key, msg.url).then(
     (out) => {
       if (out.type === 'done' && !out.empty) {
-        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.offsets.buffer];
+        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.offsets.buffer, out.reach.buffer];
         for (const c of out.classes) if (c) tr.push(c.buffer);
         (self as unknown as Worker).postMessage(out, tr);
       } else (self as unknown as Worker).postMessage(out);
