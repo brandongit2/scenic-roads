@@ -429,7 +429,7 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
 
 GC's roots are the newest catalog, every catalog of the last 14 days and the build manifest; an
 unreferenced file goes once it's also older than 14 days, in the folders catalogs index, retired
-passes' sources and the gate's checked copies (`sources/inputs/`, kept by the indexes and reports
+passes' sources and the input check's checked copies (`sources/inputs/`, kept by the indexes and reports
 the manifest or an unmerged journal entry names: plan §3). A held catalog is written to `catalog-held/` instead
 (`inputs/hold-catalog`).
 
@@ -655,7 +655,7 @@ Where they're kept:
   fit is refused. Refusals are 400 `{error}`, the reason in words.
 - The menu bar (`/api/build`): beside the build's status, `offline: {world, areas, bytes, here,
   nas}` (what's downloaded; null without a mirror).
-- The gate (docs/inputs.md §4.5): `POST /api/build/inputs` `{unit, accept: [finding id]}` or `{unit,
+- The input check (docs/inputs.md §4.5): `POST /api/build/inputs` `{unit, accept: [finding id]}` or `{unit,
   all: true}`, an ask to this Mac's agent, which writes the acceptances.
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
@@ -847,7 +847,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     passes a Mac's ask on (one older than the last change is passed over); a helper's leased job
     keeps `work.json` (its step and targets) and `done.txt` in its outbox folder; `/work/fail {…, interrupted}` gives a lease back unheld.
     `state/build/pause.json` on the NAS mirrors the build Mac's.
-  - **The gate's asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5), in each Mac's agent's folder:
+  - **The input check's asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5), in each Mac's agent's folder:
     `inputs-asks/<at, 20 digits>-<pid or "menu">-….json`, a file each, `{unit, accept: [finding
     id], all, unaccept: [finding id], check, full, forget, by, at}`, from its menu bar (Accept), the
     map's `POST /api/build/inputs {unit, accept} | {unit, all: true}` and `scenic inputs check` and
@@ -943,7 +943,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   it, crate::agent::lead::View: `{at, term, lead: {term, member, host, app, since, how}, leading,
   members: [{member, host, app, beat, me, leads, state, out_of_touch, away, can_lead, why_not,
   conds}], takeover: {refused, force, downgrade}, no_lead, handing: {to, host, term, stage, since},
-  offer: {to, host, why}, auto, asked, change}`); `inputs`, the gate's units (the lead's,
+  offer: {to, host, why}, auto, asked, change}`); `inputs`, the input check's units (the lead's,
   pipeline::inputs::view::InputView: `[{unit, version (its accepted index's content name), state:
   ok | checking | held, checking (true while a check is planned or running, a held unit staying
   held meanwhile), checked (unix seconds), held: [drop-box paths], findings: [{id, level:
@@ -952,14 +952,14 @@ class, id) within a tile. The client sends the id with the clicked point.
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
   target → key: `terrain`, `slope` (their pieces, z6 tiles; an area's whole run's records, z3 tiles,
   from before), `terrain_lo`, `slope_lo` (their assemblies, z3 tiles), `unit`, `pois`, `peaks`,
-  `pack` (z6 tiles), `lo` (z3 tiles, the worldwide steps' under their names, and the gate's checks
-  as `inputs/<unit>`), `trees` (tree
+  `pack` (z6 tiles), `lo` (z3 tiles, the worldwide steps' under their names, and the input check's
+  jobs as `inputs/<unit>`), `trees` (tree
   cover's pieces, z6 tiles), `trees_lo` (their assemblies, z3 tiles), `catalog`, `catalog_held`).
-- **The gate** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of lower-case
+- **The input check** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of lower-case
   letters, digits, `-` and `_`, nesting: `timetables/gtfs`; its records start with `@`, which no
   drop-box name nor unit name does): the drop boxes under `inputs/` (the owner's; today only the
-  test unit's, `inputs/_gate-test/`, `.jsonl` files of `{"k": <string>, "v": <number>}` lines, while
-  `state/inputs/gate-test` puts it on the gate); a unit's checked copies, content-named under
+  test unit's, `inputs/_gate-test/`, `.jsonl` files of `{"k": <string>, "v": <number>}` lines, checked
+  while `state/inputs/gate-test` exists); a unit's checked copies, content-named under
   `sources/inputs/<unit>/` (`<drop-box path to its file name's first dot>.<hash16>.<the rest of the
   name, or bin>`); its accepted index, `sources/inputs/<unit>/@index.<hash16>.json`, named in the
   manifest as `sources/inputs/<unit>/@index`: `{fmt: 1, unit, checks: "<unit> <version>", files:

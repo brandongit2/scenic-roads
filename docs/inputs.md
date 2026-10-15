@@ -1,7 +1,7 @@
 # Inputs: every input through a standard shape and a checked drop box
 
-**Status: the gate (§4) is built, on the test unit alone (#134: crate::inputs, its two-Mac trial
-of §4.10 still to run); the accessor's guard (§7.1) is built and growing with each input; the rest
+**Status: the input check (§4) is built, on the test unit alone (#134: crate::inputs; its two-Mac
+trial of §4.10 ran on 2026-10-10); the accessor's guard (§7.1) is built and growing with each input; the rest
 is planned.** It is the spec for the input standardisation series on the task board (#133 is this
 document; #134–#147 build it). Each section says what of it is built; where it describes today's
 code or today's NAS, it says "today" and cites the file; everything else is the design.
@@ -17,17 +17,27 @@ No data source is named in the app's code: per-source conversion happens outside
 the app must know about a source (where to fetch it, its licence, its credit) is written in a
 declaration file in a drop box.
 
+**The input check** (this document's name for the mechanism of §4). Every change dropped into a
+drop box is checked before the app uses it: first its shape, then the input's own rules. A change
+that passes is copied into the app's own store of checked files (`sources/inputs/`) and becomes
+the version the build reads. A change with a problem is held back: the app keeps using the last
+version that passed, shows the problem on the menu bar icon, the build page and the map's build
+panel, and takes the change in once it is fixed or, for a warning the owner agrees with, once the
+owner accepts it. Each drop box is checked on its own and is called a **unit** of the input check.
+(In the code the mechanism's identifiers keep the older word "gate": `gate_work`, `_gate-test`.)
+
 ## 1. Requirements
 
-The owner's decisions of 9 October 2026 (the board's notes for #133–#147):
+The owner's decisions (the board's notes for #133–#147; the regions' as revised on 14 October 2026):
 1. **A standard shape and a drop box per input.** The owner produces inputs to the shape and drops
    them in; the agent ingests them; after any building they show on the map.
-2. **Every change is checked first:** its shape, then the input's own checks (thin gaps between
-   regions, for instance). An error or a warning pauses ingesting it, with a warning on the menu bar
+2. **Every change is checked first:** its shape, then the input's own checks (a region naming
+   an OSM relation that doesn't exist, for instance). An error or a warning pauses ingesting it, with a warning on the menu bar
    icon and a banner on the build page. The last good version stays in use. A warning the owner
    agrees with can be accepted.
 3. **Three kinds of input:** request–fulfil, declare, and source declarations (§2).
-4. **Per input** (§6): regions as a file each, custom shapes in GeoJSON, thin gaps warned of; one
+4. **Per input** (§6): regions as a file each, built from OSM relations and GeoJSON
+   shapes with set operations, lines and buffers, pinned to an OSM snapshot; one
    timetable input worldwide (declared GTFS feeds the app fetches, and static GTFS the owner
    compiles by hand); heritage registers as one GeoJSON file each plus a description file, located
    before they're dropped, with merging by rule in the build and the owner's same/not-same pairs as
@@ -52,7 +62,7 @@ Standing constraints this design keeps:
   facts about its source that can't be read from the data (its licence, its height reference,
   where it is), and everything that can be read from the data (resolution, coverage, extent,
   feature counts, a feed's box) is read from it, at check time. Where a declared fact can be
-  checked against the data, the gate checks it, and a wrong declaration fails loudly as a finding;
+  checked against the data, the input check does so, and a wrong declaration fails loudly as a finding;
   it never corrupts output silently. A hand-entered value may at most be a hint that costs speed
   when wrong, never correctness.
 - **Docs say what's true** (this file was planned throughout; each task marks its part built as it
@@ -71,7 +81,7 @@ Standing constraints this design keeps:
 
 Precisely:
 - **Declare.** The drop box's files are the input's whole truth. Adding a file adds data, editing
-  it changes data, removing it removes data (once the removal passes the gate). The app never
+  it changes data, removing it removes data (once the removal passes the input check). The app never
   writes in a declare drop box, except where a tool of the owner's writes on their behalf (the
   Regions panel, `scenic add`/`remove`, as today).
 - **Request–fulfil.** Two halves. The request: a to-do list the app writes after building (in the
@@ -102,7 +112,7 @@ under `inputs/`:
 ```
 inputs/
   README.md                  how the drop boxes work, and each one's shape in brief (#147)
-  regions/                   declare: <id>.toml, and custom outlines as <name>.geojson (§6.1)
+  regions/                   declare: <id>.toml and <name>.geojson, in any subfolders; pins.toml (§6.1)
   languages/                 declare: territories.tsv, about.toml (§6.2)
   translations/              request–fulfil: **/*.jsonl; todo/ (the app's) (§6.3)
   descriptions/              request–fulfil: **/*.jsonl; todo/ (the app's) (§6.4)
@@ -117,7 +127,7 @@ inputs/
   hold-catalog               not an input (a control)
 ```
 
-Each of these folders is one **gate unit**: checked, held and accepted on its own (timetables'
+Each of these folders is one **unit** of the input check: checked, held and accepted on its own (timetables'
 two folders are two units of one input). Inside any drop box:
 - `todo/` is the app's (requests), `how/` is the owner's notes on how the input is made, pointing to
   its producers in the repository (`producers/<input>/`, §8); neither is read as input.
@@ -138,8 +148,8 @@ What moves (each in its task; §11):
   `descriptions/` is an error finding on the new unit ("dropped into the old folder: move it to
   inputs/translations/"), never silently ignored. The old folders are then left empty, not removed,
   so a drop there is seen.
-- `inputs/outlines/` (`.poly` files, Geofabrik's and three of our own) goes: no recipe uses one
-  today (§6.1).
+- `inputs/outlines/` (`.poly` files, Geofabrik's and three of our own) goes, each file converted
+  to GeoJSON in `inputs/regions/` first: no recipe uses one today (§6.1).
 - `inputs/ferries/` becomes timetable declarations and hand-compiled GTFS (#140, #141); its
   research notes and feed-finding notes move to `inputs/timetables/*/how/`.
 - `inputs/names/analysis/` (how earlier translation work was sized) moves to
@@ -151,20 +161,20 @@ What moves (each in its task; §11):
 - The checked copies live under `sources/inputs/` (§4.6); they're the app's, never the owner's to
   edit.
 
-## 4. The gate (#134)
+## 4. The input check (#134)
 
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), with the
-test unit `_gate-test` the only unit on it (§4.10): no real input is on the gate until its own task
-(#135–#145) adds it to `inputs::UNITS`. What of this section isn't built yet is marked planned.
+test unit `_gate-test` the only unit it checks (§4.10): no real input goes through it until its own
+task (#135–#145) adds it to `inputs::UNITS`. What of this section isn't built yet is marked planned.
 
 ### 4.1 Terms
 
-- **Drop box:** the owner's folder. The build never reads it directly once its input is on the
-  gate; it reads the accepted version.
+- **Drop box:** the owner's folder. The build never reads it directly once its input goes through
+  the input check; it reads the accepted version.
 - **Candidate:** the drop box's files as they are now, once they've held still.
 - **Finding:** what a check says about a candidate: an **error** (the file can't be used: a shape
   broken, a field missing, a reference to nothing) or a **warning** (usable, but likely a mistake:
-  a thin gap between regions, a register losing a fifth of its entries). Each has a stable id
+  a register losing a fifth of its entries). Each has a stable id
   (§4.4), the files it's about, a message in plain words, and where it is when that's a place.
 - **Held:** a change with an unaccepted finding. It isn't taken in; the last accepted version of
   the files it touches stays in use.
@@ -173,14 +183,14 @@ test unit `_gate-test` the only unit on it (§4.10): no real input is on the gat
 
 ### 4.2 Noticing a change
 
-- The lead (pool.md §5) lists every drop box (recursively for translations and descriptions,
+- The lead (pool.md §5) lists every drop box (recursively for regions, translations and descriptions,
   skipping `todo/` and `how/`) and its acceptances every two minutes, off its loop (a thread of its
   own, crate::inputs::watch, as its journal listings are: a listing can take half a minute under
   load), and keeps the last listing: each file's path, size and modification time. (A Mac working
   as a member doesn't list.)
 - `scenic inputs check [<unit>]` lists now (an ask to this Mac's agent, `inputs-asks/` in its
   folder, as an acceptance asked of it is). The Regions panel's own writes asking for a listing at
-  once, so a new region reaches the gate in seconds, come with the regions (#135, planned).
+  once, so a new region is checked within seconds, come with the regions (#135, planned).
 - A file whose time is within the last 10 s is left for the next listing (listed again 11 s
   later), by its time alone (the same size and time in two listings a few seconds apart don't prove
   it whole). The check is given the listing and acceptances its key was made from (`--listing`,
@@ -208,7 +218,7 @@ test unit `_gate-test` the only unit on it (§4.10): no real input is on the gat
 
 ### 4.3 Checking: a job like any other
 
-Checking runs as a build step, `inputs`, one target per gate unit (`inputs regions`, `inputs
+Checking runs as a build step, `inputs`, one target per unit (`inputs regions`, `inputs
 timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4: every job hands off):
 - **Its key** (`inputs::check_key`): the step's version and the unit's checker version
   (`INPUTS_V`, and a version per input's checks, bumped with any change to them), the listing
@@ -244,7 +254,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
      before (a held new file is simply absent).
   5. **Checks that version whole:** runs the unit's checks again on exactly the files it would be.
      Per-file holding can combine an old file with a new one in a way neither candidate nor the old
-     version had (a recipe kept old beside a neighbour's new shape, leaving a gap). If the whole
+     version had (a heritage match kept old beside a register's new version that no
+     longer has the entry it names). If the whole
      version raises a finding neither accepted nor raised by the accepted version as it stands (that
      one holds no change: the version already in is never held), every changed file of the unit is
      held and the version stays as it was; the banner says the changes were held together and why.
@@ -282,14 +293,14 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
     an accepted warning covers those lines exactly, and a new suspicious line in the same file (or a
     flagged line edited) is a new finding.
   Not of the whole file's bytes: an unrelated edit elsewhere in a file doesn't re-raise a warning
-  already accepted, and the same gap seen again has the same id.
+  already accepted, and the same finding seen again has the same id.
 - **Errors** are the data's or the shape's faults: the file can't be read in the shape, a required
-  field is missing or of the wrong type, an id repeats, a reference names nothing (an outline
-  relation the pass doesn't have, a shape file that isn't there), a declared fact the data
+  field is missing or of the wrong type, an id repeats, a reference names nothing (an OSM
+  relation the pinned snapshot doesn't have, a shape file that isn't there), a declared fact the data
   contradicts in a way that can't be meant (a declared height reference the app doesn't know, a
   GeoTIFF whose CRS contradicts its declared format). Errors can't be accepted; the file is fixed or
   removed.
-- **Warnings** are likely mistakes the owner may mean: a thin gap between regions, a register
+- **Warnings** are likely mistakes the owner may mean: a register
   losing more than 10 % of its entries since its accepted version, entries far outside their
   register's declared territory (NRHP lists the American Legation in Tangier), a declaration no
   step will use.
@@ -314,7 +325,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   file again from the next check (if the file has moved on since, it holds the new change, never
   the version already in).
 - Acceptances are backed up with `inputs/` (plan §3, Backups).
-- An acceptance outlives the finding: if the same gap appears again later with the same id, it's
+- An acceptance outlives the finding: if the same finding appears again later with the same id, it's
   already accepted. `scenic inputs` lists acceptances whose finding no candidate raises any more,
   and `scenic inputs unaccept --stale` removes them.
 
@@ -342,15 +353,15 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   same contents always have the same version.
 - **The records:** the manifest's `sources/inputs/<unit>/@index` names the index, whose file
   entries root the files for GC (§4.9). It changes only by a check job's hand-off, merged by the
-  lead (pool.md §5): the lead stays the one writer of the records, and the gate adds no other
-  writer.
+  lead (pool.md §5): the lead stays the one writer of the records, and the input check adds no
+  other writer.
 - **Readers:** one function in the pipeline (`inputs::open(root, manifest, unit)`, built) gives a
   step the accepted files of a unit, by their drop-box paths, from the records it planned with. No
   step reads a drop box (the accessor and the guard enforce it, §7). The Python steps get the
   files' paths on their command line, from the agent, as they get every input today. (No step reads
   a unit yet: each input's task moves its readers here.)
 - **Every read of a drop box today** moves to it in its input's task. Besides the regions' readers
-  (§6.1), the ones that would bypass the gate if missed: `scenic-build`'s `coverage_of`
+  (§6.1), the ones that would bypass the input check if missed: `scenic-build`'s `coverage_of`
   (crates/pipeline/src/bin/scenic-build.rs:3352, defaulting `--regions` to `inputs/regions`) and its
   `--translations` default (:209, `translations/`, for `names-todo`); `namestodo::run` reading
   `descriptions/` (crates/pipeline/src/namestodo.rs:607); the outline files read by the agent's
@@ -376,14 +387,13 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 
 ### 4.7 Where it shows
 
-- **The status** (`state/status.json`, plan §8, Status): `inputs`, one entry per gate unit:
+- **The status** (`state/status.json`, plan §8, Status): `inputs`, one entry per unit:
   ```json
-  {"unit": "regions", "version": "sources/inputs/regions/index.7a…json", "state": "held",
-   "checked": 1760100000, "held": ["wales.toml"],
-   "findings": [{"id": "r-gap.…", "level": "warning", "files": ["wales.toml", "england.toml"],
-                 "message": "A gap between Wales and England up to 340 m wide (2.1 km²): its roads would be left off",
-                 "at": [-3.07, 52.31]}],
-   "accepted": ["r-gap.…"], "stale": []}
+  {"unit": "heritage", "version": "sources/inputs/heritage/index.7a…json", "state": "held",
+   "checked": 1760100000, "held": ["fr-merimee.geojson"],
+   "findings": [{"id": "h-loss.…", "level": "warning", "files": ["fr-merimee.geojson"],
+                 "message": "fr-merimee: 46,210 → 39,100 entries (a loss of 15 %)"}],
+   "accepted": [], "stale": []}
   ```
   `state` is `ok`, `checking` (a check is planned or running, nothing held) or `held` (also while
   it's checked again: `checking: true` beside it, its findings still shown, until the check says;
@@ -396,8 +406,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 - **The menu bar item** (`tools/status`): today one icon shows the build's state, and a problem shows
   only when nothing builds (tools/status/main.swift). An input held adds a badge (a small warning
   triangle) to whatever icon the build's state has, so a held input is visible while the build
-  goes on with the last good version. Its menu has a line per held unit ("regions: 1 warning held
-  (wales.toml)"), with Accept (warnings only, after a confirmation naming them: an ask to this
+  goes on with the last good version. Its menu has a line per held unit ("heritage: 1 warning held
+  (fr-merimee.geojson)"), with Accept (warnings only, after a confirmation naming them: an ask to this
   Mac's agent, which writes the acceptances) and Show on the Build Page. It notifies when a unit
   becomes held and when it's taken in. Built.
 - **The build page** (`web/work/dash.js`): a banner per held unit at the top: the unit, the held
@@ -481,7 +491,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   the credits' digest in the catalog's key (§4.8).
   All built.
 - **A test input first:** `inputs/_gate-test/` isn't real data (a name starting with `_` is
-  ignored everywhere else; the gate is told of it by a flag, `state/inputs/gate-test`: `scenic
+  ignored everywhere else; the input check is told of it by a flag, `state/inputs/gate-test`: `scenic
   inputs test on|off`; off, it's no longer shown, and `test off --forget` removes its acceptances
   and asks the lead to remove its records, a job of the lead's, `inputs _gate-test forget`, its
   copies going with GC). Its shape: JSON lines `{"k": "<string>", "v": <number>}` in `.jsonl`
@@ -511,8 +521,8 @@ Each task changes what an app reads, so for a while two apps may meet:
   older apps"; an app from before them drops what it doesn't know as it saves; the checks' done
   records are kept with the lo keys, which every app keeps). An older lead keeps the
   `sources/inputs/*` entries it doesn't know (the manifest is a map it passes on whole) but plans
-  with its own code, reading the drop boxes directly as today: it bypasses the gate for as long as
-  it leads.
+  with its own code, reading the drop boxes directly as today: it bypasses the input check for as
+  long as it leads.
   Its member's hand-offs of an `inputs` job are refused (not a step it shares), as for the
   buildings.
 - **The same-app rule limits the window.** A member gets jobs only from a lead on its own app
@@ -611,81 +621,166 @@ deleted.
 
 ### 6.1 Regions (#135)
 
-**Kind:** declare. **Drop box:** `inputs/regions/` (as today).
+**Status: planned, for the owner's review before any code** (#135 starts with this section). Today
+a recipe is `<id>.toml` directly in `inputs/regions/`, its `outline` a list of `osm:`, `geofabrik:`,
+`poly:` and `place:` entries whose union is the region (crates/pipeline/src/agent/recipes.rs:26–56;
+plan §5). Everything below is the design.
 
-**Shape:** a recipe per region, `<id>.toml`, as today (crates/pipeline/src/agent/recipes.rs), with
-custom outlines in GeoJSON instead of `.poly`:
+**Kind:** declare. **Drop box:** `inputs/regions/`, read recursively.
+
+**What a region is.** A name on the map for a piece of the coverage. The coverage is the union of
+every region; nothing is built per region (plan §5), so regions may overlap freely and an overlap
+costs nothing. The app checks each region's definition, not how regions fit together: there is no
+partition report and no gap warning. Instead the map gets a **region layer** (Settings → Regions,
+beside today's "Coverage on the map", which draws the coverage as one shape): every region's
+outline and a light fill of its own, labelled with its name, drawn from the accepted version, so
+the owner can see overlaps and gaps by eye.
+
+**Files and folders.**
+- One region per file, `<id>.toml`, anywhere under `inputs/regions/`. Subfolders are only the
+  owner's grouping (`europe/portugal/azores.toml`): the build and the app ignore them. A region's
+  id is unique across all folders, so moving a file between folders changes nothing (not its id,
+  not the coverage, not a key).
+- Custom shapes are GeoJSON files, `<name>.geojson`, anywhere under `inputs/regions/`, named by
+  their file name alone (unique across all folders too, for the same reason).
+- `inputs/regions/pins.toml` names the sources the folder is written against (below). `how/`,
+  `todo/` and names starting with `.`, `@`, `#` or `_` are ignored, as in every drop box (§3).
+
+**A region file:**
 
 | Field | Type | |
 |---|---|---|
 | `id` | string: lower-case letters, digits, dashes, ≤ 64, the file's name | required |
 | `name` | string | required |
-| `outline` | list of entries, their union the region | required, non-empty |
+| `outline` | list of parts, their union | required, non-empty |
+| `minus` | list of parts, their union taken away | optional |
+| `intersect` | list of parts, the region kept only inside their union | optional |
+| `[lines.<name>]` | a line, from `coords` or `ways` (below) | optional |
+| `[pins]` | as `pins.toml`, overriding it for this file | optional |
 
-Outline entries:
-- `osm:<relation>`: an administrative or ISO 3166 area of the pass's outlines (preferred:
-  neighbours share edges exactly, and a 1 km buffer covers coasts: plan §5).
-- `shape:<file>.geojson`: a Polygon or MultiPolygon (a Feature, or a FeatureCollection whose union
-  is taken) in `inputs/regions/`. Replaces `poly:` and `geofabrik:`.
-- `place:<lon>,<lat>,<km>`: a circle up to 500 km (as today).
+The region is (∪ `outline`) ∩ (∪ `intersect`) − (∪ `minus`), in that order.
+
+**Parts.** Each entry of `outline`, `minus` or `intersect` is one of:
+- `"osm:<relation>"`: an OSM relation's area (preferred: neighbours share borders exactly). As
+  today, a vertex within 1 km of an `osm:` outline counts as inside (plan §5), which covers coasts.
+- `"shape:<name>.geojson"`: a Polygon or MultiPolygon in a GeoJSON file of the folder (a Feature,
+  or a FeatureCollection whose union is taken), for anything custom. No tolerance: the shape is
+  exactly what it says.
+- `"region:<id>"`: another region's area, as that region's file defines it.
+- `{ buffer = <part or "line:<name>">, by = "<distance>" }`: everything within that distance of a
+  shape or a line, for instance a band of 3 or 12 nautical miles around a coast or an island.
+  Distances are in `m`, `km` or `nmi` (1,852 m), measured on the ground.
+- `{ cut = <part>, by = "line:<name>", keep = "left" | "right" }`: the part of a shape on one side
+  of a line (left or right as the line is drawn, first point to last). The line must cross the
+  shape from edge to edge; where it runs on past the shape, the extra is ignored. A line that ends
+  inside the shape can't cut it, and that is an error.
+
+`buffer` and `cut` take any part, so they nest (`{ cut = { buffer = "osm:…", by = "12 nmi" }, … }`).
+
+**Lines** are named in the file and used only to cut or buffer, never as outlines:
+- `coords = [[<lon>, <lat>], …]`: drawn by hand, at least two points;
+- `ways = [<way id>, …]`: OSM ways strung together end to end, in the order given (each may be
+  reversed to meet the previous one's end); ways that don't join are an error naming the pair.
+
+**Pinned sources.** OSM relation and way ids can change their meaning as OSM is edited, so every
+region names the OSM snapshot it is written against: `inputs/regions/pins.toml` holds
+`osm = "<date>"` (an OSM pass's date, as in `sources/osm/<date>/`) for the whole folder, and a file
+may override it with its own `[pins]`. A file made from another dataset (a GeoJSON derived from a
+published set of boundaries) names that dataset's version there too, as a record: the app reads
+only OSM itself, so it checks that such a pin is well formed, not what it says.
+
+What the check does with the pin:
+- It resolves a region only against the snapshot its pin names, and only if that is the build's
+  current OSM pass. The geometry it resolves (each region's, after the operations) is stored with
+  the accepted version (content-named in `sources/inputs/regions/`), and the build reads that
+  geometry, never the pass's outlines again. So the coverage changes only when a region file
+  changes and passes the check.
+- When a new OSM pass becomes current, every region pinned to another date fails with an error
+  ("pinned to OSM 2026-03-30; the build's pass is 2026-09-29"). Errors can't be accepted, so those
+  files are held and the map keeps the coverage it had: the last accepted geometry stays in use,
+  and nothing is rebuilt because of the new pass. The finding lists, for each relation and way the
+  file names, whether the new pass still has it and whether its geometry changed, so the owner (or
+  the generator below) can check the ids and move the pin. Changing `pins.toml`'s date re-checks
+  every file that doesn't override it.
+
+**Not the app's concern.** Maritime boundaries, exclusive economic zones and the owner's global
+rules for which waters go with which region are worked out outside the app, by a generator written
+later (not part of this group). Its output is ordinary region files: OSM relations, GeoJSON shapes
+and the operations above, pinned like any other.
 
 ```toml
-id = "lake-district"
-name = "Lake District"
-outline = ["osm:2654634", "shape:lake-district-fells.geojson"]
+# inputs/regions/europe/portugal/azores.toml
+id = "azores"
+name = "Azores"
+outline = [{ buffer = "osm:1629145", by = "12 nmi" }]
 ```
+```toml
+# inputs/regions/europe/spain-north.toml: the part of Spain north of a hand-drawn line
+id = "spain-north"
+name = "Northern Spain"
+outline = [{ cut = "region:spain", by = "line:split", keep = "left" }]
+minus = ["region:andorra"]
 
-**Checks.**
-- Errors: the TOML doesn't parse; `id` isn't the file's name or isn't valid; `name` or `outline`
-  empty; an entry of an unknown kind; an `osm:` relation not in the pass's outlines; a shape file
-  missing, not GeoJSON, not a polygon, or invalid; a circle out of range; two recipes with one id.
-- Warnings:
-  - **a thin gap between neighbouring regions:** the coverage's closing at 1 km (grown by 1 km,
-    then shrunk by 1 km) less the coverage, each piece that touches two or more regions' shapes
-    **and holds a road of the pass** (a way of the pass's road values with a vertex inside it): a
-    sliver whose roads would be left off. A sliver without roads isn't a finding: the coastal
-    buffering leaves water between regions' coasts (the Severn's estuary between England's and
-    Wales' buffered outlines) and that loses nothing. The finding says how many roads and km it
-    holds. Overlaps are harmless (the coverage is a union; nothing is built per region) and aren't
-    checked. A hole inside one region (touching no other) isn't a gap: it's that region's own
-    outline. The check's key names the pass's road values, so a new pass checks again;
-  - a `.geojson` in the folder that no recipe names.
-- A `.toml.removed` file is a removal the owner made (the panel's), not a finding.
+[lines.split]
+coords = [[-9.6, 42.0], [3.6, 41.6]]
+```
+(The relation id and the line are illustrative.)
 
-**Ingesting and rebuilding.** The accepted recipes are the coverage. Jobs are keyed by the
+**Checks** (all errors; regions have no warnings):
+- the TOML doesn't parse; `id` isn't the file's name or isn't valid; `name` or `outline` is empty;
+  a field or part of an unknown kind;
+- two region files with one id, or two GeoJSON files with one name, in any folders;
+- an OSM relation or way the pinned snapshot doesn't have, or a relation with no area;
+- a broken shape: a GeoJSON file missing, not GeoJSON, not a polygon, or invalid (§5.3); a line with
+  fewer than two points, ways that don't join, a cut whose line doesn't cross its shape, a distance
+  that doesn't parse;
+- a `region:` reference to no region;
+- a loop of references (`a` naming `b` naming `a`), naming every region in it;
+- no OSM pin, or an OSM pin that isn't the build's current pass (above).
+
+A held file holds the files naming it (§4.3, step 3): a region naming a held region is held too. A
+`.toml.removed` file is a removal the owner made (the panel's), not a finding.
+
+**Ingesting and rebuilding.** The accepted regions are the coverage. Jobs are keyed by the
 coverage's geometry inside what they read (`Coverage::fingerprint`, plan §5), so nothing about keys
-changes; what changes is that the coverage comes from the accepted version (`Coverage::load`,
-crates/pipeline/src/coverage.rs:514, reads `inputs/regions` today, as do about twenty other call
-sites: agent/mod.rs:1947, :1954, :3534, :4119, :4162, :5859; terrain_task.rs:942; treepacks.rs:629;
-scenic-build.rs:1130, :1283, :1441, :1577, :1730, :1834, :2672, and `coverage_of`'s default, :3352;
-bin/terrain.rs:306; and the outline files at agent/mod.rs:652 and :4213), and a shape
-file enters by its content (a `shape:` entry's key is its geometry, as `osm:` entries' are). The
-regions' wait for more edits (plan §8, Regions: a quarter of an hour, an hour at most) counts from
-when a change is taken in. A bad recipe today is dropped from the coverage and reported
-(`recipes::load`'s second list, the status's `bad_recipes`, agent/mod.rs:373); on the gate it's
-held instead, its accepted version kept, so a typo can't shrink the map.
+changes; what changes is that the coverage comes from the accepted version's stored geometry
+(`Coverage::load`, crates/pipeline/src/coverage.rs:514, reads `inputs/regions` today, as do about
+twenty other call sites: agent/mod.rs:1947, :1954, :3534, :4119, :4162, :5859; terrain_task.rs:942;
+treepacks.rs:629; scenic-build.rs:1130, :1283, :1441, :1577, :1730, :1834, :2672, and
+`coverage_of`'s default, :3352; bin/terrain.rs:306; and the outline files at agent/mod.rs:652 and
+:4213). The regions' wait for more edits (plan §8, Regions: a quarter of an hour, an hour at most)
+counts from when a change is taken in. A bad recipe today is dropped from the coverage and reported
+(`recipes::load`'s second list, the status's `bad_recipes`, agent/mod.rs:373); once the regions go
+through the input check it's held instead, its accepted version kept, so a typo can't shrink the
+map. The Regions panel keeps writing region files (new ones at the folder's top, edits where the
+file lies), asks for a listing at once so a change is checked within seconds, and marks a held
+region "held: <finding>".
 
 **Migration.** Today all 88 recipes use `osm:` entries alone (checked on the NAS, 2026-10-10:
 `inputs/regions/*.toml`; two more are `.toml.removed`), so no recipe changes:
-1. Put the regions on the gate, the readers above on `inputs::open`. Proof: the coverage's
-   fingerprint and shapes key (`Coverage::shapes_key`) of the accepted version equal today's, so
-   every build step's key is unchanged and nothing rebuilds. The catalog is remade once: its key
-   names the regions' digest (`catalog_key`, agent/build.rs:2562), which becomes the accepted
-   index's content name; the new catalog lists the same files.
-2. **Our three custom outlines become GeoJSON** (`inputs/outlines/azores.poly`, `madeira.poly`,
-   `portugal-mainland.poly`, converted to `inputs/regions/<name>.geojson`, each checked to give the
-   same rings as its `.poly` through today's reader), so a recipe can use them again as `shape:`;
-   no recipe names them today, so they raise the "named by no recipe" warning, accepted at
-   migration. The 31 Geofabrik `.poly` files stay unused and are archived in
-   `inputs/regions/how/geofabrik/` (Geofabrik's own outlines, kept as history, not converted).
-3. Delete `poly:` and `geofabrik:` (recipes.rs:28–55, coverage.rs's `file_rings`, :374,
-   `regions_digest`'s outline files, server/src/regions.rs:686, and the tests using them,
-   agent/build.rs:3803 and agent/mod.rs:6027, which convert to `shape:`); catalogs record their
-   outlines' shapes inline (formats.md, Catalog `coverage`), so an old catalog naming `geofabrik:`
-   still draws.
-4. The Regions panel's planned drawing (plan §1) saves `shape:` GeoJSON.
-5. Run the thin-gap check over today's recipes: no gap is expected (OSM neighbours share edges), and
-   any found is the first real use of warning-and-accept.
+1. Write `inputs/regions/pins.toml` naming the current pass's date; put the regions through the
+   input check and their readers on `inputs::open`. Proof: the coverage's fingerprint and shapes
+   key (`Coverage::shapes_key`) of the accepted version equal today's, so every build step's key is
+   unchanged and nothing rebuilds. The catalog is remade once: its key names the regions' digest
+   (`catalog_key`, agent/build.rs:2562), which becomes the accepted index's content name; the new
+   catalog lists the same files.
+2. **Every `.poly` becomes GeoJSON:** our three (`inputs/outlines/azores.poly`, `madeira.poly`,
+   `portugal-mainland.poly`) and Geofabrik's 31 (`inputs/outlines/geofabrik/`), converted to
+   `inputs/regions/shapes/<name>.geojson` (Geofabrik's under `shapes/geofabrik/`, named by their
+   ids with `/` as `-`). Proof, for each: the same rings as its `.poly` through today's reader, and
+   a coverage made from the GeoJSON gives the same `Coverage::fingerprint` as one made from the
+   `.poly` on every z6 tile it meets. No recipe names them today, so none of this changes the map.
+3. Delete `poly:`, `geofabrik:` and `place:` (recipes.rs:26–56, coverage.rs's `file_rings`, :374,
+   and `circle`, :361, `regions_digest`'s outline files, server/src/regions.rs:686, the Regions
+   panel's labels for them), `inputs/outlines/` and `dem/bldfetch.py:248–250`'s read of it. No
+   live recipe uses `place:`; the tests using these kinds (agent/build.rs:3803, agent/mod.rs:6027,
+   coverage.rs:794) switch to small GeoJSON fixtures. Catalogs record their outlines' shapes inline
+   (formats.md, Catalog `coverage`), so an old catalog naming `geofabrik:` still draws.
+4. Add subfolders, pins, `region:`, `minus`, `intersect`, lines, `cut` and `buffer`, each with tests
+   on small fixtures (a cut by a line running past the shape, a loop, an id repeated in two folders,
+   a pin mismatch holding the files while the coverage stays as it was).
+5. The region layer on the map.
+6. The Regions panel's planned drawing (plan §1) saves `shape:` GeoJSON.
 
 ### 6.2 Languages by territory (#136)
 
@@ -773,7 +868,7 @@ minutes; §12).
 1. Publish a server that reads the accepted copies, and the old folder while there are none
    (§4.11); once every Mac runs it, move `translations/` to `inputs/translations/` (one rename on the
    share), while no translator runs (§3).
-2. Check today's files on the gate. The converted tables (2.78 M lines) are expected to raise
+2. Run the input check on today's files. The converted tables (2.78 M lines) are expected to raise
    check.py warnings; they're accepted once, at migration, each listed in the task's report, each
    acceptance covering exactly the lines it lists (§4.4).
 3. Proof: the server's compiled tables (`names::table`) hold the same lines (the same lookups for
@@ -987,7 +1082,7 @@ similar name, different registers) is a later request–fulfil addition, not in 
 
 ### 6.7 Timetables (#140–#142)
 
-One input worldwide, in two gate units: feeds the app fetches (source declarations) and static GTFS
+One input worldwide, in two units of the input check: feeds the app fetches (source declarations) and static GTFS
 the owner compiles by hand (declare). OSM decides what's drawn and where; timetables only add
 counts. Each mode has one counter, whichever unit its timetables came from, and each counter keeps
 what its mode shows today.
@@ -1070,7 +1165,7 @@ declared nor in the catalogue's fetched copy; an `own_code` key no outline of th
 that `inputs/keys.env` doesn't hold (the feed waits, as keyed feeds do today); two declarations with
 one URL.
 
-What a fetch brings back (a zip that isn't one, a feed without rail) isn't a gate finding: the data
+What a fetch brings back (a zip that isn't one, a feed without rail) isn't a finding of the input check: the data
 isn't the owner's drop. It's the fetching job's status, as today (a refusal leaves the feed out, an
 old copy is kept: the last good version already).
 
@@ -1145,7 +1240,7 @@ positive; a route without `route_url`; a ferry route with count rows and no `osm
 both trips and count rows; a stop's coordinates out of range. Warnings: a route with no trips and
 no count rows; two zips with one `route_id` and agency.
 
-Whether a route matches something on the map isn't a gate finding: it depends on OSM, which changes
+Whether a route matches something on the map isn't a finding of the input check: it depends on OSM, which changes
 each pass, and a warning there would hold the file again every pass. It's #142's report.
 
 **Ingesting.** `rail` and `ferries` count the accepted zips with their counters, and name them by
@@ -1331,7 +1426,7 @@ Each with its proof (the step's outputs the same) and the code's constant delete
 
 ## 7. The guards
 
-Two guards, both gating publish (`tools/app/publish.sh:36–38` runs the pipeline's whole-crate
+Two guards, both run before every publish (`tools/app/publish.sh:36–38` runs the pipeline's whole-crate
 checks with `--test`; a failure stops publishing), built on the pattern of
 `crates/pipeline/tests/cache_accessor.rs`: one accessor that the code must go through, a test that
 finds every way around it, an exemption list (file, function, reason) whose every entry must name a
@@ -1340,17 +1435,17 @@ function that exists (`every_exemption_names_a_function_there`).
 ### 7.1 Drop boxes only through the accessor (#134, growing with each input)
 
 **Built** (#134): `Out::path`'s refusal, the test (`crates/pipeline/tests/inputs_accessor.rs`,
-gating publish with the others) and `dem/inputs.py`'s `arg`, with today's readers exempt by name,
+run before publishing with the others) and `dem/inputs.py`'s `arg`, with today's readers exempt by name,
 each naming the task that moves it; the command-line defaults into the drop boxes go with their
 readers (#135, #137), and the publish check with a stand-in root whose drop boxes are unreadable is
 planned.
 
 String markers alone would miss paths built with `join`, defaults on a command line, and Python. So
 the drop boxes are reached only through an accessor that refuses everything else:
-- **In Rust:** `inputs::open` (§4.6) and the gate's check job are the only code given the drop
+- **In Rust:** `inputs::open` (§4.6) and the input check's job are the only code given the drop
   boxes' paths. The NAS root type the steps receive (`Out`, the project root) refuses, at run time,
   a content name under `inputs/`, `translations/` or `descriptions/` asked of it (`Out::path`
-  panics, naming its caller: the gate and `inputs::open` never ask it for one), so a reader that
+  panics, naming its caller: the input check and `inputs::open` never ask it for one), so a reader that
   takes a drop-box path from the records or builds one as a content name fails its first run. It
   doesn't cover a path joined onto the root itself (`Out::root()`, or a `root` a function is given:
   most of today's readers), which the test below is for. Command-line defaults that point into a drop box (today
@@ -1407,14 +1502,14 @@ made again from scratch.
   them), with its history, review and tests. They're outside what `publish.sh` ships and outside the
   guards' scans (§7): the app never runs them. Each runs on its own
   (`uv run python producers/heritage/fr_merimee.py --out <folder>`), writing the drop box's shape,
-  checked by the gate when its output is dropped. Their Python environment is their own
+  checked by the input check when its output is dropped. Their Python environment is their own
   (`producers/pyproject.toml`), not the app's `dem/`.
 - **Each drop box's `how/`** (on the NAS) says how its input is made and points to its producers in
   the repository; it holds what isn't code: the briefs and models of agent-made inputs
   (translations: Haiku; descriptions: Sonnet; the ferries' researchers' `PROMPT.md`, with how a
   batch is piloted and checked), and what the owner did by hand (the MTR's research, the registers
   downloaded by hand).
-- Then `inputs/README.md` (the drop boxes, the kinds, the gate), plan.md (§3's tree, §6's Hand-made
+- Then `inputs/README.md` (the drop boxes, the kinds, the input check), plan.md (§3's tree, §6's Hand-made
   inputs replaced by a pointer here, §7's folders), formats.md (the index, the status's `inputs`, the
   catalog's `inputs` and credits by id) and the diagram's curated inputs brought up to the drop
   boxes.
@@ -1565,7 +1660,7 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
   rule). `tools/names/cldr-languages.py`: P (`producers/languages/`).
 - `tools/names/convert-tables.py` (the one-off conversion, its per-area tables at :32–42): P
   (`producers/translations/`, history). `tools/names/check.py`: G (the translations' checks, run by
-  the gate).
+  the input check).
 - `crates/pipeline/src/osmpass.rs:147` `BASEMAP_LANGUAGES`: C (derivable from the languages input
   later).
 
@@ -1584,14 +1679,14 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 
 ### 9.9 Regions [#135]
 
-- `crates/pipeline/src/agent/recipes.rs:28–55` `Outline::Geofabrik`, `Poly` and their parsing,
-  `coverage.rs:374` `file_rings`, their rings from `inputs/outlines/`, `agent/mod.rs:4671` `regions_digest`'s
+- `crates/pipeline/src/agent/recipes.rs:26–56` `Outline::Geofabrik`, `Poly`, `Place` and their
+  parsing, `coverage.rs:374` `file_rings`, their rings from `inputs/outlines/`, `circle` (:361), `agent/mod.rs:4671` `regions_digest`'s
   outline files, `server/src/regions.rs:686`: go (§6.1). `dem/bldfetch.py:248–250` reads
   `inputs/outlines`: goes.
 
 ### 9.10 Direct reads of drop boxes (each moved behind the accessor, §7.1)
 
-Not source names, but every place that would bypass the gate:
+Not source names, but every place that would bypass the input check:
 - Regions: the readers listed in §6.1, `scenic-build`'s `coverage_of` (bin/scenic-build.rs:3352),
   the outline files at agent/mod.rs:652 and :4213 [#135].
 - Translations: `scenic-build`'s `--translations` default (bin/scenic-build.rs:209), the server's
@@ -1634,7 +1729,8 @@ the dozen direct reads of drop boxes of §9.10.
   `markconv::LEGACY` and `heritage_source` (crates/pipeline/src/markconv.rs:20–35),
   `agent::build::heritage_src` (agent/build.rs:694–700) and `overlays_key`'s branch for it
   (agent/build.rs:1944–1950). Never taken while a registers snapshot exists. **Removed in #138**
-  (the registers on the gate make the snapshot's absence impossible: the last good version stays),
+  (once the registers go through the input check, the snapshot can't go missing: the last good
+  version stays),
   then `global/legacy/` and `layers/basemap/legacy-*.pmtiles` deleted from the NAS once a published
   app has no readers. (`sources/legacy/` is already gone: the owner deleted it on 9 October.)
 - **The registers' legacy names** (`sources/registers/legacy`, `legacy-seeds`): go with #138 and
@@ -1656,8 +1752,8 @@ The board's order, with what each needs and proves:
 | # | Task | Needs | Proves before deleting |
 |---|---|---|---|
 | 133 | this spec | | |
-| 134 | the gate (§4), on `_gate-test` (built; its trial to run) | 133 | the gate's behaviour on the NAS between two Macs (§4.10: `tools/check/gate-two-macs.sh`) |
-| 135 | regions (§6.1) | 134 | coverage fingerprints unchanged: no build step reruns; the catalog is remade once (its key names the regions' digest) |
+| 134 | the input check (§4), on `_gate-test` (built; its trial ran on 2026-10-10) | 133 | its behaviour on the NAS between two Macs (§4.10: `tools/check/gate-two-macs.sh`) |
+| 135 | regions (§6.1), after 136 and 137 | 134 | coverage fingerprints unchanged: no build step reruns; the catalog is remade once (its key names the regions' digest); every `.poly` converted selects the same coverage |
 | 136 | languages (§6.2) | 134 | `global/spoken`'s content name unchanged |
 | 137 | translations, descriptions (§6.3, §6.4) | 134 | the served tables and descriptions unchanged |
 | 138 | heritage registers (§6.5) | 134, 136 (the chain's languages) | heritage-sites, heritage, marks, overlays unchanged or explained |
@@ -1668,11 +1764,11 @@ The board's order, with what each needs and proves:
 | 143 | elevation, roads (§6.8) | 134 | step 1: every differing vertex in a blend band (checked, not explained); step 2: only the respaced units' keys change; step 3: each vertex moves by its grids' difference |
 | 144 | elevation, terrain (§6.8) | 143 | terrain and slope packs unchanged |
 | 145 | the remaining sources (§6.9) | 134 | each consumer's outputs unchanged |
-| 146 | the guards (§7) | 135–145 (§7.1 from 134 on) | both pass; publish gated on them |
+| 146 | the guards (§7) | 135–145 (§7.1 from 134 on) | both pass; publish runs them first |
 | 147 | how each input is made; docs (§8) | 135–145 | |
 
 Each migration task, in order: write the producer or the declarations; drop today's data in its
-shape; check it on the gate (accepting today's warnings, each listed in the task's report); switch
+shape; run the input check on it (accepting today's warnings, each listed in the task's report); switch
 the readers to the accepted version, re-keying where the new keys name what the old pinned; prove;
 publish; only then delete the old path and its NAS files (after GC's 14 days for content-named ones).
 
@@ -1680,21 +1776,19 @@ publish; only then delete the old path and its NAS files (after GC's 14 days for
 
 - **Every step's reads move.** Regions alone are read in about twenty places today (§6.1), and
   §9.10 lists a dozen more direct reads. A reader missed would read the drop box and bypass the
-  gate; the accessor (§7.1, from #134) refuses such a read at run time and its test finds it in the
+  input check; the accessor (§7.1, from #134) refuses such a read at run time and its test finds it in the
   code, Python included, so a missed reader fails instead of bypassing quietly.
-- **The gate needs a lead.** Checks run as jobs the lead grants: with no lead (every Mac asleep or
+- **The input check needs a lead.** Checks run as jobs the lead grants: with no lead (every Mac asleep or
   away), a drop waits. Translations go from about a minute and a half to the next listing plus a
   check, a few minutes; if that matters, the map's server can show a dropped file's lines as
   "pending" before they're taken in (not planned).
-- **Thin-gap false alarms.** The closing at 1 km may flag deliberate notches (a bay between two
-  regions' custom shapes). Accepting is the answer; the finding's id keeps an accepted gap accepted.
 - **Big checks.** A heritage register of a few hundred thousand entries takes tens of seconds to a
   minute to check. Only files whose size or time changed are read (§4.2): translations' 808 MB are
   read whole once, at migration, then only the batches dropped. A same-size, same-time rewrite is
   missed until the daily full hash (§4.2). The whole-version re-check (§4.3) reruns the unit's
-  cross-file checks (thin gaps, matches, references), not every file's shape checks.
+  cross-file checks (matches, references), not every file's shape checks.
 - **Today's warnings at migration.** check.py on the converted translations, the registers' `approx`
-  shares, likely gaps: each migration accepts what's there once, listed, so the gate starts clean
+  shares: each migration accepts what's there once, listed, so the input check starts clean
   without hiding anything.
 - **Heritage's merge order.** Reading registers in id order instead of today's hand order may change
   which register a merged place names first; positions shouldn't change. Shown and explained in
@@ -1726,7 +1820,7 @@ publish; only then delete the old path and its NAS files (after GC's 14 days for
 - **Credits in transition.** Until every input has its description, the catalog's credits come
   partly from descriptions and partly from `rules::CREDITS`; #134 merges both, the descriptions
   winning for a source both name, so no credit is lost.
-- **SMB.** The gate adds a listing of about a dozen folders every two minutes and a few content-named
+- **SMB.** The input check adds a listing of about a dozen folders every two minutes and a few content-named
   writes per change: well within the share's limits (plan §3), none in a hot path.
 
 ## 13. Open questions, decided by default
@@ -1750,14 +1844,14 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
    one backup rule, one place to look). The cost is a one-time move in two publishes (§4.11), and a
    finding for anything dropped in the old folders afterwards (§3).
 5. **Two timetable units, one input.** Feeds (declarations) and static GTFS (data) have different
-   checks, so they're gated apart, but counted by the same counters and shown as one input.
+   checks, so they're checked apart, but counted by the same counters and shown as one input.
 6. **Static GTFS carries seasons; one counter per mode, the ferries' keeping their fields
    (decided).** Calendar ranges are read as month and day, the year ignored (no expiry, seasons
    kept); `months`, `checked` and the `osm` pin are extra columns and `counts.txt` an extension table
    for services known only by counts, so no departure time is invented; sources in `route_url`
    (required). Rail's counter gives trains per stop pair, the ferries' today's ferry record
    (§6.7.0).
-7. **Timetable matching problems are a report, not a gate warning:** they depend on OSM, which
+7. **Timetable matching problems are a report, not a warning of the input check:** they depend on OSM, which
    changes each pass; a warning would hold the owner's file again every pass.
 8. **Feeds carry no country or box.** Both can be read from the data (`stops.txt`), so declaring them
    would be a hand figure that goes stale; the catalogue's country rule stays, since it reads the
@@ -1787,10 +1881,15 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
     review and tests (about 3,000 lines of per-register Python) are kept.
 16. **The test input is removed after #134's trial,** its tests staying in the suite.
 17. **`OWN_CODE` becomes a declaration (decided):** the catalogue's `own_code` (§6.7.1).
-18. **Our three custom outlines become GeoJSON in #135 (decided);** Geofabrik's stay archived and
-    unused (§6.1).
-19. **The thin-gap warning needs roads in the sliver (decided):** coastal buffering leaves roadless
-    water between neighbours (the Severn), which loses nothing.
+18. **Every `.poly` becomes GeoJSON in #135 (decided, 14 October):** our three and Geofabrik's 31,
+    each proved to select the same coverage; `poly:`, `geofabrik:` and `place:` are deleted (§6.1).
+19. **Regions have no gap or partition checks (decided, 14 October):** overlaps are harmless and
+    gaps are the owner's to see on the map's region layer (§6.1), not a warning.
 20. **Popups name their source by register id (decided),** resolved against the catalog's credits,
     and the catalog's key carries the credits' digest, so a credit edit reaches the map with the next
     catalog and nothing else reruns (§4.8).
+21. **Where `osm:` parts and lines' ways come from (open, for #135's review).** The pass's outline
+    set holds administrative and ISO 3166 relations only (plan §5). A region naming another
+    relation, or a line naming ways, needs their geometry from the same pass: proposed, a small
+    extract of exactly the ids the regions name, made from the pinned pass's planet once per pass
+    and per set of ids, content-named, which the check reads.

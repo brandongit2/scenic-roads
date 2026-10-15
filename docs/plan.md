@@ -15,8 +15,9 @@
   republish `out.html` to https://claude.ai/artifact/PrjaaDXLuuXGpGr2xt5Vjg.
 - Companions: `docs/phase5.md` (landmarks, stations, ferries and overlays by view; the landmark
   jobs; the zoomed-out summaries) and `docs/formats.md` (file formats); `docs/inputs.md` (every
-  input through a standard shape and a checked drop box; tasks #133–#147: its gate is built, on a
-  test unit, the inputs' moves onto it planned).
+  input through a standard shape and a checked drop box; tasks #133–#147: the input check, which checks every change dropped into a drop box before the
+  app uses it and keeps the last version that passed until the new one does, is built, on a test
+  unit; the inputs' moves onto it are planned).
 
 **The idea in one line:** OpenStreetMap comes from one worldwide download, cut by area, and a region
 is only an outline saying which areas to build. Every step runs per area, per pack near the
@@ -164,9 +165,9 @@ deletions over SMB bypass it (tested 2026-10-02).
 ```
 translations/  descriptions/  the user's drop-ins (descriptions/README.md); todo/: the agent's lists (§7)
 inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), keys.env
-               (API keys, KEY=value lines: the rail feeds'), hold-catalog; _gate-test/ (the gate's
-               test unit's drop box, while `state/inputs/gate-test` puts it on the gate: inputs.md
-               §4.10)
+               (API keys, KEY=value lines: the rail feeds'), hold-catalog; _gate-test/ (the input
+               check's test unit's drop box, checked while `state/inputs/gate-test` exists:
+               inputs.md §4.10)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/
                (the pass's items' facts and pageviews, and the answers Wikidata and Wikipedia gave
@@ -178,8 +179,8 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
                rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v3,
                copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), registers/ (the heritage
-               registers' snapshot and its seeds: §6, Hand-made inputs), inputs/<unit>/ (the gate's
-               checked copies of a drop box's files, its accepted indexes and held reports:
+               registers' snapshot and its seeds: §6, Hand-made inputs), inputs/<unit>/ (the input
+               check's checked copies of a drop box's files, its accepted indexes and held reports:
                inputs.md §4.6)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
@@ -260,7 +261,7 @@ record changes back through the build Mac's coordinator, which journals them for
   `sources/items/<date>/` of passes older than the newest complete one): their content-named files
   by the same rule, their other files (the planet download, the pass's answers) 14 days after the
   newer pass completed, then the empty folders.
-- And the gate's checked copies (`sources/inputs/`, inputs.md §4.9) by the same rule, kept while the
+- And the input check's checked copies (`sources/inputs/`, inputs.md §4.9) by the same rule, kept while the
   manifest (or the newest records) names them, an accepted index it names lists them, a journal
   entry the newest records don't reflect yet does, or an index made or replaced in the last 14 days
   lists them (none swept the day one of those can't be read).
@@ -268,7 +269,7 @@ record changes back through the build Mac's coordinator, which journals them for
   the basemap's data, the DEM seed, the rail sources with the files they replaced), translations, descriptions, inputs, state, app and nas.
 
 **Backups.**
-- Daily, the agent copies the user's folders, `inputs/` and the gate's acceptances
+- Daily, the agent copies the user's folders, `inputs/` and the input check's acceptances
   (`state/inputs/accepted/`) into a content-addressed store under `state/backups/`. It writes a dated list on days something changed and keeps lists for 30 days.
   The store is mirrored to the build Mac, and `todo/` isn't backed up.
 - Everything else can be regenerated.
@@ -679,6 +680,14 @@ the region. Each entry is one of these:
   there by hand; nothing fetches it. Neighbours overlap a little.
 - `poly:<file>`: a `.poly` in `inputs/outlines/`.
 - `place:<lon>,<lat>,<km>`: a circle of up to 500 km, drawn as a 64-gon.
+
+**Planned** (#135, docs/inputs.md §6.1): region files anywhere under `inputs/regions/` (subfolders
+only the owner's grouping, ids unique across them), built from `osm:` relations, GeoJSON shapes and
+other regions (`region:<id>`) with union, minus and intersect, lines that cut a shape, and buffers
+by a distance, each pinned to the OSM snapshot it is written against; `geofabrik:`, `poly:` and
+`place:` deleted. Every change passes the input check before the build uses it, the last version
+that passed staying in use meanwhile. Overlaps are harmless; a map layer draws every region's
+outline and fill for the owner to inspect, and there is no gap check.
 
 **Coverage** is the union of the outlines.
 - **What gets built:** a feature is built if it touches the coverage. For a way, that means any node
@@ -2352,11 +2361,11 @@ between jobs into the other way. On:
   decide.
 
 **Order:**
-0. **The gate's checks** (`inputs <unit>`, docs/inputs.md §4.3), before every other job: a unit on
-   the gate whose drop box's listing, acceptances or accepted index changed since its check last
+0. **The input check** (`inputs <unit>`, docs/inputs.md §4.3), before every other job: a unit
+   whose drop box's listing, acceptances or accepted index changed since its check last
    ran is checked (in full once a day), so nothing builds with a change unchecked: in the first
    slot, or in the second beside any job the steps table lets a second run beside (its first
-   choice there). Only the test unit is on the gate today (inputs.md §4.10).
+   choice there). Only the test unit is checked today (inputs.md §4.10).
 1. **The OSM pass**, when the NAS holds a newer planet than the newest pass.
 2. **The pass's worldwide jobs:**
    - `pass-sets`;
@@ -2519,11 +2528,11 @@ mid-job. Nothing depends on it being available at a given time.
     Build Page in the Browser; Copy the Build Page's Address.
   - Its timers run in the run loop's common modes: the polls, the icon and the notifications go on
     while a menu is open (`scenic-status --menu-proof` shows it).
-  - **The gate** (docs/inputs.md §4.7): an input held badges the icon with a small warning
+  - **The input check** (docs/inputs.md §4.7): an input held badges the icon with a small warning
     triangle, its menu has a line per held unit (Accept its warnings, after a confirmation naming
     them; Show on the Build Page), and it notifies when a unit is held and when it's taken in. The
     status's `inputs` (the lead's) says each unit's state; `scenic status` prints a line per unit
-    held or checking, `scenic inputs` the whole gate; the build page and the map's build panel show
+    held or checking, `scenic inputs` every unit; the build page and the map's build panel show
     a banner per held unit.
 - Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
   in at home").

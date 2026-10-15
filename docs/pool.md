@@ -476,7 +476,7 @@ z6 tile (`layers/buildings/hi/6-x-y`), memory learned, power, any member, sixtee
 needs home. `bld-fetch` (the sources, onto the NAS, outside the manifest: its write-set is empty) is
 network work, the lead's.
 
-The gate's row (docs/inputs.md §4.3): `inputs`, a target per gate unit (`inputs/<unit>`), its
+The input check's row (docs/inputs.md §4.3): `inputs`, a target per unit (`inputs/<unit>`), its
 write-set the unit's accepted index, last listing and held report (`sources/inputs/<unit>/@index`,
 `…/@listed`, `…/@held`; their files, the copies they list, are outside the manifest), kept to the
 lead's slots (other members taking it is planned: the coordinator's offers are made with the pass's
@@ -1176,7 +1176,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       name its step's function doesn't give; the merge refusing what `Out` would, the entry within
       merged; an entry outside from a newer app held, then merged once the check takes it,
       acknowledged then; every entry the journal held (the first batch's real journal run); the
-      gate's and the rail feeds' steps run through a bound `Out`; the lint and its markers; the
+      input check's and the rail feeds' steps run through a bound `Out`; the lint and its markers; the
       simulator's runs with entries outside refused by every lead (by the same check,
       `steps::outside_by`, over the simulator's own outputs function); all 682 entries of the
       journal of 8–10 Oct 2026 within their write-sets (`real_journal_entries_are_within_their_write_sets`,
