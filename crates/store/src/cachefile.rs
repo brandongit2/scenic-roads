@@ -545,29 +545,6 @@ pub fn remove_tree(dir: &Path) -> Tree {
 mod tests {
     use super::*;
 
-    /// `try_remove`, tried until it's not in use: a child process another test starts holds
-    /// copies of this process's open files (their locks too) until it's started its program,
-    /// longer on a loaded Mac. Five minutes is a watchdog.
-    fn remove(p: &Path) -> Removed {
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
-        loop {
-            match try_remove(p) {
-                Removed::InUse if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
-                r => return r,
-            }
-        }
-    }
-
-    fn remove_all(ps: &[PathBuf]) -> Option<u64> {
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
-        loop {
-            match try_remove_all(ps) {
-                None if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
-                r => return r,
-            }
-        }
-    }
-
     #[test]
     fn a_held_file_stays_and_one_let_go_goes() {
         let d = tempfile::tempdir().unwrap();
@@ -582,7 +559,7 @@ mod tests {
         assert_eq!(try_remove(&p), Removed::InUse);
         assert!(p.exists());
         release(&p);
-        assert_eq!(remove(&p), Removed::Freed(5));
+        assert_eq!(try_remove(&p), Removed::Freed(5));
         assert_eq!(try_remove(&p), Removed::Gone);
         // Wrongly deleted: filled again when next held.
         hold(&p, &mut fill).unwrap();
@@ -638,7 +615,7 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"renamed");
         assert_eq!(try_remove(&p), Removed::InUse);
         release(&p);
-        assert_eq!(remove(&p), Removed::Freed(7));
+        assert_eq!(try_remove(&p), Removed::Freed(7));
     }
 
     #[test]
@@ -688,7 +665,7 @@ mod tests {
         assert_eq!(try_remove_all(&ps), None);
         assert!(ps.iter().all(|p| p.exists()));
         release(&ps[1]);
-        assert_eq!(remove_all(&ps), Some(6));
+        assert_eq!(try_remove_all(&ps), Some(6));
         assert!(ps.iter().all(|p| !p.exists()));
     }
 

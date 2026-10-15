@@ -66,6 +66,8 @@ pub fn sockets<T>(f: impl FnOnce() -> T) -> T {
 /// a child started by fork and exec holds copies of this process's open files, their `flock`s
 /// with them, until its exec, so a lock this process let go of would still look taken for that
 /// moment (store::cachefile's `try_remove`, which would pass over a file no one uses).
+/// `f` must be brief (it holds back every start, and `sockets`, which share the lock) and must
+/// not call `spawn`, `status`, `output`, `sockets` or this again: the lock isn't re-entrant.
 pub fn no_child_starting<T>(f: impl FnOnce() -> T) -> T {
     let _g = making();
     f()
