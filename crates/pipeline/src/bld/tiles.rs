@@ -15,7 +15,10 @@
 //!   outside the ring (or inside, where outside would cross a ring of the polygon; else none).
 //! - Properties: `h` the top and `m` the base (dm; `m` left out when 0), `s` where the height comes
 //!   from (0–5), `f` the floors (when `s` is 1), `c` the kind, `k` (1 a part, 2 an outline with
-//!   parts; left out when 0), `o` 1 for a copy (left out otherwise). No feature ids.
+//!   parts; left out when 0), `o` 1 for a copy (left out otherwise).
+//! - Feature ids ([`feature_id`]): the building's z14 tile (its centroid's) and its index among that
+//!   tile's records, so a building's copies have its id, and the id is the same in every build of
+//!   the same normalized files (the map's highlights set feature state by it: web/src/buildings.ts).
 //! - Features sorted by their centroid's Morton code in the tile (12 bits an axis), then id.
 //! - gzip by flate2 at level [`GZIP_LEVEL`].
 
@@ -397,6 +400,17 @@ fn morton_in(p: [i32; 2], z: u8, tx: u32, ty: u32) -> u64 {
     crate::morton(c(wx, tx), c(wy, ty))
 }
 
+/// Bits of a feature id taken by the index within its z14 tile.
+pub const ID_INDEX_BITS: u32 = 20;
+
+/// A building's or part's feature id from its place (`Feat::order`: its z14 tile's key, its index
+/// there): x << 34 | y << 20 | index, under 2^48 (a whole number in JavaScript).
+pub fn feature_id(order: (u64, u32)) -> Result<u64> {
+    let (_, x, y) = super::key_zxy(order.0);
+    anyhow::ensure!(order.1 < 1 << ID_INDEX_BITS, "z14 tile {x}/{y} has over 2^{ID_INDEX_BITS} records");
+    Ok(((x as u64) << (14 + ID_INDEX_BITS)) | ((y as u64) << ID_INDEX_BITS) | order.1 as u64)
+}
+
 /// Tile z/x/y of `feats` (each in it by its centroid): the gzip'd tile, its raw length and its
 /// features, or None when no feature is left.
 pub fn encode(z: u8, x: u32, y: u32, feats: &[Feat]) -> Result<Option<(Vec<u8>, u32, u32)>> {
@@ -429,7 +443,7 @@ pub fn encode(z: u8, x: u32, y: u32, feats: &[Feat]) -> Result<Option<(Vec<u8>, 
         if f.copy {
             tags.extend([6, vi(1)]);
         }
-        features.push(Feature { id: None, tags, geom_type: Some(3), geometry, unknown: Vec::new() });
+        features.push(Feature { id: Some(feature_id(f.order)?), tags, geom_type: Some(3), geometry, unknown: Vec::new() });
     }
     if features.is_empty() {
         return Ok(None);
@@ -466,10 +480,11 @@ mod tests {
         let other = sq(lon + 0.003, lat + 0.003, 0.0003, true);
         // A sliver that rounds to a line: dropped.
         let sliver = [[e7(lon + 0.006), e7(lat)], [e7(lon + 0.006000001), e7(lat)], [e7(lon + 0.006), e7(lat + 0.0003)]];
+        let key = roadcore::archive::tile_key(z, x, y);
         let feats = vec![
-            Feat { polys: vec![vec![&outer[..], &hole[..]]], cen: [e7(lon + 0.00025), e7(lat + 0.00025)], order: (1, 0), h: 215, m: 0, s: 0, f: 0, c: 1, k: 0, copy: false },
-            Feat { polys: vec![vec![&other[..]]], cen: [e7(lon + 0.00315), e7(lat + 0.00315)], order: (1, 1), h: 64, m: 30, s: 1, f: 2, c: 3, k: 1, copy: false },
-            Feat { polys: vec![vec![&sliver[..]]], cen: [e7(lon + 0.006), e7(lat + 0.0001)], order: (1, 2), h: 40, m: 0, s: 5, f: 0, c: 0, k: 0, copy: true },
+            Feat { polys: vec![vec![&outer[..], &hole[..]]], cen: [e7(lon + 0.00025), e7(lat + 0.00025)], order: (key, 0), h: 215, m: 0, s: 0, f: 0, c: 1, k: 0, copy: false },
+            Feat { polys: vec![vec![&other[..]]], cen: [e7(lon + 0.00315), e7(lat + 0.00315)], order: (key, 1), h: 64, m: 30, s: 1, f: 2, c: 3, k: 1, copy: false },
+            Feat { polys: vec![vec![&sliver[..]]], cen: [e7(lon + 0.006), e7(lat + 0.0001)], order: (key, 2), h: 40, m: 0, s: 5, f: 0, c: 0, k: 0, copy: true },
         ];
         let (gz, raw, n) = encode(z, x, y, &feats).unwrap().unwrap();
         assert_eq!(n, 2);
@@ -484,6 +499,11 @@ mod tests {
         // Sorted by Morton code (y's bit first at each level): the part, further north, first.
         assert_eq!(props(&l.features[1]), vec![("h".into(), 215), ("s".into(), 0), ("c".into(), 1)]);
         assert_eq!(props(&l.features[0]), vec![("h".into(), 64), ("m".into(), 30), ("s".into(), 1), ("f".into(), 2), ("c".into(), 3), ("k".into(), 1)]);
+        // Ids: the z14 tile and the index there, the part's 1.
+        let base = (8298u64 << 34) | (5634u64 << 20);
+        assert_eq!((l.features[0].id, l.features[1].id), (Some(base + 1), Some(base)));
+        assert!(feature_id((key, (1 << ID_INDEX_BITS) - 1)).unwrap() < 1 << 48);
+        assert!(feature_id((key, 1 << ID_INDEX_BITS)).is_err());
         // Rings: the first feature's exterior positive and its hole negative, whatever they were.
         let rings = |g: &[u32]| {
             let mut out: Vec<Vec<[i64; 2]>> = Vec::new();
