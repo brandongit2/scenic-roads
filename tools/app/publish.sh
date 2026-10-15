@@ -24,6 +24,17 @@ fi
 eval "$(mise env -s zsh)"
 # The commit it's built from, read now: one made while it runs would name a version it isn't.
 head=$(git rev-parse --short HEAD)
+# The certificate the listening programs are signed with (below), tried now on a scratch file so a
+# keychain that won't let codesign use its key (locked, or no GUI to answer its prompt) stops the
+# publish before the build rather than after.
+sign_id=-
+if security find-identity -p codesigning 2>/dev/null | grep -q '"Scenic Code Signing"'; then
+  sign_id="Scenic Code Signing"
+  probe=$(mktemp -d)/probe; cp /usr/bin/true $probe
+  codesign -s "$sign_id" --force $probe || { echo "publish: codesign can't use the \"Scenic Code Signing\" key: allow it in Keychain Access (Always Allow), or unlock the login keychain"; exit 1; }
+else
+  echo "publish: no \"Scenic Code Signing\" certificate on this Mac: signing ad hoc (a firewall's allow won't outlive this update)"
+fi
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 # Room for the files the tests open at once: a session over SSH starts with 256, which the tests
 # run in parallel go past (8 Oct: 15 failed so on the build Mac, all passing at 8192). Their whole
@@ -111,6 +122,12 @@ dirty=""
 version=$(date -u +%Y%m%d-%H%M)-$head$dirty
 dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
+# The programs that listen (the map server; the agent, whose coordinator and broker members reach)
+# signed with the owner's certificate when this Mac has it, under fixed identifiers, so a Mac's
+# firewall allow outlives an update (an ad-hoc signature is the build's own hash, so its allow went
+# with it). Signed here before the copy: codesign refuses files on the NAS.
+codesign -s "$sign_id" -i local.scenic.server --force target/release/server
+codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
 # The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 cp -X target/release/server target/release/scenic target/release/scenic-build target/release/extract \
@@ -129,7 +146,7 @@ mkdir -p "$sb/Contents/MacOS"
 swiftc -O -swift-version 5 -o "$sb/Contents/MacOS/scenic-status" tools/status/main.swift
 cp -X tools/status/Info.plist "$sb/Contents/Info.plist"
 xattr -cr "$sb"
-codesign -s - --force "$sb"
+codesign -s "$sign_id" -i local.scenic.status --force "$sb"
 cp -RX "$sb" "$dest.tmp/"
 rsync -a web/dist-publish/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/

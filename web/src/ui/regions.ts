@@ -538,7 +538,7 @@ export class RegionsPanel {
       else if (!k.online) act.push(h('div', { class: 'kp-line faint' }, `Away from the NAS: ${size(w.bytes - w.here)} still to copy once it’s back.`));
       else if (k.slow && !k.copying) act.push(h('div', { class: 'kp-line faint' }, `The build is running: downloads keep to ${fmt.n((k.rate ?? 20e6) / 1e6)} MB/s.`));
     } else if (free < reserve) {
-      act.push(h('div', { class: 'kp-line warn' }, `The disk is nearly full: ${size(free)} free, under the reserve. Nothing downloaded goes by itself; remove a download, or free some space.`));
+      act.push(h('div', { class: 'kp-line warn' }, `${size(free)} free, less than the ${size(reserve)} this Mac keeps free: new downloads wait until there’s room. Downloads are never removed automatically, so to make room, remove one here or free space on this Mac.`));
     }
     // Downloaded regions there's no recipe for any more (removed since): removed from here.
     if (this.loadedAt > -Infinity) {
