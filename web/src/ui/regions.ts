@@ -90,6 +90,8 @@ export class RegionsPanel {
   private resRow = h('div', { class: 'kp-line kp-res', title: 'The free space map downloads leave on this Mac’s disk: a download that would go past it waits. Lowered, waiting downloads may start; raised, nothing is deleted.' },
     h('span', {}, 'Keep free'), this.resIn, h('span', {}, 'GB'), this.resBtn, this.resSay);
   private resBusy = false;
+  /** The server refused the last save: its message stays until the field is edited again. */
+  private resRefused = false;
   private dlBtn = h('button', { class: 'pill', type: 'button', title: 'Download the area in view to this Mac, for when it’s away from the NAS' }, 'Download this view');
   private dlViews = h('div', { class: 'rg-list kp-views' });
   private dlMsg = h('div', { class: 'rg-msg' });
@@ -167,11 +169,15 @@ export class RegionsPanel {
     this.dlBtn.addEventListener('click', () => void this.downloadThisView());
     this.resBtn.hidden = true;
     this.resRow.hidden = true;
-    this.resIn.addEventListener('input', () => this.resEdited());
+    this.resIn.addEventListener('input', () => {
+      this.resRefused = false;
+      this.resEdited();
+    });
     this.resIn.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') void this.saveReserve();
       if (e.key === 'Escape') {
         this.resIn.value = String(Math.round((this.dl?.reserve ?? 0) / 1e9));
+        this.resRefused = false;
         this.resEdited();
       }
     });
@@ -677,6 +683,7 @@ export class RegionsPanel {
     this.resBtn.disabled = typeof c === 'string';
     this.resIn.classList.toggle('bad', changed && typeof c === 'string');
     if (changed && typeof c === 'string') this.sayRes(c, true);
+    else if (this.resRefused) return;
     else if (changed) this.sayRes('');
     else if (this.resSay.classList.contains('warn')) this.sayRes('');
   }
@@ -697,11 +704,13 @@ export class RegionsPanel {
       const r = await setReserve(c);
       if (this.dl) this.dl.reserve = r.reserve;
       this.resBusy = false;
+      this.resRefused = false;
       this.resBtn.hidden = true;
       this.sayRes('✓ saved');
       window.setTimeout(() => { if (this.resSay.textContent === '✓ saved') this.sayRes(''); }, 4000);
     } catch (e) {
       this.resBusy = false;
+      this.resRefused = true;
       this.sayRes(says(e), true);
       this.resBtn.disabled = false;
     }

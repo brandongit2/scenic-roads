@@ -3,8 +3,7 @@
 //! (`{"gb": 30}`, GB of 10⁹ bytes; written through a temporary file), read at start; 30 GB while
 //! unset. Changed live: the mirror checks against it from its next round, and the mirror thread is
 //! woken so downloads waiting for room may start. Raising it past what's free deletes nothing:
-//! downloads just wait. (Apart from the build agent's own disk room, `scenic room`: a setting of
-//! its own.)
+//! downloads just wait.
 //!
 //!   PUT /api/downloads/reserve   {gb}: set it (whole GB, from 5 to less than the disk's size)
 

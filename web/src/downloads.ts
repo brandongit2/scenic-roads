@@ -92,7 +92,7 @@ export const dlView = (outline: [number, number][], name?: string) => call<{ id:
 export const viewSize = (outline: [number, number][]) => call<{ bytes: number; here: number; with_world: number; need: number; room: number; fits: boolean }>('/api/downloads/views/size', json('POST', { outline }));
 /** Sets the free space downloads leave on this Mac's disk (whole GB; refused, with why, out of
  * bounds). */
-export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number}>('/api/downloads/reserve', json('PUT', { gb }));
+export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number }>('/api/downloads/reserve', json('PUT', { gb }));
 export const renameView = (id: string, name: string) => call<{ ok: boolean; name: string }>(`/api/downloads/views/${encodeURIComponent(id)}`, json('PUT', { name }));
 export const dropView = (id: string) => call<{ ok: boolean }>(`/api/downloads/views/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
