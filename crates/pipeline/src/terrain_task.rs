@@ -37,11 +37,15 @@ pub const MID: &str = "mid.sect";
 /// At most this many groups of a piece out at once.
 pub const MOST: usize = 3;
 /// Whether a terrain job offers its next piece's groups as it begins a piece (a whole piece's time
-/// for a worker to make them, not the moments before the run needs them). Off: the waiting rule
-/// gives a worker only what it would make sooner than this Mac (`task::beats`), so one slower than
-/// the build Mac is never given them anyway; its head start would count once the placement work
-/// weighs it (docs/workers.md §3).
-pub const OFFER_AHEAD: bool = false;
+/// for a worker to make them, not the moments before the run needs them): while its agent's
+/// placement is on (crate::agent::placement::ahead_on). Each group then says its head start (the
+/// tiles the run makes before it needs the group, over the group's: `Offers::offer_after`), and the
+/// coordinator gives it to a worker slower than this Mac only while that covers it
+/// (crate::coord::task's `covered`). Off: the waiting rule gives a worker only what it would make
+/// sooner than this Mac (`task::beats`), as before.
+pub fn offer_ahead() -> bool {
+    crate::agent::placement::ahead_on()
+}
 /// A group of more subtrees than this isn't offered (its memory, and the piece's run waiting on it).
 pub const MOST_SUBTREES: usize = 2;
 /// The files' format.
@@ -509,6 +513,14 @@ impl<'a> Offers<'a> {
     /// their folders under the job's tasks' folder, while workers that take them are around: none
     /// without `offload`.
     pub fn offer(offload: Option<&'a Offload>, piece: (u32, u32), levels: &Levels, raw: &dyn RawSource, src: &Sources) -> Offers<'a> {
+        Self::offer_after(offload, piece, levels, raw, src, 0)
+    }
+
+    /// `offer`, the run making `before` tiles of other pieces before it begins this one (a job's
+    /// next piece offered ahead: the piece under way's): each group's head start, told with it when
+    /// the job offers ahead (`offer_ahead`), is the tiles made here before the run needs it (those,
+    /// and this piece's own it makes first) over the group's.
+    pub fn offer_after(offload: Option<&'a Offload>, piece: (u32, u32), levels: &Levels, raw: &dyn RawSource, src: &Sources, before: usize) -> Offers<'a> {
         let mut o = Offers { offload, piece, out: Vec::new(), here: Default::default() };
         let Some(off) = offload else { return o };
         let workers = off.workers(KIND);
@@ -524,13 +536,18 @@ impl<'a> Offers<'a> {
             }
         };
         let depth = workers.min(MOST).min(groups.len().saturating_sub(1));
-        for g in groups.iter().rev().filter(|g| g.len() <= MOST_SUBTREES).take(depth) {
+        let chosen: Vec<&Vec<(u32, u32)>> = groups.iter().rev().filter(|g| g.len() <= MOST_SUBTREES).take(depth).collect();
+        // (The run's own tiles of this piece, made before it settles any group out.)
+        let out_subs: BTreeSet<(u32, u32)> = chosen.iter().flat_map(|g| g.iter().copied()).collect();
+        let own = count(&levels_of(levels, &out_subs, false));
+        for g in chosen {
             let offered = (|| -> Result<Out> {
                 let lv = levels_of(levels, &g.iter().copied().collect(), true);
                 let root = off.task_root(&format!("terrainsub-{}-{}", g[0].0, g[0].1));
                 let c = cut(piece, g, &lv, raw, src, &root.join("u").join(INPUT))?;
                 let made = c.made;
-                let task = off.offer_spec(KIND, spec(g, off.version(), c.bytes), &root, [(format!("u/{INPUT}"), c.bytes)].into(), mem_mb(c.bytes, &lv))?;
+                let ahead = (count(&lv) > 0).then(|| (before + own) as f64 / count(&lv) as f64);
+                let task = off.offer_spec_ahead(KIND, spec(g, off.version(), c.bytes), &root, [(format!("u/{INPUT}"), c.bytes)].into(), mem_mb(c.bytes, &lv), ahead)?;
                 eprintln!("terrain 6/{}/{}: subtrees {} offered ({} tiles, {:.1} MB)", piece.0, piece.1, subtrees_arg(g), c.tiles, c.bytes as f64 / 1e6);
                 Ok(Out { task, group: g.clone(), levels: lv, made })
             })();

@@ -211,7 +211,11 @@ impl<'a> Offers<'a> {
                 let root = off.task_root(&format!("treeblock-{}-{}", row[0].0, row[0].1));
                 let inputs = cut(coverage, row, &root)?;
                 let sq = row_squares(row, there);
-                off.offer_spec(KIND, spec(row, &sq, off.version(), &inputs), &root, inputs, mem_mb(row.len()))
+                // (Its head start, offering ahead: the blocks the run makes before it comes to the
+                // row, as many at once as there are threads, over the row's own run here.)
+                let at = blocks.iter().position(|b| *b == row[0]).unwrap_or(0) as f64;
+                let ahead = (at / threads as f64) / (row.len() as f64 / row.len().min(threads).max(1) as f64);
+                off.offer_spec_ahead(KIND, spec(row, &sq, off.version(), &inputs), &root, inputs, mem_mb(row.len()), Some(ahead))
             })();
             match offered {
                 Ok(t) => {

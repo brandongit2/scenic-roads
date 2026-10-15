@@ -160,7 +160,15 @@ impl Offload {
     /// Offers a task of `kind` (`spec` what a worker is given, `inputs` its files in `root`, its
     /// predicted memory `mem_mb`: the coordinator's measure of its last run replaces it).
     pub fn offer_spec(&self, kind: &str, spec: serde_json::Value, root: &Path, inputs: BTreeMap<String, u64>, mem_mb: u64) -> Result<Offered> {
-        let offer = crate::coord::task::Offer { owner: self.owner, kind: kind.into(), spec, root: root.to_path_buf(), inputs, mem_mb };
+        self.offer_spec_ahead(kind, spec, root, inputs, mem_mb, None)
+    }
+
+    /// `offer_spec`, saying how much of the job's own work comes before it needs the task (`ahead`,
+    /// in tasks' worth of this Mac's time at its kind: crate::coord::task::Task::ahead), when its
+    /// agent tells it to offer ahead (crate::agent::placement::ahead_on); else as `offer_spec`.
+    pub fn offer_spec_ahead(&self, kind: &str, spec: serde_json::Value, root: &Path, inputs: BTreeMap<String, u64>, mem_mb: u64, ahead: Option<f64>) -> Result<Offered> {
+        let ahead = ahead.filter(|a| a.is_finite() && *a > 0.0 && crate::agent::placement::ahead_on());
+        let offer = crate::coord::task::Offer { owner: self.owner, kind: kind.into(), spec, root: root.to_path_buf(), inputs, mem_mb, ahead };
         let (_, v) = self.client.post_json("/task/offer", &serde_json::to_value(&offer)?)?;
         Ok(Offered { id: v["id"].as_u64().context("the coordinator gave no task id")?, root: root.to_path_buf() })
     }

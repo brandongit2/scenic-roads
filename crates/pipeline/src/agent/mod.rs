@@ -31,6 +31,7 @@ pub mod gc;
 pub mod jobs;
 pub mod lead;
 pub mod memguard;
+pub mod placement;
 pub mod pool;
 pub mod recipes;
 pub mod rekey;
@@ -836,6 +837,10 @@ pub struct Agent {
     /// Every step to every member (crate::agent::every, `state/pool/every-step`), as the switch was
     /// last read: it acts only in the pool (`every_on`).
     every: bool,
+    /// Placement by how crucial a job is, and work offered ahead (crate::agent::placement,
+    /// `state/pool/placement`), as the switch was last read: it acts only in the pool
+    /// (`placement_on`).
+    placement: bool,
     /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`), as the switch
     /// was last read: it acts only in the pool (`brokers_on`).
     brokers: bool,
@@ -1119,7 +1124,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -4043,6 +4048,10 @@ impl Agent {
             env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", b.port())));
             env.push(("SCENIC_COORD_TOKEN".into(), b.job_token.clone()));
         }
+        // Placement on: its tasks offered ahead, with their head starts (crate::agent::placement).
+        if self.placement_on() {
+            env.push((placement::AHEAD_ENV.into(), "1".into()));
+        }
         // This Mac's cache, where a job keeps what it reads again and again (the coverage:
         // pipeline::coverage::Coverage::load).
         env.push((crate::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
@@ -5352,6 +5361,19 @@ impl Agent {
         self.every && self.pool.is_some()
     }
 
+    /// Placement by how crucial a job is (crate::agent::placement, `state/pool/placement`) acts:
+    /// switched on, in the pool. Off, or out of the pool, the agent and its coordinator are as they
+    /// were.
+    fn placement_on(&self) -> bool {
+        self.placement && self.pool.is_some()
+    }
+
+    /// What this Mac's coordinator and broker place by, placement on: the forecast's slack and
+    /// measured speeds (none yet: no slack, every speed the lead's).
+    fn placement_now(&self) -> Option<placement::Placement> {
+        self.placement_on().then(|| self.forecast.borrow().as_ref().map(placement::Placement::from_forecast).unwrap_or_default())
+    }
+
     /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`) act: switched on,
     /// in the pool. Off, or out of the pool, the agent is as it was (a member brokers nothing).
     fn brokers_on(&self) -> bool {
@@ -5679,6 +5701,12 @@ impl Agent {
             }
             self.every = on;
         }
+        if let Some(on) = placement::on(r) {
+            if on != self.placement {
+                eprintln!("agent: placement by how crucial a job is, and work offered ahead, is {}", if on { "on" } else { "off" });
+            }
+            self.placement = on;
+        }
         if let Some(on) = brokers::on(r) {
             if on != self.brokers {
                 eprintln!("agent: tasks brokered by every member are {}", if on { "on (this Mac's jobs' tasks its own broker's; pages from the members' addresses answered)" } else { "off" });
@@ -5690,9 +5718,14 @@ impl Agent {
         // plan's offers: `offer_round`.)
         if let Some(c) = &self.coord {
             c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
+            c.set_placement(self.placement_now());
             if !self.every_on() {
                 c.set_round(None);
             }
+        }
+        // (A member's broker draws its pages' tasks the same way.)
+        if let Some(b) = &self.broker {
+            b.set_placement(self.placement_now());
         }
         if let Some(on) = pool::slots_on(r) {
             if on != self.slots_on {
@@ -8750,6 +8783,55 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
+    /// Placement (`state/pool/placement`, crate::agent::placement), with every step to every
+    /// member: off, the lead's coordinator places as before and no job is told to offer ahead; on,
+    /// the lead's coordinator is told (the forecast's slack and measured speeds), the member alone
+    /// asking is drawn its target and takes it, its job told to offer its tasks ahead
+    /// (`AHEAD_ENV`); off again, as before.
+    #[test]
+    fn placement_a_member_drawn_its_target_and_its_job_told_to_offer_ahead() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        switch_on(&r, every::SWITCH);
+        let bin = app(d.path());
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let im = m.pooled().unwrap().side.member().id.clone();
+        lead.pooled().unwrap().side.know(&im);
+        // Off: not told.
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
+        // On: told, the forecast's slack and speeds in it.
+        switch_on(&r, placement::SWITCH);
+        *lead.forecast.borrow_mut() = Some(forecast::Forecast { done_at: Some(1000), steps: vec![forecast::StepFc { step: "slope".into(), done_at: Some(1000), ..Default::default() }], ..Default::default() });
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        assert_eq!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope")), Some(0));
+        // `slope` of 3/2/2 measured, offered: the member alone asking, drawn to it.
+        let c = lead.coord.as_ref().unwrap();
+        c.add_costs(&[(crate::coord::cost_key("slope", "3/2/2"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("slope") })]);
+        c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }]);
+        until(&mut m, |_| bin.join("env-slope").exists());
+        let env = std::fs::read_to_string(bin.join("env-slope")).unwrap();
+        assert!(env.lines().any(|l| l == format!("{}=1", placement::AHEAD_ENV)), "{env}");
+        until(&mut m, |m| m.slots[0].running.is_none());
+        // Off again: as before.
+        std::fs::write(r.join(placement::SWITCH), "off").unwrap();
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
+        assert!(!m.placement_on());
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
     /// Resuming (`state/pool/resume`, crate::agent::resume): an OSM pass stopped mid-stage on a
     /// member's Mac is offered to that member alone, which resumes it in its own scratch folder with
     /// its unmerged hand-offs; finished there, it's neither run nor offered until merged; a day on
@@ -9049,7 +9131,7 @@ mod pool_tests {
             let job = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], token.to_string(), "job");
             let root = d.path().join(format!("task-{port}"));
             std::fs::create_dir_all(&root).unwrap();
-            let o = crate::coord::task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": unit }), root, inputs: Default::default(), mem_mb: 300 };
+            let o = crate::coord::task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": unit }), root, inputs: Default::default(), mem_mb: 300, ahead: None };
             job.post_json("/task/offer", &serde_json::to_value(&o).unwrap()).unwrap().1["id"].as_u64().unwrap()
         };
         let mt = offer(bport, &m.broker.as_ref().unwrap().job_token, "6/1/1");

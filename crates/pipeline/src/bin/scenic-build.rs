@@ -3750,9 +3750,12 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
     let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
     // Other workers, through the build Mac's coordinator: some of each piece's z8 subtrees
     // (pipeline::terrain_task).
-    // (Each piece's offered as it begins; with OFFER_AHEAD, the next's then too.)
+    // (Each piece's offered as it begins; offering ahead (`offer_ahead`), the next's then too, its
+    // head start the piece under way's tiles.)
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
-    let offer = |t: &Unit| pipeline::terrain_task::Offers::offer(offload.as_ref(), (t.x, t.y), &pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)), &raw, &src);
+    let offer_after = |t: &Unit, before: usize| pipeline::terrain_task::Offers::offer_after(offload.as_ref(), (t.x, t.y), &pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)), &raw, &src, before);
+    let offer = |t: &Unit| offer_after(t, 0);
+    let offer_ahead = pipeline::terrain_task::offer_ahead();
     let mut ahead: Option<pipeline::terrain_task::Offers> = None;
     for (k, t) in ts.iter().enumerate() {
         pipeline::control::safe_point("terrain");
@@ -3762,8 +3765,9 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
             Some(o) => o,
             None => offer(t),
         };
-        if pipeline::terrain_task::OFFER_AHEAD {
-            ahead = ts.get(k + 1).map(offer);
+        if offer_ahead {
+            let before: usize = pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
+            ahead = ts.get(k + 1).map(|n| offer_after(n, before));
         }
         let r = pipeline::terrain_pack::build_piece_offered(out, &raw, (t.x, t.y), cov, &src, same.contains(&t.slash()), &say, offers)?;
         eprintln!("terrain {} ({} of {n}): {r:?} ({:.0?})", t.slash(), k + 1, c.elapsed());

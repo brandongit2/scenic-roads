@@ -268,6 +268,12 @@ pub struct Shared {
     /// a cold start only to the one with the most room (this Mac's own room, `Every::own`, counted
     /// as a member's). None: as before (`pick`).
     pub every: Option<Every>,
+    /// Placement by how crucial a job is (docs/pool.md §12, phase 4's eleventh batch:
+    /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
+    /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
+    /// targets and the tasks drawn among those asking by measured speed, a task offered ahead given
+    /// to a slower worker its head start covers. None: as before.
+    pub placement: Option<(crate::agent::placement::Placement, Instant)>,
     /// The lead's round under way, while every step to every member is on: granted with a round's
     /// step (`Grant::as_of`).
     pub round: Option<AsOf>,
@@ -497,7 +503,12 @@ impl Shared {
                 }
         };
         let after = self.last.get(&(a.worker.clone(), o.step.clone())).and_then(|l| o.targets.iter().position(|t| t.0 == *l)).map(|i| i + 1);
-        let Some(start) = after.filter(|&i| i < o.targets.len() && takeable(i)).or_else(|| (0..o.targets.len()).find(|&i| takeable(i))) else { return Vec::new() };
+        let start = match &self.placement {
+            // (Placement on: from the target measured to take longest that's drawn to this worker.)
+            Some((p, since)) => self.placed_start(o, a, p, *since, now, &takeable),
+            None => after.filter(|&i| i < o.targets.len() && takeable(i)).or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
+        };
+        let Some(start) = start else { return Vec::new() };
         let first = &o.targets[start];
         let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
         let mut pick = vec![(first.0.clone(), first.1.clone())];
@@ -512,6 +523,65 @@ impl Shared {
             (secs, disk) = (Some(s + more), disk + m.disk_mb);
         }
         pick
+    }
+
+    /// Placement on (crate::agent::placement): where `a`'s worker's run of offer `o` starts. The
+    /// targets it may take (`takeable`) from the one measured to take longest (`secs_of`; plan
+    /// order between equals, those never measured last), the first drawn to it among the members
+    /// asking lately whose room fits it (`placement::draw`, by their measured speeds, in the window
+    /// `now` is in since `since`); a cold start (none of its step measured) as `most_room` decides,
+    /// undrawn.
+    fn placed_start(&self, o: &Offer, a: &Ask, p: &crate::agent::placement::Placement, since: Instant, now: Instant, takeable: &dyn Fn(usize) -> bool) -> Option<usize> {
+        use crate::agent::placement;
+        let mut order: Vec<(Option<u64>, usize)> = (0..o.targets.len()).map(|i| (self.secs_of(&o.step, &o.targets[i].0, &a.worker), i)).collect();
+        order.sort_by(|x, y| y.0.is_some().cmp(&x.0.is_some()).then(y.0.cmp(&x.0)).then(x.1.cmp(&y.1)));
+        let window = now.saturating_duration_since(since).as_secs();
+        order.into_iter().map(|(_, i)| i).find(|&i| {
+            if !takeable(i) {
+                return false;
+            }
+            let t = &o.targets[i].0;
+            let Some(m) = self.measured(&o.step, t) else { return true };
+            let mut who: Vec<(String, f64)> = self
+                .workers
+                .iter()
+                .filter(|(n, w)| {
+                    *n != &a.worker && !w.bad && w.kind == "native" && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING) && w.can.iter().any(|c| c == &o.step) && w.mem_mb >= m.mem_mb && w.ask.as_ref().and_then(|x| x.disk_mb).is_none_or(|d| m.disk_mb <= d)
+                })
+                .map(|(n, _)| (n.clone(), p.weight(n)))
+                .collect();
+            who.push((a.worker.clone(), p.weight(&a.worker)));
+            placement::draw(&placement::key(&format!("{} {t}", o.step), window), &who) == Some(a.worker.as_str())
+        })
+    }
+
+    /// Placement on (crate::agent::placement): the task to give `a`'s worker, as `Tasks::pick` but
+    /// a task of a kind it's measured slower at given while its head start covers it
+    /// (`Tasks::covered`), and each task drawn among the workers that could take it now
+    /// (`takers`), weighted by their measured speed at its kind (one over their pace; one not
+    /// measured, this Mac's), passed by when drawn to another.
+    fn pick_task_placed(&self, a: &Ask, now: Instant) -> Option<u64> {
+        use crate::agent::placement;
+        let (_, since) = self.placement.as_ref()?;
+        let window = now.saturating_duration_since(*since).as_secs();
+        let mut ids: Vec<&task::Task> = self.tasks.by_id.values().filter(|t| self.tasks.may_take(t, &a.worker, &a.can, a.mem_mb, now)).collect();
+        ids.sort_by_key(|t| (t.offered, t.id));
+        ids.into_iter()
+            .find(|t| {
+                let mut who: Vec<(String, f64)> = self
+                    .takers(t, now)
+                    .iter()
+                    .filter_map(|w| w["worker"].as_str().map(str::to_string))
+                    .filter(|n| n != &a.worker && self.tasks.may_take(t, n, &[t.kind.clone()], u64::MAX, now))
+                    .map(|n| {
+                        let w = self.tasks.pace(&n, &t.kind).map_or(1.0, |p| 1.0 / p.max(1e-6));
+                        (n, w)
+                    })
+                    .collect();
+                who.push((a.worker.clone(), self.tasks.pace(&a.worker, &t.kind).map_or(1.0, |p| 1.0 / p.max(1e-6))));
+                placement::draw(&placement::key(&format!("task {}", t.id), window), &who) == Some(a.worker.as_str())
+            })
+            .map(|t| t.id)
     }
 
     /// Why a worker gets the shared steps' work it does, or doesn't: for each step it does that's
@@ -853,7 +923,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, round: None, last: BTreeMap::new(), brokers: None, dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, round: None, last: BTreeMap::new(), brokers: None, dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -1013,6 +1083,19 @@ impl Coordinator {
     /// phase 4's ninth batch; crate::agent::every).
     pub fn set_every(&self, every: Option<Every>) {
         self.shared.lock().unwrap().every = every;
+    }
+
+    /// Placement by how crucial a job is on (`Some`: the forecast's slack and measured speeds) or
+    /// off (docs/pool.md §12, phase 4's eleventh batch; crate::agent::placement). Its draws' windows
+    /// run from when it was first turned on.
+    pub fn set_placement(&self, p: Option<crate::agent::placement::Placement>) {
+        let mut s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.placement = match (p, s.placement.take()) {
+            (Some(p), Some((_, since))) => Some((p, since)),
+            (Some(p), None) => Some((p, now)),
+            (None, _) => None,
+        };
     }
 
     /// The lead's round under way (None: none), for a round's step granted with every step to
@@ -1761,6 +1844,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 // (Every step to every member: by the measures alone, its owner away or not.)
                 let every = s.every.is_some();
                 let passes = if every { &[false][..] } else { passes };
+                // (Placement on: the long poles' steps first, by their slack in the forecast; plan
+                // order between equals.)
+                let mut offers = offers;
+                if let (true, Some((p, _))) = (every, &s.placement) {
+                    offers.sort_by_key(|o| p.slack_of(&o.step));
+                }
                 for &away in passes {
                     for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
                         // (Switched off: the shared steps alone, whatever was offered before.)
@@ -1788,7 +1877,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     }
                 }
             }
-            if let Some(id) = s.tasks.pick(&a.worker, &a.can, a.mem_mb) {
+            let picked = match &s.placement {
+                Some(_) => s.pick_task_placed(&a, now),
+                None => s.tasks.pick(&a.worker, &a.can, a.mem_mb),
+            };
+            if let Some(id) = picked {
                 let lease = s.leases.grant(&a.worker, Work::Task { id }, now);
                 // (Its id taken for good: kept, so no lease after a restart has it.)
                 s.save_leases();
@@ -2208,6 +2301,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
                     let (checked, here_s) = (b["checked"].as_bool(), b["here_s"].as_f64());
                     if let (Some(here_s), Some(t)) = (here_s, s.tasks.by_id.get(&id)) {
+                        let kind = t.kind.clone();
+                        s.tasks.note_here(&kind, here_s);
+                        let t = &s.tasks.by_id[&id];
                         if let (task::State::Done { worker, .. }, Some(wall_s)) = (t.state.clone(), t.wall_s) {
                             let kind = t.kind.clone();
                             s.tasks.note_pace(&worker, &kind, wall_s, here_s);
@@ -3487,6 +3583,136 @@ mod tests {
         assert!(g.as_of.is_none());
     }
 
+    fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {
+        crate::agent::placement::Placement { slack: slack.iter().map(|(s, v)| (s.to_string(), *v)).collect(), speed: speed.iter().map(|(w, v)| (w.to_string(), *v)).collect() }
+    }
+
+    /// Placement on (crate::agent::placement): a member's ask tried on the long poles' step first
+    /// (no slack in the forecast), and within it from the target measured to take longest; off, the
+    /// plan's order as before.
+    #[test]
+    fn placement_the_long_poles_first() {
+        let (_d, c, w, _clock) = every((0, 0));
+        for (step, ts) in [("pack", vec![("6/1/1", 60)]), ("slope", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])] {
+            for (t, secs) in ts {
+                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: 500, secs, worker: None, v: cost_version(step) })], "m1");
+                c.add_disks(&[(cost_key(step, t), 10)]);
+            }
+        }
+        let offers = || vec![Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], batch: 1 }, Offer { step: "slope".into(), targets: ["3/1/1", "3/1/2", "3/1/3"].iter().map(|t| (t.to_string(), format!("k {t}"), 0)).collect(), batch: 1 }];
+        let a = Ask { can: vec!["pack".into(), "slope".into()], ..every_ask("m1", "pack", 4096, 10_000) };
+        // Off: the plan's first step, from its front.
+        c.offer("p", offers());
+        let g = w.ask(&a).unwrap().unwrap();
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "pack"));
+        w.give_back(g.lease, "the test").unwrap();
+        // On: slope has no slack (it ends with the build), pack ten minutes': slope first, from its
+        // longest, then the next longest.
+        c.set_placement(Some(placement(&[("slope", 0), ("pack", 600)], &[])));
+        c.offer("p", offers());
+        assert_eq!(granted(&w, &a), ["3/1/2"]);
+        assert_eq!(granted(&w, &a), ["3/1/1"]);
+        assert_eq!(granted(&w, &a), ["3/1/3"]);
+        assert_eq!(granted(&w, &a), ["6/1/1"]);
+        // Off again: as before.
+        c.set_placement(None);
+        assert!(c.shared.lock().unwrap().placement.is_none());
+    }
+
+    /// Placement on: of two members asking whose room fits a target, it's drawn to one by their
+    /// measured speeds, the other passing it by: exactly one of them gets each, the faster about
+    /// three in four at three times the speed, the same draw in the same window, and a new window a
+    /// new draw. Off: either may take any.
+    #[test]
+    fn placement_draws_each_target_to_one_member_by_measured_speed() {
+        let (_d, c, w1, clock) = every((0, 0));
+        let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
+        let ts: Vec<String> = (0..400).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
+        for t in &ts {
+            c.add_costs_by(&[(cost_key("pack", t), Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack") })], "m1");
+            c.add_disks(&[(cost_key("pack", t), 10)]);
+        }
+        // (Both asking lately: nothing offered yet.)
+        let (a1, a2) = (every_ask("m1", "pack", 4096, 10_000), every_ask("m2", "pack", 4096, 10_000));
+        assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
+        let one = |t: &str| Offer { step: "pack".into(), targets: vec![(t.to_string(), "k".into(), 0)], batch: 1 };
+        let picks = |c: &Coordinator| -> Vec<(bool, bool)> {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            ts.iter().map(|t| (!s.pick_every(&one(t), &a1, now).is_empty(), !s.pick_every(&one(t), &a2, now).is_empty())).collect()
+        };
+        // Off: both may take every one.
+        assert!(picks(&c).iter().all(|&(x, y)| x && y));
+        c.set_placement(Some(placement(&[], &[("m1", 3.0), ("m2", 1.0)])));
+        let first = picks(&c);
+        assert!(first.iter().all(|&(x, y)| x != y), "each to exactly one");
+        let share = first.iter().filter(|p| p.0).count() as f64 / ts.len() as f64;
+        assert!((share - 0.75).abs() < 0.06, "{share}");
+        // The same window: the same draws; the next: drawn again (a target passed by isn't held by
+        // one member for good).
+        // (Both still asking.)
+        clock.advance(Duration::from_secs(crate::agent::placement::DRAW_S - 1));
+        assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
+        assert_eq!(picks(&c), first);
+        clock.advance(Duration::from_secs(1));
+        assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
+        let next = picks(&c);
+        assert!(next.iter().all(|&(x, y)| x != y) && next != first);
+        // The other no longer asking: the one asking takes any.
+        clock.advance(ASKING);
+        assert!(w1.ask(&a1).unwrap().is_none());
+        let s = c.shared.lock().unwrap();
+        let now = s.now();
+        assert!(ts.iter().all(|t| !s.pick_every(&one(t), &a1, now).is_empty()));
+    }
+
+    /// Placement on: a task of a kind a page is measured slower at than this Mac goes to it only
+    /// while the head start it was offered with covers the page's run (its pace, with the margin,
+    /// times this Mac's measured time at the kind); one not offered ahead, never; off, as before
+    /// (never).
+    #[test]
+    fn placement_a_slower_page_gets_a_task_only_with_a_head_start_that_covers_it() {
+        let (d, c, page) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        let ask = Ask { worker: "m1".into(), kind: "page".into(), can: vec!["terrainsub".into()], mem_mb: 4096, ..Default::default() };
+        let root = d.path().join("job");
+        std::fs::create_dir_all(&root).unwrap();
+        let offer = |ahead: Option<f64>| {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            s.tasks.offer(task::Offer { owner: 42, kind: "terrainsub".into(), spec: serde_json::json!({}), root: root.clone(), inputs: Default::default(), mem_mb: 100, ahead }, now).unwrap()
+        };
+        {
+            let mut s = c.shared.lock().unwrap();
+            // Four times this Mac's time; this Mac's own run of one, 10 s.
+            s.tasks.paces.insert(("m1".into(), "terrainsub".into()), 4.0);
+            s.tasks.note_here("terrainsub", 10.0);
+        }
+        let took = |c: &Coordinator| match page.ask(&ask).unwrap().map(|g| g.work) {
+            Some(Granted::Task { id, .. }) => {
+                c.shared.lock().unwrap().tasks.close(id);
+                Some(id)
+            }
+            _ => None,
+        };
+        let plain = offer(None);
+        let ahead = offer(Some(6.0));
+        // Off: neither (it's slower).
+        assert_eq!(took(&c), None);
+        c.set_placement(Some(placement(&[], &[])));
+        // On: 4 × 1.25 × 10 s = 50 s within the 60 s head start: the one offered ahead.
+        assert_eq!(took(&c), Some(ahead));
+        // 15 s on, 45 s left: not enough.
+        let late = offer(Some(6.0));
+        clock.advance(Duration::from_secs(15));
+        assert_eq!(took(&c), None);
+        assert!(c.shared.lock().unwrap().tasks.by_id.contains_key(&late) && c.shared.lock().unwrap().tasks.by_id.contains_key(&plain));
+        // Measured faster: any, as before.
+        c.shared.lock().unwrap().tasks.paces.insert(("m1".into(), "terrainsub".into()), 0.5);
+        assert_eq!(took(&c), Some(plain));
+    }
+
     /// The lead's plan leaves out what other workers' leases hold, its own jobs' aside.
     #[test]
     fn the_targets_other_workers_hold_are_theirs_alone() {
@@ -4033,7 +4259,7 @@ mod tests {
         std::fs::write(nas.join("sources/canopy/sq.tif"), &square).unwrap();
         std::fs::write(nas.join("state/build/manifest.json"), b"{}").unwrap();
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: job_root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 100 };
+        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: job_root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 100, ahead: None };
         job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
         let ipad = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
         let g = ipad.ask(&Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: 1000, cores: 4, ..Default::default() }).unwrap().unwrap();
@@ -4095,7 +4321,7 @@ mod tests {
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
         // The job's side, from this Mac.
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800 };
+        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800, ahead: None };
         let id = job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
         // A worker that spares too little gets nothing; one that spares enough, the task.
         let web = |mem| Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: mem, cores: 4, ..Default::default() };
@@ -4176,7 +4402,7 @@ mod tests {
         std::fs::create_dir_all(root.join("u")).unwrap();
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800 };
+        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800, ahead: None };
         let id = job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
         // Its heartbeat's counts: one waiting, none out.
         let (waiting, out) = c.brokered();
@@ -4235,7 +4461,7 @@ mod tests {
             let root = d.path().join("job");
             std::fs::create_dir_all(&root).unwrap();
             let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-            let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root, inputs: Default::default(), mem_mb: 100 };
+            let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root, inputs: Default::default(), mem_mb: 100, ahead: None };
             job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
             let page = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
             let g = page.ask(&Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: 1000, cores: 4, ..Default::default() }).unwrap().unwrap();

@@ -1455,7 +1455,7 @@ pub fn build_piece_with(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Cove
 }
 
 /// `build_piece` with its subtrees out as `offers` says (made for this piece: `Offers::offer`,
-/// when it begins or, a job's next piece, ahead: crate::terrain_task::OFFER_AHEAD).
+/// when it begins or, a job's next piece, ahead: crate::terrain_task::offer_ahead).
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece_offered(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress, offers: crate::terrain_task::Offers) -> anyhow::Result<PackReport> {
     anyhow::ensure!(offers.piece() == t, "offers for 6/{}/{}, not 6/{}/{}", offers.piece().0, offers.piece().1, t.0, t.1);

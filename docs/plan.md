@@ -2912,6 +2912,15 @@ At each phase's end an Opus agent reviews the work against this plan.
      memory ceiling) are its origin's, so they don't follow it; pausing from a member's own page
      falls back to that member's coordinator when the lead doesn't answer, which pauses only its
      broker's pages;
+   - placement (`state/pool/placement`, off while missing; crate::agent::placement, pool.md §7.2,
+     §12 batch 11): it orders and draws only the members' asks and the tasks: the lead's own jobs
+     take the plan in its order; the plan's targets are placed only with every step to every member
+     on; a step's slack is its whole step's in the forecast (not each target's), and the forecast
+     doesn't model the draws; a draw's speeds are the forecast's, measured on the shared steps
+     (crate::agent::forecast's `speeds`), whatever the step drawn; a member drawn a target and not
+     asking for it holds it from the others until the minute's window turns; slope has no tasks, so
+     nothing of it is offered ahead; a head start is reckoned at this Mac's time per task of its kind
+     (its tiles or blocks counted, not timed);
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents

@@ -996,6 +996,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     least memory one takes, and those out); every coordinator answers `POST /work/where`
     (`{can, mem_mb, https}` → `{brokers: [{base, waiting}], lead, members: [<base>]}`)
     and the members' pages with CORS.
+  - `state/pool/placement`: the switch for placement by how crucial a job is, and work offered
+    ahead (docs/pool.md §7.2, §12 phase 4's eleventh batch; crate::agent::placement). Present (or
+    `on` in it) on, `off` in it or missing off. Read by every agent; it acts only in the pool. On,
+    every job is given `SCENIC_OFFER_AHEAD=1`, and a task's offer (`POST /task/offer`) from a
+    terrain piece's or a tree cover row's job carries `ahead` (how much of the job's own work comes
+    before it needs the task, in tasks' worth of this Mac's time at its kind; absent otherwise).
   - `state/pool/progress/<member>.json`: the jobs whose progress is on that member's Mac, written
     whole by it alone when that changes (a resumable job's start or end, an entry dropped):
     `{member, worker, jobs: {"osm-pass <date>": {at, since, done, scratch}}}` (`worker` the name

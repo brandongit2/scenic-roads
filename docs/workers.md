@@ -193,11 +193,14 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     coordinator), each the hi pack and the mid the manifest has (`terrain_task` tests,
     `live_pieces_with_a_worker`).
   - **They pay off only for a worker measured faster than the build Mac at them,** and none is: the
-    build Mac makes a subtree in about half a second on its threads, a page in 6–16 s. So today a
-    worker is given one, measured, and then none (the coordinator gives no worker a kind it's
-    measured slower at). Offering a job's next piece's groups as a piece begins
-    (`terrain_task::OFFER_AHEAD`, off) would give a worker a whole piece's time; it pays only once
-    the waiting rule weighs that head start (planned with the placement work).
+    build Mac makes a subtree in about half a second on its threads, a page in 6–16 s. So with
+    placement off a worker is given one, measured, and then none (the coordinator gives no worker
+    a kind it's measured slower at). With placement on (`state/pool/placement`, docs/pool.md §12
+    batch 11) a job offers its next piece's groups as a piece begins (`terrain_task::offer_ahead`),
+    each with its head start (the tiles the run makes before it needs the group, over the group's),
+    and a worker slower than this Mac is given one only while its pace, with the margin, times this
+    Mac's measured time at the kind fits in the head start left; a tree cover row says its head
+    start the same way (the blocks before it, at this Mac's threads).
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into

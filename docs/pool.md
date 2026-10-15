@@ -637,11 +637,16 @@ What's planned of placement (phase 4, §12):
   or just after its last target of the step when that one's open; as many targets as fit a quarter
   of an hour by their measured times (`coord::JOB_S`: their cost lines, a target's own or its
   step's 90th percentile; none measured, one a job).
-- **How crucial a job is** decides who takes it first, not plan order alone: each target scores by
-  its slack in the forecast (the long poles highest), and the members' slots and the pages take the
-  work on a sliding scale of their measured speed, as a weighted draw (a function of the target, the
-  worker and the time, so a decision repeats), not by a rule singling out the fastest or slowest;
-  no rule names a Mac or a kind of job.
+- **How crucial a job is** (crate::agent::placement, built: phase 4's eleventh batch, behind
+  `state/pool/placement`, §12) decides who takes it first, not plan order alone: a member's ask
+  is tried on the steps by their slack in the forecast (the long poles first), within a step from
+  the target measured to take longest, and the members' asks and the pages take the work on a
+  sliding scale of their measured speed, as a weighted draw (a function of the target, those that
+  could take it and the minute's window, so a decision repeats), not by a rule singling out the
+  fastest or slowest; no rule names a Mac or a kind of job. A task offered ahead (a terrain job's
+  next piece's subtrees, a tree cover row the run comes to late) goes to a worker slower than this
+  Mac only while its head start covers that worker's run. The lead's own jobs take the plan in
+  its order (planned: the lead's slots placed the same way).
 - **A Mac shared by measure** (built: phase 4's fifth batch, behind `state/pool/by-measure`, §12):
   a job starts beside another only if both jobs' measured memory and disk fit what the Mac has
   left; a cold start runs alone (§7.7). The run-alone and second-job lists and the raw tiles' group
@@ -1512,15 +1517,38 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       passed over after 8 s), taken on the M1 at 127.0.0.1 by a page of the M4's origin (CORS allowed)
       and handed back; switched off, the M4's broker stopped. A browser page across Macs over
       HTTPS: not run (no member has `tailscale serve` for the pool's port).
-   11. **Placement by how crucial a job is, and work offered ahead** (§7.2, workers.md §3): each
-      target's score from the forecast's slack, the long poles highest, by measured times; members'
-      slots and pages chosen on a sliding scale of measured speed, as a weighted draw that repeats
-      for the same inputs; no rule naming a Mac or a kind of job; a job's tasks offered as it
-      begins a piece (`OFFER_AHEAD`), a worker waited for while its pace times this Mac's time is
-      less than its head start, for terrain's subtrees, tree cover's rows and slope alike. Behind
-      `state/pool/placement`. Tests: the draws' shares by speed over many targets; the long poles
-      first; a worker slower than this Mac given a piece's tasks only with a head start that
-      covers it. **Scratch state (§13): both Macs** (grants).
+   11. **Placement by how crucial a job is, and work offered ahead: built** (§7.2, workers.md §3;
+      crate::agent::placement), behind `state/pool/placement` (off while missing: the agent and its
+      coordinator as they were; it acts only in the pool, and its order and draws of the plan's
+      targets only with every step to every member on, `pick_every`). The lead tells its
+      coordinator each loop each step's slack in its forecast (the build's end less the step's: the
+      long poles none) and the speeds the forecast measured (not those it guessed). A member's ask
+      is tried on the offers by their steps' slack, least first (plan order between equals), and
+      within a step from the target measured to take longest (its cost lines, `secs_of`; plan order
+      between equals, those never measured last), its run contiguous from there as before; each
+      such start is drawn (`placement::draw`: a stable hash of the step, the target and the minute's
+      window since the coordinator was told, `DRAW_S`) among the members asking lately whose room
+      fits it, weighted by measured speed (one not measured, the lead's), and a member passes by a
+      target drawn to another; a cold start stays the most room's, undrawn. A page's or worker's
+      task is drawn likewise among those that could take it, weighted by one over their measured
+      pace at its kind. Every job is told to offer ahead (`SCENIC_OFFER_AHEAD`): a terrain job
+      offers its next piece's subtrees as it begins a piece, and each task of a terrain piece or a
+      tree cover row says its head start (`ahead`: the tiles or blocks this Mac makes before it
+      needs the task, over the task's own, so many tasks' worth of this Mac's time); the
+      coordinator gives a worker measured slower than this Mac at a kind such a task only while its
+      pace, with the margin, times this Mac's time at the kind (`Tasks::here_s`, weighed in from the
+      jobs' own runs as they close their tasks) fits in the head start left; the job's waiting rule
+      already counts the time a worker has held it. No rule names a Mac or a kind of job. Slope has
+      no tasks yet (workers.md §3, planned), so nothing of it is offered ahead. The lead's own jobs
+      take the plan as before (only the members' asks and the tasks are placed). Tests: the draws'
+      shares by speed over many keys and repeating, in any order; each target drawn to exactly one
+      of two members asking, three in four to the one three times as fast, the same in its window
+      and drawn again in the next, the other no longer asking leaving any to the one asking; the
+      long poles' step first, from its longest target; a page slower than this Mac given a task
+      offered ahead only while the head start covers it, never one not offered ahead, and none
+      switched off; and two agents in one process: the lead's coordinator told, the member drawn
+      its target and its job told to offer ahead, then off. **Scratch state (§13): both Macs**
+      (grants): see below.
    12. **The forecast for equal machines** (§7.2): each member's slots as lanes, the pages as one,
       from the measures and the placement. Reports only: no switch.
    13. **What goes:** the steps table (its last columns replaced: §7.7), the claims

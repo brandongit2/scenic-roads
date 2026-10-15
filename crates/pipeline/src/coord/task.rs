@@ -55,6 +55,10 @@ pub struct Task {
     /// Kept for its worker to finish after the job ran it itself (the job's run took this long,
     /// seconds): the worker's pace measured, its result not used (`measure`).
     pub measuring: Option<f64>,
+    /// Offered ahead (crate::agent::placement): how much of the job's own work comes before it
+    /// needs this task, in tasks' worth of this Mac's time at its kind (None: needed as soon as
+    /// it's offered, as before).
+    pub ahead: Option<f64>,
 }
 
 /// A task as a job offers it (`POST /task/offer`).
@@ -66,6 +70,9 @@ pub struct Offer {
     pub root: PathBuf,
     pub inputs: BTreeMap<String, u64>,
     pub mem_mb: u64,
+    /// Offered ahead (`Task::ahead`): said only by a job told to (crate::agent::placement::AHEAD_ENV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -83,6 +90,9 @@ pub struct Tasks {
     pub paces: BTreeMap<(String, String), f64>,
     /// When the jobs last waited for a worker whose pace isn't measured to take a task (`explore`).
     explored: BTreeMap<String, Instant>,
+    /// This Mac's own time at a task of each kind (seconds, weighed in as the jobs close them, as
+    /// a pace is: `note_here`): what a head start is reckoned in (`covered`).
+    pub here_s: BTreeMap<String, f64>,
 }
 
 /// The margin a worker's pace is taken with: it's waited on only if its time, a quarter more,
@@ -113,7 +123,7 @@ impl Tasks {
     pub fn new(dir: PathBuf) -> Tasks {
         // (Uploads left by a run before this one: their jobs are gone.)
         std::fs::remove_dir_all(&dir).ok();
-        Tasks { next: 1, by_id: BTreeMap::new(), dir, recent_mb: BTreeMap::new(), paces: BTreeMap::new(), explored: BTreeMap::new() }
+        Tasks { next: 1, by_id: BTreeMap::new(), dir, recent_mb: BTreeMap::new(), paces: BTreeMap::new(), explored: BTreeMap::new(), here_s: BTreeMap::new() }
     }
 
     /// Takes a job's offer; its id.
@@ -127,7 +137,7 @@ impl Tasks {
         if recent.len() > RECENT {
             recent.pop_front();
         }
-        self.by_id.insert(id, Task { id, owner: o.owner, kind: o.kind, spec: o.spec, root: o.root, inputs: o.inputs, mem_mb: o.mem_mb, state: State::Offered, out, failed_on: BTreeSet::new(), offered: now, leased_at: None, wall_s: None, measuring: None });
+        self.by_id.insert(id, Task { id, owner: o.owner, kind: o.kind, spec: o.spec, root: o.root, inputs: o.inputs, mem_mb: o.mem_mb, state: State::Offered, out, failed_on: BTreeSet::new(), offered: now, leased_at: None, wall_s: None, measuring: None, ahead: o.ahead });
         Ok(id)
     }
 
@@ -147,6 +157,33 @@ impl Tasks {
     pub fn pick(&self, worker: &str, can: &[String], mem_mb: u64) -> Option<u64> {
         let slow = |kind: &str| self.paces.get(&(worker.to_string(), kind.to_string())).is_some_and(|&p| !beats(p));
         self.by_id.values().filter(|t| matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker) && !slow(&t.kind)).min_by_key(|t| (t.offered, t.id)).map(|t| t.id)
+    }
+
+    /// Whether `worker` (who does `can`, and can spare `mem_mb`) may take task `t` now, placement on
+    /// (crate::agent::placement): as `pick`, but one of a kind it's measured slower at while the
+    /// task's head start left covers it (`covered`).
+    pub fn may_take(&self, t: &Task, worker: &str, can: &[String], mem_mb: u64, now: Instant) -> bool {
+        let slow = self.paces.get(&(worker.to_string(), t.kind.clone())).is_some_and(|&p| !beats(p));
+        matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker) && (!slow || self.covered(t, worker, now))
+    }
+
+    /// Whether task `t`'s head start left at `now` covers `worker`'s run of it: its pace (with the
+    /// margin) times this Mac's measured time at its kind within what it was offered ahead by, less
+    /// the time since it was offered. Never for one not offered ahead, a worker not measured, or a
+    /// kind this Mac's time at isn't measured.
+    pub fn covered(&self, t: &Task, worker: &str, now: Instant) -> bool {
+        let (Some(ahead), Some(&here), Some(pace)) = (t.ahead, self.here_s.get(&t.kind), self.pace(worker, &t.kind)) else { return false };
+        pace * MARGIN * here <= ahead * here - now.saturating_duration_since(t.offered).as_secs_f64()
+    }
+
+    /// The job's own run of a task of `kind` took (or is taken to take) `here_s`: weighed in (half
+    /// the last, half the new).
+    pub fn note_here(&mut self, kind: &str, here_s: f64) {
+        if !(here_s.is_finite() && here_s > 0.0) {
+            return;
+        }
+        let h = self.here_s.entry(kind.to_string()).or_insert(here_s);
+        *h = 0.5 * *h + 0.5 * here_s;
     }
 
     /// Task `id`'s kind ("tail" when it's gone: the kind tasks had before there were others).
@@ -319,7 +356,7 @@ mod tests {
     use super::*;
 
     fn offer(tasks: &mut Tasks, root: &Path, mem: u64, now: Instant) -> u64 {
-        let o = Offer { owner: 9, kind: "tail".into(), spec: serde_json::json!({"unit": "6/1/1"}), root: root.to_path_buf(), inputs: [("u/a.bin".to_string(), 3)].into(), mem_mb: mem };
+        let o = Offer { owner: 9, kind: "tail".into(), spec: serde_json::json!({"unit": "6/1/1"}), root: root.to_path_buf(), inputs: [("u/a.bin".to_string(), 3)].into(), mem_mb: mem, ahead: None };
         tasks.offer(o, now).unwrap()
     }
 

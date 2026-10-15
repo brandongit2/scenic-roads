@@ -79,6 +79,10 @@
 #   pool-two-macs.sh brokers <folder> [off]         state/pool/brokers in the scratch folder: each
 #                                                   member brokers its own jobs' tasks, pages call
 #                                                   the members directly (`off`: the switch removed)
+#   pool-two-macs.sh placement <folder> [off]       state/pool/placement in the scratch folder:
+#                                                   members' asks and tasks placed by how crucial
+#                                                   and by measured speed, jobs offering ahead
+#                                                   (`off`: the switch removed)
 #   pool-two-macs.sh task <dir> [off]               each fake job offers a task through its Mac's
 #                                                   coordinator or broker (SCENIC_COORD) before it
 #                                                   sleeps, and notes the task's state as it ends
@@ -142,7 +146,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, task, page, page-done, planet, progress or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -324,6 +328,11 @@ EOF
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     if [[ ${3:-} == off ]]; then rm -f $r/state/pool/brokers; else mkdir -p $r/state/pool; : > $r/state/pool/brokers; fi
     ;;
+  placement)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/placement; else mkdir -p $r/state/pool; : > $r/state/pool/placement; fi
+    ;;
   task)
     d=${2:?its folder}
     if [[ ${3:-} == off ]]; then rm -f $d/v/app/job-task; else : > $d/v/app/job-task; fi
@@ -379,5 +388,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, task, page, page-done, planet, progress or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop"; exit 2 ;;
 esac
