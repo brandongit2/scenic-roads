@@ -17,7 +17,8 @@
 //!   any other change, work going among them, at most every half minute (`due`): a heartbeat is a
 //!   whole write on the NAS, and a task offered and taken again and again mustn't write each time.
 //! - **Where is work**: each coordinator is told the members in touch and their brokers (`peers`,
-//!   read from their heartbeats every half minute), and answers a page's `/work/where` with the
+//!   read from their heartbeats every half minute, in the pool's run's steps, the loop's or a
+//!   tick's, under the run's lock: crate::agent::pool::Run::tend_brokers), and answers a page's `/work/where` with the
 //!   brokers whose work fits it, most waiting first, the lead's address and every member's; and
 //!   allows the members' own pages to call it (CORS: crate::coord::brokers).
 
