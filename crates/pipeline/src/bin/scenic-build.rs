@@ -397,6 +397,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             out.save()?;
             eprintln!("spoken: {} regions, {name}", s.regions().count());
         }
+        "lakefill" => lakefill_step(&mut out, &args, &scratch)?,
         "water" => water_step(&mut out, &args, &scratch)?,
         "terrain-water" => terrain_water_step(&mut out, &args)?,
         "pass-sets" => {
@@ -4172,10 +4173,43 @@ impl Drop for WorkDir {
     }
 }
 
+/// The lakes filled from Canada's own data (pipeline::lakefill::run::all): the pass's basemap
+/// surveyed for the NTS sheets whose small lakes OSM lacks, those filled from CanVec's zips (the
+/// NAS's `sources/canvec/50k/`, read in place) band by band in this Mac's scratch, the fill put in
+/// the build as `work/lakefill` (one file). `--pass <date>`.
+fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let t = std::time::Instant::now();
+    let date = match opt(args, "--pass") {
+        Some(d) => d,
+        None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
+    };
+    let basemap = out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?);
+    let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
+    let source = out.root().join(pipeline::lakefill::run::SOURCE_DIR);
+    let work = WorkDir::new(scratch.join("lakefill"))?;
+    let mut names = vec!["Finding the map sheets OpenStreetMap's small lakes are missing from".to_string()];
+    names.extend(pipeline::lakefill::run::BANDS.iter().map(|(w, e)| format!("Filling the sheets from {}° to {}° W", -w, -e)));
+    names.push("Putting the bands together".into());
+    names.push("Uploading".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let p = phase("the lakes filled from CanVec's zips", Class::NasRead);
+    let f = pipeline::lakefill::run::all(&basemap, &outlines, &source, &work.0, &|k| pipeline::agent::jobs::part(k, &names), &|d, n| pipeline::agent::jobs::report(d, n, "z5 tiles surveyed"))?;
+    drop(p);
+    pipeline::agent::jobs::part(names.len() - 1, &names);
+    let p = phase("uploaded", Class::NasWrite);
+    let name = out.put_file(pipeline::lakefill::LOGICAL, "sect", &f)?;
+    drop(p);
+    out.save()?;
+    eprintln!("lakefill: {name} in {:.0} s", t.elapsed().as_secs_f64());
+    Ok(())
+}
+
 /// The water layer (pipeline::water): each pixel's share of sea and of inland water, z0–9, drawn
 /// from the pass's basemap's z14 water, as the water layer's packs. `--basemap f`: a local archive
 /// instead of the manifest's; `--only x/y,…`: those z5 tiles alone; `--archive f`: the tiles into
-/// that local archive, nothing written to the NAS (a regional run, measured).
+/// that local archive, nothing written to the NAS (a regional run, measured); `--lakefill f`: the
+/// lakes filled from Canada's own data (pipeline::lakefill) from that file instead of the
+/// manifest's (`work/lakefill`, drawn when the manifest names one).
 fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::water as wt;
     let t = std::time::Instant::now();
@@ -4206,7 +4240,14 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(1);
     // (Its z14 tiles read from the basemap on the NAS as it draws, in parallel: one phase.)
     let p = phase("the water drawn from the basemap's z14 tiles", Class::NasRead);
-    let (tiles, made) = wt::build(&pm, &z14, only.as_deref(), &|d, n| pipeline::agent::jobs::report(d, n, "z5 tiles drawn"))?;
+    let fill = match opt(args, "--lakefill") {
+        Some(f) => Some(pipeline::lakefill::Fill::open(Path::new(&f), &f)?),
+        None => match out.get(pipeline::lakefill::LOGICAL) {
+            Some(c) => Some(pipeline::lakefill::Fill::open(&out.path(c), c)?),
+            None => None,
+        },
+    };
+    let (tiles, made) = wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| pipeline::agent::jobs::report(d, n, "z5 tiles drawn"))?;
     drop(z14);
     drop(p);
     eprintln!("water: {} in {:.0} s", serde_json::to_string(&made)?, t.elapsed().as_secs_f64());

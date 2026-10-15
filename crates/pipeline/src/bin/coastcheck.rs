@@ -16,7 +16,7 @@
 use anyhow::{bail, Context, Result};
 use pipeline::watercov::{self as wc, Geom, GeomWriter};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn opt(args: &[String], name: &str) -> Option<String> {
@@ -96,7 +96,12 @@ fn main() -> Result<()> {
             let z14 = wt::Z14::read(&pm)?;
             eprintln!("coastcheck: z14 directory read in {:.0} s", t.elapsed().as_secs_f64());
             let only: Option<Vec<(u32, u32)>> = opt(&args, "--only").map(|o| o.split(',').filter_map(|t| t.split_once('/').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))).collect());
-            let (tiles, made) = wt::build(&pm, &z14, only.as_deref(), &|d, n| eprintln!("coastcheck: {d}/{n} z5 tiles"))?;
+            // (--lakefill f: the lakes filled from Canada's own data drawn too.)
+            let fill = match opt(&args, "--lakefill") {
+                Some(f) => Some(pipeline::lakefill::Fill::open(Path::new(&f), &f)?),
+                None => None,
+            };
+            let (tiles, made) = wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| eprintln!("coastcheck: {d}/{n} z5 tiles"))?;
             let dir = PathBuf::from(opt(&args, "--out").context("--out")?);
             for (z, x, y, png) in &tiles {
                 let f = dir.join(format!("{z}/{x}/{y}.png"));

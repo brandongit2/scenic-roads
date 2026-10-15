@@ -372,6 +372,18 @@ impl Data {
         Ok(Some(r))
     }
 
+    /// A whole file by logical name, its bytes in place (not cached here: its reader keeps it): the
+    /// mirror's copy mapped, never read into memory; else read whole from the NAS (a NAS file is
+    /// never mapped: store::range). With its content name.
+    pub fn whole(&self, logical: &str) -> Result<Option<(String, Whole)>> {
+        let Some(content) = self.content(logical) else { return Ok(None) };
+        let w = match self.src(&content)? {
+            Src::Local(m) => Whole::Mapped(m),
+            Src::Remote(r) => Whole::Read(r.read_all()?),
+        };
+        Ok(Some((content, w)))
+    }
+
     /// A whole small file by logical name (global/…), cached.
     pub fn global(&self, logical: &str) -> Result<Option<Arc<Vec<u8>>>> {
         let Some(content) = self.content(logical) else { return Ok(None) };
@@ -722,5 +734,35 @@ mod tests {
         // minutes.
         assert!(runs_at(&json!({"beat": now - 300, "job": {"id": "pack 6/52/27"}}), 600, &["job"], now));
         assert!(!runs_at(&json!({"beat": now - 300, "job": null, "beside": {"id": "lo"}}), 600, &["job"], now));
+    }
+}
+
+/// A file's bytes whole and in place (`Data::whole`): mapped from the mirror, or read from the NAS.
+pub enum Whole {
+    Mapped(Arc<Mmap>),
+    Read(Vec<u8>),
+}
+
+impl store::range::Mapped for Whole {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Whole::Mapped(m) => m,
+            Whole::Read(v) => v,
+        }
+    }
+}
+
+impl store::RangeRead for Whole {
+    fn len(&self) -> Result<u64, store::IoError> {
+        Ok(store::range::Mapped::bytes(self).len() as u64)
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        let b = store::range::Mapped::bytes(self);
+        let end = off.checked_add(len as u64).filter(|&e| e <= b.len() as u64);
+        match end {
+            Some(e) => Ok(b[off as usize..e as usize].to_vec()),
+            None => Err(store::IoError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, format!("{len} bytes at {off} past the end ({})", b.len())))),
+        }
     }
 }

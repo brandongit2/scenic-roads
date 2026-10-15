@@ -300,7 +300,7 @@ pub fn tile_water(stored: &[u8]) -> Result<TileWater> {
 }
 
 /// An MVT polygon geometry's rings (tile units).
-fn rings(g: &[u32]) -> Vec<Vec<[f64; 2]>> {
+pub fn rings(g: &[u32]) -> Vec<Vec<[f64; 2]>> {
     let mut out = Vec::new();
     let mut cur: Vec<[f64; 2]> = Vec::new();
     let (mut x, mut y, mut i) = (0i64, 0i64, 0usize);
@@ -365,6 +365,15 @@ fn draw(w: &TileWater, sea: &mut Raster, inland: &mut Raster, ox: f64, oy: f64, 
 pub struct Stored {
     pub key: u64,
     pub bytes: Arc<Vec<u8>>,
+}
+
+/// Water drawn beside the basemap's (the lakes filled from Canada's own data: crate::lakefill): a z14
+/// tile of its own where it has any, drawn with the basemap's tile there as abutting water.
+pub trait Extra: Sync {
+    /// Whether it has any water within tile z/x/y.
+    fn any(&self, z: u8, x: u32, y: u32) -> bool;
+    /// Its z14 tile x/y, if it has one (its key its own: never a basemap tile's).
+    fn z14(&self, x: u32, y: u32) -> Option<Stored>;
 }
 
 /// The z14 tiles' water drawn at some size, where it's one value throughout (the open sea's tile,
@@ -523,7 +532,8 @@ pub struct Made {
 /// over the z5 tiles `only` (all when None: then z0–4 too). Returns the stored tiles (z, x, y,
 /// PNG) in key order, and what was made. Reads each z7 tile's z14 tiles in a few long reads (the
 /// archive is on the NAS), and draws z5 tiles in parallel.
-pub fn build(pm: &store::pmtiles::PmTiles, z14: &Z14, only: Option<&[(u32, u32)]>, said: &(dyn Fn(u64, u64) + Sync)) -> Result<(Vec<TileOut>, Made)> {
+/// `extra`, when given, is drawn beside the basemap (`Extra`).
+pub fn build(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, only: Option<&[(u32, u32)]>, said: &(dyn Fn(u64, u64) + Sync)) -> Result<(Vec<TileOut>, Made)> {
     let fives: Vec<(u32, u32)> = match only {
         Some(o) => o.to_vec(),
         None => (0..32u32).flat_map(|y| (0..32u32).map(move |x| (x, y))).collect(),
@@ -538,7 +548,7 @@ pub fn build(pm: &store::pmtiles::PmTiles, z14: &Z14, only: Option<&[(u32, u32)]
         .par_iter()
         .map(|&(x5, y5)| -> Result<(Node, Vec<TileOut>)> {
             let mut out = Vec::new();
-            let node = subtree(pm, z14, &blocks, 5, x5, y5, &mut out, &drawn, &read)?;
+            let node = subtree(pm, z14, extra, &blocks, 5, x5, y5, &mut out, &drawn, &read)?;
             said(done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total);
             Ok((node, out))
         })
@@ -595,13 +605,13 @@ fn combine(kids: &[Node; 4]) -> Node {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, blocks: &Blocks, z: u8, x: u32, y: u32, out: &mut Vec<TileOut>, drawn: &std::sync::atomic::AtomicU64, read: &std::sync::atomic::AtomicU64) -> Result<Node> {
+fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, blocks: &Blocks, z: u8, x: u32, y: u32, out: &mut Vec<TileOut>, drawn: &std::sync::atomic::AtomicU64, read: &std::sync::atomic::AtomicU64) -> Result<Node> {
     use std::sync::atomic::Ordering::Relaxed;
     let d = 2 * u32::from(BASE_Z - z);
     let first = Z14_BASE + (hilbert(z, x, y) << d);
     let entries = z14.range(first, first + (1u64 << d));
-    if entries.is_empty() {
-        // No basemap tile under it: land.
+    if entries.is_empty() && !extra.is_some_and(|e| e.any(z, x, y)) {
+        // No basemap tile under it, nor any extra water: land.
         return Ok(Node::Uniform(0, 0));
     }
     if z == 7 {
@@ -628,13 +638,15 @@ fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, blocks: &Blocks, z: u8, x: u
         read.fetch_add(bytes.len() as u64, Relaxed);
         let get = |cx: u32, cy: u32| -> Result<Vec<Stored>> {
             let id = store::pmtiles::zxy_to_tile_id(BASE_Z, cx, cy)?;
-            Ok(z14.find(id).and_then(|(o, _)| bytes.get(&o).map(|b| Stored { key: o, bytes: b.clone() })).into_iter().collect())
+            let mut v: Vec<Stored> = z14.find(id).and_then(|(o, _)| bytes.get(&o).map(|b| Stored { key: o, bytes: b.clone() })).into_iter().collect();
+            v.extend(extra.and_then(|e| e.z14(cx, cy)));
+            Ok(v)
         };
         return walk(z, x, y, &get, blocks, out, drawn);
     }
     let mut kids = Vec::with_capacity(4);
     for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-        kids.push(subtree(pm, z14, blocks, z + 1, 2 * x + dx, 2 * y + dy, out, drawn, read)?);
+        kids.push(subtree(pm, z14, extra, blocks, z + 1, 2 * x + dx, 2 * y + dy, out, drawn, read)?);
     }
     let node = combine(&[kids[0].clone(), kids[1].clone(), kids[2].clone(), kids[3].clone()]);
     if let Node::Cov(c) = &node {

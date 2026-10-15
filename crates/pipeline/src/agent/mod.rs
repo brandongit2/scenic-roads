@@ -119,8 +119,8 @@ const ROUND_FILE: &str = "round.json";
 pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
 /// The pass's worldwide jobs, as the checklist says them.
-const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, water";
-const WORLDWIDE_STEPS: [&str; 8] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water"];
+const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, Canada's missing lakes, water";
+const WORLDWIDE_STEPS: [&str; 9] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water"];
 
 /// Whether jobs of steps `a` and `b` can't run at once: either runs alone; both are in one of the
 /// steps table's groups of which two never run at once on one Mac (they read the raw tiles here,
@@ -4163,7 +4163,11 @@ impl Agent {
             if let Some(w) = build::spoken_work(date, &manifest, &keys) {
                 jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", p.clone(), Some(w)));
             }
-            if let Some(w) = build::water_work(date, &manifest, &keys) {
+            // (The water after the lakes filled from Canada's own data, which it draws.)
+            let source = crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR));
+            if let Some(w) = build::lakefill_work(date, &manifest, &keys, source.as_deref()) {
+                jobs.push(job(format!("lakefill {date}"), "Filling in Canada's lakes missing from OpenStreetMap", "lakefill", p.clone(), Some(w)));
+            } else if let Some(w) = build::water_work(date, &manifest, &keys) {
                 jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
             }
         }
@@ -4642,6 +4646,7 @@ impl Agent {
             !manifest.contains_key(&crate::buildtiles::index_logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
+            build::lakefill_work(&date, &manifest, &keys, crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)).as_deref()).is_some(),
             build::water_work(&date, &manifest, &keys).is_some(),
         ]
         .iter()
@@ -6051,6 +6056,8 @@ fn first_secs(step: &str) -> f64 {
         "summits" => 30.0,
         "labels" => 2200.0,
         "water" => 3600.0,
+        // (The survey, 47 s, and the fill by bands, about 15 min on the M1, 2026-10-09.)
+        "lakefill" => 1200.0,
         "heritage-sites" => 240.0,
         // (Reading the latest basemap's water under every piece near the coverage.)
         "terrain-water" => 900.0,

@@ -1153,6 +1153,77 @@ they treat any raster.
     1.7–2.0, Antarctica at z2 about the same; within 60° nothing changes. The coarse tiles kept
     take up to 12 MB a worker.
 
+- **Lakes filled from Canada's own data** (`pipeline::lakefill`; the `lakefill` step, worldwide
+  once a pass, before the water layer, and the `lakefill` tool for its parts and checks). OSM's Canadian lakes were imported from CanVec map sheet by
+  map sheet, and some sheets never were: their small lakes vanish in rectangles (the owner, 8 Oct,
+  around 53.84, −72.12).
+  - **The survey** (`lakefill::run::survey` and `gaps`, the basemap's z12 water, 47 s): every NTS 1:50,000 sheet in
+    the Canadian regions (15,375; 0.5° × 0.25° south of 68°N, 1° to 80°N, 2° beyond), its small
+    lakes (under 1 km²) a 100 km² of land. A sheet is a gap when that's under a tenth of its
+    neighbours' (75th percentile within 3 sheets, the flagged left out, repeated), under 2, or its
+    size curve is cut off (3 or more lakes over 0.1 km², fewer under). 3,519 sheets, 2.84 million
+    km², most in the Northwest Territories, Saskatchewan, Yukon, Manitoba, Nunavut and Québec.
+    Some are lakeless by nature (ice caps, mountains): harmless, as the rules below add nothing
+    where OSM has the source's lakes, and the check below leaves those sheets out.
+  - **The source:** Natural Resources Canada's CanVec 1:50,000 Hydro, `waterbody_2` (2018), the
+    provinces' shapefile zips in the NAS's `sources/canvec/50k/`, downloaded by hand
+    (ftp.maps.canada.ca's robots.txt disallows `/pub`), read in place (`lakefill::zip`: members
+    streamed in 8 MB reads, each one's CRC checked; `unzip`'s small reads ran at 4 MB/s over the
+    NAS). Taken: `definit` 83 Lake, 87 Reservoir,
+    86 Pond and 20 Not Identified (most small lakes and ponds, which the import tagged
+    natural=water); not watercourses, the ocean, liquid waste or canals. `perm` Intermittent ones
+    are drawn as water and not flattened in the terrain, as OSM's intermittent water isn't.
+    Licence: OGL–Canada, credited.
+  - **The rules** (`lakefill::select`):
+    - whole lakes only: pieces sharing an edge, or lying along the same north–south or east–west
+      line (a sheet's edge), are one lake;
+    - none touching or overlapping OSM's water (the basemap's z14, sea and inland, within 10 m:
+      the two shores differ by metres), with all its pieces;
+    - OSM's halves completed: where the import cut OSM's lake at a gap sheet's edge (its other
+      half never imported), the source's lake touching OSM's water only across that edge (none
+      within 10 m of it inside the gap sheets, 20 m in from their edges) is taken as its part in the
+      gap sheets, cut at their edges, so the two abut and the lake reads whole; without it, a strip
+      along each such edge stayed empty beside OSM's straight-cut halves;
+    - a lake the source has twice is taken once, and a piece wholly inside another of its lake
+      dropped;
+    - lakes meeting a gap sheet are taken whole, wherever the rest lies; one over 1° across (whose
+      pieces might not all have been read) is left out;
+    - a sheet is filled only where under half of the source's lakes in it already touch OSM's water
+      (`FillOpts::canvec`): otherwise OSM has its lakes, and the sheet isn't a gap.
+  - **The fill** (2026-10-09, the M1, the 13 provinces' and territories' zips; `lakefill::run::fill`
+    by longitude bands of the gap sheets, `run::BANDS`, one at a time, then `run::merge`): 2.80 million lakes, 136,200 km²,
+    a 793 MB file, about 15 min (each band 1–4.5 min, 1.8–7.2 GB of memory). Of the source's
+    2.87 million lakes in the gap sheets, 66,695 touch OSM's water: 5,124 of those complete OSM's
+    halves. Of the 3,519 gap sheets, 3,121 are filled; 354 are left, most of the source's lakes
+    there already in OSM (208 in Nunavut, many lakeless by nature, and all 7 in Newfoundland and
+    Labrador); 44 hold none of the source's lakes. By region:
+    Northwest Territories 876,500 lakes, 44,300 km²; Québec 463,700, 26,200 km²; Manitoba
+    434,700, 24,200 km²; Saskatchewan 391,800, 23,300 km²; Ontario 208,800, 5,500 km²; Alberta
+    200,000, 3,500 km²; Nunavut 141,900, 4,700 km²; Yukon 79,800, 1,750 km²; British Columbia
+    2,700; New Brunswick 210 (and 3,300 lakes, 2,600 km², counted in a sheet beside a gap). Many
+    of the prairies' are intermittent (Saskatchewan 60 %, Alberta 85 %).
+  - **Checked:**
+    - the owner's view (z9.39 at 53.84, −72.12) and z6–8 over Québec, the water layer built in
+      scratch with and without the fill, before and after: the empty rectangles full of lakes like
+      their neighbours';
+    - the seams (`lakefill seamcheck`, every edge where the fill's lakes were cut at a sheet line
+      and OSM's water lies across, drawn at 0.5 m; 3,490 km of them): the two overlap by 0.05 m²
+      a metre of edge (5 cm on average: the sheet lines agree); 1.5 % of the edge has a band
+      between them, 13.5 m wide at the median, where the two sources' shores differ; at z14 a
+      completed half and OSM's read as one lake.
+  - **Where it plugs in** (keyed by content):
+    - The `lakefill` step (`run::all`, alone, in this Mac's scratch) makes one file,
+      `work/lakefill.<h>.sect` (docs/formats.md); its key names the pass's basemap and outlines and
+      the source's zips by name and size (`run::source_pin`). The water layer waits for it.
+    - The water layer draws its lakes as a z14 tile of their own beside the basemap's
+      (`water::Extra`), in the build and in the server's deeper zooms (the catalog's
+      `global.lakefill`; the server memory-maps the file from its mirror); the layer's key takes the
+      fill.
+    - The terrain flattens them as lakes, by their own keys (`lakefill::FilledWater`, intermittent
+      ones left out). The terrain's water source's pin names the fill after the basemap
+      (`terrain_pack::water_source_pin`), so a new fill makes the water digests again
+      (`terrain-water`) and only the pieces and assemblies whose water it changes are made again.
+
 ### Worldwide road values (in the OSM pass)
 
 **One chaining** serves whole roads, strokes, drives, hover, profiles and rides.

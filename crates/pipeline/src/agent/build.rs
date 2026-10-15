@@ -257,7 +257,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "inputs" | "labels" | "spoken" | "names-todo" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
+        if step.ends_with("-root") || matches!(step, "inputs" | "labels" | "spoken" | "names-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -371,11 +371,30 @@ pub fn names_todo_work(served: Option<u64>, done: &Keys) -> Option<Work> {
     (done.lo.get("names-todo").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
 }
 
-/// The water layer (crate::water), worldwide, once per pass (or layer version): drawn from the
-/// pass's basemap's z14 water.
+/// The lakefill step's version (crate::lakefill::run): bumped with any change to what it makes.
+pub const LAKEFILL_V: u32 = 1;
+
+/// The lakes filled from Canada's own data (crate::lakefill), once per pass (or step version, or
+/// source): from the pass's basemap and outlines and the source's zips (`source`, their pin:
+/// crate::lakefill::run::source_pin; None without them, and no fill made).
+pub fn lakefill_work(date: &str, m: &BTreeMap<String, String>, done: &Keys, source: Option<&str>) -> Option<Work> {
+    let source = source?;
+    let basemap = m.get(&format!("layers/basemap/world-{date}"))?;
+    let outlines = m.get(&format!("sources/osm/{date}/outlines"))?;
+    let k = h(&[&format!("lakefill {LAKEFILL_V}"), basemap, outlines, source]);
+    (done.lo.get("lakefill").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "lakefill".into(), targets: vec![("lakefill".into(), k)] })
+}
+
+/// The water layer (crate::water), worldwide, once per pass (or layer version, or fill): drawn
+/// from the pass's basemap's z14 water, and the lakes filled from Canada's own data when the
+/// manifest has them (the agent runs it once the lakefill step is done).
 pub fn water_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let basemap = m.get(&format!("layers/basemap/world-{date}"))?;
-    let k = h(&[&format!("water {}", crate::water::VERSION), basemap]);
+    // (The lakes filled from Canada's own data, when the manifest has them: crate::lakefill.)
+    let k = match m.get(crate::lakefill::LOGICAL) {
+        Some(fill) => h(&[&format!("water {}", crate::water::VERSION), basemap, &format!("lakefill {fill}")]),
+        None => h(&[&format!("water {}", crate::water::VERSION), basemap]),
+    };
     (done.lo.get("water").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "water".into(), targets: vec![("water".into(), k)] })
 }
 
@@ -2395,6 +2414,7 @@ pub fn label(step: &str) -> &'static str {
         "summits" => "Finding the world's summits",
         "labels" => "Ranking the world's place labels",
         "spoken" => "Mapping the languages spoken where, for names",
+        "lakefill" => "Filling in Canada's lakes missing from OpenStreetMap",
         "water" => "Drawing the world's water at every zoom",
         "backup" => "Backing up translations, descriptions, inputs and the acceptances",
         "gc" => "Removing replaced files from the NAS",

@@ -244,6 +244,27 @@ be cached). `?c=<sea>,<lake>[,<land>]`
 the sea's where there's none) and alpha their sum (at most whole), or with the land's colour the
 alpha whose blend over that land has the lightness of the two mixed as light (`alpha_for`); `?raw=1`: an RGB PNG, red the sea's share, green the inland water's.
 
+## Lakes filled from Canada's own data (`work/lakefill.<h>.sect`; pipeline::lakefill)
+
+The lakes OSM lacks in Canada's unimported map sheets (docs/plan.md §6, Water), from CanVec. RDSECT
+v1, meta `{"fmt": "lakefill-1", "grid_z": 8, "lakes", "rings", "points", "source", "layer",
+"field", "keep", "intermittent", "rules": {"tol_m"}, "gap_sheets"}`. Points are Web Mercator world
+units × 2³² (u32, as the water's full-detail store), outer rings clockwise on the map, holes
+anticlockwise.
+
+| Section | Record | Notes |
+|---|---|---|
+| `lakes` | 32 B: `id` (u64), `bbox` [u32; 4] (x0, y0, x1, y1), `first_ring`, `nrings` (u32) | `id`: bit 62 set (never an OSM id), bit 61 intermittent (drawn, not flattened), the rest a hash of its points |
+| `rings` | 8 B: first point, count (u32) | a lake's rings in a row |
+| `points` | 8 B: [u32; 2] | no closing point |
+| `grid` | u32 × (256² + 1) | per z8 cell (row by row) its first entry in `cells`, then the total |
+| `cells` | u32 | lake indices, each cell's ascending, a lake in every cell its box meets |
+
+The catalog names the fill in `global` (`"lakefill"`) for the server, which draws its lakes into
+the water's deeper zooms as a z14 tile of their own beside the basemap's (a `water` layer of class
+`lake`, extent 4096, clipped to the tile grown by a sixteenth), the file memory-mapped from the
+Mac's mirror (read whole from the NAS when the mirror lacks it).
+
 ## 3D buildings (pipeline::bld; docs/buildings3d.md §3.4)
 
 **Normalized buildings** (`work/bld/6-<x>-<y>.<h>.sect`, RDSECT v1, content-named, in the build

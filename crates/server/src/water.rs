@@ -82,6 +82,12 @@ fn made_from(s: &crate::AppState, archives: &[String]) -> u64 {
     let mut h = blake3::Hasher::new();
     h.update(&wt::VERSION.to_le_bytes());
     h.update(s.data.layer_version(wt::LAYER).as_bytes());
+    // (The lakes filled from Canada's own data, when the catalog has them.)
+    if let Some(c) = fill_content(s) {
+        h.update(b"lakefill ");
+        h.update(c.as_bytes());
+        h.update(b"\n");
+    }
     for a in archives {
         h.update(a.as_bytes());
         h.update(b"\n");
@@ -92,6 +98,31 @@ fn made_from(s: &crate::AppState, archives: &[String]) -> u64 {
 /// The URLs' version: changes with what the tiles are made from (main.rs meta's `versions`).
 pub fn version(s: &crate::AppState) -> String {
     format!("{:012x}", made_from(s, &s.data.basemap_names()) >> 16)
+}
+
+/// The catalog's lakes filled from Canada's own data (pipeline::lakefill): its content name.
+fn fill_content(s: &crate::AppState) -> Option<String> {
+    let l = s.data.catalog().global.get("lakefill")?.clone();
+    s.data.content(&l)
+}
+
+/// The catalog's fill, opened once (kept while the catalog names it): memory-mapped from this
+/// Mac's mirror (793 MB, 2026-10-09), never read into memory, but from the NAS when the mirror
+/// lacks it.
+fn fill(s: &crate::AppState) -> Result<Option<Arc<pipeline::lakefill::Fill>>> {
+    static KEPT: OnceLock<Mutex<Option<(String, Arc<pipeline::lakefill::Fill>)>>> = OnceLock::new();
+    let Some(content) = fill_content(s) else { return Ok(None) };
+    let kept = KEPT.get_or_init(|| Mutex::new(None));
+    if let Some((c, f)) = kept.lock().unwrap().as_ref() {
+        if *c == content {
+            return Ok(Some(f.clone()));
+        }
+    }
+    let Some((c, whole)) = s.data.whole(pipeline::lakefill::LOGICAL)? else { return Ok(None) };
+    let f = Arc::new(pipeline::lakefill::Fill::from_source(Box::new(whole), &c)?);
+    let content = c;
+    *kept.lock().unwrap() = Some((content, f.clone()));
+    Ok(Some(f))
 }
 
 /// The z14 tile x/y from each basemap archive that has it, keyed by its archive (by content name)
@@ -107,6 +138,10 @@ fn z14(s: &S, archives: &[String], x: u32, y: u32) -> Result<Vec<wt::Stored>> {
             let key = xxhash_rust::xxh3::xxh3_64_with_seed(name.as_bytes(), off);
             out.push(wt::Stored { key, bytes: Arc::new(bytes) });
         }
+    }
+    // The fill's lakes there, as a tile of their own beside the basemap's.
+    if let Some(f) = fill(s)? {
+        out.extend(<pipeline::lakefill::Fill as wt::Extra>::z14(&f, x, y));
     }
     Ok(out)
 }

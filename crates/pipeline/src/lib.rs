@@ -23,6 +23,7 @@ pub mod heritage;
 pub mod inputs;
 pub mod hipack;
 pub mod interest;
+pub mod lakefill;
 pub mod landcover;
 pub mod layers;
 pub mod legacy;

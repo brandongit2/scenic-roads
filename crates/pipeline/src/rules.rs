@@ -190,6 +190,12 @@ pub const CREDITS: &[Credit] = &[
         areas: NORTH_AMERICA,
     },
     Credit {
+        what: "Lakes missing from OpenStreetMap in parts of Canada",
+        source: "Natural Resources Canada, CanVec 1:50,000 Hydro features (waterbody_2), 2018",
+        terms: "Contains information licensed under the Open Government Licence – Canada (open.canada.ca/en/open-government-licence-canada)",
+        areas: CANADA,
+    },
+    Credit {
         what: "Road elevation, Japan",
         source: "Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model)): 地理院タイル（標高タイル（基盤地図情報数値標高モデル））を加工して作成, Geospatial Information Authority of Japan (maps.gsi.go.jp/development/ichiran.html)",
         terms: "GSI terms of use (Public Data License 1.0)",
@@ -540,7 +546,7 @@ mod tests {
         assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
         // (The 3D buildings' credit names the release they're built from.)
         assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::RELEASE)));
-        assert_eq!(CREDITS.len(), 43);
+        assert_eq!(CREDITS.len(), 44);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
         assert!(v[0].get("areas").is_none() && v[1]["areas"][0][2] == -40.0);
