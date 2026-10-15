@@ -1424,6 +1424,15 @@ impl Agent {
                 };
                 vec![JobSpec { id: format!("task {id}"), what, cmd, needs: Needs { nas: true }, restart_after_sleep: false, record: None }]
             }
+            // (A resumable job granted as resuming was switched off here: given back, not failed.)
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. })) if resume::RESUMABLE.contains(&step.as_str()) => {
+                if let Some(c) = &self.client {
+                    if let Err(e) = c.give_back(lease, "resuming is off on this Mac now") {
+                        eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
+                    }
+                }
+                Vec::new()
+            }
             Ok(Some(g)) => {
                 fail(self, g.lease, "this helper can't do that work");
                 Vec::new()
@@ -5099,7 +5108,9 @@ impl Agent {
         let Some(root) = self.last_root.clone() else { return };
         let scratch = scratch_of(spec).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let at = self.resume_now();
-        self.note_progress(&root, &spec.id, Some(resume::Held { at, done: false, scratch }));
+        // (Its day from when its progress began here, however often it starts again.)
+        let since = self.held_progress.as_ref().and_then(|p| p.jobs.get(&spec.id)).filter(|h| !h.done).map_or(at, resume::Held::began);
+        self.note_progress(&root, &spec.id, Some(resume::Held { at, since, done: false, scratch }));
     }
 
     /// A resumable job ended here (resuming on): its progress noted from now, finished or not (a
@@ -5109,9 +5120,10 @@ impl Agent {
             return;
         }
         let Some(root) = self.last_root.clone() else { return };
-        let scratch = self.held_progress.as_ref().and_then(|p| p.jobs.get(id)).map(|h| h.scratch.clone()).unwrap_or_default();
+        let was = self.held_progress.as_ref().and_then(|p| p.jobs.get(id)).cloned();
         let at = self.resume_now();
-        self.note_progress(&root, id, Some(resume::Held { at, done: ok, scratch }));
+        let (since, scratch) = was.map_or((at, String::new()), |h| (h.began(), h.scratch));
+        self.note_progress(&root, id, Some(resume::Held { at, since, done: ok, scratch }));
     }
 
     /// Each loop, resuming on: this member's progress no longer held dropped from its file (a
@@ -5135,7 +5147,7 @@ impl Agent {
                 continue;
             }
             let complete = h.done && job.strip_prefix("osm-pass ").is_some_and(|d| latest.as_deref().is_some_and(|l| l >= d));
-            let released = resume::released(root, &p.member, job, h.at);
+            let released = resume::released(root, &p.member, job, h.began());
             if complete || !resume::live(h, now, released) {
                 let why = if complete { "its pass is in the records" } else if released { "the owner released it" } else { "a day since its job last ran here" };
                 eprintln!("agent: {job}'s progress here no longer held for this Mac ({why})");
@@ -5149,14 +5161,16 @@ impl Agent {
     /// offered meanwhile to the one member whose Mac holds its progress (the coordinator's
     /// `offer_resume`, none otherwise).
     fn resume_hold(&self, root: &Path, newer: Option<&(PathBuf, String)>) -> Option<Waiting> {
-        if !self.resume_on() {
-            return None;
-        }
         let offer = |to: Option<(String, crate::coord::Offer)>| {
             if let Some(c) = &self.coord {
                 c.offer_resume(to);
             }
         };
+        // (Off: none offered, as before.)
+        if !self.resume_on() {
+            offer(None);
+            return None;
+        }
         let Some((planet, date)) = newer else {
             offer(None);
             return None;
@@ -5177,6 +5191,11 @@ impl Agent {
                 }
             }
         }
+        // A member running it under a lease of this coordinator: not run here too, whatever its
+        // file says now (released, its day out, or read stale meanwhile).
+        if self.coord.as_ref().is_some_and(|c| c.held("osm-pass").contains(date)) {
+            return Some(Waiting { step: Some("osm-pass".into()), what, why: "running on a member under its lease (its progress is on that Mac)".into() });
+        }
         let now = self.resume_now();
         match resume::decide(&id, &me, &files, now, &|m, at| resume::released(root, m, &id, at)) {
             resume::Decision::Plan => {
@@ -5187,7 +5206,7 @@ impl Agent {
                 let key = planet.strip_prefix(root).unwrap_or(planet.as_path()).to_string_lossy().into_owned();
                 offer(Some((worker.clone(), crate::coord::Offer { step: "osm-pass".into(), targets: vec![(date.clone(), key, 0)], batch: 1 })));
                 let h = until.saturating_sub(now).div_ceil(3600);
-                Some(Waiting { step: Some("osm-pass".into()), what, why: format!("its progress is on {worker}'s disk ({member}): offered to it alone for {h} h more, or until the owner releases it (scenic pool release {member} \"{id}\")") })
+                Some(Waiting { step: Some("osm-pass".into()), what, why: format!("its progress is on {worker}'s disk ({member}): offered to it alone for {h} h more (a member asleep or away holds it so), or until the owner releases it (scenic pool release {member} \"{id}\")") })
             }
             resume::Decision::Wait(why) => {
                 offer(None);
@@ -5230,11 +5249,7 @@ impl Agent {
         let mine = run.side.driver().mine();
         let mut es: Vec<crate::pool::journal::Entry> = mine.unwritten_entries().cloned().collect();
         es.extend(run.entries.iter().map(|(e, _)| e.clone()));
-        for key in mine.to_tell(run.gates.term) {
-            if let Ok(crate::pool::journal::Read::Entry(e)) = crate::pool::journal::read(run.side.nas(), &key) {
-                es.push(e);
-            }
-        }
+        es.extend(resume::unacked(run.side.nas(), step, &mine.to_tell(run.gates.term)));
         resume::unmerged(step, &es)
     }
 
@@ -8006,12 +8021,13 @@ mod pool_tests {
         let scratch = d.path().join(format!("m/agent/scratch/osm-{date}"));
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("filter.done"), "").unwrap();
-        let held = |at: u64, done: bool| resume::Progress { member: im.clone(), worker: cond::host_name(), jobs: [(pass.clone(), resume::Held { at, done, scratch: scratch.to_string_lossy().into_owned() })].into() };
+        let held = |at: u64, done: bool| resume::Progress { member: im.clone(), worker: cond::host_name(), jobs: [(pass.clone(), resume::Held { at, done, scratch: scratch.to_string_lossy().into_owned(), since: 0 })].into() };
         resume::write(&r, &held(now_s() - 3600, false)).unwrap();
         // Off: the lead plans it as before, whoever holds progress.
         lead.pool_switch(Some(&r));
         m.pool_switch(Some(&r));
         assert!(planned(&lead).0);
+        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_none());
         // On: not here; offered to the member alone, which resumes it in its scratch folder.
         switch_on(&r, resume::SWITCH);
         lead.pool_switch(Some(&r));
@@ -8034,6 +8050,12 @@ mod pool_tests {
         assert!(p.jobs[&pass].done, "{p:?}");
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("waiting to be merged")), "{w:?}");
+        // Released, or its day out, while the member runs it under a lease: not run here too.
+        let lease = lead.coord.as_ref().unwrap().hold("osm-pass", &[(date.to_string(), format!("sources/osm/{date}/planet.osm.pbf"))]).unwrap();
+        resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
+        let (here, w) = planned(&lead);
+        assert!(!here && w.iter().any(|w| w.why.contains("under its lease")), "{w:?}");
+        lead.coord.as_ref().unwrap().finish(lease, &[]);
         // A day on with nothing more there: the lead's to run.
         resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
         assert!(planned(&lead).0);
@@ -8043,6 +8065,12 @@ mod pool_tests {
         assert!(!planned(&lead).0);
         resume::release(&r, &im, &pass).unwrap();
         assert!(planned(&lead).0);
+        // Switched off again: the offer taken back, the plan as before.
+        resume::write(&r, &held(now_s() - 60, false)).unwrap();
+        assert!(!planned(&lead).0 && lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_some());
+        std::fs::write(r.join(resume::SWITCH), "off").unwrap();
+        lead.pool_switch(Some(&r));
+        assert!(planned(&lead).0 && lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_none());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }

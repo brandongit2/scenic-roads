@@ -953,10 +953,11 @@ class, id) within a tile. The client sends the id with the clicked point.
     it or missing off. Read by every agent; it acts only in the pool.
   - `state/pool/progress/<member>.json`: the jobs whose progress is on that member's Mac, written
     whole by it alone when that changes (a resumable job's start or end, an entry dropped):
-    `{member, worker, jobs: {"osm-pass <date>": {at, done, scratch}}}` (`worker` the name its asks
-    go by; `at` unix seconds, when the job last started or ended there: offered to it alone until
-    24 h after; `done` finished there, its entry not yet merged). Read by the lead by member id.
-  - `state/pool/progress/released/<member>/<job>-<at>`: the owner's release of that progress
+    `{member, worker, jobs: {"osm-pass <date>": {at, since, done, scratch}}}` (`worker` the name
+    its asks go by; `at` unix seconds, when the job last started or ended there; `since` when its
+    progress began there, its first start: offered to it alone until 24 h after, `at` when it's
+    missing; `done` finished there, its entry not yet merged). Read by the lead by member id.
+  - `state/pool/progress/released/<member>/<job>-<since>`: the owner's release of that progress
     (`scenic pool release <member> "<job>"`; `<job>` with spaces as `_`), made once with
     create-new, empty.
   - `agent/pool/jobs/<term>-<n>/unmerged.json` (on a Mac, resuming on): a resumable job's member's

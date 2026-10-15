@@ -508,16 +508,21 @@ What's planned of placement (phase 4, §12):
   this switch.
 - **Resuming** (crate::agent::resume, built behind `state/pool/resume`: phase 4's eighth batch,
   §12). A job interrupted with progress on its Mac's disk is offered to that Mac only until the
-  owner releases it (`scenic pool release <member> "<job>"`), or for 24 hours from when its job
-  last started or ended there. Which Mac holds which progress is on the NAS, so a new lead knows:
-  `state/pool/progress/<member>.json`, one file a member written by it alone (a file a step, as
-  first drafted, would be written by every Mac that ran it: principle 3), only as a job starts or
-  ends; the release a create-new file beside it. The lead reads its members' files by id as it
-  plans: a member's live progress means the lead doesn't run the job, and its coordinator grants it
-  to that member's agent alone, which asks for it only while its own file holds it; one finished
-  there is held, unoffered, until the records hold it. Built for the OSM pass (its stages' markers);
-  a terrain area's raw tiles and the other progress in §2's table are done again elsewhere
-  (planned).
+  owner releases it (`scenic pool release <member> "<job>"`), or for 24 hours from when its
+  progress began there (its first start: a job that fails or stops again and again there holds
+  its Mac no longer). Which Mac holds which progress is on the NAS, so a new lead knows:
+  `state/pool/progress/<member>.json`, one file a member written by it alone (principle 3: one
+  file a step would be written by every Mac that ran it), only as a job starts or ends; the
+  release a create-new file beside it. The lead reads its members' files by id as it plans: a
+  member's live progress means the lead doesn't run the job, and its coordinator grants it to that
+  member's agent alone, which asks for it only while its own file holds it; while a lease of the
+  lead's coordinator holds the job, the lead doesn't run it whatever the files say (released, the
+  day out, or read stale). The lead's own live progress comes before a member's (it runs the job
+  itself). A member in the pool but asleep, away or with its agent stopped holds the job up to the
+  day (the status says so; a release is the way to place it now). One finished there is held,
+  unoffered, until the records hold it, and if its entry is refused, until the day is out. Built
+  for the OSM pass (its stages' markers); a terrain area's raw tiles and the other progress in §2's
+  table are done again elsewhere (planned).
 - **The forecast** is rewritten for equal machines (each member's slots as lanes, the pages as one):
   a large piece of phase 4, not a detail.
 
@@ -660,7 +665,8 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   file on the NAS still says it, as before.
 - **A job resuming its own work** (built for a resumable step's job, behind the same switch) sees
   its earlier attempts: its agent writes this member's hand-offs for the step that the current
-  term's lead hasn't acknowledged (unwritten, or read from the journal by key) into its folder,
+  term's lead hasn't acknowledged (unwritten, or read from the journal by key, a refused one left
+  out) into its folder,
   and `Out::open` lays them over the snapshot (as `Keys::load_with` does for done records), so a
   pass restarted after sleep finds its earlier stages before they're merged.
 
@@ -1241,22 +1247,25 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    8. **Resuming, and planning from the records alone: built** (§7.2 Resuming, §7.4;
       crate::agent::resume), behind `state/pool/resume` (off while missing: the agent as it was;
       it acts only in the pool). A resumable job's (the OSM pass's) progress noted as its job
-      starts and ends in its member's file, `state/pool/progress/<member>.json` (one a member, not
-      the drafted `<step>.json`, which two Macs could write: principle 3); the lead not running a
-      pass a member's live file holds, its coordinator granting it to that member's worker alone
-      (`offer_resume`), which resumes it in its own scratch folder; finished there, held unoffered
-      until merged; a day on, or released (`scenic pool release`), the lead's to place; its job
-      given this member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED`), which
+      starts and ends in its member's file, `state/pool/progress/<member>.json` (one a member,
+      principle 3); the lead not running a pass a member's live file holds, nor one a lease of its
+      coordinator holds, its coordinator granting it to that member's worker alone
+      (`offer_resume`, taken back when the switch is off), which resumes it in its own scratch
+      folder; finished there, held unoffered until merged; a day from its first start there, or
+      released (`scenic pool release`), the lead's to place; its job given this member's
+      unacknowledged, unrefused hand-offs of its step (`SCENIC_UNMERGED`), which
       `Out::open` lays over the snapshot; a pass complete when the records name
       `sources/osm/<date>/pass` (`osmpass::latest_pass_by`; jobs told by `SCENIC_RESUME`). Tests:
       the decision (held for its Mac alone, a day, a release of that progress only, the newest of
-      two, finished held until merged), a member asking only for what its file holds live, the
-      files and releases; the coordinator granting it to that worker alone, once, before the plan's
+      two, finished held until merged, a pass failing again and again held a day from its first
+      start), a member asking only for what its file holds live, the files and releases, a refused
+      entry left out of what's laid; the coordinator granting it to that worker alone, once, before the plan's
       work; `Out` laying the hand-offs; a pass stopped after its filter resumed with its filtered
       planet unmerged; a pass complete by its records, the same as by the files when they agree;
       and two agents: the lead not planning it, the member resuming it with the switch's
       environment, finished held, then a day on and a release giving it back to the lead, the
-      switch off planning as before. **Scratch state (§13): both Macs, run** (15 Oct 2026, the M4
+      a release and the day out while a lease holds it not planned, the switch off
+      taking the offer back and planning as before. **Scratch state (§13): both Macs, run** (15 Oct 2026, the M4
       leading, the M1 a member, `resume`, `planet`, `progress`): the M1's file holding the pass
       (its filter marked done in its scratch folder, its agent restarted, as after a stop
       mid-stage), the lead waiting with "its progress is on MacBook-Pro-de-Brandon's disk … offered

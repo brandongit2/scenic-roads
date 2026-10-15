@@ -83,9 +83,13 @@ pub struct Progress {
 /// A job's progress on a member's Mac.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Held {
-    /// When its job last started or ended there (unix seconds, its member's clock): offered to it
-    /// alone until `HOLD_S` after.
+    /// When its job last started or ended there (unix seconds, its member's clock).
     pub at: u64,
+    /// When this progress was first noted there (its job's first start): offered to it alone until
+    /// `HOLD_S` after, however often its job starts, fails or stops there meanwhile (§7.2's day).
+    /// 0 (a file without it): `at`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub since: u64,
     /// Its job finished there: nothing left to run, its entry waiting to be merged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
@@ -94,13 +98,28 @@ pub struct Held {
     pub scratch: String,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Held {
+    /// When this progress began (`since`, else `at`): what its day and a release are reckoned by.
+    pub fn began(&self) -> u64 {
+        if self.since == 0 {
+            self.at
+        } else {
+            self.since
+        }
+    }
+}
+
 /// Member `member`'s progress file.
 pub fn path(member: &str) -> String {
     format!("{DIR}/{member}.json")
 }
 
-/// The owner's release of member `member`'s progress of `job` noted at `at`: made once, never
-/// changed (a later start of the job there is progress of its own, offered to it again).
+/// The owner's release of member `member`'s progress of `job` that began at `at` (`Held::began`):
+/// made once, never changed (progress begun there later is its own, offered to it again).
 pub fn release_path(member: &str, job: &str, at: u64) -> String {
     format!("{DIR}/released/{member}/{}-{at}", job.replace([' ', '/'], "_"))
 }
@@ -122,7 +141,7 @@ pub fn write(root: &Path, p: &Progress) -> Result<()> {
     crate::whole::write(&root.join(path(&p.member)),&serde_json::to_vec_pretty(p)?)
 }
 
-/// Whether the owner released `member`'s progress of `job` noted at `at`.
+/// Whether the owner released `member`'s progress of `job` that began at `at`.
 pub fn released(root: &Path, member: &str, job: &str, at: u64) -> bool {
     root.join(release_path(member, job, at)).exists()
 }
@@ -132,7 +151,7 @@ pub fn released(root: &Path, member: &str, job: &str, at: u64) -> bool {
 pub fn release(root: &Path, member: &str, job: &str) -> Result<String> {
     let p = read(root, member)?.with_context(|| format!("{member} has no progress file"))?;
     let h = p.jobs.get(job).with_context(|| format!("{member}'s progress holds no {job:?} (it holds {:?})", p.jobs.keys().collect::<Vec<_>>()))?;
-    let r = root.join(release_path(member, job, h.at));
+    let r = root.join(release_path(member, job, h.began()));
     std::fs::create_dir_all(r.parent().unwrap())?;
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&r) {
         Ok(_) => Ok(format!("{job}'s progress on {member} ({}) released: the lead runs it wherever it fits", p.worker)),
@@ -143,7 +162,7 @@ pub fn release(root: &Path, member: &str, job: &str) -> Result<String> {
 
 /// Whether progress `h` still holds its job for its Mac at `now` (released: `released`).
 pub fn live(h: &Held, now: u64, released: bool) -> bool {
-    !released && now < h.at.saturating_add(HOLD_S)
+    !released && now < h.began().saturating_add(HOLD_S)
 }
 
 /// What the lead does with job `job` (its plan has it), by the members' progress files `files` it
@@ -162,21 +181,36 @@ pub enum Decision {
 /// it, or waits for its finished entry); else the member's whose progress is the newest live one;
 /// else as before. `released(member, at)`: the owner released that progress.
 pub fn decide(job: &str, me: &str, files: &[Progress], now: u64, released: &dyn Fn(&str, u64) -> bool) -> Decision {
-    let holds = |p: &Progress| p.jobs.get(job).filter(|h| live(h, now, released(&p.member, h.at))).cloned();
+    let holds = |p: &Progress| p.jobs.get(job).filter(|h| live(h, now, released(&p.member, h.began()))).cloned();
     if let Some(h) = files.iter().filter(|p| p.member == me).find_map(holds) {
-        return if h.done { Decision::Wait(format!("finished on this Mac, its entry waiting to be merged (until {})", h.at + HOLD_S)) } else { Decision::Plan };
+        return if h.done { Decision::Wait(format!("finished on this Mac, its entry waiting to be merged (until {})", h.began() + HOLD_S)) } else { Decision::Plan };
     }
     let newest = files.iter().filter(|p| p.member != me).filter_map(|p| holds(p).map(|h| (p, h))).max_by_key(|(_, h)| h.at);
     match newest {
         Some((p, h)) if h.done => Decision::Wait(format!("finished on {} ({}), its entry waiting to be merged", p.worker, p.member)),
-        Some((p, h)) => Decision::Offer { member: p.member.clone(), worker: p.worker.clone(), until: h.at + HOLD_S },
+        Some((p, h)) => Decision::Offer { member: p.member.clone(), worker: p.worker.clone(), until: h.began() + HOLD_S },
         None => Decision::Plan,
     }
 }
 
 /// The jobs member file `p` holds for its own Mac to ask for at `now` (live, not finished).
 pub fn asks(p: &Progress, now: u64, released: &dyn Fn(&str, u64) -> bool) -> Vec<String> {
-    p.jobs.iter().filter(|(j, h)| !h.done && live(h, now, released(j, h.at))).map(|(j, _)| j.clone()).collect()
+    p.jobs.iter().filter(|(j, h)| !h.done && live(h, now, released(j, h.began()))).map(|(j, _)| j.clone()).collect()
+}
+
+/// This member's written entries of `step` its lead hasn't acknowledged (`keys`), read from the
+/// journal: one a lead refused (its why noted beside the journal: crate::pool::journal::refusal)
+/// left out, as is one that can't be read now.
+pub fn unacked(nas: &dyn crate::pool::nas::Nas, step: &str, keys: &[String]) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for key in keys {
+        let Ok(crate::pool::journal::Read::Entry(e)) = crate::pool::journal::read(nas, key) else { continue };
+        if e.step != step || !matches!(crate::pool::journal::refusal(nas, key), Ok(None)) {
+            continue;
+        }
+        out.push(e);
+    }
+    out
 }
 
 /// This member's entries for `step`, in lease order, laid one over another: what its jobs of
@@ -198,7 +232,7 @@ mod tests {
     use crate::pool::journal::LeaseId;
 
     fn file(member: &str, worker: &str, jobs: &[(&str, u64, bool)]) -> Progress {
-        Progress { member: member.into(), worker: worker.into(), jobs: jobs.iter().map(|(j, at, done)| (j.to_string(), Held { at: *at, done: *done, scratch: String::new() })).collect() }
+        Progress { member: member.into(), worker: worker.into(), jobs: jobs.iter().map(|(j, at, done)| (j.to_string(), Held { at: *at, done: *done, ..Default::default() })).collect() }
     }
 
     const PASS: &str = "osm-pass 2026-10-01";
@@ -233,6 +267,34 @@ mod tests {
         assert_eq!(decide(PASS, "m-lead", &[done], T + HOLD_S + 1, &none), Decision::Plan);
         let mine_done = file("m-lead", "mac-a", &[(PASS, T, true)]);
         assert!(matches!(decide(PASS, "m-lead", &[mine_done], T + 60, &none), Decision::Wait(_)));
+    }
+
+    /// A pass that keeps stopping there holds its Mac only the day from when its progress began,
+    /// however often its job starts again (`since`), and a release is of that progress.
+    #[test]
+    fn a_pass_failing_again_and_again_holds_its_mac_a_day_from_its_first_start() {
+        let none = |_: &str, _: u64| false;
+        let mut p = file("m-b", "mac-b", &[]);
+        p.jobs.insert(PASS.into(), Held { at: T + HOLD_S - 60, since: T, done: false, scratch: String::new() });
+        assert!(matches!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + HOLD_S - 30, &none), Decision::Offer { until, .. } if until == T + HOLD_S));
+        assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + HOLD_S, &none), Decision::Plan, "its last failure a minute ago doesn't hold it past the day");
+        assert!(asks(&p, T + HOLD_S, &|_, _| false).is_empty());
+        let rel = |m: &str, at: u64| m == "m-b" && at == T;
+        assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + 60, &rel), Decision::Plan, "released by when it began");
+    }
+
+    /// The journal's entries a resumed job lays: its step's, a refused one left out.
+    #[test]
+    fn a_refused_entry_is_not_laid_over_the_snapshot() {
+        let d = tempfile::tempdir().unwrap();
+        let nas = crate::pool::nas::Share::new(d.path());
+        let e = |n: u64, step: &str| Entry { member: "m-b".into(), lease: LeaseId { term: 2, n }, step: step.into(), handoff: Handoff { changes: [(format!("sources/osm/d/x{n}"), Some("c".to_string()))].into(), ..Default::default() }, at: T };
+        let keys: Vec<String> = [e(1, "osm-pass"), e(2, "osm-pass"), e(3, "terrain")].iter().map(|x| crate::pool::journal::write(&nas, x).unwrap()).collect();
+        crate::pool::journal::note_refusal(&nas, &keys[1], "outside its step's write-set").unwrap();
+        let mut missing = keys.clone();
+        missing.push("2026-01-01/2-9".into());
+        let got = unacked(&nas, "osm-pass", &missing);
+        assert_eq!(got.iter().map(|e| e.lease.n).collect::<Vec<_>>(), [1]);
     }
 
     #[test]
