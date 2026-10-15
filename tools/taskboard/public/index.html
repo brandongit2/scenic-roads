@@ -326,7 +326,7 @@
   .fields > label, .lbl { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .inp { width: 100%; height: 28px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--fg); }
   .inp.num { width: 6.5rem; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  .ta { display: block; width: 100%; min-height: 72px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--fg); line-height: 1.5; resize: none; overflow: hidden; }
+  .ta { display: block; width: 100%; min-height: 72px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--fg); line-height: 1.5; resize: none; overflow-x: hidden; overflow-y: auto; }
   .ta::placeholder { color: var(--faint); }
   /* A description's "#57"s, as links, laid over the field while it isn't being edited: the same
      box and text as the field (its own text hidden under them), so a click on anything but a link
@@ -1676,7 +1676,13 @@
     $("ed-unsaved")?.setAttribute("hidden", "");
     if (S.draft?.waiting) finishDraft(S.draft, S.draft.text);
   }
-  const autoGrow = (el) => { el.style.height = "auto"; el.style.height = `${el.scrollHeight + 2}px`; };
+  // (As tall as the text, and as the links laid over it while they show: that is its own copy of the
+  // text, wrapping as it may, and the box it is in clips it.)
+  const autoGrow = (el) => {
+    el.style.height = "auto";
+    const over = ED.f?.note === el && ED.f.noteView && !ED.f.noteView.hidden ? ED.f.noteView.scrollHeight : 0;
+    el.style.height = `${Math.max(el.scrollHeight, over) + 2}px`;
+  };
   // A field's height is measured at its width then; its width changes after (the panel laying out, a
   // window resize, the web font arriving) and the text wraps to more lines than the height holds,
   // clipped (the field never scrolls): so it is measured again whenever its width changes.
@@ -1770,6 +1776,7 @@
     } else f.noteView.replaceChildren();
     f.noteView.hidden = !on;
     f.note.classList.toggle("linked", on);
+    autoGrow(f.note);
   }
   // The task's number copied, as "#57"; where the browser won't, it's selected for ⌘C instead.
   function copyNum(it, el) {
@@ -1840,6 +1847,7 @@
     });
     f.note = h("textarea", { class: "ta", id: "ed-note", rows: "3", maxlength: "20000", placeholder: ro ? "" : kind === "task" ? "What it's about, or what to discuss" : "What this folder is for", "aria-label": "Description" });
     f.note.readOnly = ro;
+    growWatch.disconnect();
     growWatch.observe(f.note);
     growWatch.observe(f.title);
     bindField(f.note, (t, v) => { const note = v.replace(/\s+$/, ""); if (note !== (t.note ?? "")) patch(t.id, { note: note || null }); }, { enter: false });
