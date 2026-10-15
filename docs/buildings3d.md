@@ -764,7 +764,7 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   towers beside the camera: 28 px.) With the flat map's alone, the depth's float32 noise at zoom 14.9 and 48°
   over Toronto's Exhibition Place (the camera 1.3 km up) was some metres at the buildings: whole roofs
   of the large low halls, 6–10 m over the terrain, came and went as the map moved (near 14 px there;
-  now 184 px, and a pan of 0.3 m changes only the edges' pixels, as with the roofs raised 60 m).
+  now 270 px in a 704 px tall view, and a pan of 0.3 m changes only the edges' pixels, as with the roofs raised 60 m).
 - The camera's clearance (B3): camera3d refuses a move that takes it within 30 m of the ground, or
   within 4 m of the highest roof under it (`buildings.roofAt`: the loaded footprints that, drawn at
   the height scale, rise more than 26 m, read when the map is idle; a roof at its centroid's ground

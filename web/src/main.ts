@@ -31,7 +31,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -232,6 +232,11 @@ async function main() {
     return field?.on ? { allowM: m.allowM, boxes: [...m.boxes, ...field.drawnTalls().boxes] } : m;
   });
   map.on('idle', () => cam3d.tuneDepth(map));
+  // (and as the buildings' tiles arrive, the camera still: a tall one may come with them)
+  map.on('sourcedata', (e) => {
+    // (after buildings.ts has marked its read stale, whichever listener runs first)
+    if (e.sourceId === BUILDINGS_SOURCE) queueMicrotask(() => cam3d.tuneDepth(map));
+  });
   map.on('terrain', () => cam3d.tuneDepth(map));
 
   // ---- road layer & range animation ----------------------------------------------

@@ -655,7 +655,7 @@ export function boxDepth(east: [number, number], south: [number, number], up: [n
  * half the nearest anything drawn can be (the ground and short buildings from the camera's height
  * above the highest ground of the terrain tiles drawn, `nearestDepth`; the tall ones and the field's
  * tiles from their boxes too, `boxDepth`: `setTalls`), and never closer than the flat map's (at most
- * half the camera's height above the ground under it): ~13× the precision there.
+ * half the camera's height above the ground under it): ~19× the precision there.
  * (Circles and symbols test themselves against the terrain depth texture with the same perspective
  * depth: our MapLibre's circle and symbol vertex shaders.) Call on every camera change; the flat
  * map keeps MapLibre's own planes.

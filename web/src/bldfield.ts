@@ -1451,16 +1451,14 @@ export class FieldLayer implements CustomLayerInterface {
     }
   }
 
-  /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (RGBA16F with
-   * mipmaps, MB). */
-  /** The tiles drawn in the last frame as boxes (w, s, e, n) and their tallest roof (rendered metres
-   * above the ground: the tile's tallest class top, + 2 m, × the height scale): with the meshes'
-   * (buildings.drawnTalls) what the near plane keeps clear (camera3d.tuneDepth). */
+  /** The loaded tiles the view wants or stands in with (the last frame's and this one's: any it can
+   * draw next) as boxes (w, s, e, n) and their tallest roof (rendered metres above the ground: the
+   * tile's tallest class top, + 2 m, × the height scale): with the meshes' (buildings.drawnTalls)
+   * what the near plane keeps clear (camera3d.tuneDepth). */
   drawnTalls(): DrawnTalls {
     const boxes: DrawnTalls['boxes'] = [];
-    for (const k of new Set(this.drawn)) {
-      const t = this.tiles.get(k);
-      if (!t) continue;
+    for (const t of this.tiles.values()) {
+      if (t.state !== 'ready' || t.used < this.frame - 1) continue;
       const n = 2 ** t.z;
       const lon = (x: number) => (x / n) * 360 - 180;
       const lat = (y: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
@@ -1469,6 +1467,8 @@ export class FieldLayer implements CustomLayerInterface {
     return { allowM: 0, boxes };
   }
 
+  /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (RGBA16F with
+   * mipmaps, MB). */
   drawnSize(): { tiles: number; bytes: number; textureMB: number } {
     let bytes = 0, gpu = 0;
     for (const k of new Set(this.drawn)) {
