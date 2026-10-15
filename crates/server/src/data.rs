@@ -220,9 +220,12 @@ impl Data {
     }
 
     /// Follow a newer catalog on the NAS; true when the NAS was read (whether or not it changed).
+    /// From the one served now: unchanged, nothing read but the folder's listing; newer as deltas
+    /// (docs/formats.md, Delta catalogs), only those read and applied to it.
     pub fn refresh_catalog(&self) -> bool {
         let (Some(root), Some(pool)) = (self.nas_root(), self.pool()) else { return false };
-        match store::catalog::latest_nas(&pool, &root.join("catalog")) {
+        let have = self.catalog();
+        match store::catalog::latest_nas_from(&pool, &root.join("catalog"), Some(&have).filter(|c| c.n > 0).map(|c| c.as_ref())) {
             Ok(Some(c)) => {
                 if c.n != self.catalog().n {
                     eprintln!("catalog {} ({} files)", c.n, c.files.len());
@@ -734,6 +737,40 @@ mod tests {
         // minutes.
         assert!(runs_at(&json!({"beat": now - 300, "job": {"id": "pack 6/52/27"}}), 600, &["job"], now));
         assert!(!runs_at(&json!({"beat": now - 300, "job": null, "beside": {"id": "lo"}}), 600, &["job"], now));
+    }
+
+    /// Delta catalogs (docs/formats.md): the server follows them from the catalog it serves, as the
+    /// whole catalog would be, keeping a whole copy on this Mac; the deltas after the one it has are
+    /// all it reads (the whole one under them gone from the NAS, it still follows).
+    #[test]
+    fn the_server_follows_delta_catalogs_from_the_one_it_has() {
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = nas.path().join("catalog");
+        let cat = |n: u64, files: &[&str]| {
+            let mut c = Catalog::new(n);
+            for f in files {
+                let logical = format!("layers/roads/hi/{f}");
+                c.files.insert(logical.clone(), store::catalog::FileRef { file: format!("{logical}.{:016x}.pack", n), size: n, ..Default::default() });
+                c.layers.entry("roads".into()).or_default().hi.insert(f.replace('-', "/"), logical);
+            }
+            c
+        };
+        let (one, two, three) = (cat(1, &["6-1-1"]), cat(2, &["6-1-1", "6-1-2"]), cat(3, &["6-1-2", "6-1-3"]));
+        store::catalog::write(&dir, &one).unwrap();
+        let d = Data::open(Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: false, reserve: 0 }).unwrap();
+        assert_eq!(*d.catalog(), one);
+        store::catalog::write_delta(&dir, &one, &two).unwrap();
+        assert!(d.refresh_catalog());
+        assert_eq!(*d.catalog(), two);
+        assert_eq!(store::catalog::read(&home.path().join("catalog/2.json.zst")).unwrap(), two, "kept whole here");
+        // The whole one under the deltas gone: catalog 3 still followed, from 2.
+        store::catalog::write_delta(&dir, &two, &three).unwrap();
+        std::fs::remove_file(dir.join("1.json.zst")).unwrap();
+        assert!(d.refresh_catalog());
+        assert_eq!(*d.catalog(), three);
+        // (Nothing newer: as it is.)
+        assert!(d.refresh_catalog());
+        assert_eq!(*d.catalog(), three);
     }
 }
 

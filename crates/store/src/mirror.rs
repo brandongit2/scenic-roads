@@ -888,7 +888,7 @@ impl Mirror {
         let mut recent: HashSet<String> = cat.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())).collect();
         let dir = self.root.join("catalog");
         if let Ok(ns) = catalog::list(&dir) {
-            if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalog::read(&dir.join(catalog::file_name(n))).ok()) {
+            if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalog::read_n(&dir, n).ok()) {
                 recent.extend(prev.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())));
             }
         }

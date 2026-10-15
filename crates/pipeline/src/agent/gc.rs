@@ -233,19 +233,41 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     let mut drop_cats: Vec<PathBuf> = Vec::new();
     // (How far it is, for the status: the catalogs read, then the folders swept.)
     crate::agent::jobs::stage(0, 2, "steps (reading the catalogs)");
-    for (k, &n) in ns.iter().enumerate() {
-        crate::agent::jobs::within(k as f64 / ns.len() as f64);
-        let p = cat_dir.join(store::catalog::file_name(n));
+    // (Each catalog's file, whole or a delta: store::catalog::path_n.)
+    let mut in_window: BTreeSet<u64> = BTreeSet::new();
+    for &n in &ns {
+        let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
         let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
-        if n != latest && old(mtime) {
-            drop_cats.push(p);
-            continue;
+        if n == latest || !old(mtime) {
+            in_window.insert(n);
         }
+    }
+    // A delta kept keeps the catalogs it's read through, back to a whole one (their files aren't
+    // kept for them: only the catalogs in the window are what's served). One that can't be read
+    // stops the sweep.
+    let mut kept_cats = in_window.clone();
+    for &n in &in_window {
+        kept_cats.extend(store::catalog::chain(&cat_dir, n).with_context(|| format!("the catalogs catalog {n} is read through"))?);
+    }
+    for &n in ns.iter().filter(|n| !kept_cats.contains(n)) {
+        drop_cats.extend(store::catalog::path_n(&cat_dir, n));
+    }
+    // Read oldest first, each delta applied to the one before when that's just been read (not
+    // its chain read again).
+    let mut prev: Option<store::catalog::Catalog> = None;
+    for (k, &n) in in_window.iter().enumerate() {
+        crate::agent::jobs::within(k as f64 / in_window.len() as f64);
+        let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
         // A catalog in the window that can't be read stops the sweep: its files might be in use.
-        let cat = store::catalog::read(&p).with_context(|| format!("read {}", p.display()))?;
+        let delta = (p.file_name() == Some(std::ffi::OsStr::new(&store::catalog::delta_file_name(n)))).then(|| std::fs::read(&p).ok().and_then(|b| store::catalog::Delta::decode(&b).ok())).flatten();
+        let cat = match (delta, &prev) {
+            (Some(d), Some(c)) if c.n == d.of => d.apply(c).with_context(|| format!("read {}", p.display()))?,
+            _ => store::catalog::read_n(&cat_dir, n).with_context(|| format!("read {}", p.display()))?,
+        };
         read.count(std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0), 1);
         referenced.extend(cat.files.values().map(|f| f.file.clone()));
         rep.catalogs_kept += 1;
+        prev = Some(cat);
     }
     // The build's manifest: everything a build has uploaded and may publish next (work in flight,
     // and outputs reused by name). Unreadable, nothing is removed.
@@ -607,6 +629,39 @@ mod tests {
         assert!(root.join("layers/a/hi/6-1-1.3333333333333333.pack").exists());
         assert_eq!(store::catalog::latest(&root.join("catalog")).unwrap().unwrap().n, 3);
         assert_eq!(store::catalog::next_n(&root.join("catalog")).unwrap(), 4);
+    }
+
+    #[test]
+    fn a_delta_kept_keeps_the_catalogs_its_read_through_and_its_files() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let dir = root.join("catalog");
+        let mut prev: Option<store::catalog::Catalog> = None;
+        // 1 whole and old, 2 a delta and old, 3 and 4 deltas in the window (3 over 2, 4 over 3).
+        for (n, old) in [(1, true), (2, true), (3, false), (4, false)] {
+            let file = format!("layers/a/hi/6-1-{n}.{}.pack", format!("{n}").repeat(16));
+            let p = root.join(&file);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            age(&p, 60);
+            let mut cat = prev.clone().unwrap_or_else(|| store::catalog::Catalog::new(1));
+            cat.n = n;
+            cat.files.insert(format!("layers/a/hi/6-1-{n}"), store::catalog::FileRef { file, ..Default::default() });
+            let c = match &prev {
+                None => store::catalog::write(&dir, &cat).unwrap(),
+                Some(b) => store::catalog::write_delta(&dir, b, &cat).unwrap(),
+            };
+            if old {
+                age(&c, 60);
+            }
+            prev = Some(cat);
+        }
+        let r = run(root, 14, false).unwrap();
+        // (3 and 4 kept, read; 1 and 2 kept as what 3 is read through, their files not kept for them
+        // but 3's names them all.)
+        assert_eq!((r.catalogs_kept, r.catalogs_removed, r.removed), (2, 0, 0));
+        assert_eq!(store::catalog::latest(&dir).unwrap().unwrap(), prev.unwrap());
+        assert_eq!(store::catalog::list(&dir).unwrap(), [4, 3, 2, 1]);
     }
 
     #[test]

@@ -492,6 +492,37 @@ passes' sources and the input check's checked copies (`sources/inputs/`, kept by
 the manifest or an unmerged journal entry names: plan §3). A held catalog is written to `catalog-held/` instead
 (`inputs/hold-catalog`).
 
+### Delta catalogs (`catalog/<n>.delta.json.zst`)
+
+With `state/pool/delta-catalog` on (plan §8, Faster publishing), catalog `n` may be written as what
+changed over an earlier one (store::catalog::Delta), zstd with its content checksum, written and
+read back through `<n>.delta.json.zst.tmp` as a whole one is; a number is taken once, whole or as a
+delta:
+
+```json
+{"fmt": 1, "n": 8, "of": 7, "of_digest": "<32 hex>", "digest": "<32 hex>", "patch": {"o": {"n": {"=": 8}, "files": {"o": {"layers/roads/hi/6-32-21": {"=": {"file": "…", "size": 9, "fmt": 1}}, "base/6-1-1": null}}, "coverage": {"o": {"regions": {"a": {"ids": ["monaco", "andorra"], "set": {"andorra": {"=": {…}}}}}}}}}}
+```
+
+- `digest`: XXH3-128 (hex) of a catalog's JSON as written (its maps in key order), whole:
+  `of_digest` the catalog it changes, `digest` the one it makes.
+- `patch` (store::catalog::delta), one of: `{"=": v}` the value is `v`; `{"o": {key: patch | null}}`
+  an object, each key named changed by its patch (null: gone), the rest as they were; `{"a": {"ids":
+  [...], "set": {id: patch}}}` an array of objects each with a distinct string `id` (the coverage's
+  regions), in the order `ids` gives, those `set` names changed (from nothing, for a new one), the
+  rest as they were. The writer takes whichever is shortest written out.
+- Readers (store::catalog: `latest`, `latest_nas_from`, `read_n`) list both kinds, take the highest
+  number that reads whole: a delta applied to catalog `of` (read the same way, back to a whole one,
+  or the one the reader has already), checked against both digests; one that doesn't fit, or whose
+  chain is broken, is passed over as a damaged catalog is. What they get is the catalog the writer
+  made, exactly (the tests write each catalog both ways and compare).
+- The writer writes a whole one when the deltas since the last whole one and this one would add up
+  to that whole one's size or more (`Delta::due_whole`), when there's none, or when asked
+  (`scenic-build catalog --whole`).
+- An app from before deltas lists only `<n>.json.zst`: it reads the last whole catalog.
+- GC keeps, besides the catalogs in its window, every catalog a kept delta is read through, back to
+  its whole one (their files aren't kept for them).
+- A Mac keeps the catalogs it reads whole, in its own `catalog/`.
+
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
 ```

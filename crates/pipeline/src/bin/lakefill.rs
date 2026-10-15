@@ -174,7 +174,7 @@ fn catalog_add(a: &[String]) -> Result<()> {
     anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
     let dir = root.join("catalog");
     let n = *store::catalog::list(&dir)?.first().context("no catalog in the root")?;
-    let mut cat = store::catalog::read(&dir.join(format!("{n}.json.zst")))?;
+    let mut cat = store::catalog::read_n(&dir, n)?;
     let name = fill.file_name().context("a fill file")?.to_string_lossy().into_owned();
     let hash = name.trim_start_matches("lakefill.").trim_end_matches(".sect");
     let logical = format!("{}test", pipeline::lakefill::PREFIX);
