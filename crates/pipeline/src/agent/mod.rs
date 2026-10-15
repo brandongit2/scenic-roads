@@ -5340,6 +5340,12 @@ impl Agent {
             if let Some(c) = self.coord.as_ref().filter(|c| c.shared.lock().unwrap().brokers.is_some()) {
                 c.set_brokers(None);
             }
+            // (A tick from here advertises no broker: the run told now when no tick holds it, else
+            // at the loop's next pool step.)
+            if let Some(Some(mut run)) = self.try_pooled() {
+                run.cx.broker = None;
+                run.side.broker = None;
+            }
             return;
         }
         let now = Instant::now();
