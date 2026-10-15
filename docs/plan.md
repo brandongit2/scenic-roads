@@ -808,6 +808,21 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      (~40 GB free) reads it from the NAS: the water set took 65 min so (2026-10-06).
 5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons. They go in a
    sectioned file, with simplified copies for the panel.
+   - osmium's export leaves out, without naming it, a relation whose rings don't close in OSM (the
+     2026-09-28 planet's Poland and Ukraine: a way missing from their shared border, a 150 m gap).
+     The relations kept that it left out are found from the set's relations
+     (`pipeline::outlines::assemble`):
+     - **Countries and territories** (`boundary=administrative` with `ISO3166-1`): assembled by the pass itself, their ways
+       joined end to end and the gaps left joined nearest first with a straight line, each up to
+       1 km (`MAX_GAP_M`); the log names each. One that still can't be (a wider gap, a missing
+       way) **stops the pass**, naming it: every country in OSM has its outline, or the spoken
+       languages and the coverage's countries would silently lose it.
+     - **Others** (subdivisions, districts, a country's other relations such as Thailand's `land_area`): left out, their ids in the log as a warning. Hundreds
+       are broken in OSM at any time; stopping on them would stop every pass.
+   - A country's or territory's code is its own `ISO3166-1` tag where that's an assigned code
+     (Åland's AX, though tagged FI-01 as Finland's region too; Guadeloupe's GP, Mayotte's YT),
+     else read from its ISO 3166-2 code (the Canaries' `IC` is reserved, not assigned: ES); an
+     outline without one lies in the smallest country or territory holding it.
 6. **Basemap:** Planetiler on (b), worldwide, giving `layers/basemap/world-<date>`. Its jar and data
    (Natural Earth, water polygons, lake centerlines) are pinned in `sources/basemap/`. The pass
    stops before drawing it with a jar of another version (its `buildinfo.properties`) than the one
@@ -1663,7 +1678,8 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
   Scotland English then Gaelic; Brittany French then Breton; Hong Kong Cantonese then English,
   Macau Cantonese then Portuguese (their names are read in Cantonese, the government's
   romanisation, not Mandarin's Pinyin).
-- **Where:** the pass's outlines of ISO 3166-1 territories (Hong Kong's `CN-HK` is HK) and of the
+- **Where:** the pass's outlines of ISO 3166-1 territories, each under its own code (step 5 of the
+  pass: Åland's AX, Hong Kong's HK) and of the
   subdivisions with a line in the table, simplified (1 km for countries, 250 m for subdivisions), as a raster of
   1/128° cells (about 870 m at the equator), run-length coded by row, the smallest outline winning
   where they overlap (Hong Kong over China, Quebec over Canada). Beyond every territory (the high

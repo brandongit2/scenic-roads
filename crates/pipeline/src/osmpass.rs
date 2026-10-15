@@ -579,6 +579,12 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file)?;
         drop(p);
         eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
+        for (id, iso, gap) in &s.repaired {
+            eprintln!("outlines: relation {id} ({iso}) left out by osmium's export, assembled here (widest gap closed {gap:.0} m)");
+        }
+        if !s.unassembled.is_empty() {
+            eprintln!("outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}", s.unassembled.len(), s.unassembled);
+        }
         let _p = crate::timings::sub("uploaded", crate::timings::Class::NasWrite);
         out.put_file(&format!("sources/osm/{date}/outlines"), "sect", &file)?;
         out.save()?;

@@ -442,9 +442,9 @@ In `agent::build` (B2), beside the others (`bld_targets`, `bld_work`):
   (else a vertex's, likewise), so the order decides where outlines or buffers overlap, and a
   region renamed (the recipes go in id order) can change a building's country with no geometry
   changed. The fill's fits go by that country, from the pass's outline of an `osm:` region
-  (`Outlines::country_code`: its own ISO 3166-1 code, a territory's from its subdivision code where
-  ISO 3166-2 lists it by its own (US-PR, CN-HK, FR-GF, FR-PM), else the country it lies in; always
-  two letters); the coverage's fits where none is known. B1's probe of the 88 regions' 122 outlines
+  (`Outlines::country_code`: its own ISO 3166-1 code (its `ISO3166-1` tag where assigned, else
+  from its subdivision code where ISO 3166-2 lists it by its own: US-PR, CN-HK, FR-GF, FR-PM),
+  else the smallest country or territory it lies in; always two letters); the coverage's fits where none is known. B1's probe of the 88 regions' 122 outlines
   gave B0's country for each, and for 44 points at borders and in enclaves and territories
   (Monaco, Gibraltar, Llívia, Windsor, Derby Line, Tui, Ceuta, the Canaries, Hong Kong).
 - **`bld-fetch`'s key:** its version, the release and `coverage_all`; kept with the lo keys under
