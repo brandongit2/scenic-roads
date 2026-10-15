@@ -25,7 +25,7 @@
 //!   class, R `f` as √f, G `w` as log2(1 + w) ÷ log2(4097) (to 4096), B the class's mean top
 //!   linearly in its class's range ([`LO_M`], [`HI_M`]), each × 255 rounded; then a block a class, R
 //!   and G the offset from the texel's centre to its buildings' centroid (their mean, by coverage) in
-//!   the level's texels + 128, within ±127, B 0. A class whose `f` and `w` both round to 0 everywhere
+//!   the level's texels + 128, within ±127, B 0 (128, 128 where √f rounds to 0). A class whose `f` and `w` both round to 0 everywhere
 //!   is left out; a tile with none isn't written. A level-8 tile (a z8
 //!   area) may carry its heritage list after the WebP ([`heritage`]: of T's heritage sites as the
 //!   heritage chain slices them, its World Heritage components left out, `job::sites`).
@@ -635,7 +635,8 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
     }
     let n = mask.count_ones();
     // The offsets to the centroids, a block a class held after the others: R dx + 128, G dy + 128
-    // (the level's texels, rounded, within ±127), B 0; 128, 128 where the class covers nothing.
+    // (the level's texels, rounded, within ±127), B 0; 128, 128 where the class's share rounds to 0
+    // (the renderer reads none there: an offset there only costs bytes).
     for k in 0..K {
         if mask & 1 << k == 0 {
             continue;
@@ -643,7 +644,7 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
         let c = p.c[k].as_ref().unwrap();
         for i in 0..T * T {
             let f = c[0][i] as f64;
-            let q = |o: f32| if f > 0.0 { (o as f64 / f).round().clamp(-127.0, 127.0) as i32 + 128 } else { 128 };
+            let q = |o: f32| if (f.clamp(0.0, 1.0).sqrt() * 255.0).round() > 0.0 { (o as f64 / f).round().clamp(-127.0, 127.0) as i32 + 128 } else { 128 };
             rgb.extend_from_slice(&[q(c[3][i]) as u8, q(c[4][i]) as u8, 0]);
         }
     }

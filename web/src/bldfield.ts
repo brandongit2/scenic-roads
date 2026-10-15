@@ -196,8 +196,8 @@ vec3 shadeC(vec3 base, float dd, float g, vec3 lowc) {
   float hiD = max(1.0 - dot(base, vec3(0.2126, 0.7152, 0.0722)) + u_lightintensity, 1.0);
   return clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dd) * g * u_lightcolor, lowc, vec3(1.0));
 }
-#define ROOFC(c) (u_byHeight == 1 ? shadeC(lutBase(Hc[c] / u_hk), dRoof, 1.0, lowc) : roofC)
-#define WALLC(c) (u_byHeight == 1 ? shadeC(lutBase(Hc[c] / u_hk), dWall, Gc[c], lowc) : clamp(wallC * Gc[c], lowc, vec3(1.0)))
+#define ROOFC(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dRoof, 1.0, lowc) : roofC)
+#define WALLC(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dWall, Gc[c], lowc) : clamp(wallC * Gc[c], lowc, vec3(1.0)))
 void main() {
   if (v_clip > 1.0) discard;
   float mpu = u_camTile.w;
@@ -256,6 +256,7 @@ void main() {
   // (each class's layer of u_off: the classes held before it)
   int L_[5];
   { int nl = 0; for (int k = 0; k < 5; k++) { L_[k] = nl; if (((u_mask >> k) & 1) != 0) nl++; } }
+  float dgDbg = 0.0, odDbg = 0.0;   // (debug, ?fdbg=34: the largest roof ground shift and offset met)
   float T = 1.0;
   vec2 dT = d.xy / mpu;   // tile units a metre along the ray
   float t = t0;
@@ -288,8 +289,15 @@ void main() {
     te = min(max(te, t + 0.01), tmax);
     vec2 tg = texelFetch(u_top32, cell, 0).rg;
     // (a little above the cell's tallest roof: a run starting at a roof's height would take it as
-    // already below it, its walls met, its roof never)
-    float topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25);
+    // already below it, its walls met, its roof never; over the ground here, so as high again as the
+    // ground at a roof's centroid can be over it, or the roofs over higher ground came out hollow:
+    // the cell's highest ground within M cells over its lowest, its grid square's corners)
+    float dgc = 0.0;
+    if (u_dbg != 32 && u_dbg != 33) {
+      ivec2 gc = cell + ivec2(${M});
+      dgc = max(tg.g - min(min(texelFetch(u_elev, gc, 0).r, texelFetch(u_elev, gc + ivec2(1, 0), 0).r), min(texelFetch(u_elev, gc + ivec2(0, 1), 0).r, texelFetch(u_elev, gc + ivec2(1, 1), 0).r)), 0.0);
+    }
+    float topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25) + dgc;
     // The hull: each cell holding buildings a column from the ground to its highest ground plus its
     // tallest roof (+ 0.5 m), as the faces are drawn; the ray leaves it going into a column below it
     // (or a cell without any), or rising out of the one it was in. Each entry's fragment marches only
@@ -298,7 +306,7 @@ void main() {
     if (k > 0 && E.z + d.z * t >= min(bound, prevBound)) break;
     prevBound = bound;
     // (above the cell's highest ground plus its tallest roof, at both ends: no ground to look up)
-    if (min(E.z + d.z * t, E.z + d.z * te) > tg.g + topc + 1.0) {
+    if (min(E.z + d.z * t, E.z + d.z * te) > tg.g + topc - dgc + 1.0) {
       t = te;
       a0 = -1.0;   // (not known: looked up where it's needed)
       continue;
@@ -339,7 +347,7 @@ void main() {
     if (abs(dT.y) > 1e-12) s1 = min(s1, s0 + ((dT.y > 0.0 ? float(sc.y + 1) : float(sc.y)) * ${EXTENT / 128}.0 - q0.y) / dT.y);
     s1 = (oneStep || u_sub == 0) ? tOut : min(max(s1, s0 + 0.01), tOut);
     float as0 = a0 + da * (s0 - t), as1 = a0 + da * (s1 - t);   // its heights over the ground
-    if (u_dbg != 22 && u_sub != 0 && !oneStep && min(as0, as1) > texelFetch(u_top128, sc, 0).r * u_hk) { covE *= exp(-(s1 - s0) * hl / covL); s0 = s1; continue; }
+    if (u_dbg != 22 && u_sub != 0 && !oneStep && min(as0, as1) > texelFetch(u_top128, sc, 0).r * u_hk + dgc) { covE *= exp(-(s1 - s0) * hl / covL); s0 = s1; continue; }
     float run = s1 - s0;
     float n = u_dbg == 21 ? 1.0 : clamp(ceil(run * hl / max(max((dist0 + s0) * u_pixAngle, stepMin), 1e-3)), 1.0, u_sub == 0 ? 8.0 : 4.0);
     float step = run / n;
@@ -361,10 +369,12 @@ void main() {
       // rate (entered a horizontal metre below its roofs), and fill-extrusion's gradient up a wall at
       // the height the ray meets it (the colours made from it where they're used: arrays of vectors,
       // and the raw reads kept beside these, held more registers than the GPU had).
-      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;
+      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Kc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;   // (Kc: the buildings' own height, which colours them)
 // (a class's roofs level: their height over the ground here is their top over the ground at their
-// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is)
-#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = (textureLod(u_off, vec3(uv, float(L_[c])), lod).rg * 255.0 - 128.0) * ${EXTENT / 512}.0; float Hs_ = u_dbg == 32 ? H0_ : max(H0_ + ground(pt + od_) - gHere, 0.5); Fc[c] = f_; Hc[c] = Hs_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)); } }
+// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is; the
+// gradient up a wall, as fill-extrusion's, by the height over that base, its top the building's own
+// height, which also picks its colour: ?fdbg=35 both by the height over the ground here instead)
+#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = (textureLod(u_off, vec3(uv, float(L_[c])), lod).rg * 255.0 - 128.0) * ${EXTENT / 512}.0; float dg_ = ground(pt + (u_dbg == 33 ? vec2(0.0) : od_)) - gHere; dgDbg = max(dgDbg, abs(dg_)); odDbg = max(odDbg, length(od_)); float Hs_ = u_dbg == 32 ? H0_ : max(H0_ + dg_, 0.5); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -470,6 +480,7 @@ void main() {
     a0 = aEnd;
   }
   if (u_dbg == 29) { fragColor = vec4(dRoofA, dWallA, 1.0 - T, 1.0); return; }
+  if (u_dbg == 34) { fragColor = vec4(clamp(dgDbg / 30.0, 0.0, 1.0), clamp(odDbg / ${EXTENT / 16}.0, 0.0, 1.0), 0.0, 1.0); return; }
   if (T > 0.9999) discard;
   // Straight into the frame (premultiplied, over what's there), at the opacity, as MapLibre blends a
   // mesh. The hardware blends stored values; full detail shrunk mixes in linear light. The alpha is
@@ -565,6 +576,8 @@ export class FieldLayer implements CustomLayerInterface {
   maxZoom = 14;
   /** The meshes drawn (off, the comparison's field alone: drawn everywhere). */
   meshOn = true;
+  /** (diagnosis: the offsets to the centroids read nearest, as the class textures aren't) */
+  offNearest = urlNum('foffn', 0) === 1;
   /** (diagnosis: the class textures read nearest, not filtered) */
   nearest = false;
   /** The frame's depth read (the fork's sceneDepth). */
@@ -919,8 +932,10 @@ export class FieldLayer implements CustomLayerInterface {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.bindTexture(gl.TEXTURE_2D, null);
     t.cmask = cm;
-    // The offsets (RG8, a layer a class held; read nearest: a texel's own building's, not blended
-    // with its neighbour's; their mipmaps the means, offsets from the coarser texels' centres).
+    // The offsets (RG8, a layer a class held; filtered as the class textures are, so a roof's ground
+    // changes smoothly between neighbouring buildings' texels, as their coverage does: read nearest,
+    // `?foffn=1`, the roofs speckled; their mipmaps the means, offsets from the coarser texels'
+    // centres).
     {
       const nl = Math.max(1, m.offsets.length / (512 * 512 * 2));
       const ot = gl.createTexture()!;
@@ -929,8 +944,8 @@ export class FieldLayer implements CustomLayerInterface {
       gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RG8, 512, 512, nl, 0, gl.RG, gl.UNSIGNED_BYTE, m.offsets.length ? m.offsets : new Uint8Array(512 * 512 * 2).fill(128));
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
       gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, this.offNearest ? gl.NEAREST_MIPMAP_NEAREST : gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, this.offNearest ? gl.NEAREST : gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);

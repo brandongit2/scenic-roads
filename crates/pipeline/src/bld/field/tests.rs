@@ -300,6 +300,32 @@ fn offsets_to_the_centroid() {
 }
 
 #[test]
+fn small_buildings_offsets_stay_within_them() {
+    // The town's houses (22 m squares, 7 m apart; the one across the west edge 44 m) in classes
+    // 0–2 (the towers are 3 and 4): every texel's offset at level 14 within half the house and a
+    // texel (3.1 m texels at 48.9° N: the edge house 9 × 14 of them).
+    let rings = town();
+    let feet = feet_of(&rings);
+    let field = area((129, 88), &feet, &[]);
+    let mut worst = 0i32;
+    for (_, _, _, b) in field.tiles.iter().filter(|t| t.0 == 14) {
+        let (mask, classes) = decode(b);
+        let n = mask.count_ones() as usize;
+        for (l, k) in (0..K).filter(|k| mask & 1 << k != 0).enumerate() {
+            if k > 2 {
+                continue;
+            }
+            for (i, px) in classes[n + l].iter().enumerate() {
+                if classes[l][i][0] != 0 {
+                    worst = worst.max((px[0] as i32 - 128).abs()).max((px[1] as i32 - 128).abs());
+                }
+            }
+        }
+    }
+    assert!(worst <= 7, "an offset of {worst} texels");
+}
+
+#[test]
 fn a_courtyard_and_overlaps() {
     // A courtyard building (its hole wound either way) covers its outer square less the yard; two
     // copies of a house on each other cover it once inside, their mean top kept.

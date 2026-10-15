@@ -333,7 +333,7 @@ from the coarser texel's centre: a child's offset plus its centre's, ±¼ of the
   most 255), B the class's mean top `v ÷ f` as `round((H − lo) ÷ (hi − lo) × 255)` clamped, its
   class's range lo–hi 0–8, 8–20, 20–40, 40–100, 100–1000 m (0 where R and G are); then a block a
   class held: R `round(ox ÷ f) + 128`, G `round(oy ÷ f) + 128` (each within ±127 of the level's
-  texels), B 0 (128, 128, 0 where `f` is 0). A class whose R and G are 0 everywhere is left out; a tile with none isn't stored. A level-8 tile (a z8 area's)
+  texels), B 0 (128, 128, 0 where R is 0). A class whose R and G are 0 everywhere is left out; a tile with none isn't stored. A level-8 tile (a z8 area's)
   may have after the WebP its heritage list: u32 n, then n buildings or parts holding a heritage
   site's point (the newest pass's `pos` slice of T less its `parts` slice: the map's heritage dots,
   a World Heritage Site's components left out), each

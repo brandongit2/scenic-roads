@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { waitQuiet, snapshot } from './quiet.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
@@ -151,6 +152,11 @@ for (const v of views) {
         await tab.evaluate(`const f = window.__bld.field; f.stepTexel = ${mode === 'step0' ? 0 : 2}; f.subWalk = ${mode === 'sub'}; f.nearest = ${mode === 'nearest'}; return 1`);
         o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
       }
+      else if (mode.startsWith('dbg')) {
+        // (diagnosis: a debug view of the field, `fdbg` the number after "dbg")
+        await tab.evaluate(`window.__bld.field.dbg = ${Number(mode.slice(3))}; return 1`);
+        o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
+      }
       else if (mode === 'flatroof') {
         // (before the centroids' offsets: each roof over the ground under its own texel, `fdbg` 32)
         await tab.evaluate('window.__bld.field.dbg = 32; return 1');
@@ -180,12 +186,16 @@ for (const v of views) {
     }
     if (MODES.includes('cost')) {
       // The meshes by their tiles' distance (the layers with no least zoom) against from map zoom 14
-      // alone (the layers' least zoom 14), interleaved `reps` times: the z14 mesh tiles loaded, the
-      // source's buffers, and whole frames (GPU timer medians, `__bld.frames`).
+      // alone (the layers' least zoom 14), and the roofs at the ground under each texel (`fdbg` 32), interleaved `reps` times, each behind the quiet-Mac gate
+      // (quiet.mjs): the z14 mesh tiles loaded, the source's buffers, and whole frames (`__bld.frames`).
       rec.cost = [];
       for (let r = 0; r < (v.reps ?? 3); r++) {
-        for (const rule of r % 2 ? ['zoom14', 'distance'] : ['distance', 'zoom14']) {
-          rec.cost.push(await tab.evaluate(`const b = window.__bld; const m = b.map; for (const id of ['buildings', 'buildings-flat', 'buildings-pick']) if (m.getLayer(id)) m.setLayerZoomRange(id, ${rule === 'zoom14' ? 14 : 0}, 24); b.field.on = true; await b.ready(); const tm = m.style.tileManagers.bld; const ts = tm?._inViewTiles?.getAllTiles?.() ?? []; let bytes = 0; for (const t of ts) for (const bk of Object.values(t.buckets ?? {})) for (const k of ['layoutVertexBuffer', 'indexBuffer']) bytes += bk[k]?.byteLength ?? (bk[k]?.length ?? 0) * 0; const f = await b.frames(${v.frames ?? 120}); return { rule: '${rule}', zoom: m.getZoom(), meshTiles: ts.filter((t) => t.state === 'loaded').length, fieldTiles: new Set(b.field.drawn).size, frame: f }`, 600));
+        const rules = ['distance', 'zoom14', 'flatroof'];
+        for (const rule of rules.slice(r % 3).concat(rules.slice(0, r % 3))) {
+          // (the quiet-Mac gate before each, its findings kept with it; and the processes after)
+          const gate = await waitQuiet({ log: () => {} });
+          const c = await tab.evaluate(`const b = window.__bld; const m = b.map; for (const id of ['buildings', 'buildings-flat', 'buildings-pick']) if (m.getLayer(id)) m.setLayerZoomRange(id, ${rule === 'zoom14' ? 14 : 0}, 24); b.field.on = true; b.field.dbg = ${rule === 'flatroof' ? 32 : 0}; await b.ready(); const tm = m.style.tileManagers.bld; const ts = tm?._inViewTiles?.getAllTiles?.() ?? []; let bytes = 0; for (const t of ts) for (const bk of Object.values(t.buckets ?? {})) for (const k of ['layoutVertexBuffer', 'indexBuffer']) bytes += bk[k]?.byteLength ?? (bk[k]?.length ?? 0) * 0; const f = await b.frames(${v.frames ?? 120}); return { rule: '${rule}', zoom: m.getZoom(), meshTiles: ts.filter((t) => t.state === 'loaded').length, fieldTiles: new Set(b.field.drawn).size, frame: f }`, 600);
+          rec.cost.push({ ...c, gate, after: snapshot('post') });
         }
       }
       console.log(`${v.id} cost ${JSON.stringify(rec.cost.map((c) => [c.rule, c.meshTiles, c.fieldTiles, c.frame?.frameMs]))}`);

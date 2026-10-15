@@ -101,7 +101,7 @@ const summary = fs.existsSync(path.join(OUT, 'shots.json')) ? JSON.parse(fs.read
 for (const v of views) {
   const t0 = Date.now();
   const tab = await openTab();
-  const url = `${APP}/?bldcmp&dpr=2${v.bcol ? `&bcol=${v.bcol}` : ""}&bldfield=${encodeURIComponent(FIELD)}&bldtiles=${encodeURIComponent(BLD)}${v.flat ? '' : ''}#map=${v.z}/${v.lat}/${v.lon}/${v.bearing ?? 0}/${v.pitch ?? 0}${v.flat ? '&gb=0' : ''}`;
+  const url = `${APP}/?bldcmp&dpr=2${v.bcol ? `&bcol=${v.bcol}` : ""}&bldfield=${encodeURIComponent(FIELD)}&bldtiles=${encodeURIComponent(BLD)}${opt("query", "")}${v.flat ? '' : ''}#map=${v.z}/${v.lat}/${v.lon}/${v.bearing ?? 0}/${v.pitch ?? 0}${v.flat ? '&gb=0' : ''}`;
   await tab.send('Page.navigate', { url });
   for (let i = 0; i < 600; i++) {
     if (await tab.evaluate('return !!window.__bld', 10).catch(() => false)) break;
