@@ -114,7 +114,7 @@ uniform int u_mask;               // the classes present in the tile (bits)
 uniform float u_tmin;
 uniform highp sampler2D u_top32;   // each 1/32 of the tile: r its (and the cells around its) tallest mean top, g its highest ground within its reach, b that over its lowest ground (m)
 uniform highp sampler2D u_elev;    // the tile's ground, (33 + 2M)² (m), M cells beyond each edge
-uniform highp sampler2DArray u_off;   // each class held (a layer each, in order): the offset to its buildings' centroid, + 128 (level-0 texels)
+uniform highp sampler2DArray u_off;   // each class held (a layer each, in order): share × the offset to its buildings' centroid (level-0 texels; ÷ the share read alike: their share-weighted mean)
 uniform float u_dgMax;   // the tile's ground's range (m): how much higher a roof's centroid's ground can be
 uniform float u_pixAngle;   // radians a device pixel spans
 uniform vec4 u_camTile;
@@ -367,10 +367,12 @@ void main() {
       // and the raw reads kept beside these, held more registers than the GPU had).
       float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Kc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;   // (Kc: the buildings' own height, which colours them)
 // (a class's roofs level: their height over the ground here is their top over the ground at their
-// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is; the
+// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is (no
+// higher than the cell's highest ground within its reach, where its runs start: a coarse read can
+// mix offsets from further away); the
 // gradient up a wall, as fill-extrusion's, by the height over that base, its top the building's own
 // height, which also picks its colour: ?fdbg=35 both by the height over the ground here instead)
-#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = (textureLod(u_off, vec3(uv, float(L_[c])), lod).rg * 255.0 - 128.0) * ${EXTENT / 512}.0; float dg_ = ground(pt + (u_dbg == 33 ? vec2(0.0) : od_)) - gHere; dgDbg = max(dgDbg, abs(dg_)); odDbg = max(odDbg, length(od_)); float Hs_ = u_dbg == 32 ? H0_ : max(H0_ + dg_, 0.5); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
+#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = textureLod(u_off, vec3(uv, float(L_[c])), lod).rg / max(sm.r, 1e-5) * ${EXTENT / 512}.0; float dg_ = min(ground(pt + (u_dbg == 33 ? vec2(0.0) : od_)), tg.g) - gHere; dgDbg = max(dgDbg, abs(dg_)); odDbg = max(odDbg, length(od_)); float Hs_ = u_dbg == 32 ? H0_ : max(H0_ + dg_, 0.5); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -932,17 +934,14 @@ export class FieldLayer implements CustomLayerInterface {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.bindTexture(gl.TEXTURE_2D, null);
     t.cmask = cm;
-    // The offsets (RG8, a layer a class held; filtered as the class textures are, so a roof's ground
-    // changes smoothly between neighbouring buildings' texels, as their coverage does: read nearest,
-    // `?foffn=1`, the roofs speckled; their mipmaps the means, offsets from the coarser texels'
-    // centres).
+    // The offsets, premultiplied by the share (RG16F, a layer a class held; bldfield.offsets.ts):
+    // filtered and mipmapped as the class textures are, the march divides them by the share read
+    // there, so a read is its texels' share-weighted mean offset (`?foffn=1` reads them nearest).
     {
       const nl = Math.max(1, m.offsets.length / (512 * 512 * 2));
       const ot = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, ot);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RG8, 512, 512, nl, 0, gl.RG, gl.UNSIGNED_BYTE, m.offsets.length ? m.offsets : new Uint8Array(512 * 512 * 2).fill(128));
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RG16F, 512, 512, nl, 0, gl.RG, gl.FLOAT, m.offsets.length ? m.offsets : new Float32Array(512 * 512 * 2));
       gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, this.offNearest ? gl.NEAREST_MIPMAP_NEAREST : gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, this.offNearest ? gl.NEAREST : gl.LINEAR);
@@ -950,7 +949,7 @@ export class FieldLayer implements CustomLayerInterface {
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
       t.off = ot;
-      gpu += (512 * 512 * 2 * nl * 4) / 3;
+      gpu += (512 * 512 * 4 * nl * 4) / 3;
     }
     t.tex = tex;
     t.mask = m.mask;

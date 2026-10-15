@@ -1075,7 +1075,10 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
   zooms 3–8 from lo packs), encoding `field5-webp` (§4.8.1's 8-bit coding, lossless WebP, a class
   a block of rows; then a block a class of the offsets from each texel to its buildings' centroid,
   so the field's roofs are level, at their own building's ground as the meshes' are: the owner's
-  pick, 15 Oct; the march takes a roof's ground at texel + offset, so its runs in a cell start
+  pick, 15 Oct; the march takes a roof's ground at texel + offset (the offsets premultiplied by the share on
+  the GPU, RG16F, and divided by the share read there: a filtered or mipmapped read is the
+  share-weighted mean, not diluted by empty texels; `web/src/bldfield.offsets.ts`,
+  `tools/bldcheck/offmip.mjs`), so its runs in a cell start
   as much higher as the cell's highest ground within its reach (the cells its texels' offsets, and
   their neighbours', can take a roof to) is over its lowest, and colours and
   shades a wall by its building's own height, as fill-extrusion does); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker

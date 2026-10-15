@@ -5,7 +5,10 @@
 // offset to its buildings' centroid + 128), and, on a level-8 tile, its heritage list after it.
 // Decoded here to linear values (before the GPU's mipmaps: the coding's square root and log would
 // bias them), with what the march reads beside them: each 1/32 and 1/128 of the tile's tallest mean
-// top (with the texel around), and the class mask pyramid.
+// top (with the texel around), the class mask pyramid, and the offsets premultiplied by the share
+// with each cell's reach (bldfield.offsets.ts).
+
+import { premultiplied, reachOf } from './bldfield.offsets';
 
 export type FieldIn = { type: 'load'; key: string; url: string } | { type: 'cancel'; key: string };
 
@@ -27,9 +30,11 @@ export type FieldOut =
       cmask: Uint8Array;
       bytes: number;
       heritage: Uint8Array | null;
-      /** The offsets to the buildings' centroids: RG (+ 128, level-0 texels), a layer a class held. */
-      offsets: Uint8Array;
-      /** Each 32 × 32 cell's reach (cells): how far its roofs' centroids can be. */
+      /** Share × the offset to the buildings' centroids: RG (level-0 texels), a layer a class held
+       * (bldfield.offsets.ts). */
+      offsets: Float32Array;
+      /** Each 16 × 16-texel cell's reach (cells, a 32 × 32 grid): how far a read in it can put a
+       * roof's centroid. */
       reach: Uint8Array;
     };
 
@@ -76,21 +81,8 @@ async function load(key: string, url: string): Promise<FieldOut> {
         offsets[(l * N + i) * 2 + 1] = px[base + i * 4 + 1];
       }
     }
-    // Each 16 × 16 cell's reach: how many cells away its roofs' centroids can be (the largest
-    // offset of its texels and its neighbours' — filtered reads mix them — rounded up, + 1 cell).
-    const own = new Uint8Array(32 * 32);
-    for (let l = 0; l < n; l++)
-      for (let i = 0; i < N; i++) {
-        const d = Math.max(Math.abs(offsets[(l * N + i) * 2] - 128), Math.abs(offsets[(l * N + i) * 2 + 1] - 128));
-        const k = ((i / T / 16) | 0) * 32 + (((i % T) / 16) | 0);
-        if (d > own[k]) own[k] = d;
-      }
-    const reach = new Uint8Array(32 * 32);
-    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
-      let d = 0;
-      for (let yy = Math.max(0, y - 1); yy <= Math.min(31, y + 1); yy++) for (let xx = Math.max(0, x - 1); xx <= Math.min(31, x + 1); xx++) d = Math.max(d, own[yy * 32 + xx]);
-      reach[y * 32 + x] = d ? Math.ceil(d / 16) + 1 : 0;
-    }
+    const reach = reachOf(offsets, n, T);
+    const shares: Float32Array[] = [];
     const classes: (Float32Array | null)[] = [];
     const hmax = new Float32Array(N);
     const m = new Uint8Array(N);
@@ -102,6 +94,8 @@ async function load(key: string, url: string): Promise<FieldOut> {
         continue;
       }
       const o = new Float32Array(N * 3);
+      const sh = new Float32Array(N);
+      shares.push(sh);
       const base = row * N * 4;
       for (let i = 0; i < N; i++) {
         const R = px[base + i * 4], G = px[base + i * 4 + 1], B = px[base + i * 4 + 2];
@@ -114,6 +108,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
         o[i * 3] = toMantissa(f * h, 6);
         o[i * 3 + 1] = toMantissa(w, 6);
         o[i * 3 + 2] = toMantissa(f, 5);
+        sh[i] = o[i * 3 + 2];
         m[i] |= 1 << c;
         if (f > 0) {
           if (h > hmax[i]) hmax[i] = h;
@@ -160,7 +155,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets, reach };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets: premultiplied(offsets, shares, T), reach };
   } finally {
     inflight.delete(key);
   }
