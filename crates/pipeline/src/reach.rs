@@ -50,32 +50,39 @@ impl LongWay {
     /// an outline between two nodes counts as it will there.
     pub fn touches(&self, cov: &Coverage) -> bool {
         let Some(&first) = self.verts.first() else { return false };
-        if cov.contains(first) {
-            return true;
+        // (Each shape's answer kept for these points: crate::coverage's `Memo`.)
+        let mut d = blake3::Hasher::new();
+        d.update(&[self.ferry as u8]);
+        d.update(bytemuck::cast_slice(&self.verts));
+        let key: [u8; 32] = d.finalize().into();
+        let mut b = [first[0], first[1], first[0], first[1]];
+        for p in &self.verts {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
         }
+        cov.shapes.iter().any(|s| s.touches_way(&key, b, || self.points()))
+    }
+
+    /// The points `touches` tests, in the box of its nodes: its nodes, and between them every
+    /// 8 m in North America and Japan, 15 m elsewhere (by its first node); a ferry's nodes alone.
+    fn points(&self) -> impl Iterator<Item = [i32; 2]> + '_ {
+        let first = self.verts.first().copied().unwrap_or_default();
         let (lon, lat) = (first[0] as f64 * roadcore::E7, first[1] as f64 * roadcore::E7);
         let japan = (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat);
         let spacing = if lon < -40.0 || japan { UNIT_SPACING_M } else { UNIT_SPACING_M.max(COARSE_SPACING_M) };
-        for s in self.verts.windows(2) {
+        let ferry = self.ferry;
+        self.verts.first().copied().into_iter().chain(self.verts.windows(2).flat_map(move |s| {
             let (a, c) = (s[0], s[1]);
-            if !self.ferry {
+            let k = if ferry {
+                1
+            } else {
                 let d = roadcore::dist_m(a[0] as f64 * roadcore::E7, a[1] as f64 * roadcore::E7, c[0] as f64 * roadcore::E7, c[1] as f64 * roadcore::E7);
-                if d > spacing {
-                    let k = (d / spacing).ceil() as i64;
-                    for j in 1..k {
-                        let t = j as f64 / k as f64;
-                        let p = [(a[0] as f64 + (c[0] - a[0]) as f64 * t).round() as i32, (a[1] as f64 + (c[1] - a[1]) as f64 * t).round() as i32];
-                        if cov.contains(p) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            if cov.contains(c) {
-                return true;
-            }
-        }
-        false
+                if d > spacing { (d / spacing).ceil() as i64 } else { 1 }
+            };
+            (1..k).map(move |j| {
+                let t = j as f64 / k as f64;
+                [(a[0] as f64 + (c[0] - a[0]) as f64 * t).round() as i32, (a[1] as f64 + (c[1] - a[1]) as f64 * t).round() as i32]
+            }).chain(std::iter::once(c))
+        }))
     }
 }
 

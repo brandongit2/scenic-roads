@@ -4534,4 +4534,52 @@ pub(crate) mod tests {
         assert!(spoken_work("d", &m, &done).is_some());
         assert!(spoken_work("e", &m, &done).is_none());
     }
+
+    /// The plan's phases timed on a real root, read only (`SCENIC_BENCH_ROOT`: the NAS's project
+    /// folder; `SCENIC_BENCH_IDX`: a copy of an agent's `pack-idx`, which the terrain indexes are
+    /// read from and kept in). Twice over one coverage, as the agent's loops reuse theirs.
+    #[test]
+    #[ignore]
+    fn bench_plan_on_a_real_root() {
+        let Ok(root) = std::env::var("SCENIC_BENCH_ROOT") else { return };
+        let root = std::path::PathBuf::from(root);
+        let t = std::time::Instant::now();
+        let lap = |what: &str, t: &mut std::time::Instant| {
+            eprintln!("bench: {what}: {:.2} s", t.elapsed().as_secs_f64());
+            *t = std::time::Instant::now();
+        };
+        let mut t = t;
+        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+        let date = crate::osmpass::latest_pass_by(&root, false).unwrap();
+        let keys = Keys::load(&root);
+        let (recipes, _) = crate::agent::recipes::load(&root.join("inputs/regions"));
+        lap("records and recipes read", &mut t);
+        let o = m.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c)).unwrap());
+        let cov = Coverage::from_recipes(&recipes, o.as_ref(), &root.join("inputs/outlines")).unwrap();
+        let each = cov.by_region();
+        lap(&format!("coverage made ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
+        let reach = crate::reach::Reaches::load(&root, &m, &date).ok().flatten();
+        let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
+        tiles.load(&root, &m);
+        let inputs = crate::agent::input_digests(&root);
+        lap("reaches, terrain indexes, input digests", &mut t);
+        for round in 1..=2 {
+            let times = crate::agent::rekey::FileTimes::new(&root);
+            let mut k = keys.clone();
+            crate::agent::rekey::as_read(&mut k, &cov, &date, &m, reach.as_ref(), &inputs, &tiles, &times);
+            lap(&format!("[{round}] rekey::as_read"), &mut t);
+            let dg = |v: String| store::naming::hash16(v.as_bytes());
+            let n = dg(format!("{:?}", pois_keys(&cov, &date, &m)));
+            lap(&format!("[{round}] pois_keys ({n})"), &mut t);
+            let n = dg(format!("{:?}", super::unit_keys(&cov, &date, &m, reach.as_ref(), &tiles)));
+            lap(&format!("[{round}] unit_keys ({n})"), &mut t);
+            let n = dg(format!("{:?}", region_states(&cov, &each, &date, &m, &k, reach.as_ref(), &tiles)));
+            lap(&format!("[{round}] region_states ({n})"), &mut t);
+            let n = dg(format!("{:?}", super::checklist(&cov, &date, &m, &k, &inputs, false, reach.as_ref(), &[], &tiles)));
+            lap(&format!("[{round}] checklist ({n})"), &mut t);
+            let on_map = BTreeMap::new();
+            let p = super::plan(&cov, &date, &m, &k, &inputs, reach.as_ref(), &tiles, Rounds { each: &each, on_map: &on_map, since_last: Some(0), current: None, held: false });
+            lap(&format!("[{round}] plan ({}; keys {})", dg(format!("{p:?}")), dg(format!("{k:?}"))), &mut t);
+        }
+    }
 }

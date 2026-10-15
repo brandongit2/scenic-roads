@@ -35,7 +35,24 @@ pub struct Shape {
     /// isn't the pass's), as `Outlines::country_code` has it: what the 3D buildings' fill fits by.
     pub country: String,
     grid: Grid,
+    /// What's been worked out of it (`Memo`), shared by its clones (a region's coverage holds the
+    /// whole coverage's shapes): its geometry is fixed once made.
+    memo: std::sync::Arc<std::sync::Mutex<Memo>>,
 }
+
+/// A shape's answers kept, each a function of its geometry (fixed once made) and the question: its
+/// fingerprints by box (`Shape::fingerprint`), and whether a way's points (`Shape::touches_way`, by
+/// the points' digest) meet it. The plan asks the same of every unit on every loop (the coverage
+/// kept between loops while its recipes and outlines don't change): worked out once, a plan took
+/// seconds rather than minutes (2026-10-15). Emptied past `MEMO_MAX` answers.
+#[derive(Default)]
+struct Memo {
+    fingerprints: std::collections::HashMap<[i32; 4], Option<String>>,
+    ways: std::collections::HashMap<[u8; 32], bool>,
+}
+
+/// The answers a shape keeps at most (`Memo`), of each kind; past that, it starts again.
+const MEMO_MAX: usize = 1 << 20;
 
 #[derive(Clone)]
 struct Grid {
@@ -66,7 +83,7 @@ impl Shape {
         let by = (buffer_m / M_PER_E7).ceil() as i32;
         let bbox = [bb[0].saturating_sub(bx), bb[1].saturating_sub(by), bb[2].saturating_add(bx), bb[3].saturating_add(by)];
         let grid = Grid::build(&rings, bbox, bx.max(by) as f64);
-        Shape { source, rings, buffer_m, bbox, country: String::new(), grid }
+        Shape { source, rings, buffer_m, bbox, country: String::new(), grid, memo: Default::default() }
     }
 
     /// The grid cell of `p`, which must be inside the box.
@@ -101,6 +118,25 @@ impl Shape {
     /// Whether `p` (E7) is inside, or within the buffer of the boundary.
     pub fn contains(&self, p: [i32; 2]) -> bool {
         self.inside(p) || self.near_edge(p)
+    }
+
+    /// Whether any of a way's points (`points`, lying in the box `b`, w, s, e, n E7) is in the shape
+    /// (`contains`), the points known by their digest `key` (the same points, the same digest): kept
+    /// (`Memo`).
+    pub fn touches_way<I: Iterator<Item = [i32; 2]>>(&self, key: &[u8; 32], b: [i32; 4], points: impl FnOnce() -> I) -> bool {
+        if b[0] > self.bbox[2] || b[2] < self.bbox[0] || b[1] > self.bbox[3] || b[3] < self.bbox[1] {
+            return false;
+        }
+        if let Some(&t) = self.memo.lock().unwrap().ways.get(key) {
+            return t;
+        }
+        let t = points().any(|p| self.contains(p));
+        let mut m = self.memo.lock().unwrap();
+        if m.ways.len() >= MEMO_MAX {
+            m.ways.clear();
+        }
+        m.ways.insert(*key, t);
+        t
     }
 
     /// Whether `p` (E7) is within the buffer of the boundary.
@@ -187,6 +223,20 @@ impl Shape {
     /// point's, flipped by the edges crossing the line between them (inside the box), and its buffer
     /// reads the edges within the buffer of it. None when the shape has nothing in the box.
     fn fingerprint(&self, r: [i32; 4]) -> Option<String> {
+        if let Some(f) = self.memo.lock().unwrap().fingerprints.get(&r) {
+            return f.clone();
+        }
+        let f = self.fingerprint_made(r);
+        let mut m = self.memo.lock().unwrap();
+        if m.fingerprints.len() >= MEMO_MAX {
+            m.fingerprints.clear();
+        }
+        m.fingerprints.insert(r, f.clone());
+        f
+    }
+
+    /// `fingerprint`, worked out.
+    fn fingerprint_made(&self, r: [i32; 4]) -> Option<String> {
         let rg = self.grown(r);
         if rg[0] > self.bbox[2] as i64 || rg[2] < self.bbox[0] as i64 || rg[1] > self.bbox[3] as i64 || rg[3] < self.bbox[1] as i64 {
             return None;
@@ -968,6 +1018,32 @@ mod tests {
             assert_eq!(c.fingerprint(b), alone.fingerprint(b));
             assert_eq!(c.contains([200_000_000, 200_000_000]), alone.contains([200_000_000, 200_000_000]));
         }
+    }
+
+    #[test]
+    fn a_shapes_kept_answers_are_its_answers() {
+        // (Its fingerprints and ways' answers kept, `Memo`: the same as one made afresh gives,
+        // shared by its clones, and each question its own.)
+        let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
+        let ring = || vec![vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)]];
+        let kept = Shape::new("r: poly:x".into(), ring(), 1000.0);
+        let clone = kept.clone();
+        let boxes = [b(0.2, 49.9, 0.4, 50.1), b(0.4, 50.4, 0.6, 50.6), b(2.0, 50.4, 2.2, 50.6), b(0.9, 50.9, 1.1, 51.1)];
+        for bx in boxes {
+            let fresh = Shape::new("r: poly:x".into(), ring(), 1000.0).fingerprint_made(bx);
+            assert_eq!(kept.fingerprint(bx), fresh);
+            assert_eq!(clone.fingerprint(bx), fresh, "a clone's, kept by the first");
+            assert_eq!(kept.fingerprint(bx), fresh, "asked again");
+        }
+        assert_eq!(kept.memo.lock().unwrap().fingerprints.len(), 4);
+        // A way's points: in, out (its box apart: not kept), and one asked again by its digest.
+        let (inside, outside) = ([7u8; 32], [8u8; 32]);
+        let never = || -> std::vec::IntoIter<[i32; 2]> { panic!("not asked: kept, or its box misses the shape's") };
+        assert!(kept.touches_way(&inside, b(0.5, 50.5, 0.6, 50.6), || vec![e7(0.5, 50.5), e7(0.6, 50.6)].into_iter()));
+        assert!(!kept.touches_way(&outside, b(-0.5, 49.5, 0.5, 50.5), || vec![e7(-0.5, 50.5), e7(0.5, 49.5)].into_iter()));
+        assert!(!kept.touches_way(&outside, b(3.0, 50.5, 3.1, 50.6), never));
+        assert!(clone.touches_way(&inside, b(0.5, 50.5, 0.6, 50.6), never));
+        assert_eq!(kept.memo.lock().unwrap().ways.len(), 2);
     }
 
     #[test]
