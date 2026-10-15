@@ -33,9 +33,10 @@
 // (bldfield.worker.ts), a few at a time, those the view has left cancelled. A tile the server
 // doesn't have (204) holds no building, nor do its children: they aren't asked for. A tile that
 // failed is asked again after a while (2, 4 … 60 s). While one loads, its nearest loaded ancestor
-// stands in, drawn only over the missing tile's area. Its textures are kept under a budget (the
-// least recently drawn freed), freed when the layer is removed, and made again after a lost
-// context. With the fork's `sceneDepth` (web/maplibre/FORK.md), the march stops at the frame's
+// stands in, drawn only over the missing tile's area. Tiles off screen are kept while the tiles' GPU
+// memory is under the off-screen cache's target (GPU_CACHE_TARGET_MB: a soft target, the least
+// recently wanted freed first; the tiles on screen are always kept); all are freed when the layer is
+// removed, and made again after a lost context. With the fork's `sceneDepth` (web/maplibre/FORK.md), the march stops at the frame's
 // depth so far (a mesh or the terrain inside a column stops the ray) on the flat map; on the globe
 // the faces are tested against it and the march stops at its own ground.
 
@@ -56,8 +57,11 @@ const LEVEL_MAX = 14;
 const LEVEL_MIN = 4;
 /** Fetches in flight at most. */
 const FETCHES = 6;
-/** The tiles' GPU memory kept at most (MB), the least recently drawn freed beyond it. */
-const GPU_BUDGET_MB = 384;
+/** The off-screen cache's target (MB): the tiles not wanted in the frame are freed, least recently
+ * wanted first, while the tiles' GPU memory is over it (a soft target: the tiles on screen are kept
+ * whatever they take). 1,024 MB on a desktop, 512 on a touch device (the iPad's Safari gives a tab
+ * ~4 GB, shared with the rest of the map), told apart as the app tells them (`pointer: coarse`). */
+const GPU_CACHE_TARGET_MB = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 512 : 1024;
 /** MapLibre's transform (its camera's, in v6). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 /** A number from the page's URL, or the default where it's absent or not finite. */
@@ -97,7 +101,8 @@ void main() {
 
 const FS = `#version 300 es
 precision highp float;
-uniform highp sampler2D u_c0;   // each height class present: f, w, v
+uniform highp sampler2D u_c0;   // each height class present: v, w, f (R11F_G11F_B10F: v, the most
+                                  // sensitive, in a channel of 6 bits' mantissa)
 uniform highp sampler2D u_c1;
 uniform highp sampler2D u_c2;
 uniform highp sampler2D u_c3;
@@ -143,11 +148,11 @@ uniform vec2 u_vp;        // the framebuffer's size (px)
 uniform vec2 u_depthRange;
 // A class's share at a point (its texture at the read's level).
 float classF(int c, vec2 uv, float lod) {
-  if (c == 0) return textureLod(u_c0, uv, lod).r;
-  if (c == 1) return textureLod(u_c1, uv, lod).r;
-  if (c == 2) return textureLod(u_c2, uv, lod).r;
-  if (c == 3) return textureLod(u_c3, uv, lod).r;
-  return textureLod(u_c4, uv, lod).r;
+  if (c == 0) return textureLod(u_c0, uv, lod).b;
+  if (c == 1) return textureLod(u_c1, uv, lod).b;
+  if (c == 2) return textureLod(u_c2, uv, lod).b;
+  if (c == 3) return textureLod(u_c3, uv, lod).b;
+  return textureLod(u_c4, uv, lod).b;
 }
 // (stored values to light: the sRGB curve's cubic fit, within ~0.001 above its foot; no powers in the
 // march's loop; ?fdbg=31 the exact curve both ways)
@@ -349,7 +354,7 @@ void main() {
       // the height the ray meets it (the colours made from it where they're used: arrays of vectors,
       // and the raw reads kept beside these, held more registers than the GPU had).
       float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;
-#define SETC(c, smp) { vec4 sm = smp; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float Hs_ = max(sm.b / sm.r, 0.5) * u_hk; Fc[c] = f_; Hc[c] = Hs_; Rc[c] = max(sm.g, 0.0) * u_hk / Hs_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)); } }
+#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float Hs_ = max(sm.b / sm.r, 0.5) * u_hk; Fc[c] = f_; Hc[c] = Hs_; Rc[c] = max(sm.g, 0.0) * u_hk / Hs_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)); } }
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -858,14 +863,16 @@ export class FieldLayer implements CustomLayerInterface {
       const tx = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, tx);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 512, 512, 0, gl.RGBA, gl.FLOAT, c);
+      // (R11F_G11F_B10F: 4 bytes a texel, half RGBA16F's, filterable; v, w and f to 1.6, 1.6 and 3 %
+      // of their value. v in the 6-bit channel: in B's 5 bits Tokyo came out 0.4 L* darker.)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R11F_G11F_B10F, 512, 512, 0, gl.RGB, gl.FLOAT, c);
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       tex.push(tx);
-      gpu += (512 * 512 * 8 * 4) / 3;
+      gpu += (512 * 512 * 4 * 4) / 3;
     }
     const r32 = (data: Float32Array, n: number) => {
       const x = gl.createTexture()!;
@@ -904,15 +911,15 @@ export class FieldLayer implements CustomLayerInterface {
     t.state = 'ready';
   }
 
-  /** The least recently wanted tiles' GPU memory freed while over the budget (those wanted in this
+  /** The least recently wanted tiles' GPU memory freed while over the off-screen cache's target (those wanted in this
    * frame kept). */
   private trim() {
     let total = 0;
     for (const t of this.tiles.values()) total += t.gpu;
-    if (total <= GPU_BUDGET_MB * 1e6) return;
+    if (total <= GPU_CACHE_TARGET_MB * 1e6) return;
     const old = [...this.tiles.values()].filter((t) => t.state === 'ready' && t.used < this.frame).sort((a, b) => a.used - b.used);
     for (const t of old) {
-      if (total <= GPU_BUDGET_MB * 1e6) break;
+      if (total <= GPU_CACHE_TARGET_MB * 1e6) break;
       total -= t.gpu;
       this.freeGl(t);
       this.tiles.delete(t.key);

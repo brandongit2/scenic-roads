@@ -1640,8 +1640,14 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):
-- GPU memory: the tiles' textures and buffers kept under a budget (384 MB; least recently wanted
-  freed), freed in `onRemove`, made again after a lost context (the tiles asked for again); one
+- GPU memory: the class textures R11F_G11F_B10F (v, w, f: 4 bytes a texel, half RGBA16F's; with
+  mipmaps 1.4 MB a class, up to 5 a tile, and 0.4 MB of masks and tops), so a view's tiles take
+  210–580 MB (Tokyo at 13.5 and 60°: 260 MB, was 503; at 13.0 and 70°, 91 tiles, 575 MB, was
+  1,044); the dense straight-down views 0.2 L* darker than with RGBA16F, elsewhere the same. The
+  tiles off screen are kept while all the tiles' GPU memory is under the off-screen cache's target,
+  a soft target (`GPU_CACHE_TARGET_MB`: 1,024 MB on a desktop, 512 on a touch device, told apart by
+  `pointer: coarse`), the least recently wanted freed first; the tiles on screen are kept whatever
+  they take. Freed in `onRemove`, made again after a lost context (the tiles asked for again); one
   `idle` listener a layer added.
 - Decoding in a worker (`bldfield.worker.ts`: WebP to linear values, and the march's tops and class
   masks), at most six fetches in flight, the coarsest first, those the view has left cancelled.

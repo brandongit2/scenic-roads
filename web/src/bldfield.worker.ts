@@ -15,7 +15,7 @@ export type FieldOut =
       type: 'done';
       key: string;
       empty: false;
-      /** Each class present: f, w, v, 0 (Float32, 512 × 512 × 4); null where absent. */
+      /** Each class present: v, w, f (Float32, 512 × 512 × 3); null where absent. */
       classes: (Float32Array | null)[];
       mask: number;
       /** The tallest mean top (m). */
@@ -72,7 +72,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
         classes.push(null);
         continue;
       }
-      const o = new Float32Array(N * 4);
+      const o = new Float32Array(N * 3);
       const base = row * N * 4;
       for (let i = 0; i < N; i++) {
         const R = px[base + i * 4], G = px[base + i * 4 + 1], B = px[base + i * 4 + 2];
@@ -80,9 +80,11 @@ async function load(key: string, url: string): Promise<FieldOut> {
         const f = (R / 255) ** 2;
         const w = 2 ** ((G / 255) * W_LOG) - 1;
         const h = LO[c] + (B / 255) * (HI[c] - LO[c]);
-        o[i * 4] = f;
-        o[i * 4 + 1] = w;
-        o[i * 4 + 2] = f * h;
+        // (v, w, f: R11F_G11F_B10F's channels, 6, 6 and 5 bits of mantissa, rounded here to the
+        // nearest, not left to the driver.)
+        o[i * 3] = toMantissa(f * h, 6);
+        o[i * 3 + 1] = toMantissa(w, 6);
+        o[i * 3 + 2] = toMantissa(f, 5);
         m[i] |= 1 << c;
         if (f > 0) {
           if (h > hmax[i]) hmax[i] = h;
@@ -133,6 +135,14 @@ async function load(key: string, url: string): Promise<FieldOut> {
   } finally {
     inflight.delete(key);
   }
+}
+
+/** `x` (≥ 0) rounded to the nearest number with `bits` bits of mantissa after the leading one. */
+function toMantissa(x: number, bits: number): number {
+  if (!(x > 0)) return 0;
+  const e = Math.floor(Math.log2(x));
+  const q = 2 ** (e - bits);
+  return Math.round(x / q) * q;
 }
 
 function popcount(m: number) {
