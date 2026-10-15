@@ -98,8 +98,9 @@
 //! next term's create-new decides between them (a lead gone or asleep is taken over only at the
 //! owner's ask: it may come back). A current term its reads find unreadable (its create landed and
 //! its bytes never did) for `UNREAD_TAKE_S` awake is taken past by a member that can lead, the same
-//! turns deciding, as the owner's force would (`term::forced`; pool.md §6.5 says why that can't
-//! make two leads).
+//! turns deciding, as the owner's force would (`term::forced`): only reads that answer short count
+//! (one that fails starts the time again), never while a member in touch says it leads the term,
+//! and the term read again just before (pool.md §6.5).
 
 use super::beat::Beat;
 use super::handover::{self, Do, Handover, Seen};
@@ -643,7 +644,7 @@ impl Driver {
             self.take_over(io, &mut out, force, downgrade);
         }
         self.auto_take_over(io, &mut out, &heard.members, heard.able);
-        self.take_past_unread(io, &mut out, &heard.members, heard.able);
+        self.take_past_unread(io, &mut out, &heard.members, heard.able, learnt.is_ok());
         // Telling the lead it knows of its entries.
         if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             let keys = self.saved.mine.to_tell(self.cur.term);
@@ -727,6 +728,12 @@ impl Driver {
     /// Finishes the term its create made and couldn't fill; passed on, tells its target.
     fn finish(&mut self, io: &dyn Io, out: &mut Out) {
         let Some(t) = self.saved.unfinished.clone() else { return };
+        // (A later term made past it meanwhile: it's no one's to lead, and isn't finished.)
+        if term::next(io, t.term).unwrap_or(false) {
+            self.saved.unfinished = None;
+            out.events.push(Event::Waits { what: "finish the term it made", why: format!("term {} was made past it: left unfinished", t.term + 1) });
+            return;
+        }
         match term::finish(io, &t) {
             Ok(()) => {
                 self.saved.unfinished = None;
@@ -1288,8 +1295,22 @@ impl Driver {
     /// read), if it can lead now, after the members in touch that can and come first had their
     /// turn, `AUTO_RANK_S` each (§6.5: why it's safe). Not by a Mac that knows it made the term
     /// (`Saved::unfinished`): it finishes it.
-    fn take_past_unread(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool) {
-        if self.cur.term == 0 || self.cur.lead.is_some() || self.lead.is_some() || self.passing.is_some() || self.saved.unfinished.is_some() {
+    fn take_past_unread(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool, learnt: bool) {
+        if !learnt || self.cur.term == 0 || self.cur.lead.is_some() || self.lead.is_some() || self.passing.is_some() || self.saved.unfinished.is_some() {
+            self.unread = None;
+            return;
+        }
+        // (Only a read that answers, of a file that's there, its bytes too few to parse, counts: a
+        // read that fails says nothing of the term, and starts the time again.)
+        if !matches!(term::short(io, self.cur.term), Ok(true)) {
+            self.unread = None;
+            return;
+        }
+        let now = io.now();
+        // (A member in touch says it leads the term: it reads it whole, whatever this Mac's reads
+        // find. Never past it; the time starts again.)
+        let led = members.iter().filter(|m| **m != self.me.id).any(|m| matches!(Beat::read(io, m), Ok(Some(b)) if !b.out_of_touch(now) && b.leads == Some(self.cur.term)));
+        if led {
             self.unread = None;
             return;
         }
@@ -1309,7 +1330,6 @@ impl Driver {
         if !term::app_at_least(&self.me.app, &known.app) {
             return;
         }
-        let now = io.now();
         let mut can = vec![self.me.clone()];
         for m in members.iter().filter(|m| **m != self.me.id) {
             if let Ok(Some(b)) = Beat::read(io, m) {
@@ -1323,6 +1343,11 @@ impl Driver {
         if awake.saturating_sub(since) < UNREAD_TAKE_S + rank * AUTO_RANK_S {
             return;
         }
+        // (Read again just before: a term that reads whole now, or a read that fails, and it waits.)
+        if !matches!(term::short(io, self.cur.term), Ok(true)) {
+            self.unread = None;
+            return;
+        }
         let how = format!("taken over by {}: term {} unreadable for {} min", self.me.host, self.cur.term, awake.saturating_sub(since) / 60);
         match term::forced(io, &self.cur, &self.me, &how, now, false).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
@@ -1332,6 +1357,12 @@ impl Driver {
             }
             Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
         }
+    }
+
+    /// Since when (awake clock) its reads have found the current term there but too short to read
+    /// whole (`take_past_unread`): None when it reads whole, or reads fail.
+    pub fn unread_since(&self) -> Option<u64> {
+        self.unread.filter(|(e, _)| *e == self.cur.term).map(|(_, s)| s)
     }
 
     /// What a takeover from this Mac needs now, and why (the controls: "Take Over the Build…",
@@ -1488,11 +1519,13 @@ mod tests {
         down: Cell<bool>,
         fail: std::cell::RefCell<Option<String>>,
         wfail: std::cell::RefCell<Option<String>>,
+        /// Its reads of paths holding this answer, but empty (a stale or cut-short read).
+        short: std::cell::RefCell<Option<String>>,
     }
 
     impl<'a> Mac<'a> {
         fn new(mem: &'a Mem) -> Mac<'a> {
-            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000), down: Cell::new(false), fail: Default::default(), wfail: Default::default() }
+            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000), down: Cell::new(false), fail: Default::default(), wfail: Default::default(), short: Default::default() }
         }
 
         /// Time passes, awake.
@@ -1515,6 +1548,9 @@ mod tests {
         fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
             if self.down.get() && self.fail.borrow().as_deref().is_none_or(|f| path.contains(f)) {
                 anyhow::bail!("read {path}: the share doesn't answer");
+            }
+            if self.short.borrow().as_deref().is_some_and(|f| path.contains(f)) {
+                return Ok(self.mem.read(path)?.map(|_| Vec::new()));
             }
             self.mem.read(path)
         }
@@ -2755,6 +2791,77 @@ mod tests {
             }
         }
         assert!(!mem.exists(&term::path(4)).unwrap());
+    }
+
+    #[test]
+    fn a_live_lead_whose_term_reads_short_to_one_member_isnt_taken_past() {
+        // (Review of #195, H1: one member's reads of the term short while its lead leads it.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        *ib.short.borrow_mut() = Some("terms/1.json".into());
+        for _ in 0..12 {
+            for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
+                io.pass(300);
+                step(d, io, able());
+            }
+        }
+        assert!(b.current().lead.is_none(), "B reads it short throughout");
+        assert!(!mem.exists(&term::path(2)).unwrap(), "A's heartbeat says it leads term 1: never taken past");
+        assert_eq!(a.leads(), Some(1));
+    }
+
+    #[test]
+    fn a_term_whose_reads_fail_isnt_taken_past() {
+        // (Review of #195, H2: reads that fail say nothing of the term, and start the time again.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ib = Mac::new(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        mem.create_new(&term::path(2), b"").unwrap();
+        ib.down.set(true);
+        *ib.fail.borrow_mut() = Some("terms/2.json".into());
+        for _ in 0..12 {
+            ib.pass(300);
+            assert_eq!(step(&mut b, &ib, able()).leads, None);
+        }
+        assert!(!mem.exists(&term::path(3)).unwrap());
+        // Short reads again from now: half an hour from now, not at once.
+        ib.down.set(false);
+        ib.pass(300);
+        assert_eq!(step(&mut b, &ib, able()).leads, None, "the time starts again");
+        assert!(b.unread_since().is_some());
+        for _ in 0..6 {
+            ib.pass(300);
+            step(&mut b, &ib, able());
+        }
+        assert_eq!(b.leads(), Some(3));
+    }
+
+    #[test]
+    fn a_term_made_past_its_unfinished_one_isnt_finished_late() {
+        // (Review of #195, M4.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ib = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        step(&mut a, &Mac::new(&mem), able());
+        mem.create_new(&term::path(2), b"").unwrap();
+        let t2 = Term { term: 2, member: B.into(), host: "MacBook-Air".into(), app: V1.into(), since: T0, how: "re-asserted after a gap".into(), from: 1, seq: None };
+        mem.create_new(&term::path(3), b"{}").unwrap();
+        assert!(term::finish(&mem, &t2).is_err(), "term 3 past it");
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved { member: B.into(), unfinished: Some(t2), term: 2, ..Default::default() });
+        let o = step(&mut b, &ib, able());
+        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "finish the term it made", why } if why.contains("left unfinished"))), "{:?}", o.events);
+        assert!(b.saved().unfinished.is_none());
+        assert_eq!(mem.read(&term::path(2)).unwrap(), Some(Vec::new()), "left as it was");
     }
 
     #[test]

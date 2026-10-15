@@ -91,6 +91,14 @@ pub fn read(nas: &dyn Nas, e: u64) -> Result<Option<Term>> {
     Ok(Some(t))
 }
 
+/// Whether term `e`'s file is there, read whole by the share, and too short to be a term (empty, or
+/// cut short): what a member counts toward taking past it (crate::pool::driver). False when it
+/// isn't there or reads whole; an error when the read fails (that says nothing of the term).
+pub fn short(nas: &dyn Nas, e: u64) -> Result<bool> {
+    let Some(b) = nas.read(&path(e))? else { return Ok(false) };
+    Ok(serde_json::from_slice::<Term>(&b).is_err())
+}
+
 /// Whether term `e + 1` exists: what a lead of term `e` checks every loop before acting, and a
 /// member to learn of a new lead (a stat, never a listing).
 pub fn next(nas: &dyn Nas, e: u64) -> Result<bool> {
@@ -162,6 +170,8 @@ pub fn finish(nas: &dyn Nas, t: &Term) -> Result<()> {
     if read(nas, t.term)?.is_some_and(|got| same(&got, t)) {
         return Ok(());
     }
+    // (Term E+1 made past it, it's left as it is: no Mac may lead it now.)
+    ensure!(!next(nas, t.term)?, "term {} was made past term {}: not finished", t.term + 1, t.term);
     nas.write_whole(&path(t.term), &serde_json::to_vec_pretty(t)?).with_context(|| format!("finish term {}", t.term))
 }
 

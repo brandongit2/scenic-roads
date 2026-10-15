@@ -1833,7 +1833,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let v = own?.pool?.lead else { return }
         let asked = v.asked.map { ["done", "failed", "refused"].contains($0.state) ? $0.since : 0 } ?? 0
         defer { seenLead = (v.term, asked, v.alert != nil) }
-        guard let was = seenLead else { return }
+        // (The alert told on the first look too: a menu bar started while it's on says it once.)
+        guard let was = seenLead else {
+            if let a = v.alert { post("The build has no lead", a) }
+            return
+        }
         if v.term > was.term, let l = v.lead {
             post("\(l.host) leads the build", "Term \(l.term): \(l.how)")
         }

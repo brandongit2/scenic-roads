@@ -205,6 +205,10 @@ pub struct View {
     /// icon and the build page show it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alert: Option<String>,
+    /// The term is there and reads short to this Mac (not just unreadable for a failing read):
+    /// what a member takes past by itself (§6.5).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub short: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handing: Option<Handing>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -518,7 +522,7 @@ fn view(run: &Run, auto: bool) -> View {
         Takeover { refused: t.refused, force: t.force, downgrade: t.downgrade }
     });
     let offer = offer(lead_beat.as_ref(), &members);
-    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, alert: None, handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
+    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, alert: None, short: side.driver().unread_since().is_some(), handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
 }
 
 /// The alert (`View::alert`): no lead for `ALERT_S` or more, since the lead was last heard from or
@@ -552,7 +556,7 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
         Some(Takeover { refused: Some(w), .. }) => format!("this Mac can't take it over ({w}): run `scenic lead take --force` on another Mac in the pool"),
         None => "run `scenic lead take --force` on a Mac in the pool".to_string(),
     };
-    let auto = if v.lead.is_none() { "; no Mac took it past by itself (none can lead now, or the app rule refuses)" } else { "" };
+    let auto = if v.lead.is_none() && v.short { "; no Mac took it past by itself (none can lead now, or the app rule refuses)" } else { "" };
     v.alert = Some(format!("No lead for {}: {why}{auto}. Nothing builds until a Mac leads: {what}.", span(now.saturating_sub(since))));
 }
 
@@ -743,7 +747,7 @@ mod tests {
         let mut kept = Kept::default();
         // Term 55 unreadable (the 12 Oct case): seen at 1000, an alert from an hour on, saying
         // to force.
-        let mut v = View { term: 55, no_lead: Some("term 55 can't be read whole".into()), takeover: Some(Takeover { force: Some("term 55 can't be read whole".into()), ..Default::default() }), ..Default::default() };
+        let mut v = View { term: 55, short: true, no_lead: Some("term 55 can't be read whole".into()), takeover: Some(Takeover { force: Some("term 55 can't be read whole".into()), ..Default::default() }), ..Default::default() };
         alert(&mut v, &mut kept, 1000);
         assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some((55, 1000))));
         alert(&mut v, &mut kept, 1000 + ALERT_S - 1);

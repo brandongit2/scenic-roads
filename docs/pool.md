@@ -372,25 +372,31 @@ then the lowest member id, try 30 s apart, and the next term's create-new decide
 term, it waits for the owner (an update, or `--downgrade`).
 
 **Taking past a term left empty, by itself** (crate::pool::driver: `UNREAD_TAKE_S`). A member that
-can lead now, whose reads have found the current term E unreadable (empty or short) for half an hour
-awake, makes term E+1 past it as the owner's force would (`term::forced`: the app rule against the
-newest term that can be read; never `--downgrade`), the members in touch that can taking turns as
-above, `AUTO_RANK_S` apart, and the create-new deciding. Its `how` says so ("taken over by
-MacBook-Air: term 55 unreadable for 30 min (forced past: term 55 unreadable)"). A Mac that knows it
-made E and couldn't fill it (`Saved::unfinished`) doesn't: it finishes E. Why this can't make two
-leads:
+can lead now, whose reads have found the current term E's file there, answered by the share, and too
+short to be a term (`term::short`: empty or cut short) at every step for half an hour awake, makes
+term E+1 past it as the owner's force would (`term::forced`: the app rule against the newest term
+that can be read; never `--downgrade`), the members in touch that can taking turns as above,
+`AUTO_RANK_S` apart, and the create-new deciding. Its `how` says so ("taken over by MacBook-Air:
+term 55 unreadable for 30 min (forced past: term 55 unreadable)"). The half hour starts again
+whenever a read of E (or the step's learning of the term) fails rather than answers short: a share
+that doesn't answer says nothing of the term. A Mac that knows it made E and couldn't fill it
+(`Saved::unfinished`) doesn't take it past: it finishes E, unless E+1 was made meanwhile (then it
+drops E unfinished: `term::finish` refuses). Why this can't take the lead from a lead of E, nor make
+two:
 
+- **A lead's heartbeat vetoes it:** any member in touch whose heartbeat says it leads E (`leads`)
+  reads E whole, whatever this Mac's reads find; the take waits, its half hour starting again.
+- **E is read again just before:** read whole then (or the read fails), and it waits.
 - **E+1 has one maker:** its create-new succeeds for one Mac (invariant 1), as every term's.
-- **No Mac leads E meanwhile, or ever after:** a Mac leads E only once E reads whole to it, and
-  every lead checks that its term's next doesn't exist before it acts (`term::next`), stepping down
-  when it does. So were E's bytes to land late (its maker stalled mid-write, then finishing it), its
-  maker would find E+1 and step down before acting, as any lead past whose term another was made.
-- **Half an hour is far past what a term's bytes take:** a maker writes them in the same call as its
-  create (or finishes them at its next loops, `Created::Unwritten`); a stale read lasts at most
-  `STALE_S` (ten minutes). The awake clock counts it, which stops while the Mac sleeps: the real time
-  passed is never less.
-- **What it costs is what any takeover costs** (above): E had no lead that acted, so nothing in flight
-  is E's.
+- **A lead of E that no heartbeat showed steps down before acting:** every lead checks that its
+  term's next doesn't exist before it acts (`term::next`). So were E's bytes to land late (its maker
+  stalled mid-write, then finishing it), or a lead of E be out of touch, it would find E+1 and step
+  down, as any lead past whose term another was made. This is what bounds the rest: how long the
+  share keeps a read stale isn't checked (`STALE_S` is an assumption, plan §10), and the NAS's
+  operations give no file times to check E's age by; the half hour of short reads is a margin, not
+  a proof.
+- **What it costs is what any takeover costs** (above): a lead of E out of touch loses what it had
+  in flight; none of it built is lost.
 
 What isn't done, not being provably safe: a Mac finishing (writing whole) an empty term its create's
 answer was lost for. A record kept before the create can't prove it made the file: another Mac's
@@ -911,9 +917,10 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
   or from when this Mac first saw the term with no lead (kept across its processes, `lead.json`'s
   `no_lead`), the view's `alert` says how long, why, and what to do: the command that takes it over
   from this Mac (`scenic lead take`, with `--force` or `--downgrade` as `Driver::takeover` needs),
-  or, when this Mac can't, `scenic lead take --force` on another; for a term left empty, that no Mac
-  took it past by itself (§6.5). The menu bar makes it its state (the problem icon, its line, a
-  notification once), and `scenic lead`, `scenic status`, the map's build panel and the worker
+  or, when this Mac can't, `scenic lead take --force` on another; for a term this Mac reads short
+  (not one it can't read), that no Mac took it past by itself (§6.5). The menu bar makes it its
+  state (the problem icon, its line, and a notification once: when it comes on, or at the menu
+  bar's first look when it's already on), and `scenic lead`, `scenic status`, the map's build panel and the worker
   page (its alerts and the pool's section) show it in place of the "no lead" line.
 - **A member's own status in the menu bar:** a member's agent writes `helper.json`, never
   `status.json` (the lead's); the map server shows the lead's heartbeat from the NAS, and a
