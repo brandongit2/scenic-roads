@@ -285,4 +285,7 @@ async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
     assert_eq!(m.reserve(), 12_000_000_000, "the mirror's, without a restart");
     assert_eq!(get(&s).await["reserve"].as_u64(), Some(12_000_000_000));
     assert_eq!(crate::reserve::load(home.path()), 12, "kept for the next start");
+    // Raised: taken as it is.
+    tokio::task::block_in_place(|| set_reserve(&s, 200, disk)).unwrap();
+    assert_eq!(m.reserve(), 200_000_000_000);
 }

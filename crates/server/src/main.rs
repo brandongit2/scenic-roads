@@ -77,6 +77,8 @@ pub struct AppState {
     pub places: Arc<places::Index>,
     /// What this Mac has downloaded for offline use, and what the mirror copies for it.
     pub downloads: Arc<downloads::Downloads>,
+    /// The mirror's reserve, the owner's setting (reserve.rs).
+    pub reserve: reserve::Setting,
     /// The current version tokens of the app's URLs, per (catalog generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
@@ -330,6 +332,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         descriptions: descriptions::Descriptions::new(home),
         places: Default::default(),
         downloads: downloads::Downloads::load(home),
+        reserve: reserve::Setting::load(home),
         tokens: Mutex::new(None),
     })
 }
@@ -430,7 +433,7 @@ async fn main() -> Result<()> {
             eprintln!("nsmb.conf: {e:#}");
         }
     }
-    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror, reserve: reserve::load(&home) * 1_000_000_000 })?;
+    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror, reserve: reserve::Setting::load(&home).bytes() })?;
     eprintln!("catalog {} · NAS {}", d.catalog().n, d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into()));
     if root.is_none() {
         d.spawn_background();
@@ -457,6 +460,7 @@ async fn main() -> Result<()> {
         descriptions: descs,
         places: Default::default(),
         downloads: downloads::Downloads::load(&home),
+        reserve: reserve::Setting::load(&home),
         tokens: Mutex::new(None),
     });
 

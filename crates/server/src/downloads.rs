@@ -783,9 +783,7 @@ pub struct Reserve {
 /// thread woken (downloads waiting for room may start; raised, nothing is deleted).
 fn set_reserve(s: &crate::AppState, gb: u64, disk_bytes: u64) -> Result<Value> {
     let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
-    crate::reserve::check(gb, disk_bytes)?;
-    crate::reserve::save(&s.home, gb)?;
-    m.set_reserve(gb * 1_000_000_000);
+    s.reserve.set(gb, disk_bytes, m)?;
     s.downloads.poke();
     Ok(json!({ "ok": true, "reserve": m.reserve() }))
 }

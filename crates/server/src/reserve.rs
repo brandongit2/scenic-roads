@@ -3,14 +3,15 @@
 //! (`{"gb": 30}`, GB of 10⁹ bytes; written through a temporary file), read at start; 30 GB while
 //! unset. Changed live: the mirror checks against it from its next round, and the mirror thread is
 //! woken so downloads waiting for room may start. Raising it past what's free deletes nothing:
-//! downloads just wait. (Apart from the build agent's disk floors and the owner's room target in
-//! the menu bar, `scenic room`: a setting of their own.)
+//! downloads just wait. (Apart from the build agent's own disk room, `scenic room`: a setting of
+//! its own.)
 //!
 //!   PUT /api/downloads/reserve   {gb}: set it (whole GB, from 5 to less than the disk's size)
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub const FILE: &str = "reserve.json";
 /// The reserve while the owner hasn't set one (GB).
@@ -54,10 +55,43 @@ pub fn check(gb: u64, disk_bytes: u64) -> Result<()> {
     Ok(())
 }
 
+/// The setting in a server's home.
+pub struct Setting {
+    home: PathBuf,
+    /// The setting (GB); held while it's saved and the mirror told, so two changes never cross.
+    gb: Mutex<u64>,
+}
+
+impl Setting {
+    pub fn load(home: &Path) -> Setting {
+        Setting { home: home.to_owned(), gb: Mutex::new(load(home)) }
+    }
+
+    pub fn gb(&self) -> u64 {
+        *self.gb.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The reserve (bytes).
+    pub fn bytes(&self) -> u64 {
+        self.gb() * 1_000_000_000
+    }
+
+    /// Sets it to `gb` on a disk of `disk_bytes` (`check`): kept, then `m` told.
+    pub fn set(&self, gb: u64, disk_bytes: u64, m: &store::mirror::Mirror) -> Result<()> {
+        check(gb, disk_bytes)?;
+        let mut g = self.gb.lock().unwrap_or_else(|e| e.into_inner());
+        save(&self.home, gb)?;
+        *g = gb;
+        m.set_reserve(gb * 1_000_000_000);
+        Ok(())
+    }
+}
+
 /// Keeps `gb` in `home` (through a temporary file, so a half-written file is never read).
 pub fn save(home: &Path, gb: u64) -> Result<()> {
     let path = home.join(FILE);
-    let tmp = home.join(format!("{FILE}.tmp"));
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = home.join(format!("{FILE}.{}.{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     std::fs::write(&tmp, serde_json::to_vec(&Kept { gb })?).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("rename {}", tmp.display()))?;
     Ok(())
@@ -73,7 +107,7 @@ mod tests {
         assert_eq!(load(home.path()), DEFAULT_GB);
         save(home.path(), 75).unwrap();
         assert_eq!(load(home.path()), 75);
-        assert!(!home.path().join(format!("{FILE}.tmp")).exists());
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1, "no temporary file left");
         save(home.path(), 12).unwrap();
         assert_eq!(load(home.path()), 12);
     }

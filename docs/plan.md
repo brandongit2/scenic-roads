@@ -436,7 +436,7 @@ record changes back through the build Mac's coordinator, which journals them for
     outlines on the NAS while every recipe and outline file has the name, length and time it had
     (one changed in the last few seconds is always read), and which goes when a changed one is kept.
 - **Its own map** is served from the NAS and what it has downloaded (§4, Mirror, per Mac); its
-  downloads keep a 150 GB reserve so builds have room.
+  downloads keep the Regions panel's reserve free (30 GB unless set otherwise there).
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free). It copies the planet to
   the SSD first when there's room for the planet, a filtered file of up to 75 % of it, and 10 GB;
   otherwise it reads the planet from the NAS.

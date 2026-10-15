@@ -521,7 +521,7 @@ names/spoken-<content>.bin   the languages spoken where, made from the catalog's
                         23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
 reserve.json            the mirror's reserve, the Regions panel's setting (crates/server/src/reserve.rs):
-                        {gb}, written through reserve.json.tmp; none, or one that doesn't read: 30 GB
+                        {gb}, written through a temporary file beside it; none, or one that doesn't read: 30 GB
 downloads.json          what this Mac has downloaded (crates/server/src/downloads.rs; the Regions
                         panel): {fmt: 2, world: at or null, regions: [{id, name, at}], views: [{id,
                         name, outline: [[lon, lat], …] (the ground that was in view), at}]}, `at` in
@@ -706,7 +706,7 @@ Where they're kept:
   origins (localhost, `*.localhost`, a loopback address).
 - Downloads (the Regions panel's Downloads on this Mac, `downloads.rs`): `GET /api/downloads`:
   `{mirror, online, slow (the build is running: copies keep to rate), rate (bytes a second),
-  free, reserve, reserve_min, disk (the disk's size, bytes; null when unknown), here (bytes downloaded), world: {bytes, here, unknown, on, at, state}, wanted:
+  free, reserve (the owner's setting, bytes), reserve_min, disk (the disk's size, bytes; null when unknown), here (bytes downloaded), world: {bytes, here, unknown, on, at, state}, wanted:
   {bytes, here, more (the room they lack above the reserve), unknown}, copying: {what, bytes,
   have, slow} or null, last: {at, copied, copied_bytes, removed, removed_bytes, waiting,
   waiting_bytes, failed, pending, end} or null, regions: {id: {name, bytes, here, unknown, on,
@@ -720,7 +720,8 @@ Where they're kept:
   space above the reserve), fits}`; `POST /api/downloads/views` `{outline, name?}` (named after the
   place search's most important place in it unless named) → `{id, name}`; `PUT
   /api/downloads/views/{id}` `{name}`; `DELETE /api/downloads/views/{id}`; `PUT /api/downloads/reserve`
-  `{gb}` (whole GB, from 5 to less than the disk's size) → `{ok, reserve (bytes)}`. A download that wouldn't
+  `{gb}` (whole GB, from 5 to less than the disk's size) → `{ok, reserve}` (bytes; under the same remote gate and CORS as
+  the other downloads routes, no key). A download that wouldn't
   fit is refused. Refusals are 400 `{error}`, the reason in words.
 - The menu bar (`/api/build`): beside the build's status, `offline: {world, areas, bytes, here,
   nas}` (what's downloaded; null without a mirror).
@@ -987,7 +988,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/every-step`: the switch for every step to every member (docs/pool.md §7.2, §12
     phase 4's ninth batch; crate::agent::every). Present (or `on` in it) on, `off` in it or missing
     off. Read by every agent; it acts only in the pool. On, no agent makes or reads the claims
-    (`state/build/claims/`), and a member's ask carries `disk_mb` (its free disk less the 30 GB reserve and the owner's
+    (`state/build/claims/`), and a member's ask carries `disk_mb` (its free disk less the agent's job reserve, `pipeline::agent::room::RESERVE`, 30 GiB, and the owner's
     room target, MB); a
     grant of a round's step carries `as_of: {began, units}`, which the member's job reads from its
     lease's folder (`round.json`, through `SCENIC_UNITS_AS_OF`).

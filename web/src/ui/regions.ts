@@ -86,8 +86,8 @@ export class RegionsPanel {
   /** The reserve: the free space downloads leave on this Mac's disk (the server's setting). */
   private resIn = h('input', { class: 'rg-in kp-res-in', type: 'number', min: '5', step: '1', inputmode: 'numeric', 'aria-label': 'Free space to keep, GB' }) as HTMLInputElement;
   private resBtn = h('button', { class: 'pill', type: 'button', title: 'Keep this much free' }, 'Set') as HTMLButtonElement;
-  private resSay = h('span', { class: 'kp-res-say' });
-  private resRow = h('div', { class: 'kp-line kp-res', title: 'The free space map downloads leave on this Mac’s disk: a download that would go past it waits. Lowered, waiting downloads may start; raised, nothing is deleted. (Apart from the build’s own room target in the menu bar.)' },
+  private resSay = h('span', { class: 'kp-res-say', role: 'status', 'aria-live': 'polite' });
+  private resRow = h('div', { class: 'kp-line kp-res', title: 'The free space map downloads leave on this Mac’s disk: a download that would go past it waits. Lowered, waiting downloads may start; raised, nothing is deleted.' },
     h('span', {}, 'Keep free'), this.resIn, h('span', {}, 'GB'), this.resBtn, this.resSay);
   private resBusy = false;
   private dlBtn = h('button', { class: 'pill', type: 'button', title: 'Download the area in view to this Mac, for when it’s away from the NAS' }, 'Download this view');
@@ -540,8 +540,9 @@ export class RegionsPanel {
     }
     const free = k.free ?? 0, reserve = k.reserve ?? 0;
     lines.push(h('div', { class: 'kp-line', title: 'What’s downloaded to this Mac, and the disk’s free space' },
-      'This Mac: ', h('b', {}, size(k.here ?? 0)), ' downloaded · ', h('b', {}, size(free)), ` free · reserve ${size(reserve)}`));
+      'This Mac: ', h('b', {}, size(k.here ?? 0)), ' downloaded · ', h('b', {}, size(free)), ' free'));
     this.dlSum.replaceChildren(...lines);
+    this.renderReserve(k);
     this.renderWorld(k);
     // What's going on: the copy under way (why it's slow), waiting for room, away.
     const act: HTMLElement[] = [];
