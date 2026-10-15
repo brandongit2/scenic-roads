@@ -754,7 +754,13 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
 - Exaggeration: MapLibre exaggerates the ground, not the height; the scale setting multiplies the
   height (1–3×, or the terrain's exaggeration).
 - The globe: extrusions follow it to the hand-over at 15.5–16.5; the depth precision tuning
-  (`camera3d.tuneDepth`) covers them.
+  (`camera3d.tuneDepth`) covers them. Its near plane is half the nearest anything drawn can be
+  along the view (the camera's height above the highest ground of the terrain tiles drawn plus the
+  tallest mesh building, over cos p + tan(fov/2) sin p), never closer than the flat map's (the
+  viewport's height ÷ 50). With the flat map's alone, the depth's float32 noise at zoom 14.9 and 48°
+  over Toronto's Exhibition Place (the camera 1.3 km up) was some metres at the buildings: whole roofs
+  of the large low halls, 6–10 m over the terrain, came and went as the map moved (near 14 px there;
+  now 184 px, and a pan of 0.3 m changes only the edges' pixels, as with the roofs raised 60 m).
 - The camera's clearance (B3): camera3d refuses a move that takes it within 30 m of the ground, or
   within 4 m of the highest roof under it (`buildings.roofAt`: the loaded footprints that, drawn at
   the height scale, rise more than 26 m, read when the map is idle; a roof at its centroid's ground
@@ -778,7 +784,8 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   (B1).
 - **Heritage tint** (B3): the loaded buildings holding a heritage site's point, as the heritage
   overlay's dots show it (its tiers and filters applied: `dots.points`), drawn again 0.4 m larger
-  in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
+  (pulled toward the camera by a polygon offset, our MapLibre's `scenic:depth-bias`, so it wins over
+  the building it copies rather than fighting it as the map moves) in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
   plain colour, the highest group where sites share a building. Read when the map is idle; on by
   default while Heritage sites show (Settings → Buildings, `bd=`'s sixth field). Over the other
   colour modes too.
@@ -823,7 +830,7 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   the median, 0.8–6.8 at p90 (Shinjuku 3.5 and 6.3, Tokyo 4.3 and 5.5), at most 10.5. A road or
   rail line under the cursor gives way when the ray to its point meets a building above it (a
   second call). The hovered building is drawn again in a small GeoJSON layer, 1 m larger and
-  taller, amber; a tower's other parts and nearer buildings hide it where they're in front (later:
+  taller, amber (with the heritage tint's depth bias); a tower's other parts and nearer buildings hide it where they're in front (later:
   an outline drawn over the buildings). The bottom bar's slots as in §1. Known: while the globe hands
   over to the flat map (zoom 15.5–16.5), MapLibre draws a blend of the two that `rayAt` doesn't
   follow: the hover can be off by up to 6.8 px there (at z16.4). Where the framing leaves the
@@ -1088,9 +1095,13 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
   point (the heritage chain's slices of T, its World Heritage components left out: the map's dots
   but for a few sites per tile its layer has and the slices don't, 0–9 in the pilot's tiles), its height, base and footprint (16 points at most). Built; not drawn yet.
-- Not done: the catalog's layer is listed by `scenic-build catalog` (encoding `field5-webp`, zooms
-  4–14) but the field isn't in the mirror's groups nor the World download, and the agent's forecast
-  has no measured cost for `bldfield-lo` yet.
+- The catalog lists the layer (`scenic-build catalog`: encoding `field5-webp`, zooms 4–14) as it
+  lists the packs in the manifest when it's made: a z6 tile's field reaches the map with the next
+  catalog after its `bldtiles` (New York's 6/18/23 and 6/18/24, handed in at 07:08 on 15 Oct, came
+  after catalog 26 of 04:04, the server answering 204 for them till the next). A Mac's mirror copies
+  the field's hi packs with the meshes' (the last of the hi packs: up to 2 GB a z6 tile) and its lo
+  packs, as every layer's, with the World download.
+- Not done: the agent's forecast has no measured cost for `bldfield-lo` yet.
 
 **Sizes, measured on the first prototype's fields** (one class, levels 4–13; the second's: §4.8.1) (every tile encoded as above):
 
@@ -1282,6 +1293,19 @@ straight down 0.65; within a frame at 13.5 and 60°, the meshes' band is 1.3–2
 field would be there (Tokyo; Manhattan 0.3–1.8). The meshes below 14 add 10–11 z14 tiles (1.3–1.9 M
 vertices, 19–29 MB of buffers) to those views and shorten their frames (Tokyo 16.1 to 11.9 ms whole
 frames at 1440 × 900 at 2×; the field near the camera cost more than the meshes).
+
+**The walls at the hand-over (15 Oct).** The field's towers near zoom 14 were seen through: a ray
+below the roofs met walls at w ÷ H ÷ π a metre, their length over all the ground, as if it could be
+anywhere in the texel. But it's between the buildings: the footprints standing taller than it are
+solid, so it meets walls at that rate over the open ground alone, ÷ (1 − the share of the texel under
+those taller footprints) (the mean free path in the open ground is π × its area ÷ the walls'
+length). Over all the ground, a building wider than a texel let ~70 % of the rays crossing its edge
+texel through, and none stopped inside it. Measured with `?bldcmp` (the app's plain colour), the
+field alone against the z14 meshes at the same camera, Toronto at 14.02 and 48° (luminance as
+stored, 0–255, against the meshes; the frame in eight bands from the bottom): σ8 5.54 before, 4.07
+after; the bands' means −1.7 to +0.4 before, 0 to +2.2 after (the nearest band the most). At 12.5
+against full detail (k 2, ss 2, 4 strips): σ8 7.78 before, 8.10 after, the field 0.2–0.8 lighter in
+each band (it was already 5–6 lighter in the nearer half there). `?fdbg=36` draws it the old way.
 
 **Storage: level 14 built (the owner's choice, 14 Oct).** Every building at every level 4–14, five
 classes a texel, each class's mean top kept at every level; the meshes z14's alone (the z12 and
@@ -1645,7 +1669,7 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3, the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14 isn't yet the same look (§4.8.1). Not done: the mirror's group and the World download, colour by height, fog and the heritage list drawn, the coverage build, measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3, the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). Not done: colour by height, fog and the heritage list drawn, the coverage build, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):

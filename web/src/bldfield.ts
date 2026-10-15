@@ -16,8 +16,9 @@
 // their highest ground plus their tallest roof, the ground sampled from MapLibre's surface), and every
 // pixel's view ray marched from where it enters the hull till it leaves it, the field read along it. The buildings of a texel are taken as standing at random in it,
 // each class at its mean roof height (v ÷ f): a ray below that height enters a building at
-// w ÷ (v/f) ÷ π a metre of horizontal travel (Cauchy–Crofton: a random line crosses walls of length
-// L per area A 2L/(πA) times, entering half of them), and a ray coming down through the roofs'
+// w ÷ (v/f) ÷ π ÷ (1 − the share under the footprints taller than it) a metre of horizontal travel
+// (Cauchy–Crofton: a random line crosses walls of length L per area A 2L/(πA) times, entering half
+// of them; the ray is in the open ground between the buildings, so per area of that alone), and a ray coming down through the roofs'
 // height meets a roof with probability f. So a straight-down view gives f, a tilted one adds the
 // walls between the roofs, and a tower stands up on screen above its foot. Within a block the hits
 // are composited front to back (the nearest surface wins, as fill-extrusion's depth pass makes it at
@@ -388,6 +389,18 @@ void main() {
         if ((mk & 4) != 0) SETC(2, textureLod(u_c2, uv, lod))
         if ((mk & 8) != 0) SETC(3, textureLod(u_c3, uv, lod))
         if ((mk & 16) != 0) SETC(4, textureLod(u_c4, uv, lod))
+        // A ray below the roofs is between the buildings, not anywhere: the footprints standing
+        // taller than it (their share fUp) are solid, so the walls it meets come at the rate of their
+        // length over the open ground alone, w ÷ H ÷ π ÷ (1 − fUp) (the mean free path in the open
+        // ground is π × its area ÷ the walls' length). Over all the ground instead, a building wider
+        // than a texel let 70 % of the rays crossing its edge texel through and none stopped inside
+        // it: the towers seen through near the hand-over. (?fdbg=36: over all the ground)
+        if (u_dbg != 36) {
+          float hm = 0.5 * (ac + ae), fUp = 0.0;
+          for (int c = 0; c < 5; c++) if (Hc[c] > hm) fUp += Fc[c];
+          float open = 1.0 / max(1.0 - fUp, 0.02);
+          for (int c = 0; c < 5; c++) Rc[c] *= open;
+        }
       }
       float hlen = hstep * sg;   // horizontal metres of the step, before the ground
       if (u_dbg != 26 && ae < ac - 1e-4) {
