@@ -53,7 +53,7 @@ def build(check=False):
                       'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'], sw)
     rows_l = [(f, wrap('st-l', t, nw - fw - 14)) for f, t in rows]
     mac_l = lines_of(['the map is always on (a launcher)', 'copy what you download: the World, zoomed out; regions; views',
-                      'read the rest from the NAS (timeouts, an offline banner)', 'Regions panel → recipes in inputs/',
+                      'read the rest from the NAS (timeouts, an offline banner)', 'Regions panel: the regions, read only',
                       'menu bar: the build, who leads', 'each helps build (below)'], aw)
     brw_l = lines_of(['the map: MapLibre and WebGL', 'the build page, on any device (below)'], W - 16 - bx)
     hh = max(need(len(src_l)), need(len(mac_l)), need(sum(len(t) for _, t in rows_l)), need(len(brw_l)))
@@ -96,7 +96,7 @@ def build(check=False):
             'and the build’s terms, journal and records. The lead, the M4 today, and every member run two jobs at once, staging '
             'on their SSDs. What was made by hand, by you, by Claude agents or by downloads a script can’t make, goes into the '
             'NAS directly. Your Macs run the map under a launcher, copy only what you download in the Regions panel, read the '
-            'rest from the NAS, and write region recipes from the Regions panel.')
+            'rest from the NAS, and list the regions in the Regions panel.')
     marker = ('<marker id="sm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'
               '<path class="st-mk" d="M0,0.8 L10,5 L0,9.2 z"/></marker>')
     return (f'<svg viewBox="0 0 {W} {h:.0f}" role="img" aria-label="{E(aria)}" xmlns="http://www.w3.org/2000/svg">'

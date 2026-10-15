@@ -1,9 +1,6 @@
 //! `scenic`: the user's command (docs/plan.md §1, §8).
 //!
 //!   scenic status                       what the build Mac is doing, what waits and why, regions
-//!   scenic add <id> "<name>" <osm:…>…  a region of OSM relations (osm:<relation>; anything else
-//!                                       goes in its file by hand, docs/inputs.md §6.1.3)
-//!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
 //!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
 //!   scenic pool on|off|status [--force]  the pool's switch (docs/pool.md §12): on, after its checks
@@ -57,7 +54,7 @@
 //! `--root <dir>` points at the NAS project folder (default: the mounted share).
 
 use anyhow::{bail, Context, Result};
-use pipeline::agent::{self, backup, gc, jobs::now_s, recipes, Options};
+use pipeline::agent::{self, backup, gc, jobs::now_s, Options};
 use std::path::{Path, PathBuf};
 
 fn opt(args: &[String], name: &str) -> Option<String> {
@@ -647,33 +644,6 @@ fn main() -> Result<()> {
     match cmd.as_str() {
         "status" => status(&args),
         "lead" => lead(&args),
-        "add" => {
-            let (Some(id), Some(name)) = (args.get(2), args.get(3)) else { bail!("scenic add <id> \"<name>\" <outline>…") };
-            // (The outline is what follows the name, but for --root and the folder after it.)
-            let mut outline: Vec<String> = Vec::new();
-            let mut rest = args[4..].iter();
-            while let Some(a) = rest.next() {
-                if a == "--root" {
-                    rest.next();
-                } else if !a.starts_with("--") {
-                    outline.push(a.clone());
-                }
-            }
-            // (The input check takes osm: and shape: parts: docs/inputs.md §6.1.3.)
-            if let Some(o) = outline.iter().find(|o| !o.starts_with("osm:")) {
-                bail!("{o:?}: scenic add takes osm:<relation> parts (a shape, or anything else, goes in the region's file by hand)");
-            }
-            let r = recipes::Recipe { id: id.clone(), name: name.clone(), outline };
-            recipes::add(&root(&args, true)?.join("inputs/regions"), &r)?;
-            println!("added {} ({}); the build Mac builds it when it can (scenic status)", r.name, r.id);
-            Ok(())
-        }
-        "remove" => {
-            let id = args.get(2).context("scenic remove <id>")?;
-            recipes::remove(&root(&args, true)?.join("inputs/regions"), id)?;
-            println!("removed {id}; the build Mac takes what only it covered off the map with its next build");
-            Ok(())
-        }
         "agent" => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));

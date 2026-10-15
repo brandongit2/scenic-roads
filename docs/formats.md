@@ -550,7 +550,7 @@ names/spoken-<content>.bin   the languages spoken where, made from the catalog's
                         u32 head length, head (the rules' version, then a line per region: its ISO
                         code, a tab, its languages comma-separated; region 0 none), u32 run count,
                         23,041 u32 row starts, runs of (u32 first column, u16 region))
-regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
+regions.json            the last regions read (the Regions panel's list away from the NAS)
 reserve.json            the mirror's reserve, the Regions panel's setting (crates/server/src/reserve.rs):
                         {gb}, written through a temporary file beside it; none, or one that doesn't read: 30 GB
 downloads.json          what this Mac has downloaded (crates/server/src/downloads.rs; the Regions
@@ -758,8 +758,8 @@ Where they're kept:
   nas}` (what's downloaded; null without a mirror).
 - The input check (docs/inputs.md §4.5): `POST /api/build/inputs` `{unit, accept: [finding id]}` or `{unit,
   all: true}`, an ask to this Mac's agent, which writes the acceptances.
-- Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
-  `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
+- Regions (the panel, read only): `GET /api/regions` (the region files, their states and the
+  folders' tree), `/api/regions/layer`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the
   recipes, without `regions`, for a catalog that records none).
 - Names: MVT tiles and API JSON (ways, drives, `/api/names`) carry `main` and, when there is one,

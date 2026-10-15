@@ -1,6 +1,6 @@
-// Regions and the areas they're made of (docs/plan.md §1, §5): the server's recipes (/api/regions),
-// the administrative areas to make them from (/api/areas), and the coverage the map's catalog was
-// built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
+// Regions (docs/plan.md §1, §5), read only: the server's list of the region files (/api/regions),
+// the outlines of the administrative areas they're made of (/api/areas/{id}), and the coverage the
+// map's catalog was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { fmt } from './ui/dom';
 
@@ -25,23 +25,19 @@ export interface Area {
 }
 
 /** A region as the server lists it (docs/inputs.md §6.1): a checked input in the drop box's
- * inputs/regions/. Its outline is the union of its parts ("osm:<relation>", "shape:<name>.geojson");
- * a region made with more than those (minus, intersect, a buffer, a cut, pins) isn't `plain`: its
- * outline comes as texts to read, and it's edited in its file only. */
+ * inputs/regions/, changed there only. Its outline is its parts as texts to read ("osm:<relation>",
+ * "shape:<name>.geojson", or more: minus, intersect, a buffer, a cut). */
 export interface Region {
   id: string;
   name: string;
   outline: string[];
   /** Its file under inputs/regions/ ("europe/portugal/azores.toml"); its folder groups the list. */
   path?: string;
-  plain?: boolean;
   /** accepted: checked and in use; checking: being checked; held: a finding holds it back (its
-   * last accepted outline stays in use); pending: an edit made away from home, kept on this Mac. */
-  state?: 'accepted' | 'checking' | 'held' | 'pending';
+   * last accepted outline stays in use). */
+  state?: 'accepted' | 'checking' | 'held';
   held?: { id: string; message: string }[];
 }
-/** What a new region or an edit sends: osm: and shape: parts only. */
-export type RegionEdit = Pick<Region, 'id' | 'name' | 'outline'>;
 
 const NAS_AWAY = 'The NAS isn’t reachable: try again at home';
 
@@ -66,10 +62,9 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-/** The regions; away from home, the last list read with the edits still waiting to go (`pending`). */
-export const listRegions = () => call<{ regions: Region[]; bad: [string, string][]; pending?: number; offline?: boolean; tree?: Folder }>('/api/regions');
+/** The regions; away from home, the last list read (`offline`). */
+export const listRegions = () => call<{ regions: Region[]; bad: [string, string][]; offline?: boolean; tree?: Folder }>('/api/regions');
 /** A folder under inputs/regions/ holding regions at some depth: they group the list. `name`: its
  * _group.toml's name, else the folder's; `folders` come sorted (by order, then name). */
 export interface Folder {
@@ -79,17 +74,6 @@ export interface Folder {
   regions: string[];
   folders: Folder[];
 }
-/** An edit: done on the NAS, or (away from home) kept on this Mac until it's reachable: `queued`. */
-export type EditResult = { done?: boolean; queued?: boolean };
-export const addRegion = (r: RegionEdit) => call<EditResult>('/api/regions', json('POST', r));
-export const editRegion = (id: string, patch: { name?: string; outline?: string[] }) => call<EditResult>(`/api/regions/${encodeURIComponent(id)}`, json('PUT', patch));
-export const removeRegion = (id: string) => call<EditResult>(`/api/regions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-/** What to say after an edit kept on this Mac. */
-export const QUEUED = 'Saved on this Mac: it goes to the NAS when you’re home';
-/** The areas containing a point, smallest first. */
-export const areasAt = (lng: number, lat: number) => call<{ areas: Area[] }>(`/api/areas?at=${lng.toFixed(5)},${lat.toFixed(5)}`).then((d) => d.areas);
-/** Areas by the start of their name or English name, largest first. */
-export const searchAreas = (q: string, signal?: AbortSignal) => call<{ areas: Area[] }>(`/api/areas/search?${new URLSearchParams({ q })}`, { signal }).then((d) => d.areas);
 /**
  * The coverage the map's catalog (`catalog`, its number) was built for: each region's outline
  * entries, simplified for drawing (properties: region, region_name, entry, and an osm: entry's area
@@ -171,8 +155,6 @@ export const levelName = (a: Pick<Area, 'level' | 'country' | 'iso'>): string =>
 /** An area's name to show: English when it has one. */
 export const areaName = (a: Pick<Area, 'name' | 'en'>): string => a.en || a.name;
 
-export const km2 = (v: number) => (v < 1 ? '<1 km²' : `${fmt.n(v)} km²`);
-
 /** An outline entry in words: "Northumberland (county)", "Kanto (Geofabrik)", "40 km around …".
  * `area`: an osm: entry's area, when known (the coverage's features have none when the server
  * can't read the pass's outlines: away from the NAS, not on this Mac). */
@@ -192,19 +174,14 @@ export function entryLabel(entry: string, area?: Pick<Area, 'name' | 'en' | 'lev
   return entry;
 }
 
-/** A region id from a name: lower-case letters, digits and dashes. */
-export const slug = (s: string): string =>
-  s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 64).replace(/-+$/, '');
-/** The server's rule for ids (pipeline::agent::recipes::valid_id). */
-export const validId = (id: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(id);
 
-// The coverage in the app's accent; the areas being looked at in a pale white no overlay uses.
+// The coverage in the app's accent; the area being looked at in a pale white no overlay uses.
 const COVERAGE = '#6fd3a6';
 const PREVIEW = '#dce7f5';
 
 /**
- * The regions on the map: the coverage (every region's outline, a thin line and a faint fill) and
- * the areas being looked at in the panel (the one hovered, the ones chosen for a new region).
+ * The regions on the map: the coverage (every region's outline, a thin line and a faint fill), each
+ * region in its own colour, and the region or view hovered in the panel.
  * Draped on the terrain under the roads and every label; nothing here takes the pointer.
  */
 export class RegionLayers {
@@ -227,7 +204,7 @@ export class RegionLayers {
     const before = ['contours-3d', 'roads'].find((id) => map.getLayer(id));
     const width = (w: number): ExpressionSpecification => ['interpolate', ['linear'], ['zoom'], 3, w * 0.8, 10, w * 1.2, 15, w * 1.8];
     const hidden = { visibility: 'none' as const };
-    for (const src of ['coverage', 'region-draft', 'region-hover']) map.addSource(src, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    for (const src of ['coverage', 'region-hover']) map.addSource(src, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'coverage-fill', type: 'fill', source: 'coverage', layout: hidden, paint: { 'fill-color': COVERAGE, 'fill-opacity': 0.05 } }, before);
     map.addLayer({ id: 'coverage-line', type: 'line', source: 'coverage', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': COVERAGE, 'line-width': width(1), 'line-opacity': 0.65 } }, before);
     // Every region in its own colour: a light fill, so overlaps mix and gaps show, and a thin line,
@@ -244,8 +221,6 @@ export class RegionLayers {
       layout: { ...hidden, 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-padding': 8 },
       paint: { 'text-color': colour, 'text-halo-color': '#0b0e13', 'text-halo-width': 1.2, 'text-opacity': 0.85 },
     });
-    map.addLayer({ id: 'region-draft-fill', type: 'fill', source: 'region-draft', layout: hidden, paint: { 'fill-color': PREVIEW, 'fill-opacity': 0.08 } }, before);
-    map.addLayer({ id: 'region-draft-line', type: 'line', source: 'region-draft', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': PREVIEW, 'line-width': width(1.4), 'line-opacity': 0.9 } }, before);
     map.addLayer({ id: 'region-hover-fill', type: 'fill', source: 'region-hover', layout: hidden, paint: { 'fill-color': PREVIEW, 'fill-opacity': 0.05 } }, before);
     map.addLayer({ id: 'region-hover-line', type: 'line', source: 'region-hover', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': PREVIEW, 'line-width': width(1.2), 'line-dasharray': [2, 1.5], 'line-opacity': 0.9 } }, before);
     this.ready = true;
@@ -277,11 +252,6 @@ export class RegionLayers {
     this.regionsOn = on;
     if (data) this.regions = data.features;
     this.put('regions', this.regions, this.regionsOn);
-  }
-
-  /** The areas chosen for a new region (their union). */
-  setDraft(features: GeoJSON.Feature[]) {
-    this.put('region-draft', features);
   }
 
   /** The area or region hovered in the panel (none: null). */

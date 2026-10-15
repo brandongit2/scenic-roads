@@ -223,7 +223,7 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
     assert_eq!(r.held, vec!["eu/a.toml"]);
     assert_eq!(r.findings[0].check(), "rg-pin-mismatch");
     // A file the regions don't take: ignored.
-    assert!(!checks.takes("notes.txt") && !checks.takes("old.poly") && checks.takes("x/y.geojson"));
+    assert!(!checks.takes("notes.txt") && !checks.takes("old.poly") && !checks.takes("eu/old.toml.removed") && checks.takes("x/y.geojson"));
     let _: &Index = &prev;
 }
 

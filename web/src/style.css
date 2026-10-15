@@ -588,37 +588,16 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .kp-ask .warn { color: #f3c77a; }
 #layers .kp-ask[hidden] { display: none; }
 #layers .rg-ask { display: grid; gap: 6px; padding: 2px 0; font-size: 11px; line-height: 1.45; }
-#layers .rg-ask .pills .pill, #layers .rg-draft .pills .pill { flex: 1; padding: 3px 8px; }
+#layers .rg-ask .pills .pill { flex: 1; padding: 3px 8px; }
 #layers .rg-bad { color: #f3c77a; font-size: 10.5px; line-height: 1.4; padding: 2px 0; overflow-wrap: anywhere; }
 #layers .rg-empty { font-size: 11px; padding: 2px 0; }
-#layers :is(.rg-note, .rg-msg, .rg-hint) { font-size: 10.5px; line-height: 1.45; color: var(--muted); }
-#layers :is(.rg-note, .rg-msg, .rg-hint):empty { display: none; }
-#layers .rg-hint { color: var(--faint); margin-top: 4px; }
+#layers :is(.rg-note, .rg-msg) { font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+#layers :is(.rg-note, .rg-msg):empty { display: none; }
 #layers .rg-msg { margin-top: 6px; }
 #layers :is(.rg-note, .rg-msg).warn { color: #f3c77a; }
-#layers .rg-search { display: flex; gap: 6px; align-items: center; }
-#layers .rg-search .pill { flex: none; white-space: nowrap; }
-#layers :is(.rg-q, .rg-in, .rg-field input) { min-width: 0; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font-size: 11px; color: var(--text); outline: none; }
-#layers :is(.rg-q, .rg-in, .rg-field input):focus { border-color: rgba(255, 255, 255, 0.28); }
-#layers :is(.rg-q, .rg-in) { flex: 1; }
-#layers .rg-cands { display: flex; flex-direction: column; max-height: 232px; overflow-y: auto; margin: 4px -6px 0; scrollbar-width: thin; }
-#layers .rg-cands:empty { display: none; }
-#layers .cand { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
-#layers .cand:hover, #layers .cand.active { background: var(--hover); }
-#layers .cand .cn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-#layers .cand .ck { color: var(--muted); font-size: 10.5px; }
-#layers .cand .cs { grid-column: 1 / -1; color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#layers .cand.in .cn { color: #dce7f5; }
-#layers .cand.in .cn::before { content: '✓ '; }
-#layers .rg-draft { display: grid; gap: 5px; margin-top: 8px; padding: 7px 8px 8px; border: 1px solid rgba(220, 231, 245, 0.2); border-radius: 7px; background: rgba(220, 231, 245, 0.03); }
-#layers .rg-dhd { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 600; color: #dce7f5; }
-#layers .rg-dhd .faint { font-weight: 400; }
-#layers .rg-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-#layers .rg-chip { display: inline-flex; align-items: center; max-width: 100%; padding: 0 2px 0 7px; border-radius: 999px; background: rgba(220, 231, 245, 0.1); color: #dce7f5; font-size: 10.5px; line-height: 18px; white-space: nowrap; }
-#layers .rg-chip button { border: 0; background: none; padding: 0 4px; color: inherit; opacity: 0.65; font-size: 11px; line-height: 1; }
-#layers .rg-chip button:hover { opacity: 1; }
-#layers .rg-field { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 11px; }
-#layers .rg-draft .pill:disabled { opacity: 0.5; }
+#layers .rg-in { min-width: 0; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font-size: 11px; color: var(--text); outline: none; }
+#layers .rg-in:focus { border-color: rgba(255, 255, 255, 0.28); }
+#layers .rg-in { flex: 1; }
 
 /* The build Mac and the NAS in the status bar (ui/buildstatus.ts): a few words each, the details
    on a click. */
@@ -667,7 +646,6 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .rg-state.held { color: #f3c77a; max-width: 50%; overflow: hidden; text-overflow: ellipsis; }
 #layers .rg-dir > summary { font-size: 10.5px; padding: 5px 0 1px; cursor: pointer; color: #a9b6c8; }
 #layers .rg-dir .rg-dir { padding-left: 10px; }
-#layers .rg-file { font-size: 10.5px; overflow-wrap: anywhere; }
 
 
 /* Phones and tablets (docs/plan.md §4, Devices) ------------------------------------------------ */
@@ -782,7 +760,7 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
   #layers label.tog { grid-template-columns: 22px 1fr auto; padding: 9px 6px; }
   #layers .row, #layers .fade, #layers .wgrid { padding: 5px 0; row-gap: 8px; }
   #layers .levels .lv { padding: 7px 0; }
-  #layers .rg, #layers .cand { padding: 8px 6px; }
+  #layers .rg { padding: 8px 6px; }
   #layers .rg-act { opacity: 1; width: 30px; height: 30px; font-size: 15px; }
   #layers .rg-dl { height: 30px; padding: 0 10px; font-size: 12px; }
   .climb { padding: 11px 6px; }

@@ -47,14 +47,12 @@ nothing built depends on how the coverage is divided into regions.
 
 **The Regions panel** (Settings → Regions):
 - **What it does today:**
-  - It shows the regions, and on the map the coverage the published data was built for. A recipe
-    the catalog doesn't have yet (added or redrawn since) shows as pending.
-  - It makes new regions from administrative areas (levels 2–8 and ISO 3166, from the pass's
-    outlines), found by name or by a click on the map (the areas containing the point), each shown
-    with its area in km².
-  - It renames regions (rebuilding nothing) and removes them: what only a removed region covered
-    leaves the map with the next build.
-  - Edits made away from home wait on the Mac and go to the NAS when it's back.
+  - It shows the regions, read only, grouped by their folders, each with its state in the input
+    check (accepted, checking, held with the finding), and on the map the coverage the published
+    data was built for and each region's accepted outline. A region the catalog doesn't have yet
+    (added or redrawn since) shows as pending. Away from the NAS it shows the list as last read.
+  - Regions change only as files in the drop box, `inputs/regions/` (docs/inputs.md §6.1): the app
+    writes none. What only a removed region covered leaves the map with the next build.
   - **Downloads on this Mac** (§4, Mirror, per Mac): nothing is copied to a Mac unless it's
     downloaded there, and nothing downloaded goes until it's removed.
     - **World, zoomed out**: a row of its own with its size and a Download or Remove button. Not
@@ -70,12 +68,6 @@ nothing built depends on how the coverage is divided into regions.
       so with the numbers.
     - The Mac's own line: what's downloaded, the free space and the reserve; the copy under way,
       and when the build runs, that downloads keep to 20 MB/s.
-- **From a terminal:** `scenic add` and `scenic remove` do the same, straight to the NAS.
-- **Planned:**
-  - drawing and redrawing outlines (dragging points; saved as a `.poly`);
-  - splitting and merging regions;
-  - Geofabrik units and place-and-radius outlines in the panel (recipes take both already);
-  - each choice's cost in build time.
 - Coverage is drawn on the map. The status bar shows the build Mac's state and offers to reload when
   new data or a new app is in.
 - New areas appear when the build publishes its catalog: a round of publishing goes out as regions
@@ -250,10 +242,7 @@ uploads, the job keys): one agent per Mac (a lock), and build steps merge their 
 under this Mac's lock. The M1's helper uploads its jobs' files (content-named) and hands its
 record changes back through the build Mac's coordinator, which journals them for its agent to merge
 (§8, Two Macs). The exceptions:
-- **Region recipes:** any Mac's server writes them. A new recipe is created exclusively (`O_EXCL`), a
-  rename is rewritten through a temporary file, and a removal is renamed to `.removed`. `scenic add`
-  and `scenic remove` write them too.
-- The user's folders.
+- The user's folders (the drop boxes, the regions' among them: the app never writes them).
 - **The app:** `tools/app/publish.sh`, run by hand.
 - **The planet:** the NAS's own fetch.
 
@@ -496,7 +485,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     bare name. The bare name resolves to the NAS's Tailscale address, whose userspace networking held
     SMB to 12 MB/s.
 - **`nsmb.conf`** makes the share a soft mount, under both names.
-- **NAS access:** reads and writes (the Regions panel's recipes too) go through a bounded I/O pool
+- **NAS access:** reads and writes (the Regions panel's region files too) go through a bounded I/O pool
   with timeouts.
   - An overrun trips the breaker (an offline banner) only when a quick probe of the share also fails,
     so on a busy link a slow read fails alone. One prober watches for the NAS's return.
@@ -2870,7 +2859,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    - Built:
      - landmarks, stations, ferries and overlays by view;
      - zoomed-out queries;
-     - the Regions panel (add, rename, remove; regions and the view kept on each Mac);
+     - the Regions panel (the regions read only, their states and outlines; regions and the view kept on each Mac);
      - the status bar;
      - catalog switching;
      - the water's coverage at every zoom, and the shoreline check.

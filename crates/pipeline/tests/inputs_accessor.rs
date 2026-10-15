@@ -1,10 +1,9 @@
 //! The drop boxes are read only through their accessor (docs/inputs.md §7.1): `pipeline::inputs`
 //! (`inputs::open`, and the gate's check job, `inputs::gate::run`), and in Python `dem/inputs.py`'s
 //! `arg`. Every item outside `#[cfg(test)]` code whose text names a drop box (`MARKERS`, and each
-//! gate unit's name) calls the accessor, or is listed in `EXEMPT` by name with why: the writers
-//! (the Regions panel's and `scenic add`'s), the backups, GC's never-swept list, the records'
-//! names, and the readers each input's task moves behind the accessor (#135–#145, removing their
-//! exemptions; #146 checks none is left but the writers'). A new reader of a drop box fails here
+//! gate unit's name) calls the accessor, or is listed in `EXEMPT` by name with why: the backups, GC's
+//! never-swept list, the records' names, and the readers each input's task moves behind the
+//! accessor (#135–#145, removing their exemptions; #146 checks none is left). A new reader of a drop box fails here
 //! until it's routed through the accessor; an exemption that no longer matches a line fails too, so
 //! the list can't go stale. At run time the NAS root the steps get refuses a drop-box path asked of
 //! it by content name (`out::Out::path`).
@@ -40,8 +39,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/every.rs", "LEAD_ONLY", "\"inputs\"", "the `inputs` step's name, kept to the lead, not a drop box"),
     ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", "\"inputs/keys.env\"", "inputs/keys.env, not an input (§2): its key names enter keys, never its values"),
-    ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::add(&root(&args, true)?.join(\"inputs/regions\")", "`scenic add`: the owner's tool's write of a recipe (§2)"),
-    ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::remove(&root(&args, true)?.join(\"inputs/regions\")", "`scenic remove`: the owner's tool's write of a recipe (§2)"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),

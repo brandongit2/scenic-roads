@@ -82,8 +82,7 @@ Standing constraints this design keeps:
 Precisely:
 - **Declare.** The drop box's files are the input's whole truth. Adding a file adds data, editing
   it changes data, removing it removes data (once the removal passes the input check). The app never
-  writes in a declare drop box, except where a tool of the owner's writes on their behalf (the
-  Regions panel, `scenic add`/`remove`, as today).
+  writes in a declare drop box.
 - **Request–fulfil.** Two halves. The request: a to-do list the app writes after building (in the
   drop box's `todo/`, never an input itself), each entry with what's needed and why, sorted by
   priority, beside a brief (`todo/README.md`) saying how to answer. The fulfilment: answer files the
@@ -191,9 +190,7 @@ section isn't built yet is marked planned.
   load), and keeps the last listing: each file's path, size and modification time. (A Mac working
   as a member doesn't list.)
 - `scenic inputs check [<unit>]` lists now (an ask to this Mac's agent, `inputs-asks/` in its
-  folder, as an acceptance asked of it is). The Regions panel's own writes asking for a listing at
-  once, so a new region is checked within seconds, ask this Mac's agent to check `regions` (built,
-  #135).
+  folder, as an acceptance asked of it is).
 - A file whose time is within the last 10 s is left for the next listing (listed again 11 s
   later), by its time alone (the same size and time in two listings a few seconds apart don't prove
   it whole). The check is given the listing and acceptances its key was made from (`--listing`,
@@ -379,8 +376,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 - **The map's server** reads its inputs the same way: the translations and descriptions from the
   accepted files the lead's manifest (`state/build/manifest.json`) names, copied to the Mac
   (crates/server/src/accepted.rs, pipeline::inputs::served: built, #137), and away from the NAS
-  from that copy; the regions' recipes (for the Regions panel's pending and held states) from both
-  the accepted version and the drop box (planned, #135). `names-todo` reads the translations' and
+  from that copy; the regions (the Regions panel's list and states) from the drop box's region
+  files, read only, and the accepted version and held report (built, #135). `names-todo` reads the translations' and
   descriptions' accepted versions the agent names (their indexes, in its key; built, #137).
 - **The catalog** records the accepted index of every unit its data was built from
   (`"inputs": {"<unit>": "<index content name>"}`), so what a published map was made from can be
@@ -418,8 +415,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   is checking, a quiet line says so. Built.
 - **The map's build panel** (`web/src/ui/buildstatus.ts`): the same banners, compact, a link to
   the place on the map, and a warning sign on the build item (`/api/build/inputs`, an ask to this
-  Mac's agent). Built. The Regions panel marking a held recipe "held: <finding>" comes with the
-  regions (built, #135: the panel's states, §6.1.9).
+  Mac's agent). Built. The Regions panel marks a held region "held: <finding>" (built, #135: the
+  panel's states, §6.1.9).
 - **`scenic status`** prints a line per unit held or checking; `scenic inputs` lists every unit's
   version, state, findings and acceptances (stale ones marked). Built.
 
@@ -624,7 +621,7 @@ deleted.
 
 **Status: built (#135, both publishes)**, reviewed by the owner on 15 October 2026 (the decisions in
 §6.1.11, three of them against the picks: unknown files ignored, the antimeridian supported, the
-panel editing only names and part lists). Built: the check (crate::inputs::regions: `file`,
+app writing no region). Built: the check (crate::inputs::regions: `file`,
 `shapes`, `geom`, `resolve`, `stored`, `extract`), the stored geometry, the readers of the accepted
 version alone (crate::inputs::regions::read, `Coverage::accepted`), the `regions-extract` job,
 folders as the Regions list's groups, the server's panel states and region layer
@@ -663,8 +660,7 @@ checks each region's definition, not how regions fit together: no partition repo
   catalog, is new.
 - `inputs/regions/pins.toml` names the OSM snapshot the folder is written against (§6.1.5).
 - `how/`, `todo/` and names starting with `.`, `@`, `#` or `_` are ignored, as in every drop box
-  (§3); a `<id>.toml.removed` is a removal the owner made (the Regions panel's), not a finding.
-  Any other file (a `.poly`, a `.txt`, a `.toml.bak`) is ignored too: neither checked nor read, nor
+  (§3). Any other file (a `.poly`, a `.txt`, a `.toml.bak`, a `.toml.removed`) is ignored too: neither checked nor read, nor
   copied into the accepted version (decided by the owner, 15 October: §6.1.11, 5). Only
   `<id>.toml`, `<name>.geojson` and `pins.toml` are the input.
 
@@ -761,7 +757,7 @@ ways = [24046327, 24046330, 155883810]
 ```
 A `shape:` file:
 ```json
-{"type": "Feature", "properties": {"source": "drawn in the Regions panel"},
+{"type": "Feature", "properties": {"source": "drawn by hand"},
  "geometry": {"type": "Polygon", "coordinates": [[[-8.2, 41.1], [-8.0, 41.1], [-8.0, 41.3], [-8.2, 41.1]]]}}
 ```
 `pins.toml`:
@@ -919,7 +915,7 @@ file of exactly those ids' geometry, made from the pinned pass.
 
 All moved (#135): the table lists them as they were before. Every reader of `inputs/regions` and `inputs/outlines` then (each in the accessor guard's
 exemptions, crates/pipeline/tests/inputs_accessor.rs, naming #135). Each moves to
-`Coverage::accepted` or the index, and its exemption goes, except the two writers marked "stays":
+`Coverage::accepted` or the index, and its exemption goes:
 
 | Where | Function | Reads today |
 |---|---|---|
@@ -945,10 +941,8 @@ exemptions, crates/pipeline/tests/inputs_accessor.rs, naming #135). Each moves t
 | crates/pipeline/src/bin/scenic-build.rs:2788 | `pass_and_coverage` (`--regions`' default) | same |
 | crates/pipeline/src/bin/scenic-build.rs:3476 | `coverage_of` (`--regions`' default) | `Coverage::load` |
 | crates/pipeline/src/bld/job_holdout.rs:171 | `holdout` (a test, `$REGIONS`) | `recipes::load` |
-| crates/server/src/regions.rs:199–290 | `nas`, `load`, `apply` (the Regions panel) | lists and writes region files (stays: the owner's tool, §2) |
 | crates/server/src/regions.rs:663 | `coverage_from_recipes` | recipes, `inputs/outlines` |
 | crates/server/src/regions.rs:613 | `recorded_features` | `parse_outline` of a catalog's entries |
-| crates/pipeline/src/bin/scenic.rs:663, :669 | `scenic add`, `scenic remove` | writes region files (stays, §2) |
 | dem/bldfetch.py:248–250 | `coverage` | `inputs/outlines/*.poly` |
 
 The `scenic-build` subcommands' `--regions <dir>` (a scratch folder of region files, for proofs)
@@ -985,18 +979,17 @@ over the files and ids named.
 | `rg-extract` | a relation or way not in the pass's outline set that the current extract lacks: the files wait (held) while the extract is made (§6.1.6), then are checked again |
 
 A held region keeps its last accepted geometry; a region new since the accepted version and held is
-not in the coverage yet. Removing a region (its file deleted, or the panel's `.toml.removed`) takes
-it out with the next accepted version.
+not in the coverage yet. Removing a region (its file deleted, or renamed to a name the regions
+ignore) takes it out with the next accepted version.
 
 #### 6.1.9 What the owner sees
 
-- **The Regions panel** (Settings → Regions) keeps writing region files (new ones at the folder's
-  top, edits where the file lies, found by `id`), asks for a listing at once so a change is checked
-  within seconds, lists regions by folder, and shows each as accepted, checking, or "held:
-  <finding>". It edits only `name` and the `outline` list of `osm:` and `shape:` parts (decided by
-  the owner, 15 October: §6.1.11, 11); a region with any `minus`, `intersect`, line, `buffer`,
-  `cut` or `[pins]` shows its parts read-only, "edit the file". Drawing a shape in the panel and
-  saving it as a `shape:` GeoJSON is a task of its own (#200), not this one.
+- **The Regions panel** (Settings → Regions) is read only (decided by the owner, 15 October:
+  §6.1.11, 11): it lists the regions by folder (the tree above), each with its parts and its state,
+  accepted, checking, or "held: <finding>", and shows them on the map. The server reads the region
+  files through the NAS I/O pool (`GET /api/regions`; away from the NAS, the last list read) and
+  their states from the accepted index and the held report. Nothing in the app writes a region:
+  regions change only as files in `inputs/regions/`, which the input check takes in.
 - **The region layer** (a switch in Settings → Regions, beside "Coverage on the map"): every
   region's stored outline with a light fill in a colour from its id's hash (so a region keeps its
   colour) and its name as a label, so overlaps (fills mixing) and gaps (no fill) show by eye; a held
@@ -1027,8 +1020,6 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
 - **Not ready:** while the current pass has no outline set yet (its outlines step pending, #201),
   the check does nothing: no finding, no extract asked for, nothing taken in; the outline set's
   name is in its key, so it runs once it's made.
-- Before the switch the Regions panel takes `osm:` parts alone (a `shape:` part is "available after
-  the switch"): the drop box's readers know no other kind.
 - `regions_digest` and `catalog_key` take the index's content name once readers use it.
 - The check refuses `geofabrik:`, `poly:` and `place:` (`rg-part`); the fallback still reads them.
 - The operations, subfolders, lines, `region:`, pins, the extract and the region layer ship here
@@ -1080,7 +1071,7 @@ reader reads the accepted version alone. Deleted, with their guard exemptions: t
 old kinds, and `dem/bldfetch.py`'s read of `inputs/outlines` (the agent's job gives it the coverage
 as a GeoJSON file, `--coverage`, made from the stored geometry). With them went the migration's own
 tools, `scenic-build regions-proof` and `scenic regions convert-poly`, and the proof's record
-(`state/inputs/regions-proof.json`, read no more; the records' `sources/inputs/regions/@switched` stays: the readers refuse to read the regions without it, an app installed before the runbook was done saying to do it first, and its proved app still bars older Macs from leading). The panel takes `shape:` parts from here on. Built (this app). Catalogs record their regions' shapes inline (formats.md, Catalog
+(`state/inputs/regions-proof.json`, read no more; the records' `sources/inputs/regions/@switched` stays: the readers refuse to read the regions without it, an app installed before the runbook was done saying to do it first, and its proved app still bars older Macs from leading). Built (this app). Catalogs record their regions' shapes inline (formats.md, Catalog
 `coverage`), so an old catalog naming `geofabrik:` still draws. The tests move to GeoJSON fixtures
 (§6.1.7), and the operations are tested on small fixtures: two touching squares unioned; a minus and
 an intersect; a cut by a line running past the shape, by one ending inside it (an error), of a shape
@@ -1131,9 +1122,10 @@ three (5, 6 and 11), decided otherwise; the section above is written to the deci
    cost three planet scans; a new pass starts it afresh.
 10. **`--regions <dir>` keeps working on a scratch folder (decided)**, through the check's code in
     memory, so a proof can try a region before it's dropped.
-11. **The panel edits only `name` and part lists (decided by the owner):** the `outline` list of
-    `osm:` and `shape:` parts; the rest in the file. Drawing a shape in the panel (plan §1) and
-    saving it as a `shape:` GeoJSON is its own board task, #200, not part of #135.
+11. **The app writes no region (decided by the owner, against the pick):** regions change only as
+    files in the drop box, which the input check takes in; the Regions panel lists them, their
+    states and their outlines on the map, read only (§6.1.9). The pick was a panel editing names
+    and part lists.
 12. **Converted shapes in `inputs/regions/shapes/` and `shapes/geofabrik/` (decided)**, plain
     grouping folders like any other.
 13. **A colour per region from its id's hash (decided)**, stable everywhere, over a palette assigned
@@ -1862,8 +1854,8 @@ the drop boxes are reached only through an accessor that refuses everything else
   `"translations`, `}/translations`, `"descriptions`, `}/descriptions`, and each unit's name; a
   line's `sources/inputs` aside) must make an accessor call (`inputs::open(`, `inputs::gate::run(`;
   one named in a string doesn't count) or be exempt, by the item's name and an anchor in the line
-  (what it says: so a common name like `new` exempts that line alone), with a reason (the Regions
-  panel's and `scenic add`'s writes, the backups, GC's never-swept list, the records' names, today's
+  (what it says: so a common name like `new` exempts that line alone), with a reason (the
+  backups, GC's never-swept list, the records' names, today's
   readers with their tasks). An exemption that matches no line fails the test too, so the list
   can't outlive what it exempts (`every_exemption_matches_a_line`), and the scanner's own rules have
   a test.
@@ -1878,7 +1870,7 @@ the drop boxes are reached only through an accessor that refuses everything else
   publishing) runs with a stand-in NAS root whose drop boxes are unreadable, so a step that opens
   one fails there.
 - Each input's task adds its readers to the accessor and removes their exemptions; #146 checks that
-  none is left but the writers'.
+  none is left.
 
 ### 7.2 No source names in the app's code (#146)
 
@@ -2303,5 +2295,5 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
 22. **The regions' open questions (decided by the owner, 15 Oct):** every pick of §6.1.11 kept but
     three: a file in `inputs/regions/` that's neither a region, a shape nor `pins.toml` is ignored,
     not an error; regions crossing the antimeridian are supported now (each region computed in its
-    own longitude frame, stored split at ±180°); the Regions panel edits only names and part lists,
-    drawing a shape being its own task (#200).
+    own longitude frame, stored split at ±180°); the app writes no region, the Regions panel
+    listing them read only.

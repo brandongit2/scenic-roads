@@ -164,7 +164,6 @@ impl Checks for Regions {
                     c.facts.insert("id".into(), r.id.clone().into());
                     c.facts.insert("name".into(), r.name.clone().into());
                     c.facts.insert("outline".into(), r.outline_text().into());
-                    c.facts.insert("plain".into(), r.is_plain().into());
                 }
                 Err(fs) => c.findings.extend(fs.iter().map(|f| finding(f, path))),
             }

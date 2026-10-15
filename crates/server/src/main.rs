@@ -476,7 +476,7 @@ async fn main() -> Result<()> {
     // The mirror: what's downloaded (downloads.rs).
     downloads::spawn_mirror(state.clone());
     tokio::spawn(warm(state.clone()));
-    regions::spawn_flusher(state.clone());
+    regions::spawn_syncer(state.clone());
     // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start
     // proxying the server any time). (A `remote-key` an older server kept: unused, removed.)
     std::fs::remove_file(home.join("remote-key")).ok();
@@ -527,11 +527,8 @@ async fn main() -> Result<()> {
         .route("/api/layer/{name}", get(layer_h))
         .route("/api/names", get(names_h))
         .route("/api/places", get(places::search))
-        .route("/api/regions", get(regions::list).post(regions::add))
+        .route("/api/regions", get(regions::list))
         .route("/api/regions/layer", get(regions::layer))
-        .route("/api/regions/{id}", axum::routing::put(regions::edit).delete(regions::remove))
-        .route("/api/areas", get(regions::at))
-        .route("/api/areas/search", get(regions::search))
         .route("/api/areas/{id}", get(regions::one))
         .route("/api/coverage", get(regions::coverage))
         .route("/api/downloads", get(downloads::get_status))

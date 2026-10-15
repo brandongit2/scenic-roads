@@ -55,7 +55,7 @@ GROUPS = [
     ('Chosen, researched or downloaded by hand', [
         ('doc', None, 'osm', 'Region recipes',
          'the coverage: what every step builds',
-         'you, in the Regions panel (or scenic add): a list of OSM boundaries each',
+         'you, as files in the drop box: OSM boundaries and shapes each',
          'NAS inputs/regions/ (88; backed up daily)',
          'plan.md §5',
          'nothing: they are the definition'),

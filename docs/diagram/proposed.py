@@ -21,7 +21,7 @@ def build(check=False):
                     [(['pieces/<z6>.osm.pbf'], 'PBF · all land ≈ 58 GB'), (['sets/ · outlines'], 'nine sets: rail, ferries …'),
                      (['roads/<z6>'], 'each way’s road and offset')], scope='global')
     c_reg = d.cur('osm', s_osm.b + 10, 'Your region recipes', ['88, each a list of OSM', 'boundaries: their union is', 'the coverage'],
-                  'you, in the Regions panel', 'doc')
+                  'you, as files in inputs/regions/', 'doc')
     d.arrow('osm', (s_osm.r, n_pass.y + 18), (n_pass.l, n_pass.y + 18))
     d.arrow('osm', (n_pass.r, n_pass.y + 18), (n_pass.r + 34, n_pass.y + 18), label='read by the rows below as “OSM pieces” and “OSM sets”',
             at=(n_pass.r + 42, n_pass.y + 22))

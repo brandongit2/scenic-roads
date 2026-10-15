@@ -648,8 +648,7 @@ async function main() {
     return [c.lng, c.lat];
   });
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
-  // Regions (Layers → Regions): the regions the map is built for, their coverage on the map, and new
-  // ones made of administrative areas.
+  // Regions (Layers → Regions): the regions the map is built for and their coverage on the map.
   const regions = new RegionsPanel(new RegionLayers(map));
   layers.addSection('regions', 'Regions', regions.nodes, (open) => regions.setOpen(open));
   // The landmark dots, drawn on the GPU (dots.ts); the overlays feed them.
@@ -1450,7 +1449,7 @@ async function main() {
       hovered = null;
       roads.setHover(null);
       rails.setHover(null);
-      map.getCanvas().style.cursor = viewshed.active || regions.picking ? 'crosshair' : 'pointer';
+      map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : 'pointer';
       hoverAreas = feats.areas;
       return strip.showFeature(ferry, feats.areas);
     }
@@ -1472,7 +1471,7 @@ async function main() {
         if (set && hovered && set.has(hovered.way)) layer.setHover(hovered, set);
       });
     }
-    map.getCanvas().style.cursor = viewshed.active || regions.picking ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
+    map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
     hoverAreas = feats.areas;
     if (!hovered) {
       // A building, when no marker, road or rail line answers: the areas it's in as chips (a whole
@@ -1639,10 +1638,6 @@ async function main() {
     if (hudOff()) return;
     if (viewshed.active) {
       viewshed.run([e.lngLat.lng, e.lngLat.lat]);
-      return;
-    }
-    if (regions.picking) {
-      void regions.pickAt([e.lngLat.lng, e.lngLat.lat]);
       return;
     }
     if (overlays.click(e.point, POINT_LAYERS)) return;
@@ -1847,7 +1842,6 @@ async function main() {
     if (document.querySelector('dialog[open]')) return; // the dialog closes itself
     if (driving) return stopDrive();
     if (viewshed.active) return viewshed.cancel();
-    if (regions.picking) return regions.stopPicking();
     overlays.closePopup();
     store.set({ selected: null, stretch: null });
   });
@@ -2117,8 +2111,6 @@ async function main() {
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });
   // Keep this view: the ground on screen, as the lists "in view" take it.
   regions.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
-  regions.onPicking = (on) => (map.getCanvas().style.cursor = on ? 'crosshair' : '');
-  regions.onChanged = () => void watch?.poll();
 
   // ---- boot --------------------------------------------------------------------------
   let bootDone = false;
