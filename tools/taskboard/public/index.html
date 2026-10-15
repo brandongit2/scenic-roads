@@ -302,7 +302,7 @@
   body.drag-live, body.drag-live * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 
   /* The details of the selected item: docked on wide screens, a drawer otherwise. */
-  .editor { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--panel); }
+  .editor { min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; background: var(--panel); }
   /* The backdrop behind the open drawer (narrow only): dims the page, blocks it, a click closes the details. */
   .scrim { display: none; }
   .ed-sticky { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin: 0 -16px; padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -1677,6 +1677,11 @@
     if (S.draft?.waiting) finishDraft(S.draft, S.draft.text);
   }
   const autoGrow = (el) => { el.style.height = "auto"; el.style.height = `${el.scrollHeight + 2}px`; };
+  // A field's height is measured at its width then; its width changes after (the panel laying out, a
+  // window resize, the web font arriving) and the text wraps to more lines than the height holds,
+  // clipped (the field never scrolls): so it is measured again whenever its width changes.
+  const growWatch = new ResizeObserver((es) => { for (const e of es) if (e.contentRect.width !== e.target._w) { e.target._w = e.contentRect.width; autoGrow(e.target); } });
+  document.fonts?.ready.then(() => document.querySelectorAll("textarea.ta, textarea.ed-title").forEach(autoGrow));
   const edItem = () => (ED.id && M ? M.byId.get(ED.id) : null);
   function emptyEditor() {
     const legend = h("dl", { class: "legend" });
@@ -1835,6 +1840,8 @@
     });
     f.note = h("textarea", { class: "ta", id: "ed-note", rows: "3", maxlength: "20000", placeholder: ro ? "" : kind === "task" ? "What it's about, or what to discuss" : "What this folder is for", "aria-label": "Description" });
     f.note.readOnly = ro;
+    growWatch.observe(f.note);
+    growWatch.observe(f.title);
     bindField(f.note, (t, v) => { const note = v.replace(/\s+$/, ""); if (note !== (t.note ?? "")) patch(t.id, { note: note || null }); }, { enter: false });
     f.noteView = h("div", { class: "ta-view", "aria-hidden": "true", hidden: true });
     f.note.addEventListener("focus", noteLinks);
