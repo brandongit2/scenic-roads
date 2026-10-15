@@ -1547,8 +1547,14 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       long poles' step first, from its longest target; a page slower than this Mac given a task
       offered ahead only while the head start covers it, never one not offered ahead, and none
       switched off; and two agents in one process: the lead's coordinator told, the member drawn
-      its target and its job told to offer ahead, then off. **Scratch state (§13): both Macs**
-      (grants): see below.
+      its target and its job told to offer ahead, then off. **Scratch state (§13): both Macs, run in part**
+      (15 Oct 2026, the M4 leading, the M1 a member, `root`, `region`, `every`, `placement`,
+      `jobs … 30`): the switch read on both, the region's terrain and tree cover pieces granted to
+      the M1 (the only member asking, so drawn to it), every job on both Macs given
+      `SCENIC_OFFER_AHEAD=1`; switched off, both agents said so. Draws between two members asking,
+      the long poles' order across steps with measured times and a slower page given a task ahead
+      were shown only by the tests (the scratch state's fake jobs offer no subtrees and the region
+      reached no round).
    12. **The forecast for equal machines** (§7.2): each member's slots as lanes, the pages as one,
       from the measures and the placement. Reports only: no switch.
    13. **What goes:** the steps table (its last columns replaced: §7.7), the claims
