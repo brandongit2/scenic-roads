@@ -16,8 +16,9 @@ pub struct Client {
     contact: Mutex<Contact>,
     /// This worker's name.
     pub worker: String,
-    /// When the coordinator last answered (this Mac's clock, unix s): any answer but a refused token.
-    answered: Mutex<Option<u64>>,
+    /// When the coordinator last answered (this Mac's clock, unix s; any answer but a refused
+    /// token), and the pool's term and member it said it is (crate::coord::POOL_TERM, POOL_MEMBER).
+    answered: Mutex<Option<Answered>>,
 }
 
 /// What the coordinator answered: its status and its JSON (Null for none).
@@ -38,6 +39,15 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// A coordinator's last answer to this client: when (this Mac's clock, unix s), and the pool's term
+/// and member it said it is (None: it didn't say: not a pool's lead, or an older app).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answered {
+    pub at: u64,
+    pub term: Option<u64>,
+    pub member: Option<String>,
+}
 
 /// What became of work handed back (`Client::done`).
 #[derive(Debug, PartialEq, Eq)]
@@ -60,9 +70,9 @@ impl Client {
         Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None) }
     }
 
-    /// When the coordinator last answered a request (this Mac's clock, unix s); None: not yet.
-    pub fn answered(&self) -> Option<u64> {
-        *self.answered.lock().unwrap()
+    /// When the coordinator last answered a request, and as what (`Answered`); None: not yet.
+    pub fn answered(&self) -> Option<Answered> {
+        self.answered.lock().unwrap().clone()
     }
 
     pub fn urls(&self) -> Vec<String> {
@@ -111,7 +121,9 @@ impl Client {
                             last = Some(anyhow::anyhow!("the coordinator refused the token"));
                             break;
                         }
-                        *self.answered.lock().unwrap() = Some(crate::agent::jobs::now_s());
+                        let h = |n: &str| resp.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);
+                        let term = h(super::POOL_TERM).and_then(|t| t.parse().ok());
+                        *self.answered.lock().unwrap() = Some(Answered { at: crate::agent::jobs::now_s(), term, member: h(super::POOL_MEMBER) });
                         // The working address first from now on.
                         let mut cur = self.contact.lock().unwrap();
                         if let Some(i) = cur.urls.iter().position(|u| u == url) {

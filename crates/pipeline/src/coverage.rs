@@ -44,15 +44,79 @@ pub struct Shape {
 /// fingerprints by box (`Shape::fingerprint`), and whether a way's points (`Shape::touches_way`, by
 /// the points' digest) meet it. The plan asks the same of every unit on every loop (the coverage
 /// kept between loops while its recipes and outlines don't change): worked out once, a plan took
-/// seconds rather than minutes (2026-10-15). Emptied past `MEMO_MAX` answers.
-#[derive(Default)]
+/// seconds rather than minutes (2026-10-15). What every shape's memo holds together is capped
+/// (`MEMO_CAP`): past it, every memo starts again (`Budget`).
 struct Memo {
     fingerprints: std::collections::HashMap<[i32; 4], Option<String>>,
     ways: std::collections::HashMap<[u8; 32], bool>,
+    /// The budget it counts toward (`MEMOS`), the generation its answers are of, and the bytes they
+    /// count.
+    budget: &'static Budget,
+    gen: u64,
+    bytes: usize,
 }
 
-/// The answers a shape keeps at most (`Memo`), of each kind; past that, it starts again.
-const MEMO_MAX: usize = 1 << 20;
+impl Default for Memo {
+    fn default() -> Memo {
+        Memo { fingerprints: Default::default(), ways: Default::default(), budget: &MEMOS, gen: MEMOS.gen.load(std::sync::atomic::Ordering::SeqCst), bytes: 0 }
+    }
+}
+
+/// The bytes all shapes' memos hold at most, together: past it, every memo is emptied (each as it
+/// next answers). Measured on the build's coverage (2026-10-15: 122 shapes, a plan, the checklist
+/// and the regions' progress, worked out twice): 13 MB (`memo_bytes`, the bench in
+/// crate::agent::build's tests); this leaves room for a coverage about five times as big before
+/// the memos start again, and is little to a Mac.
+pub const MEMO_CAP: usize = 64 << 20;
+
+/// What memos hold together, against a cap: the bytes counted, and the generation (begun again
+/// past the cap: every memo of an earlier one is stale).
+struct Budget {
+    cap: usize,
+    bytes: std::sync::atomic::AtomicUsize,
+    gen: std::sync::atomic::AtomicU64,
+}
+
+static MEMOS: Budget = Budget { cap: MEMO_CAP, bytes: std::sync::atomic::AtomicUsize::new(0), gen: std::sync::atomic::AtomicU64::new(0) };
+
+/// The bytes the shapes' memos hold now (of the current generation), about.
+pub fn memo_bytes() -> usize {
+    MEMOS.bytes.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Memo {
+    /// Ready for an answer of about `bytes`: emptied when of an earlier generation; counted, and past
+    /// the cap a new generation begun (every memo emptied as it next answers, this one at once).
+    fn take(&mut self, bytes: usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let b = self.budget;
+        if !self.current() {
+            (self.fingerprints, self.ways, self.bytes, self.gen) = (Default::default(), Default::default(), 0, b.gen.load(SeqCst));
+        }
+        if b.bytes.fetch_add(bytes, SeqCst) + bytes > b.cap {
+            b.gen.fetch_add(1, SeqCst);
+            b.bytes.store(0, SeqCst);
+            (self.fingerprints, self.ways, self.bytes, self.gen) = (Default::default(), Default::default(), 0, b.gen.load(SeqCst));
+            b.bytes.fetch_add(bytes, SeqCst);
+        }
+        self.bytes += bytes;
+    }
+
+    /// Whether its answers are of the current generation (an earlier one's are stale: none).
+    fn current(&self) -> bool {
+        self.gen == self.budget.gen.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for Memo {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.current() {
+            let b = &self.budget.bytes;
+            b.fetch_sub(self.bytes.min(b.load(SeqCst)), SeqCst);
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Grid {
@@ -127,14 +191,15 @@ impl Shape {
         if b[0] > self.bbox[2] || b[2] < self.bbox[0] || b[1] > self.bbox[3] || b[3] < self.bbox[1] {
             return false;
         }
-        if let Some(&t) = self.memo.lock().unwrap().ways.get(key) {
-            return t;
+        {
+            let m = self.memo.lock().unwrap();
+            if let Some(&t) = m.ways.get(key).filter(|_| m.current()) {
+                return t;
+            }
         }
         let t = points().any(|p| self.contains(p));
         let mut m = self.memo.lock().unwrap();
-        if m.ways.len() >= MEMO_MAX {
-            m.ways.clear();
-        }
+        m.take(32 + 1 + 16);
         m.ways.insert(*key, t);
         t
     }
@@ -223,14 +288,15 @@ impl Shape {
     /// point's, flipped by the edges crossing the line between them (inside the box), and its buffer
     /// reads the edges within the buffer of it. None when the shape has nothing in the box.
     fn fingerprint(&self, r: [i32; 4]) -> Option<String> {
-        if let Some(f) = self.memo.lock().unwrap().fingerprints.get(&r) {
-            return f.clone();
+        {
+            let m = self.memo.lock().unwrap();
+            if let Some(f) = m.fingerprints.get(&r).filter(|_| m.current()) {
+                return f.clone();
+            }
         }
         let f = self.fingerprint_made(r);
         let mut m = self.memo.lock().unwrap();
-        if m.fingerprints.len() >= MEMO_MAX {
-            m.fingerprints.clear();
-        }
+        m.take(16 + 24 + f.as_ref().map_or(0, String::capacity) + 16);
         m.fingerprints.insert(r, f.clone());
         f
     }
@@ -1044,6 +1110,37 @@ mod tests {
         assert!(!kept.touches_way(&outside, b(3.0, 50.5, 3.1, 50.6), never));
         assert!(clone.touches_way(&inside, b(0.5, 50.5, 0.6, 50.6), never));
         assert_eq!(kept.memo.lock().unwrap().ways.len(), 2);
+    }
+
+    #[test]
+    fn the_memos_together_stay_under_their_cap() {
+        // (Every shape's memo counts toward one budget: past its cap, all start again. A budget of
+        // this test's own, so no other test's memos are emptied.)
+        let budget: &'static Budget = Box::leak(Box::new(Budget { cap: 1000, bytes: Default::default(), gen: Default::default() }));
+        let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
+        let ring = |x: f64| vec![vec![e7(x, 50.0), e7(x + 1.0, 50.0), e7(x + 1.0, 51.0), e7(x, 51.0)]];
+        let shape = |x: f64| {
+            let s = Shape::new("a".into(), ring(x), 0.0);
+            s.memo.lock().unwrap().budget = budget;
+            s
+        };
+        let (one, two) = (shape(0.0), shape(5.0));
+        let f1 = one.fingerprint(b(0.2, 49.9, 0.4, 50.1));
+        two.fingerprint(b(5.2, 49.9, 5.4, 50.1));
+        let held = budget.bytes.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(held > 0 && held < budget.cap && one.memo.lock().unwrap().current());
+        // Past the cap: a new generation; the other's answers are stale, none.
+        let mut i = 0.0;
+        while two.memo.lock().unwrap().gen == 0 {
+            two.fingerprint(b(5.2 + i, 49.9, 5.3 + i, 50.1));
+            i += 0.01;
+        }
+        assert!(budget.bytes.load(std::sync::atomic::Ordering::SeqCst) <= budget.cap);
+        assert!(!one.memo.lock().unwrap().current(), "emptied as it next answers");
+        assert_eq!(one.fingerprint(b(0.2, 49.9, 0.4, 50.1)), f1, "worked out again, the same");
+        assert!(one.memo.lock().unwrap().current() && one.memo.lock().unwrap().fingerprints.len() == 1);
+        drop(one);
+        assert!(budget.bytes.load(std::sync::atomic::Ordering::SeqCst) < budget.cap);
     }
 
     #[test]

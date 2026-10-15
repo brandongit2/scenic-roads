@@ -252,6 +252,10 @@ pub struct Shared {
     /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
     /// not fresh, no longer leading), workers told to ask again in a moment.
     pub moving: Option<String>,
+    /// The pool's member this coordinator is (its agent's), while it leads: every answer says so,
+    /// with its term (`POOL_MEMBER`, `POOL_TERM`), so a member tells its lead's coordinator from
+    /// another's (crate::agent::lead's "late, not gone").
+    pub pool_member: Option<String>,
     /// The build page's asks of the pool's lead (`/work/lead`), for the agent to take up
     /// (crate::agent::lead).
     pub lead_asks: Vec<crate::control::LeadRequest>,
@@ -571,6 +575,10 @@ impl Shared {
     }
 }
 
+/// The headers every answer of a pool's lead's coordinator carries: its term and its member.
+pub const POOL_TERM: &str = "x-pool-term";
+pub const POOL_MEMBER: &str = "x-pool-member";
+
 pub struct Coordinator {
     pub shared: Arc<Mutex<Shared>>,
     pub contact: Contact,
@@ -836,7 +844,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, round: None, last: BTreeMap::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, round: None, last: BTreeMap::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -1229,6 +1237,11 @@ impl Coordinator {
         let mb = s.tasks.typical_mb("tail").unwrap_or(0);
         let now = s.now();
         s.workers.iter().any(|(n, w)| !w.bad && now.saturating_duration_since(w.seen) < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb && s.tasks.pace(n, "tail").is_some_and(task::beats))
+    }
+
+    /// The pool's member this coordinator answers as (`Shared::pool_member`).
+    pub fn set_member(&self, member: &str) {
+        self.shared.lock().unwrap().pool_member = Some(member.to_string());
     }
 
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
@@ -2293,6 +2306,7 @@ mod http {
         let routes = routes.route("/work/test-block", get(test_block));
         let app = routes
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), gate))
+            .layer(axum::middleware::from_fn_with_state(ctx.clone(), stamp))
             .layer(tower_http::catch_panic::CatchPanicLayer::new())
             .with_state(ctx);
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).thread_name("coordinator").enable_all().build()?;
@@ -2432,6 +2446,22 @@ mod http {
     /// (`/task/…`), with its own key, from this Mac itself (crate::net::own: `tailscale serve` hands
     /// the tailnet's requests over from loopback). A key that isn't one is refused (401), so an
     /// agent with an old one reads the new one. Who it is goes on to the request (`Caller`).
+    /// Every answer says the pool's term and member this coordinator is, while it has them.
+    async fn stamp(State(c): State<Ctx>, req: Request, next: Next) -> Response {
+        let mut r = next.run(req).await;
+        let (term, member) = {
+            let s = c.shared.lock().unwrap();
+            (s.leases.term, s.pool_member.clone())
+        };
+        if let (true, Some(m)) = (term > 0, member) {
+            if let (Ok(t), Ok(m)) = (axum::http::HeaderValue::from_str(&term.to_string()), axum::http::HeaderValue::from_str(&m)) {
+                r.headers_mut().insert(super::POOL_TERM, t);
+                r.headers_mut().insert(super::POOL_MEMBER, m);
+            }
+        }
+        r
+    }
+
     async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, mut req: Request, next: Next) -> Response {
         let ip = peer.ip();
         if !crate::net::reached(ip, req.headers()) {

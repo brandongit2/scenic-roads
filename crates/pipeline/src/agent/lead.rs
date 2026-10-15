@@ -560,7 +560,11 @@ fn view(run: &Run, auto: bool) -> View {
 /// and the command that takes it over (what a takeover from this Mac needs, or from another Mac
 /// when this one can't).
 pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
-    let Some(why) = v.no_lead.clone() else {
+    // (A lead late, its coordinator answering: counted all the same, its takeover the owner's
+    // forced one.)
+    let late = v.no_lead.is_none() && v.quiet.is_some();
+    let why = v.no_lead.clone().or_else(|| v.lead.as_ref().filter(|_| late).map(|l| format!("{}'s heartbeat is out of touch, though its coordinator still answers", l.host)));
+    let Some(why) = why else {
         kept.no_lead = None;
         v.alert = None;
         return;
@@ -579,6 +583,7 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
         return;
     }
     let what = match &v.takeover {
+        Some(Takeover { refused: None, .. }) if late => "if it's stuck, run `scenic lead take --force` on this Mac (or \"Take Over the Build…\" in its menu) to lead from the records on the NAS; nothing built is lost".to_string(),
         Some(t @ Takeover { refused: None, .. }) => {
             let flags: String = [t.force.as_ref().map(|_| " --force"), t.downgrade.as_ref().map(|_| " --downgrade")].into_iter().flatten().collect();
             format!("run `scenic lead take{flags}` on this Mac (or \"Take Over the Build…\" in its menu) to lead from the records on the NAS; nothing built is lost")
@@ -1203,6 +1208,14 @@ mod tests {
             b.go();
             assert!(b.asked().state == State::Refused && b.asked().said.contains("coordinator answered this Mac"), "{:?}", b.asked());
             assert_eq!(b.run.side.driver().leads(), None);
+            // Late for an hour: the alert all the same, its takeover forced.
+            b.pass(ALERT_S);
+            b.run.cx.lead_answered = Some(b.run.side.now() - 20);
+            b.run.controls.stale = true;
+            b.go();
+            let w = b.view().alert.expect("an alert");
+            assert!(w.contains("coordinator still answers") && w.contains("scenic lead take --force"), "{w}");
+            let now = b.run.side.now();
             // Its coordinator not heard from for as long as its heartbeat: no lead, as before.
             b.run.cx.lead_answered = Some(now - ANSWERED_S);
             b.run.controls.stale = true;

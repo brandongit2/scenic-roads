@@ -478,9 +478,17 @@ nobody reads: invariant 5.
   and stop and the state a term taken up loads stay its loop's. So a heartbeat goes out of touch
   only when its process, or its writes to the NAS, stop.
 - **Late, not gone:** a lead whose heartbeat is out of touch while its coordinator answered this
-  Mac within the same ten minutes (crate::coord::client's `answered`: a member's requests to it)
-  is shown as late ("its heartbeat is late, but its coordinator answered this Mac …"), not as "no
-  lead", and an unforced takeover is refused, saying so (crate::agent::lead's `ANSWERED_S`).
+  Mac within the same ten minutes (crate::coord::client's `answered`: a member's requests to it,
+  counted only when the answer says it's the current term's, from that term's lead: every answer
+  of a lead's coordinator carries `x-pool-term` and `x-pool-member`) is shown as late ("its
+  heartbeat is late, but its coordinator answered this Mac …"), not as "no lead", and an unforced
+  takeover is refused, saying so (crate::agent::lead's `ANSWERED_S`). The hour's alert (§10)
+  counts all the same, naming `--force`.
+- **The agent's loop never waits on the pool's thread:** a tick holds the run across the share's
+  operations, which may hang; the loop reads what it needs then without the lock (the member's id,
+  the run as its last pool step left it), passes its own pool step over (granting and starting
+  nothing on its behalf), keeps its jobs' hand-offs for the next, and at shutdown waits a minute at
+  most for the tick.
 - **The lead stays awake** while it leads with leases out, at any charge (an idle-sleep assertion,
   `caffeinate -i` held for the agent, as jobs hold one), so no member stalls behind a lead that
   dozed off with no job of its own (with the part changing in its process: §12, phase 4's fourth

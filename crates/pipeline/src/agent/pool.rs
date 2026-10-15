@@ -1010,6 +1010,24 @@ pub fn lock(r: &Shared) -> std::sync::MutexGuard<'_, Run> {
     r.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The run, locked, unless another holds it now (a tick, perhaps on a share that hangs).
+pub fn try_lock(r: &Shared) -> Option<std::sync::MutexGuard<'_, Run>> {
+    match r.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Clears `Run::in_step` when dropped: the agent's loop's pool step over, however it ended.
+pub struct InStep(pub Shared);
+
+impl Drop for InStep {
+    fn drop(&mut self) {
+        lock(&self.0).in_step = false;
+    }
+}
+
 /// The pool's own thread: it steps the driver (`Run::tick`) whenever the agent's loop hasn't for a
 /// while (`TICK_S`, `QUIET_S`), so the heartbeat, the mail, the owner's asks, a handover's offers,
 /// answers and settling, and the view go on while the agent plans or tends its jobs. Stopped (and
@@ -1060,12 +1078,18 @@ impl Ticker {
 }
 
 impl Drop for Ticker {
+    /// Stopped, not waited for (a tick on a share that hangs may not return): `stop` waits.
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(t) = self.thread.take() {
-            t.join().ok();
-        }
     }
+}
+
+/// When the current term's lead's coordinator last answered this Mac (`answered`, its client's): only
+/// an answer saying it's that term's, from that member (crate::coord::POOL_TERM, POOL_MEMBER); one
+/// from another coordinator (an earlier lead's not yet stopped, an older app's) says nothing of it.
+pub fn lead_answered(answered: Option<&crate::coord::client::Answered>, cur: Option<&crate::pool::term::Term>) -> Option<u64> {
+    let (a, t) = (answered?, cur?);
+    (a.term == Some(t.term) && a.member.as_deref() == Some(t.member.as_str())).then_some(a.at)
 }
 
 /// What the coordinator answers asks for jobs with, by the gates (None: it grants): settling a
@@ -2190,6 +2214,51 @@ mod tests {
             assert!(Instant::now() < end, "not done in {WATCHDOG:?} of ticks");
             std::thread::sleep(Duration::from_millis(30));
         }
+    }
+
+    #[test]
+    fn only_the_current_leads_coordinator_answering_counts() {
+        // Its answers say its term and member, while it has them; a member counts an answer only
+        // from the current term's lead.
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "a", "development");
+        let client = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "b");
+        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["x".into()], mem_mb: 1024, ..Default::default() };
+        client.ask(&ask).ok();
+        let first = client.answered().expect("answered");
+        assert_eq!((first.term, first.member.as_deref()), (None, None), "not a pool's lead yet: it says nothing");
+        c.set_member("m-000000000000000a");
+        c.set_term(3);
+        client.ask(&ask).ok();
+        let a = client.answered().unwrap();
+        assert_eq!((a.term, a.member.as_deref()), (Some(3), Some("m-000000000000000a")));
+        let term = |t: u64, m: &str| crate::pool::term::Term { term: t, member: m.into(), host: "A".into(), app: "development".into(), since: 1, how: String::new(), from: t - 1, seq: None };
+        assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000a"))), Some(a.at));
+        assert_eq!(lead_answered(Some(&a), Some(&term(4, "m-000000000000000a"))), None, "an earlier term's lead");
+        assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000c"))), None, "another member's");
+        assert_eq!(lead_answered(Some(&first), Some(&term(3, "m-000000000000000a"))), None, "one that says nothing");
+        assert_eq!(lead_answered(None, Some(&term(3, "m-000000000000000a"))), None);
+    }
+
+    #[test]
+    fn a_pool_step_held_by_a_tick_is_passed_over_and_a_panicking_one_clears_in_step() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let shared: Shared = Arc::new(std::sync::Mutex::new(Run::new(side(&r, &home), Role::Member, Gates::default())));
+        {
+            let _held = lock(&shared);
+            assert!(try_lock(&shared).is_none(), "a tick holds it: not waited on");
+        }
+        let s2 = shared.clone();
+        let t = std::thread::spawn(move || {
+            lock(&s2).in_step = true;
+            let _clear = InStep(s2.clone());
+            panic!("the loop's pool step panicked");
+        });
+        assert!(t.join().is_err());
+        let run = try_lock(&shared).expect("free again");
+        assert!(!run.in_step, "cleared as it unwound");
     }
 
     #[test]

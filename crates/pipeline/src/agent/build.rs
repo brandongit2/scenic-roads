@@ -4580,6 +4580,7 @@ pub(crate) mod tests {
             let on_map = BTreeMap::new();
             let p = super::plan(&cov, &date, &m, &k, &inputs, reach.as_ref(), &tiles, Rounds { each: &each, on_map: &on_map, since_last: Some(0), current: None, held: false });
             lap(&format!("[{round}] plan ({}; keys {})", dg(format!("{p:?}")), dg(format!("{k:?}"))), &mut t);
+            eprintln!("bench: [{round}] the coverage's memos hold {} KB", crate::coverage::memo_bytes() >> 10);
         }
     }
 }
