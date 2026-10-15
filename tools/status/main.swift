@@ -1215,10 +1215,23 @@ func pendingAsk() -> Bool? {
     return !(o["pause"] is NSNull || o["pause"] == nil)
 }
 
-/// This Mac's own agent's status (`Own`): the build Mac's or a helper's file, the fresher.
+/// The pool as this Mac's agent's pool last stepped it (`agent/pool/view.json`: crates/pipeline/
+/// src/agent/pool.rs PoolFile), written each of its steps, every 20 s or so whatever the agent's
+/// loop is doing (agents from #197 on).
+struct PoolFile: Decodable {
+    let beat: Int
+    let pool: OwnPool
+}
+
+/// This Mac's own agent's status (`Own`): the build Mac's or a helper's file, the fresher; its pool
+/// part from the pool's own view when that's fresher (the status waits for the agent's loop).
 func ownStatus() -> Own? {
     let dir = home.appendingPathComponent("agent")
-    return ["status.json", "helper.json"].compactMap { (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(Own.self, from: $0) } }.max { $0.beat < $1.beat }
+    guard let own = ["status.json", "helper.json"].compactMap({ (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(Own.self, from: $0) } }).max(by: { $0.beat < $1.beat }) else { return nil }
+    if let v = (try? Data(contentsOf: dir.appendingPathComponent("pool/view.json"))).flatMap({ try? JSONDecoder().decode(PoolFile.self, from: $0) }), v.beat > own.beat {
+        return Own(host: own.host, beat: own.beat, caches: own.caches, pool: v.pool)
+    }
+    return own
 }
 
 /// This Mac's ask to its agent to clear its build caches (room.rs ClearRequest), while it waits or
@@ -1632,7 +1645,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Asks this Mac's agent of the pool's lead: its ask file (crates/pipeline/src/control.rs
-    /// LeadRequest), written whole, which the agent takes up within seconds.
+    /// LeadRequest), written whole, which the pool's next step takes up, within half a minute
+    /// (crates/pipeline/src/agent/pool.rs Ticker).
     func askLead(_ ask: [String: Any]) {
         let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
         let dir = home.appendingPathComponent("agent")

@@ -270,9 +270,10 @@ impl AppState {
         let asked = pipeline::control::peek_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
         // What this Mac has downloaded (the menu says when the map needs the NAS).
         let offline = downloads::summary(self);
-        // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh), and its lead
-        // ask while its agent hasn't taken it up.
-        let pool = pipeline::agent::lead::own_status(&self.home.join("agent")).filter(|s| now.saturating_sub(s.beat) < 120).and_then(|s| s.pool).map_or(serde_json::Value::Null, |p| serde_json::to_value(p).unwrap_or_default());
+        // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh: its status, or
+        // its pool's own view, written each step of the pool's whatever its loop is doing), and its
+        // lead ask while its agent hasn't taken it up.
+        let pool = pipeline::agent::lead::own_pool(&self.home.join("agent"), now, 120).map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
         let lead_asked = pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
         // Where the menu bar's panel finds the build page.
         let pages = self.build_pages(local && !helping);

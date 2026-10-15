@@ -16,8 +16,9 @@
 //! hand-offs handed to it, writes no heartbeat, sends nothing, steps no more, and leaves the pool).
 //! Two processes of one member would lead one term twice, and number leases `<term>-<n>` twice.
 //!
-//! The agent calls `Driver::step` once per loop of its own, about every 20 s, from one thread. A
-//! step:
+//! The agent steps it about every 20 s, one step at a time: its loop's step, and while that loop is
+//! busy (a long plan, a job stopped) its pool's own thread's (crate::agent::pool's `Ticker`), each
+//! under the run's lock. A step:
 //!
 //! - **does its NAS operations through `Io`** (crate::pool::nas::Nas, and two clocks): a few
 //!   reads and stats, the records' save (about 3 MB), a term made now and then, and its jobs'
@@ -84,10 +85,10 @@
 //! itself, a create-new no stale read can fool) before acting again when, since its last step or
 //! within its last one, its wall clock and its awake clock moved more than `GAP_S` apart (it slept,
 //! or its wall clock was set, either way);
-//! when its last step ran over `STALL_S` (the NAS stalled: a share under load slows every
-//! operation, so a step's length short of that says nothing); after a restart; and when the agent
-//! asks (`Heard::reassert`, before a GC sweep). Time spent listing the journal, or waiting between
-//! loops, isn't a gap. A re-assertion keeps what the lead knew of the journal (no other lead came
+//! when its last step ran over `STALL_S`, or that long awake passed since it (the NAS stalled, or
+//! its process was held up: a share under load slows every operation, so a step's length short of
+//! that says nothing); after a restart; and when the agent asks (`Heard::reassert`, before a GC
+//! sweep). Time spent listing the journal (off the steps) isn't a gap. A re-assertion keeps what the lead knew of the journal (no other lead came
 //! between), so a sweep's step is caught up; after a sleep, its members' messages meanwhile lost,
 //! it lists the journal again. A lead whose re-assertion the app rule refuses (it restarted into
 //! an older app or a development build) stands down, and says so in its heartbeat
@@ -118,7 +119,8 @@ use std::path::Path;
 /// More than this unaccounted for, between steps or within one, and a lead re-asserts before it
 /// acts (s).
 pub const GAP_S: u64 = 60;
-/// A step running longer than this, awake: the NAS stalled, and its lead re-asserts (s).
+/// A step running longer than this, awake, or this long awake between two steps: the NAS stalled,
+/// or the process stepping it was held up, and its lead re-asserts (s).
 pub const STALL_S: u64 = 300;
 /// The longest a read is taken to stay stale (s; how long the share keeps reads stale is unchecked:
 /// plan §10): term 1 with no snapshot a take-up can read whole for this long awake (its lead's, or
@@ -572,6 +574,9 @@ impl Driver {
             if self.clocks.is_some_and(|was| gap(was, start)) {
                 self.must = Some("re-asserted after a gap");
                 self.slept = true;
+            } else if self.clocks.is_some_and(|was| start.1.saturating_sub(was.1) > STALL_S) && self.must.is_none() {
+                // (Not stepped for that long awake: its process held up, the share stalled.)
+                self.must = Some("re-asserted after a long while unstepped");
             } else if heard.reassert && self.must.is_none() {
                 self.must = Some("re-asserted before a sweep");
             }

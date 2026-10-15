@@ -7,13 +7,14 @@
 //!
 //! The lead, A, of term E:
 //! - **Leading**: an ask to hand to B makes it **Offered**: an offer, known by when it was made;
-//! - **Offered**: B's heartbeat answers that offer (`ready_for`: E+1 and the offer) within a minute:
-//!   **Settling**; else **Leading** again;
+//! - **Offered**: B's heartbeat answers that offer (`ready_for`: E+1 and the offer), read by A within
+//!   `OFFER_S` of making it: **Settling**; else **Leading** again;
 //! - **Settling**: A grants nothing new, merges what waits, cancels its duties in flight, writes the
-//!   coordinator's state and saves its records with it; settled within a minute of B's answer, and
-//!   B's answer standing, it makes term E+1 naming B, with that snapshot's number: **Passed**. Not
-//!   settled within the minute: **Leading** again (a settle that ends later passes nothing: B
-//!   answered an offer long gone);
+//!   coordinator's state and saves its records with it; settled within `SETTLE_S` of the step that
+//!   read B's answer (A's clock: when settling began), and B's heartbeat as read then still
+//!   answering this offer (the same answer, read again, counts: an answer names its offer), it makes
+//!   term E+1 naming B, with that snapshot's number: **Passed**. Not settled in that time:
+//!   **Leading** again (a settle that ends later passes nothing: B answered an offer long gone);
 //! - **Passed**: A is a member. B is known to lead E+1 within two minutes (its message, its
 //!   heartbeat, or E+1's first snapshot): the handover is over; else A makes term E+2 naming itself
 //!   ("B didn't take up") and leads it.
@@ -24,8 +25,11 @@
 use super::beat::{Beat, HandingTo, Ready, Stage};
 use serde::{Deserialize, Serialize};
 
-/// How long an offer waits for the target's answer (s).
-pub const OFFER_S: u64 = 60;
+/// How long an offer waits for the target's answer (s): the target's step reads the offer in the
+/// lead's heartbeat and answers, then the lead's step reads the answer, each Mac's pool stepped at
+/// least every `crate::agent::pool::QUIET_S` whatever its agent is doing (checked by a test there),
+/// with time for the steps themselves on a share under load.
+pub const OFFER_S: u64 = 120;
 /// How long a lead may take to settle once the target answered (s).
 pub const SETTLE_S: u64 = 60;
 /// How long the target has to lead once the term naming it is made (s).
@@ -238,13 +242,13 @@ mod tests {
 
     #[test]
     fn a_handover_gives_up_or_takes_back_when_its_minutes_run_out() {
-        // No answer within a minute: leading again.
+        // No answer within the offer's time: leading again.
         let mut h = Handover::Leading;
         h.step(7, &Seen { now: 100, ask: Some(B), ..Default::default() });
         let other = Beat { ready_for: Some(Ready { term: 8, offer: 100 }), ..beat("m-000000000000000c") };
-        assert_eq!(h.step(7, &Seen { now: 159, target: Some(&other), ..Default::default() }), Do::Nothing);
+        assert_eq!(h.step(7, &Seen { now: 100 + OFFER_S - 1, target: Some(&other), ..Default::default() }), Do::Nothing);
         assert!(matches!(h, Handover::Offered { .. }), "another's answer isn't B's");
-        h.step(7, &Seen { now: 160, ..Default::default() });
+        h.step(7, &Seen { now: 100 + OFFER_S, ..Default::default() });
         assert_eq!(h, Handover::Leading);
         // Not settled within a minute: leading again.
         h.step(7, &Seen { now: 200, ask: Some(B), ..Default::default() });
@@ -281,8 +285,8 @@ mod tests {
         let mut h = Handover::Leading;
         h.step(7, &Seen { now: 100, ask: Some(B), ..Default::default() });
         let old = answer(&h, 7);
-        h.step(7, &Seen { now: 200, ..Default::default() });
-        assert_eq!(h, Handover::Leading, "unanswered in its minute");
+        h.step(7, &Seen { now: 100 + OFFER_S, ..Default::default() });
+        assert_eq!(h, Handover::Leading, "unanswered in its time");
         h.step(7, &Seen { now: 4000, ask: Some(B), ..Default::default() });
         assert_eq!(h.step(7, &Seen { now: 4001, target: Some(&old), ..Default::default() }), Do::Nothing, "an earlier offer's answer");
         let new = answer(&h, 7);

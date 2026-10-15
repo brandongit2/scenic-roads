@@ -1,7 +1,17 @@
 //! The agent's part in the pool (docs/pool.md §12, phase 1's integration): what runs the pool's
-//! driver (crate::pool::driver) once a loop and does what it can't do itself. The driver's contract
-//! (its module's doc) says what that is; this module keeps it:
+//! driver (crate::pool::driver) and does what it can't do itself. The driver's contract (its
+//! module's doc) says what that is; this module keeps it:
 //!
+//! - **Stepped every 20 s or so, whatever the agent is doing** (`Run`, shared under a lock:
+//!   `Shared`): by the agent's loop, its step and what follows it in one hold of the run
+//!   (`Run::in_step`), and by the pool's own thread (`Ticker`) whenever that loop hasn't stepped it
+//!   for `QUIET_S` (a plan, a job being stopped, a share slow to answer): `Run::tick`, every `TICK_S`
+//!   while the loop stays busy. A tick does what's the pool's alone: the owner's asks, the driver's
+//!   step (its heartbeat, mail and listings with it), a handover's offer, answer, settling (when no
+//!   duty runs or starts here: `Cx`) and pass, the history, the view (`VIEW`), whether the
+//!   coordinator grants. What's the agent's (its jobs, its coordinator's start and stop, the state a
+//!   term taken up loads: `Run::pending_took_up`) waits for its loop's next step. One step at a
+//!   time, each file of the pool's written by the run alone.
 //! - **One process per member** (`Side::open`): the member's id (crate::pool::member_id, in the
 //!   agent's folder), its lock in the app's folder (crate::pool::MemberLock), and the driver made
 //!   from the state saved last. A process the lock is held from runs no driver.
@@ -16,7 +26,7 @@
 //!   whole by its sender alone, the last `KEPT` it sent there, each numbered; read by member id,
 //!   never by listing): best effort, as the driver's are (a message lost is told again or made up
 //!   for). The pool's API (§9) is planned.
-//! - **The heartbeat**: the driver's fields, the members it knows, written each loop they change
+//! - **The heartbeat**: the driver's fields, the members it knows, written each step they change
 //!   and at least every two minutes, stamped as it's written, to `state/pool/members/<id>.json`.
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
 //!
@@ -117,6 +127,16 @@ const BEAT_EVERY: Duration = Duration::from_secs(120);
 /// A Tell the same as the last to that member is sent again only after this (the lead hears it
 /// each loop otherwise; it keeps what it was told).
 const TELL_AGAIN: Duration = Duration::from_secs(600);
+/// The pool's own thread (`Ticker`) steps the driver when no step has run for this long (s, awake)…
+pub const TICK_S: u64 = 20;
+/// …and the agent's loop hasn't stepped it for this long (s, awake): its loop steps it about every
+/// 20 s while its steps are short, and the thread steps it meanwhile when one is long (a plan, a
+/// job stopped, a share slow to answer). No more than this goes between two steps of a member's
+/// driver while its process runs, whatever the agent's loop is doing.
+pub const QUIET_S: u64 = 25;
+/// The pool as this member's process last stepped it (`Run::write_view`): in the agent's pool
+/// folder, written by the run alone (under its lock), at every step.
+pub const VIEW: &str = "view.json";
 
 /// How the pool runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -128,6 +148,18 @@ pub enum Mode {
     Shadow,
     /// On: the terms say who leads.
     On,
+}
+
+/// The pool as a member's process last stepped it (`VIEW`): when (its clock, unix s), and the view.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PoolFile {
+    pub beat: u64,
+    pub pool: super::PoolView,
+}
+
+/// The pool's view this Mac's agent last wrote (`VIEW`, in its folder `home`'s pool folder).
+pub fn read_view(home: &Path) -> Option<PoolFile> {
+    std::fs::read(home.join("pool").join(VIEW)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 /// The pool's switch at `root` (the NAS's project folder): on when `ENABLED` is there, else shadow
@@ -930,12 +962,218 @@ pub struct Run {
     /// Its part changes in this process (`SLOTS`): a step that takes up a term or loses one doesn't
     /// ask for a restart; the agent changes its part (crate::agent's `change_part`).
     pub in_process: bool,
+    /// What a tick needs of the agent (`Cx`), as its loop left it.
+    pub cx: Cx,
+    /// The agent's loop is stepping it (its step and what follows it, `in_step` until it's done):
+    /// no tick meanwhile.
+    pub in_step: bool,
+    /// The awake time (its driver's clock, s) of its last step, and of the agent's loop's last.
+    last_step: Option<u64>,
+    last_full: Option<u64>,
+    /// Terms a tick took up whose coordinator's part is the agent's (`took_up`: the state handed
+    /// over loaded, its own host's leases from before dropped), at its loop's next step.
+    pub pending_took_up: Vec<Event>,
+}
+
+/// What the pool's own thread needs of the agent to step the driver while the agent's loop is busy
+/// (`Run::tick`): set by the agent's loop at each of its steps, under the run's lock. The tick
+/// changes nothing of the agent's own (its jobs, its coordinator's life, its part): those stay its
+/// loop's.
+#[derive(Default)]
+pub struct Cx {
+    /// The NAS's project folder (None: unreachable, no tick).
+    pub root: Option<PathBuf>,
+    /// The agent's folder.
+    pub home: PathBuf,
+    /// This process's coordinator (the lead's), for what the lead's step asks of it: the build
+    /// page's asks, settling's state, whether it grants (`set_moving`), its term.
+    pub coord: Option<Arc<crate::coord::Coordinator>>,
+    /// Whether this Mac can lead now (its disk, home and power).
+    pub able: bool,
+    /// A duty (a catalog, a sweep) runs here, or passed its gate to start: a tick doesn't settle a
+    /// handover (the agent's step stops the duty first).
+    pub duty: bool,
+    /// The agent's loop is starting a job (its lease from this coordinator): a tick doesn't settle
+    /// until it's done.
+    pub starting: bool,
+    /// When this Mac last had an answer from the lead's coordinator (its clock, unix s): a member's
+    /// client's (crate::coord::client::Client::answered).
+    pub lead_answered: Option<u64>,
+}
+
+/// A run shared by the agent's loop and the pool's own thread (`Ticker`).
+pub type Shared = Arc<std::sync::Mutex<Run>>;
+
+/// The run, locked (a thread that panicked holding it took its process down with it: the lock is
+/// taken all the same).
+pub fn lock(r: &Shared) -> std::sync::MutexGuard<'_, Run> {
+    r.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The pool's own thread: it steps the driver (`Run::tick`) whenever the agent's loop hasn't for a
+/// while (`TICK_S`, `QUIET_S`), so the heartbeat, the mail, the owner's asks, a handover's offers,
+/// answers and settling, and the view go on while the agent plans or tends its jobs. Stopped (and
+/// waited for) when dropped.
+pub struct Ticker {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Ticker {
+    pub fn start(run: Shared) -> Ticker {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let halt = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("pool".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let mut r = lock(&run);
+                    if halt.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    if r.tick_due() {
+                        r.tick();
+                    }
+                }
+            })
+            .map_err(|e| eprintln!("pool: its thread didn't start ({e}): the agent's loop steps it alone"))
+            .ok();
+        Ticker { stop, thread }
+    }
+
+    /// Stops it: its tick under way finished, waited for `wait` at most (then left to end by itself:
+    /// it steps nothing more).
+    pub fn stop(mut self, wait: Duration) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let Some(t) = self.thread.take() else { return };
+        let since = Instant::now();
+        while !t.is_finished() && since.elapsed() < wait {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if t.is_finished() {
+            t.join().ok();
+        } else {
+            eprintln!("pool: its thread's tick hasn't ended in {} s; left to end by itself", wait.as_secs());
+        }
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            t.join().ok();
+        }
+    }
+}
+
+/// What the coordinator answers asks for jobs with, by the gates (None: it grants): settling a
+/// handover, its term being taken up (`pending`: its state not loaded yet), its view not fresh, or
+/// no longer leading.
+pub fn moving(g: &Gates, pending: bool) -> Option<String> {
+    match () {
+        _ if g.leads.is_some() && pending => Some("taking up its term".into()),
+        _ if g.leads.is_some() && g.duties => None,
+        _ if g.settle => Some("settling a handover".into()),
+        _ if g.leads.is_some() => Some("re-asserting its term".into()),
+        _ => Some("no longer leads".into()),
+    }
 }
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new() }
+    }
+
+    /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for
+    /// `TICK_S`, the loop's last was `QUIET_S` ago or more, and the NAS was reachable then.
+    pub fn tick_due(&self) -> bool {
+        let now = self.side.io().awake();
+        let since = |t: Option<u64>, s: u64| t.is_none_or(|t| now.saturating_sub(t) >= s);
+        !self.in_step && self.side.stopped.is_none() && self.cx.root.is_some() && since(self.last_step, TICK_S) && since(self.last_full, QUIET_S)
+    }
+
+    /// The agent's loop's step is done (its after-effects too): the view written, ticks again.
+    pub fn stepped_full(&mut self) {
+        self.last_full = Some(self.side.io().awake());
+        self.in_step = false;
+        self.write_view();
+    }
+
+    /// A step of the pool's own thread (`Ticker`), the agent's loop busy: what the loop's step does
+    /// that's the pool's alone. The owner's asks taken (this Mac's and the build page's); a
+    /// handover settled when nothing the agent would stop runs or starts here (`Cx::duty`,
+    /// `Cx::starting`: else the loop's next step stops it and settles); the driver's step, its
+    /// heartbeat and mail with it; the history and the view; the coordinator told whether it grants.
+    /// A term it takes up that isn't its own re-asserted is left to the loop's next step for the
+    /// coordinator's part (`pending_took_up`: the state handed over, its leases), the coordinator
+    /// granting nothing until then; a change of this process's part is the loop's too (its next
+    /// step's `change_part`). None when there was nothing to step (no NAS).
+    pub fn tick(&mut self) -> Option<Out> {
+        let root = self.cx.root.clone()?;
+        let home = self.cx.home.clone();
+        let coord = self.cx.coord.clone();
+        if let Some(co) = &coord {
+            if self.gates.settle && self.settled.is_none() && !self.cx.duty && !self.cx.starting {
+                co.set_moving(Some("settling a handover".into()));
+                self.settled = serde_json::to_value(co.pool_state()).ok();
+            }
+            self.controls.page.extend(co.take_lead_asks());
+        }
+        super::lead::take(self, &home);
+        let out = self.step(self.cx.able);
+        for e in &out.events {
+            let Event::TookUp { term, handed, .. } = e else { continue };
+            match &coord {
+                Some(c) if self.led.contains(&(term - 1)) && handed.is_none() => c.set_term(*term),
+                _ => self.pending_took_up.push(e.clone()),
+            }
+        }
+        if let (Some(c), Some(e), true) = (&coord, out.leads, self.pending_took_up.is_empty()) {
+            c.set_term(e);
+        }
+        super::lead::after(self, &out, &root, &home, coord.as_deref());
+        self.behind();
+        if let Some(co) = &coord {
+            co.set_moving(moving(&self.gates, !self.pending_took_up.is_empty()));
+        }
+        for e in &out.events {
+            if let Event::Failed { what, why } | Event::Waits { what, why } = e {
+                eprintln!("pool: couldn't {what} yet: {why}");
+            }
+        }
+        self.write_view();
+        Some(out)
+    }
+
+    /// Leading term 2 or later, today's records files not yet written from its records: not caught
+    /// up (a catalog and GC read them). True when so.
+    pub fn behind(&mut self) -> bool {
+        if self.gates.leads.is_none() {
+            return false;
+        }
+        let behind = self.side.driver().records().is_some_and(|rec| rec.term >= 2 && self.today != Some((rec.term, rec.seq)));
+        if behind {
+            (self.gates.caught_up, self.gates.fresh) = (false, false);
+        }
+        behind
+    }
+
+    /// This member as the status shows it (crate::agent::PoolView).
+    pub fn pool_view(&self) -> super::PoolView {
+        super::PoolView { member: self.side.member().id.clone(), role: self.role, gates: self.gates.clone(), members: self.side.members().iter().cloned().collect(), unacked: self.side.driver().mine().to_tell(self.gates.term).len(), restart: self.restart.clone(), lead: self.controls.view.clone() }
+    }
+
+    /// The view (`pool_view`) with when it was written (this Mac's clock), to the agent's pool
+    /// folder (`VIEW`): what the controls read while the agent's status waits for its loop.
+    pub fn write_view(&self) {
+        let v = PoolFile { beat: self.side.now(), pool: self.pool_view() };
+        let r = serde_json::to_vec(&v).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.side.dir.join(VIEW), &b));
+        if let Err(e) = r {
+            eprintln!("pool: writing its view: {e:#}");
+        }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -959,6 +1197,7 @@ impl Run {
         let app_of = |m: &str| -> Option<String> { if m == me { return Some(lead_app.clone()) } nas.read(&crate::pool::beat::path(m)).ok().flatten().and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok()).map(|h| h.pool.app) };
         let checked = |e: &Entry, r: &Records| check_from(e, r, &lead_app, &app_of);
         let out = self.side.step(give, &checked);
+        self.last_step = Some(self.side.io().awake());
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
         // removal failed isn't drained again by a later process.)
         let kept = out.stop.is_none() && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
@@ -1069,9 +1308,12 @@ impl Run {
 /// term before has (a takeover's, or its own before a restart), loaded; its own host's leases from
 /// before dropped (its jobs ended with the process that ran them), but those of the jobs this
 /// process runs (`keep`: a member that took the lead in its process, its job going on).
-pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &Out, host: &str, keep: &[u64]) {
+///
+/// `events`: a step's, with those a tick left it (`Run::pending_took_up`); `leads`: the term the
+/// last step says this member leads.
+pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, events: &[Event], leads: Option<u64>, host: &str, keep: &[u64]) {
     let Some(c) = coord else { return };
-    for e in &out.events {
+    for e in events {
         let Event::TookUp { term, handed, .. } = e else { continue };
         c.set_term(*term);
         // (A take-up after a term this process led keeps what it has: it's newer than the files.)
@@ -1094,7 +1336,7 @@ pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &O
             }
         }
     }
-    if let Some(e) = out.leads {
+    if let Some(e) = leads {
         c.set_term(e);
     }
 }
@@ -1924,5 +2166,125 @@ mod tests {
         let f = |t| std::fs::read_to_string(r.join("state/coord/history").join(day(t)).join("m-000000000000000a.jsonl")).unwrap();
         assert_eq!(f(1_791_400_000).lines().count(), 2);
         assert_eq!(f(1_791_500_000).lines().count(), 1);
+    }
+
+    /// Moves a run's clocks on `s` seconds (its driver's wall and awake clocks: `Side::ahead`).
+    fn pass(r: &mut Run, s: u64) {
+        r.side.ahead += s;
+    }
+
+    /// Ticks `r` as its pool's own thread would (`TICK_S` apart: its agent's loop busy) until
+    /// `done`; the other runs ticked in turn, their clocks moved alike (their listings made off
+    /// their steps meanwhile: five minutes is a watchdog, not a measure).
+    fn tick_until(runs: &mut [&mut Run], done: impl Fn(&[&mut Run]) -> bool) {
+        let end = Instant::now() + WATCHDOG;
+        loop {
+            for r in runs.iter_mut() {
+                pass(r, TICK_S);
+                assert!(r.tick_due(), "due {TICK_S} s on, its loop silent");
+                r.tick();
+            }
+            if done(runs) {
+                return;
+            }
+            assert!(Instant::now() < end, "not done in {WATCHDOG:?} of ticks");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
+    #[test]
+    fn a_handovers_times_fit_the_pools_steps() {
+        use crate::pool::handover::{OFFER_S, SETTLE_S, TAKE_UP_S};
+        // (Derived, not figures of their own: each Mac's pool is stepped at least every `QUIET_S`
+        // whatever its agent does, a step itself taking up to as long again on a share under load.)
+        // An offer: the target's step reads it and answers, the lead's step reads the answer.
+        assert!(OFFER_S >= 2 * 2 * QUIET_S, "{OFFER_S}");
+        // Settling: the lead's next step settles, the one after passes.
+        assert!(SETTLE_S >= 2 * QUIET_S, "{SETTLE_S}");
+        // Taking up: the target's next step reads the term (or the message) and takes it up.
+        assert!(TAKE_UP_S >= 2 * 2 * QUIET_S, "{TAKE_UP_S}");
+        assert!(TICK_S <= QUIET_S && QUIET_S < crate::pool::driver::STALL_S);
+    }
+
+    #[test]
+    fn a_tick_is_due_while_the_agents_loop_is_quiet_and_never_during_its_step() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut run = Run::new(side(&r, &home), Role::Member, Gates::default());
+        assert!(!run.tick_due(), "no NAS known yet: nothing to tick");
+        run.cx = Cx { root: Some(r.clone()), home: home.clone(), able: true, ..Default::default() };
+        assert!(run.tick_due(), "never stepped");
+        // The loop's step: none while it runs, nor for `QUIET_S` after it.
+        run.in_step = true;
+        assert!(!run.tick_due());
+        run.step(true);
+        run.stepped_full();
+        assert!(!run.in_step && !run.tick_due());
+        pass(&mut run, TICK_S);
+        assert!(!run.tick_due(), "the loop stepped it {TICK_S} s ago: its next step is about due");
+        pass(&mut run, QUIET_S - TICK_S);
+        assert!(run.tick_due(), "the loop quiet {QUIET_S} s: its step is held up");
+        run.tick();
+        assert!(!run.tick_due());
+        pass(&mut run, TICK_S - 1);
+        assert!(!run.tick_due());
+        pass(&mut run, 1);
+        assert!(run.tick_due(), "every {TICK_S} s while the loop stays busy");
+        // Its view, written at every step, for the controls (`read_view`).
+        let v = read_view(&home).expect("its view");
+        assert_eq!((v.pool.member, v.beat), (run.side.member().id.clone(), run.side.now() - TICK_S));
+    }
+
+    #[test]
+    fn a_handover_goes_through_both_pools_threads_while_both_agents_plan() {
+        // (#191: the target answered an offer only once per agent step, minutes apart while it
+        // planned, and the lead gave up after a minute.) Neither agent's loop steps here: their
+        // pools' ticks alone offer, answer, settle, pass and take up, `TICK_S` apart.
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
+        let mut a = Run::new(side(&r, &ha), Role::Member, Gates::default());
+        let mut b = Run::new(side(&r, &hb), Role::Member, Gates::default());
+        let (ia, ib) = (a.side.member().id.clone(), b.side.member().id.clone());
+        let (coord, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
+        let coord = Arc::new(coord);
+        // (A's first steps its loop's, as the agent's start makes them: it takes term 1 up.)
+        let end = Instant::now() + WATCHDOG;
+        while !a.step(true).caught_up {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert_eq!(a.gates.leads, Some(1));
+        a.cx = Cx { root: Some(r.clone()), home: ha.clone(), coord: Some(coord.clone()), able: true, ..Default::default() };
+        b.cx = Cx { root: Some(r.clone()), home: hb.clone(), able: true, ..Default::default() };
+        tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
+        assert_eq!(coord.shared.lock().unwrap().moving, None, "it grants");
+        a.side.know(&ib);
+        b.side.know(&ia);
+        tick_until(&mut [&mut b], |r| r[0].side.driver().current().term == 1);
+        // A duty runs on A (a catalog): offered and answered, but not settled while it runs.
+        crate::control::request_lead(&ha, crate::control::LeadAsk::Give { to: ib.clone() }, "a test").unwrap();
+        a.cx.duty = true;
+        tick_until(&mut [&mut a, &mut b], |r| r[0].gates.settle);
+        assert!(a.settled.is_none() && coord.shared.lock().unwrap().moving.as_deref() == Some("settling a handover"));
+        a.tick();
+        assert!(a.settled.is_none(), "a duty runs: the agent's loop stops it first");
+        // Stopped (the loop's step): settled, passed, taken up, within the offer's and the settle's
+        // minutes on A's clock.
+        a.cx.duty = false;
+        tick_until(&mut [&mut a, &mut b], |r| r[1].side.driver().leads() == Some(2));
+        assert_eq!(a.side.driver().leads(), None);
+        assert_eq!(coord.shared.lock().unwrap().moving.as_deref(), Some("no longer leads"), "its coordinator grants nothing; the loop stops it");
+        // B's coordinator's part (the state handed over) is its loop's next step's.
+        let handed = b.pending_took_up.iter().find_map(|e| match e {
+            Event::TookUp { term: 2, handed, .. } => Some(handed.clone()),
+            _ => None,
+        });
+        assert!(handed.is_some_and(|h| h.is_some_and(|h| h["leases"].is_object())), "{:?}", b.pending_took_up);
+        tick_until(&mut [&mut a, &mut b], |r| r[0].controls.kept.asked.as_ref().is_some_and(|k| k.state == super::super::lead::State::Done));
+        // The views, fresh on both Macs without their loops.
+        assert_eq!(read_view(&hb).and_then(|v| v.pool.lead).map(|v| (v.term, v.leading)), Some((2, true)));
+        assert_eq!(read_view(&ha).and_then(|v| v.pool.gates.leads), None);
     }
 }

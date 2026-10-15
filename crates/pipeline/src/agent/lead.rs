@@ -3,7 +3,8 @@
 //!
 //! - **The asks** (crate::control::LeadAsk): from this Mac's menu, `scenic lead` and the map, a file
 //!   in the agent's folder (`control::LEAD_REQUEST`); from the build page, its lead's coordinator
-//!   (`/work/lead`). The agent takes them at its next loop (`Controls::take`) and checks each as
+//!   (`/work/lead`). The pool's next step takes them (`Controls::take`: the agent's loop's, or
+//!   while that's busy its pool's own thread's, crate::agent::pool's `Ticker`) and checks each as
 //!   the driver's step would (`Driver::hand_to`, `Driver::takeover`): one refused never reaches it,
 //!   and says why; one that passes goes to the next step as the owner's ask, the driver handing
 //!   over (on the lead) or passing it on to the lead by mail (on a member, §9: the pool's HTTP API
@@ -12,7 +13,9 @@
 //!   from its heartbeat (never listed), with its state and whether the lead can be handed to it,
 //!   and why not; what a takeover from this Mac needs; a handover under way; "no lead", and why; the
 //!   proactive offer (§6.5); the ask's state; the last change of lead in words. Made again every
-//!   `VIEW_S`, and at once after an ask or a change.
+//!   `VIEW_S`, and at once after an ask or a change. A lead whose heartbeat is out of touch while its
+//!   coordinator answered this Mac lately (`ANSWERED_S`) is late, not gone (`View::quiet`): no "no
+//!   lead", and no takeover unforced.
 //! - **The proactive offer, automatic** when the owner turns it on (`AUTO` on the NAS, `scenic lead
 //!   auto on`): the lead asks the handover itself once the offer has stood `AUTO_AFTER_S`, never
 //!   while a handover or an ask is under way, nor within `CALM_S` of the last change of lead (`auto`).
@@ -43,6 +46,10 @@ pub const CALM_S: u64 = 1800;
 pub const ALERT_S: u64 = 3600;
 /// The view is made again this often (s): a heartbeat read per member.
 const VIEW_S: u64 = 30;
+/// The lead's coordinator answered this Mac within this (s): it's there, whatever its heartbeat
+/// says, so its heartbeat out of touch isn't "no lead", nor a takeover unforced (its pool's step held
+/// up, its writes not landing). A lead's beat goes out of touch at the same age.
+pub const ANSWERED_S: u64 = crate::pool::beat::OUT_OF_TOUCH_S;
 /// An ask's end is shown this long, then forgotten (s).
 const SHOWN_S: u64 = 600;
 /// An ask passed on to the lead with nothing come of it in this long is said to have gone unheard (s).
@@ -201,6 +208,10 @@ pub struct View {
     /// ("Take it").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_lead: Option<String>,
+    /// The lead's heartbeat is out of touch while its coordinator answered this Mac lately
+    /// (`ANSWERED_S`): not "no lead", but its heartbeat late, in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet: Option<String>,
     /// No lead for `ALERT_S` or more: since when, why, and what to do, in words (the menu bar's
     /// icon and the build page show it).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,6 +311,7 @@ pub fn take(run: &mut Run, home: &Path) {
                 match (t.refused, t.force, t.downgrade) {
                     (Some(why), _, _) => (State::Refused, format!("this Mac can't take the lead over: {why}"), None, None),
                     (_, Some(why), _) if !force => (State::Refused, format!("taking the lead over needs the owner's force (scenic lead take --force): {why}"), None, None),
+                    _ if !force && !leads && late(run, now) => (State::Refused, format!("taking the lead over needs the owner's force (scenic lead take --force): {}'s coordinator answered this Mac {}, so it's there (its heartbeat is late)", lead_host.clone().unwrap_or_else(|| "the lead".into()), ago(now, run.cx.lead_answered.unwrap_or(now))), None, None),
                     (_, _, Some(why)) if !downgrade => (State::Refused, format!("taking the lead over needs the owner's downgrade (scenic lead take --downgrade): {why}"), None, None),
                     _ => (State::Going, "taking the lead over".to_string(), Some(me), Some(Ask::TakeOver { force: *force, downgrade: *downgrade })),
                 }
@@ -456,6 +468,18 @@ pub fn state_of(h: &Heartbeat, now: u64, app: Option<&str>) -> String {
     }
 }
 
+/// Whether the current term's lead (not this Mac) is out of touch by its heartbeat, not stood down,
+/// while its coordinator answered this Mac lately (`lead_answered`).
+fn late(run: &Run, now: u64) -> bool {
+    let Some(t) = run.side.driver().current().lead.clone() else { return false };
+    lead_answered(run, now).is_some() && t.member != run.side.member().id && run.side.heartbeat(&t.member).is_some_and(|h| h.pool.out_of_touch(now) && h.pool.stood_down != Some(t.term))
+}
+
+/// When the lead's coordinator last answered this Mac, if within `ANSWERED_S` of `now`.
+fn lead_answered(run: &Run, now: u64) -> Option<u64> {
+    run.cx.lead_answered.filter(|a| now.saturating_sub(*a) < ANSWERED_S)
+}
+
 /// The view, made now.
 fn view(run: &Run, auto: bool) -> View {
     let side = &run.side;
@@ -506,13 +530,19 @@ fn view(run: &Run, auto: bool) -> View {
     }
     members.sort_by(|a, b| b.me.cmp(&a.me).then(b.leads.cmp(&a.leads)).then(a.host.cmp(&b.host)));
     let lead_beat = cur.lead.as_ref().and_then(|t| beats.iter().find(|(id, _)| *id == t.member)).map(|(_, h)| h.clone());
+    // (Its coordinator answered lately: there, its heartbeat late.)
+    let answered = lead_answered(run, now);
+    let quiet = match (&cur.lead, &lead_beat, answered) {
+        (Some(t), Some(h), Some(a)) if !leading && t.member != me && h.pool.beat > 0 && h.pool.out_of_touch(now) && h.pool.stood_down != Some(t.term) => Some(format!("{}'s heartbeat is late (last {}), but its coordinator answered this Mac {}: it's there", t.host, ago(now, h.pool.beat), ago(now, a))),
+        _ => None,
+    };
     let no_lead = match (&cur.lead, &lead_beat) {
         _ if cur.term == 0 => None,
         (None, _) => Some(format!("term {} can't be read whole", cur.term)),
         (Some(t), _) if leading || t.member == me => None,
         (Some(t), None) => Some(format!("no heartbeat from {}", t.host)),
         (Some(t), Some(h)) if h.pool.beat == 0 => Some(format!("no heartbeat from {}", t.host)),
-        (Some(t), Some(h)) if h.pool.out_of_touch(now) => Some(format!("{} is out of touch: last heard from {}", t.host, ago(now, h.pool.beat))),
+        (Some(t), Some(h)) if h.pool.out_of_touch(now) && quiet.is_none() => Some(format!("{} is out of touch: last heard from {}", t.host, ago(now, h.pool.beat))),
         (Some(t), Some(h)) if h.pool.stood_down == Some(t.term) => Some(format!("{} stood down from term {} (its app is older than the term's)", t.host, t.term)),
         _ => None,
     };
@@ -522,7 +552,7 @@ fn view(run: &Run, auto: bool) -> View {
         Takeover { refused: t.refused, force: t.force, downgrade: t.downgrade }
     });
     let offer = offer(lead_beat.as_ref(), &members);
-    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, alert: None, short: side.driver().unread_since().is_some(), handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
+    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, quiet, alert: None, short: side.driver().unread_since().is_some(), handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
 }
 
 /// The alert (`View::alert`): no lead for `ALERT_S` or more, since the lead was last heard from or
@@ -665,7 +695,27 @@ pub fn replay(dir: &Path, coord: &crate::coord::Coordinator) {
 
 /// This Mac's own agent's status (its folder `home`): the lead's `status.json` or a member's
 /// `helper.json`, the fresher.
+///
+/// Its pool part as the pool's own thread last wrote it (crate::agent::pool's `VIEW`), when that's
+/// fresher: the status is written at the end of the agent's loop, which a long step holds up, while
+/// the pool is stepped every 20 s or so whatever the loop does.
 pub fn own_status(home: &Path) -> Option<super::Status> {
+    let mut st = own_status_plain(home)?;
+    if let Some(v) = super::pool::read_view(home).filter(|v| v.beat > st.beat) {
+        st.pool = Some(v.pool);
+    }
+    Some(st)
+}
+
+/// This Mac's agent's pool part, the fresher of its status's and its pool's own (`own_status`), if
+/// written within `fresh_s` of `now`, with when it was.
+pub fn own_pool(home: &Path, now: u64, fresh_s: u64) -> Option<(super::PoolView, u64)> {
+    let from_status = own_status_plain(home).and_then(|s| Some((s.pool?, s.beat)));
+    let from_view = super::pool::read_view(home).map(|v| (v.pool, v.beat));
+    [from_status, from_view].into_iter().flatten().max_by_key(|(_, at)| *at).filter(|(_, at)| now.saturating_sub(*at) < fresh_s)
+}
+
+fn own_status_plain(home: &Path) -> Option<super::Status> {
     ["status.json", "helper.json"].iter().filter_map(|f| std::fs::read(home.join(f)).ok()).filter_map(|b| serde_json::from_slice::<super::Status>(&b).ok()).max_by_key(|s| s.beat)
 }
 
@@ -686,6 +736,9 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
         (_, Some(why)) => out.push(v.alert.clone().unwrap_or_else(|| format!("No lead: {why} (`scenic lead take` takes it over)"))),
         (Some(l), None) => out.push(format!("The lead: {}{} — term {}, since {} ({})", l.host, if v.leading { " (this Mac)" } else { "" }, l.term, ago(now, l.since), l.how)),
         (None, None) => out.push("No terms yet".into()),
+    }
+    if let Some(q) = &v.quiet {
+        out.push(q.clone());
     }
     if let Some(h) = &v.handing {
         let stage = serde_json::to_value(h.stage).ok().and_then(|s| s.as_str().map(str::to_string)).unwrap_or_default();
@@ -926,9 +979,34 @@ mod tests {
             pub fn view(&self) -> View {
                 self.run.controls.view.clone().expect("a view")
             }
-            /// Both its clocks moved on `s` seconds.
-            pub fn pass(&mut self, s: u64) {
-                self.run.side.ahead += s;
+            /// Both its clocks moved on `s` seconds, its run stepped every `TICK_S` meanwhile, as its
+            /// pool's own thread steps it whatever its agent's loop does (a lead not stepped for
+            /// five minutes awake re-asserts: crate::pool::driver's `STALL_S`). The last step is
+            /// the test's.
+            pub fn pass(&mut self, mut s: u64) {
+                while s > 0 {
+                    let k = s.min(crate::agent::pool::TICK_S);
+                    self.run.side.ahead += k;
+                    s -= k;
+                    if s > 0 {
+                        self.go();
+                    }
+                }
+            }
+        }
+
+        /// `Mac::pass` on the Macs together: their clocks moved on `s` seconds a `TICK_S` at a time,
+        /// each stepped in turn meanwhile (the last steps the test's).
+        pub(super) fn pass_all(macs: &mut [&mut Mac], mut s: u64) {
+            while s > 0 {
+                let k = s.min(crate::agent::pool::TICK_S);
+                s -= k;
+                for m in macs.iter_mut() {
+                    m.run.side.ahead += k;
+                    if s > 0 {
+                        m.go();
+                    }
+                }
             }
         }
 
@@ -1060,8 +1138,8 @@ mod tests {
             assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "offered", .. })), "{:?}", o.events);
             assert_eq!(a.asked().state, State::Going);
             assert!(a.view().handing.as_ref().is_some_and(|h| h.stage == Stage::Offered && h.to == b.id()), "{:?}", a.view().handing);
-            // B never answers: a minute on, the offer is given up; A leads term 1 still.
-            a.pass(61);
+            // B never answers: the offer's time on, it's given up; A leads term 1 still.
+            a.pass(crate::pool::handover::OFFER_S + 1);
             a.go();
             assert_eq!(a.asked().state, State::Failed, "{:?}", a.asked());
             assert!(a.asked().said.contains("given up"));
@@ -1106,6 +1184,34 @@ mod tests {
         }
 
         #[test]
+        fn a_lead_whose_coordinator_answers_is_late_not_gone() {
+            // (#191: the lead's heartbeat went stale during its long plan steps while it granted
+            // and renewed as ever; the other Mac said "No lead … out of touch".)
+            let d = tempfile::tempdir().unwrap();
+            let (a, mut b) = pool(d.path());
+            b.pass(660);
+            let now = b.run.side.now();
+            b.run.cx.lead_answered = Some(now - 20);
+            b.run.controls.stale = true;
+            b.go();
+            let v = b.view();
+            assert_eq!(v.no_lead, None, "{v:?}");
+            assert!(v.quiet.as_ref().is_some_and(|q| q.contains("heartbeat is late") && q.contains("its coordinator answered this Mac 20 s ago")), "{v:?}");
+            assert!(said(&v, now).iter().any(|l| Some(l) == v.quiet.as_ref()));
+            // Taking over unforced: refused, saying so; forced, the owner's call.
+            b.ask(LeadAsk::Take { force: false, downgrade: false });
+            b.go();
+            assert!(b.asked().state == State::Refused && b.asked().said.contains("coordinator answered this Mac"), "{:?}", b.asked());
+            assert_eq!(b.run.side.driver().leads(), None);
+            // Its coordinator not heard from for as long as its heartbeat: no lead, as before.
+            b.run.cx.lead_answered = Some(now - ANSWERED_S);
+            b.run.controls.stale = true;
+            b.go();
+            assert!(b.view().no_lead.as_ref().is_some_and(|w| w.contains("out of touch")) && b.view().quiet.is_none(), "{:?}", b.view());
+            drop(a);
+        }
+
+        #[test]
         fn no_lead_for_an_hour_is_an_alert_saying_what_to_do() {
             let d = tempfile::tempdir().unwrap();
             let (a, mut b) = pool(d.path());
@@ -1128,15 +1234,13 @@ mod tests {
             let (mut a, mut b) = pool(d.path());
             let ib = b.id();
             // Half an hour on since term 1 began; A on battery: B is offered, on every Mac's view.
-            a.pass(CALM_S);
-            b.pass(CALM_S);
+            pass_all(&mut [&mut a, &mut b], CALM_S);
             a.conds = Conds { ac: false, battery: Some(40), ..HOME };
             until(&mut [&mut a, &mut b], |m| m[1].view().offer.is_some());
             let o = b.view().offer.unwrap();
             assert_eq!((o.to.as_str(), o.why.ends_with("is on battery")), (ib.as_str(), true));
             // The switch off: five minutes on, nothing.
-            a.pass(AUTO_AFTER_S + 30);
-            b.pass(AUTO_AFTER_S + 30);
+            pass_all(&mut [&mut a, &mut b], AUTO_AFTER_S + 30);
             for _ in 0..3 {
                 a.go();
                 b.go();
@@ -1144,12 +1248,10 @@ mod tests {
             assert_eq!(a.run.side.driver().leads(), Some(1));
             // On: once the offer stood five minutes, the lead hands over by itself.
             std::fs::write(a.root.join(AUTO), "").unwrap();
-            a.pass(VIEW_S);
-            b.pass(VIEW_S);
+            pass_all(&mut [&mut a, &mut b], VIEW_S);
             a.go();
             assert!(a.view().auto, "read with the view, every half minute");
-            a.pass(AUTO_AFTER_S);
-            b.pass(AUTO_AFTER_S);
+            pass_all(&mut [&mut a, &mut b], AUTO_AFTER_S);
             until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().leads() == Some(2));
             assert!(a.asked().by.starts_with("the pool by itself"), "{:?}", a.asked());
             // B, its new lead, at once on battery too: no offer back for half an hour.
@@ -1157,11 +1259,9 @@ mod tests {
             a.conds = HOME;
             a.go();
             b.go();
-            a.pass(VIEW_S);
-            b.pass(VIEW_S);
+            pass_all(&mut [&mut a, &mut b], VIEW_S);
             until(&mut [&mut a, &mut b], |m| m[1].view().offer.is_some());
-            b.pass(AUTO_AFTER_S + 60);
-            a.pass(AUTO_AFTER_S + 60);
+            pass_all(&mut [&mut a, &mut b], AUTO_AFTER_S + 60);
             for _ in 0..4 {
                 a.go();
                 b.go();

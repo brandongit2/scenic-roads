@@ -16,6 +16,8 @@ pub struct Client {
     contact: Mutex<Contact>,
     /// This worker's name.
     pub worker: String,
+    /// When the coordinator last answered (this Mac's clock, unix s): any answer but a refused token.
+    answered: Mutex<Option<u64>>,
 }
 
 /// What the coordinator answered: its status and its JSON (Null for none).
@@ -50,12 +52,17 @@ impl Client {
     /// the file can't be read now (an SMB hiccup: not the same as none).
     pub fn from_nas(root: &Path, worker: &str) -> Result<Option<Client>> {
         let Some(c) = read_contact(root)? else { return Ok(None) };
-        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string() }))
+        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string(), answered: Mutex::new(None) }))
     }
 
     /// A coordinator at fixed addresses.
     pub fn at(urls: Vec<String>, token: String, worker: &str) -> Client {
-        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string() }
+        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None) }
+    }
+
+    /// When the coordinator last answered a request (this Mac's clock, unix s); None: not yet.
+    pub fn answered(&self) -> Option<u64> {
+        *self.answered.lock().unwrap()
     }
 
     pub fn urls(&self) -> Vec<String> {
@@ -104,6 +111,7 @@ impl Client {
                             last = Some(anyhow::anyhow!("the coordinator refused the token"));
                             break;
                         }
+                        *self.answered.lock().unwrap() = Some(crate::agent::jobs::now_s());
                         // The working address first from now on.
                         let mut cur = self.contact.lock().unwrap();
                         if let Some(i) = cur.urls.iter().position(|u| u == url) {

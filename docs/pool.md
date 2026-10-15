@@ -178,7 +178,7 @@ A term is a file made once with create-new and never changed: `state/build/terms
 
 - **The current term is the highest that exists.** A Mac learns it once, at start (`term::current`:
   from the lead's hint, or a listing of `terms/` when the hint names no term there, then checked
-  upward), then each loop checks only whether `<E+1>.json` exists (`term::next`: a stat, never a
+  upward), then each step checks only whether `<E+1>.json` exists (`term::next`: a stat, never a
   listing); a lead handing over tells the new lead of its term too (§6.4). Its view never goes back:
   it keeps the highest term it knew across restarts (`driver::Saved`). `state/build/lead.json` is a
   hint the lead writes after taking up its term (for old apps, and to save a listing), never the
@@ -279,17 +279,22 @@ A term is a file made once with create-new and never changed: `state/build/terms
   one reads once a later term has records of its own; its journal reads and duties stop at its next
   check (§6.6). A stale lead's late rename can't land over the new lead's records: there's no
   shared file to rename over, each term having its own.
-- **The coordinator's state** is per term too: `state/coord/term/<E>/{leases,costs,failed,trust,
-  pause}.json`, copied at take-up (§7.5). A handover's new lead loads it as the old lead wrote it
-  last, from the snapshot its term names (§6.4).
+- **The coordinator's state** is per term too: one file, `state/coord/term/<E>/state.json`
+  (crate::coord::PoolState: the leases, what each target cost, the memory floors and disks
+  learned, the workers' failures, the pause), written whole by the lead of E at each loop of its
+  agent's that changed it (crate::agent's `pool_lead_files`). A lead taking up a term loads one
+  (crate::agent::pool's `took_up`, §7.5): a handover's new lead the state the old lead wrote
+  settling, from the snapshot its term names (§6.4); any other the newest `state.json` of a term
+  before its own; a lead re-asserting keeps its coordinator's as it is.
 
 ### 6.3 Asking
 
 Any member asks the lead. Its menu ("Hand the Build To ▸", "Make This Mac Lead"), `scenic lead` and
 the map's build panel ask their own Mac's agent (an ask file in its folder, `lead-request.json`,
 crate::control::LeadRequest; the map through its server's `/api/build/lead`), the worker page the
-agent of the Mac serving it (its coordinator's `/work/lead`); the agent takes the ask up at its next
-loop (crate::agent::lead). It checks it as the driver's step would (`Driver::hand_to`,
+agent of the Mac serving it (its coordinator's `/work/lead`); the pool's next step takes the ask up
+(crate::agent::lead), within half a minute: the agent's loop's step, or while that loop is busy
+(a long plan, a job being stopped) its pool's own thread's (§6.7). It checks it as the driver's step would (`Driver::hand_to`,
 `Driver::takeover`): one refused never reaches the driver, and its status says why. On the lead the
 driver hands over (§6.4); on another member it passes the ask on to the lead by mail
 (`Msg::HandTo`, §9: the pool's HTTP API, `POST /pool/lead`, is planned), and the lead checks it
@@ -311,15 +316,19 @@ what the lead's step saw, driven by crate::pool::driver.
 | State | Who writes what | Next |
 | --- | --- | --- |
 | **Leading** (A, term E) | | an ask to hand to B: **Offered** |
-| **Offered** | A's heartbeat: `handing_to: B, offer, since` (the offer known by when it was made) | B answers this offer within 60 s: **Ready**; else A clears it: **Leading** |
+| **Offered** | A's heartbeat: `handing_to: B, offer, since` (the offer known by when it was made) | A reads B's answer to this offer within two minutes of making it (`OFFER_S`: two steps of each Mac's pool, §6.7, with time to spare): **Ready**; else A clears it: **Leading** |
 | **Ready** | B checks its disk and app, then its heartbeat: `ready_for: E+1` and the offer it answers (an answer to an earlier offer answers no later one) | **Settling** |
-| **Settling** | A stops granting jobs (asks are answered "the lead is moving; ask again in a moment"), keeps renewing the leases out and taking hand-offs into the journal; cancels its duties in flight (a catalog is killed: it writes once at the end; GC stops between folders); writes the coordinator's state, and saves its records with it, merging what's waiting | settled within 60 s of B's answer, B's answer standing: **Passed**; else **Leading** (a settle that ends later passes nothing) |
+| **Settling** | A stops granting jobs (asks are answered "the lead is moving; ask again in a moment"), keeps renewing the leases out and taking hand-offs into the journal; cancels its duties in flight (a catalog is killed: it writes once at the end; GC stops between folders); writes the coordinator's state, and saves its records with it, merging what's waiting | settled within a minute (`SETTLE_S`, A's clock) of the step that read B's answer, B's heartbeat as A reads it then still answering this offer (the same answer read again counts: an answer names its offer, and none answers a later one): **Passed**; else **Leading** (a settle that ends later passes nothing) |
 | **Passed** | A makes `terms/<E+1>.json` naming B, with `seq`: the number of the snapshot it saved settling (§6.1), and tells B of it. A is now a member; its own member API sends lead asks on to B | B takes up within 2 min (B tells A it leads, or A reads it in B's heartbeat, or E+1 has a snapshot): **Leading** (B, E+1); else **Taken back** |
 | **Taken back** | A makes `terms/<E+2>.json` naming itself ("B didn't take up"), the app rule checked against term E (§6.1) | **Leading** (A, E+2) |
 
 - **The agent's parts** (§12, built): settling stops grants (its coordinator answers asks "the
   lead is moving; ask again in a moment"), stops a catalog or a sweep in flight, and hands the
-  coordinator's state to the step; the transitions themselves are the driver's. The owner's asks
+  coordinator's state to the step; the transitions themselves are the driver's. The pool's own
+  thread (§6.7) settles too while the agent's loop is busy, but only with no duty running or about
+  to start and no job starting (else that loop's next step stops the duty and settles); it leaves
+  the coordinator's start and stop, and the state a term taken up loads, to that loop's next step,
+  the coordinator granting nothing meanwhile. The owner's asks
   reach it (§6.3), so a handover starts only when someone asks, or by itself when the owner turned
   the proactive offer's switch on (§6.5).
 - **Nothing running stops,** on any Mac: leases keep their ids (`<term>-<n>`, unique by
@@ -340,7 +349,9 @@ what the lead's step saw, driven by crate::pool::driver.
 
 When the lead is out of touch (its heartbeat's own beat more than ten minutes old by the reader's
 clock; or, planned, it says it can't reach the NAS), or its heartbeat says it stood down from its
-term (§6.6), the owner may have another member take the lead: "Take Over the Build…" on its menu,
+term (§6.6), the owner may have another member take the lead (a lead out of touch whose
+coordinator answered this Mac in the last ten minutes is late, not gone: §6.7, and needs
+`--force`): "Take Over the Build…" on its menu,
 which says since when the lead's been gone and asks to confirm, the worker page's "Take it", or
 `scenic lead take`. The member makes `terms/<E+1>.json` naming itself and takes up as in §6.2.
 `--force` does it without the out-of-touch check (the owner knows the lead is off), and past a term
@@ -418,10 +429,12 @@ for a while. So the lead **re-asserts** before it acts again (crate::pool::drive
 `terms/<E+1>.json` naming itself, a create-new no stale read can fool, and takes it up from its own
 records (one copy of its snapshot, about 3 MB). It does when, since its last loop or within it, its
 wall clock and its awake clock moved more than a minute apart (the awake clock, Rust's `Instant`,
-doesn't count sleep: it slept, or its clock was set, either way); when its last loop ran over five
-minutes awake (the NAS stalled: on a share under load every operation can take seconds, so a loop's
-length short of that says nothing); after a restart; and before every GC sweep. Time spent waiting
-between loops, or listing the journal (done off the loop), isn't a gap. It keeps what it knew of the
+doesn't count sleep: it slept, or its clock was set, either way); when its last step ran over five
+minutes awake, or five minutes awake passed since it (`STALL_S`: the NAS stalled, or its process
+was held up; the pool is stepped every 20 s or so whatever the agent does, §6.7, and on a share
+under load every operation can take seconds, so a step's length short of that says nothing);
+after a restart; and before every GC sweep. Time spent listing the journal (done off the steps)
+isn't a gap. It keeps what it knew of the
 journal (no other lead came between), its refusals not noted yet with it, so the loop that
 re-asserts before a sweep is caught up (§6.2); after a sleep, the messages members sent it meanwhile
 lost, it lists the journal again. A member whose saved state is lost, or another's (this Mac's
@@ -440,7 +453,7 @@ than it now runs does the same. A lead handing over that restarts into an older 
 lead back when its target doesn't take up (the app rule): it drops the handover, and the term waits
 for its target or a takeover; the owner's forced takeover drops a handover waiting too.
 
-Every loop it also checks `<E+1>.json`. Stepping down: it stops granting, planning, merging and its
+Every step it also checks `<E+1>.json`. Stepping down: it stops granting, planning, merging and its
 duties, writes nothing more, and goes on as a member: its slots carry on (a lease the new lead knows
 is renewed; one that lapsed is stopped, its done targets handed off). The history and its menu say
 so: "No longer leading term 4: a later term exists; term 5 is MacBook-Pro-de-Brandon's (taken over
@@ -457,6 +470,17 @@ nobody reads: invariant 5.
   ahead is shown as "clock wrong". The Macs keep time by NTP to well under a second.
 - **Nothing persisted as an `Instant`:** lease deadlines, failures' waits and workers' last-seen
   times are wall-clock times on the NAS, so they mean the same on the next lead.
+- **The pool is stepped whatever the agent is doing** (crate::agent::pool's `Ticker`): the agent's
+  loop steps it about every 20 s while its steps are short, and the pool's own thread steps it
+  whenever that loop hasn't for 25 s (`QUIET_S`), every 20 s (`TICK_S`) until it does: a plan's
+  minutes, a job being stopped, a share slow to answer hold up no heartbeat, offer, answer, settle,
+  ask or view. One step at a time, under the run's lock; the agent's jobs, its coordinator's start
+  and stop and the state a term taken up loads stay its loop's. So a heartbeat goes out of touch
+  only when its process, or its writes to the NAS, stop.
+- **Late, not gone:** a lead whose heartbeat is out of touch while its coordinator answered this
+  Mac within the same ten minutes (crate::coord::client's `answered`: a member's requests to it)
+  is shown as late ("its heartbeat is late, but its coordinator answered this Mac …"), not as "no
+  lead", and an unforced takeover is refused, saying so (crate::agent::lead's `ANSWERED_S`).
 - **The lead stays awake** while it leads with leases out, at any charge (an idle-sleep assertion,
   `caffeinate -i` held for the agent, as jobs hold one), so no member stalls behind a lead that
   dozed off with no job of its own (with the part changing in its process: §12, phase 4's fourth
@@ -919,8 +943,8 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
   app, resources, conditions; its slots' jobs (progress, parts, memory) and why a slot is idle; its
   tasks waiting and out; its addresses; whether it leads (its term), a handover's state
   (`handing_to`, its offer; `ready_for`, the offer it answers), or that it stood down from its term
-  (`stood_down`: §6.6). Written each loop it changes, at least every two minutes, its beat stamped
-  as it's written. Read by member id (the ids are in the lead's status), not by listing.
+  (`stood_down`: §6.6). Written each step of its pool it changes (§6.7), at least every two
+  minutes, its beat stamped as it's written. Read by member id (the ids are in the lead's status), not by listing.
 - **The build's status,** written by the lead per term (`state/build/term/<E>/status.json`): the
   checklist, the forecast, the regions, what waits and why, the jobs that ended lately (any
   member's), the pause, the last catalog, the lead and its term, a handover under way.
@@ -928,7 +952,10 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
   `scenic lead` and `scenic status`): the pool, a line or card per member, the lead marked;
   out-of-touch members with when they were last heard from; a handover's states as they happen; "No
   lead" with "Take it". They read it from the agent's status (`pool.lead`: crate::agent::lead::View,
-  made again every half minute, and at once after an ask or a change of lead): the term's lead,
+  made again every half minute, and at once after an ask or a change of lead), or from the pool's
+  own view when that's fresher (`agent/pool/view.json`, written at every step of the pool's, §6.7:
+  the status waits for the agent's loop; `lead::own_status`, `own_pool`, the menu bar's
+  `ownStatus`): the term's lead,
   each member it knows read by id from its heartbeat (never listed), with its state (home on power,
   on battery, away, out of touch, clock wrong, stood down, app too old) and whether the lead can be
   handed to it and why not (`Driver::hand_to`), what a takeover from this Mac needs

@@ -207,7 +207,7 @@ fn lead(args: &[String]) -> Result<()> {
         Some(x) => bail!("scenic lead [give <member> | take [--force] [--downgrade] | auto on|off], not {x}"),
     };
     let r = pipeline::control::request_lead(&home, ask, &format!("scenic lead on {host}"))?;
-    println!("asked this Mac's agent; it takes the ask up within seconds");
+    println!("asked this Mac's agent; its pool's next step takes the ask up, within half a minute");
     // Followed as the agent's status says, two minutes at most.
     let start = std::time::Instant::now();
     let mut last = String::new();
