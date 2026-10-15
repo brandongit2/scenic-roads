@@ -1426,7 +1426,7 @@ shape of §5.2. Each is made a declaration or kept in code with a written reason
 | Geoid grids | none today (heights aren't converted) | `egm2008.toml`, `egm96.toml`, `cgg2013a.toml`, `geoid18.toml`, `gsigeo2011.toml`: `format = "geoid-grid"`, pinned (§6.8) |
 | Wikipedia pageviews | `dem/pageviews.py:56` (`DUMP`) | `pageviews.toml`: the URL template; the months chosen stay the items job's rule (pageviews.py:55, :61) |
 | Fonts | `scripts/fonts.sh:6` (Protomaps' assets) | kept: the app's own assets, built into it, not map data |
-| Canada's lake fill (#124, CanVec) | `lakefill::run::SOURCE_DIR` (`sources/canvec/50k/` on the NAS, the provinces' zips downloaded by hand) and `FillOpts::canvec` (its layer, fields and values) | `canvec-hydro.toml`: `format = "zip"` of shapefiles, the zips as its `files`, pinned (`refresh = "never"`); its layer and values move to the declaration |
+| Canada's lake fill (#124, CanVec) | `lakefill::run::SOURCE_DIR` (`sources/canvec/50k/` on the NAS, the provinces' zips downloaded by hand) and `FillOpts::canvec` (its layer, fields and values) | planned: `canvec-hydro.toml`, `format = "zip"` of shapefiles, the zips as its `files`, pinned (`refresh = "never"`); its layer and values move to the declaration |
 | GEBCO, NCEI's coastal relief and Great Lakes bathymetry | on the NAS (`sources/gebco`, `ncei-crm`, `ncei-greatlakes`), nothing on `main` reads them | none until a step reads them |
 
 Each with its proof (the step's outputs the same) and the code's constant deleted.

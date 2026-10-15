@@ -1182,17 +1182,18 @@ they treat any raster.
     - OSM's halves completed: where the import cut OSM's lake at a gap sheet's edge (its other
       half never imported), the source's lake touching OSM's water only across that edge (none
       within 10 m of it inside the gap sheets, 20 m in from their edges) is taken as its part in the
-      gap sheets, cut at their edges, so the two abut and the lake reads whole; without it, a strip
-      along each such edge stayed empty beside OSM's straight-cut halves;
+      gap sheets, cut at their edges, so the two abut and the lake reads whole (else a strip along
+      each such edge would be empty beside OSM's straight-cut halves);
     - a lake the source has twice is taken once, and a piece wholly inside another of its lake
       dropped;
     - lakes meeting a gap sheet are taken whole, wherever the rest lies; one over 1° across (whose
       pieces might not all have been read) is left out;
     - a sheet is filled only where under half of the source's lakes in it already touch OSM's water
       (`FillOpts::canvec`): otherwise OSM has its lakes, and the sheet isn't a gap.
-  - **The fill** (2026-10-09, the M1, the 13 provinces' and territories' zips; `lakefill::run::fill`
-    by longitude bands of the gap sheets, `run::BANDS`, one at a time, then `run::merge`): 2.80 million lakes, 136,200 km²,
-    a 793 MB file, about 15 min (each band 1–4.5 min, 1.8–7.2 GB of memory). Of the source's
+  - **The fill** (2026-10-15, the build Mac, the 13 provinces' and territories' zips;
+    `lakefill::run::fill` by longitude bands of the gap sheets, `run::BANDS`, one at a time, then
+    `run::merge`): 2.80 million lakes, 136,200 km², a 793 MB file, 4.3 min, 10.4 GB of memory at
+    most. Of the source's
     2.87 million lakes in the gap sheets, 66,695 touch OSM's water: 5,124 of those complete OSM's
     halves. Of the 3,519 gap sheets, 3,121 are filled; 354 are left, most of the source's lakes
     there already in OSM (208 in Nunavut, many lakeless by nature, and all 7 in Newfoundland and
@@ -1212,15 +1213,21 @@ they treat any raster.
       between them, 13.5 m wide at the median, where the two sources' shores differ; at z14 a
       completed half and OSM's read as one lake.
   - **Where it plugs in** (keyed by content):
-    - The `lakefill` step (`run::all`, alone, in this Mac's scratch) makes one file,
-      `work/lakefill.<h>.sect` (docs/formats.md); its key names the pass's basemap and outlines and
-      the source's zips by name and size (`run::source_pin`). The water layer waits for it.
+    - The `lakefill` step (`run::all`, alone, in this Mac's scratch) makes one file a pass,
+      `work/lakefill/<date>.<h>.sect` (docs/formats.md), the other passes' removed; its key names
+      the pass's basemap and outlines and the source's zips by name, size and time
+      (`run::source_pin`; a folder that can't be read holds both it and the water). Only the fill
+      made from the latest pass's basemap is drawn (`lakefill::current`). The water layer waits for
+      it, until it has failed 3 times in a row (`water_waits_for_lakefill`): then the water is drawn
+      without this pass's fill and the checklist says so.
     - The water layer draws its lakes as a z14 tile of their own beside the basemap's
       (`water::Extra`), in the build and in the server's deeper zooms (the catalog's
-      `global.lakefill`; the server memory-maps the file from its mirror); the layer's key takes the
-      fill.
+      `global.lakefill`, the file among the mirror's essentials; the server memory-maps it from the
+      mirror, else reads it whole from the NAS, and a tile request that can't read it fails and is
+      tried again); the layer's key takes the fill.
     - The terrain flattens them as lakes, by their own keys (`lakefill::FilledWater`, intermittent
-      ones left out). The terrain's water source's pin names the fill after the basemap
+      ones left out; a lake joined from pieces is intermittent only when all of them are, so one
+      with perennial and intermittent pieces is flattened whole). The terrain's water source's pin names the fill after the basemap
       (`terrain_pack::water_source_pin`), so a new fill makes the water digests again
       (`terrain-water`) and only the pieces and assemblies whose water it changes are made again.
 

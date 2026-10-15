@@ -77,12 +77,13 @@ pub fn water_pin(m: &std::collections::BTreeMap<String, String>) -> Option<(&str
 
 /// The pin of the terrain's water source as the jobs open it (`SourceFiles`: `WaterSource::pin`),
 /// from the manifest alone: the latest pass's basemap's content name, and the lakes filled from
-/// Canada's own data's after it when the manifest has them (crate::lakefill::filled_pin); None
+/// Canada's own data's after it when the manifest has them for that basemap
+/// (crate::lakefill::current, filled_pin); None
 /// without a basemap. What the terrain's keys name the water by (agent::build: its digests,
 /// crate::terrain_water::WaterIdx).
 pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Option<String> {
     let (_, c) = water_pin(m)?;
-    Some(crate::lakefill::filled_pin(c, m.get(crate::lakefill::LOGICAL).map(String::as_str)))
+    Some(crate::lakefill::filled_pin(c, crate::lakefill::current(m).map(|(_, f)| f)))
 }
 
 /// The terrain's water source, open (its pin `water_source_pin`'s): the latest pass's basemap, with
@@ -91,8 +92,8 @@ pub fn open_water(out: &Out) -> anyhow::Result<crate::lakefill::FilledWater<crat
     use anyhow::Context;
     let (_, c) = water_pin(&out.manifest).context("no basemap (layers/basemap/world-<date>): the terrain's water is the latest pass's basemap's")?;
     let base = crate::terrain_water::BasemapWater::open(&out.path(c), c)?;
-    let fill = match out.get(crate::lakefill::LOGICAL) {
-        Some(f) => Some(crate::lakefill::Fill::open(&out.path(f), f)?),
+    let fill = match crate::lakefill::current(&out.manifest) {
+        Some((_, f)) => Some(crate::lakefill::Fill::open(&out.path(f), f)?),
         None => None,
     };
     Ok(crate::lakefill::FilledWater { base, fill })

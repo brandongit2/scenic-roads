@@ -927,11 +927,13 @@ fn label(i: &Item) -> String {
 /// needs to start and to draw anywhere zoomed out, and the small per-tile records any view's lists
 /// read. The worldwide files the build makes (`global/…`: rail frequencies, the road → units index,
 /// landmark totals, heritage summaries, today's converted layer files and details, roads' English
-/// names), every layer's root and lo packs (zooms 0–8), and the landmark points and area details
-/// (markdata, ovdata). Not the pass's area outlines (a worldwide file under `sources/`, read only to
-/// make new regions), nor the basemap (its pieces: crate::pieces).
+/// names), the lakes filled from Canada's own data (`work/lakefill/…`, which the water's deeper
+/// zooms read: the server maps it from here), every layer's root and lo packs (zooms 0–8), and the
+/// landmark points and area details (markdata, ovdata). Not the pass's area outlines (a worldwide
+/// file under `sources/`, read only to make new regions), nor the basemap (its pieces:
+/// crate::pieces).
 fn essential_logicals(cat: &Catalog) -> std::collections::HashSet<&str> {
-    let mut e: HashSet<&str> = cat.global.values().map(String::as_str).filter(|l| l.starts_with("global/")).collect();
+    let mut e: HashSet<&str> = cat.global.values().map(String::as_str).filter(|l| l.starts_with("global/") || l.starts_with("work/lakefill/")).collect();
     for l in cat.layers.values() {
         e.extend(l.root.iter().map(String::as_str));
         e.extend(l.lo.values().map(String::as_str));

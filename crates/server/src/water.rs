@@ -100,28 +100,35 @@ pub fn version(s: &crate::AppState) -> String {
     format!("{:012x}", made_from(s, &s.data.basemap_names()) >> 16)
 }
 
-/// The catalog's lakes filled from Canada's own data (pipeline::lakefill): its content name.
-fn fill_content(s: &crate::AppState) -> Option<String> {
+/// The catalog's lakes filled from Canada's own data (pipeline::lakefill): its logical and content
+/// names.
+fn fill_names(s: &crate::AppState) -> Option<(String, String)> {
     let l = s.data.catalog().global.get("lakefill")?.clone();
-    s.data.content(&l)
+    let c = s.data.content(&l)?;
+    Some((l, c))
+}
+
+fn fill_content(s: &crate::AppState) -> Option<String> {
+    fill_names(s).map(|(_, c)| c)
 }
 
 /// The catalog's fill, opened once (kept while the catalog names it): memory-mapped from this
-/// Mac's mirror (793 MB, 2026-10-09), never read into memory, but from the NAS when the mirror
-/// lacks it.
+/// Mac's mirror (793 MB, 2026-10-15), never read into memory, but read whole from the NAS when the
+/// mirror lacks it. One request opens it while the others wait for it (the lock is held across
+/// the opening). One that can't be read fails the tile's request, which is tried again on the
+/// next: a tile is never drawn without the fill under a version that names it.
 fn fill(s: &crate::AppState) -> Result<Option<Arc<pipeline::lakefill::Fill>>> {
     static KEPT: OnceLock<Mutex<Option<(String, Arc<pipeline::lakefill::Fill>)>>> = OnceLock::new();
-    let Some(content) = fill_content(s) else { return Ok(None) };
-    let kept = KEPT.get_or_init(|| Mutex::new(None));
-    if let Some((c, f)) = kept.lock().unwrap().as_ref() {
+    let Some((logical, content)) = fill_names(s) else { return Ok(None) };
+    let mut kept = KEPT.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((c, f)) = kept.as_ref() {
         if *c == content {
             return Ok(Some(f.clone()));
         }
     }
-    let Some((c, whole)) = s.data.whole(pipeline::lakefill::LOGICAL)? else { return Ok(None) };
+    let Some((c, whole)) = s.data.whole(&logical)? else { return Ok(None) };
     let f = Arc::new(pipeline::lakefill::Fill::from_source(Box::new(whole), &c)?);
-    let content = c;
-    *kept.lock().unwrap() = Some((content, f.clone()));
+    *kept = Some((c, f.clone()));
     Ok(Some(f))
 }
 

@@ -166,6 +166,16 @@ fn sync(m: &Mirror, cat: &Catalog, w: &Wanted, nas: &Nas) -> SyncStats {
 }
 
 #[test]
+fn the_lake_fill_is_an_essential_and_the_outlines_are_not() {
+    let mut cat = Catalog::default();
+    for (key, l) in [("lakefill", "work/lakefill/2026-09-28"), ("outlines", "sources/osm/2026-09-28/outlines"), ("railfreq", "global/railfreq")] {
+        cat.files.insert(l.to_string(), FileRef { file: format!("{l}.0123456789abcdef.bin"), size: 1, fmt: 1, ..Default::default() });
+        cat.global.insert(key.to_string(), l.to_string());
+    }
+    assert_eq!(essentials(&cat), ["global/railfreq.0123456789abcdef.bin", "work/lakefill/2026-09-28.0123456789abcdef.bin"]);
+}
+
+#[test]
 fn nothing_is_copied_that_wasnt_downloaded() {
     let nas = nas();
     let home = tempfile::tempdir().unwrap();

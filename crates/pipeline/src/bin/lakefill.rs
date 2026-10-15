@@ -177,11 +177,12 @@ fn catalog_add(a: &[String]) -> Result<()> {
     let mut cat = store::catalog::read(&dir.join(format!("{n}.json.zst")))?;
     let name = fill.file_name().context("a fill file")?.to_string_lossy().into_owned();
     let hash = name.trim_start_matches("lakefill.").trim_end_matches(".sect");
-    let content = store::naming::content_name(pipeline::lakefill::LOGICAL, hash, "sect");
+    let logical = format!("{}test", pipeline::lakefill::PREFIX);
+    let content = store::naming::content_name(&logical, hash, "sect");
     std::fs::create_dir_all(root.join(&content).parent().unwrap())?;
     std::fs::copy(&fill, root.join(&content))?;
-    cat.files.insert(pipeline::lakefill::LOGICAL.into(), store::catalog::FileRef { file: content.clone(), size: std::fs::metadata(&fill)?.len(), fmt: 1, ..Default::default() });
-    cat.global.insert("lakefill".into(), pipeline::lakefill::LOGICAL.into());
+    cat.files.insert(logical.clone(), store::catalog::FileRef { file: content.clone(), size: std::fs::metadata(&fill)?.len(), fmt: 1, ..Default::default() });
+    cat.global.insert("lakefill".into(), logical);
     cat.n += 1;
     let p = store::catalog::write_copy(&dir, &cat)?;
     eprintln!("lakefill: {} with {content}", p.display());

@@ -654,9 +654,26 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
 
 // ---- the fill's file ------------------------------------------------------------------------------
 
-/// The fill's logical name in the manifest and catalog: the water layer and the terrain draw it
-/// when it's there (content-named, `work/lakefill.<hash>.sect`).
-pub const LOGICAL: &str = "work/lakefill";
+/// The fills' logical names' prefix: one per pass, `work/lakefill/<date>` (content-named,
+/// `work/lakefill/<date>.<hash>.sect`), made from that pass's basemap (`logical`).
+pub const PREFIX: &str = "work/lakefill/";
+
+/// The logical name of the fill made from pass `date`'s basemap.
+pub fn logical(date: &str) -> String {
+    format!("{PREFIX}{date}")
+}
+
+/// The fill the water and the terrain read with the build manifest `m`: the one made from the
+/// latest pass's basemap (`terrain_pack::water_pin`), as (logical, content name); None when that
+/// pass has none (not made yet, or no source), so a fill made from an older basemap is never
+/// drawn over a newer one.
+pub fn current(m: &BTreeMap<String, String>) -> Option<(String, &str)> {
+    let (l, _) = crate::terrain_pack::water_pin(m)?;
+    let date = l.strip_prefix("layers/basemap/world-")?;
+    let f = logical(date);
+    let c = m.get(&f)?;
+    Some((f, c.as_str()))
+}
 
 /// The fill file's format (meta `fmt`).
 pub const FORMAT: &str = "lakefill-1";
@@ -1312,6 +1329,56 @@ pub mod zip {
     mod tests {
         use super::*;
 
+        /// A zip of `files` (name, bytes, deflated or stored), as PKWARE's APPNOTE lays one out.
+        fn write_zip(path: &Path, files: &[(&str, &[u8], bool)]) {
+            use std::io::Write;
+            let (mut out, mut central) = (Vec::new(), Vec::new());
+            for (name, data, deflate) in files {
+                let crc = crc32fast::hash(data);
+                let body = if *deflate {
+                    let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                    e.write_all(data).unwrap();
+                    e.finish().unwrap()
+                } else {
+                    data.to_vec()
+                };
+                let method: u16 = if *deflate { 8 } else { 0 };
+                let at = out.len() as u32;
+                let common = |v: &mut Vec<u8>| {
+                    v.extend(20u16.to_le_bytes());
+                    v.extend(0u16.to_le_bytes());
+                    v.extend(method.to_le_bytes());
+                    v.extend([0u8; 4]);
+                    v.extend(crc.to_le_bytes());
+                    v.extend((body.len() as u32).to_le_bytes());
+                    v.extend((data.len() as u32).to_le_bytes());
+                    v.extend((name.len() as u16).to_le_bytes());
+                    v.extend(0u16.to_le_bytes());
+                };
+                out.extend(0x0403_4b50u32.to_le_bytes());
+                common(&mut out);
+                out.extend(name.as_bytes());
+                out.extend(&body);
+                central.extend(0x0201_4b50u32.to_le_bytes());
+                central.extend(20u16.to_le_bytes());
+                common(&mut central);
+                // (Comment length, disk, internal and external attributes.)
+                central.extend([0u8; 10]);
+                central.extend(at.to_le_bytes());
+                central.extend(name.as_bytes());
+            }
+            let cd_at = out.len() as u32;
+            out.extend(&central);
+            out.extend(0x0605_4b50u32.to_le_bytes());
+            out.extend([0u8; 4]);
+            out.extend((files.len() as u16).to_le_bytes());
+            out.extend((files.len() as u16).to_le_bytes());
+            out.extend((central.len() as u32).to_le_bytes());
+            out.extend(cd_at.to_le_bytes());
+            out.extend(0u16.to_le_bytes());
+            std::fs::write(path, out).unwrap();
+        }
+
         #[test]
         fn members_are_listed_and_read_and_checked() {
             let d = tempfile::tempdir().unwrap();
@@ -1321,10 +1388,7 @@ pub mod zip {
             std::fs::write(dir.join("a.bin"), &big).unwrap();
             std::fs::write(dir.join("b.txt"), b"hello").unwrap();
             let z = d.path().join("t.zip");
-            let mut zip = std::process::Command::new("/usr/bin/zip");
-            zip.arg("-q").arg("-j").arg(&z).arg(dir.join("a.bin")).arg(dir.join("b.txt"));
-            let ok = store::spawn::status(&mut zip).unwrap();
-            assert!(ok.success());
+            write_zip(&z, &[("a.bin", &big, true), ("b.txt", b"hello", false)]);
             let ms = members(&z).unwrap();
             assert_eq!(ms.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["a.bin", "b.txt"]);
             let mut got = Vec::new();

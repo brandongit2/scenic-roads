@@ -286,19 +286,29 @@ impl FillOpts {
 /// territories' shapefile zips, downloaded by hand: docs/plan.md §6 Water).
 pub const SOURCE_DIR: &str = "sources/canvec/50k";
 
-/// The source's files under `dir` as the step's key names them: each zip's name and size, in
-/// order; None without any (no fill made).
-pub fn source_pin(dir: &Path) -> Option<String> {
-    let mut v: Vec<String> = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let n = e.file_name().to_string_lossy().into_owned();
-            (n.to_ascii_lowercase().ends_with(".zip") && !n.starts_with('.')).then(|| Some(format!("{n} {}", e.metadata().ok()?.len())))?
-        })
-        .collect();
+/// The source's files under `dir` as the step's key names them: each zip's name, size and time
+/// (a zip replaced by one of the same size is a new source), in order; None when there's no such
+/// folder or no zip in it (no fill made); an error when it can't be read now (the NAS away), which
+/// is never taken for "no source".
+pub fn source_pin(dir: &Path) -> std::io::Result<Option<String>> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut v = Vec::new();
+    for e in rd {
+        let e = e?;
+        let n = e.file_name().to_string_lossy().into_owned();
+        if !n.to_ascii_lowercase().ends_with(".zip") || n.starts_with('.') {
+            continue;
+        }
+        let md = e.metadata()?;
+        let t = md.modified()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        v.push(format!("{n} {} {t}", md.len()));
+    }
     v.sort();
-    (!v.is_empty()).then(|| v.join("\n"))
+    Ok((!v.is_empty()).then(|| v.join("\n")))
 }
 
 /// The longitude bands `all` fills one at a time (each 1.8–7.2 GB of memory, 2026-10-09).
@@ -916,13 +926,32 @@ mod tests {
     #[test]
     fn the_sources_pin_is_its_zips_names_and_sizes() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(source_pin(d.path()), None);
-        assert_eq!(source_pin(&d.path().join("none")), None);
-        std::fs::write(d.path().join("b_Hydro_shp.zip"), b"12345").unwrap();
-        std::fs::write(d.path().join("a_Hydro_shp.zip"), b"1").unwrap();
-        std::fs::write(d.path().join("notes.txt"), b"x").unwrap();
-        std::fs::write(d.path().join("._a_Hydro_shp.zip"), b"xx").unwrap();
-        assert_eq!(source_pin(d.path()).as_deref(), Some("a_Hydro_shp.zip 1\nb_Hydro_shp.zip 5"));
+        assert_eq!(source_pin(d.path()).unwrap(), None);
+        assert_eq!(source_pin(&d.path().join("none")).unwrap(), None);
+        let set = |name: &str, bytes: &[u8], t: u64| {
+            let p = d.path().join(name);
+            std::fs::write(&p, bytes).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)).unwrap();
+        };
+        set("b_Hydro_shp.zip", b"12345", 1_700_000_000);
+        set("a_Hydro_shp.zip", b"1", 1_700_000_100);
+        set("notes.txt", b"x", 1);
+        set("._a_Hydro_shp.zip", b"xx", 1);
+        assert_eq!(source_pin(d.path()).unwrap().as_deref(), Some("a_Hydro_shp.zip 1 1700000100\nb_Hydro_shp.zip 5 1700000000"));
+        // The same size, replaced: another source.
+        set("a_Hydro_shp.zip", b"2", 1_700_000_200);
+        assert_eq!(source_pin(d.path()).unwrap().as_deref(), Some("a_Hydro_shp.zip 1 1700000200\nb_Hydro_shp.zip 5 1700000000"));
+        // A folder that can't be read is an error, not "no source".
+        let f = d.path().join("notes.txt");
+        assert!(source_pin(&f).is_err());
+    }
+
+    #[test]
+    fn the_water_waits_for_the_fill_until_it_has_failed_a_few_times() {
+        use crate::agent::build::{water_waits_for_lakefill as waits, LAKEFILL_HOLDS};
+        assert!(waits(true, 0) && waits(true, LAKEFILL_HOLDS - 1));
+        assert!(!waits(true, LAKEFILL_HOLDS) && !waits(true, LAKEFILL_HOLDS + 5));
+        assert!(!waits(false, 0), "no lakefill work: nothing to wait for");
     }
 
     #[test]
@@ -946,8 +975,18 @@ mod tests {
         let water = build::water_work(date, &m, &done).unwrap().targets[0].1.clone();
         let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
         assert_eq!(pin, "layers/basemap/world-x.0123456789abcdef.pmtiles");
-        m.insert(crate::lakefill::LOGICAL.to_string(), "work/lakefill.0123456789abcdef.sect".to_string());
-        assert_ne!(build::water_work(date, &m, &done).unwrap().targets[0].1, water);
-        assert_eq!(crate::terrain_pack::water_source_pin(&m).unwrap(), "layers/basemap/world-x.0123456789abcdef.pmtiles + work/lakefill.0123456789abcdef.sect");
+        m.insert(crate::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
+        let filled = build::water_work(date, &m, &done).unwrap().targets[0].1.clone();
+        assert_ne!(filled, water);
+        assert_eq!(crate::terrain_pack::water_source_pin(&m).unwrap(), "layers/basemap/world-x.0123456789abcdef.pmtiles + work/lakefill/2026-09-28.0123456789abcdef.sect");
+        // A newer pass's basemap: the older pass's fill is drawn by neither, until one is made from it.
+        let newer = "2027-03-01";
+        m.insert(format!("layers/basemap/world-{newer}"), "layers/basemap/world-y.fedcba9876543210.pmtiles".to_string());
+        assert_eq!(crate::lakefill::current(&m), None);
+        assert_eq!(crate::terrain_pack::water_source_pin(&m).unwrap(), "layers/basemap/world-y.fedcba9876543210.pmtiles");
+        let w_new = build::water_work(newer, &m, &done).unwrap().targets[0].1.clone();
+        m.insert(crate::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
+        assert_ne!(build::water_work(newer, &m, &done).unwrap().targets[0].1, w_new);
+        assert_eq!(crate::lakefill::current(&m).map(|(l, _)| l), Some(crate::lakefill::logical(newer)));
     }
 }

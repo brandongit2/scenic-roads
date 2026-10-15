@@ -88,7 +88,7 @@ pub const TABLE: [Step; 45] = [
     Step { alone: true, ..base("labels", w_labels) },
     // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
     // merged fill's, 10.4 GB at most measured, 2026-10-15; its runs' files, under a GB each, here.)
-    Step { mem_mb: 11264, disk: RESERVE + 5 * GB, alone: true, ..base("lakefill", w_lakefill) },
+    Step { mem_mb: 12288, disk: RESERVE + 5 * GB, alone: true, ..base("lakefill", w_lakefill) },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
     // 2026-10-08; its tiles' archive, 1.8 GB worldwide, and their packs written here first.)
     Step { mem_mb: 8192, disk: RESERVE + 5 * GB, alone: true, ..base("water", w_water) },
@@ -470,12 +470,13 @@ fn w_labels(l: &str, _: bool) -> bool {
     pack(l, "labels", &ALL)
 }
 
-/// The water's packs, every zoom (those it didn't write removed, and the small water's before it,
-/// which it replaced).
+/// The pass's lakes filled from Canada's own data (the other passes' removed).
 fn w_lakefill(l: &str, _: bool) -> bool {
-    l == crate::lakefill::LOGICAL
+    matches!(parts(l).as_slice(), ["work", "lakefill", d] if date(d))
 }
 
+/// The water's packs, every zoom (those it didn't write removed, and the small water's before it,
+/// which it replaced).
 fn w_water(l: &str, removal: bool) -> bool {
     pack(l, "water", &ALL) || (removal && pack(l, "smallwater", &ALL))
 }
@@ -670,7 +671,7 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
         // by the former), the batches, the disk.
-        let mem: [(&str, u64); 20] = [("lakefill", 11264), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
+        let mem: [(&str, u64); 20] = [("lakefill", 12288), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
         }
@@ -758,7 +759,7 @@ mod tests {
     #[test]
     fn entries_within_their_write_sets() {
         let ok: [(&str, &[(&str, bool)]); 26] = [
-            ("lakefill", &[("work/lakefill", false)]),
+            ("lakefill", &[("work/lakefill/2026-09-28", false), ("work/lakefill/2026-03-01", true)]),
             ("inputs", &[("sources/inputs/_gate-test/@index", false), ("sources/inputs/_gate-test/@held", true), ("sources/inputs/_gate-test/@listed", false), ("sources/inputs/_gate-nest/inner/@index", false), ("sources/inputs/_gate-nest/inner/@listed", false)]),
             ("osm-pass", &[("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-09-28/pass", false), ("layers/basemap/world-2026-09-28", false), ("sources/osm/2026-08-01/sets/water", true), ("work/heritage/2026-08-01/base/heritage", true), ("work/summits/2026-08-01", true)]),
             ("pass-sets", &[("sources/osm/2026-09-28/sets/water-v2", false)]),
@@ -795,7 +796,7 @@ mod tests {
         // removed by a step that doesn't retire passes, a prune that writes, a removal the step
         // doesn't make.
         let bad: [(&str, &[(&str, bool)]); 11] = [
-            ("lakefill", &[("work/lakefill-2", false)]),
+            ("lakefill", &[("work/lakefill", false), ("work/lakefill/x", false)]),
             ("inputs", &[("sources/inputs/_gate-test/a", false), ("sources/inputs/_gate-test/index", false), ("sources/inputs/x/y/@other", false)]),
             ("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false)]),
             ("terrain", &[("work/terrain-mid/3-1-2", false)]),

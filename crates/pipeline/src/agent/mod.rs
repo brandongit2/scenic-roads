@@ -4163,12 +4163,30 @@ impl Agent {
             if let Some(w) = build::spoken_work(date, &manifest, &keys) {
                 jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", p.clone(), Some(w)));
             }
-            // (The water after the lakes filled from Canada's own data, which it draws.)
-            let source = crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR));
-            if let Some(w) = build::lakefill_work(date, &manifest, &keys, source.as_deref()) {
-                jobs.push(job(format!("lakefill {date}"), "Filling in Canada's lakes missing from OpenStreetMap", "lakefill", p.clone(), Some(w)));
-            } else if let Some(w) = build::water_work(date, &manifest, &keys) {
-                jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
+            // (The water after the lakes filled from Canada's own data, which it draws: while the
+            // lakefill job has work, unless it has failed LAKEFILL_HOLDS times in a row; then the
+            // water is drawn with the pass's fill as the manifest has it, or none. While the
+            // source's folder can't be read, neither runs.)
+            match crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)) {
+                Err(e) => waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("its source's folder can't be read now ({e}); the water waits too") }),
+                Ok(source) => {
+                    let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
+                    let failures = self.mem.retry.get(&format!("lakefill {date}")).map_or(0, |r| r.0);
+                    let holds = build::water_waits_for_lakefill(lakefill.is_some(), failures);
+                    if let Some(w) = lakefill {
+                        jobs.push(job(format!("lakefill {date}"), "Filling in Canada's lakes missing from OpenStreetMap", "lakefill", p.clone(), Some(w)));
+                    }
+                    if let Some(w) = build::water_work(date, &manifest, &keys) {
+                        if holds {
+                            waiting.push(Waiting { step: Some("water".into()), what: "Drawing the world's water at every zoom".into(), why: "waits for Canada's missing lakes to be filled (the lakefill job)".into() });
+                        } else {
+                            if failures >= build::LAKEFILL_HOLDS {
+                                waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("failed {failures} times in a row: the water is drawn without this pass's fill meanwhile") });
+                            }
+                            jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
+                        }
+                    }
+                }
             }
         }
         // After each catalog the map serves: the names to translate and descriptions to write.
@@ -4646,7 +4664,7 @@ impl Agent {
             !manifest.contains_key(&crate::buildtiles::index_logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
-            build::lakefill_work(&date, &manifest, &keys, crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)).as_deref()).is_some(),
+            build::lakefill_work(&date, &manifest, &keys, crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)).ok().flatten().as_deref()).is_some(),
             build::water_work(&date, &manifest, &keys).is_some(),
         ]
         .iter()

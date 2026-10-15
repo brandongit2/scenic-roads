@@ -244,7 +244,7 @@ be cached). `?c=<sea>,<lake>[,<land>]`
 the sea's where there's none) and alpha their sum (at most whole), or with the land's colour the
 alpha whose blend over that land has the lightness of the two mixed as light (`alpha_for`); `?raw=1`: an RGB PNG, red the sea's share, green the inland water's.
 
-## Lakes filled from Canada's own data (`work/lakefill.<h>.sect`; pipeline::lakefill)
+## Lakes filled from Canada's own data (`work/lakefill/<date>.<h>.sect`; pipeline::lakefill)
 
 The lakes OSM lacks in Canada's unimported map sheets (docs/plan.md §6, Water), from CanVec. RDSECT
 v1, meta `{"fmt": "lakefill-1", "grid_z": 8, "lakes", "rings", "points", "source", "layer",

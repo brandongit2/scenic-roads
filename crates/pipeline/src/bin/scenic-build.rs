@@ -1008,6 +1008,34 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     })
 }
 
+/// The catalog's `global` names besides `global/…` files: the latest pass's outlines, for the
+/// Regions panel and the modules (exactly `sources/osm/<date>/outlines`: the pass's outline set,
+/// sets/outlines, is its input), and the lakes filled from Canada's own data made from the latest
+/// pass's basemap, which the server draws into the water's deeper zooms
+/// (pipeline::lakefill::current).
+fn worldwide_globals(m: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut g = BTreeMap::new();
+    if let Some(l) = m.keys().filter(|k| matches!(k.split('/').collect::<Vec<_>>()[..], ["sources", "osm", _, "outlines"])).max() {
+        g.insert("outlines".to_string(), l.clone());
+    }
+    if let Some((l, _)) = pipeline::lakefill::current(m) {
+        g.insert("lakefill".to_string(), l);
+    }
+    g
+}
+
+/// Whether the catalog lists logical `l` among its files: only what the map reads (build sources,
+/// the planet's pieces, sets and road values, stay out, or every Mac's mirror would copy them).
+fn served_file(l: &str, basemap: &[String], global: &BTreeMap<String, String>) -> bool {
+    (l.starts_with("layers/") && (!l.starts_with("layers/basemap/") || basemap.iter().any(|b| b == l)))
+        || l.starts_with("base/")
+        || l.starts_with("hidata/")
+        || l.starts_with("markdata/")
+        || l.starts_with("ovdata/")
+        || l.starts_with("global/")
+        || global.values().any(|g| g == l)
+}
+
 fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>) -> Result<()> {
     let p = phase("the manifest's files sorted into the catalog's", Class::Compute);
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
@@ -1074,11 +1102,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
             (x.minzoom, x.maxzoom) = zs;
         }
     }
-    // The latest pass's outlines, for the Regions panel and the modules.
-    // (Exactly sources/osm/<date>/outlines: the pass's outline set, sets/outlines, is its input.)
-    if let Some(l) = out.manifest.keys().filter(|k| matches!(k.split('/').collect::<Vec<_>>()[..], ["sources", "osm", _, "outlines"])).max() {
-        global.insert("outlines".to_string(), l.clone());
-    }
+    global.extend(worldwide_globals(&out.manifest));
     drop(p);
     let p = phase("the units' summaries read", Class::NasRead);
     let meta = units_meta(out, &base)?;
@@ -1097,15 +1121,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     eprintln!("catalog: {} regions, {} credits (of the table's {} and {} description{})", regions.len(), credits.len(), pipeline::rules::CREDITS.len(), described.len(), if described.len() == 1 { "" } else { "s" });
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
     // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.
-    let served = |l: &str| {
-        (l.starts_with("layers/") && (!l.starts_with("layers/basemap/") || basemap.iter().any(|b| b == l)))
-            || l.starts_with("base/")
-            || l.starts_with("hidata/")
-            || l.starts_with("markdata/")
-            || l.starts_with("ovdata/")
-            || l.starts_with("global/")
-            || global.values().any(|g| g == l)
-    };
+    let served = |l: &str| served_file(l, &basemap, &global);
     drop(p);
     let p = phase("every file checked on the NAS", Class::NasRead);
     let mut files: BTreeMap<String, serde_json::Value> = BTreeMap::new();
@@ -4176,7 +4192,7 @@ impl Drop for WorkDir {
 /// The lakes filled from Canada's own data (pipeline::lakefill::run::all): the pass's basemap
 /// surveyed for the NTS sheets whose small lakes OSM lacks, those filled from CanVec's zips (the
 /// NAS's `sources/canvec/50k/`, read in place) band by band in this Mac's scratch, the fill put in
-/// the build as `work/lakefill` (one file). `--pass <date>`.
+/// the build as `work/lakefill/<date>` (one file), the other passes' removed. `--pass <date>`.
 fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let t = std::time::Instant::now();
     let date = match opt(args, "--pass") {
@@ -4197,8 +4213,12 @@ fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(p);
     pipeline::agent::jobs::part(names.len() - 1, &names);
     let p = phase("uploaded", Class::NasWrite);
-    let name = out.put_file(pipeline::lakefill::LOGICAL, "sect", &f)?;
+    let name = out.put_file_with(&pipeline::lakefill::logical(&date), "sect", &f, &|d, n| pipeline::agent::jobs::report(d, n, "bytes uploaded"))?;
     drop(p);
+    let older: Vec<String> = out.manifest.keys().filter(|l| l.starts_with(pipeline::lakefill::PREFIX) && **l != pipeline::lakefill::logical(&date)).cloned().collect();
+    for l in older {
+        out.remove(&l);
+    }
     out.save()?;
     eprintln!("lakefill: {name} in {:.0} s", t.elapsed().as_secs_f64());
     Ok(())
@@ -4209,7 +4229,7 @@ fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 /// instead of the manifest's; `--only x/y,…`: those z5 tiles alone; `--archive f`: the tiles into
 /// that local archive, nothing written to the NAS (a regional run, measured); `--lakefill f`: the
 /// lakes filled from Canada's own data (pipeline::lakefill) from that file instead of the
-/// manifest's (`work/lakefill`, drawn when the manifest names one).
+/// manifest's (`work/lakefill/<date>`, drawn when the manifest names one).
 fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::water as wt;
     let t = std::time::Instant::now();
@@ -4242,7 +4262,7 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("the water drawn from the basemap's z14 tiles", Class::NasRead);
     let fill = match opt(args, "--lakefill") {
         Some(f) => Some(pipeline::lakefill::Fill::open(Path::new(&f), &f)?),
-        None => match out.get(pipeline::lakefill::LOGICAL) {
+        None => match out.get(&pipeline::lakefill::logical(&date)) {
             Some(c) => Some(pipeline::lakefill::Fill::open(&out.path(c), c)?),
             None => None,
         },
@@ -4288,6 +4308,26 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The catalog names the pass's lake fill in `global` and lists it among its files (so the
+    /// server draws it and the mirror copies it); a fill of an older pass's basemap neither.
+    #[test]
+    fn the_catalog_names_and_lists_the_passs_lake_fill() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("layers/basemap/world-2026-09-28".to_string(), "layers/basemap/world-2026-09-28.0123456789abcdef.pmtiles".to_string());
+        m.insert("sources/osm/2026-09-28/outlines".to_string(), "sources/osm/2026-09-28/outlines.0123456789abcdef.sect".to_string());
+        m.insert("work/lakefill/2026-09-28".to_string(), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
+        m.insert("work/lakefill/2026-03-01".to_string(), "work/lakefill/2026-03-01.0123456789abcdef.sect".to_string());
+        let g = super::worldwide_globals(&m);
+        assert_eq!(g.get("lakefill").map(String::as_str), Some("work/lakefill/2026-09-28"));
+        assert_eq!(g.get("outlines").map(String::as_str), Some("sources/osm/2026-09-28/outlines"));
+        let files: Vec<&String> = m.keys().filter(|l| super::served_file(l, &[], &g)).collect();
+        assert!(files.iter().any(|l| *l == "work/lakefill/2026-09-28"));
+        assert!(!files.iter().any(|l| *l == "work/lakefill/2026-03-01"));
+        // A newer pass without its fill yet: none named.
+        m.insert("layers/basemap/world-2027-03-01".to_string(), "layers/basemap/world-2027-03-01.0123456789abcdef.pmtiles".to_string());
+        assert_eq!(super::worldwide_globals(&m).get("lakefill"), None);
+    }
+
     /// A pack or lo job's base packs another such job uses (it holds them: store::cachefile) aren't
     /// pruned from under it: once, prune_cache deleted what the other read next.
     #[test]

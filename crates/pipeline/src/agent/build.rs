@@ -385,13 +385,26 @@ pub fn lakefill_work(date: &str, m: &BTreeMap<String, String>, done: &Keys, sour
     (done.lo.get("lakefill").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "lakefill".into(), targets: vec![("lakefill".into(), k)] })
 }
 
+/// Failures in a row of the lakefill job after which the water no longer waits for it
+/// (`water_waits_for_lakefill`).
+pub const LAKEFILL_HOLDS: u32 = 3;
+
+/// Whether the water layer's job waits for the lakefill job (`lakefill`: whether it has work):
+/// while it has, until it has failed `LAKEFILL_HOLDS` times in a row (`failures`); then the water
+/// is drawn with the fill the manifest has for the pass (or none), and drawn again once the fill
+/// is made.
+pub fn water_waits_for_lakefill(lakefill: bool, failures: u32) -> bool {
+    lakefill && failures < LAKEFILL_HOLDS
+}
+
 /// The water layer (crate::water), worldwide, once per pass (or layer version, or fill): drawn
-/// from the pass's basemap's z14 water, and the lakes filled from Canada's own data when the
-/// manifest has them (the agent runs it once the lakefill step is done).
+/// from the pass's basemap's z14 water, and the lakes filled from Canada's own data made from that
+/// basemap when the manifest has them (the agent runs it once the lakefill step is done:
+/// `water_waits_for_lakefill`).
 pub fn water_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let basemap = m.get(&format!("layers/basemap/world-{date}"))?;
     // (The lakes filled from Canada's own data, when the manifest has them: crate::lakefill.)
-    let k = match m.get(crate::lakefill::LOGICAL) {
+    let k = match m.get(&crate::lakefill::logical(date)) {
         Some(fill) => h(&[&format!("water {}", crate::water::VERSION), basemap, &format!("lakefill {fill}")]),
         None => h(&[&format!("water {}", crate::water::VERSION), basemap]),
     };
