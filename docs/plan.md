@@ -2783,6 +2783,13 @@ At each phase's end an Opus agent reviews the work against this plan.
      Mac's clock's (Macs a second apart may spend one over its length and a second); the sandbox
      lets a job reach any service on its own Mac; and the heavy NAS reads' group went on plain reads
      of the share measured two at once (pool.md §7.7), not two `bldprep` measured;
+   - resuming (`state/pool/resume`, off while missing; crate::agent::resume, pool.md §7.2, §7.4)
+     covers the OSM pass alone (a terrain area's raw tiles, the buildings scan's parts and a
+     rail-feeds run's zips start afresh elsewhere); a member's resumed pass is granted by the lead's
+     coordinator to the worker named in its progress file (its host name, as its asks go); its
+     job's unmerged hand-offs are read from the journal by the keys its lead hasn't acknowledged,
+     and laid only for a resumable step's job; a job stopped without its end seen (the agent
+     killed) keeps the day from its start;
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents

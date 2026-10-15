@@ -691,6 +691,12 @@ fn main() -> Result<()> {
                 Some("on") => println!("{}", agent::pool::switch_on(&r, &agent::app_version(&bin), force)?),
                 Some("off") => println!("{}", agent::pool::switch_off(&r, force)?),
                 Some("status") | None => println!("{}", agent::pool::status(&r)),
+                Some("release") => {
+                    // A job's progress on a member's Mac given up (crate::agent::resume): the lead
+                    // runs it wherever it fits from then.
+                    let (Some(m), Some(job)) = (args.get(3), args.get(4)) else { anyhow::bail!("scenic pool release <member> \"<job>\" (e.g. \"osm-pass 2026-10-01\")") };
+                    println!("{}", agent::resume::release(&r, m, job)?);
+                }
                 Some("floors") => {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`

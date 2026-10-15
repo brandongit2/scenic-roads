@@ -251,6 +251,11 @@ impl Mine {
         self.unwritten.keys()
     }
 
+    /// The entries kept and not written yet, themselves.
+    pub fn unwritten_entries(&self) -> impl Iterator<Item = &Entry> {
+        self.unwritten.values()
+    }
+
     /// Its hand-offs not written yet, alone: what another member id (this Mac's member file lost)
     /// keeps of them, the same bytes whoever writes them.
     pub fn unwritten_only(self) -> Mine {

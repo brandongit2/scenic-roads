@@ -34,6 +34,7 @@ pub mod recipes;
 pub mod rekey;
 pub mod room;
 pub mod shadow;
+pub mod resume;
 pub mod steps;
 pub mod tiles;
 
@@ -811,6 +812,12 @@ pub struct Agent {
     /// reads' groups gone.
     budgets: bool,
     proxy: Option<crate::budget::Proxy>,
+    /// Resuming, and planning from the records alone (docs/pool.md §7.2, §7.4; crate::agent::resume,
+    /// `state/pool/resume`), in the pool: a resumable job's progress named on the NAS and offered to
+    /// its Mac alone, its job given this member's unmerged hand-offs, a pass complete by the records.
+    resume: bool,
+    /// This member's progress file as it last wrote it (or read it, as the process began).
+    held_progress: Option<resume::Progress>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
     /// whether they go on or one is given back.
     disk_room: Option<Instant>,
@@ -1061,7 +1068,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1267,7 +1274,19 @@ impl Agent {
                 return Vec::new();
             }
         }
-        let can = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap, self.floor());
+        let mut can = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap, self.floor());
+        // (Resuming on: a resumable job whose progress this Mac's file holds, asked for too; the
+        // lead offers it to this Mac alone. Its scratch is here already: no room asked for it.)
+        if self.resume_on() {
+            if let Some(p) = self.own_progress(root) {
+                let now = self.resume_now();
+                for job in resume::asks(&p, now, &|j, at| resume::released(root, &p.member, j, at)) {
+                    if let Some(step) = job.split(' ').next().filter(|s| !can.iter().any(|c| c == s)) {
+                        can.push(step.to_string());
+                    }
+                }
+            }
+        }
         if can.is_empty() {
             let need = helper_need(crate::trees::task::KIND);
             let floor = self.floor();
@@ -1301,7 +1320,11 @@ impl Agent {
             self.know_pause(None);
         }
         match asked {
-            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if steps::SHARED.contains(&step.as_str()) => {
+            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if steps::SHARED.contains(&step.as_str()) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) => {
+                // (A resumable job, its progress on this Mac: resumed in its own scratch folder,
+                // its step's whole hand-off as the lead's own job's, no done record: its target,
+                // the pass's date, is no step's target. crate::agent::resume.)
+                let resumed = !steps::SHARED.contains(&step.as_str());
                 // (In the pool, its folder is its lease's, `<term>-<lease>`, handed to the journal.)
                 let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { term, n: lease });
                 let dir = match pooled {
@@ -1311,7 +1334,7 @@ impl Agent {
                 // (Its step and targets, kept with its saves: should this agent stop, the next hands
                 // off what of them it finished.)
                 let work = match pooled {
-                    Some(l) => serde_json::to_vec(&pool::JobKept { step: step.clone(), targets: targets.clone(), lease: l }),
+                    Some(l) => serde_json::to_vec(&pool::JobKept { step: step.clone(), targets: if resumed { Vec::new() } else { targets.clone() }, lease: l }),
                     None => serde_json::to_vec(&build::Work { step: step.clone(), targets: targets.clone() }),
                 };
                 let kept = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("work.json"), work.unwrap_or_default()));
@@ -1323,6 +1346,18 @@ impl Agent {
                 let s = |p: &Path| p.to_string_lossy().into_owned();
                 // The build Mac's own command for it, its saves handed off (SCENIC_HANDOFF).
                 let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display()), format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display())];
+                if resumed {
+                    // (Its target the pass's date, its key the planet's path in the NAS's folder.)
+                    let (date, planet) = targets.first().cloned().unwrap_or_default();
+                    cmd.extend(self.osm_pass_cmd(root, &root.join(&planet), &date));
+                    let lease_kept = match pooled {
+                        Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
+                        None => Held::Leased { lease, dir },
+                    };
+                    self.slots[0].lease = Some(lease_kept);
+                    let what = format!("Reading the OpenStreetMap planet of {date} (resumed here, its progress on this Mac)");
+                    return vec![JobSpec { id: format!("{step} {date}"), what, cmd, needs, restart_after_sleep: true, record: None }];
+                }
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()));
                 cmd.extend(self.step_args(&step, &pass));
@@ -2343,6 +2378,7 @@ impl Agent {
                 format!("{st}{}\n{}", if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) }, jobs::tail(&r.log, 20))
             };
             let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
+            self.progress_ended(&id, ok);
             eprintln!("agent: {id} {} after {} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" }, if wall < 10.0 { format!("{wall:.1}") } else { secs.to_string() });
             let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
             self.note_end(k, &step, &done, secs, ok, &how);
@@ -3804,6 +3840,21 @@ impl Agent {
         // This Mac's cache, where a job keeps what it reads again and again (the coverage:
         // pipeline::coverage::Coverage::load).
         env.push((crate::coverage::CACHE_ENV.into(), self.o.home.join("cache").to_string_lossy().into_owned()));
+        // Resuming on (crate::agent::resume): a pass complete by the records; a resumable job given
+        // this member's hand-offs of its step its lead hasn't merged (laid over the snapshot as it
+        // opens: crate::out::Out), and its progress noted as this Mac's.
+        if self.resume_on() {
+            env.push((resume::RESUME_ENV.into(), "1".into()));
+            if resume::resumable(&spec.id) {
+                if let Some(Held::Pooled { dir, .. }) = &self.slots[k].lease {
+                    let step = step_of(&spec.id).unwrap_or_default();
+                    let f = dir.join("unmerged.json");
+                    crate::whole::write(&f, &serde_json::to_vec(&self.unmerged_for(&step))?)?;
+                    env.push((resume::UNMERGED_ENV.into(), f.to_string_lossy().into_owned()));
+                }
+                self.progress_started(&spec);
+            }
+        }
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
         // done (crate::control), afresh.
         let control = self.control_path(k);
@@ -3971,8 +4022,10 @@ impl Agent {
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
         // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
-        let have = crate::osmpass::latest_pass(root);
+        let have = self.latest_pass(root);
         let newer = crate::osmpass::newer_planet(root, have.as_deref()).ok().flatten();
+        // (Resuming on: held for, and offered to, the member whose Mac has its progress.)
+        let held = self.resume_hold(root, newer.as_ref());
         if let Some((planet, date)) = newer.clone() {
             let what = format!("Reading the OpenStreetMap planet of {date}");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
@@ -3985,36 +4038,14 @@ impl Agent {
                 free += room::cheap_bytes(&self.o.home.join("cache"), Some(&root.join("sources")));
             }
             let started = scratch.exists();
-            if !jar.exists() {
+            if let Some(w) = held {
+                waiting.push(w);
+            } else if !jar.exists() {
                 waiting.push(Waiting { step: Some("osm-pass".into()), what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });
             } else if !started && free < PASS_SPACE {
                 waiting.push(Waiting { step: Some("osm-pass".into()), what, why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30) });
             } else {
-                out.push(JobSpec {
-                    id: format!("osm-pass {date}"),
-                    what,
-                    cmd: vec![
-                        s(&build),
-                        "osm-pass".into(),
-                        "--root".into(),
-                        s(root),
-                        "--scratch".into(),
-                        s(&scratch),
-                        "--planet".into(),
-                        s(&planet),
-                        "--date".into(),
-                        date,
-                        "--extract".into(),
-                        s(&self.o.bin.join("extract")),
-                        "--planetiler".into(),
-                        s(&jar),
-                        "--clear".into(),
-                        s(&pack_cache),
-                    ],
-                    needs: Needs { nas: true },
-                    restart_after_sleep: true,
-                    record: None,
-                });
+                out.push(JobSpec { id: format!("osm-pass {date}"), what, cmd: self.osm_pass_cmd(root, &planet, &date), needs: Needs { nas: true }, restart_after_sleep: true, record: None });
             }
         }
 
@@ -4573,7 +4604,7 @@ impl Agent {
     /// scratch folder keeps), the pass's worldwide jobs, then the regions' steps (build::checklist).
     fn checklist(&self, root: &Path, regions: &[recipes::Recipe]) -> Vec<build::Step> {
         let mut out = Vec::new();
-        let have = crate::osmpass::latest_pass(root);
+        let have = self.latest_pass(root);
         // The pass: a newer planet's under way (or waiting), else done.
         let pass_stages = ["filter", "sets", "outlines", "basemap", "cut", "roads"];
         let mut pass = build::Step { what: "Reading the newest OpenStreetMap planet".into(), steps: vec!["osm-pass".into()], total: Some(pass_stages.len()), unit: "stages".into(), ..Default::default() };
@@ -4631,7 +4662,7 @@ impl Agent {
 
     /// Per region, how many of its areas are built (none before the first pass makes the outlines).
     fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
-        let Some(date) = crate::osmpass::latest_pass(root) else { return BTreeMap::new() };
+        let Some(date) = self.latest_pass(root) else { return BTreeMap::new() };
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return BTreeMap::new() };
         let (cov, each) = (&covs.all, &covs.each);
@@ -4656,7 +4687,7 @@ impl Agent {
     /// which would leave the coverage short), or the lock is held. (Without the pass's reaches, the
     /// units wait for them.)
     fn rekey_records(&self, root: &Path) -> Result<Option<rekey::Rekeyed>> {
-        let Some(date) = crate::osmpass::latest_pass(root) else { return Ok(None) };
+        let Some(date) = self.latest_pass(root) else { return Ok(None) };
         let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
         if recipes.is_empty() || !unread.is_empty() {
             return Ok(None);
@@ -4699,7 +4730,7 @@ impl Agent {
     /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's
     /// derived), for a job's `--expect-same`; as they are when what that reads can't be told now.
     fn as_read(&self, root: &Path, mut keys: build::Keys) -> build::Keys {
-        let Some(date) = crate::osmpass::latest_pass(root) else { return keys };
+        let Some(date) = self.latest_pass(root) else { return keys };
         let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
         if recipes.is_empty() || !unread.is_empty() {
             return keys;
@@ -5005,6 +5036,209 @@ impl Agent {
         }
     }
 
+    /// Resuming (crate::agent::resume, `state/pool/resume`) acts: switched on, in the pool. Off, or
+    /// out of the pool, the agent is as it was.
+    fn resume_on(&self) -> bool {
+        self.resume && self.pool.is_some()
+    }
+
+    /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
+    /// by the NAS's `pass.*.json` files, as before.
+    fn latest_pass(&self, root: &Path) -> Option<String> {
+        crate::osmpass::latest_pass_by(root, self.resume_on())
+    }
+
+    /// This member's clock, as its pool's steps read it (unix seconds).
+    fn resume_now(&self) -> u64 {
+        self.pool.as_ref().map_or_else(now_s, |p| p.side.now())
+    }
+
+    /// This member's progress file: as this process last wrote it, else read from the NAS (once,
+    /// or again after a read failed). None out of the pool, or when it can't be read now.
+    fn own_progress(&mut self, root: &Path) -> Option<resume::Progress> {
+        if self.held_progress.is_none() {
+            let me = self.pool.as_ref()?.side.member().id.clone();
+            match resume::read(root, &me) {
+                Ok(p) => self.held_progress = Some(p.unwrap_or(resume::Progress { member: me, worker: self.host.clone(), jobs: BTreeMap::new() })),
+                Err(e) => {
+                    eprintln!("agent: this Mac's progress file can't be read now ({e:#})");
+                    return None;
+                }
+            }
+        }
+        self.held_progress.clone()
+    }
+
+    /// Notes job `job`'s progress on this Mac in its member's progress file (None: dropped),
+    /// written whole when that changes it, and only then.
+    fn note_progress(&mut self, root: &Path, job: &str, held: Option<resume::Held>) {
+        let Some(mut p) = self.own_progress(root) else { return };
+        let before = p.clone();
+        match held {
+            Some(h) => {
+                p.jobs.insert(job.to_string(), h);
+            }
+            None => {
+                p.jobs.remove(job);
+            }
+        }
+        p.worker = self.host.clone();
+        if p == before {
+            return;
+        }
+        match resume::write(root, &p) {
+            Ok(()) => self.held_progress = Some(p),
+            Err(e) => eprintln!("agent: this Mac's progress of {job} not noted on the NAS ({e:#}): the lead may run it elsewhere"),
+        }
+    }
+
+    /// A resumable job starting here (resuming on): its progress noted as this Mac's, from now.
+    fn progress_started(&mut self, spec: &JobSpec) {
+        if !self.resume_on() || !resume::resumable(&spec.id) {
+            return;
+        }
+        let Some(root) = self.last_root.clone() else { return };
+        let scratch = scratch_of(spec).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let at = self.resume_now();
+        self.note_progress(&root, &spec.id, Some(resume::Held { at, done: false, scratch }));
+    }
+
+    /// A resumable job ended here (resuming on): its progress noted from now, finished or not (a
+    /// finished one is held, unoffered, until its pass is in the records: `tend_progress`).
+    fn progress_ended(&mut self, id: &str, ok: bool) {
+        if !self.resume_on() || !resume::resumable(id) {
+            return;
+        }
+        let Some(root) = self.last_root.clone() else { return };
+        let scratch = self.held_progress.as_ref().and_then(|p| p.jobs.get(id)).map(|h| h.scratch.clone()).unwrap_or_default();
+        let at = self.resume_now();
+        self.note_progress(&root, id, Some(resume::Held { at, done: ok, scratch }));
+    }
+
+    /// Each loop, resuming on: this member's progress no longer held dropped from its file (a
+    /// pass the records hold complete, finished here; a day past its job's last run here, or
+    /// released by the owner), its scratch folder left to room-making as before. A job running
+    /// here is left as it is.
+    fn tend_progress(&mut self, root: &Path) {
+        if !self.resume_on() {
+            return;
+        }
+        let Some(p) = self.own_progress(root) else { return };
+        if p.jobs.is_empty() {
+            return;
+        }
+        let now = self.resume_now();
+        let running: BTreeSet<String> = self.slots.iter().filter_map(|s| s.running.as_ref()).map(|r| r.spec.id.clone()).collect();
+        // (The records read only for a finished job's: the manifest is large.)
+        let latest = p.jobs.values().any(|h| h.done).then(|| self.latest_pass(root)).flatten();
+        for (job, h) in &p.jobs {
+            if running.contains(job) {
+                continue;
+            }
+            let complete = h.done && job.strip_prefix("osm-pass ").is_some_and(|d| latest.as_deref().is_some_and(|l| l >= d));
+            let released = resume::released(root, &p.member, job, h.at);
+            if complete || !resume::live(h, now, released) {
+                let why = if complete { "its pass is in the records" } else if released { "the owner released it" } else { "a day since its job last ran here" };
+                eprintln!("agent: {job}'s progress here no longer held for this Mac ({why})");
+                self.note_progress(root, job, None);
+            }
+        }
+    }
+
+    /// What the lead's plan does with the OSM pass of `newer` (its planet and date), resuming on
+    /// (crate::agent::resume::decide): None to plan it here as before; else why not, the pass
+    /// offered meanwhile to the one member whose Mac holds its progress (the coordinator's
+    /// `offer_resume`, none otherwise).
+    fn resume_hold(&self, root: &Path, newer: Option<&(PathBuf, String)>) -> Option<Waiting> {
+        if !self.resume_on() {
+            return None;
+        }
+        let offer = |to: Option<(String, crate::coord::Offer)>| {
+            if let Some(c) = &self.coord {
+                c.offer_resume(to);
+            }
+        };
+        let Some((planet, date)) = newer else {
+            offer(None);
+            return None;
+        };
+        let run = self.pool.as_ref()?;
+        let me = run.side.member().id.clone();
+        let id = format!("osm-pass {date}");
+        let what = format!("Reading the OpenStreetMap planet of {date}");
+        let mut members: BTreeSet<String> = run.side.members().clone();
+        members.insert(me.clone());
+        let mut files = Vec::new();
+        for m in &members {
+            match resume::read(root, m) {
+                Ok(p) => files.extend(p),
+                Err(e) => {
+                    offer(None);
+                    return Some(Waiting { step: Some("osm-pass".into()), what, why: format!("a member's progress can't be read now ({e:#})") });
+                }
+            }
+        }
+        let now = self.resume_now();
+        match resume::decide(&id, &me, &files, now, &|m, at| resume::released(root, m, &id, at)) {
+            resume::Decision::Plan => {
+                offer(None);
+                None
+            }
+            resume::Decision::Offer { member, worker, until } => {
+                let key = planet.strip_prefix(root).unwrap_or(planet.as_path()).to_string_lossy().into_owned();
+                offer(Some((worker.clone(), crate::coord::Offer { step: "osm-pass".into(), targets: vec![(date.clone(), key, 0)], batch: 1 })));
+                let h = until.saturating_sub(now).div_ceil(3600);
+                Some(Waiting { step: Some("osm-pass".into()), what, why: format!("its progress is on {worker}'s disk ({member}): offered to it alone for {h} h more, or until the owner releases it (scenic pool release {member} \"{id}\")") })
+            }
+            resume::Decision::Wait(why) => {
+                offer(None);
+                Some(Waiting { step: Some("osm-pass".into()), what, why })
+            }
+        }
+    }
+
+    /// The OSM pass's command for the planet `planet` of `date`, in this Mac's scratch folder of it
+    /// (where its stages' markers are: crate::osmpass), the lead's own and a member's resumed alike.
+    fn osm_pass_cmd(&self, root: &Path, planet: &Path, date: &str) -> Vec<String> {
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
+        vec![
+            s(&self.o.bin.join("scenic-build")),
+            "osm-pass".into(),
+            "--root".into(),
+            s(root),
+            "--scratch".into(),
+            s(&scratch),
+            "--planet".into(),
+            s(planet),
+            "--date".into(),
+            date.to_string(),
+            "--extract".into(),
+            s(&self.o.bin.join("extract")),
+            "--planetiler".into(),
+            s(&root.join("sources/basemap/planetiler.jar")),
+            "--clear".into(),
+            s(&self.o.home.join("cache").join("base")),
+        ]
+    }
+
+    /// This member's hand-offs for `step` its lead hasn't acknowledged, laid in lease order
+    /// (crate::agent::resume::unmerged): unwritten, handed from a job and not yet stepped, or
+    /// written and not acknowledged by the current term's lead (read from the journal; one that
+    /// can't be read now left out).
+    fn unmerged_for(&self, step: &str) -> crate::handoff::Handoff {
+        let Some(run) = self.pool.as_ref() else { return Default::default() };
+        let mine = run.side.driver().mine();
+        let mut es: Vec<crate::pool::journal::Entry> = mine.unwritten_entries().cloned().collect();
+        es.extend(run.entries.iter().map(|(e, _)| e.clone()));
+        for key in mine.to_tell(run.gates.term) {
+            if let Ok(crate::pool::journal::Read::Entry(e)) = crate::pool::journal::read(run.side.nas(), &key) {
+                es.push(e);
+            }
+        }
+        resume::unmerged(step, &es)
+    }
+
     /// The pool's switch on the NAS, looked at each loop: a change from the one this process
     /// started with restarts it (into the new one: on, the agent's part is the terms'); off as it
     /// started, the agent is as it was. Shadowed, the shadow run beside it (crate::agent::shadow,
@@ -5024,6 +5258,13 @@ impl Agent {
             self.budgets = on;
         }
         self.tend_proxy(r);
+        if let Some(on) = resume::on(r) {
+            if on != self.resume {
+                eprintln!("agent: resuming on its Mac, and a pass complete by the records, is {}", if on { "on" } else { "off" });
+            }
+            self.resume = on;
+        }
+        self.tend_progress(r);
         if let Some(on) = pool::slots_on(r) {
             if on != self.slots_on {
                 eprintln!("agent: a part changing in this process is {}", if on { "on" } else { "off" });
@@ -7726,6 +7967,80 @@ mod pool_tests {
         assert!(lead.coord.as_ref().unwrap().held("slope").is_empty());
         let lid = LeaseId { term: 1, n: key.rsplit('-').next().unwrap().parse().unwrap() };
         assert_eq!(lid.term, 1);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
+    /// Resuming (`state/pool/resume`, crate::agent::resume): an OSM pass stopped mid-stage on a
+    /// member's Mac is offered to that member alone, which resumes it in its own scratch folder with
+    /// its unmerged hand-offs; finished there, it's neither run nor offered until merged; a day on
+    /// (or released), the lead runs it itself. Off, the lead plans it as before.
+    #[test]
+    fn an_osm_pass_stopped_on_a_member_is_resumed_there_alone_and_released_after_a_day() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        let date = "2026-10-01";
+        let pass = format!("osm-pass {date}");
+        std::fs::create_dir_all(r.join(format!("sources/osm/{date}"))).unwrap();
+        std::fs::write(r.join(format!("sources/osm/{date}/planet.osm.pbf")), "planet").unwrap();
+        std::fs::create_dir_all(r.join("sources/basemap")).unwrap();
+        std::fs::write(r.join("sources/basemap/planetiler.jar"), "jar").unwrap();
+        let bin = app(d.path());
+        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.free_set = Some(400 << 30);
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let im = m.pool.as_ref().unwrap().side.member().id.clone();
+        lead.pool.as_mut().unwrap().side.know(&im);
+        let planned = |a: &Agent| {
+            let mut w = Vec::new();
+            let p = a.plan(&r, &Conditions::default(), &mut w);
+            (p.iter().any(|j| j.id == pass), w)
+        };
+        // The member's Mac holds the pass's progress (its filter done), noted an hour ago.
+        let scratch = d.path().join(format!("m/agent/scratch/osm-{date}"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join("filter.done"), "").unwrap();
+        let held = |at: u64, done: bool| resume::Progress { member: im.clone(), worker: cond::host_name(), jobs: [(pass.clone(), resume::Held { at, done, scratch: scratch.to_string_lossy().into_owned() })].into() };
+        resume::write(&r, &held(now_s() - 3600, false)).unwrap();
+        // Off: the lead plans it as before, whoever holds progress.
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        assert!(planned(&lead).0);
+        // On: not here; offered to the member alone, which resumes it in its scratch folder.
+        switch_on(&r, resume::SWITCH);
+        lead.pool_switch(Some(&r));
+        m.pool_switch(Some(&r));
+        let (here, w) = planned(&lead);
+        assert!(!here && w.iter().any(|w| w.why.contains("offered to it alone")), "{w:?}");
+        // (Its earlier stage's entry, handed and not yet merged: laid over the snapshot for its job.)
+        let earlier = crate::pool::journal::Entry { member: im.clone(), lease: LeaseId { term: 1, n: 99 }, step: "osm-pass".into(), handoff: crate::handoff::Handoff { changes: [(format!("sources/osm/{date}/filtered"), Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")))].into(), ..Default::default() }, at: now_s() };
+        m.pool.as_mut().unwrap().entries.push((earlier, None));
+        assert!(m.unmerged_for("osm-pass").changes.contains_key(&format!("sources/osm/{date}/filtered")) && m.unmerged_for("unit").changes.is_empty());
+        m.pool.as_mut().unwrap().entries.clear();
+        until(&mut m, |m| m.slots[0].running.as_ref().is_some_and(|j| j.spec.id == pass) || std::fs::read_to_string(bin.join("env-osm-pass")).is_ok());
+        until(&mut m, |m| m.slots[0].running.is_none());
+        let env = std::fs::read_to_string(bin.join("env-osm-pass")).unwrap();
+        assert!(env.contains("SCENIC_RESUME=1") && env.contains("SCENIC_UNMERGED=") && env.contains("SCENIC_HANDOFF="), "{env}");
+        // Finished there: held, unoffered, until merged.
+        let p = resume::read(&r, &im).unwrap().unwrap();
+        assert!(p.jobs[&pass].done, "{p:?}");
+        let (here, w) = planned(&lead);
+        assert!(!here && w.iter().any(|w| w.why.contains("waiting to be merged")), "{w:?}");
+        // A day on with nothing more there: the lead's to run.
+        resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
+        assert!(planned(&lead).0);
+        // Released by the owner: the same.
+        let at = now_s() - 60;
+        resume::write(&r, &held(at, false)).unwrap();
+        assert!(!planned(&lead).0);
+        resume::release(&r, &im, &pass).unwrap();
+        assert!(planned(&lead).0);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }

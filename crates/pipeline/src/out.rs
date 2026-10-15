@@ -91,6 +91,16 @@ fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
     Ok(r.units)
 }
 
+/// Hand-off `h`'s changes laid over manifest `m` (a name it removes, removed).
+pub fn lay_over(m: &mut BTreeMap<String, String>, h: &crate::handoff::Handoff) {
+    for (l, c) in &h.changes {
+        match c {
+            Some(c) => m.insert(l.clone(), c.clone()),
+            None => m.remove(l),
+        };
+    }
+}
+
 /// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
 /// it can't be read now (an SMB hiccup), so nothing is ever written from an empty one by mistake.
 pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &Path) -> Result<T> {
@@ -152,6 +162,18 @@ impl Out {
 
     /// `open`, a round's job's (`as_of`: its round's file and when it began, `UNITS_AS_OF_ENV`).
     pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&str>) -> Result<Self> {
+        let unmerged = std::env::var_os(crate::agent::resume::UNMERGED_ENV).map(PathBuf::from);
+        Self::open_with(root, scratch, as_of, unmerged.as_deref())
+    }
+
+    /// `open_as_of`, with this Mac's hand-offs for the job's step its lead hasn't merged
+    /// (`unmerged`: a file of one hand-off, their changes laid in order, made by its agent with
+    /// `state/pool/resume` on: crate::agent::resume) laid over the snapshot, as
+    /// `Keys::load_with` lays the done records: a job resuming its own work (the OSM pass after
+    /// sleep) finds its earlier stages' outputs (docs/pool.md §7.4). Its agent gives them only to a
+    /// job that hands off (`SCENIC_HANDOFF`): one that saves the records has none. They're the snapshot's,
+    /// not this job's changes: its saves hand off only its own.
+    pub fn open_with(root: &Path, scratch: &Path, as_of: Option<&str>, unmerged: Option<&Path>) -> Result<Self> {
         let _p = crate::timings::phase("records read", crate::timings::Class::NasRead);
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
@@ -162,6 +184,12 @@ impl Out {
             None => manifest,
         };
         let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
+        let mut manifest = manifest;
+        if let Some(p) = unmerged {
+            let b = std::fs::read(p).with_context(|| format!("read this Mac's unmerged hand-offs, {}", p.display()))?;
+            let h: crate::handoff::Handoff = serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?;
+            lay_over(&mut manifest, &h);
+        }
         // (A helper's job hands off only its own uploads.)
         let pending = if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
         Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff, as_of, step: None, outside: Vec::new() })
@@ -530,6 +558,29 @@ impl BuildLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This Mac's unmerged hand-offs laid over the snapshot (docs/pool.md §7.4): their names read
+    /// as the job's earlier attempts left them, none of them this job's own changes; none given,
+    /// the snapshot as it is.
+    #[test]
+    fn a_jobs_unmerged_hand_offs_are_laid_over_the_snapshot() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), r#"{"sources/osm/2026-09-01/pass": "sources/osm/2026-09-01/pass.1111111111111111.json", "sources/osm/2026-10-01/sets/old": "x"}"#).unwrap();
+        let h = crate::handoff::Handoff { changes: [("sources/osm/2026-10-01/filtered".to_string(), Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf".to_string())), ("sources/osm/2026-10-01/sets/old".to_string(), None)].into(), ..Default::default() };
+        let f = d.path().join("unmerged.json");
+        std::fs::write(&f, serde_json::to_vec(&h).unwrap()).unwrap();
+        let mut out = Out::open_with(&root, &d.path().join("scratch"), None, Some(&f)).unwrap();
+        out.for_step("osm-pass");
+        assert_eq!(out.get("sources/osm/2026-10-01/filtered"), Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf"));
+        assert!(out.get("sources/osm/2026-10-01/sets/old").is_none() && out.get("sources/osm/2026-09-01/pass").is_some());
+        assert!(out.changes.is_empty(), "the snapshot's, not this job's");
+        let plain = Out::open_with(&root, &d.path().join("scratch"), None, None).unwrap();
+        assert!(plain.get("sources/osm/2026-10-01/filtered").is_none() && plain.get("sources/osm/2026-10-01/sets/old").is_some());
+        // (A file that can't be read fails the job rather than open the snapshot without them.)
+        assert!(Out::open_with(&root, &d.path().join("scratch"), None, Some(&d.path().join("missing.json"))).is_err());
+    }
 
     /// One read gives the name's hash and the checksum, each as hashing the bytes alone gives it,
     /// across chunks (a file larger than one, its last one short).

@@ -61,7 +61,19 @@
 #                                                   start, opens every connection to it
 #                                                   (SCENIC_TEST_PROXY_TO), so nothing reaches
 #                                                   Wikimedia
-#   pool-two-macs.sh stop <dir>                     the launcher and the agent stopped (the agent
+#   pool-two-macs.sh resume <folder> [off]          state/pool/resume in the scratch folder:
+#                                                   resuming on a job's Mac, a pass complete by the
+#                                                   records (`off`: the switch removed)
+#   pool-two-macs.sh planet <folder> <date>         a planet of <date> in the scratch folder (a
+#                                                   stand-in file) and Planetiler's jar: an OSM pass
+#                                                   to plan (the fake pass job marks its filter done
+#                                                   in its scratch folder, notes the unmerged file
+#                                                   it was given, and hands off the pass's marker)
+#   pool-two-macs.sh progress <folder> <member> <host> <date> [done]
+#                                                   that member's progress file holding the pass of
+#                                                   <date>, noted now (as its Mac's agent notes a
+#                                                   pass stopped there mid-stage)
+#   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
 #
@@ -103,7 +115,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -180,7 +192,14 @@ if [ -n "$SCENIC_HANDOFF" ]; then
     spoken|roadunits) l="global/$step" ;;
     *) l="" ;;
   esac
+  # (The OSM pass: its filter marked done in its scratch folder, and the pass's marker handed off.)
+  date=""; prev=""
+  for a in "$@"; do [ "$prev" = "--date" ] && date="$a"; prev="$a"; done
+  if [ "$step" = osm-pass ] && [ -n "$scratch" ]; then
+    mkdir -p "$scratch" && : > "$scratch/filter.done" && echo "${SCENIC_UNMERGED:-none}" > "$scratch/unmerged-$$"
+  fi
   case "$step" in
+    osm-pass) ch="\"sources/osm/$date/pass\":\"sources/osm/$date/pass.0123456789abcdef.json\"" up="" ;;
     terrain|slope|trees|unit|pois|peaks|bldprep|bldtiles) ch="" up="" ;;
     *) ch=${l:+"\"$l\":\"$l.0123456789abcdef.pack\""} up="\"work/test-$step.0123456789abcdef.json\":\"aa\"" ;;
   esac
@@ -241,6 +260,25 @@ EOF
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     if [[ ${3:-} == off ]]; then rm -f $r/state/pool/by-measure; else mkdir -p $r/state/pool; : > $r/state/pool/by-measure; fi
     ;;
+  resume)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/resume; else mkdir -p $r/state/pool; : > $r/state/pool/resume; fi
+    ;;
+  planet)
+    r=${2:?the scratch folder} date=${3:?its date}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    mkdir -p $r/sources/osm/$date $r/sources/basemap
+    print -n planet > $r/sources/osm/$date/planet.osm.pbf
+    print -n jar > $r/sources/basemap/planetiler.jar
+    ;;
+  progress)
+    r=${2:?the scratch folder} m=${3:?its member} h=${4:?its host} date=${5:?the pass date}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    mkdir -p $r/state/pool/progress
+    done=false; [[ ${6:-} == done ]] && done=true
+    print -n "{\"member\":\"$m\",\"worker\":\"$h\",\"jobs\":{\"osm-pass $date\":{\"at\":$(date +%s),\"done\":$done}}}" > $r/state/pool/progress/$m.json
+    ;;
   newest)
     d=${2:?its folder}
     [[ -e $d/v/app/20261010-0000-ccccccc ]] || cp -R $d/v/app/20261009-0000-bbbbbbb $d/v/app/20261010-0000-ccccccc
@@ -254,5 +292,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, planet, progress or stop"; exit 2 ;;
 esac

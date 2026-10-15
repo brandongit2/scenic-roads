@@ -948,6 +948,20 @@ class, id) within a tile. The client sends the id with the clicked point.
     job's connections through its agent's proxy, sandboxed, Wikimedia's metered by the pool's one
     budget; the answers' lease. Present (or `on` in it) on, `off` in it or missing off. Read by
     every agent, the pool on or off.
+  - `state/pool/resume`: the switch for resuming on a job's Mac and a pass complete by the records
+    (docs/pool.md §7.2 Resuming, §7.4; crate::agent::resume). Present (or `on` in it) on, `off` in
+    it or missing off. Read by every agent; it acts only in the pool.
+  - `state/pool/progress/<member>.json`: the jobs whose progress is on that member's Mac, written
+    whole by it alone when that changes (a resumable job's start or end, an entry dropped):
+    `{member, worker, jobs: {"osm-pass <date>": {at, done, scratch}}}` (`worker` the name its asks
+    go by; `at` unix seconds, when the job last started or ended there: offered to it alone until
+    24 h after; `done` finished there, its entry not yet merged). Read by the lead by member id.
+  - `state/pool/progress/released/<member>/<job>-<at>`: the owner's release of that progress
+    (`scenic pool release <member> "<job>"`; `<job>` with spaces as `_`), made once with
+    create-new, empty.
+  - `agent/pool/jobs/<term>-<n>/unmerged.json` (on a Mac, resuming on): a resumable job's member's
+    hand-offs of its step not yet acknowledged, one hand-off laid in lease order, named to the job
+    by `SCENIC_UNMERGED` and laid over the manifest by its `Out`.
   - `state/pool/wiki/<class>/<window>-<slot>`: a lease of the Wikimedia budget (`wiki`: its sites;
     `query`: the query services), made with create-new, the leaser's member id (or name) in it;
     `<window>` the ten-second window since the epoch, `<slot>` its batch of the window's tokens.

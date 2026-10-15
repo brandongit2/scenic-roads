@@ -210,6 +210,10 @@ pub struct Shared {
     /// order. A worker's come from the far end; this Mac's own jobs take the near end.
     pub pass: String,
     pub offers: Vec<Offer>,
+    /// A resumable job offered to the one worker whose Mac holds its progress (its name, and the
+    /// job as an offer: its step, its target and key, `offer_resume`; crate::agent::resume), to
+    /// no other, whatever pass is offered.
+    pub resume: Option<(String, Offer)>,
     /// Work done (journaled, or recorded by this Mac's job), (step, target) → key, under a key the
     /// plan hasn't shown yet: not offered again meanwhile.
     pub done: BTreeMap<(String, String), String>,
@@ -707,7 +711,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -852,6 +856,13 @@ impl Coordinator {
         s.done = done.into_iter().filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str())).collect();
         s.pass = pass.to_string();
         s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
+    }
+
+    /// A resumable job offered to worker `worker` alone (crate::agent::resume: its Mac holds the
+    /// job's progress), or none: granted whole, its targets as `o` has them, to that worker only,
+    /// while no lease holds them.
+    pub fn offer_resume(&self, to: Option<(String, Offer)>) {
+        self.shared.lock().unwrap().resume = to.filter(|(_, o)| !o.targets.is_empty());
     }
 
     /// `offer` with units alone (target, key, piece bytes).
@@ -1486,6 +1497,21 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // then a task; any other, a task.
             // (What fits its usual memory first, of any step; then, its owner away, what fits the
             // more it spares then.)
+            // A resumable job, to the worker whose Mac holds its progress alone, first: nothing
+            // else would run there (crate::agent::resume).
+            if let Some((_, o)) = s.resume.clone().filter(|(w, o)| *w == a.worker && a.can.contains(&o.step)) {
+                let held = s.leases.held(&o.step, now);
+                if !o.targets.iter().any(|(t, _, _)| held.contains(t)) {
+                    let pick: Vec<(String, String)> = o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
+                    let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                    s.save_leases();
+                    eprintln!("coordinator: {} took {} {} (its progress is on its Mac)", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
+                    s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
+                    let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
+                    let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass } };
+                    return Ok((200, serde_json::to_value(g)?));
+                }
+            }
             if !s.pass.is_empty() {
                 let offers = s.offers.clone();
                 let passes: &[bool] = if a.more_mb.is_some() && a.max_secs.is_some() { &[false, true] } else { &[false] };
@@ -2959,6 +2985,40 @@ mod tests {
         c.load_pool_state(&p).unwrap();
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
         assert_eq!((c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)), (Some(9000), Some(7000)));
+    }
+
+    /// A resumable job offered to the worker whose Mac holds its progress (crate::agent::resume):
+    /// granted whole to it alone, whatever another asks with, once while its lease holds it, and
+    /// before the plan's other work; none once it's taken off.
+    #[test]
+    fn a_resumable_job_goes_to_the_worker_holding_its_progress_alone() {
+        let (_d, c, m1) = start();
+        let port = m1.urls()[0].clone();
+        let m2 = client::Client::at(vec![port], c.contact.token.clone(), "m2");
+        c.offer("2026-09-01", vec![Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }]);
+        c.offer_resume(Some(("m1".into(), Offer { step: "osm-pass".into(), targets: vec![("2026-10-01".into(), "sources/osm/2026-10-01/planet.osm.pbf".into(), 0)], batch: 1 })));
+        let can = |steps: &[&str]| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(4096) };
+        // Another worker asking for it: not its (the plan's work instead, or nothing).
+        assert!(w_step(&m2, &can(&["osm-pass"])).is_none());
+        // Its own, not asking for it (its file no longer holds it): the plan's work.
+        assert_eq!(w_step(&m1, &can(&["slope"])).as_deref(), Some("slope 3/2/2"));
+        // Asking for it: granted whole, its pass the job's.
+        let g = m1.ask(&can(&["osm-pass", "slope"])).unwrap().unwrap();
+        let Granted::Job { step, targets, pass } = g.work else { panic!("a job") };
+        assert_eq!((step.as_str(), pass.as_str()), ("osm-pass", "2026-10-01"));
+        assert_eq!(targets, vec![("2026-10-01".to_string(), "sources/osm/2026-10-01/planet.osm.pbf".to_string())]);
+        // Held by its lease: not granted twice.
+        assert!(w_step(&m1, &can(&["osm-pass"])).is_none());
+        c.finish(g.lease, &[]);
+        c.offer_resume(None);
+        assert!(w_step(&m1, &can(&["osm-pass"])).is_none());
+    }
+
+    fn w_step(w: &client::Client, a: &Ask) -> Option<String> {
+        match w.ask(a).unwrap().map(|g| g.work) {
+            Some(Granted::Job { step, targets, .. }) => Some(format!("{step} {}", targets[0].0)),
+            _ => None,
+        }
     }
 
     #[test]

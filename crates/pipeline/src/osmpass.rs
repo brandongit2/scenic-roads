@@ -803,8 +803,38 @@ pub fn pass_done(root: &Path, date: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The date of the newest complete pass on the NAS.
+/// A job's environment: a pass is complete when its records say so (`latest_pass`; the agent sets
+/// it with `state/pool/resume` on: crate::agent::resume).
+pub const RESUME_ENV: &str = "SCENIC_RESUME";
+
+/// The date of the newest complete pass: by the records when the job's agent says so
+/// (`RESUME_ENV`), else by the `pass.*.json` files on the NAS (`latest_pass_by`).
 pub fn latest_pass(root: &Path) -> Option<String> {
+    latest_pass_by(root, std::env::var_os(RESUME_ENV).is_some())
+}
+
+/// The date of the newest complete pass: with `records`, the newest whose `sources/osm/<date>/pass`
+/// the merged records name (today's manifest, which the lead writes from them: docs/pool.md §7.4),
+/// none when they can't be read now; else the newest with a `pass.*.json` file on the NAS.
+pub fn latest_pass_by(root: &Path, records: bool) -> Option<String> {
+    if records {
+        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
+        return latest_pass_in(&m);
+    }
+    latest_pass_on_nas(root)
+}
+
+/// The date of the newest pass manifest `m` names complete (`sources/osm/<date>/pass`).
+pub fn latest_pass_in(m: &BTreeMap<String, String>) -> Option<String> {
+    m.range("sources/osm/".to_string()..)
+        .take_while(|(l, _)| l.starts_with("sources/osm/"))
+        .filter_map(|(l, _)| l.strip_prefix("sources/osm/")?.strip_suffix("/pass").filter(|d| is_date(d)))
+        .max()
+        .map(str::to_string)
+}
+
+/// The date of the newest complete pass on the NAS, by its `pass.*.json` file.
+fn latest_pass_on_nas(root: &Path) -> Option<String> {
     let dir = root.join("sources/osm");
     let mut dates: Vec<String> = std::fs::read_dir(&dir)
         .ok()?
@@ -965,6 +995,51 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pass complete by its records (docs/pool.md §7.4): the newest the manifest names complete,
+    /// whatever `pass.*.json` files the NAS holds; by the files, as before.
+    #[test]
+    fn a_pass_is_complete_by_its_records() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        std::fs::create_dir_all(r.join("state/build")).unwrap();
+        for (date, file) in [("2026-09-01", true), ("2026-10-01", true), ("2026-11-01", false)] {
+            std::fs::create_dir_all(r.join("sources/osm").join(date)).unwrap();
+            if file {
+                std::fs::write(r.join(format!("sources/osm/{date}/pass.1111111111111111.json")), "{}").unwrap();
+            }
+        }
+        // (2026-10-01's pass file is there, its entry not merged yet; 2026-09-01's in the records.)
+        std::fs::write(r.join("state/build/manifest.json"), r#"{"sources/osm/2026-09-01/pass": "sources/osm/2026-09-01/pass.1111111111111111.json", "sources/osm/2026-09-01/pieces/6-1-1": "p", "sources/osm/2026-12-01/sets/rail": "s", "sources/osm/x/pass": "y"}"#).unwrap();
+        assert_eq!(latest_pass_by(r, false).as_deref(), Some("2026-10-01"));
+        assert_eq!(latest_pass_by(r, true).as_deref(), Some("2026-09-01"));
+        assert_eq!(latest_pass_in(&BTreeMap::new()), None);
+        // When the records say what the files do, the same.
+        std::fs::write(r.join("state/build/manifest.json"), r#"{"sources/osm/2026-09-01/pass": "a", "sources/osm/2026-10-01/pass": "b"}"#).unwrap();
+        assert_eq!(latest_pass_by(r, true), latest_pass_by(r, false));
+    }
+
+    /// A pass stopped after its filter, resumed by its Mac before the lead merged that stage's
+    /// entry: its marker says the stage is done, and the snapshot with this Mac's unmerged
+    /// hand-offs laid over it (crate::agent::resume) names the filtered planet the next stages read.
+    #[test]
+    fn a_pass_resumed_finds_its_earlier_stages_unmerged() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, scratch) = (d.path().join("nas"), d.path().join("scratch"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
+        mark(&scratch, "filter").unwrap();
+        let date = "2026-10-01";
+        let earlier = crate::handoff::Handoff { changes: [(format!("sources/osm/{date}/filtered"), Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")))].into(), ..Default::default() };
+        let f = d.path().join("unmerged.json");
+        std::fs::write(&f, serde_json::to_vec(&earlier).unwrap()).unwrap();
+        let fresh = Out::open_with(&root, &scratch, None, None).unwrap();
+        assert!(filtered_nas(&fresh, date).is_err(), "without them, the stage's output isn't there to read");
+        let resumed = Out::open_with(&root, &scratch, None, Some(&f)).unwrap();
+        assert!(done(&scratch, "filter").exists() && !done(&scratch, "sets").exists());
+        assert_eq!(filtered_nas(&resumed, date).unwrap(), root.join(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")));
+    }
 
     #[test]
     fn planetilers_version_is_read_from_its_buildinfo() {

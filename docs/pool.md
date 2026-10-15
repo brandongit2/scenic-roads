@@ -82,7 +82,7 @@ it on the NAS. The rest a new lead has from the NAS, or makes again.
 | What units keep for their later runs | the NAS: `cache/dem-units/`, `cache/scenic-units/` | none (its next unit job moves any there) | nothing |
 | Made from the NAS's data and kept: the heritage chain's clip of the filtered planet (22 GB on the build Mac), the trains' stop pairs | made again from the NAS | its cache | its first runs make them again (the clip: an hour of osmium) |
 | The Python steps' environment | the app's lock file (`dem/uv.lock`) | `app/<version>/dem/.venv`, which uv makes from it (from uv's cache, else PyPI) | its first Python step makes it |
-| A job's progress: the OSM pass's stages, the buildings scan's parts (Overture's, ~40 GB), a rail-feeds run's zips not yet put, raw tiles not yet packed | the Mac running it, until the job puts its results on the NAS | its scratch folders and cache | planned: offered to that Mac alone (§7.2, Resuming); else done again |
+| A job's progress: the OSM pass's stages, the buildings scan's parts (Overture's, ~40 GB), a rail-feeds run's zips not yet put, raw tiles not yet packed | the Mac running it, until the job puts its results on the NAS | its scratch folders and cache | the OSM pass's, offered to that Mac alone for a day, behind `state/pool/resume` (§7.2, Resuming); the rest done again |
 | The coordinator's: the workers' token, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the build Mac's disk alone (a helper's hand-off, the helper's until it's sent); with the pool on (§12), the NAS: `state/coord/` (the token, the state per term, the history per writer), the journal | `agent/coord/` (`journal/`: the hand-offs taken); a helper's `agent/outbox/` | with the pool on, loads the state a handover hands it, else the newest a term before has (§6.2, §7.5); off, none: pages ask again, costs are first guesses, unmerged hand-offs are built again |
 | The lead's own: the round under way, its retries, the daily jobs' last runs | the build Mac's disk alone | `agent/round.json`, `agent/state.json` | not in the phases yet: the next round begins afresh, failed jobs may run again at once |
 
@@ -506,10 +506,18 @@ What's planned of placement (phase 4, §12):
   go with the switch on (the rule of only network work while the Mac is in use went with batch 3);
   the Wikidata and heavy NAS reads' groups go with `state/pool/budgets` (batch 7, §7.7), whatever
   this switch.
-- **Resuming.** A job interrupted with progress on its Mac's disk (the OSM pass's stages, a terrain
-  area's raw tiles) is offered to that Mac only until the owner releases it, or for 24 hours.
-  Which Mac holds which progress is on the NAS (`state/pool/progress/<step>.json`, written by that
-  member), so a new lead knows.
+- **Resuming** (crate::agent::resume, built behind `state/pool/resume`: phase 4's eighth batch,
+  §12). A job interrupted with progress on its Mac's disk is offered to that Mac only until the
+  owner releases it (`scenic pool release <member> "<job>"`), or for 24 hours from when its job
+  last started or ended there. Which Mac holds which progress is on the NAS, so a new lead knows:
+  `state/pool/progress/<member>.json`, one file a member written by it alone (a file a step, as
+  first drafted, would be written by every Mac that ran it: principle 3), only as a job starts or
+  ends; the release a create-new file beside it. The lead reads its members' files by id as it
+  plans: a member's live progress means the lead doesn't run the job, and its coordinator grants it
+  to that member's agent alone, which asks for it only while its own file holds it; one finished
+  there is held, unoffered, until the records hold it. Built for the OSM pass (its stages' markers);
+  a terrain area's raw tiles and the other progress in §2's table are done again elsewhere
+  (planned).
 - **The forecast** is rewritten for equal machines (each member's slots as lanes, the pages as one):
   a large piece of phase 4, not a detail.
 
@@ -647,10 +655,14 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   complete when `sources/osm/<date>/pass` is in the records, not when a `pass.*.json` file exists;
   the catalog's `--ready` comes from the merged records, and a catalog runs only when nothing waits
   to be merged.
-- **A job resuming its own work** (planned, phase 4) sees its earlier attempts: in hand-off mode
-  `Out::open` lays this Mac's unmerged hand-offs for the same step over the snapshot (as
-  `Keys::load_with` does for done records), so a pass restarted after sleep finds its earlier
-  stages.
+  Built behind `state/pool/resume` (crate::osmpass::latest_pass_by: the agent's planning, and its
+  jobs' by `SCENIC_RESUME`); the catalog's gate is phase 1's (caught up). Off, a `pass.*.json`
+  file on the NAS still says it, as before.
+- **A job resuming its own work** (built for a resumable step's job, behind the same switch) sees
+  its earlier attempts: its agent writes this member's hand-offs for the step that the current
+  term's lead hasn't acknowledged (unwritten, or read from the journal by key) into its folder,
+  and `Out::open` lays them over the snapshot (as `Keys::load_with` does for done records), so a
+  pass restarted after sleep finds its earlier stages before they're merged.
 
 ### 7.5 The coordinator across terms
 
@@ -1226,14 +1238,25 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       answer at the first window after the hold ended, a batch already leased spent before); two
       processes, one a Mac, taking the answers' lease five times each, holding it three seconds:
       no two holds overlapping, the second Mac waiting while the first held it.
-   8. **Resuming, and planning from the records alone** (§7.2 Resuming, §7.4): a job's progress on
-      its Mac's disk written through one accessor that names the Mac on the NAS
-      (`state/pool/progress/<step>.json`), offered to that Mac only for 24 hours or until the owner
-      releases it; `Out::open` laying the Mac's unmerged hand-offs for its step over the snapshot; a
-      pass complete when its records say so, not by `pass.*.json`. Behind `state/pool/resume`.
-      Tests: an OSM pass stopped mid-stage resumed by its Mac from its stages, offered to no other,
-      released after a day; plans the same from the records as from today's files. **Scratch state
-      (§13): both Macs.**
+   8. **Resuming, and planning from the records alone: built** (§7.2 Resuming, §7.4;
+      crate::agent::resume), behind `state/pool/resume` (off while missing: the agent as it was;
+      it acts only in the pool). A resumable job's (the OSM pass's) progress noted as its job
+      starts and ends in its member's file, `state/pool/progress/<member>.json` (one a member, not
+      the drafted `<step>.json`, which two Macs could write: principle 3); the lead not running a
+      pass a member's live file holds, its coordinator granting it to that member's worker alone
+      (`offer_resume`), which resumes it in its own scratch folder; finished there, held unoffered
+      until merged; a day on, or released (`scenic pool release`), the lead's to place; its job
+      given this member's unacknowledged hand-offs of its step (`SCENIC_UNMERGED`), which
+      `Out::open` lays over the snapshot; a pass complete when the records name
+      `sources/osm/<date>/pass` (`osmpass::latest_pass_by`; jobs told by `SCENIC_RESUME`). Tests:
+      the decision (held for its Mac alone, a day, a release of that progress only, the newest of
+      two, finished held until merged), a member asking only for what its file holds live, the
+      files and releases; the coordinator granting it to that worker alone, once, before the plan's
+      work; `Out` laying the hand-offs; a pass stopped after its filter resumed with its filtered
+      planet unmerged; a pass complete by its records, the same as by the files when they agree;
+      and two agents: the lead not planning it, the member resuming it with the switch's
+      environment, finished held, then a day on and a release giving it back to the lead, the
+      switch off planning as before. **Scratch state (§13): both Macs.**
    9. **Every step to every member** (§7.2, §7.7): the lead's coordinator offers every step to
       every member whose Mac's measured room fits the target's measures (a cold start to the
       member with the most room, alone), the map tiles' `pack` and `lo` among them (each Mac's saves
