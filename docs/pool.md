@@ -372,7 +372,7 @@ then the lowest member id, try 30 s apart, and the next term's create-new decide
 term, it waits for the owner (an update, or `--downgrade`).
 
 **Taking past a term left empty, by itself** (crate::pool::driver: `UNREAD_TAKE_S`). A member that
-can lead now, whose reads have found the current term E's file there, answered by the share, and too
+can lead now, every other member heard from (below), whose reads have found the current term E's file there, answered by the share, and too
 short to be a term (`term::short`: empty or cut short) at every step for half an hour awake, makes
 term E+1 past it as the owner's force would (`term::forced`: the app rule against the newest term
 that can be read; never `--downgrade`), the members in touch that can taking turns as above,
@@ -384,8 +384,15 @@ that doesn't answer says nothing of the term. A Mac that knows it made E and cou
 drops E unfinished: `term::finish` refuses). Why this can't take the lead from a lead of E, nor make
 two:
 
-- **A lead's heartbeat vetoes it:** any member in touch whose heartbeat says it leads E (`leads`)
-  reads E whole, whatever this Mac's reads find; the take waits, its half hour starting again.
+- **Every other member must be heard from, and none lead E; it fails closed**
+  (`clear_to_take_past`): at every step it counts, and again just before, each other member it
+  knows must have a heartbeat that reads whole, in touch, not leading E (a lead of E reads E whole,
+  whatever this Mac's reads find). A read that fails, a heartbeat missing, not whole or out of
+  touch, and the take waits, its half hour starting again. So does a member list with no other
+  member (a listing that failed may leave only itself), and this Mac's own heartbeat on the NAS
+  older than `OWN_BEAT_S` (six minutes: its writes not landing, its view an outage's). So a
+  member that's gone (its heartbeat out of touch, or unreadable) leaves an empty term to the owner:
+  `scenic lead take --force`, which the alert names after an hour (§10).
 - **E is read again just before:** read whole then (or the read fails), and it waits.
 - **E+1 has one maker:** its create-new succeeds for one Mac (invariant 1), as every term's.
 - **A lead of E that no heartbeat showed steps down before acting:** every lead checks that its

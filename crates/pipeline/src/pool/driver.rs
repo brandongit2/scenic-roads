@@ -99,8 +99,9 @@
 //! owner's ask: it may come back). A current term its reads find unreadable (its create landed and
 //! its bytes never did) for `UNREAD_TAKE_S` awake is taken past by a member that can lead, the same
 //! turns deciding, as the owner's force would (`term::forced`): only reads that answer short count
-//! (one that fails starts the time again), never while a member in touch says it leads the term,
-//! and the term read again just before (pool.md §6.5).
+//! (one that fails starts the time again), only while every other member's heartbeat reads whole,
+//! in touch and not leading the term, and this Mac's own is fresh (failing closed), and the term
+//! and heartbeats read again just before (pool.md §6.5).
 
 use super::beat::Beat;
 use super::handover::{self, Do, Handover, Seen};
@@ -151,6 +152,9 @@ pub const AUTO_RANK_S: u64 = 30;
 /// the next past it by itself (s; §6.5): far past any stale read (`STALE_S`) and any create's bytes
 /// in flight, so no Mac reads the term whole, and none can lead it but by making a later term.
 pub const UNREAD_TAKE_S: u64 = 1800;
+/// Taking a term past by itself, this Mac's own heartbeat on the NAS must be this fresh (s): its
+/// writes land, so its view of the others' isn't an outage's.
+pub const OWN_BEAT_S: u64 = 360;
 /// An entry a lead's reads find not whole (short, or not there) over this long awake is refused
 /// (s): no stale read lasts so long, and its file won't be whole (cut short on the share, or
 /// removed). So is one whose reads fail while the share answers the step's others (a file the
@@ -1307,10 +1311,7 @@ impl Driver {
             return;
         }
         let now = io.now();
-        // (A member in touch says it leads the term: it reads it whole, whatever this Mac's reads
-        // find. Never past it; the time starts again.)
-        let led = members.iter().filter(|m| **m != self.me.id).any(|m| matches!(Beat::read(io, m), Ok(Some(b)) if !b.out_of_touch(now) && b.leads == Some(self.cur.term)));
-        if led {
+        if !self.clear_to_take_past(io, members, now) {
             self.unread = None;
             return;
         }
@@ -1343,8 +1344,9 @@ impl Driver {
         if awake.saturating_sub(since) < UNREAD_TAKE_S + rank * AUTO_RANK_S {
             return;
         }
-        // (Read again just before: a term that reads whole now, or a read that fails, and it waits.)
-        if !matches!(term::short(io, self.cur.term), Ok(true)) {
+        // (Read again just before, the heartbeats too: a term that reads whole now, a read that
+        // fails, or a member not known clear, and it waits.)
+        if !matches!(term::short(io, self.cur.term), Ok(true)) || !self.clear_to_take_past(io, members, io.now()) {
             self.unread = None;
             return;
         }
@@ -1357,6 +1359,20 @@ impl Driver {
             }
             Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
         }
+    }
+
+    /// Whether taking the current term past is clear, failing closed (§6.5): this Mac's own
+    /// heartbeat on the NAS written within `OWN_BEAT_S` (its writes land), at least one other member
+    /// known (a member list that's only itself may be a listing that failed), and every other
+    /// member's heartbeat read, in touch, and not leading the term (it would read it whole). A read
+    /// that fails, a heartbeat missing or not whole, or one out of touch: not clear.
+    fn clear_to_take_past(&self, io: &dyn Io, members: &[String], now: u64) -> bool {
+        let fresh = |b: &Beat| !b.out_of_touch(now) && now.saturating_sub(b.beat) <= OWN_BEAT_S;
+        if !matches!(Beat::read(io, &self.me.id), Ok(Some(b)) if fresh(&b)) {
+            return false;
+        }
+        let others: Vec<&String> = members.iter().filter(|m| **m != self.me.id).collect();
+        !others.is_empty() && others.iter().all(|m| matches!(Beat::read(io, m), Ok(Some(b)) if !b.out_of_touch(now) && b.leads != Some(self.cur.term)))
     }
 
     /// Since when (awake clock) its reads have found the current term there but too short to read
@@ -1519,7 +1535,8 @@ mod tests {
         down: Cell<bool>,
         fail: std::cell::RefCell<Option<String>>,
         wfail: std::cell::RefCell<Option<String>>,
-        /// Its reads of paths holding this answer, but empty (a stale or cut-short read).
+        /// Its reads of paths holding any of these (`|` between) answer, but empty (a stale or
+        /// cut-short read).
         short: std::cell::RefCell<Option<String>>,
     }
 
@@ -1549,7 +1566,7 @@ mod tests {
             if self.down.get() && self.fail.borrow().as_deref().is_none_or(|f| path.contains(f)) {
                 anyhow::bail!("read {path}: the share doesn't answer");
             }
-            if self.short.borrow().as_deref().is_some_and(|f| path.contains(f)) {
+            if self.short.borrow().as_deref().is_some_and(|f| f.split('|').any(|f| path.contains(f))) {
                 return Ok(self.mem.read(path)?.map(|_| Vec::new()));
             }
             self.mem.read(path)
@@ -2737,11 +2754,13 @@ mod tests {
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         step(&mut b, &ib, able());
         mem.create_new(&term::path(2), b"").unwrap();
+        // (The members both know: C was never one, and an unknown heartbeat would hold it.)
+        let ab = || Heard { members: vec![A.into(), B.into()], ..able() };
         let mut took = None;
         for i in 0..10 {
             for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
                 io.pass(300);
-                let o = step(d, io, able());
+                let o = step(d, io, ab());
                 if let Some(e) = o.leads {
                     took.get_or_insert((d.member().id.clone(), e, i));
                 }
@@ -2776,14 +2795,14 @@ mod tests {
             }
             for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
                 io.pass(300);
-                step(d, io, able());
+                step(d, io, Heard { members: vec![A.into(), B.into()], ..able() });
             }
         }
         assert!(!mem.exists(&term::path(3)).unwrap(), "read whole: never taken past");
         assert_eq!(a.current().lead.as_ref().map(|t| t.member.as_str()), Some(C));
         // Term 3 left empty, neither able to lead now (away, on battery): an hour on, nothing.
         mem.create_new(&term::path(3), b"").unwrap();
-        let unable = || Heard { able: false, ..able() };
+        let unable = || Heard { able: false, members: vec![A.into(), B.into()], ..able() };
         for _ in 0..12 {
             for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
                 io.pass(300);
@@ -2815,6 +2834,47 @@ mod tests {
     }
 
     #[test]
+    fn a_term_read_short_isnt_taken_past_while_a_members_heartbeat_cant_be_read_fresh() {
+        // (Re-review of #195: the veto fails closed.) B reads term 1 short, and A's heartbeat
+        // empty, then stale: an hour on, no term 2.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        *ib.short.borrow_mut() = Some("terms/1.json".into());
+        let only = || Heard { members: vec![A.into(), B.into()], ..able() };
+        // Empty reads of A's heartbeat for half an hour (A goes on leading, beating).
+        *ib.short.borrow_mut() = Some(format!("terms/1.json|members/{A}"));
+        for _ in 0..6 {
+            for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
+                io.pass(300);
+                step(d, io, only());
+            }
+        }
+        // Then A's heartbeat stale (A gone silent) for an hour more, B's reads of term 1 short.
+        *ib.short.borrow_mut() = Some("terms/1.json".into());
+        for _ in 0..12 {
+            ib.pass(300);
+            step(&mut b, &ib, only());
+        }
+        assert!(b.current().lead.is_none() && !mem.exists(&term::path(2)).unwrap(), "left to the owner");
+        // And with no other member known (a listing that failed), not either.
+        let mem = Mem::default();
+        setup(&mem);
+        let ib = Mac::new(&mem);
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        step(&mut b, &ib, able());
+        mem.create_new(&term::path(2), b"").unwrap();
+        for _ in 0..12 {
+            ib.pass(300);
+            step(&mut b, &ib, Heard { members: vec![B.into()], ..able() });
+        }
+        assert!(!mem.exists(&term::path(3)).unwrap());
+    }
+
+    #[test]
     fn a_term_whose_reads_fail_isnt_taken_past() {
         // (Review of #195, H2: reads that fail say nothing of the term, and start the time again.)
         let mem = Mem::default();
@@ -2828,19 +2888,28 @@ mod tests {
         mem.create_new(&term::path(2), b"").unwrap();
         ib.down.set(true);
         *ib.fail.borrow_mut() = Some("terms/2.json".into());
+        // (A beats on, unable to lead: only B's reads count.)
+        let (abl, una) = (|| Heard { members: vec![A.into(), B.into()], ..able() }, || Heard { able: false, members: vec![A.into(), B.into()], ..able() });
         for _ in 0..12 {
+            ia.pass(300);
+            step(&mut a, &ia, una());
             ib.pass(300);
-            assert_eq!(step(&mut b, &ib, able()).leads, None);
+            assert_eq!(step(&mut b, &ib, abl()).leads, None);
         }
         assert!(!mem.exists(&term::path(3)).unwrap());
         // Short reads again from now: half an hour from now, not at once.
         ib.down.set(false);
+        ia.pass(300);
+        step(&mut a, &ia, una());
         ib.pass(300);
-        assert_eq!(step(&mut b, &ib, able()).leads, None, "the time starts again");
+        assert_eq!(step(&mut b, &ib, abl()).leads, None, "the time starts again");
         assert!(b.unread_since().is_some());
-        for _ in 0..6 {
+        // (Half an hour, and A's turn first: its heartbeat, in touch, ranks it before B.)
+        for _ in 0..7 {
+            ia.pass(300);
+            step(&mut a, &ia, una());
             ib.pass(300);
-            step(&mut b, &ib, able());
+            step(&mut b, &ib, abl());
         }
         assert_eq!(b.leads(), Some(3));
     }
