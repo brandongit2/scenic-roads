@@ -31,7 +31,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, tallestDrawn, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -227,7 +227,10 @@ async function main() {
   // The camera stays a few metres above the 3D buildings' roofs, as above the ground.
   cam3d.setRoofs((ll) => roofAt(map, ll));
   // (and the near plane clear of the tallest of them, read again once the map settles: tuneDepth)
-  cam3d.setTallest(() => tallestDrawn(map));
+  cam3d.setTalls(() => {
+    const m = drawnTalls(map);
+    return field?.on ? { allowM: m.allowM, boxes: [...m.boxes, ...field.drawnTalls().boxes] } : m;
+  });
   map.on('idle', () => cam3d.tuneDepth(map));
   map.on('terrain', () => cam3d.tuneDepth(map));
 

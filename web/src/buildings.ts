@@ -21,6 +21,7 @@ import type { ScaleFields } from './state';
 import { Dist } from './roads/stats';
 import { fadeAlpha, scaleU } from './ui/scale';
 import { HERITAGE_GROUPS } from './basemap';
+import type { DrawnTalls } from './camera3d';
 
 export type BuildingColour = 'plain' | 'height' | 'source';
 
@@ -200,7 +201,7 @@ export function keepWhole(map: MLMap) {
  * pulled this far toward the camera (our MapLibre's `scenic:depth-bias`, a polygon offset), they win
  * over the buildings under them where the depth can't tell the two apart (far off, their walls a few
  * tenths of a metre apart), where they fought as the map moved. */
-const DEPTH_BIAS = 4;
+const DEPTH_BIAS: [number, number] = [1, 4];   // (factor 4 tinted a nearer tower's edge-on walls)
 
 /** Adds the source and layers (when the catalog has buildings): the extrusions after the road and
  * rail layers (`before`: the first symbol layer), the footprints among the draped layers
@@ -423,12 +424,19 @@ function watchTall(map: MLMap) {
   });
 }
 
-/** The tallest mesh building in the loaded tiles (rendered metres above its ground: its height ×
- * the scale; the pipeline's bound until they're read), or 0 while the meshes aren't drawn: what the
- * near plane keeps clear (camera3d.tuneDepth). */
-export function tallestDrawn(map: MLMap): number {
+/** The mesh buildings that can be drawn, for the near plane (camera3d.tuneDepth; rendered metres:
+ * height × the scale): those under `TALL_DM` anywhere, the taller at their footprints' boxes, as read
+ * when the map was last idle. From when a tile arrives until that read, any up to the pipeline's
+ * bound (`TALLEST_DM`) anywhere, so a supertall drawn before it is never missed. None while the
+ * meshes aren't drawn. */
+export function drawnTalls(map: MLMap): DrawnTalls {
   const t = tallOf(map);
-  return t.k > 0 ? (t.dm / 10) * t.k : 0;
+  if (!(t.k > 0)) return { allowM: 0, boxes: [] };
+  if (t.dirty) return { allowM: (TALLEST_DM / 10) * t.k, boxes: [] };
+  return {
+    allowM: (TALL_DM / 10) * t.k,
+    boxes: t.tall.map(({ f, box }) => [box[0], box[1], box[2], box[3], (((f.properties as { h?: number }).h ?? 0) / 10) * t.k]),
+  };
 }
 
 /** The least height (rendered m) of a roof the camera is kept above: under this, its clearance

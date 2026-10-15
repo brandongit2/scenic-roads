@@ -564,6 +564,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   every layer's root and lo packs (zooms 0–8), and the landmark points and area details (markdata,
   ovdata): 7.8 GB of catalog 14's 251 GB (2026-10-06), 8.6 GB with the fill. Not the pass's area
   outlines (2.7 GB, read only to make regions). The basemap's zooms 0–10 are 1.7 GB of its 28.5.
+  The 3D buildings' field adds its lo packs (levels 4–8) once a catalog lists them: 164 MB in 18 z3
+  tiles for the 290 z6 tiles built (the NAS's files, 15 Oct; at most 33 MB a z3 tile, 3/2/3).
 - **A region, or a view** (the ground on screen when it was downloaded): every layer's hi pack,
   and the base pack and road values, of each z6 tile within 2 km of it (outlines are simplified);
   the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi packs within 25 km
@@ -2759,7 +2761,7 @@ everything is rebuilt.
 | sources kept per pass | ~200 GB | the same |
 | roadside buildings (the world's, once per Overture release; ~2.5 billion boxes) | ~40 GB | the same |
 | 3D buildings (`docs/buildings3d.md` §2.5): their sources (62 GB, on the NAS since 2026-10-06), the normalized files (~440 M buildings in the coverage's 380 z6 tiles, at the 38–50 B each B1 and B2 measured) and the packs (~342 M, 13.5–20 B each) | 62 + 17–22 + 4.6–6.9 GB; a mirror the packs alone | not planned |
-| an app Mac's mirror | what's downloaded: the World ~10.3 GB (the essentials 8.6 with the lake fill's 0.8, the basemap's zooms 0–10 1.7), a region from tens of MB to ~20 GB | as downloaded |
+| an app Mac's mirror | what's downloaded: the World ~10.3 GB (the essentials 8.6 with the lake fill's 0.8, the basemap's zooms 0–10 1.7; ~10.5 with the buildings' field's lo packs, 0.16), a region from tens of MB to ~20 GB | as downloaded |
 
 A retired pass's sources go 14 days after the next pass completes, so the NAS holds about two
 passes' sources at most.

@@ -755,9 +755,13 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   height (1–3×, or the terrain's exaggeration).
 - The globe: extrusions follow it to the hand-over at 15.5–16.5; the depth precision tuning
   (`camera3d.tuneDepth`) covers them. Its near plane is half the nearest anything drawn can be
-  along the view (the camera's height above the highest ground of the terrain tiles drawn plus the
-  tallest mesh building, over cos p + tan(fov/2) sin p), never closer than the flat map's (the
-  viewport's height ÷ 50). With the flat map's alone, the depth's float32 noise at zoom 14.9 and 48°
+  along the view, never closer than the flat map's (the viewport's height ÷ 50): the ground and the
+  buildings under 30 m anywhere, from the camera's height above the highest ground of the terrain
+  tiles drawn (over cos p + tan(fov/2) sin p); each taller mesh building (as read when the map was
+  last idle) and each field tile drawn (its tallest class top) no nearer than its box's corners or
+  that bound for its own height, whichever is farther; from when a mesh tile arrives until the next
+  idle, any building up to the pipeline's 700 m anywhere. (Downtown Toronto at 15.33 and 48°, its
+  towers beside the camera: 28 px.) With the flat map's alone, the depth's float32 noise at zoom 14.9 and 48°
   over Toronto's Exhibition Place (the camera 1.3 km up) was some metres at the buildings: whole roofs
   of the large low halls, 6–10 m over the terrain, came and went as the map moved (near 14 px there;
   now 184 px, and a pan of 0.3 m changes only the edges' pixels, as with the roofs raised 60 m).
@@ -784,8 +788,9 @@ amber). And two custom layers of the roads' code after them, `roads-bridges` and
   (B1).
 - **Heritage tint** (B3): the loaded buildings holding a heritage site's point, as the heritage
   overlay's dots show it (its tiers and filters applied: `dots.points`), drawn again 0.4 m larger
-  (pulled toward the camera by a polygon offset, our MapLibre's `scenic:depth-bias`, so it wins over
-  the building it copies rather than fighting it as the map moves) in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
+  (pulled toward the camera by a polygon offset of factor −1, units −4, our MapLibre's
+  `scenic:depth-bias`, so it wins over the building it copies rather than fighting it as the map
+  moves; a factor of −4 tinted stripes of a nearer tower's edge-on walls) in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
   plain colour, the highest group where sites share a building. Read when the map is idle; on by
   default while Heritage sites show (Settings → Buildings, `bd=`'s sixth field). Over the other
   colour modes too.
@@ -1100,7 +1105,8 @@ texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five 
   catalog after its `bldtiles` (New York's 6/18/23 and 6/18/24, handed in at 07:08 on 15 Oct, came
   after catalog 26 of 04:04, the server answering 204 for them till the next). A Mac's mirror copies
   the field's hi packs with the meshes' (the last of the hi packs: up to 2 GB a z6 tile) and its lo
-  packs, as every layer's, with the World download.
+  packs, as every layer's, with the World download, on every Mac: 164 MB in 18 z3 tiles for the 290
+  z6 tiles built (the NAS's files, 15 Oct; 33 MB at most, 3/2/3).
 - Not done: the agent's forecast has no measured cost for `bldfield-lo` yet.
 
 **Sizes, measured on the first prototype's fields** (one class, levels 4–13; the second's: §4.8.1) (every tile encoded as above):

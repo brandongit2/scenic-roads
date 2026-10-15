@@ -22,11 +22,14 @@ let roofUnder: (ll: LngLat) => number = () => -Infinity;
 export function setRoofs(f: (ll: LngLat) => number): void {
   roofUnder = f;
 }
-/** The tallest building drawn as a mesh (rendered metres above its ground; 0: none drawn): main.ts
- * sets it (buildings.tallestDrawn), for the near plane (tuneDepth). */
-let tallestDrawn: () => number = () => 0;
-export function setTallest(f: () => number): void {
-  tallestDrawn = f;
+/** What buildings can be drawn, for the near plane (tuneDepth): any building may be up to `allowM`
+ * tall anywhere (rendered metres above its ground), and those taller stand within `boxes` (w, s, e, n
+ * and their tallest, rendered metres). */
+export type DrawnTalls = { allowM: number; boxes: [number, number, number, number, number][] };
+/** main.ts sets it: the meshes' (buildings.drawnTalls) and the field's (FieldLayer.drawnTalls). */
+let drawnTalls: () => DrawnTalls = () => ({ allowM: 0, boxes: [] });
+export function setTalls(f: () => DrawnTalls): void {
+  drawnTalls = f;
 }
 
 /** The lowest the camera may be over a point: 30 m above the ground, and a few above any roof. */
@@ -622,6 +625,24 @@ export function nearestDepth(clearM: number, pitchDeg: number, fovDeg: number): 
 }
 
 /**
+ * The least depth along the camera's forward axis (m) of a box: its corners `east`, `south` and
+ * `up` metres from the camera (two values each: up its foot's and its top's), the camera's bearing and
+ * pitch in degrees (a linear function over a box is least at a corner); Infinity when every corner is
+ * behind the camera (nothing of it drawn), and negative when some are.
+ */
+export function boxDepth(east: [number, number], south: [number, number], up: [number, number], bearingDeg: number, pitchDeg: number): number {
+  const b = bearingDeg * DEG, p = pitchDeg * DEG;
+  const fx = Math.sin(p) * Math.sin(b), fy = -Math.sin(p) * Math.cos(b), fz = -Math.cos(p);
+  let lo = Infinity, hi = -Infinity;
+  for (const x of east) for (const y of south) for (const z of up) {
+    const d = x * fx + y * fy + z * fz;
+    lo = Math.min(lo, d);
+    hi = Math.max(hi, d);
+  }
+  return hi <= 0 ? Infinity : lo;
+}
+
+/**
  * Depth precision on the globe. MapLibre's globe view uses a 0.5 px near plane (its 2D layers
  * compute their own depth, so it didn't matter to them), but the terrain mesh, its depth texture
  * and 3D custom layers use the perspective depth, where everything then lives in the last pixel
@@ -631,9 +652,10 @@ export function nearestDepth(clearM: number, pitchDeg: number, fovDeg: number): 
  * the buildings: at zoom 14.9 and 48° over Toronto's Exhibition Place (the camera 1.3 km up) the
  * depth's float32 noise was some metres at the buildings, so the roofs of large low buildings, 6–10 m
  * over the terrain, fought it as the map moved, whole roofs coming and going. So the near plane is
- * half the nearest anything drawn can be (`nearestDepth`: the camera's height above the highest
- * ground of the terrain tiles drawn plus the tallest mesh building), and never closer than the flat
- * map's (at most half the camera's height above the ground under it): ~20× the precision there.
+ * half the nearest anything drawn can be (the ground and short buildings from the camera's height
+ * above the highest ground of the terrain tiles drawn, `nearestDepth`; the tall ones and the field's
+ * tiles from their boxes too, `boxDepth`: `setTalls`), and never closer than the flat map's (at most
+ * half the camera's height above the ground under it): ~13× the precision there.
  * (Circles and symbols test themselves against the terrain depth texture with the same perspective
  * depth: our MapLibre's circle and symbol vertex shaders.) Call on every camera change; the flat
  * map keeps MapLibre's own planes.
@@ -658,15 +680,37 @@ export function tuneDepth(map: MLMap): void {
   const clearance = Math.max(1, tr.getCameraAltitude() - ground) * tr.pixelsPerMeter;
   const flat = Math.max(0.5, Math.min(tr.height / 50, clearance * 0.5));
   // (the highest ground drawn: the terrain tiles' ranges, exaggerated; sea level without terrain)
-  let top = 0;
-  const terrain = (map as unknown as { terrain?: { tileManager: { getRenderableTiles(): { tileID: unknown }[] }; getMinMaxElevation(id: unknown): { maxElevation: number | null } } | null }).terrain;
+  let top = 0, low = 0;
+  const terrain = (map as unknown as { terrain?: { tileManager: { getRenderableTiles(): { tileID: unknown }[] }; getMinMaxElevation(id: unknown): { minElevation: number | null; maxElevation: number | null } } | null }).terrain;
   if (terrain) {
     const tiles = terrain.tileManager.getRenderableTiles();
     top = -Infinity;
-    for (const t of tiles) top = Math.max(top, terrain.getMinMaxElevation(t.tileID).maxElevation ?? Infinity);
+    low = Infinity;
+    for (const t of tiles) {
+      const r = terrain.getMinMaxElevation(t.tileID);
+      top = Math.max(top, r.maxElevation ?? Infinity);
+      low = Math.min(low, r.minElevation ?? -Infinity);
+    }
     if (!tiles.length) top = Infinity;
   }
-  const safe = 0.5 * nearestDepth(tr.getCameraAltitude() - top - tallestDrawn(), tr.pitch, tr.fov) * tr.pixelsPerMeter;
+  // The ground and every building up to `allowM` anywhere; each taller one no nearer than either
+  // bound: its box's (from the lowest ground drawn to its height over the highest; none where the
+  // box reaches behind the camera) or its height's anywhere (nearestDepth), whichever is farther.
+  const talls = drawnTalls();
+  const alt = tr.getCameraAltitude();
+  let nearest = nearestDepth(alt - top - talls.allowM, tr.pitch, tr.fov);
+  if (talls.boxes.length && nearest > 0) {
+    const cam = MercatorCoordinate.fromLngLat(tr.getCameraLngLat());
+    const m = cam.meterInMercatorCoordinateUnits();
+    const bearing = map.getBearing();
+    for (const [w, s, e, n, h] of talls.boxes) {
+      const a = MercatorCoordinate.fromLngLat([w, n]), c = MercatorCoordinate.fromLngLat([e, s]);
+      const box = boxDepth([(a.x - cam.x) / m, (c.x - cam.x) / m], [(a.y - cam.y) / m, (c.y - cam.y) / m], [low - alt, top + h - alt], bearing, tr.pitch);
+      nearest = Math.min(nearest, Math.max(box, nearestDepth(alt - top - h, tr.pitch, tr.fov)));
+      if (!(nearest > 0)) break;
+    }
+  }
+  const safe = 0.5 * Math.max(0, nearest) * tr.pixelsPerMeter;
   const near = Math.max(flat, safe);
   const lat = map.getCenter().lat;
   const far = tr.cameraToCenterDistance + (2 * tr.worldSize) / (2 * Math.PI) / Math.cos((lat * Math.PI) / 180);

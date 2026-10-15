@@ -37,10 +37,10 @@ function setup(metadata?: unknown) {
 
 describe('drawFillExtrusion depth bias', () => {
     test('a layer with scenic:depth-bias is drawn with a polygon offset toward the camera, reset after', () => {
-        const {calls, draw, tileManager} = setup({'scenic:depth-bias': 4});
+        const {calls, draw, tileManager} = setup({'scenic:depth-bias': [1, 4]});
         draw();
         expect(tileManager.getTile).toHaveBeenCalledTimes(2);
-        expect(calls).toEqual([`enable ${0x8037}`, 'offset -4 -4', 'offset 0 0', `disable ${0x8037}`]);
+        expect(calls).toEqual([`enable ${0x8037}`, 'offset -1 -4', 'offset 0 0', `disable ${0x8037}`]);
     });
 
     test('a layer without it touches no polygon offset', () => {
@@ -50,9 +50,11 @@ describe('drawFillExtrusion depth bias', () => {
         expect(calls).toEqual([]);
     });
 
-    test('a bias that is not a positive number is ignored', () => {
-        const {calls, draw} = setup({'scenic:depth-bias': 'x'});
-        draw();
-        expect(calls).toEqual([]);
+    test('a bias that is not two positive numbers is ignored', () => {
+        for (const b of ['x', 4, [1], [0, 4], [1, -4]]) {
+            const {calls, draw} = setup({'scenic:depth-bias': b});
+            draw();
+            expect(calls).toEqual([]);
+        }
     });
 });

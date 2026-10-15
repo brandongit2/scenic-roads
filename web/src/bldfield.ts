@@ -46,6 +46,7 @@ import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRende
 import { link } from './roads/layer';
 import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
+import type { DrawnTalls } from './camera3d';
 
 const G = 32;
 /** The elevation grid's margin around a tile (grid cells): a roof's ground is taken at its building's
@@ -373,6 +374,7 @@ void main() {
 // base, its top the building's own height, which also picks its colour: ?fdbg=35 both by the height
 // over the ground here instead; ?fdbg=32 each roof over the ground under its own texel)
 #define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; float dg_ = textureLod(u_dg, vec3(uv, float(L_[c])), lod).r / max(sm.r, 1e-5); float Hs_ = u_dbg == 32 ? H0_ : clamp(H0_ + dg_, 0.5, max(topc - 0.25, 0.5)); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
+      float openK = 1.0;   // (the walls' rate over the open ground ÷ over all of it: below)
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -398,8 +400,8 @@ void main() {
         if (u_dbg != 36) {
           float hm = 0.5 * (ac + ae), fUp = 0.0;
           for (int c = 0; c < 5; c++) if (Hc[c] > hm) fUp += Fc[c];
-          float open = 1.0 / max(1.0 - fUp, 0.02);
-          for (int c = 0; c < 5; c++) Rc[c] *= open;
+          openK = 1.0 / max(1.0 - fUp, 0.02);
+          for (int c = 0; c < 5; c++) Rc[c] *= openK;
         }
       }
       float hlen = hstep * sg;   // horizontal metres of the step, before the ground
@@ -435,7 +437,8 @@ void main() {
           dRoofA += T * pr;
           T *= 1.0 - pr;
           covE = min(covE + Fc[c], 0.999);
-          covL = clamp(4.0 * Fc[c] / max(Rc[c] * 3.14159265, 1e-6), 2.0, 200.0);
+          // (the footprints' own width, 4 f H ÷ w, from the rate over all the ground: unscaled)
+          covL = clamp(4.0 * Fc[c] / max(Rc[c] / openK * 3.14159265, 1e-6), 2.0, 200.0);
           rateA += Rc[c];
           wcol += Rc[c] * WALLC(c);
           cur = Hc[c];
@@ -1450,6 +1453,22 @@ export class FieldLayer implements CustomLayerInterface {
 
   /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (RGBA16F with
    * mipmaps, MB). */
+  /** The tiles drawn in the last frame as boxes (w, s, e, n) and their tallest roof (rendered metres
+   * above the ground: the tile's tallest class top, + 2 m, × the height scale): with the meshes'
+   * (buildings.drawnTalls) what the near plane keeps clear (camera3d.tuneDepth). */
+  drawnTalls(): DrawnTalls {
+    const boxes: DrawnTalls['boxes'] = [];
+    for (const k of new Set(this.drawn)) {
+      const t = this.tiles.get(k);
+      if (!t) continue;
+      const n = 2 ** t.z;
+      const lon = (x: number) => (x / n) * 360 - 180;
+      const lat = (y: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
+      boxes.push([lon(t.x), lat(t.y + 1), lon(t.x + 1), lat(t.y), t.top * this.hk]);
+    }
+    return { allowM: 0, boxes };
+  }
+
   drawnSize(): { tiles: number; bytes: number; textureMB: number } {
     let bytes = 0, gpu = 0;
     for (const k of new Set(this.drawn)) {
