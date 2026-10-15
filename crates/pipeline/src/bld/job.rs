@@ -617,7 +617,7 @@ mod tests {
 
     fn cov(outline: &str, country: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();
-        let mut c = Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap();
+        let mut c = Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap();
         for s in &mut c.shapes {
             s.country = country.into();
         }

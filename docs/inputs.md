@@ -622,20 +622,14 @@ deleted.
 
 ### 6.1 Regions (#135)
 
-**Status: built, publish 1 of 2 (#135)**, reviewed by the owner on 15 October 2026 (the decisions in
+**Status: built (#135, both publishes)**, reviewed by the owner on 15 October 2026 (the decisions in
 §6.1.11, three of them against the picks: unknown files ignored, the antimeridian supported, the
 panel editing only names and part lists). Built: the check (crate::inputs::regions: `file`,
-`shapes`, `geom`, `resolve`, `stored`, `extract`), the stored geometry, both read paths
-(crate::inputs::regions::read: the readers read the accepted version once the records say they
-switched, `sources/inputs/regions/@switched`, which the check records when the migration's proof
-says the same of that version; the drop box's recipes before),
-the `regions-extract` job, `scenic-build regions-proof`, `scenic regions convert-poly`, the server's
-panel states and region layer (`/api/regions`, `/api/regions/layer`) and the map's. Publish 2 (the
-fallback and the old kinds deleted, §6.1.10) is the next app. Until it, the old kinds (`geofabrik:`,
-`poly:`, `place:`) still read on the drop box's path; the check refuses them. Today a recipe is `<id>.toml` directly in
-`inputs/regions/`, its `outline` a list of `osm:`, `geofabrik:`, `poly:` and `place:` entries whose
-union is the region (crates/pipeline/src/agent/recipes.rs, `Outline`; plan §5), read straight from
-the drop box by every reader listed in §6.1.7. Everything below is the design.
+`shapes`, `geom`, `resolve`, `stored`, `extract`), the stored geometry, the readers of the accepted
+version alone (crate::inputs::regions::read, `Coverage::accepted`), the `regions-extract` job,
+folders as the Regions list's groups, the server's panel states and region layer
+(`/api/regions`, `/api/regions/layer`) and the map's. The old kinds of part (`geofabrik:`, `poly:`,
+`place:`) and the drop box's path for the build are gone (§6.1.10).
 
 **Kind:** declare. **Drop box:** `inputs/regions/`, read recursively. **Unit:** `regions`.
 
@@ -923,7 +917,7 @@ file of exactly those ids' geometry, made from the pinned pass.
 
 #### 6.1.7 Readers moved to the accepted version
 
-Every reader of `inputs/regions` and `inputs/outlines` today (each in the accessor guard's
+All moved (#135): the table lists them as they were before. Every reader of `inputs/regions` and `inputs/outlines` then (each in the accessor guard's
 exemptions, crates/pipeline/tests/inputs_accessor.rs, naming #135). Each moves to
 `Coverage::accepted` or the index, and its exemption goes, except the two writers marked "stays":
 
@@ -959,11 +953,12 @@ exemptions, crates/pipeline/tests/inputs_accessor.rs, naming #135). Each moves t
 
 The `scenic-build` subcommands' `--regions <dir>` (a scratch folder of region files, for proofs)
 stays: it runs the same check code in memory on that folder and builds the coverage from the result,
-storing nothing. The tests building a coverage from `place:` or `poly:` recipes (about thirty, in
+storing nothing. The tests that built a coverage from `place:` or `poly:` recipes (about thirty, in
 agent/build.rs, agent/rekey.rs, agent/mod.rs, terrain_pack.rs, slope_pack.rs, treepacks.rs,
-rail.rs, reach.rs, candidates.rs, bld/job.rs, bld/task.rs, coverage.rs) switch to a test helper
-making a coverage from GeoJSON fixtures (a square; a circle with the same 65 points `circle` gives
-today, so their expected values stand).
+rail.rs, reach.rs, candidates.rs, bld/job.rs, bld/task.rs, coverage.rs) use a test-only helper,
+`Coverage::fixture`, keeping that notation for their fixtures (a circle of the same 64 points the
+old `circle` gave, so their expected values stand; a `.poly` square); the agent's tests put an
+accepted version of fixtures in their records (`inputs::regions::accept_fixture`).
 
 #### 6.1.8 Checks
 
@@ -1046,7 +1041,7 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
    findings (any is a recipe today's path takes and the new check doesn't: fix the file or report).
    From here until step 2's switch, **no edits to `inputs/regions/`**: the switch is only for the
    version proved.
-2. Proof (`scenic-build regions-proof --root <root> --write`, built; it refuses while any pool
+2. Proof (`scenic-build regions-proof --root <root> --write`, publish 1's, gone with publish 2; it refuses while any pool
    member's heartbeat names an app older than its own): build the coverage both ways (`recipes::load` +
    `from_recipes` on the pass's outlines; `Coverage::accepted`) and compare `fingerprint` and
    `shapes_key` on every z6 tile either meets and every job box in the records (`rekey_records`'
@@ -1067,7 +1062,7 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
    regions' index now) and lists the same regions with the same drawn shapes (look at the map's
    coverage once, by eye, beside the region layer). **From the switch on, the coverage follows
    `pins.toml`, not the newest pass:** a new pass changes nothing until the pin is moved (§6.1.5).
-4. Convert every `.poly` to GeoJSON (`scenic regions convert-poly`, built): ours
+4. Convert every `.poly` to GeoJSON (`scenic regions convert-poly`, publish 1's; gone with publish 2): ours
    (`inputs/outlines/azores.poly`, `madeira.poly`, `portugal-mainland.poly`) to
    `inputs/regions/shapes/<name>.geojson`, Geofabrik's 31 (`inputs/outlines/geofabrik/`) to
    `inputs/regions/shapes/geofabrik/<id, / as ->.geojson`, each a Feature naming its `.poly` in its
@@ -1082,8 +1077,10 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
 reader reads the accepted version alone. Deleted, with their guard exemptions: the fallback,
 `recipes::load` as a coverage path, `Outline::Geofabrik`, `Poly`, `Place` and their parsing,
 `file_rings`, `circle`, `regions_digest`, the server's `coverage_from_recipes` and its labels for the
-old kinds, and `dem/bldfetch.py`'s read of `inputs/outlines` (it gets the stored geometry's paths on
-its command line, §4.6). Catalogs record their regions' shapes inline (formats.md, Catalog
+old kinds, and `dem/bldfetch.py`'s read of `inputs/outlines` (the agent's job gives it the coverage
+as a GeoJSON file, `--coverage`, made from the stored geometry). With them went the migration's own
+tools, `scenic-build regions-proof` and `scenic regions convert-poly`, and the proof's record
+(`state/inputs/regions-proof.json`, read no more; the records' `sources/inputs/regions/@switched` stays: the readers refuse to read the regions without it, an app installed before the runbook was done saying to do it first, and its proved app still bars older Macs from leading). The panel takes `shape:` parts from here on. Built (this app). Catalogs record their regions' shapes inline (formats.md, Catalog
 `coverage`), so an old catalog naming `geofabrik:` still draws. The tests move to GeoJSON fixtures
 (§6.1.7), and the operations are tested on small fixtures: two touching squares unioned; a minus and
 an intersect; a cut by a line running past the shape, by one ending inside it (an error), of a shape

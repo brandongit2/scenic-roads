@@ -130,12 +130,6 @@ impl Checks for Regions {
         self.ctx.as_ref().and_then(|c| c.not_ready.clone())
     }
 
-    fn switch(&self, root: &Path, index: &str) -> Result<Option<Vec<u8>>> {
-        Ok(match read::proof(root)? {
-            Some(p) if p.same && p.index == index => Some(serde_json::to_vec_pretty(&p)?),
-            _ => None,
-        })
-    }
 
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
@@ -246,6 +240,64 @@ impl Checks for Regions {
         };
         Ok(Some(Box::new(Regions::new(Some(Prepared { pass: date, outlines, extract, others, names, not_ready })))))
     }
+}
+
+/// For tests and scratch runs (`scenic-build regions-fixture`): an accepted version of `recipes`
+/// (fixtures: `place:<lon>,<lat>,<km>` a circle, `poly:<file>` a `.poly` in `dir`, an `osm:` part a
+/// small square at its id's place) stored under `root`, its index named in `manifest` (which the
+/// caller then writes as the records).
+pub fn accept_fixture(root: &Path, dir: &Path, recipes: &[crate::agent::recipes::Recipe], manifest: &mut BTreeMap<String, String>) -> String {
+    use crate::inputs::{FileEntry, Index};
+    let mut index = Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), ..Default::default() };
+    let put = |name: &str, b: &[u8]| {
+        std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
+        std::fs::write(root.join(name), b).unwrap();
+    };
+    for r in recipes {
+        let mut shapes = Vec::new();
+        for entry in &r.outline {
+            let rings = match entry.strip_prefix("osm:") {
+                Some(id) => {
+                    let k: i32 = id.parse::<i32>().unwrap() % 100;
+                    vec![vec![[k * 10_000_000, 0], [k * 10_000_000 + 1_000_000, 0], [k * 10_000_000 + 1_000_000, 1_000_000], [k * 10_000_000, 1_000_000]]]
+                }
+                None => match entry.strip_prefix("place:") {
+                    Some(v) => {
+                        let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                        vec![crate::coverage::fixture_circle(n[0], n[1], n[2])]
+                    }
+                    None => crate::coverage::read_poly(&std::fs::read_to_string(dir.join(entry.trim_start_matches("poly:"))).unwrap()).unwrap(),
+                },
+            };
+            shapes.push(stored::Shape { from: entry.clone(), country: String::new(), tolerance_m: 0, rings });
+        }
+        let g = stored::Geometry { id: r.id.clone(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] }.encode();
+        let gname = format!("{}/@geometry/{}.{}.rgeo", super::store_dir(UNIT), r.id, store::naming::hash16(&g));
+        put(&gname, &g);
+        let d = serde_json::to_vec(&stored::Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline.clone(), shapes: Default::default() }).unwrap();
+        let dname = format!("{}/@drawn/{}.{}.json", super::store_dir(UNIT), r.id, store::naming::hash16(&d));
+        put(&dname, &d);
+        let text = toml::to_string(r).unwrap();
+        let path = format!("{}.toml", r.id);
+        let file = super::copy_name(UNIT, &path, &store::naming::hash16(text.as_bytes())).unwrap();
+        put(&file, text.as_bytes());
+        let mut facts = serde_json::Map::new();
+        for (k, v) in [("id", r.id.clone()), ("name", r.name.clone()), ("geometry", gname.clone()), ("drawn", dname)] {
+            facts.insert(k.into(), v.into());
+        }
+        facts.insert("outline".into(), r.outline.clone().into());
+        index.files.insert(path, FileEntry { file, size: text.len() as u64, keyed: gname, facts });
+    }
+    let ib = serde_json::to_vec(&index).unwrap();
+    let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&ib));
+    put(&name, &ib);
+    manifest.insert(super::logical(UNIT), name.clone());
+    // (The readers' switch, as publish 1's runbook records it.)
+    let sw = br#"{"fmt": 1, "same": true, "app": "development"}"#;
+    let swname = format!("{}.{}.json", super::switched_logical(UNIT), store::naming::hash16(sw));
+    put(&swname, sw);
+    manifest.insert(super::switched_logical(UNIT), swname);
+    name
 }
 
 #[cfg(test)]

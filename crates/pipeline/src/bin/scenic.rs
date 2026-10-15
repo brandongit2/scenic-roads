@@ -4,8 +4,6 @@
 //!   scenic add <id> "<name>" <osm:…>…  a region of OSM relations (osm:<relation>; anything else
 //!                                       goes in its file by hand, docs/inputs.md §6.1.3)
 //!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
-//!   scenic regions convert-poly         every .poly in inputs/outlines/ to GeoJSON shapes in
-//!                                       inputs/regions/shapes/, each proved the same (#135)
 //!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
 //!   scenic pool on|off|status [--force]  the pool's switch (docs/pool.md §12): on, after its checks
@@ -794,19 +792,6 @@ fn main() -> Result<()> {
         }
         "timings" => timings(&args),
         "inputs" => inputs(&args),
-        "regions" => {
-            // scenic regions convert-poly [--root r]: every .poly in inputs/outlines/ to GeoJSON in
-            // inputs/regions/shapes/ (Geofabrik's in shapes/geofabrik/), each proved to select the
-            // same coverage (docs/inputs.md §6.1.10, runbook step 4).
-            anyhow::ensure!(args.get(2).map(String::as_str) == Some("convert-poly"), "scenic regions convert-poly [--root <dir>]");
-            let root = root(&args, true)?;
-            let done = pipeline::inputs::regions::shapes::convert_poly(&root.join("inputs/outlines"), &root.join("inputs/regions/shapes"), "inputs/outlines")?;
-            for c in &done {
-                println!("{} → {}: {} rings, {} points, the same rings read back and the same fingerprint on {} z6 tiles{}", c.from.display(), c.to.display(), c.rings, c.points, c.tiles, if c.written { "" } else { " (there already)" });
-            }
-            println!("{} .poly files converted and proved", done.len());
-            Ok(())
-        }
         c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup, timings, inputs"),
     }
 }

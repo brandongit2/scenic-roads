@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn long_ways_decide_by_touching() {
         let d = tempfile::tempdir().unwrap();
-        let cov = |place: &str| Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![place.into()] }], None, d.path()).unwrap();
+        let cov = |place: &str| Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![place.into()] }], None, d.path()).unwrap();
         // A tile owning a ferry from its coast (-20, 65) far east to (0, 60); its own roads far from
         // the coverage.
         let u = Unit { z: 6, x: 28, y: 16 };
@@ -321,7 +321,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // A 2 km circle; a straight road whose two nodes are 50 km apart on either side, passing
         // 1 km from its centre: no node inside, but the points extract puts along it are.
-        let cov = Coverage::from_recipes(&[Recipe { id: "c".into(), name: "C".into(), outline: vec!["place:0,50.0,2".into()] }], None, d.path()).unwrap();
+        let cov = Coverage::fixture(&[Recipe { id: "c".into(), name: "C".into(), outline: vec!["place:0,50.0,2".into()] }], None, d.path()).unwrap();
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(-0.35, 50.009), e7(0.35, 50.009)] };
         assert!(!cov.touches(&road.verts));
         assert!(road.touches(&cov));

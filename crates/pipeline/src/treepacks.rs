@@ -463,7 +463,7 @@ mod tests {
 
     fn cov(outline: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();
-        Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap()
+        Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap()
     }
 
     #[test]
@@ -521,7 +521,7 @@ mod tests {
         // Over z8 blocks 131–134, rows 87 and 88: z6 tiles 6/32/21, 6/32/22, 6/33/21 and 6/33/22 of
         // z3 tile 3/4/2, the squares' data in each.
         std::fs::write(d.path().join("t.poly"), "t\n1\n 5.5 48.85\n 9.5 48.85\n 9.5 48.95\n 5.5 48.95\nEND\nEND\n").unwrap();
-        let c = Coverage::from_recipes(&[Recipe { id: "t".into(), name: "T".into(), outline: vec!["poly:t.poly".into()] }], None, d.path()).unwrap();
+        let c = Coverage::fixture(&[Recipe { id: "t".into(), name: "T".into(), outline: vec!["poly:t.poly".into()] }], None, d.path()).unwrap();
         let run = |t: Unit, dir: &Path| {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&coverage_json(&c, t)).unwrap()).unwrap();
@@ -574,7 +574,7 @@ mod tests {
         put_piece(&mut parts, t, &dir, false).unwrap();
         assert_eq!(parts.get(&hi), before.get(&hi).map(String::as_str));
         // The coverage gone from a piece: its packs and mid dropped.
-        let gone = Coverage::from_recipes(&[Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
+        let gone = Coverage::fixture(&[Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
         build_piece(&mut parts, &gone, t, d.path(), sq.path(), &d.path().join("s"), 1, false, &|| {}).unwrap();
         assert!(LAYERS.iter().all(|l| parts.get(&format!("layers/{l}/hi/6-33-22")).is_none()) && parts.get(&mid).is_none());
         assert!(build_piece(&mut parts, &gone, pieces[0], d.path(), sq.path(), &d.path().join("s"), 1, true, &|| {}).is_err(), "not as it is: it's gone");
@@ -626,11 +626,9 @@ mod tests {
         let t0 = std::time::Instant::now();
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
         let date = crate::osmpass::latest_pass(&root).unwrap();
-        let src = crate::inputs::regions::read::source(&root, &m).unwrap();
-        let (recipes, bad) = crate::inputs::regions::read::recipes(&root, &src);
-        assert!(bad.is_empty(), "{bad:?}");
-        let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c)).unwrap());
-        let cov = crate::inputs::regions::read::coverage_with(&root, &src, &recipes, outlines.as_ref()).unwrap();
+        let a = crate::inputs::regions::read::source(&root, &m).unwrap();
+        let recipes = crate::inputs::regions::read::recipes(&a).unwrap();
+        let cov = Coverage::accepted(&root, &a, None).unwrap();
         let tt = targets(&cov, &m);
         eprintln!("pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)", recipes.len(), tt.pieces.len(), tt.lo.len(), t0.elapsed().as_secs_f64());
         let out = Out::unbound(&data.join("no-root"), &data.join("scratch")).unwrap();

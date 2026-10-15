@@ -310,7 +310,7 @@ pub(crate) mod tests {
             blob(&mut out, "OSMHeader", &hb);
             // The strings: "" first, then every tag's and role's.
             let mut strings: Vec<String> = vec![String::new()];
-            let mut sid = |s: &str, strings: &mut Vec<String>| -> u64 {
+            let sid = |s: &str, strings: &mut Vec<String>| -> u64 {
                 match strings.iter().position(|x| x == s) {
                     Some(i) => i as u64,
                     None => {

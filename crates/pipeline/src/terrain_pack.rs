@@ -1684,7 +1684,7 @@ pub(crate) mod tests {
             }
         }
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
-        let cov = Coverage::from_recipes(&[], None, d.path()).unwrap();
+        let cov = Coverage::fixture(&[], None, d.path()).unwrap();
         let mut out = Out::unbound(&root, &scratch).unwrap();
         let said = Mutex::new(Vec::new());
         build_q_with(&mut out, &raw, (1, 1), &[], &cov, &Sources::default(), &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))).unwrap();
@@ -1748,7 +1748,7 @@ pub(crate) mod tests {
     fn north_tiles(d: &std::path::Path, local: &std::path::Path) -> ((u32, u32), Vec<(u32, u32)>, Coverage) {
         // A small coverage in the far north (z11 the finest there: fewer tiles) on two z6 tiles'
         // edge, and its area's z6 tiles near it.
-        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d).unwrap();
+        let cov = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d).unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.len() >= 2, "{ts:?}");
@@ -2310,7 +2310,7 @@ pub(crate) mod tests {
         use crate::terrain_north::tests::FnCells;
         let d = tempfile::tempdir().unwrap();
         let local = d.path().join("local");
-        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
+        let cov = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.len() >= 2, "{ts:?}");
@@ -2439,7 +2439,7 @@ pub(crate) mod tests {
         let b = crate::stage::tile_box_grown(6, 21, 18, 0.0);
         let dx = |lat: f64| 20.0 / (111.320 * lat.to_radians().cos());
         let (lat, lon) = (b[1] + 0.05, b[2] + (dx(b[3]) + dx(b[1] + 0.5)) / 2.0);
-        let c = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{lon},{lat},0.5")] }], None, d).unwrap();
+        let c = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{lon},{lat},0.5")] }], None, d).unwrap();
         assert!(near_coverage(&c, 6, 21, 18, 20.0) && !makes_hi(&c, (21, 18)) && piece_levels(&c, (21, 18)).iter().all(|(_, t)| t.is_empty()));
         c
     }

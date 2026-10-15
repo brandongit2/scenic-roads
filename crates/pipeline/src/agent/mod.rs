@@ -711,51 +711,6 @@ struct Coverages {
     each: Vec<(String, crate::coverage::Coverage)>,
 }
 
-/// What a coverage is made from, as keys: the recipes, the pass's outlines (their content name), and
-/// the outline files (names, sizes and times, the Geofabrik folder's too); and what the owner's
-/// edits change: the recipes and the outline files they name (any other file there, a Finder's
-/// .DS_Store or an editor's swap file, is none). None when the outline files can't be read now.
-fn coverage_key(recipes: &[recipes::Recipe], outlines: Option<&str>, dir: &Path) -> Option<(String, String)> {
-    let mut parts: Vec<String> = recipes.iter().map(|r| format!("{} {}", r.id, r.outline.join(" "))).collect();
-    let mut edits = parts.clone();
-    for entry in recipes.iter().flat_map(|r| r.outline.iter()) {
-        let file = match recipes::parse_outline(entry) {
-            Ok(recipes::Outline::Poly(f)) => dir.join(f),
-            Ok(recipes::Outline::Geofabrik(g)) => dir.join("geofabrik").join(format!("{}.poly", g.replace('/', "-"))),
-            _ => continue,
-        };
-        match std::fs::metadata(&file) {
-            Ok(m) => {
-                let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
-                edits.push(format!("{entry} {} {t}", m.len()));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => edits.push(format!("{entry} missing")),
-            Err(_) => return None,
-        }
-    }
-    let pass = format!("outlines {}", outlines.unwrap_or("-"));
-    for d in [dir.to_path_buf(), dir.join("geofabrik")] {
-        let rd = match std::fs::read_dir(&d) {
-            Ok(rd) => rd,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return None,
-        };
-        let mut files: Vec<String> = Vec::new();
-        for e in rd {
-            let e = e.ok()?;
-            let m = e.metadata().ok()?;
-            if m.is_file() {
-                let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
-                files.push(format!("{} {} {t}", e.file_name().to_string_lossy(), m.len()));
-            }
-        }
-        files.sort();
-        parts.extend(files);
-    }
-    edits.sort();
-    parts.push(pass);
-    Some((store::naming::hash16(parts.join("\n").as_bytes()), store::naming::hash16(edits.join("\n").as_bytes())))
-}
 
 /// How long the regions' work waits after the owner changes a recipe or an outline file, for more
 /// edits: three edits in a row built the same regions' heritage sites three times, and their
@@ -4347,8 +4302,8 @@ impl Agent {
             return Vec::new();
         }
         // (The regions from the same records as the coverage.)
-        let (recipes, unread) = match crate::inputs::regions::read::source(root, &manifest) {
-            Ok(src) => crate::inputs::regions::read::recipes(root, &src),
+        let (recipes, unread): (Vec<recipes::Recipe>, Vec<(String, String)>) = match crate::inputs::regions::read::source(root, &manifest).and_then(|a| crate::inputs::regions::read::recipes(&a)) {
+            Ok(r) => (r, Vec::new()),
             Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
         };
         if let Some((_, why)) = unread.iter().find(|(f, _)| f == "regions") {
@@ -5153,15 +5108,10 @@ impl Agent {
     /// are all of them (every one read), and a change to them is the owner's edit (the plan's; not
     /// the heartbeat's, whose read may have failed).
     fn coverage(&self, root: &Path, manifest: &BTreeMap<String, String>, date: &str, recipes: &[recipes::Recipe], edits: bool) -> Result<std::rc::Rc<Coverages>, String> {
-        let dir = root.join("inputs/outlines");
-        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).cloned();
-        // (The accepted version, once the readers read it: keyed by its index's name, an edit being
-        // a new version.)
-        let src = crate::inputs::regions::read::source(root, manifest).map_err(|e| format!("the regions' accepted version: {e:#}"))?;
-        let (key, seen) = match &src {
-            crate::inputs::regions::read::Source::Accepted(a) => (Some(format!("accepted {}", a.version)), Some(a.version.clone())),
-            crate::inputs::regions::read::Source::DropBox => coverage_key(recipes, outlines.as_deref(), &dir).unzip(),
-        };
+        let _ = (date, recipes);
+        // (The accepted version: keyed by its index's name, an edit being a new version.)
+        let a = crate::inputs::regions::read::source(root, manifest).map_err(|e| format!("the regions' accepted version: {e:#}"))?;
+        let (key, seen) = (Some(format!("accepted {}", a.version)), Some(a.version.clone()));
         if let Some(e) = seen.filter(|_| edits) {
             if self.edits.borrow().as_ref().is_some_and(|last| *last != e) {
                 let now = std::time::SystemTime::now();
@@ -5175,13 +5125,7 @@ impl Agent {
                 return Ok(c.clone());
             }
         }
-        let all = match &src {
-            crate::inputs::regions::read::Source::Accepted(a) => crate::coverage::Coverage::accepted(root, a, None).map_err(|e| format!("{e:#}"))?,
-            crate::inputs::regions::read::Source::DropBox => {
-                let o = outlines.map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose().map_err(|e| format!("the pass's outlines: {e:#}"))?;
-                crate::coverage::Coverage::from_recipes(recipes, o.as_ref(), &dir).map_err(|e| format!("{e:#}"))?
-            }
-        };
+        let all = crate::coverage::Coverage::accepted(root, &a, None).map_err(|e| format!("{e:#}"))?;
         let c = std::rc::Rc::new(Coverages { each: all.by_region(), all });
         // (Not kept when the outline files couldn't be listed: made again next time.)
         *self.coverage.borrow_mut() = key.map(|k| (k, c.clone()));
@@ -6475,7 +6419,7 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     }
     // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
     // then waits).
-    inputs.insert("regions".into(), crate::inputs::regions::read::digest(root, || regions_digest(root)).unwrap_or_else(|| "?".into()));
+    inputs.insert("regions".into(), crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()));
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
     // The 3D buildings' sources: what each z6 tile's bldprep reads, and its rows.
     inputs.extend(crate::bld::sources::digests(root, crate::buildtiles::RELEASE));
@@ -6496,45 +6440,18 @@ fn key_names(path: &Path) -> Option<String> {
     Some(names.join(","))
 }
 
-/// The regions as the readers read them now (crate::inputs::regions::read: the accepted version
-/// once the migration's proof has passed, the drop box's recipes before), sorted by id, and those
-/// that can't be read (the accepted version unreadable now: one line naming why).
+/// The regions as the readers read them now (the accepted version: crate::inputs::regions::read),
+/// sorted by id, and why none can be read when it can't (one line).
 fn load_regions(root: &Path) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
     match crate::inputs::regions::read::source_now(root) {
-        Ok(src) => crate::inputs::regions::read::recipes(root, &src),
+        Ok(a) => match crate::inputs::regions::read::recipes(&a) {
+            Ok(r) => (r, Vec::new()),
+            Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
+        },
         Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
     }
 }
 
-/// The recipes, and the outline files they name (by size and time), hashed; None when a read fails.
-fn regions_digest(root: &Path) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for e in std::fs::read_dir(root.join("inputs/regions")).ok()?.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".toml") {
-            continue;
-        }
-        let text = crate::smallfiles::read_to_string(&e.path()).ok()?;
-        for entry in recipes::parse(&name, &text).map(|r| r.outline).unwrap_or_default() {
-            let file = match recipes::parse_outline(&entry) {
-                Ok(recipes::Outline::Poly(f)) => root.join("inputs/outlines").join(f),
-                Ok(recipes::Outline::Geofabrik(g)) => root.join("inputs/outlines/geofabrik").join(format!("{}.poly", g.replace('/', "-"))),
-                _ => continue,
-            };
-            match std::fs::metadata(&file) {
-                Ok(md) => {
-                    let t = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-                    parts.push(format!("{entry} {} {t}", md.len()));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => parts.push(format!("{entry} missing")),
-                Err(_) => return None,
-            }
-        }
-        parts.push(format!("{name} {text}"));
-    }
-    parts.sort();
-    Some(store::naming::hash16(parts.join("\n").as_bytes()))
-}
 
 /// Why the build isn't done, by its forecast (None: nothing left to build, no round under way, no
 /// machine busy). One more than ten minutes old (the plan can't be made now), or made before the
@@ -8117,10 +8034,10 @@ mod tests {
         let date = "2026-09-28";
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         put(&root.join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
-        recipes::add(&root.join("inputs/regions"), &recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }).unwrap();
-        let (recipes, _) = recipes::load(&root.join("inputs/regions"));
-        let cov = crate::coverage::Coverage::from_recipes(&recipes, None, &root.join("inputs/outlines")).unwrap();
+        let recipes = vec![recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }];
+        let cov = crate::coverage::Coverage::fixture(&recipes, None, &root.join("inputs/outlines")).unwrap();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(root, &root.join("inputs/outlines"), &recipes, &mut m);
         let piece = format!("sources/osm/{date}/pieces/6-28-17");
         m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
         let mut reaches = crate::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
@@ -8186,9 +8103,8 @@ mod tests {
         assert!(!root.to_string_lossy().contains("projects/scenic-roads"), "not the project folder");
         let date = "2026-09-28";
         rekey_root_with(&root, [-220_000_000, 640_000_000, -10_000_000, 641_600_000]);
-        let (recipes, _) = recipes::load(&root.join("inputs/regions"));
-        let cov = crate::coverage::Coverage::from_recipes(&recipes, None, &root.join("inputs/outlines")).unwrap();
         let m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
+        let cov = crate::coverage::Coverage::accepted(&root, &crate::inputs::regions::read::source(&root, &m).unwrap(), None).unwrap();
         let reaches = crate::reach::Reaches::load(&root, &m, date).ok().flatten().expect("the reaches");
         let mut keys = build::Keys::load(&root);
         let tiles = {
@@ -8339,14 +8255,17 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("catalog")).unwrap();
-        std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
-        recipes::add(&root.join("inputs/regions"), &recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }).unwrap();
+        let mut m = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(&root, &root, &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }], &mut m);
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut a = agent(&root, &home);
         a.step().unwrap();
         let st = read_status(Some(&root), &home).unwrap();
         assert_eq!(st.regions.len(), 1);
         assert!(st.conditions.nas);
-        assert!(st.waiting.iter().any(|w| w.what.starts_with("Backing up")), "{:?}", st.waiting);
+        // (The regions' check of their accepted version comes first, the gate's jobs first of all;
+        // the backup after it.)
+        assert!(st.waiting.iter().any(|w| w.what.starts_with("Backing up") || w.what.starts_with("Checking the inputs dropped in regions")), "{:?}", st.waiting);
         // Once backed up today, it isn't due.
         a.mem.last_ok.insert("backup".into(), now_s());
         let mut w = Vec::new();
@@ -8461,34 +8380,22 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_to_a_recipe_or_an_outline_file_is_noticed_and_a_new_pass_is_not() {
+    fn an_edit_to_the_regions_is_noticed() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        let outlines = root.join("inputs/outlines");
-        std::fs::create_dir_all(&outlines).unwrap();
         let r = |p: &str| vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }];
-        // The pass's outlines change the coverage's key, not the edits'.
-        let (k1, e1) = coverage_key(&r("-21.9,64.13"), Some("sources/osm/a.outlines"), &outlines).unwrap();
-        let (k2, e2) = coverage_key(&r("-21.9,64.13"), Some("sources/osm/b.outlines"), &outlines).unwrap();
-        assert!(k1 != k2 && e1 == e2);
-        // A recipe's outline, or an outline file a recipe names, changes both; another file there
-        // (a Finder's .DS_Store) only the coverage's.
-        assert_ne!(coverage_key(&r("-21.9,64.2"), Some("sources/osm/a.outlines"), &outlines).unwrap().1, e1);
-        let named = vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["poly:x.poly".into()] }];
-        let (k0, n1) = coverage_key(&named, Some("sources/osm/a.outlines"), &outlines).unwrap();
-        std::fs::write(outlines.join(".DS_Store"), b"x").unwrap();
-        let (k3, n2) = coverage_key(&named, Some("sources/osm/a.outlines"), &outlines).unwrap();
-        assert!(n1 == n2 && k3 != k0);
-        std::fs::write(outlines.join("x.poly"), b"x").unwrap();
-        assert_ne!(coverage_key(&named, Some("sources/osm/a.outlines"), &outlines).unwrap().1, n2);
-        // The agent: the first look isn't an edit; a change is (the plan's look, not the heartbeat's).
+        let mut m1 = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.13"), &mut m1);
+        let mut m2 = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.2"), &mut m2);
+        // The agent: the first look isn't an edit; a new accepted version is (the plan's look, not
+        // the heartbeat's).
         let a = agent(&root, &home);
-        let none = BTreeMap::new();
-        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.13"), true).unwrap();
-        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.13"), true).unwrap();
-        a.coverage(&root, &none, "2026-09-28", &[], false).unwrap();
+        a.coverage(&root, &m1, "2026-09-28", &[], true).unwrap();
+        a.coverage(&root, &m1, "2026-09-28", &[], true).unwrap();
+        a.coverage(&root, &m1, "2026-09-28", &[], false).unwrap();
         assert!(a.edited_at.get().is_none());
-        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.2"), true).unwrap();
+        a.coverage(&root, &m2, "2026-09-28", &[], true).unwrap();
         let (first, last) = a.edited_at.get().unwrap();
         assert_eq!(edit_held(Some((first, last)), last), Some((Duration::ZERO, EDIT_HOLD)));
         // A run of edits holds the work an hour at most.

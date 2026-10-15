@@ -1123,7 +1123,7 @@ mod tests {
         use crate::terrain_pack::{near_coverage, RawTiles};
         let d = tempfile::tempdir().unwrap();
         let local = d.path().join("local");
-        let cov = crate::coverage::Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:0.0,70.5,2".into()] }], None, d.path()).unwrap();
+        let cov = crate::coverage::Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:0.0,70.5,2".into()] }], None, d.path()).unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         assert_eq!(by_q.keys().copied().collect::<Vec<_>>(), [(3, 1), (4, 1)]);
         for (&q, ts) in &by_q {
@@ -1228,7 +1228,7 @@ mod tests {
         // A small coverage in the far north (z11 the finest there: fewer tiles) on two z6 tiles'
         // edge, and its area's z6 tiles near it; terrain made for it from raw tiles (smooth slopes,
         // every third with a spike, every seventh missing), every level's.
-        let cov = crate::coverage::Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
+        let cov = crate::coverage::Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.len() >= 2, "{ts:?}");

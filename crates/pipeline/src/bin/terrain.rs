@@ -18,7 +18,7 @@
 //! `terrain --scan`: the repair over the coverage's tiles, from AWS's raw tiles (see `scan`).
 
 use det::Det;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pipeline::count_bar;
 use pipeline::terrain_pack::{fetch, max_zoom_at, near_coverage, process, process_with, tile_lat, Repaired};
 use rayon::prelude::*;
@@ -300,12 +300,9 @@ fn scan() -> Result<()> {
     } else {
         // The coverage, as the agent has it (the regions' recipes, the pass's outlines).
         let out = pipeline::out::Out::unbound(&root, &cache.join("scratch"))?;
-        let date = pipeline::osmpass::latest_pass(&root).context("no OSM pass")?;
-        let outlines = out.get(&format!("sources/osm/{date}/outlines")).map(|c| out.path(c));
-        let outlines = outlines.as_deref().map(pipeline::outlines::Outlines::open).transpose()?;
         let src = pipeline::inputs::regions::read::source(&root, &out.manifest)?;
-        let (recipes, _) = pipeline::inputs::regions::read::recipes(&root, &src);
-        let cov = pipeline::inputs::regions::read::coverage_with(&root, &src, &recipes, outlines.as_ref())?;
+        let recipes = pipeline::inputs::regions::read::recipes(&src)?;
+        let cov = pipeline::coverage::Coverage::accepted(&root, &src, None)?;
         let by_q = pipeline::agent::build::coverage_tiles(&cov);
         eprintln!("scan: {} regions, {} z3 packs, {} z6 tiles", recipes.len(), by_q.len(), by_q.values().map(Vec::len).sum::<usize>());
         let mut z3: HashMap<(u32, u32), (Vec<f32>, Vec<f32>)> = HashMap::new();

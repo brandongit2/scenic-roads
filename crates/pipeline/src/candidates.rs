@@ -121,7 +121,7 @@ mod tests {
     fn clipped_to_the_unit_and_the_coverage() {
         let d = tempfile::tempdir().unwrap();
         // Iceland around Reykjavik: unit 6/28/17 holds -21.9, 64.13.
-        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
+        let cov = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
         let u = Unit { z: 6, x: 28, y: 17 };
         let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
         assert!(crate::unit::owns(tb, [-219_000_000, 641_300_000]), "{tb:?}");

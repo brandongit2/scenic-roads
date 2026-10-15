@@ -9,8 +9,6 @@
 //! --release -p pipeline --lib holdout -- --ignored --nocapture
 
 use super::*;
-use crate::agent::recipes;
-use crate::outlines::Outlines;
 use std::path::Path;
 
 /// One held-out building's estimates (dm) and what it is.
@@ -167,11 +165,9 @@ fn stats(errs: &mut [f64], over: usize) -> String {
 #[ignore]
 fn holdout() {
     let dir = std::env::var("WORK").unwrap();
-    let o = Outlines::open(Path::new(&std::env::var("OUTLINES").unwrap())).unwrap();
-    let (rs, bad) = recipes::load(Path::new(&std::env::var("REGIONS").unwrap()));
-    assert!(bad.is_empty());
-    let d = tempfile::tempdir().unwrap();
-    let cov = Coverage::from_recipes(&rs, Some(&o), d.path()).unwrap();
+    // (The regions' accepted version the records of the NAS project folder `ROOT` name.)
+    let root = std::path::PathBuf::from(std::env::var("ROOT").unwrap());
+    let cov = Coverage::accepted(&root, &crate::inputs::regions::read::source_now(&root).unwrap(), None).unwrap();
     let (mut qs, mut ms, mut n) = (Vec::new(), Vec::new(), 0u64);
     for t in std::env::var("TILES").unwrap().split(',') {
         let t = Unit::parse(t).unwrap();

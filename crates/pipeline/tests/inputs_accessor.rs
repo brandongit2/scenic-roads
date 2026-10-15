@@ -38,14 +38,11 @@ const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 /// with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/every.rs", "LEAD_ONLY", "\"inputs\"", "the `inputs` step's name, kept to the lead, not a drop box"),
-    ("crates/pipeline/src/coverage.rs", "file_rings", "\"inputs/outlines/{f}\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", "\"inputs/keys.env\"", "inputs/keys.env, not an input (§2): its key names enter keys, never its values"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::add(&root(&args, true)?.join(\"inputs/regions\")", "`scenic add`: the owner's tool's write of a recipe (§2)"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::remove(&root(&args, true)?.join(\"inputs/regions\")", "`scenic remove`: the owner's tool's write of a recipe (§2)"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
-    ("crates/pipeline/src/bin/scenic.rs", "main", "convert_poly(&root.join(\"inputs/outlines\")", "`scenic regions convert-poly`: the owner's tool converting the .poly files to shapes in the drop box (§6.1.10, runbook step 4) [#135]"),
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9): the drop boxes, and the old translations/ and descriptions/ (#137), whose drops the input check flags"),
@@ -55,10 +52,9 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every drop box and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/agent/mod.rs", "plan", "w.step == \"inputs\"", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
-    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/hold-catalog\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
-    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
-    ("crates/pipeline/src/agent/mod.rs", "checklist", "\"inputs/hold-catalog\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog, a control"),
-    ("crates/pipeline/src/agent/mod.rs", "coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
+    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/hold-catalog\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
+    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
+    ("crates/pipeline/src/agent/mod.rs", "checklist", "\"inputs/hold-catalog\"", "inputs/hold-catalog, a control"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs\".into()", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "strip_prefix(\"inputs/\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
@@ -67,13 +63,10 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs-listing\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/ferries/freq\"", "inputs/keys.env's key names (not an input, §2); the ferries' timetables [#140, #141]"),
     ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/keys.env\"", "inputs/keys.env's key names (not an input, §2); the ferries' timetables [#140, #141]"),
-    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "regions_digest", "\"inputs/outlines/geofabrik\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/offload.rs", "offer", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/offload.rs", "run_task", "spec[\"inputs\"]", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/ovconv.rs", "ferries_job", "\"inputs/ferries/freq\"", "inputs/ferries/freq [#140, #141]"),
-    ("crates/server/src/regions.rs", "nas", "\"inputs/regions\"", "the Regions panel: its writes (the owner's tool, §2) and its reads of the recipes [#135]"),
+    ("crates/server/src/regions.rs", "nas", "\"inputs/regions\"", "the Regions panel: the owner's tool (§2), its writes and the list it edits"),
     ("crates/server/src/descriptions.rs", "load", "\"descriptions: {} from {} files\"", "the map server's descriptions: its log's words, not a path"),
     ("crates/server/src/names_live.rs", "reload", "\"translations: {w}\"", "the map server's translations: its log's words, not a path"),
     ("crates/server/src/names_live.rs", "reload", "\"translations: {} lines, {} names in {} files, languages {:?} ({:.1?})\"", "the map server's translations: its log's words, not a path"),
@@ -84,8 +77,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
 /// The same of the Python steps.
 const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/railfeeds.py", "keys", "\"inputs/keys.env's keys (KEY=value lines; # comments).\"", "inputs/keys.env, not an input (§2): named in its docstring"),
-    ("dem/bldfetch.py", "coverage", "\"inputs/outlines\"", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
-    ("dem/bldfetch.py", "coverage", "\"inputs/outlines/geofabrik\"", "inputs/outlines' .poly files for bld-fetch's coverage [#135]"),
     ("dem/heritage_eu.py", "wd_search_labels", "\"languages\": \"|\".join(langs)", "Wikidata's API parameter `languages`, not the languages drop box"),
 ];
 

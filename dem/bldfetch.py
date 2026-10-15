@@ -15,10 +15,10 @@ has it, each fetched once:
     each 3 arcsec cell, epoch 2018, WGS84; EC JRC, CC BY 4.0) meeting the coverage grown by the
     margin, as JRC's 10° zips. Into sources/ghsl/R2023A/<file>.zip, with index.json.
 
-The coverage is the regions' outlines as the map's server has them (--server: /api/regions, and
-/api/areas/<id> for each osm: entry; place: entries are drawn here; poly: and geofabrik: entries are
-read from the NAS's inputs/outlines/), or a GeoJSON file (--coverage). Adding a region and running
-this again fetches only the files the new coverage needs.
+The coverage is a GeoJSON file (--coverage: the agent's job writes it from the regions' accepted
+geometry, as the build reads it), or, by hand, the regions' osm: parts as the map's server has them
+(--server: /api/regions, and /api/areas/<id> for each; a region with any other part needs
+--coverage). Adding a region and running this again fetches only the files the new coverage needs.
 
 Each file is downloaded to `<file>.<host>.tmp` beside its place, resumed from where a run cut short
 left it (an HTTP range; for S3, only while the object is the one it was: If-Match its ETag), flushed,
@@ -172,36 +172,6 @@ def get_json(url: str):
 
 # ---- the coverage ----------------------------------------------------------------------------------
 
-def read_poly(path: Path) -> list:
-    """An osmosis .poly file's polygons (shapely), holes ('!' sections) taken out of the one before."""
-    from shapely.geometry import Polygon
-    lines = [l.strip() for l in path.read_text().splitlines()]
-    out, i = [], 1
-    while i < len(lines) and lines[i] != "END":
-        hole = lines[i].startswith("!")
-        i += 1
-        ring = []
-        while lines[i] != "END":
-            x, y = lines[i].split()[:2]
-            ring.append((float(x), float(y)))
-            i += 1
-        i += 1
-        if hole and out:
-            out[-1] = out[-1].difference(Polygon(ring))
-        elif len(ring) >= 3:
-            out.append(Polygon(ring).buffer(0))
-    return out
-
-
-def circle(lon: float, lat: float, km: float):
-    from shapely.geometry import Polygon
-    pts = []
-    for k in range(64):
-        a = 2 * math.pi * k / 64
-        pts.append((lon + km / (111.32 * max(0.01, math.cos(math.radians(lat)))) * math.sin(a), lat + km / 110.57 * math.cos(a)))
-    return Polygon(pts)
-
-
 def coverage(args) -> tuple[object, list[str]]:
     """The coverage grown by the margin (a prepared shapely geometry), and what it's made of."""
     from shapely.geometry import shape
@@ -241,15 +211,10 @@ def coverage(args) -> tuple[object, list[str]]:
                     if g is None:
                         raise SystemExit(f"{r['id']}: the server has no outline for {entry}")
                     parts.append(shape(g).buffer(0))
-                elif kind == "place":
-                    lon, lat, km = (float(v) for v in arg.split(","))
-                    parts.append(circle(lon, lat, km))
-                elif kind == "poly":
-                    parts.extend(read_poly(Path(args.root) / "inputs/outlines" / arg))
-                elif kind == "geofabrik":
-                    parts.extend(read_poly(Path(args.root) / "inputs/outlines/geofabrik" / f"{arg}.poly"))
                 else:
-                    raise SystemExit(f"{r['id']}: an outline entry this can't read: {entry}")
+                    # (Any other part: the agent's job passes --coverage, the regions' accepted
+                    # geometry as the build reads it; asking the server by hand covers osm: parts.)
+                    raise SystemExit(f"{r['id']}: a part only --coverage gives: {entry}")
     grown = []
     for p in parts:
         if p.is_empty:

@@ -451,7 +451,7 @@ mod tests {
     fn coverage() -> Coverage {
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, o: &str| Recipe { id: id.into(), name: id.into(), outline: vec![o.into()] };
-        let mut c = Coverage::from_recipes(&[r("far", "place:2.35,48.85,2"), r("fr", "place:5.615,48.80,3"), r("es", "place:5.66,48.80,3")], None, d.path()).unwrap();
+        let mut c = Coverage::fixture(&[r("far", "place:2.35,48.85,2"), r("fr", "place:5.615,48.80,3"), r("es", "place:5.66,48.80,3")], None, d.path()).unwrap();
         for (s, cc) in c.shapes.iter_mut().zip(["GB", "FR", "ES"]) {
             s.country = cc.into();
         }

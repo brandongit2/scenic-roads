@@ -2858,7 +2858,7 @@ pub(crate) mod tests {
 
     fn cov() -> Coverage {
         let d = tempfile::tempdir().unwrap();
-        Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap()
+        Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap()
     }
 
     /// The heritage-sites job's inputs (the pass's areas set, the registers' snapshot).
@@ -3159,7 +3159,7 @@ pub(crate) mod tests {
     fn a_z6_tile_the_coverage_leaves_and_comes_back_to() {
         let d = tempfile::tempdir().unwrap();
         let small = cov();
-        let big = Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into(), "place:47.8,54.2,5".into()] }], None, d.path()).unwrap();
+        let big = Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into(), "place:47.8,54.2,5".into()] }], None, d.path()).unwrap();
         assert!(coverage_tiles(&big).into_values().flatten().any(|t| t == (40, 20)));
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
@@ -3278,7 +3278,7 @@ pub(crate) mod tests {
     fn three() -> (Coverage, Reaches, BTreeMap<String, String>, Keys) {
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, places: &[&str]| Recipe { id: id.into(), name: id.to_uppercase(), outline: places.iter().map(|p| format!("place:{p},20")).collect() };
-        let c = Coverage::from_recipes(&[r("a", &["-21.9,64.13"]), r("b", &["-18.1,65.68", "-14.4,65.26"]), r("c", &["-19.0,63.42"])], None, d.path()).unwrap();
+        let c = Coverage::fixture(&[r("a", &["-21.9,64.13"]), r("b", &["-18.1,65.68", "-14.4,65.26"]), r("c", &["-19.0,63.42"])], None, d.path()).unwrap();
         let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
         for (u, b) in [("6/28/16", e7box(-22.0, 64.0, -21.7, 64.16)), ("6/29/16", e7box(-18.3, 65.6, -17.9, 65.8)), ("6/30/16", e7box(-14.6, 65.2, -14.2, 65.35)), ("6/31/16", e7box(-19.2, 63.35, -18.8, 63.5))] {
             reach.units.insert(u.into(), Reach { owned: Some(b), long: vec![] });
@@ -3760,7 +3760,7 @@ pub(crate) mod tests {
         // 6/28/16, 3/3/2); one unit each, g's first by place.
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, place: &str| Recipe { id: id.into(), name: id.to_uppercase(), outline: vec![format!("place:{place},20")] };
-        let c = Coverage::from_recipes(&[r("a", "-21.9,64.13"), r("g", "-51.7,64.18")], None, d.path()).unwrap();
+        let c = Coverage::fixture(&[r("a", "-21.9,64.13"), r("g", "-51.7,64.18")], None, d.path()).unwrap();
         let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
         reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] });
         reach.units.insert("6/22/17".into(), Reach { owned: Some(e7box(-51.9, 64.1, -51.5, 64.3)), long: vec![] });
@@ -4100,7 +4100,7 @@ pub(crate) mod tests {
         assert!(p.ready.is_empty() && p.regions.iter().all(|r| r.trees.contains(&"6/28/16".to_string())), "{:?}", p.regions);
         // The coverage gone from 3/3/2 altogether: each piece drops its packs and mid ("none"),
         // and the assembly its lo packs.
-        let far = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:20,40,10".into()] }], None, std::path::Path::new("/nonexistent")).unwrap();
+        let far = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:20,40,10".into()] }], None, std::path::Path::new("/nonexistent")).unwrap();
         m.insert("layers/trees-cover/lo/3-3-2".into(), "layers/trees-cover/lo/3-3-2.1111111111111111.pack".into());
         let tt = crate::treepacks::targets(&far, &m);
         let w = tree_work(&tt, &m, &done);
@@ -4114,7 +4114,7 @@ pub(crate) mod tests {
     fn keys_dont_name_regions() {
         let d = tempfile::tempdir().unwrap();
         let place = "place:-21.9,64.13,20";
-        let cov_of = |rs: &[(&str, &str)]| Coverage::from_recipes(&rs.iter().map(|(id, o)| Recipe { id: id.to_string(), name: "R".into(), outline: vec![o.to_string()] }).collect::<Vec<_>>(), None, d.path()).unwrap();
+        let cov_of = |rs: &[(&str, &str)]| Coverage::fixture(&rs.iter().map(|(id, o)| Recipe { id: id.to_string(), name: "R".into(), outline: vec![o.to_string()] }).collect::<Vec<_>>(), None, d.path()).unwrap();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         let keys = |c: &Coverage| (terrain_slope_targets(c, &m, &tiles_for(&m)), unit_keys(c, "d", &m).into_iter().map(|(u, k)| (u.slash(), k)).collect::<Vec<_>>(), pois_keys(c, "d", &m).into_iter().map(|(_, k)| k).collect::<Vec<_>>());
@@ -4147,14 +4147,14 @@ pub(crate) mod tests {
         // An outline's change outside a unit's whole reach leaves its key; inside it, not.
         let poly = |east: f64| {
             std::fs::write(d.path().join("p.poly"), format!("p\n1\n -22.2 64.0\n -21.8 64.0\n {east} 64.3\n -22.2 64.3\nEND\nEND\n")).unwrap();
-            Coverage::from_recipes(&[Recipe { id: "p".into(), name: "P".into(), outline: vec!["poly:p.poly".into()] }], None, d.path()).unwrap()
+            Coverage::fixture(&[Recipe { id: "p".into(), name: "P".into(), outline: vec!["poly:p.poly".into()] }], None, d.path()).unwrap()
         };
         let key = |c: &Coverage| ukeys(c, "d", &m, Some(&r)).into_iter().find(|(u, _)| u.slash() == "6/28/16").unwrap().1;
         let k0 = key(&poly(30.0));
         assert_ne!(key(&poly(31.0)), k0, "the moved edge crosses 6/28/16's tile");
         let far = |east: f64| {
             std::fs::write(d.path().join("q.poly"), format!("q\n1\n -22.2 64.0\n -21.8 64.0\n -21.8 64.1\n -15.0 64.1\n {east} 64.1\n {east} 70.0\n -22.2 70.0\nEND\nEND\n")).unwrap();
-            Coverage::from_recipes(&[Recipe { id: "q".into(), name: "Q".into(), outline: vec!["poly:q.poly".into()] }], None, d.path()).unwrap()
+            Coverage::fixture(&[Recipe { id: "q".into(), name: "Q".into(), outline: vec!["poly:q.poly".into()] }], None, d.path()).unwrap()
         };
         let k1 = key(&far(10.0));
         assert_eq!(key(&far(12.0)), k1, "only vertices far east of the tile moved");
@@ -4280,7 +4280,7 @@ pub(crate) mod tests {
         let more: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY,ODPT_KEY,TDX_CLIENT_ID".to_string())].into();
         assert!(rail_chain(&c, "d", &m, &done, &more).is_none());
         assert_eq!(rail_chain(&c, "d", &m, &done, &none).unwrap().step, "rail-feeds");
-        let bigger = Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,25".into()] }], None, d.path()).unwrap();
+        let bigger = Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,25".into()] }], None, d.path()).unwrap();
         assert_eq!(rail_chain(&bigger, "d", &m, &done, &lta).unwrap().step, "rail-feeds");
         // A new list (a feed fetched), a new pass's rail set, other MTR pairs: the trains again.
         for (l, f) in [(crate::rail::FEEDS.to_string(), "sources/rail/feeds.6666666666666666.json"), (crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.7777777777777777.osm.pbf"), (crate::rail::MTR_PAIRS.to_string(), "sources/rail/mtr-pairs.8888888888888888.bin")] {
@@ -4468,7 +4468,7 @@ pub(crate) mod tests {
         // Two units in two terrain areas (Nuuk 6/22/17 in 3/2/2, Reykjavik 6/28/16 in 3/3/2).
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, place: &str| Recipe { id: id.into(), name: id.to_uppercase(), outline: vec![format!("place:{place},20")] };
-        let c = Coverage::from_recipes(&[r("a", "-21.9,64.13"), r("g", "-51.7,64.18")], None, d.path()).unwrap();
+        let c = Coverage::fixture(&[r("a", "-21.9,64.13"), r("g", "-51.7,64.18")], None, d.path()).unwrap();
         let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
         reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] });
         reach.units.insert("6/22/17".into(), Reach { owned: Some(e7box(-51.9, 64.1, -51.5, 64.3)), long: vec![] });
@@ -4813,10 +4813,9 @@ pub(crate) mod tests {
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
         let date = crate::osmpass::latest_pass_by(&root, false).unwrap();
         let keys = Keys::load(&root);
-        let (recipes, _) = crate::agent::recipes::load(&root.join("inputs/regions"));
-        lap("records and recipes read", &mut t);
-        let o = m.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c)).unwrap());
-        let cov = Coverage::from_recipes(&recipes, o.as_ref(), &root.join("inputs/outlines")).unwrap();
+        let a = crate::inputs::regions::read::source(&root, &m).unwrap();
+        lap("records read", &mut t);
+        let cov = Coverage::accepted(&root, &a, None).unwrap();
         let each = cov.by_region();
         lap(&format!("coverage made ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
         let reach = crate::reach::Reaches::load(&root, &m, &date).ok().flatten();

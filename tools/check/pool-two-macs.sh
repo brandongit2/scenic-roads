@@ -9,7 +9,7 @@
 #                                                   an older helper's hand-off to drain, switched on
 #                                                   (`slots`: state/pool/slots on too, a part
 #                                                   changing in its process)
-#   pool-two-macs.sh region <folder>                a pass (its marker alone) and a region (a 20 km
+#   pool-two-macs.sh region <folder> [scenic-build]  a pass (its marker alone) and a region (a 20 km
 #                                                   circle) in the scratch folder: the lead plans
 #                                                   the pass's worldwide jobs for itself, and offers
 #                                                   the region's terrain and tree cover to members
@@ -171,7 +171,8 @@ case $cmd in
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     mkdir -p $r/sources/osm/2026-09-28 $r/inputs/regions
     print -n '{}' > $r/sources/osm/2026-09-28/pass.0000000000000000.json
-    print -n 'id = "b4test"\nname = "B4 test"\noutline = ["place:7.0,46.0,20"]\n' > $r/inputs/regions/b4test.toml
+    # (The regions' accepted version, a 20 km circle round 7° E 46° N: the build reads no drop box.)
+    ${3:-scenic-build} regions-fixture --root $r b4test 7.0,46.0,20
     ;;
   app)
     d=${2:?its folder}; d=${d:a} scenic=${3:?the scenic program}

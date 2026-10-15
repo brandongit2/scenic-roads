@@ -1,14 +1,7 @@
-//! How the build reads the regions (docs/inputs.md §6.1.4, §6.1.7, §6.1.10).
-//!
-//! From the accepted version (`Source::Accepted`): the regions listed by the index (each region
-//! file's `facts`: its id, name and outline entries), the coverage made from their stored geometry
-//! (`Coverage::accepted`), and the catalog's drawn regions from their drawn files. Until the
-//! records say the readers switched (`sources/inputs/regions/@switched`, which the regions' check
-//! records once the migration's proof, `scenic-build regions-proof`, says the same of exactly the
-//! accepted version the records name), the readers read the drop box as before
-//! (`Source::DropBox`): the recipes in `inputs/regions/`, the pass's outlines and
-//! `inputs/outlines/`. The switch is in the records, so a reader never decides it from a file it
-//! may fail to read.
+//! How the build reads the regions (docs/inputs.md §6.1.4, §6.1.7): from the accepted version
+//! alone, the regions listed by the index (each region file's `facts`: its id, name and outline
+//! entries), the coverage made from their stored geometry (`Coverage::accepted`), the catalog's
+//! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
 
 use super::stored::{Drawn, Geometry};
 use crate::agent::recipes::Recipe;
@@ -19,34 +12,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// The migration's proof (`scenic-build regions-proof`): the readers read the accepted version
-/// once it says `same: true`.
-pub const PROOF: &str = "state/inputs/regions-proof.json";
+/// The regions' accepted version the records `manifest` name: what every reader reads; an error
+/// before the records say the readers switched (`sources/inputs/regions/@switched`: publish 1's
+/// runbook, docs/inputs.md §6.1.10, comes first), or when it can't be read now.
+pub fn source(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Accepted> {
+    anyhow::ensure!(switched(manifest), "the records don't say the regions' readers switched: run publish 1's runbook first (docs/inputs.md §6.1.10)");
+    crate::inputs::open(root, manifest, super::UNIT)?.context("no accepted version of the regions yet (the input check takes inputs/regions/ in)")
+}
 
-/// What the proof found.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Proof {
-    pub fmt: u32,
-    /// The accepted index it compared with the drop box's path.
-    pub index: String,
-    /// The pass's date.
-    pub pass: String,
-    /// Fingerprints and shapes keys the same on every z6 tile and job box compared, and no build
-    /// step's key changed.
-    pub same: bool,
-    pub regions: usize,
-    pub tiles: usize,
-    pub boxes: usize,
-    /// The build steps whose key a dry plan would change.
-    pub steps_changed: usize,
-    /// Each difference, in words (the first hundred).
-    #[serde(default)]
-    pub differences: Vec<String>,
-    pub at: u64,
-    /// The app the proof ran on: once the switch is recorded (with these bytes), no Mac on an older
-    /// app leads or is handed work (`switch_app`).
-    #[serde(default)]
-    pub app: String,
+/// Whether the records say the readers read the regions' accepted version.
+pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
+    manifest.contains_key(&crate::inputs::switched_logical(super::UNIT))
 }
 
 /// The app the regions' switch was proved on, from the records' `@switched` (its `app`): Ok(None)
@@ -77,53 +53,8 @@ pub fn needed_app(term: Option<&str>, regions: Option<&str>) -> Option<String> {
     }
 }
 
-/// The proof: None when none has been written; an error when it can't be read now or doesn't
-/// parse (never taken for none).
-pub fn proof(root: &Path) -> Result<Option<Proof>> {
-    match std::fs::read(root.join(PROOF)) {
-        Ok(b) => Ok(Some(serde_json::from_slice(&b).with_context(|| format!("parse {PROOF}"))?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("read {PROOF}")),
-    }
-}
-
-/// Whether the records say the readers read the regions' accepted version.
-pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
-    manifest.contains_key(&crate::inputs::switched_logical(super::UNIT))
-}
-
-/// Where the readers read the regions from now.
-#[derive(Clone, Debug)]
-pub enum Source {
-    /// The accepted version the records name.
-    Accepted(Accepted),
-    /// The drop box, as before the input check (until the proof passes).
-    DropBox,
-}
-
-impl Source {
-    /// What it is, for keys: the accepted index's content name, or "dropbox".
-    pub fn name(&self) -> &str {
-        match self {
-            Source::Accepted(a) => &a.version,
-            Source::DropBox => "dropbox",
-        }
-    }
-}
-
-/// Where the readers read the regions from, given the records `manifest`: the accepted version once
-/// they say the readers switched (for good: later versions are the owner's edits taken in by the
-/// check); the drop box before. Switched but no accepted version to read is an error, never the
-/// drop box instead.
-pub fn source(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Source> {
-    if !switched(manifest) {
-        return Ok(Source::DropBox);
-    }
-    Ok(Source::Accepted(crate::inputs::open(root, manifest, super::UNIT)?.context("the records say the regions' readers switched, but name no accepted version")?))
-}
-
 /// `source`, the records read from the NAS.
-pub fn source_now(root: &Path) -> Result<Source> {
+pub fn source_now(root: &Path) -> Result<Accepted> {
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
     source(root, &m)
 }
@@ -200,16 +131,9 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
     build("", &groups, &regions)
 }
 
-/// The regions as a reader lists them (sorted by id), and the files that don't read (none from an
-/// accepted version: every file in it was checked).
-pub fn recipes(root: &Path, src: &Source) -> (Vec<Recipe>, Vec<(String, String)>) {
-    match src {
-        Source::Accepted(a) => match listed(a) {
-            Ok(l) => (l.into_iter().map(|l| l.recipe).collect(), Vec::new()),
-            Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
-        },
-        Source::DropBox => crate::agent::recipes::load(&root.join("inputs/regions")),
-    }
+/// The regions as a reader lists them, sorted by id.
+pub fn recipes(a: &Accepted) -> Result<Vec<Recipe>> {
+    Ok(listed(a)?.into_iter().map(|l| l.recipe).collect())
 }
 
 /// Reads `names` (content names under `root`), 16 at a time (on the NAS each waits a round trip or
@@ -274,60 +198,18 @@ impl Coverage {
     }
 }
 
-/// The coverage from `src`: the accepted version's stored geometry, or the drop box's recipes with
-/// the pass's outlines (`outlines`, its file) as before; and the recipes that didn't read.
-pub fn coverage(root: &Path, src: &Source, outlines: Option<&Path>, cache: Option<&Path>) -> Result<(Coverage, Vec<(String, String)>)> {
-    match src {
-        Source::Accepted(a) => Ok((Coverage::accepted(root, a, cache)?, Vec::new())),
-        Source::DropBox => Coverage::load(&root.join("inputs/regions"), outlines, &root.join("inputs/outlines"), cache),
-    }
-}
-
-/// The coverage from `src` without a cache, the recipes given (the drop box's path: as
-/// `Coverage::from_recipes` makes it).
-pub fn coverage_with(root: &Path, src: &Source, recipes: &[Recipe], outlines: Option<&crate::outlines::Outlines>) -> Result<Coverage> {
-    match src {
-        Source::Accepted(a) => Coverage::accepted(root, a, None),
-        Source::DropBox => Coverage::from_recipes(recipes, outlines, &root.join("inputs/outlines")),
-    }
-}
-
-/// The drawn regions of `regions` (recipes `recipes` lists from `src`): from the accepted version's
-/// drawn files, or the drop box's recipes drawn as before (`coverage::drawn`).
-pub fn drawn(root: &Path, src: &Source, regions: &[Recipe], outlines: Option<&crate::outlines::Outlines>) -> Result<Vec<DrawnRegion>> {
-    match src {
-        Source::DropBox => crate::coverage::drawn(regions, outlines, &root.join("inputs/outlines")),
-        Source::Accepted(a) => {
-            let l = listed(a)?;
-            let names: Vec<String> = regions.iter().filter_map(|r| l.iter().find(|x| x.recipe.id == r.id).map(|x| x.drawn.clone())).collect();
-            read_all(root, &names)?.iter().zip(&names).map(|(b, n)| serde_json::from_slice::<Drawn>(b).map(|d| d.region()).with_context(|| format!("parse {n}"))).collect()
-        }
-    }
-}
-
-/// The regions' digest in the agent's inputs (what the catalog's key names): the accepted index's
-/// content name once the readers read it; else the drop box's recipes and outline files, as before
-/// (`regions_digest`). None when it can't be read now.
-pub fn digest(root: &Path, dropbox: impl FnOnce() -> Option<String>) -> Option<String> {
-    match source_now(root) {
-        Ok(Source::Accepted(a)) => Some(a.version),
-        Ok(Source::DropBox) => dropbox(),
-        Err(_) => None,
-    }
+/// The drawn regions of `regions` (as `recipes` lists them) from the accepted version's drawn
+/// files.
+pub fn drawn(root: &Path, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnRegion>> {
+    let l = listed(a)?;
+    let names: Vec<String> = regions.iter().filter_map(|r| l.iter().find(|x| x.recipe.id == r.id).map(|x| x.drawn.clone())).collect();
+    read_all(root, &names)?.iter().zip(&names).map(|(b, n)| serde_json::from_slice::<Drawn>(b).map(|d| d.region()).with_context(|| format!("parse {n}"))).collect()
 }
 
 /// The coverage of a scratch folder of region files (`--regions <dir>`, for proofs: docs/inputs.md
 /// §6.1.10, 10): the check's own code run on it in memory against the records' current pass,
-/// storing nothing; a region it would hold is an error naming why. A folder without `pins.toml`
-/// is read as recipes, as before (`Coverage::from_recipes`).
+/// storing nothing; a region it would hold is an error naming why.
 pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<(Coverage, usize)> {
-    if !dir.join("pins.toml").exists() {
-        let (recipes, _) = crate::agent::recipes::load(dir);
-        anyhow::ensure!(!recipes.is_empty(), "no regions in {}", dir.display());
-        let outlines = crate::osmpass::latest_pass_in(manifest).and_then(|d| manifest.get(&format!("sources/osm/{d}/outlines")).map(|o| root.join(o)));
-        let o = outlines.map(|p| crate::outlines::Outlines::open(&p)).transpose()?;
-        return Ok((Coverage::from_recipes(&recipes, o.as_ref(), &root.join("inputs/outlines"))?, recipes.len()));
-    }
     let mut paths = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
     while let Some((d, rel)) = stack.pop() {

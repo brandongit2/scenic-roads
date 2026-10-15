@@ -698,7 +698,7 @@ mod tests {
     fn iceland(reaches: &dyn Fn(&mut Reaches)) -> (Coverage, Reaches, BTreeMap<String, String>, Keys) {
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, places: &[&str]| Recipe { id: id.into(), name: id.to_uppercase(), outline: places.iter().map(|p| format!("place:{p},20")).collect() };
-        let c = Coverage::from_recipes(&[r("a", &["-21.9,64.13"]), r("b", &["-18.1,65.68", "-14.4,65.26"])], None, d.path()).unwrap();
+        let c = Coverage::fixture(&[r("a", &["-21.9,64.13"]), r("b", &["-18.1,65.68", "-14.4,65.26"])], None, d.path()).unwrap();
         let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
         for (u, b) in [("6/28/17", e7box(-22.0, 64.0, -21.7, 64.16)), ("6/28/16", e7box(-18.3, 65.6, -17.9, 65.8)), ("6/29/16", e7box(-14.6, 65.2, -14.2, 65.35))] {
             reach.units.insert(u.into(), Reach { owned: Some(b), long: vec![] });
@@ -966,7 +966,7 @@ mod tests {
     #[test]
     fn tree_covers_old_targets_were_the_z3_tiles_the_coverage_meets() {
         let d = tempfile::tempdir().unwrap();
-        let cov = |o: &str| Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![o.into()] }], None, d.path()).unwrap();
+        let cov = |o: &str| Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![o.into()] }], None, d.path()).unwrap();
         // Reykjavik's 20 km circle: in z3 tile 3/3/2 only.
         let c = cov("place:-21.9,64.13,20");
         let m = BTreeMap::new();

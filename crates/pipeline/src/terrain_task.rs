@@ -721,7 +721,7 @@ mod tests {
     /// a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
     /// tile 6/34/14), and its raw tiles under `d`: the piece, its coverage, its raw tiles' cache.
     fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
-        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:12.656,70.10,1".into()] }], None, d).unwrap();
+        let cov = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:12.656,70.10,1".into()] }], None, d).unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.contains(&(34, 14)), "{ts:?}");
@@ -956,11 +956,8 @@ mod tests {
     /// The coverage of `out`'s regions, as scenic-build's steps read it (the latest pass's outlines).
     fn live_coverage(out: &Out) -> Coverage {
         let root = out.root();
-        let src = crate::inputs::regions::read::source(root, &out.manifest).unwrap();
-        let (recipes, _) = crate::inputs::regions::read::recipes(root, &src);
-        let date = crate::osmpass::latest_pass(root);
-        let outlines = date.as_deref().and_then(|d| out.get(&format!("sources/osm/{d}/outlines")).map(|n| out.path(n))).map(|p| crate::outlines::Outlines::open(&p).unwrap());
-        crate::inputs::regions::read::coverage_with(root, &src, &recipes, outlines.as_ref()).unwrap()
+        let a = crate::inputs::regions::read::source(root, &out.manifest).unwrap();
+        Coverage::accepted(root, &a, None).unwrap()
     }
 
     /// By hand, on the build's own data (docs/workers.md §3): pieces `TT_PIECES` ("6/x/y,…") made

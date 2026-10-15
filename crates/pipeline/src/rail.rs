@@ -401,7 +401,7 @@ mod tests {
 
     fn square_cov(d: &Path) -> Coverage {
         std::fs::write(d.join("sq.poly"), "sq\n1\n 0 0\n 1 0\n 1 1\n 0 1\nEND\nEND\n").unwrap();
-        Coverage::from_recipes(&[Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }], None, d).unwrap()
+        Coverage::fixture(&[Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }], None, d).unwrap()
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
             std::fs::write(d.path().join(name), format!("p\n1\n {w} {s}\n {e} {s}\n {e} {n}\n {w} {n}\nEND\nEND\n")).unwrap();
             format!("poly:{name}")
         };
-        let cov = |outline: Vec<String>| Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline }], None, d.path()).unwrap();
+        let cov = |outline: Vec<String>| Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline }], None, d.path()).unwrap();
         // Most of A, running 0.2° into B: A's, and C's and D's (each all inside, though a small part
         // of the outline); not B's (a margin).
         assert_eq!(countries(&cov(vec![poly("a.poly", 0.5, 0.5, 10.2, 9.5)]), &o).unwrap(), vec!["AA", "CC", "DD"]);

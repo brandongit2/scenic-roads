@@ -12,11 +12,15 @@
 //! the map draws it from the catalog rather than from the recipes.
 
 use det::Det;
-use crate::outlines::{inside, simplify, Outlines};
-use crate::agent::recipes::{parse_outline, Outline, Recipe};
+use crate::outlines::inside;
+#[cfg(test)]
+use crate::outlines::Outlines;
+#[cfg(test)]
+use crate::agent::recipes::Recipe;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::path::Path;
 
 /// Metres per E7 unit of latitude (and of longitude at the equator).
@@ -473,8 +477,9 @@ pub fn read_poly(text: &str) -> Result<Vec<Vec<[i32; 2]>>> {
     Ok(rings)
 }
 
-/// A circle as a 64-gon.
-fn circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
+/// A fixture's circle (`Coverage::fixture`, `inputs::regions::accept_fixture`): the 64 points the
+/// old `place:` parts had, `km` round `lon`, `lat`.
+pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
     let dy = km * 1000.0 / 110_574.0;
     let dx = km * 1000.0 / (111_320.0 * lat.to_radians().dcos().max(0.01));
     (0..64)
@@ -485,68 +490,13 @@ fn circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
         .collect()
 }
 
-/// The rings of an outline entry that isn't `osm:` (those are the pass's): a Geofabrik or drawn
-/// `.poly` in `outline_dir`, or a place's circle.
-fn file_rings(o: &Outline, outline_dir: &Path) -> Result<Vec<Vec<[i32; 2]>>> {
-    match o {
-        Outline::Geofabrik(id) => {
-            let p = outline_dir.join("geofabrik").join(format!("{}.poly", id.replace('/', "-")));
-            read_poly(&std::fs::read_to_string(&p).with_context(|| format!("{} (fetched when the region is added)", p.display()))?)
-        }
-        Outline::Poly(f) => read_poly(&std::fs::read_to_string(outline_dir.join(f)).with_context(|| format!("inputs/outlines/{f}"))?),
-        Outline::Place { lon, lat, km } => Ok(vec![circle(*lon, *lat, *km)]),
-        Outline::Osm(id) => bail!("osm:{id} is one of the pass's outlines"),
-    }
-}
-
 /// The environment variable the agent names its jobs' cache folder in (`<home>/cache`), where
-/// `Coverage::load` keeps the coverage it reads.
+/// `Coverage::accepted` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
-
-/// A file changed this recently isn't trusted by its size and time (a time's granularity over SMB
-/// can hide a second write in the same second): the coverage is read anew and not kept.
-const SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
 const KEPT_MAGIC: &[u8; 8] = b"RDCOV001";
 
-/// What the coverage read from `regions` (the recipes), `outlines` (the pass's) and `outline_dir`
-/// is made from, as a hash: each recipe's and outline file's name, length and modification time,
-/// and the pass's outlines' content name. None when a file changed in the last `SETTLE`, or can't be
-/// listed: then it's read anew.
-fn kept_key(regions: &Path, outlines: Option<&Path>, outline_dir: &Path) -> Option<String> {
-    let now = std::time::SystemTime::now();
-    let mut h = blake3::Hasher::new();
-    h.update(outlines.and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_bytes());
-    let mut files: Vec<(String, u64, u128)> = Vec::new();
-    fn walk(dir: &Path, tag: &str, now: std::time::SystemTime, files: &mut Vec<(String, u64, u128)>) -> Option<()> {
-        for e in std::fs::read_dir(dir).ok()? {
-            let e = e.ok()?;
-            let md = e.metadata().ok()?;
-            let name = format!("{tag}/{}", e.file_name().to_string_lossy());
-            if md.is_dir() {
-                walk(&e.path(), &name, now, files)?;
-                continue;
-            }
-            let t = md.modified().ok()?;
-            if now.duration_since(t).map_or(true, |age| age < SETTLE) {
-                return None;
-            }
-            files.push((name, md.len(), t.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()));
-        }
-        Some(())
-    }
-    walk(regions, "regions", now, &mut files)?;
-    if outline_dir.is_dir() {
-        walk(outline_dir, "outlines", now, &mut files)?;
-    }
-    files.sort();
-    for (n, len, t) in &files {
-        h.update(format!("\n{n}\t{len}\t{t}").as_bytes());
-    }
-    Some(store::naming::hex16(&h.finalize()))
-}
-
-/// The coverage's shapes as kept (`Coverage::load`): their source, country, buffer and rings, and
+/// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer and rings, and
 /// the recipes that didn't read.
 pub(crate) fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
     let mut b = KEPT_MAGIC.to_vec();
@@ -574,7 +524,7 @@ pub(crate) fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
 }
 
 /// `kept_bytes` read back: the shapes made again from their rings (`Shape::new`, as
-/// `from_recipes` makes them); None when they don't read.
+/// `Coverage::accepted` makes them); None when they don't read.
 pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
     struct Rd<'a>(&'a [u8]);
     impl<'a> Rd<'a> {
@@ -620,66 +570,30 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
 }
 
 impl Coverage {
-    /// The coverage of the recipes in `regions` (`inputs/regions`), with the pass's outlines
-    /// (`outlines`, its file) and `outline_dir` (`from_recipes`), and the recipes that didn't read.
-    /// Where there's a `cache` (this Mac's: `CACHE_ENV`), kept there as made
-    /// (`coverage/<key>.cov`) and read from there by the next job while every recipe and outline
-    /// file has the name, length and time it had (`kept_key`; one changed in the last few seconds
-    /// is always read): reading the recipes and the outlines' rings from the NAS took seconds a
-    /// job, tens under load. The same shapes either way.
-    pub fn load(regions: &Path, outlines: Option<&Path>, outline_dir: &Path, cache: Option<&Path>) -> Result<(Coverage, Vec<(String, String)>)> {
-        let fresh = || -> Result<(Coverage, Vec<(String, String)>)> {
-            let (recipes, bad) = crate::agent::recipes::load(regions);
-            anyhow::ensure!(!recipes.is_empty(), "no regions in {}", regions.display());
-            let o = outlines.map(Outlines::open).transpose()?;
-            Ok((Coverage::from_recipes(&recipes, o.as_ref(), outline_dir)?, bad))
-        };
-        let Some((dir, key)) = cache.map(|c| c.join("coverage")).zip(kept_key(regions, outlines, outline_dir)) else { return fresh() };
-        let at = dir.join(format!("{key}.cov"));
-        if let Some(kept) = store::cachefile::read(&at).ok().flatten().and_then(|b| from_kept(&b)) {
-            return Ok(kept);
-        }
-        let made = fresh()?;
-        // (Only a cache: one not kept is read anew next time. The others, older, go.)
-        if store::cachefile::create_bytes(&at, &kept_bytes(&made.0, &made.1)).is_ok() {
-            store::cachefile::release(&at);
-            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                if e.path() != at {
-                    store::cachefile::try_remove(&e.path());
-                }
-            }
-        }
-        Ok(made)
-    }
-
-    /// The coverage of `recipes`: `osm:` outlines from `outlines`, `poly:` and Geofabrik outlines
-    /// from `outline_dir` (`inputs/outlines/`, Geofabrik's as `geofabrik/<id>.poly`), circles for
-    /// places. An entry that can't be resolved is an error naming it.
-    pub fn from_recipes(recipes: &[Recipe], outlines: Option<&Outlines>, outline_dir: &Path) -> Result<Coverage> {
+    /// A coverage for the tests, from fixtures as regions name them (`<id>: <entry>`): `place:<lon>,
+    /// <lat>,<km>`, a circle of the 64 points the old `place:` parts had, and `poly:<file>`, a
+    /// `.poly` in `dir` (a square, mostly). Never the app's: its regions are the accepted version's
+    /// (`Coverage::accepted`).
+    #[cfg(test)]
+    pub fn fixture(recipes: &[Recipe], _outlines: Option<&Outlines>, dir: &Path) -> Result<Coverage> {
         let mut shapes = Vec::new();
         for r in recipes {
             for entry in &r.outline {
-                let source = format!("{}: {entry}", r.id);
-                let shape = match parse_outline(entry)? {
-                    Outline::Osm(id) => {
-                        let o = outlines.context("no outlines yet (the OSM pass makes them)")?;
-                        let rec = o.by_id(id).with_context(|| format!("{source}: relation {id} isn't an administrative or ISO 3166 outline of this pass"))?;
-                        let mut s = Shape::new(source, o.rings(rec)?, OSM_BUFFER_M);
-                        s.country = o.country_code(rec);
-                        s
-                    }
-                    other => {
-                        let rings = file_rings(&other, outline_dir).with_context(|| source.clone())?;
-                        Shape::new(source, rings, 0.0)
-                    }
+                let rings = if let Some(v) = entry.strip_prefix("place:") {
+                    let n: Vec<f64> = v.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().with_context(|| entry.clone())?;
+                    vec![fixture_circle(n[0], n[1], n[2])]
+                } else if let Some(f) = entry.strip_prefix("poly:") {
+                    read_poly(&std::fs::read_to_string(dir.join(f)).with_context(|| f.to_string())?)?
+                } else {
+                    bail!("{}: {entry}: a fixture is place: or poly:", r.id)
                 };
-                shapes.push(shape);
+                shapes.push(Shape::new(format!("{}: {entry}", r.id), rings, 0.0));
             }
         }
         Ok(Coverage { shapes })
     }
 
-    /// Each region's own coverage (its shapes, as `from_recipes` made them for it: "<id>: <entry>"),
+    /// Each region's own coverage (its shapes, as `Coverage::accepted` made them for it: "<id>: <from>"),
     /// in the order its first shape comes: no outline read again.
     pub fn by_region(&self) -> Vec<(String, Coverage)> {
         let mut out: Vec<(String, Coverage)> = Vec::new();
@@ -806,53 +720,6 @@ impl DrawnRegion {
     }
 }
 
-/// Every region's outlines for drawing: `osm:` entries as the pass simplified them for the Regions
-/// panel, the others simplified here alike, by size (`draw_tolerance_m`). Each entry is read on its
-/// own, so one that can't be (a relation the pass lacks, a missing `.poly`) loses only its shape,
-/// with a note: the regions are still recorded. A read that fails (the NAS) fails the whole, so
-/// nothing records a region without its outline.
-pub fn drawn(recipes: &[Recipe], outlines: Option<&Outlines>, outline_dir: &Path) -> Result<Vec<DrawnRegion>> {
-    recipes
-        .iter()
-        .map(|r| {
-            let mut shapes = BTreeMap::new();
-            for entry in &r.outline {
-                match drawn_entry(entry, outlines, outline_dir) {
-                    Ok(polygons) => {
-                        shapes.insert(entry.clone(), polygons);
-                    }
-                    Err(e) if failed_read(&e) => return Err(e.context(format!("{}: {entry}", r.id))),
-                    Err(e) => eprintln!("coverage: {}: {entry}: {e:#}", r.id),
-                }
-            }
-            Ok(DrawnRegion { id: r.id.clone(), name: r.name.clone(), outline: r.outline.clone(), shapes })
-        })
-        .collect()
-}
-
-/// Whether `e` is a read that failed (worth trying again), not a file that isn't there.
-pub fn failed_read(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() != std::io::ErrorKind::NotFound))
-}
-
-/// One outline entry's polygons for drawing, in degrees. A `.poly`'s or a circle's rings are each a
-/// polygon of their own, as `/api/coverage` always gave them (the app nests holes by containment).
-fn drawn_entry(entry: &str, outlines: Option<&Outlines>, outline_dir: &Path) -> Result<Vec<Vec<Vec<[f64; 2]>>>> {
-    let polygons = match parse_outline(entry)? {
-        Outline::Osm(id) => {
-            let o = outlines.context("no outlines yet (the OSM pass makes them)")?;
-            let rec = o.by_id(id).with_context(|| format!("relation {id} isn't an administrative or ISO 3166 outline of the pass"))?;
-            o.simple_polygons(rec)?
-        }
-        other => {
-            let rings = file_rings(&other, outline_dir)?;
-            let tol = draw_tolerance_m(&rings);
-            rings.iter().map(|r| vec![simplify(r, tol)]).collect()
-        }
-    };
-    Ok(polygons.iter().map(|p| p.iter().map(|r| ring_degrees(r)).collect()).collect())
-}
-
 /// How far a drawn outline may stray from its file's: about a pixel when the whole outline fills a
 /// screen, within the pass's own range for the panel (1 km for countries, 60 m for the smallest
 /// areas).
@@ -889,70 +756,6 @@ pub fn inside_plain(rings: &[Vec<[i32; 2]>], p: [i32; 2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The coverage as `Coverage::load` keeps it in a cache, and as it reads it again: the same
-    /// shapes as read anew, until a recipe or an outline file changes; an edited recipe is read anew
-    /// (and the copy kept from before goes), one edited seconds ago is read but not kept.
-    #[test]
-    fn the_coverage_kept_is_read_anew_when_a_recipe_changes() {
-        let d = tempfile::tempdir().unwrap();
-        let (regions, outlines, cache) = (d.path().join("regions"), d.path().join("outlines"), d.path().join("cache"));
-        std::fs::create_dir_all(&regions).unwrap();
-        std::fs::create_dir_all(&outlines).unwrap();
-        let old = |p: &Path| {
-            let f = std::fs::File::options().write(true).open(p).unwrap();
-            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600)).unwrap();
-        };
-        let write = |p: &Path, text: &str| {
-            std::fs::write(p, text).unwrap();
-            old(p);
-        };
-        write(&regions.join("a.toml"), "id = \"a\"\nname = \"A\"\noutline = [\"place:7.0,46.0,20\", \"poly:b.poly\"]\n");
-        write(&regions.join("bad.toml"), "id = \"Bad\"\n");
-        write(&outlines.join("b.poly"), "b\n1\n   8.0 46.0\n   8.2 46.0\n   8.2 46.2\n   8.0 46.2\n   8.0 46.0\nEND\nEND\n");
-        let view = |c: &Coverage| c.shapes.iter().map(|s| (s.source.clone(), s.rings.clone(), s.bbox, s.country.clone(), s.buffer_m.to_bits())).collect::<Vec<_>>();
-        let kept = || std::fs::read_dir(cache.join("coverage")).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>()).unwrap_or_default();
-        let (fresh, bad) = Coverage::load(&regions, None, &outlines, None).unwrap();
-        assert_eq!(fresh.shapes.len(), 2);
-        assert_eq!(bad.len(), 1);
-        assert!(kept().is_empty(), "no cache, nothing kept");
-        let (first, bad1) = Coverage::load(&regions, None, &outlines, Some(&cache)).unwrap();
-        assert_eq!((view(&first), &bad1), (view(&fresh), &bad));
-        let k1 = kept();
-        assert_eq!(k1.len(), 1);
-        // Read from the copy: the same shapes, each point inside as before.
-        let (again, bad2) = Coverage::load(&regions, None, &outlines, Some(&cache)).unwrap();
-        assert_eq!((view(&again), &bad2), (view(&fresh), &bad));
-        assert!(again.contains([81_000_000, 461_000_000]) && again.contains([70_000_000, 460_000_000]) && !again.contains([90_000_000, 460_000_000]));
-        // A copy that doesn't read (cut short) is made again.
-        let at = cache.join("coverage").join(&k1[0]);
-        let b = std::fs::read(&at).unwrap();
-        std::fs::remove_file(&at).unwrap();
-        std::fs::write(&at, &b[..b.len() - 3]).unwrap();
-        assert_eq!(view(&Coverage::load(&regions, None, &outlines, Some(&cache)).unwrap().0), view(&fresh));
-        // A recipe edited: read anew, and the copy from before gone.
-        write(&regions.join("a.toml"), "id = \"a\"\nname = \"A\"\noutline = [\"place:9.0,46.0,20\"]\n");
-        let (edited, _) = Coverage::load(&regions, None, &outlines, Some(&cache)).unwrap();
-        assert_eq!(edited.shapes.len(), 1);
-        assert!(edited.contains([90_000_000, 460_000_000]) && !edited.contains([70_000_000, 460_000_000]));
-        assert_eq!(view(&edited), view(&Coverage::load(&regions, None, &outlines, None).unwrap().0));
-        let k2 = kept();
-        assert_eq!(k2.len(), 1);
-        assert_ne!(k2, k1);
-        // An outline file edited likewise; one edited just now is read but not kept.
-        write(&regions.join("a.toml"), "id = \"a\"\nname = \"A\"\noutline = [\"poly:b.poly\"]\n");
-        std::fs::write(outlines.join("b.poly"), "b\n1\n   8.0 46.0\n   8.4 46.0\n   8.4 46.2\n   8.0 46.2\n   8.0 46.0\nEND\nEND\n").unwrap();
-        // (Its time ahead of the clock: within the settling time however long the test takes.)
-        let f = std::fs::File::options().write(true).open(outlines.join("b.poly")).unwrap();
-        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600)).unwrap();
-        let (now, _) = Coverage::load(&regions, None, &outlines, Some(&cache)).unwrap();
-        assert!(now.contains([83_000_000, 461_000_000]));
-        assert_eq!(kept(), k2, "a file changed seconds ago: nothing kept");
-        old(&outlines.join("b.poly"));
-        let (settled, _) = Coverage::load(&regions, None, &outlines, Some(&cache)).unwrap();
-        assert_eq!(view(&settled), view(&now));
-        assert_ne!(kept(), k2);
-    }
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7).round() as i32, (y * 1e7).round() as i32]
@@ -1021,47 +824,17 @@ mod tests {
     }
 
     #[test]
-    fn coverage_from_recipes() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("box.poly"), "b\n1\n 10 10\n 11 10\n 11 11\n 10 11\nEND\nEND\n").unwrap();
-        let recipes = vec![
-            Recipe { id: "a".into(), name: "A".into(), outline: vec!["poly:box.poly".into(), "place:20,20,10".into()] },
-        ];
-        let c = Coverage::from_recipes(&recipes, None, d.path()).unwrap();
-        assert!(c.contains(e7(10.5, 10.5)));
-        assert!(c.contains(e7(20.05, 20.05)));
-        assert!(!c.contains(e7(20.2, 20.0)));
-        assert!(c.touches(&[e7(0.0, 0.0), e7(10.1, 10.1)]));
-        let bad = vec![Recipe { id: "b".into(), name: "B".into(), outline: vec!["osm:1".into()] }];
-        assert!(Coverage::from_recipes(&bad, None, d.path()).is_err());
-        let missing = vec![Recipe { id: "c".into(), name: "C".into(), outline: vec!["geofabrik:europe/gone".into()] }];
-        let e = format!("{:#}", Coverage::from_recipes(&missing, None, d.path()).err().unwrap());
-        assert!(e.starts_with("c: geofabrik:europe/gone: ") && e.contains("geofabrik/europe-gone.poly (fetched when the region is added)"), "{e}");
-    }
-
-    #[test]
-    fn drawn_as_a_catalog_records_it() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("box.poly"), "b\n1\n 10 10\n 11 10\n 11 11\n 10 11\nEND\nEND\n").unwrap();
-        let outline: Vec<String> = ["poly:box.poly", "place:20,20,10", "osm:1", "poly:gone.poly"].map(String::from).to_vec();
-        let recipes = vec![Recipe { id: "a".into(), name: "A".into(), outline: outline.clone() }];
-        let r = &drawn(&recipes, None, d.path()).unwrap()[0];
-        // The recipe as it is; the entries that can't be read (no outlines yet, no file) have no shape.
-        assert_eq!((r.id.as_str(), r.name.as_str(), &r.outline), ("a", "A", &outline));
-        assert_eq!(r.shapes.keys().collect::<Vec<_>>(), ["place:20,20,10", "poly:box.poly"]);
-        // In degrees, rings closed.
-        assert_eq!(r.shapes["poly:box.poly"], vec![vec![vec![[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]]]]);
-        let circle = &r.shapes["place:20,20,10"][0][0];
-        assert!(circle.len() > 16 && circle.first() == circle.last(), "{}", circle.len());
-        // Boxes meeting it: across an edge, wholly inside, outside; the circle.
+    fn a_drawn_region_meets_boxes_and_reads_back() {
+        let ring = |pts: &[[f64; 2]]| pts.to_vec();
+        let mut shapes = BTreeMap::new();
+        shapes.insert("shape:box.geojson".to_string(), vec![vec![ring(&[[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]])]]);
+        let r = DrawnRegion { id: "a".into(), name: "A".into(), outline: vec!["shape:box.geojson".into()], shapes };
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         assert!(r.meets_rect(b(10.9, 10.4, 11.2, 10.6)));
         assert!(r.meets_rect(b(10.4, 10.4, 10.6, 10.6)), "wholly inside");
         assert!(!r.meets_rect(b(11.1, 10.4, 11.2, 10.6)));
-        assert!(r.meets_rect(b(19.99, 19.99, 20.01, 20.01)) && !r.meets_rect(b(20.2, 20.2, 20.3, 20.3)));
-        // Stored and read back unchanged.
-        let back: DrawnRegion = serde_json::from_value(serde_json::to_value(r).unwrap()).unwrap();
-        assert_eq!(&back, r);
+        let back: DrawnRegion = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
         // Simplified by size: a country's outline by up to a kilometre, a town's by 60 m.
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(30.0, 40.0), e7(30.0, 60.0)]]), 1000.0);
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(0.01, 40.0), e7(0.01, 40.01)]]), 60.0);
@@ -1074,12 +847,12 @@ mod tests {
             Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:20,20,10".into(), "place:21,20,10".into()] },
             Recipe { id: "b".into(), name: "B".into(), outline: vec!["place:40,40,10".into()] },
         ];
-        let all = Coverage::from_recipes(&rs, None, d.path()).unwrap();
+        let all = Coverage::fixture(&rs, None, d.path()).unwrap();
         let each = all.by_region();
         assert_eq!(each.iter().map(|(id, c)| (id.as_str(), c.shapes.len())).collect::<Vec<_>>(), [("a", 2), ("b", 1)]);
         // The same as made from each recipe alone.
         for (r, (_, c)) in rs.iter().zip(&each) {
-            let alone = Coverage::from_recipes(std::slice::from_ref(r), None, d.path()).unwrap();
+            let alone = Coverage::fixture(std::slice::from_ref(r), None, d.path()).unwrap();
             let b = [190_000_000, 190_000_000, 420_000_000, 420_000_000];
             assert_eq!(c.fingerprint(b), alone.fingerprint(b));
             assert_eq!(c.contains([200_000_000, 200_000_000]), alone.contains([200_000_000, 200_000_000]));

@@ -77,7 +77,20 @@ fn a_plain_region_is_today_s_coverage_exactly() {
     let g = &out.resolved["a"].geometry;
     assert_eq!(g.shapes.iter().map(|s| (s.from.as_str(), s.tolerance_m, s.country.as_str())).collect::<Vec<_>>(), vec![("osm:1", 1000, "AA"), ("osm:2", 1000, "BB")]);
     let new = read::coverage_of(std::slice::from_ref(g));
-    let old = Coverage::from_recipes(&[Recipe { id: "a".into(), name: "a".into(), outline: vec!["osm:1".into(), "osm:2".into()] }], Some(&f.o), Path::new("/nonexistent")).unwrap();
+    // (As the recipes' coverage was made: each `osm:` part its relation's rings, the coast's 1 km,
+    // its country.)
+    let old = Coverage {
+        shapes: [1u64, 2]
+            .iter()
+            .map(|id| {
+                let rec = f.o.by_id(*id).unwrap();
+                let mut s = crate::coverage::Shape::new(format!("a: osm:{id}"), f.o.rings(rec).unwrap(), crate::coverage::OSM_BUFFER_M);
+                s.country = f.o.country_code(rec);
+                s
+            })
+            .collect(),
+    };
+    let _: &[Recipe] = &[];
     for b in [[0, 0, 5_000_000, 5_000_000], [9_000_000, -1_000_000, 11_000_000, 1_000_000], [-10_000_000, -10_000_000, 30_000_000, 30_000_000]] {
         assert_eq!(new.fingerprint(b), old.fingerprint(b));
         assert_eq!(new.shapes_key(b), old.shapes_key(b));
@@ -215,6 +228,32 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
 }
 
 #[test]
+fn a_line_from_ways_buffered_and_ways_that_dont_join() {
+    let f = fx();
+    let way = |ends: [u64; 2], line: Vec<[i32; 2]>| Some(extract::Way { ends, line });
+    let mut e = extract::Extract { fmt: 1, pass: PASS.into(), ..Default::default() };
+    // A river of two ways, the second drawn backwards; a third that meets neither.
+    e.ways.insert("11".into(), way([1, 2], vec![[50_000_000, 50_000_000], [51_000_000, 50_000_000]]));
+    e.ways.insert("12".into(), way([3, 2], vec![[52_000_000, 50_000_000], [51_000_000, 50_000_000]]));
+    e.ways.insert("13".into(), way([8, 9], vec![[60_000_000, 50_000_000], [61_000_000, 50_000_000]]));
+    let others = BTreeMap::new();
+    let ctx = resolve::Context { pass: Some(PASS), outlines: Some(&f.o), extract: Some(&e), others: &others, memo: None, names: String::new() };
+    let r = region("river", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 12]\n");
+    let out = resolve::resolve(&folder(&[PINS, ("river.toml", &r)]), &ctx);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let cov = read::coverage_of(std::slice::from_ref(&out.resolved["river"].geometry));
+    assert!(cov.contains([51_500_000, 50_150_000]), "2 km off the second way: in");
+    assert!(!cov.contains([51_500_000, 50_400_000]), "4.5 km off: out");
+    let bad = region("bad", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 13]\n");
+    let out = resolve::resolve(&folder(&[PINS, ("bad.toml", &bad)]), &ctx);
+    assert!(out.problems.iter().any(|p| p.check == "rg-line" && p.message.contains("ways 11 and 13 don't join")), "{:?}", out.problems);
+    // A way the extract lacks: waited for, named in the needs.
+    let more = region("more", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 14]\n");
+    let out = resolve::resolve(&folder(&[PINS, ("more.toml", &more)]), &ctx);
+    assert_eq!(out.needs.iter().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["w14"]);
+}
+
+#[test]
 fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     let f = fx();
     let checks = Regions::new(Some(Prepared { pass: Some(PASS.into()), outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()), ..Default::default() }));
@@ -291,50 +330,18 @@ fn without_the_pass_s_outline_set_the_check_does_nothing() {
 }
 
 #[test]
-fn the_switch_is_in_the_records_and_only_for_the_version_proved() {
+fn a_region_missing_a_fact_is_an_error() {
     let f = fx();
     let d = job_root(&f, true);
     let root = d.path();
-    let run = || {
-        let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
-        crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap()
-    };
-    run();
-    let m = manifest(root);
-    let index = m[&crate::inputs::logical(UNIT)].clone();
-    // No proof: the drop box.
-    assert!(matches!(read::source(root, &m).unwrap(), read::Source::DropBox));
-    assert_eq!(read::proof(root).unwrap(), None);
-    // A proof that doesn't parse, or can't be read: an error, never "not proved".
-    std::fs::create_dir_all(root.join("state/inputs")).unwrap();
-    std::fs::write(root.join(read::PROOF), b"{half").unwrap();
-    assert!(read::proof(root).is_err());
-    std::fs::remove_file(root.join(read::PROOF)).unwrap();
-    std::fs::create_dir_all(root.join(read::PROOF)).unwrap();
-    assert!(read::proof(root).is_err(), "a read that fails");
-    std::fs::remove_dir(root.join(read::PROOF)).unwrap();
-    // A proof of another version: no switch.
-    let proof = |index: &str| read::Proof { fmt: 1, index: index.into(), pass: PASS.into(), same: true, ..Default::default() };
-    std::fs::write(root.join(read::PROOF), serde_json::to_vec(&proof("sources/inputs/regions/@index.0000000000000000.json")).unwrap()).unwrap();
-    run();
-    assert!(!read::switched(&manifest(root)));
-    // Of this one: switched, in the records; the readers read it, whatever the file says after.
-    std::fs::write(root.join(read::PROOF), serde_json::to_vec(&proof(&index)).unwrap()).unwrap();
-    let said = run();
-    assert!(said.contains("the readers switch"), "{said}");
-    let m = manifest(root);
-    assert!(read::switched(&m));
-    // The app it was proved on, in the switch's bytes: none kept here, so every app follows it.
-    // The switch's bytes are the proof's: one without an app is unknown, an error.
-    let rd = |n: &str| -> Result<Vec<u8>> { std::fs::read(root.join(n)).with_context(|| n.to_string()) };
-    assert!(read::switch_app(&m, &rd).is_err(), "no app in it: unknown");
-    assert!(matches!(read::source(root, &m).unwrap(), read::Source::Accepted(_)));
-    std::fs::write(root.join(read::PROOF), b"{half").unwrap();
-    assert!(matches!(read::source(root, &m).unwrap(), read::Source::Accepted(_)));
-    // An index whose region misses a fact: an error, never a region left out.
-    let mut a = crate::inputs::open(root, &m, UNIT).unwrap().unwrap();
+    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
+    // (Not switched in these records: the readers refuse, naming the runbook.)
+    assert!(format!("{:#}", read::source(root, &manifest(root)).unwrap_err()).contains("runbook"));
+    let mut a = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    assert_eq!(read::recipes(&a).unwrap().len(), 1);
     a.index.files.get_mut("a.toml").unwrap().facts.remove("drawn");
-    assert!(read::listed(&a).is_err());
+    assert!(read::listed(&a).is_err() && read::recipes(&a).is_err(), "never a region left out");
 }
 
 #[test]

@@ -225,11 +225,23 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     if step == "rekey-check" {
         return rekey_check(&root, &args);
     }
+    if step == "regions-fixture" {
+        // regions-fixture --root <scratch folder> <id> <lon,lat,km>: an accepted version of one
+        // region, a circle, its index named in the folder's records (a scratch run's: the pool's
+        // two-Mac procedure, tools/check/pool-two-macs.sh); never the project folder.
+        anyhow::ensure!(!root.to_string_lossy().contains("/projects/scenic-roads"), "not the project folder");
+        let pos = positional(&args);
+        let (Some(id), Some(at)) = (pos.first(), pos.get(1)) else { bail!("regions-fixture --root <folder> <id> <lon,lat,km>") };
+        let path = root.join("state/build/manifest.json");
+        let mut m: BTreeMap<String, String> = pipeline::out::read_record(&path).unwrap_or_default();
+        let r = pipeline::agent::recipes::Recipe { id: id.clone(), name: id.clone(), outline: vec![format!("place:{at}")] };
+        let name = pipeline::inputs::regions::accept_fixture(&root, &root, &[r], &mut m);
+        pipeline::whole::write(&path, &serde_json::to_vec(&m)?)?;
+        println!("regions-fixture: {name}");
+        return Ok(());
+    }
     if step == "p5-check" {
         return p5_check(&root, &args);
-    }
-    if step == "regions-proof" {
-        return regions_proof(&root, &args);
     }
     if step == "water-key-check" {
         return water_key_check(&root, &args);
@@ -1297,26 +1309,14 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
 /// without its outline or leave a region out.
 fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeMap<String, Option<String>>>, last: Option<&store::catalog::Catalog>) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
     use pipeline::inputs::regions::read;
+    let _ = outlines;
     let src = read::source(out.root(), &out.manifest)?;
-    let dir = out.root().join("inputs/regions");
-    if matches!(src, read::Source::DropBox) {
-        std::fs::read_dir(&dir).with_context(|| format!("the regions ({})", dir.display()))?;
-    }
-    let (recipes, bad) = read::recipes(out.root(), &src);
-    for (f, e) in &bad {
-        // (A recipe that reads but doesn't parse is left out; one that doesn't read is the NAS.)
-        std::fs::read(dir.join(f)).with_context(|| format!("region {f}"))?;
-        eprintln!("catalog: region {f} left out: {e}");
-    }
-    let outlines = match outlines.and_then(|l| out.get(l)) {
-        Some(c) => Some(pipeline::outlines::Outlines::open(&out.path(c)).context("the pass's outlines")?),
-        None => None,
-    };
-    let Some(ready) = ready else { return read::drawn(out.root(), &src, &recipes, outlines.as_ref()) };
+    let recipes = read::recipes(&src)?;
+    let Some(ready) = ready else { return read::drawn(out.root(), &src, &recipes) };
     // (Built with the outline its recipe has now: one redrawn since the plan said so isn't.)
     let is_ready = |r: &pipeline::agent::recipes::Recipe| ready.get(&r.id).is_some_and(|d| d.as_ref().is_none_or(|d| *d == pipeline::agent::recipes::outline_digest(&r.outline)));
     let built: Vec<_> = recipes.iter().filter(|r| is_ready(r)).cloned().collect();
-    let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> = read::drawn(out.root(), &src, &built, outlines.as_ref())?.into_iter().map(|d| (d.id.clone(), d)).collect();
+    let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> = read::drawn(out.root(), &src, &built)?.into_iter().map(|d| (d.id.clone(), d)).collect();
     // (The first held catalog keeps the regions as the served one has them: `last`, the caller's.)
     let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
         .and_then(|c| c.coverage.get("regions").and_then(|v| serde_json::from_value::<Vec<pipeline::coverage::DrawnRegion>>(v.clone()).ok()))
@@ -1463,10 +1463,9 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
     let keys = build::Keys::load_strict(root)?;
     let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad) = pipeline::inputs::regions::read::recipes(root, &src);
+    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");
-    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
-    let cov = pipeline::inputs::regions::read::coverage_with(root, &src, &recipes, outlines.as_ref())?;
+    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
     if build::reach_work(&date, &m, &keys).is_some() {
         println!("(the pass's reaches are to be made again: the agent re-keys nothing until they are)");
     }
@@ -1601,150 +1600,6 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-// ---- regions-proof -----------------------------------------------------------------------------
-
-/// `regions-proof [--pass d] [--write]`: the regions' migration's proof (docs/inputs.md §6.1.10,
-/// runbook step 2). The coverage both ways, the drop box's recipes with the pass's outlines
-/// (`Coverage::from_recipes`) and the accepted version's stored geometry (`Coverage::accepted`),
-/// compared on every z6 tile either meets and every job box the records name (each target that's
-/// a tile, at its zoom): `fingerprint` and `shapes_key` the same; then the unit keys and a dry plan
-/// made with each, the same inputs but the coverage: the same keys and work. With `--write` (and
-/// only when all are the same) it writes `state/inputs/regions-proof.json` naming the accepted
-/// index, `same: true`; the regions' next check records the switch in the records when the version
-/// is still that one (`scenic inputs check --full regions` asks for it at once). A difference is
-/// printed and written as `same: false`, which switches nothing. It refuses to run while a pool
-/// member's heartbeat names an app older than its own (one that can't read the switch), and also
-/// compares the catalog's drawn regions both ways.
-fn regions_proof(root: &Path, args: &[String]) -> Result<()> {
-    use pipeline::agent::{build, tiles::TerrainTiles};
-    use pipeline::coverage::Coverage;
-    // Every member on this app or a later one: an older one reads the drop box whatever the records
-    // say.
-    let me = pipeline::agent::app_version(std::env::current_exe()?.parent().context("the program's folder")?);
-    let members = root.join("state/pool/members");
-    match std::fs::read_dir(&members) {
-        Ok(rd) => {
-            for e in rd {
-                let e = e?;
-                if !e.file_name().to_string_lossy().ends_with(".json") {
-                    continue;
-                }
-                let b: serde_json::Value = serde_json::from_slice(&std::fs::read(e.path())?).with_context(|| format!("parse {}", e.path().display()))?;
-                let app = b.get("app").and_then(|a| a.as_str()).unwrap_or("");
-                anyhow::ensure!(pipeline::pool::term::app_at_least(app, &me), "member {} runs {app:?}, older than this app ({me}): every Mac on it first", e.file_name().to_string_lossy());
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("list {}", members.display())),
-    }
-    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass_in(&m)).context("no complete OSM pass")?;
-    let unit = pipeline::inputs::regions::UNIT;
-    let a = pipeline::inputs::open(root, &m, unit)?.context("the records name no accepted version of the regions yet")?;
-    let (recipes, bad) = pipeline::agent::recipes::load(&root.join("inputs/regions"));
-    anyhow::ensure!(bad.is_empty(), "recipes that don't read (today's path): {bad:?}");
-    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
-    let old = Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines"))?;
-    let new = Coverage::accepted(root, &a, None)?;
-    let mut diffs: Vec<String> = Vec::new();
-    let ids = |c: &Coverage| c.by_region().into_iter().map(|(id, c)| (id, c.shapes.len())).collect::<Vec<_>>();
-    if ids(&old) != ids(&new) {
-        diffs.push(format!("the regions and their shapes' counts differ: {:?} against {:?}", ids(&old), ids(&new)));
-    }
-    let e7 = |b: [f64; 4]| [(b[0] * 1e7).round() as i32, (b[1] * 1e7).round() as i32, (b[2] * 1e7).round() as i32, (b[3] * 1e7).round() as i32];
-    let mut compare = |what: &str, b: [i32; 4], diffs: &mut Vec<String>| {
-        if old.fingerprint(b) != new.fingerprint(b) {
-            diffs.push(format!("{what}: the fingerprint differs"));
-        }
-        if old.shapes_key(b) != new.shapes_key(b) {
-            diffs.push(format!("{what}: the shapes key differs"));
-        }
-    };
-    // Every z6 tile either coverage meets.
-    let mut tiles = 0usize;
-    for x in 0..64u32 {
-        for y in 0..64u32 {
-            let b = e7(pipeline::bld::tile_box_deg(6, x, y));
-            if old.meets_rect(b) || new.meets_rect(b) || old.meets_box(b) || new.meets_box(b) {
-                tiles += 1;
-                compare(&format!("6/{x}/{y}"), b, &mut diffs);
-            }
-        }
-    }
-    // Every job box the records name: each target of the build's keys that's a tile.
-    let keys = build::Keys::load_strict(root)?;
-    let mut boxes: BTreeSet<(u8, u32, u32)> = BTreeSet::new();
-    fn walk(v: &serde_json::Value, out: &mut BTreeSet<(u8, u32, u32)>) {
-        if let Some(o) = v.as_object() {
-            for (k, v) in o {
-                let parts: Vec<&str> = k.split(['/', '-']).collect();
-                for w in parts.windows(3) {
-                    if let (Ok(z), Ok(x), Ok(y)) = (w[0].parse::<u8>(), w[1].parse::<u32>(), w[2].parse::<u32>()) {
-                        if z <= 16 && x < (1 << z) && y < (1 << z) {
-                            out.insert((z, x, y));
-                        }
-                    }
-                }
-                walk(v, out);
-            }
-        }
-    }
-    walk(&serde_json::to_value(&keys)?, &mut boxes);
-    for &(z, x, y) in &boxes {
-        compare(&format!("the job box {z}/{x}/{y}"), e7(pipeline::bld::tile_box_deg(z, x, y)), &mut diffs);
-    }
-    // The unit keys and a dry plan with each coverage, all else the same.
-    let reach = pipeline::reach::Reaches::load(root, &m, &date).ok().flatten();
-    let mut tt = TerrainTiles::new(None);
-    tt.load(root, &m);
-    let uk = |c: &Coverage| build::unit_keys(c, &date, &m, reach.as_ref(), &tt);
-    let (uo, un) = (uk(&old), uk(&new));
-    let units_changed = uo.iter().zip(&un).filter(|(a, b)| a != b).count() + uo.len().abs_diff(un.len());
-    if units_changed > 0 {
-        diffs.push(format!("{units_changed} units' keys differ"));
-    }
-    let inputs = pipeline::agent::input_digests(root);
-    let none = BTreeMap::new();
-    let plan = |c: &Coverage| {
-        let each = c.by_region();
-        build::plan(c, &date, &m, &keys, &inputs, reach.as_ref(), &tt, build::Rounds { each: &each, on_map: &none, since_last: None, current: None, held: false, way: Default::default() }).work
-    };
-    let (po, pn) = (plan(&old), plan(&new));
-    let steps_changed = po.iter().filter(|w| !pn.contains(w)).count() + pn.iter().filter(|w| !po.contains(w)).count();
-    if steps_changed > 0 {
-        diffs.push(format!("{steps_changed} planned jobs differ"));
-    }
-    // The catalog's drawn regions, both ways.
-    let drawn_old = pipeline::coverage::drawn(&recipes, outlines.as_ref(), &root.join("inputs/outlines"))?;
-    let drawn_new = pipeline::inputs::regions::read::drawn(root, &pipeline::inputs::regions::read::Source::Accepted(a.clone()), &recipes, outlines.as_ref())?;
-    for (o, n) in drawn_old.iter().zip(&drawn_new) {
-        if o != n {
-            diffs.push(format!("{}: its drawn shapes differ", o.id));
-        }
-    }
-    if drawn_old.len() != drawn_new.len() {
-        diffs.push(format!("{} drawn regions against {}", drawn_old.len(), drawn_new.len()));
-    }
-    let same = diffs.is_empty();
-    println!("regions-proof: pass {date}, {} regions, accepted {}", ids(&new).len(), a.version);
-    println!("  {tiles} z6 tiles and {} job boxes compared; {} units' keys and {} planned jobs worked out both ways", boxes.len(), uo.len(), po.len());
-    println!("  {}", if same { "the same: fingerprints, shapes keys, unit keys and the plan".to_string() } else { format!("{} differences", diffs.len()) });
-    for d in diffs.iter().take(100) {
-        println!("    {d}");
-    }
-    if args.iter().any(|a| a == "--write") {
-        let p = pipeline::inputs::regions::read::Proof { fmt: 1, index: a.version.clone(), pass: date.clone(), same, regions: ids(&new).len(), tiles, boxes: boxes.len(), steps_changed, differences: diffs.iter().take(100).cloned().collect(), at: pipeline::agent::jobs::now_s(), app: me.clone() };
-        let path = root.join(pipeline::inputs::regions::read::PROOF);
-        pipeline::whole::write(&path, &serde_json::to_vec_pretty(&p)?)?;
-        println!("  written: {}", path.display());
-        if same {
-            println!("  next: scenic inputs check --full regions (its check records the switch while the accepted version is still {})", a.version);
-        }
-    }
-    anyhow::ensure!(same, "the accepted version doesn't give the same coverage: the readers stay on the drop box");
-    Ok(())
-}
-
 // ---- p5-check ----------------------------------------------------------------------------------
 
 /// `p5-check trees`: what switching tree cover from a z3 tile's whole run to pieces and assemblies
@@ -1766,10 +1621,9 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
     let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
     let keys = build::Keys::load_strict(root)?;
     let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad) = pipeline::inputs::regions::read::recipes(root, &src);
+    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now: {bad:?}");
-    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
-    let cov = pipeline::inputs::regions::read::coverage_with(root, &src, &recipes, outlines.as_ref())?;
+    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
     let costs: BTreeMap<String, pipeline::coord::Cost> = match opt(args, "--costs") {
         Some(p) => pipeline::out::read_record(Path::new(&p))?,
         None => BTreeMap::new(),
@@ -1903,10 +1757,9 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
     let mut m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
     let keys = build::Keys::load_strict(root)?;
     let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad) = pipeline::inputs::regions::read::recipes(root, &src);
+    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now: {bad:?}");
-    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
-    let cov = pipeline::inputs::regions::read::coverage_with(root, &src, &recipes, outlines.as_ref())?;
+    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
     let t0 = std::time::Instant::now();
     let mut tiles = TerrainTiles::new(None);
     let n = tiles.load(root, &m);
@@ -2057,10 +1910,9 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
     let keys = build::Keys::load_strict(root)?;
     let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad) = pipeline::inputs::regions::read::recipes(root, &src);
+    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");
-    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
-    let cov = pipeline::inputs::regions::read::coverage_with(root, &src, &recipes, outlines.as_ref())?;
+    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
     let costs: BTreeMap<String, pipeline::coord::Cost> = match opt(args, "--costs") {
         Some(p) => pipeline::out::read_record(Path::new(&p))?,
         None => BTreeMap::new(),
@@ -3694,22 +3546,16 @@ fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverag
 
 /// The regions' coverage as a step reads it (pipeline::inputs::regions::read), with the regions'
 /// count: `--regions <dir>`, a scratch folder of region files, through the check's own code in
-/// memory (one without `pins.toml` read as recipes, as before); else the accepted version once the
-/// readers read it (the migration's proof passed), the drop box's recipes with pass `date`'s
-/// outlines before.
+/// memory; else the accepted version.
 fn regions_coverage(out: &Out, args: &[String], date: &str, cache: Option<&Path>) -> Result<(pipeline::coverage::Coverage, usize)> {
     use pipeline::inputs::regions::read;
     if let Some(dir) = opt(args, "--regions").map(PathBuf::from) {
         return read::coverage_of_folder(out.root(), &out.manifest, &dir);
     }
+    let _ = date;
     let src = read::source(out.root(), &out.manifest)?;
-    let outlines = out.get(&format!("sources/osm/{date}/outlines")).map(|n| out.path(n));
-    let (cov, bad) = read::coverage(out.root(), &src, outlines.as_deref(), cache)?;
-    for (f, e) in &bad {
-        eprintln!("skipping region {f}: {e}");
-    }
+    let cov = pipeline::coverage::Coverage::accepted(out.root(), &src, cache)?;
     let n = cov.by_region().len();
-    anyhow::ensure!(n > 0, "no regions ({})", src.name());
     Ok((cov, n))
 }
 
@@ -4658,6 +4504,10 @@ mod tests {
         for root in &roots {
             std::fs::create_dir_all(root.join("state/build")).unwrap();
             std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
+            // (The regions' accepted version, none in it, as the readers read it.)
+            let mut m = std::collections::BTreeMap::new();
+            pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+            std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
             put(root, "layers/roads/hi/6-1-2", b"one");
             gone = put(root, "layers/roads/lo/3-0-0", b"lo pack");
             // (Enough files that a change is small beside the whole.)

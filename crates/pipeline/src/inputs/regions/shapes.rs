@@ -3,7 +3,7 @@
 //! union of its features). Read exactly, rounded to E7; invalid geometry (a ring unclosed, of fewer
 //! than four points, crossing itself) is an error naming where, never repaired. And `.poly` files
 //! (Osmosis's format, Geofabrik's) converted to it (`from_poly`), the conversion proved by reading
-//! the GeoJSON back (`scenic regions convert-poly`).
+//! the GeoJSON back (how the `.poly` files the regions once read became shapes, #135).
 
 use super::geom::{self, Pt, Ring};
 use anyhow::{bail, Context, Result};
@@ -141,76 +141,6 @@ pub fn to_i32(r: &[Pt]) -> Vec<[i32; 2]> {
     r.iter().map(|p| [p[0] as i32, p[1] as i32]).collect()
 }
 
-/// What converting one `.poly` found (`convert_poly`).
-#[derive(Debug)]
-pub struct Converted {
-    pub from: std::path::PathBuf,
-    pub to: std::path::PathBuf,
-    pub rings: usize,
-    pub points: usize,
-    /// The z6 tiles it meets, each with the same fingerprint as the `.poly`'s shape.
-    pub tiles: usize,
-    /// Whether the file was written now (false: one was there already, with the same rings).
-    pub written: bool,
-}
-
-/// Every `.poly` in `from` (ours at its top, Geofabrik's in `geofabrik/`) converted to GeoJSON in
-/// `into` (`<name>.geojson`, Geofabrik's in `into/geofabrik/`), each a Feature naming its `.poly`
-/// (`named_as`: how the properties name `from`), written new (never over another file), and
-/// proved: read back, the same E7 rings as the `.poly` (`crate::coverage::read_poly`), and a
-/// coverage shape of them the same fingerprint on every z6 tile it meets. A file already there with
-/// the same rings is left as it is; one with others is an error.
-pub fn convert_poly(from: &std::path::Path, into: &std::path::Path, named_as: &str) -> Result<Vec<Converted>> {
-    let mut out = Vec::new();
-    for (sub, dst) in [("", into.to_path_buf()), ("geofabrik", into.join("geofabrik"))] {
-        let dir = if sub.is_empty() { from.to_path_buf() } else { from.join(sub) };
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        let mut names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".poly") && !n.starts_with('.')).collect();
-        names.sort();
-        for n in names {
-            let p = dir.join(&n);
-            let rings = read_poly(&std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?).with_context(|| format!("{}", p.display()))?;
-            let mut props = serde_json::Map::new();
-            let rel = if sub.is_empty() { n.clone() } else { format!("{sub}/{n}") };
-            props.insert("converted_from".into(), format!("{named_as}/{rel}").into());
-            props.insert("converted_by".into(), "scenic regions convert-poly (#135)".into());
-            let text = from_poly(&rings, &props);
-            let to = dst.join(format!("{}.geojson", n.trim_end_matches(".poly")));
-            // The proof: read back, the same rings; the same fingerprint on every z6 tile.
-            let back = flat(&read(text.as_bytes()).with_context(|| format!("{} read back", to.display()))?);
-            anyhow::ensure!(back == poly_rings_unclosed(&rings), "{}: the GeoJSON read back doesn't have the .poly's rings", to.display());
-            let a = crate::coverage::Shape::new(String::new(), rings.clone(), 0.0);
-            let b = crate::coverage::Shape::new(String::new(), back.iter().map(|r| to_i32(r)).collect(), 0.0);
-            let (ca, cb) = (crate::coverage::Coverage { shapes: vec![a] }, crate::coverage::Coverage { shapes: vec![b] });
-            let mut tiles = 0;
-            for x in 0..64u32 {
-                for y in 0..64u32 {
-                    let d = crate::bld::tile_box_deg(6, x, y);
-                    let t = [(d[0] * 1e7).round() as i32, (d[1] * 1e7).round() as i32, (d[2] * 1e7).round() as i32, (d[3] * 1e7).round() as i32];
-                    let f = ca.fingerprint(t);
-                    anyhow::ensure!(f == cb.fingerprint(t), "{}: the fingerprint on 6/{x}/{y} differs from the .poly's", to.display());
-                    tiles += !f.is_empty() as usize;
-                }
-            }
-            std::fs::create_dir_all(&dst).with_context(|| format!("create {}", dst.display()))?;
-            let written = match std::fs::File::options().write(true).create_new(true).open(&to) {
-                Ok(mut f) => {
-                    std::io::Write::write_all(&mut f, text.as_bytes()).with_context(|| format!("write {}", to.display()))?;
-                    true
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let there = flat(&read(&std::fs::read(&to)?).with_context(|| format!("{} (there already)", to.display()))?);
-                    anyhow::ensure!(there == back, "{} is there already, with other rings", to.display());
-                    false
-                }
-                Err(e) => return Err(e).with_context(|| format!("create {}", to.display())),
-            };
-            out.push(Converted { from: p, to, rings: rings.len(), points: rings.iter().map(Vec::len).sum(), tiles, written });
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,21 +164,6 @@ mod tests {
         assert_eq!(read(c).unwrap().len(), 3);
         // Across the antimeridian, drawn the short way: not crossing itself.
         assert!(read(br#"{"type": "Polygon", "coordinates": [[[179, -17], [-179, -17], [-179, -16], [179, -16], [179, -17]]]}"#).is_ok());
-    }
-
-    #[test]
-    fn convert_poly_writes_and_proves_each() {
-        let d = tempfile::tempdir().unwrap();
-        let (from, into) = (d.path().join("outlines"), d.path().join("regions/shapes"));
-        std::fs::create_dir_all(from.join("geofabrik")).unwrap();
-        std::fs::write(from.join("x.poly"), "x\n1\n -8.1 41.1\n -8.0 41.1\n -8.0 41.3\nEND\nEND\n").unwrap();
-        std::fs::write(from.join("geofabrik/europe-y.poly"), "y\n1\n 1 1\n 2 1\n 2 2\n 1 1\nEND\nEND\n").unwrap();
-        let c = convert_poly(&from, &into, "inputs/outlines").unwrap();
-        assert_eq!(c.len(), 2);
-        assert!(c.iter().all(|x| x.written && x.tiles >= 1));
-        assert!(into.join("x.geojson").exists() && into.join("geofabrik/europe-y.geojson").exists());
-        // Again: there already, the same: left.
-        assert!(convert_poly(&from, &into, "inputs/outlines").unwrap().iter().all(|x| !x.written));
     }
 
     #[test]
