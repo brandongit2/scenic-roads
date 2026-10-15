@@ -86,7 +86,8 @@ function model(sw) {
   const fresh = (beat) => beat && now - beat < STALE_S;
   const fc = a.forecast || null;
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
-  const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600);
+  // (Not the build Mac's own helper file, from while it was a member: it leads now.)
+  const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600 && x.host !== a.host);
   const pages = (sw.workers || []).filter((w) => w.kind === "web" && w.seen_s < 900);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
   // Every machine: the build Mac, its helpers, then the pages (one entry).
@@ -124,6 +125,7 @@ function alerts(m) {
   const { a, now } = m;
   if (!a.host) return [{ cls: "bad", text: "No word from the build Mac yet", to: "machines" }];
   if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Build Mac out of touch for ${dur(now - a.beat)}`, to: "machines" });
+  if (a.pool?.lead?.alert) out.push({ cls: "bad", text: a.pool.lead.alert, to: "pool" });
   for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < 360 ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
   for (const x of m.macs) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};

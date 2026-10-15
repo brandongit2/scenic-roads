@@ -236,14 +236,25 @@ impl AppState {
     fn build_status_at(&self, now: u64) -> serde_json::Value {
         let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
-        let (mut status, local) = match own {
-            Some(v) if fresh => (v, true),
-            _ => (self.agent_status(), false),
+        // A helper on this Mac (docs/plan.md §8, Two Macs; a pool's member): its own status, fresh.
+        let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).filter(|h: &serde_json::Value| h["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 120));
+        // (The lead's heartbeat on the NAS, written every two minutes at least while there's a
+        // lead: older than ten, there's none to show, and a member shows its own status in its place,
+        // so its menu bar stays fresh.)
+        let (mut status, local, helping) = match own {
+            Some(v) if fresh => (v, true, false),
+            _ => {
+                let lead = self.agent_status();
+                let lead_fresh = lead["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 600);
+                match &helper {
+                    Some(h) if !lead_fresh => (h.clone(), true, true),
+                    _ => (lead, false, false),
+                }
+            }
         };
-        // A helper on this Mac (docs/plan.md §8, Two Macs): its own status, fresh, in place of what
-        // the build Mac last read of it (which stops while the build Mac sleeps).
-        let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        if let (Some(h), Some(obj)) = (helper.filter(|h| h["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 120)), status.as_object_mut()) {
+        // Its own status, fresh, in place of what the build Mac last read of it (which stops while
+        // the build Mac sleeps); not when it's the status shown.
+        if let (Some(h), Some(obj)) = (helper.filter(|h| !helping && h["host"] != status["host"]), status.as_object_mut()) {
             let host = h["host"].clone();
             let mut list: Vec<serde_json::Value> = obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             list.retain(|x| x["host"] != host);
@@ -264,7 +275,7 @@ impl AppState {
         let pool = pipeline::agent::lead::own_status(&self.home.join("agent")).filter(|s| now.saturating_sub(s.beat) < 120).and_then(|s| s.pool).map_or(serde_json::Value::Null, |p| serde_json::to_value(p).unwrap_or_default());
         let lead_asked = pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
         // Where the menu bar's panel finds the build page.
-        let pages = self.build_pages(local);
+        let pages = self.build_pages(local && !helping);
         serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked, "pages": pages})
     }
 
@@ -1076,6 +1087,27 @@ mod tests {
         let body = test_state(home.path(), nas.path()).build_status_at(now);
         assert_eq!(body["pages"], serde_json::json!(["https://lead.tail0.ts.net/work/", "http://100.70.85.80:8090/work/"]));
         assert!(!body.to_string().contains(key));
+    }
+
+    #[test]
+    fn a_members_own_status_stands_in_for_a_lead_not_heard_from() {
+        // 12 Oct: no lead for three days, the lead's heartbeat on the NAS frozen, and this member's
+        // menu bar with it. Its own status, fresh, is shown in its place.
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let now = 1_791_300_000;
+        std::fs::create_dir_all(nas.path().join("state")).unwrap();
+        std::fs::create_dir_all(home.path().join("agent")).unwrap();
+        std::fs::write(home.path().join("agent/helper.json"), serde_json::json!({ "host": "member", "beat": now - 5, "job": null }).to_string()).unwrap();
+        // The lead heard from: its status, this member's beside it as a helper.
+        std::fs::write(nas.path().join("state/status.json"), serde_json::json!({ "host": "lead", "beat": now - 100 }).to_string()).unwrap();
+        let body = test_state(home.path(), nas.path()).build_status_at(now);
+        assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("lead"), Some(false)));
+        assert_eq!(body["status"]["helpers"][0]["host"], "member");
+        // Not for ten minutes: this member's own, as this Mac's, and no page of its own.
+        std::fs::write(nas.path().join("state/status.json"), serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400 }).to_string()).unwrap();
+        let body = test_state(home.path(), nas.path()).build_status_at(now);
+        assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("member"), Some(true)));
+        assert!(body["status"]["helpers"].is_null() && body["pages"] == serde_json::json!([]), "{body}");
     }
 
     #[test]

@@ -195,10 +195,12 @@ A term is a file made once with create-new and never changed: `state/build/terms
   away between) says so (`nas::Created::Unwritten`), and its maker writes them whole over its own
   file, at once or at a later loop (`term::finish`: no other Mac's create of the name can succeed);
   a try whose answer was lost knows its own term by what it reads (the same but for `since`). A
-  maker that stopped for good, or lost its answer before its bytes landed, leaves the term
-  unreadable for good: only the owner's forced takeover follows it (§6.5, `term::force`), which
-  checks the app rule against the newest term that can be read and says so in its `how` ("forced
-  past: term E unreadable").
+  maker that stopped for good, or lost its answer before its bytes landed (12 Oct: term 55, three
+  days with no lead), leaves the term unreadable for good: a forced takeover follows it
+  (`term::forced`), which checks the app rule against the newest term that can be read and says
+  so in its `how` ("forced past: term E unreadable"). A member that can lead makes it by itself
+  once the term has read unreadable half an hour (§6.5, Taking past a term left empty); else the
+  owner's (`scenic lead take --force`), which the alert names (§10).
 - **The app rule.** A term records its lead's app. A Mac makes a term only with an app at least as
   new as the term before's ("update first": job keys include the steps' versions, so a lead on an
   older app would take everything a newer one built as stale and build it again). Published apps
@@ -368,6 +370,33 @@ stood down for two minutes takes over by itself, if the app rule lets it (crate:
 then the lowest member id, try 30 s apart, and the next term's create-new decides between them. Its
 `how` says so ("taken over by MacBook-Air: Mac-mini stood down"). When no member's app can lead the
 term, it waits for the owner (an update, or `--downgrade`).
+
+**Taking past a term left empty, by itself** (crate::pool::driver: `UNREAD_TAKE_S`). A member that
+can lead now, whose reads have found the current term E unreadable (empty or short) for half an hour
+awake, makes term E+1 past it as the owner's force would (`term::forced`: the app rule against the
+newest term that can be read; never `--downgrade`), the members in touch that can taking turns as
+above, `AUTO_RANK_S` apart, and the create-new deciding. Its `how` says so ("taken over by
+MacBook-Air: term 55 unreadable for 30 min (forced past: term 55 unreadable)"). A Mac that knows it
+made E and couldn't fill it (`Saved::unfinished`) doesn't: it finishes E. Why this can't make two
+leads:
+
+- **E+1 has one maker:** its create-new succeeds for one Mac (invariant 1), as every term's.
+- **No Mac leads E meanwhile, or ever after:** a Mac leads E only once E reads whole to it, and
+  every lead checks that its term's next doesn't exist before it acts (`term::next`), stepping down
+  when it does. So were E's bytes to land late (its maker stalled mid-write, then finishing it), its
+  maker would find E+1 and step down before acting, as any lead past whose term another was made.
+- **Half an hour is far past what a term's bytes take:** a maker writes them in the same call as its
+  create (or finishes them at its next loops, `Created::Unwritten`); a stale read lasts at most
+  `STALE_S` (ten minutes). The awake clock counts it, which stops while the Mac sleeps: the real time
+  passed is never less.
+- **What it costs is what any takeover costs** (above): E had no lead that acted, so nothing in flight
+  is E's.
+
+What isn't done, not being provably safe: a Mac finishing (writing whole) an empty term its create's
+answer was lost for. A record kept before the create can't prove it made the file: another Mac's
+create of the same name may have won and be writing its bytes, and two contents written over one
+term would be two leads of it. Nor is a lead that's only out of touch taken over by itself (above:
+it may be asleep, and come back). Both stay the owner's, and the alert (§10) says so after an hour.
 
 ### 6.6 Re-asserting, and stepping down
 
@@ -877,7 +906,21 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
   come from their heartbeats' conditions (`conds`: home, mains power, battery, able to lead), which
   apps before phase 3 leave out ("conditions unknown"). The menu bar and the map show this Mac's
   agent's view (the map server's `/api/build` `pool`), the worker page the serving Mac's (in
-  `/work/swarm`'s agent). Each Mac's map server keeps the app its own agent runs, and keeps its
+  `/work/swarm`'s agent).
+- **The alert: no lead for an hour** (`lead::alert`, `ALERT_S`): counted from the lead's last beat,
+  or from when this Mac first saw the term with no lead (kept across its processes, `lead.json`'s
+  `no_lead`), the view's `alert` says how long, why, and what to do: the command that takes it over
+  from this Mac (`scenic lead take`, with `--force` or `--downgrade` as `Driver::takeover` needs),
+  or, when this Mac can't, `scenic lead take --force` on another; for a term left empty, that no Mac
+  took it past by itself (§6.5). The menu bar makes it its state (the problem icon, its line, a
+  notification once), and `scenic lead`, `scenic status`, the map's build panel and the worker
+  page (its alerts and the pool's section) show it in place of the "no lead" line.
+- **A member's own status in the menu bar:** a member's agent writes `helper.json`, never
+  `status.json` (the lead's); the map server shows the lead's heartbeat from the NAS, and a
+  member's own `helper.json` in its place once that heartbeat is ten minutes old (no lead), so
+  the member's menu bar stays fresh. The build Mac's helpers leave out its own host (its helper
+  file from before it led, fresh for ten minutes, isn't a second card).
+- Each Mac's map server keeps the app its own agent runs, and keeps its
   downloads' copies to 20 MB/s while the build Mac runs a job.
 - **The history** notes each term (handed over, taken back, taken over, re-asserted), each step
   down, and a handover's offer, end, giving up and drop, as `term` events (crate::agent::lead::notes):

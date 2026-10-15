@@ -2283,9 +2283,10 @@ impl Agent {
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
         let mut checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
-        // (Read each loop: a helper's status changes between plans.)
+        // (Read each loop: a helper's status changes between plans. Not this Mac's own, from
+        // while it was a member: it leads now, and that file goes stale by itself.)
         let helpers: Vec<Status> = match (&root, self.o.helper) {
-            (Some(r), false) => helpers(r),
+            (Some(r), false) => helpers(r).into_iter().filter(|h| h.host != self.host).collect(),
             _ => Vec::new(),
         };
         self.note_helpers_caches(&helpers);

@@ -96,7 +96,10 @@
 //! down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
 //! members that can, newest app first, then lowest member id, try `AUTO_RANK_S` apart, and the
 //! next term's create-new decides between them (a lead gone or asleep is taken over only at the
-//! owner's ask: it may come back).
+//! owner's ask: it may come back). A current term its reads find unreadable (its create landed and
+//! its bytes never did) for `UNREAD_TAKE_S` awake is taken past by a member that can lead, the same
+//! turns deciding, as the owner's force would (`term::forced`; pool.md §6.5 says why that can't
+//! make two leads).
 
 use super::beat::Beat;
 use super::handover::{self, Do, Handover, Seen};
@@ -143,6 +146,10 @@ pub const OVERDUE_S: u64 = 7200;
 pub const STOOD_DOWN_S: u64 = 120;
 /// The wait between the members that can take over a lead that stood down, by rank (s).
 pub const AUTO_RANK_S: u64 = 30;
+/// How long, awake, a member finds the current term unreadable (empty or short) before it makes
+/// the next past it by itself (s; §6.5): far past any stale read (`STALE_S`) and any create's bytes
+/// in flight, so no Mac reads the term whole, and none can lead it but by making a later term.
+pub const UNREAD_TAKE_S: u64 = 1800;
 /// An entry a lead's reads find not whole (short, or not there) over this long awake is refused
 /// (s): no stale read lasts so long, and its file won't be whole (cut short on the share, or
 /// removed). So is one whose reads fail while the share answers the step's others (a file the
@@ -442,6 +449,9 @@ pub struct Driver {
     first: Option<u64>,
     /// The lead that stood down, as seen: its term, and since when (this Mac's clock).
     stood: Option<(u64, u64)>,
+    /// The current term found unreadable (no lead anyone knows): its number, and since when (awake
+    /// clock).
+    unread: Option<(u64, u64)>,
     /// Since when (awake clock) a take-up has found term 1 with no snapshot that reads whole (its
     /// lead's, or its first).
     first_unread: Option<u64>,
@@ -484,7 +494,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, first_unread: None }
+        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, unread: None, first_unread: None }
     }
 
     /// What to keep for the next process: saved after every step that changed it, before that
@@ -633,6 +643,7 @@ impl Driver {
             self.take_over(io, &mut out, force, downgrade);
         }
         self.auto_take_over(io, &mut out, &heard.members, heard.able);
+        self.take_past_unread(io, &mut out, &heard.members, heard.able);
         // Telling the lead it knows of its entries.
         if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             let keys = self.saved.mine.to_tell(self.cur.term);
@@ -1262,6 +1273,58 @@ impl Driver {
         }
         let how = format!("taken over by {}: {} stood down", self.me.host, t.host);
         match Term::after(&self.cur, &self.me, &how, io.now()).and_then(|n| Ok((term::make(io, &n)?, n))) {
+            Ok((made, n)) => {
+                if !self.made(io, out, n, made) {
+                    out.events.push(Event::Waits { what: "take over", why: format!("term {} made by another first", self.cur.term + 1) });
+                }
+            }
+            Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
+        }
+    }
+
+    /// A current term unreadable (empty or short: its create landed, its bytes never did) for
+    /// `UNREAD_TAKE_S` awake, as this Mac's reads find it: the next term made past it by this Mac,
+    /// as the owner's force would (`term::forced`, the app rule against the newest term that can be
+    /// read), if it can lead now, after the members in touch that can and come first had their
+    /// turn, `AUTO_RANK_S` each (§6.5: why it's safe). Not by a Mac that knows it made the term
+    /// (`Saved::unfinished`): it finishes it.
+    fn take_past_unread(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool) {
+        if self.cur.term == 0 || self.cur.lead.is_some() || self.lead.is_some() || self.passing.is_some() || self.saved.unfinished.is_some() {
+            self.unread = None;
+            return;
+        }
+        let awake = io.awake();
+        let since = match self.unread {
+            Some((e, since)) if e == self.cur.term => since,
+            _ => {
+                self.unread = Some((self.cur.term, awake));
+                awake
+            }
+        };
+        if !able || awake.saturating_sub(since) < UNREAD_TAKE_S {
+            return;
+        }
+        // (The newest term that can be read: the app rule's, as the owner's force checks it.)
+        let Some(known) = (1..self.cur.term).rev().find_map(|e| term::read(io, e).ok().flatten()) else { return };
+        if !term::app_at_least(&self.me.app, &known.app) {
+            return;
+        }
+        let now = io.now();
+        let mut can = vec![self.me.clone()];
+        for m in members.iter().filter(|m| **m != self.me.id) {
+            if let Ok(Some(b)) = Beat::read(io, m) {
+                if !b.out_of_touch(now) && b.leads.is_none() && term::app_at_least(&b.app, &known.app) {
+                    can.push(b.member());
+                }
+            }
+        }
+        can.sort_by(first_to_try);
+        let rank = can.iter().position(|m| m.id == self.me.id).unwrap_or(0) as u64;
+        if awake.saturating_sub(since) < UNREAD_TAKE_S + rank * AUTO_RANK_S {
+            return;
+        }
+        let how = format!("taken over by {}: term {} unreadable for {} min", self.me.host, self.cur.term, awake.saturating_sub(since) / 60);
+        match term::forced(io, &self.cur, &self.me, &how, now, false).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
                 if !self.made(io, out, n, made) {
                     out.events.push(Event::Waits { what: "take over", why: format!("term {} made by another first", self.cur.term + 1) });
@@ -2622,6 +2685,76 @@ mod tests {
         let mut v = [two.clone(), newer.clone(), one.clone()];
         v.sort_by(first_to_try);
         assert_eq!(v.map(|m| m.id), [newer.id, one.id, two.id]);
+    }
+
+    #[test]
+    fn a_term_left_empty_is_taken_past_by_itself_after_half_an_hour() {
+        // 12 Oct: an SMB drop lost the answer to the M4's create of term 2, which landed 0 bytes.
+        // No Mac could read it, so none led, until the owner's force three days on. Now the
+        // members that can lead take it past by themselves once it's been unreadable half an hour
+        // awake: the first by rank, the create deciding.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        mem.create_new(&term::path(2), b"").unwrap();
+        let mut took = None;
+        for i in 0..10 {
+            for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
+                io.pass(300);
+                let o = step(d, io, able());
+                if let Some(e) = o.leads {
+                    took.get_or_insert((d.member().id.clone(), e, i));
+                }
+            }
+        }
+        let (who, e, i) = took.expect("taken past");
+        assert_eq!((who.as_str(), e), (A, 3), "the lowest member id first");
+        // (Seen first at round 0, so half an hour on is round 6.)
+        assert_eq!(i, 6, "after half an hour, not before");
+        let t = term::read(&mem, 3).unwrap().unwrap();
+        assert_eq!((t.from, t.how.as_str()), (2, "taken over by Mac-mini: term 2 unreadable for 30 min (forced past: term 2 unreadable)"));
+        assert!(!mem.exists(&term::path(4)).unwrap(), "B follows term 3; it makes none of its own");
+        assert_eq!(b.current().lead.as_ref().map(|t| t.member.as_str()), Some(A));
+    }
+
+    #[test]
+    fn a_term_left_empty_isnt_taken_past_by_a_mac_that_cant_lead_nor_once_it_reads_whole() {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        // Term 2 made, its bytes landing twenty minutes on (its maker, C, finishing it): it's
+        // led, and no one takes it past.
+        mem.create_new(&term::path(2), b"").unwrap();
+        let t2 = Term { term: 2, member: C.into(), host: "iMac".into(), app: V1.into(), since: T0, how: "re-asserted after a gap".into(), from: 1, seq: None };
+        for i in 0..12 {
+            if i == 4 {
+                mem.write_whole(&term::path(2), &serde_json::to_vec(&t2).unwrap()).unwrap();
+            }
+            for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
+                io.pass(300);
+                step(d, io, able());
+            }
+        }
+        assert!(!mem.exists(&term::path(3)).unwrap(), "read whole: never taken past");
+        assert_eq!(a.current().lead.as_ref().map(|t| t.member.as_str()), Some(C));
+        // Term 3 left empty, neither able to lead now (away, on battery): an hour on, nothing.
+        mem.create_new(&term::path(3), b"").unwrap();
+        let unable = || Heard { able: false, ..able() };
+        for _ in 0..12 {
+            for (d, io) in [(&mut a, &ia), (&mut b, &ib)] {
+                io.pass(300);
+                assert_eq!(step(d, io, unable()).leads, None);
+            }
+        }
+        assert!(!mem.exists(&term::path(4)).unwrap());
     }
 
     #[test]

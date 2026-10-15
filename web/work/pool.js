@@ -64,7 +64,7 @@ export function poolSection(agent, now, ask) {
     const t = v.takeover || {};
     const can = !t.refused && !t.force && !t.downgrade;
     const take = () => confirm(`Take the build over on the Mac serving this page?\n\nNo lead: ${v.no_lead}.\n\nIt makes the next term naming itself and leads from the records on the NAS; nothing built is lost.`) && ask({ take: true });
-    top.push(h("div", "pool-ctl warnline", h("span", null, `No lead: ${v.no_lead}`),
+    top.push(h("div", "pool-ctl warnline", h("span", null, v.alert || `No lead: ${v.no_lead}`),
       h("button", { class: "primary", disabled: !can, title: can ? "" : t.refused || `needs the owner's ${t.force ? "force" : "downgrade"} (the Mac's menu, or scenic lead take): ${t.force || t.downgrade}`, onclick: take }, "Take it")));
   }
   if (v.offer) {

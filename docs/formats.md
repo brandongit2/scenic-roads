@@ -570,7 +570,8 @@ agent/pool/             the pool's part of the agent (crate::agent::pool; only w
                         once a saved state holds its entry), lead.json (the owner's lead asks, crate::
                         agent::lead::Kept: {asked: {ask, by, at, since, state: refused | passed |
                         going | done | failed, said, to}, change: {at, said}, offered: [member,
-                        since], auto_at}), notes.jsonl (the terms' history events a member kept for
+                        since], auto_at, no_lead: [term, since] (the term with no lead, as first
+                        seen so: the alert's start)}), notes.jsonl (the terms' history events a member kept for
                         its next process's coordinator, removed once noted there)
 agent/shadow/           a shadow run beside the agent (`state/pool/shadow`; crate::agent::shadow):
                         member, and pool-shadow/ with saved.json, mail.json, members.json as pool/'s,
@@ -903,7 +904,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     /api/build/lead {to} | {take: true}` (never forced); taken up and removed by its agent at its
     next loop. The build page's go to its coordinator, `POST /work/lead {to} | {take: true}` (a
     page's, with no key; never forced), which its agent takes up the same way. `/api/build` says
-    this Mac's `pool` (its agent's `PoolView`, fresh) and `lead_asked` (its ask not yet taken up).
+    this Mac's `pool` (its agent's `PoolView`, fresh) and `lead_asked` (its ask not yet taken up);
+    its `status` is this Mac's agent's own `status.json` when fresh (it leads), else the lead's
+    heartbeat on the NAS, but for a member's own `helper.json`, fresh, when that heartbeat is ten
+    minutes old or more (no lead to show: the menu bar stays fresh).
   - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
     pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
     null, raw: [[area, {name, bytes}], …] (a helper's raw tiles' archives, on the NAS, for the build
@@ -1008,7 +1012,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   members, unacked, restart, lead}`, a helper's status too; `lead`, the pool as the controls show
   it, crate::agent::lead::View: `{at, term, lead: {term, member, host, app, since, how}, leading,
   members: [{member, host, app, beat, me, leads, state, out_of_touch, away, can_lead, why_not,
-  conds}], takeover: {refused, force, downgrade}, no_lead, handing: {to, host, term, stage, since},
+  conds}], takeover: {refused, force, downgrade}, no_lead, alert (no lead for an hour or more:
+  since when, why and the command that takes it over, in words), handing: {to, host, term, stage, since},
   offer: {to, host, why}, auto, asked, change}`); `inputs`, the input check's units (the lead's,
   pipeline::inputs::view::InputView: `[{unit, version (its accepted index's content name), state:
   ok | checking | held, checking (true while a check is planned or running, a held unit staying

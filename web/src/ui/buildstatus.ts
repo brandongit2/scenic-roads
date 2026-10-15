@@ -24,6 +24,8 @@ interface PoolView {
   members: { member: string; host: string; app: string; beat: number; me?: boolean; leads?: boolean; state: string; out_of_touch?: boolean; away?: boolean; can_lead: boolean; why_not?: string }[];
   takeover?: { refused?: string; force?: string; downgrade?: string };
   no_lead?: string;
+  /** No lead for an hour or more: why, and what to do. */
+  alert?: string;
   handing?: { host: string; stage: string; since: number };
   asked?: { by: string; at: number; state: string; said: string };
   change?: { at: number; said: string };
@@ -160,7 +162,8 @@ export class BuildStatus {
     const v = this.pool?.lead;
     if (!v) return [];
     const out: Node[] = [hd('The pool', v.no_lead ? `term ${v.term} · no lead` : v.lead ? `term ${v.lead.term}` : '')];
-    if (v.no_lead) out.push(h('div', { class: 'bs-row warn' }, `No lead: ${v.no_lead}`));
+    if (v.alert) out.push(h('div', { class: 'bs-row warn' }, v.alert));
+    else if (v.no_lead) out.push(h('div', { class: 'bs-row warn' }, `No lead: ${v.no_lead}`));
     else if (v.lead) out.push(h('div', { class: 'bs-row' }, `${v.lead.host}${v.leading ? ' (this Mac)' : ''} leads, since ${ago(v.lead.since)} · ${v.lead.how}`));
     if (v.handing) out.push(h('div', { class: 'bs-row' }, `Handing over to ${v.handing.host}: ${v.handing.stage}, ${ago(v.handing.since)}`));
     for (const m of v.members) {

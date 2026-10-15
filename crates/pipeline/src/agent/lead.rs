@@ -38,6 +38,9 @@ pub const AUTO_AFTER_S: u64 = 300;
 /// No automatic handover within this of the last change of lead, or of the last automatic ask (s):
 /// so the lead can't flap between two Macs on the edge of their conditions.
 pub const CALM_S: u64 = 1800;
+/// No lead for this long (by this Mac's clock: since the lead was last heard from, or since this
+/// Mac first saw the term unreadable or the lead stood down) is an alert, on every view (s).
+pub const ALERT_S: u64 = 3600;
 /// The view is made again this often (s): a heartbeat read per member.
 const VIEW_S: u64 = 30;
 /// An ask's end is shown this long, then forgotten (s).
@@ -100,6 +103,10 @@ pub struct Kept {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offered: Option<(String, u64)>,
     pub auto_at: u64,
+    /// The term with no lead anyone can reach, as first seen so (its number, since when): for the
+    /// alert (`ALERT_S`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_lead: Option<(u64, u64)>,
 }
 
 /// The term's lead, as its file says.
@@ -194,6 +201,10 @@ pub struct View {
     /// ("Take it").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_lead: Option<String>,
+    /// No lead for `ALERT_S` or more: since when, why, and what to do, in words (the menu bar's
+    /// icon and the build page show it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handing: Option<Handing>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -350,7 +361,8 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     let due = run.controls.stale || run.controls.view.as_ref().is_none_or(|v| now.abs_diff(v.at) >= VIEW_S);
     if due {
         let auto = run.side.nas().exists(AUTO).unwrap_or(false);
-        let v = view(run, auto);
+        let mut v = view(run, auto);
+        alert(&mut v, &mut run.controls.kept, now);
         run.controls.view = Some(v);
         run.controls.stale = false;
     }
@@ -506,7 +518,51 @@ fn view(run: &Run, auto: bool) -> View {
         Takeover { refused: t.refused, force: t.force, downgrade: t.downgrade }
     });
     let offer = offer(lead_beat.as_ref(), &members);
-    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
+    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, alert: None, handing, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
+}
+
+/// The alert (`View::alert`): no lead for `ALERT_S` or more, since the lead was last heard from or
+/// since this Mac first saw no lead in this term (`kept.no_lead`), whichever is earlier; with why,
+/// and the command that takes it over (what a takeover from this Mac needs, or from another Mac
+/// when this one can't).
+pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
+    let Some(why) = v.no_lead.clone() else {
+        kept.no_lead = None;
+        v.alert = None;
+        return;
+    };
+    let seen = match kept.no_lead {
+        Some((e, since)) if e == v.term => since,
+        _ => {
+            kept.no_lead = Some((v.term, now));
+            now
+        }
+    };
+    let heard = v.lead.as_ref().and_then(|l| v.members.iter().find(|m| m.member == l.member)).map(|m| m.beat).filter(|&b| b > 0);
+    let since = heard.map_or(seen, |b| b.min(seen));
+    if now.saturating_sub(since) < ALERT_S {
+        v.alert = None;
+        return;
+    }
+    let what = match &v.takeover {
+        Some(t @ Takeover { refused: None, .. }) => {
+            let flags: String = [t.force.as_ref().map(|_| " --force"), t.downgrade.as_ref().map(|_| " --downgrade")].into_iter().flatten().collect();
+            format!("run `scenic lead take{flags}` on this Mac (or \"Take Over the Build…\" in its menu) to lead from the records on the NAS; nothing built is lost")
+        }
+        Some(Takeover { refused: Some(w), .. }) => format!("this Mac can't take it over ({w}): run `scenic lead take --force` on another Mac in the pool"),
+        None => "run `scenic lead take --force` on a Mac in the pool".to_string(),
+    };
+    let auto = if v.lead.is_none() { "; no Mac took it past by itself (none can lead now, or the app rule refuses)" } else { "" };
+    v.alert = Some(format!("No lead for {}: {why}{auto}. Nothing builds until a Mac leads: {what}.", span(now.saturating_sub(since))));
+}
+
+/// A span of seconds in words: "75 min", "5 h", "3 days".
+fn span(s: u64) -> String {
+    match s {
+        0..=5399 => format!("{} min", s / 60),
+        5400..=129_599 => format!("{} h", s / 3600),
+        _ => format!("{} days", s / 86400),
+    }
 }
 
 /// The proactive offer (§6.5): the lead's heartbeat says it's away from home or on battery, no
@@ -623,7 +679,7 @@ fn ago(now: u64, t: u64) -> String {
 pub fn said(v: &View, now: u64) -> Vec<String> {
     let mut out = Vec::new();
     match (&v.lead, &v.no_lead) {
-        (_, Some(why)) => out.push(format!("No lead: {why} (`scenic lead take` takes it over)")),
+        (_, Some(why)) => out.push(v.alert.clone().unwrap_or_else(|| format!("No lead: {why} (`scenic lead take` takes it over)"))),
         (Some(l), None) => out.push(format!("The lead: {}{} — term {}, since {} ({})", l.host, if v.leading { " (this Mac)" } else { "" }, l.term, ago(now, l.since), l.how)),
         (None, None) => out.push("No terms yet".into()),
     }
@@ -681,6 +737,36 @@ mod tests {
     }
 
     const HOME: Conds = Conds { home: true, ac: true, battery: Some(90), able: true };
+
+    #[test]
+    fn the_alert_counts_from_the_first_sight_of_no_lead_or_the_leads_last_beat() {
+        let mut kept = Kept::default();
+        // Term 55 unreadable (the 12 Oct case): seen at 1000, an alert from an hour on, saying
+        // to force.
+        let mut v = View { term: 55, no_lead: Some("term 55 can't be read whole".into()), takeover: Some(Takeover { force: Some("term 55 can't be read whole".into()), ..Default::default() }), ..Default::default() };
+        alert(&mut v, &mut kept, 1000);
+        assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some((55, 1000))));
+        alert(&mut v, &mut kept, 1000 + ALERT_S - 1);
+        assert_eq!(v.alert, None);
+        alert(&mut v, &mut kept, 1000 + 3 * 3600);
+        assert_eq!(v.alert.as_deref(), Some("No lead for 3 h: term 55 can't be read whole; no Mac took it past by itself (none can lead now, or the app rule refuses). Nothing builds until a Mac leads: run `scenic lead take --force` on this Mac (or \"Take Over the Build…\" in its menu) to lead from the records on the NAS; nothing built is lost."));
+        // A later term with no lead counts again from its first sight; this Mac unable, another's.
+        let mut v = View { term: 56, no_lead: Some("term 56 can't be read whole".into()), takeover: Some(Takeover { refused: Some("term 56, which this Mac made, isn't written whole yet".into()), ..Default::default() }), ..Default::default() };
+        alert(&mut v, &mut kept, 20_000);
+        assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some((56, 20_000))));
+        alert(&mut v, &mut kept, 20_000 + ALERT_S);
+        assert!(v.alert.as_deref().is_some_and(|w| w.contains("this Mac can't take it over (term 56, which this Mac made") && w.contains("`scenic lead take --force` on another Mac")), "{v:?}");
+        // The lead out of touch: from its last beat, though first seen just now.
+        let lead = LeadOf { term: 56, member: "m-a".into(), host: "Mac-mini".into(), ..Default::default() };
+        let mut v = View { term: 56, lead: Some(lead), members: vec![Member { member: "m-a".into(), beat: 30_000, ..Default::default() }], no_lead: Some("Mac-mini is out of touch".into()), takeover: Some(Takeover::default()), ..Default::default() };
+        kept.no_lead = None;
+        alert(&mut v, &mut kept, 30_000 + ALERT_S + 120);
+        assert!(v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 62 min: Mac-mini is out of touch. ") && w.contains("`scenic lead take` on this Mac")), "{v:?}");
+        // A lead again: none, and forgotten.
+        let mut v = View { term: 57, ..Default::default() };
+        alert(&mut v, &mut kept, 40_000);
+        assert_eq!((v.alert, kept.no_lead), (None, None));
+    }
 
     #[test]
     fn a_members_state_in_words() {
@@ -1012,6 +1098,23 @@ mod tests {
             let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(b.root.join("state/build/terms/2.json")).unwrap()).unwrap();
             assert!(term2.how.starts_with("taken over by"), "{term2:?}");
             assert!(b.run.controls.kept.change.as_ref().is_some_and(|c| c.said.contains("This Mac leads term 2")));
+            drop(a);
+        }
+
+        #[test]
+        fn no_lead_for_an_hour_is_an_alert_saying_what_to_do() {
+            let d = tempfile::tempdir().unwrap();
+            let (a, mut b) = pool(d.path());
+            // A silent: out of touch at eleven minutes, no alert yet; an hour after its last beat,
+            // the alert, with the command.
+            b.pass(660);
+            b.go();
+            assert!(b.view().no_lead.is_some() && b.view().alert.is_none(), "{:?}", b.view());
+            b.pass(ALERT_S - 660 + VIEW_S);
+            b.go();
+            let w = b.view().alert.expect("an alert");
+            assert!(w.starts_with("No lead for 60 min: ") && w.contains("out of touch") && w.contains("`scenic lead take` on this Mac"), "{w}");
+            assert!(said(&b.view(), b.run.side.now())[0] == w, "`scenic lead` and `scenic status` say it first");
             drop(a);
         }
 

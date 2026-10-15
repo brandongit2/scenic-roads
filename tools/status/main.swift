@@ -193,6 +193,8 @@ struct PoolView: Decodable {
     let members: [PoolMember]
     let takeover: TakeoverNeeds?
     let no_lead: String?
+    /// No lead for an hour or more: since when, why, and what to do (agents from #195 on).
+    let alert: String?
     let handing: Handing?
     let offer: PoolOffer?
     let auto: Bool?
@@ -311,6 +313,7 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
     var out = [Line(text: "", style: .separator)]
     if let why = v.no_lead {
         out.append(Line(text: "The pool · term \(v.term) · no lead: \(why)", style: .header))
+        if let a = v.alert { out.append(Line(text: a, style: .plain)) }
     } else if let l = v.lead {
         out.append(Line(text: "The pool · \(l.host) leads term \(l.term)\(v.leading ? " (this Mac)" : "") since \(clock(l.since))", style: .header))
     }
@@ -590,6 +593,15 @@ func classify(_ r: Reply?) -> (Kind, String) {
     if let d = s.recent.first, !d.ok { return (.problem, clip("Failed: \(d.what)")) }
     if let w = s.waiting.first { return (.waiting, clip("Waiting: \(w.what)")) }
     return (.idle, "Nothing to build")
+}
+
+/// The state with a line saying it, this Mac's agent's view of the pool considered: no lead for an
+/// hour or more (its `alert`, fresh) is a problem, whatever the last status says, and the line says
+/// why and what to do (docs/pool.md §10).
+func state(_ r: Reply?, own: Own?) -> (Kind, String) {
+    let now = r?.now ?? Int(Date().timeIntervalSince1970)
+    if let o = own, now - o.beat <= outOfTouch, let a = o.pool?.lead?.alert { return (.problem, a) }
+    return classify(r)
 }
 
 /// One line of the menu: plain, small and dim, or the log's monospace.
@@ -1392,7 +1404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: the icon and the menu
 
     func show() {
-        let (kind, line) = classify(reply)
+        let (kind, line) = state(reply, own: own)
         if let b = item.button {
             let held = heldInputs(reply)
             b.image = iconImage(kind, held: !held.isEmpty, line: line)
@@ -1423,7 +1435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func currentMenu() -> NSMenu {
-        let (kind, line) = classify(reply)
+        let (kind, line) = state(reply, own: own)
         return menu(kind, line)
     }
 
@@ -1816,14 +1828,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     /// The pool's lead changing, and this Mac's ask of it ending, each told once (the first look
     /// only sets where they're told from).
-    var seenLead: (term: Int, asked: Int)?
+    var seenLead: (term: Int, asked: Int, alert: Bool)?
     func tellLead() {
         guard let v = own?.pool?.lead else { return }
         let asked = v.asked.map { ["done", "failed", "refused"].contains($0.state) ? $0.since : 0 } ?? 0
-        defer { seenLead = (v.term, asked) }
+        defer { seenLead = (v.term, asked, v.alert != nil) }
         guard let was = seenLead else { return }
         if v.term > was.term, let l = v.lead {
             post("\(l.host) leads the build", "Term \(l.term): \(l.how)")
+        }
+        if !was.alert, let a = v.alert {
+            post("The build has no lead", a)
         }
         if asked > was.asked, let a = v.asked {
             post(a.state == "done" ? "Lead: done" : "Lead: \(a.state == "refused" ? "refused" : "came to nothing")", a.said)
@@ -1884,7 +1899,7 @@ if args.contains("--print") {
         done.signal()
     }.resume()
     done.wait()
-    let (kind, line) = classify(r)
+    let (kind, line) = state(r, own: ownStatus())
     print("icon: \(kind.symbol)\(heldInputs(r).isEmpty ? "" : " with a warning badge")")
     for v in heldInputs(r) { print("item: \(inputLine(v))") }
     let own = ownStatus()
@@ -1916,7 +1931,7 @@ if args.contains("--print") {
     _ = NSApplication.shared
     let d = AppDelegate()
     d.reply = r
-    let (kind, line) = classify(r)
+    let (kind, line) = state(r, own: ownStatus())
     let views: [NSView] = lines(r, line, own: ownStatus()).map { l in
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
     } + (ownStatus()?.pool.flatMap { p in p.lead.map { leadItems($0, me: p.member) } } ?? []).flatMap { li in
@@ -1958,7 +1973,7 @@ if args.contains("--print") {
         d.reply = try? JSONDecoder().decode(Reply.self, from: data)
         let beside = try? JSONDecoder().decode(Replay.self, from: data)
         d.own = beside?.own
-        print("\(f): \(classify(d.reply).1)\(heldInputs(d.reply).isEmpty ? "" : " (badged)")")
+        print("\(f): \(state(d.reply, own: d.own).1)\(heldInputs(d.reply).isEmpty ? "" : " (badged)")")
         for v in heldInputs(d.reply) { print("  item: \(inputLine(v))") }
         if let c = cachesItem(d.own, now: d.reply?.now ?? Int(Date().timeIntervalSince1970), asked: beside?.clear_asked ?? false) {
             print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
