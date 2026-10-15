@@ -8835,10 +8835,12 @@ mod pool_tests {
         let c = lead.coord.as_ref().unwrap();
         c.add_costs(&[(crate::coord::cost_key("slope", "3/2/2"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("slope") })]);
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }]);
-        until(&mut m, |_| bin.join("env-slope").exists());
+        // (Read once its job has ended: the fake job's `env >` makes the file before it writes it,
+        // so the file's being there says nothing of its lines. Only the member's job runs slope:
+        // the lead isn't stepped after it's offered.)
+        until(&mut m, |m| bin.join("env-slope").exists() && m.slots[0].running.is_none());
         let env = std::fs::read_to_string(bin.join("env-slope")).unwrap();
         assert!(env.lines().any(|l| l == format!("{}=1", placement::AHEAD_ENV)), "{env}");
-        until(&mut m, |m| m.slots[0].running.is_none());
         // Off again: as before.
         std::fs::write(r.join(placement::SWITCH), "off").unwrap();
         lead.pool_switch(Some(&r));
