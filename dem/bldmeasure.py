@@ -41,7 +41,7 @@ agent has a job (--agent-status, read only). Python decodes and measures here; i
 code (§3.7): numbers are for the plan, not for a tile.
 
 usage: bldmeasure.py --root <NAS project folder> --work <local folder>
-                     [--regions regions.geojson | --server http://localhost:8080] [--jobs 8]
+                     [--regions regions.geojson | --server http://localhost:7311] [--jobs 8]
                      [--fill-jobs 4] [--phases scan,fit,fill,tiles,report] [--box w,s,e,n]
                      [--agent-status <status.json>]
 """
@@ -1734,7 +1734,7 @@ def main() -> None:
     ap.add_argument("--root", required=True, help="the NAS's project folder (read only)")
     ap.add_argument("--work", required=True, help="a local folder for the spool and the results")
     ap.add_argument("--regions", help="the regions' outlines as GeoJSON (else from --server)")
-    ap.add_argument("--server", default="http://localhost:8080", help="the map's server, for the regions")
+    ap.add_argument("--server", default="http://localhost:7311", help="the map's server, for the regions")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--fill-jobs", type=int, default=4)
     ap.add_argument("--fill-mem-gb", type=float, default=16.0, help="the fill's tiles in memory at once, roughly")

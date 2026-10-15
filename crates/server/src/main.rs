@@ -1,6 +1,6 @@
 //! The map's server: tiles, layers and the APIs over the catalog's data (docs/plan.md §4).
 //!
-//! usage: server [--port 8080] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
+//! usage: server [--port 7311] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
 //!               [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]
 //!
 //! Data comes from the NAS project folder (found and mounted by itself), read from this Mac's mirror
@@ -392,13 +392,13 @@ async fn main() -> Result<()> {
         if !why.is_empty() {
             eprintln!("server: {why}");
         }
-        eprintln!("usage: server [--port 8080] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]\n              [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]");
+        eprintln!("usage: server [--port {}] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]\n              [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]", pipeline::net::DEFAULT_PORT);
         std::process::exit(if why.is_empty() { 0 } else { 2 });
     }
     raise_open_files();
     let web = PathBuf::from(arg("--web").unwrap_or_else(|| "web/dist".into()));
     let fonts = PathBuf::from(arg("--fonts").unwrap_or_else(|| "data/fonts".into()));
-    let port: u16 = arg("--port").unwrap_or_else(|| "8080".into()).parse()?;
+    let port: u16 = arg("--port").map(|p| p.parse()).transpose()?.unwrap_or(pipeline::net::DEFAULT_PORT);
     let home = arg("--home").map(PathBuf::from).unwrap_or_else(data::default_home);
     let reserve_gb: f64 = arg("--reserve-gb").map(|v| v.parse()).transpose()?.unwrap_or(50.0);
     anyhow::ensure!(reserve_gb.is_finite() && reserve_gb >= 0.0, "--reserve-gb: a number of GB");
@@ -992,6 +992,12 @@ impl Region {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_port_is_not_8080() {
+        // Other tools default to 8080; the docs, the status app, the bench and the dev proxy repeat this number.
+        assert_eq!(pipeline::net::DEFAULT_PORT, 7311);
+    }
 
     #[test]
     fn help_and_unknown_options_never_start_it() {

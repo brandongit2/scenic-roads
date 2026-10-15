@@ -80,4 +80,4 @@ fi
 # The menu bar item (tools/status, both Macs): the launcher runs Scenic.app from `current`, under
 # its own login item.
 "${0:A:h}/../status/install.sh"
-echo "installed $version; the map is at http://localhost:8080"
+echo "installed $version; the map is at http://localhost:7311"

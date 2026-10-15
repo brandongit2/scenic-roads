@@ -13,7 +13,7 @@ It is built for finding scenic drives and rides:
 - The roads are draped on 3D terrain with hill-shading.
 - Passenger rail (trams, metros, commuter, intercity, heritage and mountain railways) is scored for the view from the carriage window.
 
-**Using it.** The map runs on each Mac at http://localhost:8080: the published app (`tools/app/install.sh`), kept running by a launcher. Its data lives on the NAS.
+**Using it.** The map runs on each Mac at http://localhost:7311: the published app (`tools/app/install.sh`), kept running by a launcher. Its data lives on the NAS.
 - The build Mac's agent (`scenic agent`) builds it from a worldwide OpenStreetMap download into packs listed by a catalog ("How it's built", below). Each Mac's server serves it and copies it locally as it can.
 - Regions are added and removed in Settings → Regions, or with `scenic add` and `scenic remove`. `scenic status`, the status bar, the menu bar item and the build page (the lead's `/work/`, which a click on the menu bar item shows in a popover; its menu, on a right-click, copies the address or opens it in the browser) show what the build Mac is doing; the menu bar item, the map's build panel, the build page and `scenic pause` / `scenic resume` pause and resume the whole build. With the pool on, the same places show which Mac leads the build and hand it over (`scenic lead`, `scenic lead give <Mac>`, `scenic lead take`; the menu's Hand the Build To and Make This Mac Lead: `docs/pool.md` §11).
 - The menu bar item has no Quit: launchd starts it again at once. `launchctl bootout gui/$(id -u)/local.scenic.status` stops it until the next login.

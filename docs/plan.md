@@ -28,7 +28,7 @@ nothing built depends on how the coverage is divided into regions.
 **The map is always there.**
 - A launcher (`tools/launcher`, a LaunchAgent) keeps the server running on both Macs. An idle server
   loads nothing, so it costs almost nothing.
-- The user opens `http://localhost:8080`.
+- The user opens `http://localhost:7311`.
 - Zoomed out, nothing small leaves the map: every road is drawn at every zoom. The water zoomed out
   looks as the full-detail map would rendered and then shrunk to the screen (the owner's choice,
   2026-10-08): an island or lake smaller than a pixel is as faint as its share of the pixel, the
@@ -632,7 +632,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **The address** to open on a device is `<home>/map-page` (`crates/server/src/remote.rs`), which
   the server rewrites when it changes: HTTPS where `tailscale serve` proxies the server's port at the
   root of an HTTPS port of its own (the app asks for `/api/…`, so not under a path: `tailscale serve
-  --bg --https=8443 http://127.0.0.1:8080`), else the tailnet address. The status menu's Copy the
+  --bg --https=8443 http://127.0.0.1:7311`), else the tailnet address. The status menu's Copy the
   Map's Address and `scenic status` give it.
   - Only a proxy that says it is one (`tailscale serve`'s HTTPS sets `X-Forwarded-For`) keeps the
     requests it hands over from passing for this Mac's own. A plain TCP forward on this Mac would let

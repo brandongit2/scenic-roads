@@ -672,7 +672,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", required=True, help="the NAS's project folder")
     ap.add_argument("--release", default="2026-09-23.1", help="Overture's release")
-    ap.add_argument("--server", default="http://localhost:8080", help="the map's server, for the coverage")
+    ap.add_argument("--server", default="http://localhost:7311", help="the map's server, for the coverage")
     ap.add_argument("--coverage", help="the coverage as a GeoJSON file instead")
     ap.add_argument("--margin-km", type=float, default=20.0)
     ap.add_argument("--jobs", type=int, default=2, help="transfers at once (2-4)")

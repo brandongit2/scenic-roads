@@ -136,6 +136,12 @@ pub fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The port the map's server listens on unless `--port` says otherwise (not 8080: other tools
+/// default to it). Repeated where another language can't read this: web/vite.config.ts, the
+/// status app (tools/status/main.swift), tools/bench, dem/bldfetch.py, dem/bldmeasure.py,
+/// .claude/launch.json and the docs; the server's test pins it.
+pub const DEFAULT_PORT: u16 = 7311;
+
 /// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name.
 pub fn urls(port: u16) -> Vec<String> {
     let mut out = Vec::new();

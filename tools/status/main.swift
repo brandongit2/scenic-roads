@@ -31,7 +31,7 @@
 //   scenic-status --menu-proof              runs, its polls and notifications printed with the time,
 //                                           a menu held open 25 s between: they go on while it's open
 //   scenic-status --wait-replaced           waits, without a window, until a newer app is installed
-// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080), SCENIC_HOME the app folder,
+// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:7311), SCENIC_HOME the app folder,
 // SCENIC_STATUS_APPEARANCE (light, dark) the system's appearance.
 
 import AppKit
@@ -40,7 +40,7 @@ import SystemConfiguration
 import UserNotifications
 import WebKit
 
-let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:8080")!
+let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:7311")!
 let home = ProcessInfo.processInfo.environment["SCENIC_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
 /// Without a heartbeat for this long, the build Mac counts as out of touch (asleep, off, away, or
 /// its agent stuck): its agent writes one at least every two minutes.

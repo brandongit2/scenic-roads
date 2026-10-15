@@ -26,7 +26,7 @@ const forkDeps = Object.keys(JSON.parse(readFileSync(`${fork}package.json`, 'utf
 }
 
 // In development the Rust backend serves data; Vite serves the app with HMR.
-const backend = 'http://127.0.0.1:8080';
+const backend = 'http://127.0.0.1:7311';
 
 export default defineConfig({
   plugins: [shadersPlugin()],

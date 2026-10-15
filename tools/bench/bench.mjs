@@ -31,7 +31,7 @@ const PORT = Number(args.port ?? 9333);
 const W = Number(args.w ?? 1512), H = Number(args.h ?? 900), DPR = Number(args.dpr ?? 2);
 const SECS = Number(args.secs ?? 5);
 const RUNS = String(args.runs ?? 'pan,pinch,orbit,hover').split(',');
-const URL = String(args.url ?? 'http://localhost:8080/');
+const URL = String(args.url ?? 'http://localhost:7311/');
 
 // ---- CDP plumbing --------------------------------------------------------------------------
 const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json();
