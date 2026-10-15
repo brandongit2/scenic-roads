@@ -932,8 +932,14 @@ impl Coordinator {
     /// one's: its addresses, not only its token (the pool's, the same on every lead: a lead that
     /// lost its term while frozen would take the new lead's contact off).
     pub fn unpublish(&self, root: &Path) {
+        self.unpublish_unless(root, &|| false);
+    }
+
+    /// `unpublish`, unless `published` says the contact was published again meanwhile (asked just
+    /// before the remove: a removal that waited on a hung share doesn't take a fresh contact off).
+    pub fn unpublish_unless(&self, root: &Path, published: &dyn Fn() -> bool) {
         let there = std::fs::read(contact_path(root)).ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
-        if there.is_some_and(|c| c.token == self.contact.token && c.urls == self.contact.urls) {
+        if there.is_some_and(|c| c.token == self.contact.token && c.urls == self.contact.urls) && !published() {
             std::fs::remove_file(contact_path(root)).ok();
         }
     }
@@ -2879,6 +2885,27 @@ mod tests {
         c.publish(&root).unwrap();
         c.unpublish(&root);
         assert!(!contact_path(&root).exists(), "its own goes");
+    }
+
+    #[test]
+    fn an_unpublish_overtaken_by_a_publish_leaves_the_contact() {
+        // (An unpublish begun on a hung share, the contact published again before its remove: the
+        // fresh contact stays. The agent counts its publications: `publish_gen`.)
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
+        let gens = std::sync::atomic::AtomicU64::new(1);
+        c.publish(&root).unwrap();
+        let at = gens.load(std::sync::atomic::Ordering::SeqCst);
+        // Published again meanwhile.
+        gens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        c.publish(&root).unwrap();
+        c.unpublish_unless(&root, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at);
+        assert!(contact_path(&root).exists(), "the fresh contact stays");
+        let at = gens.load(std::sync::atomic::Ordering::SeqCst);
+        c.unpublish_unless(&root, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at);
+        assert!(!contact_path(&root).exists(), "not published since: it goes");
     }
 
     fn start() -> (tempfile::TempDir, Coordinator, client::Client) {

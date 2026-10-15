@@ -980,6 +980,15 @@ pub struct Run {
 /// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
 /// without the run's lock, so the agent's loop tells a tick (maybe hung on the share) from the
 /// pool's thread's moment's check of whether one is due.
+/// Ends a `Ticking` when dropped (`Ticking::begin`).
+pub struct TickingEnds(Ticking);
+
+impl Drop for TickingEnds {
+    fn drop(&mut self) {
+        self.0.end();
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Ticking(Arc<std::sync::atomic::AtomicU64>);
 
@@ -996,6 +1005,11 @@ impl Ticking {
     }
     pub fn start_at(&self, awake: u64) {
         self.0.store(awake.max(1), std::sync::atomic::Ordering::SeqCst);
+    }
+    /// `start`, ended when the guard it gives is dropped.
+    pub fn begin(&self) -> TickingEnds {
+        self.start();
+        TickingEnds(self.clone())
     }
     pub fn end(&self) {
         self.0.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -1084,9 +1098,9 @@ impl Ticker {
                     if r.tick_due() {
                         // (Said outside the lock: the loop tells a tick holding the run from this
                         // check's moment, and how long a tick has held it: `Ticking`.)
-                        r.ticking.start();
+                        // (Ended however the tick ends, a panic too.)
+                        let _said = r.ticking.begin();
                         r.tick();
-                        r.ticking.end();
                     }
                 }
             })
@@ -2294,6 +2308,20 @@ mod tests {
         assert!(t.join().is_err());
         let run = try_lock(&shared).expect("free again");
         assert!(!run.in_step, "cleared as it unwound");
+    }
+
+    #[test]
+    fn a_tick_that_panics_isnt_said_to_hold_the_run() {
+        let t = Ticking::default();
+        let t2 = t.clone();
+        assert!(std::thread::spawn(move || {
+            let _said = t2.begin();
+            assert!(t2.since().is_some());
+            panic!("the tick panicked");
+        })
+        .join()
+        .is_err());
+        assert_eq!(t.since(), None, "ended as it unwound");
     }
 
     #[test]

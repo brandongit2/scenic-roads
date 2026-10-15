@@ -963,6 +963,10 @@ pub struct Agent {
     /// loop's pool steps passed over in a row for it, and since when it's taken for hung
     /// (`pool_skipped`).
     ticking: Option<pool::Ticking>,
+    /// The coordinator's contact's publications, counted (an unpublish begun before the last one
+    /// doesn't take it off), and the unpublish on a thread of its own still under way, if one is.
+    publish_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    unpublishing: Option<std::thread::JoinHandle<()>>,
     pool_skips: u32,
     pool_hung: Option<u64>,
     shadow: Option<shadow::Shadow>,
@@ -1103,7 +1107,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2227,6 +2231,7 @@ impl Agent {
         let leading = leading && self.pool_hung.is_none();
         if let (Some(c), Some(r), true) = (&self.coord, &root, leading) {
             if self.published.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
+                self.publish_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 match c.publish(r) {
                     Ok(()) => self.published = Some(Instant::now()),
                     Err(e) => eprintln!("agent: publishing the coordinator's contact: {e:#}"),
@@ -5681,11 +5686,13 @@ impl Agent {
             self.pool_hung = since;
             if let Some(co) = &self.coord {
                 co.set_moving(Some("its pool step hangs (the NAS not answering)".into()));
-                if let (Some(r), true) = (root, self.published.is_some()) {
-                    // (On a thread of its own, not waited for: the NAS it reads and removes on
-                    // hangs.)
-                    let (c, r) = (co.clone(), r.to_path_buf());
-                    std::thread::spawn(move || c.unpublish(&r));
+                // (On a thread of its own, not waited for: the NAS it reads and removes on hangs. One
+                // at a time; and not once the contact was published again since it began.)
+                let busy = self.unpublishing.as_ref().is_some_and(|t| !t.is_finished());
+                if let (Some(r), true, false) = (root, self.published.is_some(), busy) {
+                    let (c, r, gens) = (co.clone(), r.to_path_buf(), self.publish_gen.clone());
+                    let at = gens.load(std::sync::atomic::Ordering::SeqCst);
+                    self.unpublishing = Some(std::thread::spawn(move || c.unpublish_unless(&r, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at)));
                     self.published = None;
                 }
             }
