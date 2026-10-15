@@ -33,8 +33,10 @@
 // /tiles/buildings-field): `field5-webp` tiles, fetched and decoded to linear values in a worker
 // (bldfield.worker.ts), a few at a time, those the view has left cancelled. A tile the server
 // doesn't have (204) holds no building, nor do its children: they aren't asked for. A tile that
-// failed is asked again after a while (2, 4 … 60 s). While one loads, its nearest loaded ancestor
-// stands in, drawn only over the missing tile's area. Tiles off screen are kept while the tiles' GPU
+// failed is asked again after a while (2, 4 … 60 s). While one loads, its loaded descendants (up to
+// three levels finer: zooming out) stand in over their own areas, and its nearest loaded ancestor over
+// the rest of its area alone; under the meshes, their z12 ancestors are fetched ahead (after the
+// wanted tiles), so zooming out past the hand-over has a stand-in where the meshes stop. Tiles off screen are kept while the tiles' GPU
 // memory is under the off-screen cache's target (GPU_CACHE_TARGET_MB: a soft target, the least
 // recently wanted freed first; the tiles on screen are always kept); all are freed when the layer is
 // removed, and made again after a lost context. With the fork's `sceneDepth` (web/maplibre/FORK.md), the march stops at the frame's
@@ -61,6 +63,10 @@ const LUT_N = 2048;
 /** The finest level, and the coarsest. */
 const LEVEL_MAX = 14;
 const LEVEL_MIN = 4;
+/** How many levels finer a loading tile's stand-ins may be (zooming out: 4^this tiles at most). */
+const STANDIN_DEPTH = 3;
+/** The level fetched ahead under the meshes (a z12 tile holds 16 of their z14 tiles). */
+const PREFETCH_LEVEL = 12;
 /** Fetches in flight at most. */
 const FETCHES = 6;
 /** The off-screen cache's target (MB): the tiles not wanted in the frame are freed, least recently
@@ -570,6 +576,8 @@ interface FTile {
   used: number;
   fails: number;
   retryAt: number;
+  /** Only fetched ahead, under the meshes (not wanted for drawing this frame): after the wanted. */
+  pre: boolean;
 }
 
 type Prog = { p: WebGLProgram; u: Record<string, WebGLUniformLocation | null> };
@@ -840,16 +848,22 @@ export class FieldLayer implements CustomLayerInterface {
         for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(z + 1, x * 2 + i, y * 2 + j);
       } else out.push(this.tile(z, x, y));
     };
+    // Under the meshes, their level-PREFETCH_LEVEL ancestors fetched ahead (after the wanted tiles), so
+    // zooming out past the hand-over has a loaded tile to stand in where the meshes stop.
+    for (const k of meshes) {
+      const [mz, mx, my] = k.split('/').map(Number);
+      if (mz > PREFETCH_LEVEL) this.tile(PREFETCH_LEVEL, mx >> (mz - PREFETCH_LEVEL), my >> (mz - PREFETCH_LEVEL), true);
+    }
     for (let y = 0; y < 2 ** LEVEL_MIN; y++) for (let x = 0; x < 2 ** LEVEL_MIN; x++) visit(LEVEL_MIN, x, y);
     return out;
   }
 
   /** Tile z/x/y, asked for if it's new or its retry is due. */
-  private tile(z: number, x: number, y: number): FTile {
+  private tile(z: number, x: number, y: number, pre = false): FTile {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0 };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, pre };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -857,6 +871,7 @@ export class FieldLayer implements CustomLayerInterface {
       this.queue.push(t);
     }
     t.used = this.frame;
+    t.pre = t.pre && pre;
     return t;
   }
 
@@ -877,7 +892,7 @@ export class FieldLayer implements CustomLayerInterface {
       }
       return t.state === 'queued';
     });
-    this.queue.sort((a, b) => a.z - b.z);
+    this.queue.sort((a, b) => Number(a.pre) - Number(b.pre) || a.z - b.z);
     while (this.flying.size < FETCHES && this.queue.length) {
       const t = this.queue.shift()!;
       t.state = 'loading';
@@ -1190,10 +1205,44 @@ export class FieldLayer implements CustomLayerInterface {
     this.frame++;
     const tiles = this.cover();
     this.pump();
-    // A tile still loading: its nearest loaded ancestor stands in, over the missing tile's area only
-    // (in the ancestor's tile units); one loaded whole over its own.
+    // A tile still loading: its loaded descendants stand in (zooming out: the finer tiles drawn till
+    // the coarser one comes), each whole over its own area, down to STANDIN_DEPTH levels; where none
+    // covers a part of it, its nearest loaded ancestor, over that part only (in the ancestor's tile
+    // units). So no ground is drawn twice, and none goes blank while its replacement loads.
     const draw: { t: FTile; clip: [number, number, number, number] | null }[] = [];
     for (const t of tiles) {
+      if (t.state === 'ready') {
+        draw.push({ t, clip: null });
+        continue;
+      }
+      if (t.state === 'empty') continue;
+      const missing: [number, number, number][] = [];
+      const found: FTile[] = [];
+      const down = (z: number, x: number, y: number, depth: number) => {
+        const c = this.tiles.get(`${z}/${x}/${y}`);
+        if (c?.state === 'ready') {
+          found.push(c);
+          return;
+        }
+        if (c?.state === 'empty') return;
+        if (depth >= STANDIN_DEPTH || z >= LEVEL_MAX) {
+          missing.push([z, x, y]);
+          return;
+        }
+        const f0 = found.length, m0 = missing.length;
+        for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) down(z + 1, x * 2 + i, y * 2 + j, depth + 1);
+        // (nothing below it at all: the square missing whole, one stand-in clip rather than four)
+        if (found.length === f0 && missing.length === m0 + 4) {
+          missing.length = m0;
+          missing.push([z, x, y]);
+        }
+      };
+      down(t.z, t.x, t.y, 0);
+      for (const c of found) {
+        c.used = this.frame;
+        draw.push({ t: c, clip: null });
+      }
+      if (!missing.length) continue;
       let d: FTile | undefined = t;
       while (d && d.state !== 'ready') {
         if (d.state === 'empty' || d.z <= LEVEL_MIN) {
@@ -1204,10 +1253,9 @@ export class FieldLayer implements CustomLayerInterface {
       }
       if (!d) continue;
       d.used = this.frame;
-      if (d === t) draw.push({ t: d, clip: null });
-      else {
-        const k = 2 ** (t.z - d.z), s = EXTENT / k;
-        const ox = (t.x - d.x * k) * s, oy = (t.y - d.y * k) * s;
+      for (const [z, x, y] of missing) {
+        const k = 2 ** (z - d.z), s = EXTENT / k;
+        const ox = (x - d.x * k) * s, oy = (y - d.y * k) * s;
         draw.push({ t: d, clip: [ox, oy, ox + s, oy + s] });
       }
     }
