@@ -29,7 +29,7 @@
 // Timed against the frame budget (2 ms at 2880 × 1626 on the M4), see docs/buildings3d.md §4.8.1.
 //
 // `?bldfield` turns it on (`?bldfield=<url>`: the tiles at <url>/{z}/{x}/{y}, else the server's
-// /tiles/buildings-field): `field3-webp` tiles, fetched and decoded to linear values in a worker
+// /tiles/buildings-field): `field5-webp` tiles, fetched and decoded to linear values in a worker
 // (bldfield.worker.ts), a few at a time, those the view has left cancelled. A tile the server
 // doesn't have (204) holds no building, nor do its children: they aren't asked for. A tile that
 // failed is asked again after a while (2, 4 … 60 s). While one loads, its nearest loaded ancestor
@@ -46,6 +46,9 @@ import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
 
 const G = 32;
+/** The elevation grid's margin around a tile (grid cells): a roof's ground is taken at its building's
+ * centroid, up to 127 of the level's texels (8 cells) beyond the texel, so beyond the tile too. */
+const M = 8;
 const EXTENT = 8192;
 /** The march's steps at most (a pixel's footprint each where the ray starts, fewer where its run is short). */
 const STEPS = 64;
@@ -110,7 +113,9 @@ uniform highp sampler2D u_c4;
 uniform int u_mask;               // the classes present in the tile (bits)
 uniform float u_tmin;
 uniform highp sampler2D u_top32;   // the tallest mean top in each 1/32 of the tile and the cells around it (m)
-uniform highp sampler2D u_elev;    // the tile's ground, 33 × 33 (m)
+uniform highp sampler2D u_elev;    // the tile's ground, (33 + 2M)² (m), M cells beyond each edge
+uniform highp sampler2DArray u_off;   // each class held (a layer each, in order): the offset to its buildings' centroid, + 128 (level-0 texels)
+uniform float u_dgMax;   // the tile's ground's range (m): how much higher a roof's centroid's ground can be
 uniform float u_pixAngle;   // radians a device pixel spans
 uniform vec4 u_camTile;
 uniform float u_top;
@@ -169,7 +174,7 @@ vec3 toSrgb(vec3 c) {
 
 float ground(vec2 p) {
   // (R32F isn't filtered: bilinear by hand, as the box's vertices interpolate it)
-  vec2 g = clamp(p / ${EXTENT}.0 * ${G}.0, vec2(0.0), vec2(${G}.0 - 0.001));
+  vec2 g = clamp(p / ${EXTENT}.0 * ${G}.0 + ${M}.0, vec2(0.0), vec2(${G + 2 * M}.0 - 0.001));
   ivec2 i = ivec2(floor(g));
   vec2 f = g - vec2(i);
   float a = texelFetch(u_elev, i, 0).r, b = texelFetch(u_elev, i + ivec2(1, 0), 0).r;
@@ -248,6 +253,9 @@ void main() {
   // roof; in the others, steps of a pixel's footprint where the ray is (one where it comes nearly
   // straight down), each step's height over the ground linear between its ends: the share of it
   // below each class's roofs, and whether it comes down through them (a roof), so no step jumps a layer.
+  // (each class's layer of u_off: the classes held before it)
+  int L_[5];
+  { int nl = 0; for (int k = 0; k < 5; k++) { L_[k] = nl; if (((u_mask >> k) & 1) != 0) nl++; } }
   float T = 1.0;
   vec2 dT = d.xy / mpu;   // tile units a metre along the ray
   float t = t0;
@@ -354,7 +362,9 @@ void main() {
       // the height the ray meets it (the colours made from it where they're used: arrays of vectors,
       // and the raw reads kept beside these, held more registers than the GPU had).
       float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;
-#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float Hs_ = max(sm.b / sm.r, 0.5) * u_hk; Fc[c] = f_; Hc[c] = Hs_; Rc[c] = max(sm.g, 0.0) * u_hk / Hs_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)); } }
+// (a class's roofs level: their height over the ground here is their top over the ground at their
+// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is)
+#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = (textureLod(u_off, vec3(uv, float(L_[c])), lod).rg * 255.0 - 128.0) * ${EXTENT / 512}.0; float Hs_ = u_dbg == 32 ? H0_ : max(H0_ + ground(pt + od_) - gHere, 0.5); Fc[c] = f_; Hc[c] = Hs_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)); } }
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -362,7 +372,8 @@ void main() {
         int ml = min(int(lod) + 1, 9);
         int mk = int(texelFetch(u_cmask, clamp(ivec2(uv * float(512 >> ml)), ivec2(0), ivec2((512 >> ml) - 1)), ml).r) & u_mask;
         // (and not a class whose tallest possible roof, 8, 20, 40, 100 m, is under the whole step)
-        float mina = min(ac, a1) / u_hk;
+        float mina = (min(ac, a1) - u_dgMax) / u_hk;
+        float gHere = ground(pt);
         int cut = int(mina > 8.0) + int(mina > 20.0) + int(mina > 40.0) + int(mina > 100.0);
         if (u_dbg != 15) mk &= (31 << cut) & 31;
         if (u_dbg == 19) mk &= 24;
@@ -520,6 +531,10 @@ interface FTile {
   vao: WebGLVertexArrayObject | null;
   elevFor: string;
   bytes: number;
+  /** The offsets to the centroids: an RG8 texture array, a layer a class held. */
+  off: WebGLTexture | null;
+  /** The tile's ground's range with its margin (m). */
+  dgMax: number;
   /** Its textures' and buffers' GPU memory (bytes, about). */
   gpu: number;
   /** The frame it was last wanted in, its failures so far, when it's asked again (ms). */
@@ -664,7 +679,8 @@ export class FieldLayer implements CustomLayerInterface {
   private freeGl(t: FTile) {
     const gl = this.gl;
     for (const x of t.tex ?? []) if (x) gl.deleteTexture(x);
-    for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex]) if (x) gl.deleteTexture(x);
+    for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex, t.off]) if (x) gl.deleteTexture(x);
+    t.off = null;
     if (t.elev) gl.deleteBuffer(t.elev);
     if (t.ibuf) gl.deleteBuffer(t.ibuf);
     if (t.vao) gl.deleteVertexArray(t.vao);
@@ -713,7 +729,7 @@ export class FieldLayer implements CustomLayerInterface {
     const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
     for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
+      'u_off', 'u_dgMax', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(key, pr);
     return pr;
@@ -794,7 +810,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0 };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, off: null, dgMax: 0 };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -903,6 +919,24 @@ export class FieldLayer implements CustomLayerInterface {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.bindTexture(gl.TEXTURE_2D, null);
     t.cmask = cm;
+    // The offsets (RG8, a layer a class held; read nearest: a texel's own building's, not blended
+    // with its neighbour's; their mipmaps the means, offsets from the coarser texels' centres).
+    {
+      const nl = Math.max(1, m.offsets.length / (512 * 512 * 2));
+      const ot = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, ot);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RG8, 512, 512, nl, 0, gl.RG, gl.UNSIGNED_BYTE, m.offsets.length ? m.offsets : new Uint8Array(512 * 512 * 2).fill(128));
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+      t.off = ot;
+      gpu += (512 * 512 * 2 * nl * 4) / 3;
+    }
     t.tex = tex;
     t.mask = m.mask;
     t.top = Math.min(1000, m.top + 2);
@@ -942,18 +976,39 @@ export class FieldLayer implements CustomLayerInterface {
     const gl = this.gl;
     const terrain = (this.map as unknown as { terrain?: { getElevationForLngLat(ll: LngLat, tr: unknown): number } | null }).terrain;
     const tr = trOf(this.map);
-    const e = new Float32Array((G + 1) * (G + 1));
+    // The grid M cells beyond each edge too (a roof's ground at its building's centroid), and the
+    // tile's own (33 × 33) within it.
+    const GE = G + 1 + 2 * M;
+    const ee = new Float32Array(GE * GE);
     if (terrain) {
       const n = 2 ** t.z;
-      for (let j = 0; j <= G; j++) {
-        const my = (t.y + j / G) / n;
-        for (let i = 0; i <= G; i++) {
-          const ll = new MercatorCoordinate((t.x + i / G) / n, my, 0).toLngLat();
-          e[j * (G + 1) + i] = terrain.getElevationForLngLat(ll, tr) || 0;
+      for (let j = 0; j < GE; j++) {
+        const my = Math.min(1, Math.max(0, (t.y + (j - M) / G) / n));
+        for (let i = 0; i < GE; i++) {
+          const ll = new MercatorCoordinate((t.x + (i - M) / G) / n, my, 0).toLngLat();
+          ee[j * GE + i] = terrain.getElevationForLngLat(ll, tr) || 0;
         }
       }
     }
+    const e = new Float32Array((G + 1) * (G + 1));
+    for (let j = 0; j <= G; j++) for (let i = 0; i <= G; i++) e[j * (G + 1) + i] = ee[(j + M) * GE + i + M];
     t.gmin = e.reduce((m, x) => Math.min(m, x), Infinity);
+    // Each cell's highest ground within M cells: where its roofs can stand (at their centroids').
+    const hi = new Float32Array(32 * 32);
+    {
+      const rowMax = new Float32Array(GE * GE);
+      for (let j = 0; j < GE; j++) for (let i = 0; i < GE; i++) {
+        let m = -Infinity;
+        for (let k = Math.max(0, i - M); k <= Math.min(GE - 1, i + M + 1); k++) m = Math.max(m, ee[j * GE + k]);
+        rowMax[j * GE + i] = m;
+      }
+      for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+        let m = -Infinity;
+        for (let j = y; j <= y + 2 * M + 1; j++) m = Math.max(m, rowMax[j * GE + x + M]);
+        hi[y * 32 + x] = m;
+      }
+    }
+    t.dgMax = Math.max(0, ee.reduce((m, x) => Math.max(m, x), -Infinity) - t.gmin);
     // Each cell's highest ground (the grid's corners around it: G = 32 cells, one a grid square), with
     // its tallest top: the march skips a cell from its absolute heights alone.
     if (t.top32 && t.top32cpu) {
@@ -961,7 +1016,7 @@ export class FieldLayer implements CustomLayerInterface {
       for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
         const k = y * 32 + x;
         rg[k * 2] = t.top32cpu[k];
-        rg[k * 2 + 1] = Math.max(e[y * (G + 1) + x], e[y * (G + 1) + x + 1], e[(y + 1) * (G + 1) + x], e[(y + 1) * (G + 1) + x + 1]);
+        rg[k * 2 + 1] = hi[k];
       }
       gl.bindTexture(gl.TEXTURE_2D, t.top32);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 32, 32, 0, gl.RG, gl.FLOAT, rg);
@@ -969,7 +1024,7 @@ export class FieldLayer implements CustomLayerInterface {
     }
     if (!t.elevTex) t.elevTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, G + 1, G + 1, 0, gl.RED, gl.FLOAT, e);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, GE, GE, 0, gl.RED, gl.FLOAT, ee);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -988,7 +1043,7 @@ export class FieldLayer implements CustomLayerInterface {
       const k = y * 32 + x, kb = Math.floor(y / B) * NB + Math.floor(x / B);
       const top = t.top32cpu ? t.top32cpu[k] : 0;
       const c4 = [e[y * (G + 1) + x], e[y * (G + 1) + x + 1], e[(y + 1) * (G + 1) + x], e[(y + 1) * (G + 1) + x + 1]];
-      if (top > 0) bound[kb] = Math.max(bound[kb], fr(fr(fr(Math.max(...c4)) + fr(fr(top) * fr(this.hk))) + 0.5));
+      if (top > 0) bound[kb] = Math.max(bound[kb], fr(fr(fr(hi[k]) + fr(fr(top) * fr(this.hk))) + 0.5));
       low[kb] = Math.min(low[kb], ...c4);
     }
     // (each cell's column's figure, for the march's test: the same floats)
@@ -1251,6 +1306,10 @@ export class FieldLayer implements CustomLayerInterface {
         }
       }
       gl.uniform1i(u.u_mask, t.mask);
+      gl.uniform1f(u.u_dgMax, t.dgMax);
+      gl.activeTexture(gl.TEXTURE15);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, t.off);
+      gl.uniform1i(u.u_off, 15);
       gl.activeTexture(gl.TEXTURE10);
       gl.bindTexture(gl.TEXTURE_2D, t.top32);
       gl.activeTexture(gl.TEXTURE1);
@@ -1291,6 +1350,8 @@ export class FieldLayer implements CustomLayerInterface {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
+    gl.activeTexture(gl.TEXTURE15);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     gl.activeTexture(gl.TEXTURE0);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);

@@ -1,7 +1,8 @@
 // The buildings field's tiles fetched and decoded off the main thread (bldfield.ts; the format:
-// docs/formats.md `field3-webp`, crates/pipeline/src/bld/field.rs). A tile is a class mask byte, a
-// lossless WebP 512 wide and 512 × (the classes held) tall (R √f, G log2(1 + w) ÷ log2(4097), B the
-// class's mean top in its class's range, × 255), and, on a level-8 tile, its heritage list after it.
+// docs/formats.md `field5-webp`, crates/pipeline/src/bld/field.rs). A tile is a class mask byte, a
+// lossless WebP 512 wide and 2 × 512 × (the classes held) tall (a block a class: R √f, G log2(1 + w)
+// ÷ log2(4097), B the class's mean top in its class's range, × 255; then a block a class: R and G the
+// offset to its buildings' centroid + 128), and, on a level-8 tile, its heritage list after it.
 // Decoded here to linear values (before the GPU's mipmaps: the coding's square root and log would
 // bias them), with what the march reads beside them: each 1/32 and 1/128 of the tile's tallest mean
 // top (with the texel around), and the class mask pyramid.
@@ -26,6 +27,8 @@ export type FieldOut =
       cmask: Uint8Array;
       bytes: number;
       heritage: Uint8Array | null;
+      /** The offsets to the buildings' centroids: RG (+ 128, level-0 texels), a layer a class held. */
+      offsets: Uint8Array;
     };
 
 const T = 512;
@@ -38,10 +41,10 @@ const inflight = new Map<string, AbortController>();
 
 /** The tile's parts: mask, WebP, what follows. */
 function split(b: Uint8Array): { mask: number; webp: Uint8Array; tail: Uint8Array } {
-  if (b.length < 13 || String.fromCharCode(b[1], b[2], b[3], b[4]) !== 'RIFF') throw new Error('not a field3-webp tile');
+  if (b.length < 13 || String.fromCharCode(b[1], b[2], b[3], b[4]) !== 'RIFF') throw new Error('not a field5-webp tile');
   const riff = b[5] | (b[6] << 8) | (b[7] << 16) | (b[8] << 24);
   const end = 9 + riff;
-  if (end > b.length) throw new Error('a field3-webp tile cut short');
+  if (end > b.length) throw new Error('a field5-webp tile cut short');
   return { mask: b[0], webp: b.subarray(1, end), tail: b.subarray(end) };
 }
 
@@ -56,12 +59,21 @@ async function load(key: string, url: string): Promise<FieldOut> {
     const { mask, webp, tail } = split(b);
     const n = popcount(mask);
     const bmp = await createImageBitmap(new Blob([webp as BlobPart], { type: 'image/webp' }), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
-    if (bmp.width !== T || bmp.height !== T * n) throw new Error(`a field tile ${bmp.width} × ${bmp.height}`);
-    const cv = new OffscreenCanvas(T, T * n);
+    if (bmp.width !== T || bmp.height !== 2 * T * n) throw new Error(`a field tile ${bmp.width} × ${bmp.height}`);
+    const cv = new OffscreenCanvas(T, 2 * T * n);
     const cx = cv.getContext('2d', { willReadFrequently: true })!;
     cx.drawImage(bmp, 0, 0);
     bmp.close();
-    const px = cx.getImageData(0, 0, T, T * n).data;
+    const px = cx.getImageData(0, 0, T, 2 * T * n).data;
+    // (the offsets' blocks after the classes': R and G, + 128)
+    const offsets = new Uint8Array(n * N * 2);
+    for (let l = 0; l < n; l++) {
+      const base = (n + l) * N * 4;
+      for (let i = 0; i < N; i++) {
+        offsets[(l * N + i) * 2] = px[base + i * 4];
+        offsets[(l * N + i) * 2 + 1] = px[base + i * 4 + 1];
+      }
+    }
     const classes: (Float32Array | null)[] = [];
     const hmax = new Float32Array(N);
     const m = new Uint8Array(N);
@@ -131,7 +143,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, offsets };
   } finally {
     inflight.delete(key);
   }
@@ -160,7 +172,7 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
   load(msg.key, msg.url).then(
     (out) => {
       if (out.type === 'done' && !out.empty) {
-        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer];
+        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.offsets.buffer];
         for (const c of out.classes) if (c) tr.push(c.buffer);
         (self as unknown as Worker).postMessage(out, tr);
       } else (self as unknown as Worker).postMessage(out);

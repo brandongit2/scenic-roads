@@ -4,7 +4,10 @@
 //! - `f` roof coverage: the share of the texel under the class's roofs (exact areas, as font
 //!   renderers rasterize; overlapping footprints summed, then clamped to 1);
 //! - `w` wall area per ground area: Σ wall length × (top − base) ÷ the texel's area;
-//! - `v` Σ roof share × top (m), so `v ÷ f` is the class's mean top (scaled with `f`'s clamp).
+//! - `v` Σ roof share × top (m), so `v ÷ f` is the class's mean top (scaled with `f`'s clamp);
+//! - `ox`, `oy` Σ roof share × the offset from the texel's centre to the building's centroid (its
+//!   polygons' area-weighted; the level's texels), so a roof's ground is taken at its own building's
+//!   centroid, as the meshes take it, and roofs are level.
 //!
 //! Densities, so a coarser level is the mean of its four children. Every level holds every building
 //! (the meshes are z14's alone, from map zoom 14); level 14 is drawn from zoom 13 to 14.
@@ -17,11 +20,13 @@
 //!   planes are kept exactly ([`write_mid`]: `work/bldfield-mid/6-x-y`).
 //! - **`bldfield-lo Q`** (a z3 tile) makes levels 8–4 from its z6 tiles' mids ([`lo`]): the lo packs
 //!   hold levels 4–8, the hi packs 9–14 (as the server takes zooms 3–8 from lo packs).
-//! - **Encoding `field3-webp`** ([`encode`]): a mask byte (the classes held, bit k class k), then one
-//!   lossless WebP (`crate::webp`), 512 wide and 512 × (the classes held) tall, a class's rows after
-//!   the one before: R `f` as √f, G `w` as log2(1 + w) ÷ log2(4097) (to 4096), B the class's mean top
-//!   linearly in its class's range ([`LO_M`], [`HI_M`]), each × 255 rounded. A class whose `f` and `w`
-//!   both round to 0 everywhere is left out; a tile with none isn't written. A level-8 tile (a z8
+//! - **Encoding `field5-webp`** ([`encode`]): a mask byte (the classes held, bit k class k), then one
+//!   lossless WebP (`crate::webp`), 512 wide and 2 × 512 × (the classes held) tall: first a block a
+//!   class, R `f` as √f, G `w` as log2(1 + w) ÷ log2(4097) (to 4096), B the class's mean top
+//!   linearly in its class's range ([`LO_M`], [`HI_M`]), each × 255 rounded; then a block a class, R
+//!   and G the offset from the texel's centre to its buildings' centroid (their mean, by coverage) in
+//!   the level's texels + 128, within ±127, B 0. A class whose `f` and `w` both round to 0 everywhere
+//!   is left out; a tile with none isn't written. A level-8 tile (a z8
 //!   area) may carry its heritage list after the WebP ([`heritage`]: of T's heritage sites as the
 //!   heritage chain slices them, its World Heritage components left out, `job::sites`).
 
@@ -47,7 +52,7 @@ pub const LEVEL_MIN: u8 = 4;
 pub const ALL_CLASSES: u8 = 0b11111;
 /// The served layer (`layers/buildings-field/hi/6-x-y`, `lo/3-x-y`) and its encoding.
 pub const LAYER: &str = "buildings-field";
-pub const ENCODING: &str = "field3-webp";
+pub const ENCODING: &str = "field5-webp";
 /// Bumped when the lo step's output changes (every `bldfield-lo` target runs again).
 pub const LO_V: u32 = 1;
 /// A tile's planes, every class (MB).
@@ -61,6 +66,8 @@ pub const LO_PEAK_MB: u64 = 256 + 16 * PLANES_MB * 2 + (5 + 4 * 2) * PLANES_MB;
 const SF: f64 = (1u64 << 32) as f64;
 const SV: f64 = (1u64 << 24) as f64;
 const SW: f64 = (1u64 << 16) as f64;
+/// Coverage × a centroid's coordinate (texels).
+const SG: f64 = (1u64 << 20) as f64;
 /// Level-14 texels a z13 cell side, and z13 cells an area side.
 const N: usize = 1024;
 const STRIDE: usize = N + 2;
@@ -69,7 +76,12 @@ const CELLS: u32 = 32;
 const WORLD_TEXELS: f64 = (1u64 << 23) as f64;
 
 /// A class's planes: f, w, v.
-pub type Class = [Vec<f32>; 3];
+/// A class's planes: f, w, v, and f × the offset from the texel's centre to its building's centroid
+/// (x, then y; in the level's texels): `ox ÷ f`, `oy ÷ f` the offset, so the march takes a roof's
+/// ground at its building's centroid, as the meshes do.
+pub type Class = [Vec<f32>; 5];
+/// Planes a class.
+const PL: usize = 5;
 
 /// A level's planes over an `n` × `n` grid, each class's only where it holds something.
 #[derive(Clone, Debug, PartialEq)]
@@ -85,7 +97,7 @@ impl Planes {
 
     fn class_mut(&mut self, k: usize) -> &mut Class {
         let n = self.n;
-        self.c[k].get_or_insert_with(|| Box::new([vec![0.0; n * n], vec![0.0; n * n], vec![0.0; n * n]]))
+        self.c[k].get_or_insert_with(|| Box::new(std::array::from_fn(|_| vec![0.0; n * n])))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -97,7 +109,8 @@ impl Planes {
     }
 
     /// Quadrant `q` (0 nw, 1 ne, 2 sw, 3 se) of this level's parent, half as fine: each texel the
-    /// mean of four, in a fixed order.
+    /// mean of four, in a fixed order. (The offsets: each child's from its own centre, a quarter of
+    /// the parent's texel off the parent's, and in texels half as wide.)
     fn half_into(&self, parent: &mut Planes, q: usize) {
         let h = self.n / 2;
         debug_assert_eq!(parent.n, self.n);
@@ -111,6 +124,17 @@ impl Planes {
                     for x in 0..h {
                         let i = |dx: usize, dy: usize| (2 * y + dy) * self.n + 2 * x + dx;
                         b[(oy + y) * self.n + ox + x] = 0.25 * (((a[i(0, 0)] + a[i(1, 0)]) + a[i(0, 1)]) + a[i(1, 1)]);
+                    }
+                }
+            }
+            for (p, axis) in [(3usize, 0usize), (4, 1)] {
+                let (f, a) = (&c[0], &c[p]);
+                let b = &mut pc[p];
+                for y in 0..h {
+                    for x in 0..h {
+                        let i = |dx: usize, dy: usize| (2 * y + dy) * self.n + 2 * x + dx;
+                        let one = |dx: usize, dy: usize| a[i(dx, dy)] + f[i(dx, dy)] * ([dx, dy][axis] as f32 - 0.5);
+                        b[(oy + y) * self.n + ox + x] = 0.125 * (((one(0, 0) + one(1, 0)) + one(0, 1)) + one(1, 1));
                     }
                 }
             }
@@ -136,7 +160,7 @@ impl Planes {
         for (k, c) in self.c.iter().enumerate() {
             let Some(c) = c else { continue };
             let oc = o.class_mut(k);
-            for p in 0..3 {
+            for p in 0..PL {
                 for y in 0..T {
                     let s = (ty * T + y) * self.n + tx * T;
                     oc[p][y * T..(y + 1) * T].copy_from_slice(&c[p][s..s + T]);
@@ -166,16 +190,27 @@ pub struct Foot<'a> {
     pub m: u16,
 }
 
-/// A z13 cell's accumulators for a class.
+/// A z13 cell's accumulators for a class: coverage, × top, × the centroid's x and y (cell texels).
 struct Acc {
     f: Vec<i64>,
     v: Vec<i64>,
+    gx: Vec<i64>,
+    gy: Vec<i64>,
     w: Vec<i64>,
 }
 
+/// What an edge's coverage is weighted by beside itself: its building's top (m) and centroid (cell
+/// texels).
+#[derive(Clone, Copy)]
+struct Wt {
+    top: f64,
+    cx: f64,
+    cy: f64,
+}
+
 /// Deposits the coverage of the edge p0–p1 (cell texels, x already in [0, N]) as font-rs's
-/// accumulation does, `dir`ected: c into f, c × top into v.
-fn line(acc: &mut Acc, p0: (f64, f64), p1: (f64, f64), wgt: f64, top: f64) {
+/// accumulation does, `dir`ected: c into f, c × top into v, c × the centroid into gx, gy.
+fn line(acc: &mut Acc, p0: (f64, f64), p1: (f64, f64), wgt: f64, t: Wt) {
     if p0.1 == p1.1 {
         return;
     }
@@ -185,7 +220,9 @@ fn line(acc: &mut Acc, p0: (f64, f64), p1: (f64, f64), wgt: f64, top: f64) {
     }
     let mut put = |i: usize, c: f64| {
         acc.f[i] += (c * SF).round() as i64;
-        acc.v[i] += (c * top * SV).round() as i64;
+        acc.v[i] += (c * t.top * SV).round() as i64;
+        acc.gx[i] += (c * t.cx * SG).round() as i64;
+        acc.gy[i] += (c * t.cy * SG).round() as i64;
     };
     let dxdy = (p1.0 - p0.0) / (p1.1 - p0.1);
     let mut x = p0.0;
@@ -234,7 +271,7 @@ fn line(acc: &mut Acc, p0: (f64, f64), p1: (f64, f64), wgt: f64, top: f64) {
 
 /// An edge clipped to x in [0, N]: the parts left of 0 drawn on x = 0 (they cover every texel to
 /// their right), those right of N on x = N (they cover none).
-fn edge(acc: &mut Acc, a: (f64, f64), b: (f64, f64), wgt: f64, top: f64) {
+fn edge(acc: &mut Acc, a: (f64, f64), b: (f64, f64), wgt: f64, top: Wt) {
     let w = N as f64;
     let mut pts = [a, a, a, b];
     let mut n = 1;
@@ -316,8 +353,29 @@ fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
     for &fi in list {
         let ft = &feet[fi as usize];
         let k = class_of(ft.h);
-        let a = acc[k].get_or_insert_with(|| Acc { f: vec![0; N * STRIDE], v: vec![0; N * STRIDE], w: vec![0; N * N] });
-        let top = ft.h as f64 / 10.0;
+        let a = acc[k].get_or_insert_with(|| Acc { f: vec![0; N * STRIDE], v: vec![0; N * STRIDE], gx: vec![0; N * STRIDE], gy: vec![0; N * STRIDE], w: vec![0; N * N] });
+        // Its centroid (its polygons' area-weighted, in the cell's texels): every texel it covers
+        // keeps the offset to it.
+        let (mut ca, mut cxs, mut cys) = (0.0f64, 0.0f64, 0.0f64);
+        for poly in &ft.polys {
+            for (ri, r) in poly.iter().enumerate() {
+                let pts: Vec<(f64, f64)> = r.iter().map(|&p| {
+                    let (wx, wy) = world7(p);
+                    (wx * WORLD_TEXELS - ox, wy * WORLD_TEXELS - oy)
+                }).collect();
+                let s = area2(&pts);
+                let sign = if (ri == 0) == (s < 0.0) { 1.0 } else { -1.0 };
+                for i in 0..pts.len() {
+                    let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                    let cr = p.0 * q.1 - q.0 * p.1;
+                    cxs += sign * -cr * (p.0 + q.0);
+                    cys += sign * -cr * (p.1 + q.1);
+                }
+                ca += sign * -s;
+            }
+        }
+        let (cxb, cyb) = if ca.abs() > 1e-12 { (cxs / (3.0 * ca), cys / (3.0 * ca)) } else { (f64::NAN, f64::NAN) };
+        let top = Wt { top: ft.h as f64 / 10.0, cx: cxb, cy: cyb };
         let wh = ft.h.saturating_sub(ft.m) as f64 / 10.0;
         for poly in &ft.polys {
             let rings: Vec<Vec<(f64, f64)>> = poly
@@ -369,30 +427,38 @@ fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
         let Some(a) = a else { continue };
         let c = out.class_mut(k);
         for y in 0..N {
-            let (mut cf, mut cv) = (0i64, 0i64);
+            let (mut cf, mut cv, mut gx, mut gy) = (0i64, 0i64, 0i64, 0i64);
             for x in 0..N {
                 cf += a.f[y * STRIDE + x];
                 cv += a.v[y * STRIDE + x];
+                gx += a.gx[y * STRIDE + x];
+                gy += a.gy[y * STRIDE + x];
                 let (mut f, mut v) = (cf as f64 / SF, cv as f64 / SV);
+                // (f × the offset from the texel's centre to the centroid)
+                let (mut ox_, mut oy_) = (gx as f64 / SG - f * (x as f64 + 0.5), gy as f64 / SG - f * (y as f64 + 0.5));
                 if f <= 0.0 || v < 0.0 {
-                    (f, v) = (0.0, 0.0);
+                    (f, v, ox_, oy_) = (0.0, 0.0, 0.0, 0.0);
                 } else if f > 1.0 {
-                    // (overlapping roofs: the share clamped to 1, their tops' sum scaled with it,
-                    // so v / f stays their mean top)
+                    // (overlapping roofs: the share clamped to 1, their tops' and offsets' sums
+                    // scaled with it, so v / f stays their mean top, the offsets their mean)
                     v /= f;
+                    ox_ /= f;
+                    oy_ /= f;
                     f = 1.0;
                 }
                 let i = y * N + x;
                 c[0][i] = f as f32;
                 c[1][i] = (a.w[i] as f64 / SW / ta[y]) as f32;
                 c[2][i] = v as f32;
+                c[3][i] = ox_ as f32;
+                c[4][i] = oy_ as f32;
             }
         }
     }
     out
 }
 
-/// What an area's field made: its tiles, levels 14–8 ((level, x, y, `field3-webp` bytes), in that
+/// What an area's field made: its tiles, levels 14–8 ((level, x, y, `field5-webp` bytes), in that
 /// order, each level by x, y), and its level-8 planes (the mid's; None: no building).
 #[derive(Debug, Default, PartialEq)]
 pub struct AreaField {
@@ -542,7 +608,7 @@ fn quantize(c: &Class, k: usize, i: usize) -> [u8; 3] {
     [qf as u8, qw as u8, qh.round() as u8]
 }
 
-/// A tile's `field3-webp` bytes (the classes in `allowed` it holds), `tail` after them; None when
+/// A tile's `field5-webp` bytes (the classes in `allowed` it holds), `tail` after them; None when
 /// it holds nothing.
 pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
     assert_eq!(p.n, T);
@@ -568,8 +634,21 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let n = mask.count_ones();
+    // The offsets to the centroids, a block a class held after the others: R dx + 128, G dy + 128
+    // (the level's texels, rounded, within ±127), B 0; 128, 128 where the class covers nothing.
+    for k in 0..K {
+        if mask & 1 << k == 0 {
+            continue;
+        }
+        let c = p.c[k].as_ref().unwrap();
+        for i in 0..T * T {
+            let f = c[0][i] as f64;
+            let q = |o: f32| if f > 0.0 { (o as f64 / f).round().clamp(-127.0, 127.0) as i32 + 128 } else { 128 };
+            rgb.extend_from_slice(&[q(c[3][i]) as u8, q(c[4][i]) as u8, 0]);
+        }
+    }
     // (Regions of 128 px for the codes' groups: 32 px took 6.8× the time for 0.25 % less, Annecy's tiles.)
-    let webp = crate::webp::encode_rgb_regions(&rgb, T as u32, T as u32 * n, 7);
+    let webp = crate::webp::encode_rgb_regions(&rgb, T as u32, T as u32 * n * 2, 7);
     let mut out = Vec::with_capacity(1 + webp.len() + tail.len());
     out.push(mask);
     out.extend_from_slice(&webp);
@@ -577,12 +656,12 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// A `field3-webp` tile's parts: its class mask, its WebP, and what follows (a heritage list).
+/// A `field5-webp` tile's parts: its class mask, its WebP, and what follows (a heritage list).
 pub fn split(b: &[u8]) -> Result<(u8, &[u8], &[u8])> {
-    ensure!(b.len() >= 13 && &b[1..5] == b"RIFF", "not a field3-webp tile");
+    ensure!(b.len() >= 13 && &b[1..5] == b"RIFF", "not a field5-webp tile");
     let riff = u32::from_le_bytes(b[5..9].try_into().unwrap()) as usize;
     let end = 1 + 8 + riff;
-    ensure!(end <= b.len(), "a field3-webp tile cut short");
+    ensure!(end <= b.len(), "a field5-webp tile cut short");
     Ok((b[0], &b[1..end], &b[end..]))
 }
 
@@ -707,7 +786,7 @@ pub fn heritage(a: (u32, u32), feet: &[Foot], sites: &[[i32; 2]]) -> Vec<u8> {
 
 // ---- mids and the lo levels ------------------------------------------------------------------------
 
-const MID_MAGIC: &[u8; 8] = b"BFMID02\0";
+const MID_MAGIC: &[u8; 8] = b"BFMID03\0";
 
 /// A z6 tile's mid: its areas' level-8 planes, exactly, and their heritage lists (magic, then each
 /// area by (x, y): u32 x, u32 y, u32 the heritage list's bytes and those bytes, u8 class mask,
@@ -768,7 +847,7 @@ pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Mid>> {
 }
 
 /// The lo levels (8–4) of z3 tile `q`, from its z6 tiles' mids (`mid(x, y)`: None where there's
-/// none; level 8 each area's planes, its heritage list after them): (level, x, y, `field3-webp`),
+/// none; level 8 each area's planes, its heritage list after them): (level, x, y, `field5-webp`),
 /// by level from 8, then x, y.
 pub fn lo(q: (u32, u32), mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
     type Out = (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>);

@@ -318,12 +318,13 @@ fn bld_peak(step: &str, rows: u64) -> u64 {
     }
 }
 
-/// `bldtiles`' (B5's pilot with the field, 2026-10-14, on the build Mac's 14 threads): 1.8 GB and
-/// 700 B a record of its largest z8 area (taken as two fifths of the rows), the field's cells in
-/// flight the fixed part. Measured 1.76–1.79 GB for tiles of 37–52 k records, 4.3 GB for Toronto's
-/// 9.5 M and 5.1 GB for New York's 14.6 M.
+/// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the build
+/// Mac's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 area (taken as two fifths of
+/// the rows), the field's cells in flight the fixed part. Measured 1.3–2.9 GB for tiles of up to
+/// 52 k records, 3.8 GB for Toronto's 9.5 M, 4.5 GB for Annecy's 10.0 M, 7.9 GB for New York's
+/// 14.6 M and 10.2 GB for Kantō's 30.3 M.
 pub const fn bldtiles_peak(rows: u64) -> u64 {
-    1800 + rows * 2 / 5 * 700 / (1 << 20)
+    1800 + rows * 2 / 5 * 1100 / (1 << 20)
 }
 
 /// The memory a terrain run of an area of `z6` tiles near the coverage is expected to take (MB),
@@ -6134,9 +6135,9 @@ mod tests {
     fn a_3d_buildings_job_is_offered_by_the_rows_it_reads() {
         // B2's runs on the M1: Paris's 6/32/22 (16.5 M rows in its row groups) took 2.4 GB to read;
         // Vermont's 6/19/23 (6.8 M) 1.2 GB. B5's pilot raised New York's 14.6 M records with the
-        // field in 5.1 GB, Toronto's 9.5 M in 4.3 GB. Offered above each.
-        assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (2818, 6207));
-        assert!(bld_peak("bldprep", 6_771_191) > 1243 && bld_peak("bldtiles", 14_611_533) > 5057 && bld_peak("bldtiles", 9_496_532) > 4325);
+        // field in 7.9 GB, Toronto's 9.5 M in 3.8 GB, Kantō's 30.3 M in 10.2 GB. Offered above each.
+        assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (2818, 8725));
+        assert!(bld_peak("bldprep", 6_771_191) > 1243 && bld_peak("bldtiles", 14_611_533) > 7889 && bld_peak("bldtiles", 9_496_532) > 3843 && bld_peak("bldtiles", 30_320_309) > 10200);
         // A tile reading nothing (a GHSL tile alone): its fixed part.
         assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (300, 1800));
         assert_eq!((batch_size("bldprep"), batch_size("bldtiles")), (8, 16));

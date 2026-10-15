@@ -1057,7 +1057,7 @@ per texel, every building at every level.
   on the field.
 
 **The field's tiles** (B5; docs/formats.md, The field). 512 × 512 texels, levels 4–14 (level 14's
-texel is 1.2 m at the equator), five height classes a texel (§4.8.1):
+texel is 4.8 m at the equator, a device pixel at zoom 13 on a 2× screen), five height classes a texel (§4.8.1):
 - built in `bldtiles T`, per z8 area, from the buildings as filled (§2.3), with the meshes: every
   building and part extruded that meets the area (its own and those filled around it, for their
   parts inside it), rasterized into the z13 cells of the area at level 14, each cell's accumulators
@@ -1072,13 +1072,15 @@ texel is 1.2 m at the equator), five height classes a texel (§4.8.1):
   tiles' mids (as `terrain-lo` and `trees-lo`), its key the mids' content names; it runs once
   every `bldtiles` target of its z3 tile is done.
 - served as `layers/buildings-field/hi/6-x-y` (levels 9–14) and `lo/3-x-y` (4–8: the server takes
-  zooms 3–8 from lo packs), encoding `field3-webp` (§4.8.1's 8-bit coding, lossless WebP, a class
-  a block of rows); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
+  zooms 3–8 from lo packs), encoding `field5-webp` (§4.8.1's 8-bit coding, lossless WebP, a class
+  a block of rows; then a block a class of the offsets from each texel to its buildings' centroid,
+  so the field's roofs are level, at their own building's ground as the meshes' are: the owner's
+  pick, 15 Oct); `/tiles/buildings-field/{z}/{x}/{y}`. Decoded to linear values in a worker
   before the GPU's mipmaps (the coding's square root and log would bias them).
 - a level-8 tile carries its area's heritage list: each building or part holding a heritage site's
   point (the heritage chain's slices of T, its World Heritage components left out: the map's dots
   but for a few sites per tile its layer has and the slices don't, 0–9 in the pilot's tiles), its height, base and footprint (16 points at most). Built; not drawn yet.
-- Not done: the catalog's layer is listed by `scenic-build catalog` (encoding `field3-webp`, zooms
+- Not done: the catalog's layer is listed by `scenic-build catalog` (encoding `field5-webp`, zooms
   4–14) but the field isn't in the mirror's groups nor the World download, and the agent's forecast
   has no measured cost for `bldfield-lo` yet.
 

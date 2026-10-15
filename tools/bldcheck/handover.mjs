@@ -151,6 +151,11 @@ for (const v of views) {
         await tab.evaluate(`const f = window.__bld.field; f.stepTexel = ${mode === 'step0' ? 0 : 2}; f.subWalk = ${mode === 'sub'}; f.nearest = ${mode === 'nearest'}; return 1`);
         o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
       }
+      else if (mode === 'flatroof') {
+        // (before the centroids' offsets: each roof over the ground under its own texel, `fdbg` 32)
+        await tab.evaluate('window.__bld.field.dbg = 32; return 1');
+        o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
+      }
       else if (mode === 'fieldonly') o = { field: true, buildings: false, k: 0, fbias: 1, ss: 1, fieldMax: 14, ...common };
       else if (mode === 'appneg') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, wallSign: -1, ...common };
       else if (mode === 'flat') o = { field: true, k: 0, fbias: 1, ss: 1, fieldMax: 14, linear: false, ...common };

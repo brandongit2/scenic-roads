@@ -22,11 +22,12 @@ fn decode(b: &[u8]) -> (u8, Vec<Vec<[u8; 3]>>) {
     let (mask, webp, _) = split(b).unwrap();
     let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(webp)).unwrap();
     let (w, h) = d.dimensions();
-    assert_eq!((w as usize, h as usize), (T, T * mask.count_ones() as usize));
+    assert_eq!((w as usize, h as usize), (T, 2 * T * mask.count_ones() as usize));
     let mut buf = vec![0u8; d.output_buffer_size().unwrap()];
     d.read_image(&mut buf).unwrap();
     let px = if d.has_alpha() { 4 } else { 3 };
     let all: Vec<[u8; 3]> = buf.chunks(px).map(|c| [c[0], c[1], c[2]]).collect();
+    // (the classes' blocks, then their offsets' blocks)
     (mask, all.chunks(T * T).map(|c| c.to_vec()).collect())
 }
 
@@ -122,8 +123,9 @@ fn encoding_round_trip() {
     let b = (8u8, a.0, a.1, encode(mid, ALL_CLASSES, &[]).unwrap());
     let (mask, classes) = decode(&b.3);
     assert_eq!(mask, mid.mask());
+    let n = mask.count_ones() as usize;
     let mut ks = (0..K).filter(|k| mask & 1 << k != 0);
-    for got in classes {
+    for got in classes.iter().take(n) {
         let k = ks.next().unwrap();
         let c = mid.c[k].as_ref().unwrap();
         for (i, g) in got.iter().enumerate() {
@@ -262,6 +264,38 @@ fn heritage_slices_against_markdata() {
             eprintln!("  only in markdata: {p:?}, in another slice {}, a slice point within 2e-6° {near}", anywhere.contains(p));
         }
         eprintln!("{t}: markdata {} ({} with components), slice {}, in markdata not slice {}, in slice not markdata {}, components in slice {}", md.len(), all.len(), pos.len(), md.difference(&pos).count(), pos.difference(&md).count(), all.difference(&md).filter(|p| pos.contains(*p)).count());
+    }
+}
+
+#[test]
+fn offsets_to_the_centroid() {
+    // A big building (240 m square) and its centroid: every texel it covers at level 14 points to
+    // it within half a texel, and at level 13 (the means of four) too; the tile's offset block
+    // decodes to the same.
+    let a = (129, 88);
+    let r = square(2.3601, 48.8702, 0.0016, true);
+    let rings = vec![(r.clone(), 150u16, 0u16)];
+    let feet = feet_of(&rings);
+    let field = area(a, &feet, &[]);
+    let (cxw, cyw) = world7([crate::bld::e7(2.3601), crate::bld::e7(48.8702)]);
+    for (z, x0, y0, b) in field.tiles.iter().filter(|t| t.0 >= 13) {
+        let scale = (1u64 << (*z as u32 + 9)) as f64;
+        let (mask, classes) = decode(b);
+        let n = mask.count_ones() as usize;
+        let k = (0..K).filter(|k| mask & 1 << k != 0).position(|k| k == class_of(150)).unwrap();
+        let (cls, off) = (&classes[k], &classes[n + k]);
+        let mut checked = 0;
+        for i in 0..T * T {
+            if cls[i][0] < 250 {
+                continue; // (inside the building only)
+            }
+            let (x, y) = ((i % T) as f64 + 0.5, (i / T) as f64 + 0.5);
+            let (ex, ey) = (cxw * scale - *x0 as f64 * T as f64 - x, cyw * scale - *y0 as f64 * T as f64 - y);
+            let (gx, gy) = (off[i][0] as f64 - 128.0, off[i][1] as f64 - 128.0);
+            assert!((gx - ex.clamp(-127.0, 127.0)).abs() <= 1.0 && (gy - ey.clamp(-127.0, 127.0)).abs() <= 1.0, "level {z} texel {i}: {gx},{gy} against {ex:.1},{ey:.1}");
+            checked += 1;
+        }
+        assert!(checked > 0, "level {z}");
     }
 }
 
