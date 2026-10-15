@@ -81,7 +81,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
         offsets[(l * N + i) * 2 + 1] = px[base + i * 4 + 1];
       }
     }
-    const reach = reachOf(offsets, n, T);
+    const reach = reachOf(offsets, n, T, 0);
     const shares: Float32Array[] = [];
     const classes: (Float32Array | null)[] = [];
     const hmax = new Float32Array(N);

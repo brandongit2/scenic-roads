@@ -44,6 +44,7 @@ import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRende
 import { link } from './roads/layer';
 import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
+import { REACH_PAD } from './bldfield.offsets';
 
 const G = 32;
 /** The elevation grid's margin around a tile (grid cells): a roof's ground is taken at its building's
@@ -292,7 +293,7 @@ void main() {
     // already below it, its walls met, its roof never; over the ground here, so as high again as the
     // ground at a roof's centroid can be over it, or the roofs over higher ground came out hollow:
     // the cell's highest ground within its reach over its lowest, its grid square's corners)
-    float dgc = u_dbg == 32 || u_dbg == 33 ? 0.0 : tg.b;
+    float dgc = u_dbg == 32 || u_dbg == 33 || u_dbg == 36 ? 0.0 : tg.b;
     float topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25) + dgc;
     // The hull: each cell holding buildings a column from the ground to its highest ground plus its
     // tallest roof (+ 0.5 m), as the faces are drawn; the ray leaves it going into a column below it
@@ -372,7 +373,7 @@ void main() {
 // mix offsets from further away); the
 // gradient up a wall, as fill-extrusion's, by the height over that base, its top the building's own
 // height, which also picks its colour: ?fdbg=35 both by the height over the ground here instead)
-#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = textureLod(u_off, vec3(uv, float(L_[c])), lod).rg / max(sm.r, 1e-5) * ${EXTENT / 512}.0; float dg_ = min(ground(pt + (u_dbg == 33 ? vec2(0.0) : od_)), tg.g) - gHere; dgDbg = max(dgDbg, abs(dg_)); odDbg = max(odDbg, length(od_)); float Hs_ = u_dbg == 32 ? H0_ : max(H0_ + dg_, 0.5); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
+#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; vec2 od_ = u_dbg == 37 ? vec2(0.0) : textureLod(u_off, vec3(uv, float(L_[c])), lod).rg / max(sm.r, 1e-5) * ${EXTENT / 512}.0; float dg_ = min(ground(pt + (u_dbg == 33 ? vec2(0.0) : od_)), tg.g) - gHere; dgDbg = max(dgDbg, abs(dg_)); odDbg = max(odDbg, length(od_)); float Hs_ = u_dbg == 32 ? H0_ : u_dbg == 36 ? H0_ + 1e-20 * od_.x : max(H0_ + dg_, 0.5); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
       if (inBox && u_dbg != 20) {
         float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
         // (only the classes the texel and its neighbours hold, at the level a step coarser than the
@@ -578,6 +579,10 @@ export class FieldLayer implements CustomLayerInterface {
   meshOn = true;
   /** (diagnosis: the offsets to the centroids read nearest, as the class textures aren't) */
   offNearest = urlNum('foffn', 0) === 1;
+  /** (timing: the cells beyond a cell's reach a read can take, `?fpad=`; bldfield.offsets.ts's
+   * REACH_PAD. Timing debug modes: `?fdbg=36` reads the offsets but takes no ground from them and
+   * starts no higher, `?fdbg=37` starts runs as high as the reach's ground but reads no offsets.) */
+  reachPad = urlNum('fpad', REACH_PAD);
   /** (diagnosis: the class textures read nearest, not filtered) */
   nearest = false;
   /** The frame's depth read (the fork's sceneDepth). */
@@ -1013,7 +1018,7 @@ export class FieldLayer implements CustomLayerInterface {
     // can be over its own height.
     const hi = new Float32Array(32 * 32), dgc = new Float32Array(32 * 32);
     for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
-      const r = Math.min(M, t.reach ? t.reach[y * 32 + x] : M);
+      const r = Math.min(M, t.reach ? t.reach[y * 32 + x] + this.reachPad : M);
       let m = -Infinity;
       for (let j = y + M - r; j <= y + M + 1 + r; j++) for (let i = x + M - r; i <= x + M + 1 + r; i++) m = Math.max(m, ee[j * GE + i]);
       const lo = Math.min(ee[(y + M) * GE + x + M], ee[(y + M) * GE + x + M + 1], ee[(y + M + 1) * GE + x + M], ee[(y + M + 1) * GE + x + M + 1]);
@@ -1114,7 +1119,7 @@ export class FieldLayer implements CustomLayerInterface {
     t.nb = NB;
     t.orderKey = '';
     t.gmax = e.reduce((m, x) => Math.max(m, x), -Infinity);
-    t.elevFor = this.elevKey + '|' + this.hk + '|' + this.blockCells;
+    t.elevFor = this.elevKey + '|' + this.hk + '|' + this.blockCells + '|' + this.reachPad;
   }
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
@@ -1254,7 +1259,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1f(u.u_tmin, this.tmin);
     gl.uniform1i(u.u_elev, 1);
     for (const { t, clip } of draw) {
-      if (t.elevFor !== this.elevKey + '|' + this.hk + '|' + this.blockCells) this.elevations(t);
+      if (t.elevFor !== this.elevKey + '|' + this.hk + '|' + this.blockCells + '|' + this.reachPad) this.elevations(t);
       const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
       gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
       const mc = pd.tileMercatorCoords as ArrayLike<number>;

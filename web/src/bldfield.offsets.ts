@@ -41,8 +41,9 @@ export function premultiplied(offsets: Uint8Array, shares: Float32Array[], T: nu
 }
 
 /** Each 16 × 16-texel cell's reach in cells (a 32 × 32 grid for T = 512): its own and its
- * neighbours' largest offset, rounded up to cells, + REACH_PAD; 0 where none of them holds a roof. */
-export function reachOf(offsets: Uint8Array, n: number, T: number): Uint8Array {
+ * neighbours' largest offset, rounded up to cells, + `pad`; 0 where none of them holds a roof. (The
+ * worker passes 0: the renderer adds its own pad, `?fpad=`, REACH_PAD unless set.) */
+export function reachOf(offsets: Uint8Array, n: number, T: number, pad = REACH_PAD): Uint8Array {
   const N = T * T, C = T / 16;
   const own = new Uint8Array(C * C);
   const has = new Uint8Array(C * C);
@@ -62,7 +63,7 @@ export function reachOf(offsets: Uint8Array, n: number, T: number): Uint8Array {
         d = Math.max(d, own[yy * C + xx]);
         any |= has[yy * C + xx];
       }
-    reach[y * C + x] = any ? Math.ceil(d / 16) + REACH_PAD : 0;
+    reach[y * C + x] = any ? Math.ceil(d / 16) + pad : 0;
   }
   return reach;
 }
