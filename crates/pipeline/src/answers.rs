@@ -73,8 +73,8 @@ impl Kept {
         Ok(Some(Holding(self)))
     }
 
-    /// Before a write to the NAS: the lease, when one's held, still this holder's (a lease lost, its
-    /// renewal failed or another taker's since, stops the sync or keep before it writes).
+    /// Before a write to the NAS: the lease, when one's held, still this holder's as its file says
+    /// (lapsed, or another taker's since: the sync or keep stops before it writes).
     fn still_ours(&self) -> Result<()> {
         match self.holding.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             Some(l) => l.ours(),
@@ -668,8 +668,6 @@ pub struct Lease {
     path: PathBuf,
     token: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Set by the renewer when the lease is found not to be this holder's any more.
-    lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     renewer: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -692,8 +690,7 @@ impl Lease {
             }
         }
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (p, t, s, lo) = (path.to_path_buf(), token.clone(), stop.clone(), lost.clone());
+        let (p, t, s) = (path.to_path_buf(), token.clone(), stop.clone());
         let renewer = std::thread::Builder::new()
             .name("answers-lease".into())
             .spawn(move || {
@@ -702,21 +699,22 @@ impl Lease {
                     std::thread::sleep(std::time::Duration::from_millis(250));
                     if last.elapsed() >= std::time::Duration::from_secs(LEASE_S / 4) {
                         last = std::time::Instant::now();
+                        // (A renewal that finds the file another's, or gone, decides nothing: a breaker
+                        // may have it aside a moment and put it back; `ours`, before each write,
+                        // reads the file then.)
                         if !renew_lease(&p, &t, crate::agent::jobs::now_s()) {
-                            lo.store(true, std::sync::atomic::Ordering::SeqCst);
-                            eprintln!("answers: the answers' lease isn't this process's any more (lapsed and taken): its sync or keep stops before its next write to the NAS");
+                            eprintln!("answers: the answers' lease wasn't this process's as it renewed it (lapsed and taken, or aside a moment): its next write checks it first");
                         }
                     }
                 }
             })
             .ok();
-        Ok(Lease { path: path.to_path_buf(), token, stop, lost, renewer })
+        Ok(Lease { path: path.to_path_buf(), token, stop, renewer })
     }
 
-    /// Whether it's still this holder's, as the NAS says now: its renewer hasn't lost it, and the
-    /// file names this holder and hasn't lapsed. An error to stop the work it guards, else.
+    /// Whether it's still this holder's, as the NAS's file says now: it names this holder and
+    /// hasn't lapsed. An error to stop the work it guards, else.
     pub fn ours(&self) -> Result<()> {
-        anyhow::ensure!(!self.lost.load(std::sync::atomic::Ordering::SeqCst), "the answers' lease was lost (lapsed and taken by another): nothing written");
         lease_is(&self.path, &self.token, crate::agent::jobs::now_s())
     }
 }
@@ -1340,6 +1338,25 @@ mod tests {
         // (A finds its lease gone at its check, and can't renew it; C holds it alone.)
         assert!(lease_is(&p, "a", late).is_err() && !renew_lease(&p, "a", late));
         assert!(lease_is(&p, "c", late).is_ok());
+    }
+
+    /// The holder's renewal while a breaker has its lease aside (renewed just before the breaker
+    /// read it, so put back): the renewal fails, but the lease is still the holder's once it's
+    /// back, and its check before a write passes.
+    #[test]
+    fn a_renewal_while_the_lease_is_aside_loses_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nas/state/pool/answers.lease");
+        let l = Lease::take(&p).unwrap();
+        let aside = p.with_file_name("answers.lease.lapsed-b");
+        std::fs::rename(&p, &aside).unwrap();
+        assert!(!renew_lease(&p, &l.token, crate::agent::jobs::now_s()), "aside: not found");
+        assert!(l.ours().is_err(), "nor written meanwhile");
+        create_new(&p, &std::fs::read(&aside).unwrap()).unwrap();
+        std::fs::remove_file(&aside).unwrap();
+        l.ours().unwrap();
+        drop(l);
+        assert!(!p.exists());
     }
 
     /// A keep whose lease was lost (here: taken by another after it lapsed) writes nothing to the NAS.

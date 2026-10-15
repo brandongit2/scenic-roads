@@ -370,17 +370,15 @@ fn charge(budget: &Budget, class: Option<Class>, began: u64) {
     }
 }
 
-/// Copies each way until both have ended (or either has been idle its read timeout: both then
-/// shut, so the other way ends too), `done` run before the client's side is closed (what it
+/// Copies each way until both have ended (a way idle its read timeout ends: the client's told to
+/// the host as its end; the host's shuts the whole connection), `done` run before the client's side is closed (what it
 /// does is done before the client sees its answer end).
 fn relay(client: TcpStream, up: TcpStream, done: impl FnOnce()) -> io::Result<()> {
     let (mut c_r, mut u_w) = (client.try_clone()?, up.try_clone()?);
     let t = std::thread::Builder::new().name("budgets-relay".into()).spawn(move || {
-        if io::copy(&mut c_r, &mut u_w).is_err() {
-            // (Idle, or broken: the whole connection ends.)
-            let _ = c_r.shutdown(Shutdown::Both);
-            let _ = u_w.shutdown(Shutdown::Both);
-        }
+        // (The client's side ended, idle or broken: told to the host as its end, whose answer still
+        // comes back; a host that then stays idle too is ended by its own read's timeout.)
+        let _ = io::copy(&mut c_r, &mut u_w);
         let _ = u_w.shutdown(Shutdown::Write);
     })?;
     let (mut u_r, mut c_w) = (up, client);
@@ -547,47 +545,46 @@ mod tests {
         Proxy::start_with(b, Some(Arc::new(move |_: &str, _: u16| Some(a))), limits).unwrap()
     }
 
-    /// The bounds: a client that never ends its head is closed; a tunnel idle in both ways is ended,
-    /// and charged (a query's: seven seconds on the budget's clock, moved by the upstream as it
-    /// answers); one connection past the most at once is answered 503. (Each outcome is the same
-    /// however long the waits take: no clock in the asserts.)
+    /// The bounds, each with only its own limit short (the others a minute): a client that sends
+    /// nothing is closed with no answer; a query's tunnel whose bytes all came with its head (so
+    /// nothing the test does is timed), then left idle by the client, is ended once the host has
+    /// answered, and charged (seven seconds, on the budget's clock, moved by the host as it
+    /// answers); one connection past the most at once is answered 503. No assert depends on when
+    /// the test's own thread runs.
     #[test]
     fn a_silent_client_an_idle_tunnel_and_too_many_connections_are_ended() {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let c = clock.clone();
         let up = upstream(Arc::new(move || c.set(c.now_ms() + 7_000)));
-        let short = Duration::from_millis(100);
-        let a = proxy_within(dir.path(), &clock, &up, Limits { head: short, idle: short, conns: 8 });
-        // (A head never ended: closed, no answer.)
-        let mut s = TcpStream::connect(a.addr).unwrap();
-        s.write_all(b"CONNECT en.wikipedia").unwrap();
+        let (short, long) = (Duration::from_millis(100), Duration::from_secs(60));
+        // (Nothing sent: closed at its head's limit, nothing answered.)
+        let h = proxy_within(&dir.path().join("h"), &clock, &up, Limits { head: short, idle: long, conns: 8 });
         let mut out = Vec::new();
-        s.read_to_end(&mut out).unwrap();
+        TcpStream::connect(h.addr).unwrap().read_to_end(&mut out).unwrap();
         assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
-        // (A query's tunnel: a byte through, then left idle, never closed by the client: ended.)
+        // (A query's tunnel, its byte sent with its head; the client never ends its side.)
+        let a = proxy_within(dir.path(), &clock, &up, Limits { head: long, idle: short, conns: 8 });
         let mut s = TcpStream::connect(a.addr).unwrap();
-        write!(s, "CONNECT query.wikidata.org:443 HTTP/1.1\r\n\r\n").unwrap();
-        let mut head = [0u8; 39];
-        s.read_exact(&mut head).unwrap();
-        assert!(head.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&head));
-        s.write_all(b"q").unwrap();
-        let mut rest = Vec::new();
-        s.read_to_end(&mut rest).unwrap();
-        assert_eq!(rest, b"q");
-        // (Charged as it ended, before the client saw its end: three owed past its token, so the
-        // window's five slots are leased by the next query, or it's the next window's.)
+        s.write_all(b"CONNECT query.wikidata.org:443 HTTP/1.1\r\n\r\nq").unwrap();
+        let mut all = Vec::new();
+        s.read_to_end(&mut all).unwrap();
+        assert_eq!(all, b"HTTP/1.1 200 Connection established\r\n\r\nq", "{}", String::from_utf8_lossy(&all));
+        // (Charged as it ended, before the client saw its end: four tokens of the window's five
+        // spent with its own, so the next query takes the fifth, leasing every slot, or the next
+        // window's.)
         let w = a.budget.ledger()[0].window;
         assert_eq!(tunnel(&a.addr, "query.wikidata.org", b"x"), b"x");
         let next = a.budget.ledger()[1].window;
         let leased = (0..5).filter(|s| a.budget.dir(Class::Query).join(format!("{w}-{s}")).is_file()).count();
         assert!(next > w || leased == 5, "charged: {leased} slots of window {w}");
-        // (One connection at most: while one is open, another is answered 503.)
-        let b = proxy_within(&dir.path().join("b"), &clock, &up, Limits { conns: 1, ..Limits::default() });
+        // (One connection at most: while one is open, the next is answered 503 as it's taken; it
+        // sends nothing, so no unread request resets the answer.)
+        let b = proxy_within(&dir.path().join("b"), &clock, &up, Limits { head: long, idle: long, conns: 1 });
         let mut open = TcpStream::connect(b.addr).unwrap();
         write!(open, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n").unwrap();
+        let mut head = [0u8; 39];
         open.read_exact(&mut head).unwrap();
-        // (Answered as it's taken: read before sending anything, so no unread request resets it.)
         let mut r = String::new();
         TcpStream::connect(b.addr).unwrap().read_to_string(&mut r).unwrap();
         assert!(r.starts_with("HTTP/1.1 503"), "{r}");
