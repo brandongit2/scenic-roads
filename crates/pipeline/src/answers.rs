@@ -30,7 +30,7 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// The archives' zstd level (JSON lines: a tenth of their size).
 const LEVEL: i32 = 10;
@@ -504,7 +504,7 @@ fn readable(p: &Path) -> Result<()> {
 fn pack(dir: &Path, names: &[String], to: &Path) -> Result<()> {
     let list = to.with_file_name(format!("{}.list", to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
     std::fs::write(&list, names.iter().map(|n| format!("{n}\0")).collect::<String>())?;
-    let mut tar = store::spawn::spawn(Command::new("tar").env("COPYFILE_DISABLE", "1").arg("--null").arg("-cf").arg("-").arg("-C").arg(dir).arg("-T").arg(&list).stdout(Stdio::piped())).context("run tar")?;
+    let mut tar = store::spawn::spawn(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").arg("--null").arg("-cf").arg("-").arg("-C").arg(dir).arg("-T").arg(&list).stdout(Stdio::piped())).context("run tar")?;
     let r = (|| -> Result<()> {
         let mut z = zstd::Encoder::new(std::fs::File::create(to)?, LEVEL)?;
         z.include_checksum(true)?;
@@ -521,7 +521,7 @@ fn pack(dir: &Path, names: &[String], to: &Path) -> Result<()> {
 
 /// Archive `from` unpacked into `dir`.
 fn unpack(from: &Path, dir: &Path) -> Result<()> {
-    let mut tar = store::spawn::spawn(Command::new("tar").arg("-xf").arg("-").arg("-C").arg(dir).stdin(Stdio::piped())).context("run tar")?;
+    let mut tar = store::spawn::spawn(store::spawn::command("tar").arg("-xf").arg("-").arg("-C").arg(dir).stdin(Stdio::piped())).context("run tar")?;
     let r = (|| -> Result<()> {
         let mut z = zstd::Decoder::new(std::fs::File::open(from)?)?;
         match std::io::copy(&mut z, tar.stdin.as_mut().context("tar's input")?) {
@@ -1070,7 +1070,7 @@ mod tests {
         let snap = d.path().join("cache/registers-7acb8655abb6");
         put(&snap.join("crhp.json"), "{}");
         let epoch = d.path().join("cache/heritage-2026-09-28-7acb8655abb6");
-        assert!(store::spawn::status(Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap().success());
+        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap().success());
         let h = heritage(&root, &epoch, &snap, "2026-09-28", "7acb8655abb6");
         put(&epoch.join("areas-wikidata.json"), "{\"Q1\": {}}");
         assert!(h.keep(&heritage_files(&epoch, &snap), &scratch).unwrap());
@@ -1084,7 +1084,7 @@ mod tests {
         put(&epoch.join("crhp.json"), "{\"changed\": 1}");
         assert!(h.keep(&heritage_files(&epoch, &snap), &scratch).unwrap());
         let other = d.path().join("m1/heritage-2026-09-28-7acb8655abb6");
-        assert!(store::spawn::status(Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&other)).unwrap().success());
+        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&other)).unwrap().success());
         let o = heritage(&root, &other, &snap, "2026-09-28", "7acb8655abb6");
         assert_eq!(o.sync(&heritage_files(&other, &snap), &scratch).unwrap(), Synced::Took);
         assert_eq!(read(&other.join("crhp.json")), "{\"changed\": 1}");
@@ -1202,7 +1202,7 @@ mod tests {
         }
         // The pass's copy (cp -c -R keeps the times; -p in its fallback).
         let epoch = d.path().join("cache/heritage-2026-09-28-7acb8655abb6");
-        let st = store::spawn::status(Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap();
+        let st = store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap();
         assert!(st.success());
         assert!(heritage_files(&epoch, &snap).is_empty(), "a fresh copy holds no answers");
         let k = heritage(&root, &epoch, &snap, "2026-09-28", "7acb8655abb6");
@@ -1222,7 +1222,7 @@ mod tests {
         // A Mac without the pass's copy makes it from the snapshot and takes the answers over it.
         let other = d.path().join("m1/heritage-2026-09-28-7acb8655abb6");
         std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-        assert!(store::spawn::status(Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&other)).unwrap().success());
+        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&other)).unwrap().success());
         let k1 = heritage(&root, &other, &snap, "2026-09-28", "7acb8655abb6");
         assert_eq!(k1.sync(&heritage_files(&other, &snap), &scratch).unwrap(), Synced::Took);
         assert_eq!(read(&other.join("wd/ids.jsonl")), "wd/ids.jsonl and more");
@@ -1263,7 +1263,7 @@ mod tests {
         put(&snap.join(".done"), "");
         put(&snap.join("crhp.json"), "{}");
         let epoch = cache.join("heritage-2026-09-28-7acb8655abb6");
-        assert!(store::spawn::status(Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap().success());
+        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap().success());
         put(&epoch.join("areas-wikidata.json"), "{}");
         let said = seed(&root, &cache, &scratch, false).unwrap();
         assert_eq!(said.len(), 2, "{said:?}");

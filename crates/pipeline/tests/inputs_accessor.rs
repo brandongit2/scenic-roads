@@ -231,7 +231,7 @@ fn the_steps_root_refuses_a_drop_box_path() {
 /// `translations/` or `descriptions/`). (Passed over, said, without python3.)
 #[test]
 fn the_python_steps_open_inputs_through_their_helper() {
-    let ok = store::spawn::status(std::process::Command::new("python3").args(["-I", "-c", "pass"])).is_ok_and(|s| s.success());
+    let ok = store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "pass"])).is_ok_and(|s| s.success());
     if !ok {
         eprintln!("python3 isn't here: dem/inputs.py not run");
         return;
@@ -250,6 +250,6 @@ for p in ["/nas/sources/inputs/_gate-test/a.0123456789abcdef.jsonl", "/nas/sourc
     assert str(inputs.arg(p)) == p, p
 print("ok")
 "#;
-    let out = store::spawn::output(std::process::Command::new("python3").arg("-I").arg("-c").arg(code).arg(root().join("dem"))).unwrap();
+    let out = store::spawn::output(store::spawn::command("python3").arg("-I").arg("-c").arg(code).arg(root().join("dem"))).unwrap();
     assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok", "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }

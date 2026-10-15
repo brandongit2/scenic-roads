@@ -11,7 +11,7 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
     timings::start("test");
     {
         let _p = timings::phase("python step", Class::Mixed);
-        let mut c = std::process::Command::new("python3");
+        let mut c = store::spawn::command("python3");
         c.arg("-I").arg(&script);
         timings::child(&mut c);
         let st = store::spawn::status(&mut c).expect("python3");

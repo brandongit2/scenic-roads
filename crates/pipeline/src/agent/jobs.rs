@@ -108,7 +108,7 @@ impl Running {
         std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}) ===\n", spec.id, now_s()).as_bytes())?;
         let err = out.try_clone()?;
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
-        let mut c = Command::new("/usr/sbin/taskpolicy");
+        let mut c = store::spawn::command("/usr/sbin/taskpolicy");
         c.args(["-c", "utility"]);
         if let Some(profile) = sandbox {
             c.args(["/usr/bin/sandbox-exec", "-p", profile]);
@@ -180,7 +180,7 @@ impl Running {
 /// Keeps the Mac awake while process `pid` runs: no idle sleep (on battery too: -i), no system sleep
 /// on mains power (-s), ending with it (-w).
 fn keep_awake(pid: u32) -> Option<Child> {
-    store::spawn::spawn(Command::new("/usr/bin/caffeinate").args(["-i", "-s", "-w", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())).ok()
+    store::spawn::spawn(store::spawn::command("/usr/bin/caffeinate").args(["-i", "-s", "-w", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())).ok()
 }
 
 impl Drop for Running {
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(lines, ["[>   ]  0% ", "[=>  ]  50% ", "done", "last"]);
         // A program's progress, seen as it runs; its other lines on to the log.
         let mut seen = Vec::new();
-        let st = run_watched(Command::new("/bin/sh").args(["-c", "echo 'progress: 1/4 x' >&2; echo hi >&2; printf '[=> ] 75%%\r' >&2"]), |f| seen.push(f)).unwrap();
+        let st = run_watched(store::spawn::command("/bin/sh").args(["-c", "echo 'progress: 1/4 x' >&2; echo hi >&2; printf '[=> ] 75%%\r' >&2"]), |f| seen.push(f)).unwrap();
         assert!(st.success());
         assert_eq!(seen, [0.25, 0.75]);
     }
@@ -615,7 +615,7 @@ mod tests {
             i=0; until [ -e "$SEEN" ]; do i=$((i + 1)); [ "$i" -le 6000 ] || exit 1; sleep 0.01; done
             printf '[===]  100%% \n' >&2"#;
         let mut seen = Vec::new();
-        let st = run_watched(Command::new("/bin/sh").args(["-c", script]).env("SEEN", &mark), |f| {
+        let st = run_watched(store::spawn::command("/bin/sh").args(["-c", script]).env("SEEN", &mark), |f| {
             if f == 0.5 {
                 std::fs::write(&mark, b"").unwrap();
             }

@@ -362,7 +362,7 @@ fn terrain_peak(z6: usize) -> u64 {
 /// The memory a helper spares (MB): three eighths of its Mac's; while its owner is away (`away`),
 /// five eighths.
 fn helper_memory(away: bool) -> u64 {
-    let total = store::spawn::output(std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
+    let total = store::spawn::output(store::spawn::command("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
     total.map_or(6144, |b| (b >> 20) * if away { 5 } else { 3 } / 8)
 }
 
@@ -6161,7 +6161,7 @@ impl Agent {
         if self.lead_awake.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
             return;
         }
-        self.lead_awake = store::spawn::spawn(std::process::Command::new("/usr/bin/caffeinate").args(["-i", "-w", &std::process::id().to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())).ok();
+        self.lead_awake = store::spawn::spawn(store::spawn::command("/usr/bin/caffeinate").args(["-i", "-w", &std::process::id().to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())).ok();
     }
 
     fn lead_awake_off(&mut self) {
@@ -7937,7 +7937,7 @@ mod tests {
         let mut a = running_agent(&root, &home, false);
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // (A process group of its own, as a job's.)
-        let mut left = store::spawn::spawn(std::process::Command::new("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
+        let mut left = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
         let pgid = left.id() as i32;
         let group = |leader_start: u64| jobs::Group { pgid, leader_start, started: now_s() - 5, id: "unit 6/1/1".into() };
         // Its group's id another program's now (another leader's start time): not the job's.
@@ -8047,7 +8047,7 @@ mod tests {
         // Asked while a job an earlier agent left runs here (its programs may not hold what they
         // use): not cleared, and why said; the ask taken up all the same.
         use std::os::unix::process::CommandExt;
-        let mut left = store::spawn::spawn(std::process::Command::new("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
+        let mut left = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
         let pgid = left.id() as i32;
         a.orphans.push(jobs::Group { pgid, leader_start: crate::sys::process_start(pgid).unwrap(), started: now_s() - 5, id: "backup".into() });
         let r = room::request_clear(&home, "scenic clean on m4").unwrap();

@@ -80,7 +80,7 @@ pub fn flagged(bytes: &[u8]) -> Result<Vec<Flag>> {
     }
     let file = py.scratch.join(format!("flagged-{}-{}.jsonl", std::process::id(), store::naming::hash16(bytes)));
     crate::whole::write(&file, bytes)?;
-    let mut c = std::process::Command::new(&py.cmd[0]);
+    let mut c = store::spawn::command(&py.cmd[0]);
     c.current_dir(&py.cwd).args(&py.cmd[1..]).arg(&script).arg("--flagged").arg(&file);
     let out = store::spawn::output(&mut c).with_context(|| format!("run the translations' checker ({})", py.cmd.join(" ")));
     std::fs::remove_file(&file).ok();

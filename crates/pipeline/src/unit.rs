@@ -798,7 +798,7 @@ pub fn take_peak() -> u64 {
 fn snapshot(snap: &Path, n: usize, c: &Command, dir: &Path, what: &str, when: &str) -> Result<()> {
     let to = snap.join(format!("{n:02} {what} {when}"));
     std::fs::create_dir_all(snap)?;
-    let st = store::spawn::status(Command::new("cp").arg("-c").arg("-R").arg(dir).arg(&to))?;
+    let st = store::spawn::status(store::spawn::command("cp").arg("-c").arg("-R").arg(dir).arg(&to))?;
     anyhow::ensure!(st.success(), "clone {} to {}", dir.display(), to.display());
     let mut cmd = format!("prog {}\n", c.get_program().to_string_lossy());
     for a in c.get_args() {
@@ -819,7 +819,7 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     snapshot(snap, n, &c, dir, what, "before")?;
     // (A copy of the command for the snapshot after: `run` takes it.)
-    let mut shown = Command::new(c.get_program());
+    let mut shown = store::spawn::command(c.get_program());
     shown.args(c.get_args());
     for (k, v) in c.get_envs() {
         if let Some(v) = v {
@@ -937,7 +937,7 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
     // 1. Every way of the piece, densified.
-    let mut c = Command::new(tools.bin.join("extract"));
+    let mut c = store::spawn::command(tools.bin.join("extract"));
     c.arg(dir).arg(tools.spacing_m.to_string()).arg(piece);
     run_in(c, "extract", &log, dir, tools)?;
     use crate::timings::Class;
@@ -979,13 +979,13 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     let s = stage("heritage inputs", Class::NasRead);
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     s.end();
-    let mut c = Command::new(tools.bin.join("areaflags"));
+    let mut c = store::spawn::command(tools.bin.join("areaflags"));
     c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
     run_in(c, "area flags (areaflags)", &log, dir, tools)?;
     // Land cover the packs lack (new coverage): ESA WorldCover for those grid tiles only; the
     // rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
-        let mut c = Command::new(tools.bin.join("landcover"));
+        let mut c = store::spawn::command(tools.bin.join("landcover"));
         c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
         run_in(c, "land cover (landcover)", &log, dir, tools)?;
     }
@@ -1168,7 +1168,7 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
         (!v.contains("{net}")).then_some(v)
     };
     for r in runs {
-        let mut c = Command::new(tools.bin.join(&r.prog));
+        let mut c = store::spawn::command(tools.bin.join(&r.prog));
         for a in &r.args {
             c.arg(fill(a).with_context(|| format!("{}: no place for {a}", r.what))?);
         }
@@ -1238,7 +1238,7 @@ mod tests {
         assert_eq!(log_tail(&log, 3), "line 98\nline 99\nline 100");
         assert_eq!(log_tail(&d.path().join("none.log"), 3), "");
         // A failing step: its log's end is kept, and the error names it.
-        let mut c = Command::new("sh");
+        let mut c = store::spawn::command("sh");
         c.args(["-c", "echo why it failed; exit 3"]);
         let e = run(c, "a step", &log).unwrap_err().to_string();
         assert!(e.contains("a step failed") && log_tail(&log, 1) == "why it failed");

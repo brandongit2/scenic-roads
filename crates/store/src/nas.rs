@@ -43,7 +43,7 @@ pub fn smb_url() -> &'static str {
 
 /// Whether the Keychain has an internet password for `server` (its attributes only: no prompt).
 fn keychain_knows(server: &str) -> bool {
-    crate::spawn::status(Command::new("/usr/bin/security").args(["find-internet-password", "-s", server]).stdout(Stdio::null()).stderr(Stdio::null())).is_ok_and(|s| s.success())
+    crate::spawn::status(crate::spawn::command("/usr/bin/security").args(["find-internet-password", "-s", server]).stdout(Stdio::null()).stderr(Stdio::null())).is_ok_and(|s| s.success())
 }
 
 /// The URL to mount the share by away from home: the bare name (Tailscale's DNS sends it through the
@@ -64,7 +64,7 @@ pub fn at_home() -> bool {
 /// Unmounts the share at `point`, forced (files open on it fail, as they would with the connection
 /// gone), within `timeout`.
 pub fn unmount(point: &Path, timeout: Duration) -> Result<()> {
-    let mut cmd = Command::new("/usr/sbin/diskutil");
+    let mut cmd = crate::spawn::command("/usr/sbin/diskutil");
     cmd.args(["unmount", "force"]).arg(point);
     run_with_timeout(cmd, timeout).with_context(|| format!("unmount {}", point.display()))
 }
@@ -182,7 +182,7 @@ fn percent_decode(s: &str) -> String {
 /// `timeout` (a dialog asking for a password, an unreachable host), it is killed and this fails.
 /// An already mounted share succeeds at once. Afterwards, `find_mount` gives the mount point.
 pub fn mount(url: &str, timeout: Duration) -> Result<()> {
-    let mut cmd = Command::new("/usr/bin/osascript");
+    let mut cmd = crate::spawn::command("/usr/bin/osascript");
     cmd.arg("-e").arg(format!("mount volume \"{}\"", applescript_escape(url)));
     run_with_timeout(cmd, timeout).with_context(|| format!("mount {url}"))
 }
@@ -362,19 +362,19 @@ mod tests {
     fn commands_time_out_and_report_errors() {
         // (A command of an hour, given 200 ms: one that waited for it would take the hour.)
         let t0 = Instant::now();
-        let mut c = Command::new("/bin/sleep");
+        let mut c = crate::spawn::command("/bin/sleep");
         c.arg("3600");
         let e = run_with_timeout(c, Duration::from_millis(200)).unwrap_err();
         assert!(e.to_string().contains("no answer"), "{e:#}");
         assert!(t0.elapsed() < Duration::from_secs(600), "{:?}", t0.elapsed());
 
-        let mut c = Command::new("/bin/sh");
+        let mut c = crate::spawn::command("/bin/sh");
         c.args(["-c", "echo 'execution error: no such volume (-43)' >&2; exit 1"]);
         // (Ten minutes for what ends at once: a busy Mac's slowest start.)
         let e = run_with_timeout(c, Duration::from_secs(600)).unwrap_err();
         assert!(e.to_string().contains("no such volume"), "{e:#}");
 
-        run_with_timeout(Command::new("/usr/bin/true"), Duration::from_secs(600)).unwrap();
+        run_with_timeout(crate::spawn::command("/usr/bin/true"), Duration::from_secs(600)).unwrap();
         assert_eq!(applescript_escape(r#"smb://a"b\c"#), r#"smb://a\"b\\c"#);
     }
 

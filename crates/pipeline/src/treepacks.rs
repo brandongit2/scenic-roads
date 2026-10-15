@@ -179,11 +179,11 @@ fn fresh(cov: &Coverage, t: Unit, scratch: &Path, always: bool) -> Result<Option
 /// squares to make) with `args`.
 fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()> {
     let (mut c, prog) = if python {
-        let mut c = std::process::Command::new("uv");
+        let mut c = store::spawn::command("uv");
         c.args(["run", "python", "trees.py"]);
         (c, "trees.py")
     } else {
-        (std::process::Command::new(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")), "the trees program")
+        (store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")), "the trees program")
     };
     // (Its phase, its own under it: crate::timings.)
     let _p = crate::timings::phase(if python { "trees.py" } else { "the trees program" }, crate::timings::Class::Mixed);

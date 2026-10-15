@@ -2180,7 +2180,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         drop(p);
         let dir = scratch.join(format!("pois-{}", u.dash()));
         let p = phase("candidates extracted (extract)", Class::Compute);
-        let mut c = std::process::Command::new(&extract);
+        let mut c = store::spawn::command(&extract);
         c.arg(&dir).arg("8").arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
         let o = store::spawn::output(&mut c).with_context(|| format!("run {}", extract.display()))?;
         anyhow::ensure!(o.status.success(), "extract --candidates for {}: {}\n{}", u.slash(), o.status, String::from_utf8_lossy(&o.stderr).lines().rev().take(8).collect::<Vec<_>>().join("\n"));
@@ -2484,7 +2484,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     eprintln!("items: the pass's answers {}", kept.sync(&answers(), &scratch.join("answers"))?.words());
     drop(p);
     let dir = scratch.join("items-out");
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let p = phase("items.py", Class::Mixed);
     pipeline::timings::child(&mut c);
@@ -2771,7 +2771,7 @@ fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()
     std::fs::create_dir_all(scratch)?;
     let (list, tar) = (scratch.join("registers.list"), scratch.join("registers.tar.zst"));
     // (By its path: with the PATH changed, a program looked up is started by fork and exec.)
-    let mut c = std::process::Command::new("/bin/sh");
+    let mut c = store::spawn::command("/bin/sh");
     c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
     c.arg("-c")
         .arg(r#"set -e; cd "$1"; find . -type f ! -path './osm/*' ! -name .DS_Store | LC_ALL=C sort > "$2"; tar -cf - -T "$2" | zstd -T0 -10 -q -f -o "$3""#)
@@ -2837,10 +2837,10 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     let epoch = cache.join(format!("heritage-{date}-{id}"));
     if !epoch.join(".done").exists() {
         std::fs::remove_dir_all(&epoch).ok();
-        let st = store::spawn::status(std::process::Command::new("cp").arg("-c").arg("-R").arg(&snap).arg(&epoch))?;
+        let st = store::spawn::status(store::spawn::command("cp").arg("-c").arg("-R").arg(&snap).arg(&epoch))?;
         if !st.success() {
             std::fs::remove_dir_all(&epoch).ok();
-            let st = store::spawn::status(std::process::Command::new("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch))?;
+            let st = store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch))?;
             anyhow::ensure!(st.success(), "copying {} failed: {st}", snap.display());
         }
         std::fs::write(epoch.join(".done"), b"")?;
@@ -2873,7 +2873,7 @@ fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> 
     if !dir.join(".done").exists() {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir)?;
-        let mut c = std::process::Command::new("/bin/sh");
+        let mut c = store::spawn::command("/bin/sh");
         c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
         c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&dir);
         let st = store::spawn::status(&mut c).context("zstd | tar")?;
@@ -2920,7 +2920,7 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
 /// for every other Python step; the lock file as is).
 fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&str]) -> Result<()> {
     let t = std::time::Instant::now();
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     // (The pageview months' indexes the items job keeps, on the NAS: pageviews.py.)
     c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", dem.join(".venv")).env("SCENIC_PAGEVIEWS_STORE", nas.join("sources/pageviews")).args(["run", "--frozen", "python", script]).args(args);
     // (Its phase, its own phases under it: dem/timings.py.)
@@ -3733,7 +3733,7 @@ fn bld_fetch_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> 
     let cover = scratch.join("bld-coverage.geojson");
     std::fs::write(&cover, serde_json::to_vec(&pipeline::rail::coverage_geojson(&cov))?)?;
     let _p = phase("bldfetch.py", Class::Mixed);
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(&dem).args(["run", "python", "bldfetch.py", "--root"]).arg(out.root()).args(["--release", pipeline::buildtiles::RELEASE, "--coverage"]).arg(&cover);
     pipeline::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run bldfetch.py")?;
@@ -4231,7 +4231,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     drop(p);
     parts.start(1);
     let p = phase("railfeeds.py", Class::Mixed);
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(&dem)
         .args(["run", "python", "railfeeds.py", "--catalogue"])
         .arg(&catalogue)
@@ -4300,7 +4300,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::write(&list, serde_json::to_vec(&rail::feeds_for_counting(out)?)?)?;
         drop(p);
         let p = phase("railgtfs.py", Class::Mixed);
-        let mut c = std::process::Command::new("uv");
+        let mut c = store::spawn::command("uv");
         c.current_dir(&dem).args(["run", "python", "railgtfs.py", "--feeds"]).arg(&list).arg("--out").arg(&pairs).arg("--used").arg(&used);
         pipeline::timings::child(&mut c);
         let st = store::spawn::status(&mut c).context("run railgtfs.py")?;
@@ -4360,7 +4360,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("its ways extracted and those in the coverage kept (extract)", Class::Compute);
     let dir = scratch.join("ways");
     std::fs::remove_dir_all(&dir).ok();
-    let st = store::spawn::status(std::process::Command::new(bin.join("extract")).arg(&dir).arg("8").arg(&clip)).context("run extract")?;
+    let st = store::spawn::status(store::spawn::command(bin.join("extract")).arg(&dir).arg("8").arg(&clip)).context("run extract")?;
     anyhow::ensure!(st.success(), "extract failed: {st}");
     std::fs::remove_file(&clip).ok();
     let (kept, _) = pipeline::unit::subset(&dir, |_, vs| cov.touches(vs))?;
@@ -4369,7 +4369,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // 4. The trains on them.
     parts.start(4);
     let p = phase("the trains matched onto the tracks (railfreq)", Class::Compute);
-    let st = store::spawn::status(std::process::Command::new(bin.join("railfreq")).arg(&dir).args(&inputs)).context("run railfreq")?;
+    let st = store::spawn::status(store::spawn::command(bin.join("railfreq")).arg(&dir).args(&inputs)).context("run railfreq")?;
     anyhow::ensure!(st.success(), "railfreq failed: {st}");
     let ways = roadcore::Ways::open(&dir)?;
     let freq = rail::by_way_id(ways.ways(), &std::fs::read(dir.join("rail-freq.bin"))?);
@@ -4407,7 +4407,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let tiles = work.join("labels.tiles");
     let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
     let p = phase("labels.py", Class::Mixed);
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(&dem).args(["run", "python", "labels.py", "--src"]).arg(&local).arg("--out").arg(&tiles).arg("--work").arg(&work);
     pipeline::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run labels.py")?;

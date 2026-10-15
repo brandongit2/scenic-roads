@@ -368,7 +368,7 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
         Ok(())
     };
     let osmium = |args: &[&str]| {
-        let mut c = Command::new("osmium");
+        let mut c = store::spawn::command("osmium");
         c.current_dir(&work).args(args);
         c
     };
@@ -391,7 +391,7 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
     }
     drop(p);
     let p = crate::timings::phase("ferries.py", crate::timings::Class::Mixed);
-    let mut py = Command::new("uv");
+    let mut py = store::spawn::command("uv");
     py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work);
     crate::timings::child(&mut py);
     run(py, "ferries.py")?;

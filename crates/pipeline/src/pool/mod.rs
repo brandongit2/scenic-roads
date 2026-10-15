@@ -116,7 +116,7 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
 fn platform_uuid() -> Option<&'static str> {
     static UUID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     UUID.get_or_init(|| {
-        let o = store::spawn::output(std::process::Command::new("/usr/sbin/ioreg").args(["-rd1", "-c", "IOPlatformExpertDevice"])).ok()?;
+        let o = store::spawn::output(store::spawn::command("/usr/sbin/ioreg").args(["-rd1", "-c", "IOPlatformExpertDevice"])).ok()?;
         parse_uuid(&String::from_utf8_lossy(&o.stdout))
     })
     .as_deref()

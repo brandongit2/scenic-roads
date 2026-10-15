@@ -176,7 +176,7 @@ fn every_exemption_names_a_function_there() {
 /// what the first did. (Passed over, said, where python3 has no `compression.zstd`: before 3.14.)
 #[test]
 fn the_python_steps_hold_what_they_read() {
-    let ok = store::spawn::status(std::process::Command::new("python3").args(["-I", "-c", "from compression import zstd"])).is_ok_and(|s| s.success());
+    let ok = store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "from compression import zstd"])).is_ok_and(|s| s.success());
     if !ok {
         eprintln!("python3 with compression.zstd isn't here: pageviews_chaos.py not run");
         return;
@@ -184,7 +184,7 @@ fn the_python_steps_hold_what_they_read() {
     let d = tempfile::tempdir().unwrap();
     // (No network, as the script makes sure for itself too: SCENIC_FETCH_OFFLINE, and a proxy that
     // refuses for what it runs.)
-    let out = store::spawn::output(std::process::Command::new("python3").env("SCENIC_FETCH_OFFLINE", "1").env("ALL_PROXY", "http://127.0.0.1:9").env("HTTPS_PROXY", "http://127.0.0.1:9").env("HTTP_PROXY", "http://127.0.0.1:9").arg("-I").arg(root().join("tools/check/pageviews_chaos.py")).arg(d.path())).unwrap();
+    let out = store::spawn::output(store::spawn::command("python3").env("SCENIC_FETCH_OFFLINE", "1").env("ALL_PROXY", "http://127.0.0.1:9").env("HTTPS_PROXY", "http://127.0.0.1:9").env("HTTP_PROXY", "http://127.0.0.1:9").arg("-I").arg(root().join("tools/check/pageviews_chaos.py")).arg(d.path())).unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{err}");
     assert!(err.contains("40 lookups alike") && !err.contains("\"deleted\": 0"), "{err}");

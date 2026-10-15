@@ -145,7 +145,7 @@ pub const DEFAULT_PORT: u16 = 7311;
 /// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name.
 pub fn urls(port: u16) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(o) = store::spawn::output(&mut std::process::Command::new("/sbin/ifconfig")) {
+    if let Ok(o) = store::spawn::output(&mut store::spawn::command("/sbin/ifconfig")) {
         for w in String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().windows(2) {
             let ["inet", a] = w else { continue };
             let Ok(ip) = a.parse::<std::net::Ipv4Addr>() else { continue };
@@ -164,7 +164,7 @@ pub fn urls(port: u16) -> Vec<String> {
 pub fn served_https(port: u16) -> Option<String> {
     let cli = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"].into_iter().find(|p| Path::new(p).exists())?;
     // (Bounded: a stuck daemon mustn't hold up whoever asks.)
-    let mut child = store::spawn::spawn(std::process::Command::new(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())).ok()?;
+    let mut child = store::spawn::spawn(store::spawn::command(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())).ok()?;
     let t = Instant::now();
     while child.try_wait().ok()?.is_none() {
         if t.elapsed() > Duration::from_secs(3) {

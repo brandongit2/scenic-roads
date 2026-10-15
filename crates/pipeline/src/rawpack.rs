@@ -1434,9 +1434,9 @@ mod tests {
             std::fs::create_dir_all(src.join(rel).parent().unwrap()).unwrap();
             std::fs::write(src.join(rel), b).unwrap();
         }
-        let tar = store::spawn::output(std::process::Command::new("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./12/2048/1365.png", "./12/2049/1365.none", "./9/256/170.png", "./9/256/171.png"])).unwrap();
+        let tar = store::spawn::output(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./12/2048/1365.png", "./12/2049/1365.none", "./9/256/170.png", "./9/256/171.png"])).unwrap();
         assert!(tar.status.success());
-        let odd = store::spawn::output(std::process::Command::new("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./notes.txt"])).unwrap();
+        let odd = store::spawn::output(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./notes.txt"])).unwrap();
         assert!(pack_tar(&odd.stdout[..], &dir, &store, &root, Some(1)).is_err(), "a file that isn't a tile: a name misread");
         // Cut short (in a header, in a tile): an error, nothing named.
         for cut in [512 * 3 + 100, 700] {
@@ -1549,7 +1549,7 @@ mod tests {
         let name = format!("12/2048/{:0>120}.png", 1365);
         std::fs::create_dir_all(src.join("12/2048")).unwrap();
         std::fs::write(src.join(&name), png()).unwrap();
-        let tar = store::spawn::output(std::process::Command::new("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "--format", "pax", "-cf", "-", "-C"]).arg(&src).arg(format!("./{name}"))).unwrap();
+        let tar = store::spawn::output(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "--format", "pax", "-cf", "-", "-C"]).arg(&src).arg(format!("./{name}"))).unwrap();
         assert!(tar.status.success());
         let r = pack_tar(&tar.stdout[..], &dir, &store, &root, Some(1)).unwrap();
         assert_eq!((r.tiles, r.other), (1, 0));

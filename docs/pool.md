@@ -857,6 +857,11 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   made the same way. clippy.toml's disallowed-methods, checked by tools/app/publish.sh (a hit fails
   the publish), keeps every start, listen and accept in the workspace to it; tests and examples
   that start no coordinator (names', scenic-metrics' test servers) are excepted by an allow.
+  A child is started by its program's path (`store::spawn::command`: a name looked up in PATH
+  first, the ban covering `Command::new`), and room-making's deletes (`store::cachefile`) wait for
+  every start under way: a start that looks a program up (posix_spawnp: a failed exec for each PATH
+  folder before the program's) or forks returns while a child still holds copies of this process's
+  files and their locks, which made a file no one used look in use.
   Outgoing connections (ureq's) aren't made under the lock: a child holding one keeps a
   connection open, never a port from being listened on.
 - **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1: while the pool

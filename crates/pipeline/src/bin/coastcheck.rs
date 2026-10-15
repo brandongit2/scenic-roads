@@ -117,7 +117,7 @@ fn main() -> Result<()> {
             let dir = PathBuf::from(opt(&args, "--store").context("--store")?);
             let tmp = dir.join("sea-count.tmp");
             let mut w = GeomWriter::create(&tmp)?;
-            let mut unzip = store::spawn::spawn(std::process::Command::new("/usr/bin/unzip").arg("-p").arg(opt(&args, "--water-polygons").context("--water-polygons")?).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped()))?;
+            let mut unzip = store::spawn::spawn(store::spawn::command("/usr/bin/unzip").arg("-p").arg(opt(&args, "--water-polygons").context("--water-polygons")?).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped()))?;
             wc::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, unzip.stdout.take().context("unzip")?), &mut w)?;
             anyhow::ensure!(unzip.wait()?.success(), "unzip failed");
             let (n, _) = w.finish()?;
@@ -151,7 +151,7 @@ fn build(args: &[String]) -> Result<()> {
     let mut w = GeomWriter::create(&out)?;
     let t = std::time::Instant::now();
     // The sea's water polygons.
-    let mut unzip = store::spawn::spawn(std::process::Command::new("/usr/bin/unzip").arg("-p").arg(&zip).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped())).context("run unzip")?;
+    let mut unzip = store::spawn::spawn(store::spawn::command("/usr/bin/unzip").arg("-p").arg(&zip).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped())).context("run unzip")?;
     let shp = unzip.stdout.take().context("unzip's output")?;
     let polygons = wc::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, shp), &mut w);
     anyhow::ensure!(unzip.wait()?.success(), "unzip failed");

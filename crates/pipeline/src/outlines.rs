@@ -304,7 +304,7 @@ fn osmium(args: &mut Command, what: &str) -> Result<()> {
 pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &str)>) -> Result<Summary> {
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
-    osmium(Command::new("osmium").args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"]).arg(&rels_opl).arg(set), "osmium cat (the outline set's relations)")?;
+    osmium(store::spawn::command("osmium").args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"]).arg(&rels_opl).arg(set), "osmium cat (the outline set's relations)")?;
     let rels = opl::kept_relations(BufReader::with_capacity(1 << 20, std::fs::File::open(&rels_opl)?))?;
     std::fs::remove_file(&rels_opl).ok();
     let geo = work.join("outlines.geojsonseq");
@@ -313,7 +313,7 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
     let idx = work.join("outlines-nodes.idx");
     std::fs::remove_file(&idx).ok();
     let st = store::spawn::status(
-        Command::new("osmium")
+        store::spawn::command("osmium")
         .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
         .arg(format!("--index-type=sparse_file_array,{}", idx.display()))
         .arg("-o")
@@ -341,7 +341,7 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
             }
         }
         std::fs::write(&ids, list)?;
-        osmium(Command::new("osmium").args(["getid", "-r", "-f", "opl", "--overwrite", "-i"]).arg(&ids).arg("-o").arg(&members).arg(set), "osmium getid (the unassembled countries' ways)")?;
+        osmium(store::spawn::command("osmium").args(["getid", "-r", "-f", "opl", "--overwrite", "-i"]).arg(&ids).arg("-o").arg(&members).arg(set), "osmium getid (the unassembled countries' ways)")?;
         let geom = opl::Geometry::read(BufReader::with_capacity(1 << 20, std::fs::File::open(&members)?))?;
         std::fs::remove_file(&ids).ok();
         std::fs::remove_file(&members).ok();

@@ -244,7 +244,7 @@ pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, dem: &Path) -> Result<()> {
     if to_make == 0 {
         return Ok(());
     }
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(dem).args(["run", "python", "leaftype.py", "--make"]).arg(dir).args(sqs.iter().map(|(t, l)| format!("{t},{l}")));
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run leaftype.py")?;

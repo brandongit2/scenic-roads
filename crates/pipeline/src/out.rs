@@ -461,7 +461,7 @@ impl Out {
         let names: Vec<String> = self.pending.keys().cloned().collect();
         let mut bad = Vec::new();
         for chunk in names.chunks(200) {
-            let mut cmd = std::process::Command::new(ssh[0]);
+            let mut cmd = store::spawn::command(ssh[0]);
             cmd.args(&ssh[1..]);
             let quoted: Vec<String> = chunk.iter().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
             cmd.arg(format!("cd '{nas_root}' && sha256sum {}", quoted.join(" ")));
@@ -488,7 +488,7 @@ impl Out {
         }
         if !bad.is_empty() {
             let quoted: Vec<String> = bad.iter().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
-            let mut cmd = std::process::Command::new(ssh[0]);
+            let mut cmd = store::spawn::command(ssh[0]);
             cmd.args(&ssh[1..]);
             cmd.arg(format!("cd '{nas_root}' && rm -f {}", quoted.join(" ")));
             store::spawn::status(&mut cmd).ok();

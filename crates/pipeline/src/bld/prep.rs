@@ -717,7 +717,7 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     use crate::timings::{phase, Class};
     // (bldprep.py reading the sources as this reads its stream: one phase, its own under it.)
     let streamed = phase("bldprep.py, its stream read", Class::Mixed);
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(dem).args(["run", "python", "bldprep.py", "--root"]).arg(out.root()).args(["--tile", &t.slash(), "--release", release]).stdout(std::process::Stdio::piped());
     crate::timings::child(&mut c);
     let mut child = store::spawn::spawn(&mut c).context("run bldprep.py")?;

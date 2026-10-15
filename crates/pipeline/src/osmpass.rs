@@ -121,11 +121,8 @@ pub const BUFFER_KM: f64 = 10.0;
 
 pub fn osmium() -> Command {
     let path = format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default());
-    // (Found here, by the PATH it's given, and started by its path: a program a Command looks up by
-    // a PATH it changes is started by fork and exec, whose child holds copies of this process's
-    // files, their locks with them, for a moment; by its path, it's spawned whole.)
-    let prog = path.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join("osmium")).find(|p| p.is_file()).unwrap_or_else(|| "osmium".into());
-    let mut c = Command::new(prog);
+    // (Looked up by the PATH it's given: store::spawn.)
+    let mut c = store::spawn::command_in("osmium", std::ffi::OsStr::new(&path));
     c.env("PATH", path);
     c
 }
@@ -394,7 +391,7 @@ impl UnitLinks {
 /// Run `extract` on a piece and work out its unit's chaining inputs.
 pub fn unit_links(extract: &Path, piece: &Path, unit: Unit, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
-    let mut c = Command::new(extract);
+    let mut c = store::spawn::command(extract);
     c.arg(work).arg("8").arg(piece);
     c.stderr(std::process::Stdio::null());
     run(c, &format!("extract {}", piece.display()))?;
@@ -652,7 +649,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         std::fs::create_dir_all(&downloads)?;
         // Run in the scratch folder, its files named relative to it: Planetiler reads `--output` as
         // a URI, which a space in the path ("Application Support") breaks.
-        let mut j = Command::new("/opt/homebrew/opt/openjdk@21/bin/java");
+        let mut j = store::spawn::command("/opt/homebrew/opt/openjdk@21/bin/java");
         j.current_dir(scratch);
         j.args(["-Xmx24g", "-jar"]).arg(planetiler).args([
             "--download",
@@ -888,7 +885,7 @@ fn latest_pass_on_nas(root: &Path) -> Option<String> {
 fn copy_keep(p: &Path, scratch: &Path) -> Result<PathBuf> {
     let d = scratch.join(format!("upload-{}", p.file_name().unwrap().to_string_lossy()));
     // A clone on APFS: instant, no extra space.
-    let st = store::spawn::status(Command::new("cp").arg("-c").arg(p).arg(&d))?;
+    let st = store::spawn::status(store::spawn::command("cp").arg("-c").arg(p).arg(&d))?;
     if !st.success() {
         store::sys::copy_data(p, &d)?;
     }
@@ -1011,7 +1008,7 @@ fn buildinfo_version(props: &str) -> Option<&str> {
 /// (pipeline::water::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so a
 /// new one's basemap isn't drawn until its z14 water is checked again as full detail.
 pub fn check_planetiler(jar: &Path) -> Result<()> {
-    let o = store::spawn::output(Command::new("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties")).with_context(|| format!("read {}", jar.display()))?;
+    let o = store::spawn::output(store::spawn::command("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties")).with_context(|| format!("read {}", jar.display()))?;
     ensure!(o.status.success(), "no buildinfo.properties in {}", jar.display());
     let props = String::from_utf8_lossy(&o.stdout);
     let v = buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;

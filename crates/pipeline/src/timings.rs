@@ -1049,7 +1049,7 @@ mod tests {
         // tests' phases (their code's, on their threads) would come into this run meanwhile.
         const ALONE: &str = "SCENIC_TEST_ALONE";
         if std::env::var_os(ALONE).is_none() {
-            let out = store::spawn::output(std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", "timings::tests::phases_add_up_nest_and_take_in_children"]).env(ALONE, "1")).unwrap();
+            let out = store::spawn::output(store::spawn::command(std::env::current_exe().unwrap()).args(["--exact", "timings::tests::phases_add_up_nest_and_take_in_children"]).env(ALONE, "1")).unwrap();
             let said = String::from_utf8_lossy(&out.stdout);
             assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
             return;
@@ -1070,7 +1070,7 @@ mod tests {
                 let _ss = sub("folded", Class::Disk);
             }
             // A child program's phases, as one writes them.
-            let mut c = std::process::Command::new("true");
+            let mut c = store::spawn::command("true");
             child(&mut c);
             let to = c
                 .get_envs()

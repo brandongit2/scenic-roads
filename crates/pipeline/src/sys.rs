@@ -455,7 +455,7 @@ mod tests {
         // the other tests' memory comes and goes meanwhile, by more than the check's margin.
         const ALONE: &str = "SCENIC_TEST_ALONE";
         if std::env::var_os(ALONE).is_none() {
-            let mut c = Command::new(std::env::current_exe().unwrap());
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
             c.args(["--exact", "sys::tests::a_groups_memory_is_its_processes_together"]).env(ALONE, "1");
             own_group(&mut c);
             let out = store::spawn::output(&mut c).unwrap();
@@ -469,7 +469,7 @@ mod tests {
         // A child holding 200 MB of its own (written, so it's resident) counts while it runs. (It
         // holds them until its input closes, after they're counted: not for a time a loaded Mac
         // might take longer than to count them.)
-        let mut c = store::spawn::spawn(Command::new("/usr/bin/python3").args(["-c", "import sys; b = bytearray(200 << 20); b[::4096] = b'x' * len(b[::4096]); print(1, flush=True); sys.stdin.read()"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())).unwrap();
+        let mut c = store::spawn::spawn(store::spawn::command("/usr/bin/python3").args(["-c", "import sys; b = bytearray(200 << 20); b[::4096] = b'x' * len(b[::4096]); print(1, flush=True); sys.stdin.read()"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())).unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(c.stdout.as_mut().unwrap()), &mut line).unwrap();
         reset_group_peak();
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn a_tree_killed_whole() {
         // A shell with two sleeps (as uv with Python): the shell killed, its children too.
-        let mut c = store::spawn::spawn(Command::new("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"])).unwrap();
+        let mut c = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"])).unwrap();
         let pid = c.id() as i32;
         // (Waited for as long as a busy Mac takes to start them: five minutes, a watchdog.)
         let watchdog = || std::time::Instant::now() + std::time::Duration::from_secs(300);

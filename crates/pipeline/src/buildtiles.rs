@@ -192,7 +192,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
     let p = phase("buildings.py", Class::Mixed);
-    let mut c = std::process::Command::new("uv");
+    let mut c = store::spawn::command("uv");
     c.current_dir(dem).args(["run", "python", "buildings.py", "--world"]).arg(&parts).args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", RELEASE]);
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run buildings.py")?;

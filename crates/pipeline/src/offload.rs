@@ -672,7 +672,7 @@ mod tests {
     fn a_jobs_tasks_and_its_programs_end_with_its_process_group() {
         // A program the job runs (the tree cover's `trees`) is in the job's process group: its
         // tasks are kept under the same owner.
-        let child = store::spawn::output(std::process::Command::new("/bin/sh").args(["-c", "ps -o pgid= -p $$"])).unwrap();
+        let child = store::spawn::output(store::spawn::command("/bin/sh").args(["-c", "ps -o pgid= -p $$"])).unwrap();
         assert_eq!(String::from_utf8_lossy(&child.stdout).trim().parse::<u32>().unwrap(), owner());
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
