@@ -450,7 +450,7 @@ fn dist_m(a: [i32; 2], b: [i32; 2]) -> f64 {
 /// its own to).
 /// The widest gap closed with them. Refused: a node where more than two way ends meet (which way
 /// a ring takes there is a guess that can make it cross itself).
-fn rings_of(ways: &[Vec<(u64, [i32; 2])>], segments: &mut Vec<([i32; 2], [i32; 2])>) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
+pub(crate) fn rings_of(ways: &[Vec<(u64, [i32; 2])>], segments: &mut Vec<([i32; 2], [i32; 2])>) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
     let mut ends: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
     for (i, w) in ways.iter().enumerate() {
         ensure!(w.len() >= 2, "a way of fewer than two nodes");
@@ -534,7 +534,7 @@ fn rings_of(ways: &[Vec<(u64, [i32; 2])>], segments: &mut Vec<([i32; 2], [i32; 2
 }
 
 /// The segments of `ways`.
-fn segments_of<'a>(ways: impl IntoIterator<Item = &'a Vec<(u64, [i32; 2])>>) -> Vec<([i32; 2], [i32; 2])> {
+pub(crate) fn segments_of<'a>(ways: impl IntoIterator<Item = &'a Vec<(u64, [i32; 2])>>) -> Vec<([i32; 2], [i32; 2])> {
     ways.into_iter().flat_map(|w| w.windows(2).map(|s| (s[0].1, s[1].1))).collect()
 }
 

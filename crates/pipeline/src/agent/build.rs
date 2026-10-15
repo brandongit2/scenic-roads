@@ -257,7 +257,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "inputs" | "outlines" | "labels" | "spoken" | "names-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
+        if step.ends_with("-root") || matches!(step, "inputs" | "outlines" | "regions-extract" | "labels" | "spoken" | "names-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -2551,6 +2551,7 @@ pub fn label(step: &str) -> &'static str {
         "summits" => "Finding the world's summits",
         "labels" => "Ranking the world's place labels",
         "spoken" => "Mapping the languages spoken where, for names",
+        "regions-extract" => "Extracting the regions' OSM relations and ways",
         "lakefill" => "Filling in Canada's lakes missing from OpenStreetMap",
         "water" => "Drawing the world's water at every zoom",
         "backup" => "Backing up translations, descriptions, inputs and the acceptances",

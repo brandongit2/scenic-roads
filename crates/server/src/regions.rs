@@ -1,10 +1,17 @@
 //! Regions and the areas they're made of (docs/plan.md §1, the Regions panel; §5).
 //!
-//!   GET    /api/regions             the recipes in inputs/regions on the NAS, and the ones that
-//!                                   don't parse
-//!   POST   /api/regions             {id, name, outline}: a new region (created exclusively: 409 when
-//!                                   the id is taken)
-//!   PUT    /api/regions/{id}        {name, outline}: rename or redraw
+//!   GET    /api/regions             the region files in inputs/regions on the NAS, in every folder,
+//!                                   each with its path, whether it's plain (only osm:/shape: parts,
+//!                                   nothing else) and its state in the input check (accepted,
+//!                                   checking, held with the findings), and the files that don't
+//!                                   parse (docs/inputs.md §6.1.9)
+//!   GET    /api/regions/layer       every region's accepted outline for drawing (its drawn files,
+//!                                   kept on this Mac), a colour from its id, held or not; the
+//!                                   catalog's regions until this Mac has the accepted copy
+//!   POST   /api/regions             {id, name, outline}: a new region at the folder's top (created
+//!                                   exclusively: 409 when the id is taken); osm: and shape: parts
+//!   PUT    /api/regions/{id}        {name, outline}: rename or redraw a plain region, found by id in
+//!                                   whichever folder it lies (another is "edit the file")
 //!   DELETE /api/regions/{id}        removed (its recipe kept as .removed)
 //!   GET    /api/areas?at=lon,lat    the outlines containing a point, smallest first
 //!   GET    /api/areas/search?q=     outlines by name, largest first
@@ -264,24 +271,169 @@ fn load(pool: &IoPool, dir: &std::path::Path) -> Result<Recipes> {
     Ok((ok, bad))
 }
 
-/// Applies one edit to the folder. A new recipe is created exclusively (`O_EXCL`, so two Macs can't
-/// both create it), a changed one is written to a temporary file renamed over it (no reader sees
-/// half of it), and a removed one is renamed to `.removed`, which keeps it for undoing.
+/// A region file as the panel lists it (docs/inputs.md §6.1.9).
+#[derive(serde::Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub id: String,
+    pub name: String,
+    pub outline: Vec<String>,
+    /// Its path in the drop box (`europe/portugal/azores.toml`).
+    pub path: String,
+    /// Only `osm:` and `shape:` parts, nothing else: what the panel edits.
+    pub plain: bool,
+    /// accepted, checking, held or pending ("" when the check's records can't be read now).
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<Value>,
+}
+
+impl Listed {
+    fn of(r: &pipeline::inputs::regions::file::Region, path: String) -> Listed {
+        let plain = r.is_plain() && r.lines.is_empty() && r.pins.is_empty();
+        Listed { id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), path, plain, state: String::new(), held: Vec::new() }
+    }
+}
+
+/// The region files and the files that don't parse (path, problem), as the panel lists them.
+type ListedAll = (Vec<Listed>, Vec<(String, String)>);
+
+/// Every region file in the folder and its subfolders (`how/`, `todo/` and the names every drop box
+/// passes over aside, and `pins.toml`), by id; the files that don't parse. The NAS failing midway is
+/// an error, never a shorter list.
+fn load_all(pool: &IoPool, dir: &std::path::Path) -> Result<ListedAll> {
+    let (mut ok, mut bad) = (Vec::new(), Vec::new());
+    let mut stack = vec![(dir.to_path_buf(), String::new())];
+    while let Some((d, rel)) = stack.pop() {
+        let items = match pool.list(&d) {
+            Ok(items) => items,
+            Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("list {}", d.display())),
+        };
+        for it in items {
+            if pipeline::inputs::ignored(&it.name) || (rel.is_empty() && (it.name == "how" || it.name == "todo")) {
+                continue;
+            }
+            let path = if rel.is_empty() { it.name.clone() } else { format!("{rel}/{}", it.name) };
+            if it.is_dir {
+                stack.push((d.join(&it.name), path));
+                continue;
+            }
+            if !it.name.ends_with(".toml") || path == "pins.toml" {
+                continue;
+            }
+            let p = d.join(&it.name);
+            let text = match pool.read_all(&p) {
+                Ok(b) => String::from_utf8(b).map_err(anyhow::Error::from),
+                Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(IoError::Io(e)) if pool.is_online() => Err(e.into()),
+                Err(e) => return Err(e).with_context(|| format!("read {}", p.display())),
+            };
+            match text.and_then(|t| pipeline::inputs::regions::file::parse(&it.name, &t).map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))) {
+                Ok(r) => ok.push(Listed::of(&r, path)),
+                Err(e) => bad.push((path, format!("{e:#}"))),
+            }
+        }
+    }
+    ok.sort_by(|a, b| a.id.cmp(&b.id));
+    bad.sort();
+    Ok((ok, bad))
+}
+
+/// The drop-box path of region `id`'s file, in whichever folder it lies.
+fn find(pool: &IoPool, dir: &std::path::Path, id: &str) -> Result<String> {
+    let mut stack = vec![(dir.to_path_buf(), String::new())];
+    let want = format!("{id}.toml");
+    while let Some((d, rel)) = stack.pop() {
+        let items = match pool.list(&d) {
+            Ok(items) => items,
+            Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("list {}", d.display())),
+        };
+        for it in items {
+            if pipeline::inputs::ignored(&it.name) || (rel.is_empty() && (it.name == "how" || it.name == "todo")) {
+                continue;
+            }
+            let path = if rel.is_empty() { it.name.clone() } else { format!("{rel}/{}", it.name) };
+            if it.is_dir {
+                stack.push((d.join(&it.name), path));
+            } else if it.name == want {
+                return Ok(path);
+            }
+        }
+    }
+    bail!("no region {id}")
+}
+
+/// Whether the records say the build's readers read the regions' accepted version
+/// (`sources/inputs/regions/@switched`): before, they read the drop box's recipes, which know only
+/// `osm:` parts. `dir` is the regions' folder; false when the records can't be read.
+fn switched_on(pool: &IoPool, dir: &std::path::Path) -> bool {
+    let Some(root) = dir.parent().and_then(|p| p.parent()) else { return false };
+    let Ok(b) = pool.read_all(&root.join(pipeline::inputs::served::RECORDS)) else { return false };
+    serde_json::from_slice::<std::collections::BTreeMap<String, String>>(&b).is_ok_and(|m| pipeline::inputs::regions::read::switched(&m))
+}
+
+/// A recipe's text checked as a region file is (its parts `osm:` or `shape:` alone: the panel's;
+/// before the readers' switch, `osm:` alone, the only kind the drop box's readers share with the
+/// check).
+fn region_text(r: &Recipe, switched: bool) -> Result<String> {
+    for o in &r.outline {
+        ensure!(o.starts_with("osm:") || o.starts_with("shape:"), "{o:?}: the panel takes osm:<relation> and shape:<name>.geojson parts (edit the file for others)");
+        ensure!(switched || o.starts_with("osm:"), "{o:?}: shape: parts are available after the switch to the checked regions (docs/inputs.md §6.1.10)");
+    }
+    let text = toml::to_string(r)?;
+    pipeline::inputs::regions::file::parse(&format!("{}.toml", r.id), &text).map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))?;
+    Ok(text)
+}
+
+/// `old` (a plain region file) with its `name` and `outline` lines replaced by `r`'s, the rest
+/// (comments, blank lines) as it was; None when either isn't on one line of its own, or the result
+/// doesn't read back as `r`.
+fn keep_layout(old: &str, r: &Recipe) -> Option<String> {
+    let v = toml::Value::try_from(r).ok()?;
+    let line = |k: &str| Some(format!("{k} = {}", v.get(k)?));
+    let (mut name, mut outline) = (0, 0);
+    let mut out: Vec<String> = Vec::new();
+    for l in old.lines() {
+        let key = l.split('=').next().unwrap_or("").trim();
+        if key == "name" {
+            name += 1;
+            out.push(line("name")?);
+        } else if key == "outline" {
+            outline += 1;
+            out.push(line("outline")?);
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    let text = out.join("\n") + "\n";
+    let back = pipeline::inputs::regions::file::parse(&format!("{}.toml", r.id), &text).ok()?;
+    (name == 1 && outline == 1 && back.name == r.name && back.outline_text() == r.outline).then_some(text)
+}
+
+/// Applies one edit to the folder. A new region file is created exclusively at the folder's top
+/// (`O_EXCL`, so two Macs can't both create it), a changed one is written where it lies to a
+/// temporary file renamed over it (no reader sees half of it), and a removed one is renamed to
+/// `.removed`, which keeps it for undoing.
 fn apply(pool: &IoPool, dir: &std::path::Path, q: &Queued) -> Result<()> {
     match q {
         Queued::Add { recipe } => {
-            recipe.validate()?;
+            let text = region_text(recipe, switched_on(pool, dir))?;
+            if find(pool, dir, &recipe.id).is_ok() {
+                bail!("region {} exists already", recipe.id);
+            }
             pool.create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
             let p = dir.join(format!("{}.toml", recipe.id));
-            match pool.write_new(&p, toml::to_string(recipe)?.into_bytes()) {
+            match pool.write_new(&p, text.into_bytes()) {
                 Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!("region {} exists already", recipe.id),
                 r => r.with_context(|| format!("create {}", p.display())),
             }
         }
         Queued::Remove { id } => {
             ensure!(recipes::valid_id(id), "{id:?} isn't a region id");
-            let p = dir.join(format!("{id}.toml"));
-            match pool.rename(&p, &dir.join(format!("{id}.toml.removed"))) {
+            let p = dir.join(find(pool, dir, id)?);
+            match pool.rename(&p, &p.with_extension("toml.removed")) {
                 Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!("no region {id}"),
                 r => r.with_context(|| format!("rename {}", p.display())),
             }
@@ -290,21 +442,29 @@ fn apply(pool: &IoPool, dir: &std::path::Path, q: &Queued) -> Result<()> {
             // (The id makes a path: nothing but a region id may.)
             ensure!(recipes::valid_id(id), "{id:?} isn't a region id");
             let file = format!("{id}.toml");
-            let p = dir.join(&file);
+            let path = find(pool, dir, id)?;
+            let p = dir.join(&path);
             let text = match pool.read_all(&p) {
                 Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!("no region {id}"),
                 r => r.with_context(|| format!("read {}", p.display()))?,
             };
-            let mut r = recipes::parse(&file, &String::from_utf8(text)?)?;
+            let old = String::from_utf8(text)?;
+            let region = pipeline::inputs::regions::file::parse(&file, &old).map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))?;
+            ensure!(Listed::of(&region, path.clone()).plain, "{id} has more than osm: and shape: parts: edit the file (inputs/regions/{path})");
+            let mut r = Recipe { id: region.id, name: region.name, outline: region.outline.iter().map(|x| x.to_string()).collect() };
             if let Some(n) = name {
                 r.name = n.clone();
             }
             if let Some(o) = outline {
                 r.outline = o.clone();
             }
-            r.validate()?;
-            let tmp = dir.join(format!("{file}.tmp"));
-            pool.write(&tmp, toml::to_string(&r)?.into_bytes()).with_context(|| format!("write {}", tmp.display()))?;
+            let text = region_text(&r, switched_on(pool, dir))?;
+            // (The owner's comments and layout kept: only the name's and the outline's lines
+            // rewritten, when each is one line; else the file written anew.)
+            let text = keep_layout(&old, &r).unwrap_or(text);
+            // (Beside the file, an ignored name: `.` starts it, so no listing takes it half-written.)
+            let tmp = p.with_file_name(format!(".{file}.tmp"));
+            pool.write(&tmp, text.into_bytes()).with_context(|| format!("write {}", tmp.display()))?;
             pool.rename(&tmp, &p).with_context(|| format!("rename {}", tmp.display()))?;
             Ok(())
         }
@@ -370,12 +530,12 @@ fn enqueue(queue: &std::path::Path, q: &Queued) -> Result<()> {
 }
 
 /// The list as these edits leave it (offline: the pending ones).
-fn with_queued(mut list: Vec<Recipe>, q: &[(std::path::PathBuf, Queued)]) -> Vec<Recipe> {
+fn with_queued(mut list: Vec<Listed>, q: &[(std::path::PathBuf, Queued)]) -> Vec<Listed> {
     for (_, e) in q {
         match e {
             Queued::Add { recipe } => {
                 list.retain(|r| r.id != recipe.id);
-                list.push(recipe.clone());
+                list.push(Listed { id: recipe.id.clone(), name: recipe.name.clone(), outline: recipe.outline.clone(), path: format!("{}.toml", recipe.id), plain: true, state: "pending".into(), held: Vec::new() });
             }
             Queued::Remove { id } => list.retain(|r| &r.id != id),
             Queued::Edit { id, name, outline } => {
@@ -386,6 +546,7 @@ fn with_queued(mut list: Vec<Recipe>, q: &[(std::path::PathBuf, Queued)]) -> Vec
                     if let Some(o) = outline {
                         r.outline = o.clone();
                     }
+                    r.state = "pending".into();
                 }
             }
         }
@@ -425,6 +586,8 @@ pub fn spawn_flusher(s: S) {
             if !queued(&queue_dir(&s)).is_empty() {
                 flush(&s);
             }
+            // (The regions' accepted copy, for the layer: brought up to date once a minute.)
+            sync_accepted(&s);
             std::thread::sleep(std::time::Duration::from_secs(60));
         })
         .ok();
@@ -439,13 +602,14 @@ pub async fn list(State(s): State<S>) -> Response {
             Some((dir, pool)) => {
                 // The NAS not answering is a 503, as for any read it can't answer; the list kept
                 // for going away stays as it was.
-                let (ok, bad) = match load(&pool, &dir) {
+                let (mut ok, bad) = match load_all(&pool, &dir) {
                     Ok(v) => v,
                     Err(e) => {
                         eprintln!("regions: {e:#}");
                         return err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"));
                     }
                 };
+                states(&s2, &pool, &mut ok);
                 if let Ok(b) = serde_json::to_vec(&ok) {
                     let tmp = cache.with_extension("json.tmp");
                     if std::fs::write(&tmp, b).is_ok() {
@@ -453,12 +617,14 @@ pub async fn list(State(s): State<S>) -> Response {
                     }
                 }
                 let pending: Vec<String> = q.iter().map(|(_, e)| format!("{e:?}")).collect();
-                Json(json!({ "regions": with_queued(ok, &q), "bad": bad, "pending": pending.len() })).into_response()
+                let t = tree(&s2, &ok);
+                Json(json!({ "regions": with_queued(ok, &q), "bad": bad, "pending": pending.len(), "tree": t })).into_response()
             }
             None => {
                 // Away: the last list read, with the edits waiting to go.
-                let last: Vec<Recipe> = std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-                Json(json!({ "regions": with_queued(last, &q), "bad": [], "pending": q.len(), "offline": true })).into_response()
+                let last: Vec<Listed> = std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                let t = tree(&s2, &last);
+                Json(json!({ "regions": with_queued(last, &q), "bad": [], "pending": q.len(), "offline": true, "tree": t })).into_response()
             }
         }
     })
@@ -472,7 +638,14 @@ pub async fn list(State(s): State<S>) -> Response {
 fn edit_or_queue(s: &crate::AppState, q: Queued) -> Response {
     match nas(s) {
         Some((dir, pool)) => match apply(&pool, &dir, &q) {
-            Ok(()) => Json(json!({ "done": true })).into_response(),
+            Ok(()) => {
+                // (Checked within seconds: this Mac's agent asked to list the drop boxes now.)
+                let ask = pipeline::inputs::Ask { unit: pipeline::inputs::regions::UNIT.into(), check: true, by: format!("the Regions panel on {}", pipeline::agent::cond::host_name()), at: pipeline::agent::jobs::now_s(), ..Default::default() };
+                if let Err(e) = pipeline::inputs::ask(&s.home.join("agent"), &ask) {
+                    eprintln!("regions: the check wasn't asked for now ({e:#}): the next listing takes the edit");
+                }
+                Json(json!({ "done": true })).into_response()
+            }
             Err(e) => {
                 let code = status(&e, &pool);
                 if code == StatusCode::SERVICE_UNAVAILABLE {
@@ -491,7 +664,7 @@ fn edit_or_queue(s: &crate::AppState, q: Queued) -> Response {
 pub async fn add(State(s): State<S>, Json(r): Json<Recipe>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = r.validate() {
+        if let Err(e) = region_text(&r, true) {
             return err(StatusCode::BAD_REQUEST, format!("{e:#}"));
         }
         edit_or_queue(&s2, Queued::Add { recipe: r })
@@ -510,10 +683,8 @@ pub async fn edit(State(s): State<S>, Path(id): Path<String>, Json(e): Json<Edit
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || {
         if let Some(o) = &e.outline {
-            for x in o {
-                if let Err(e) = recipes::parse_outline(x) {
-                    return err(StatusCode::BAD_REQUEST, format!("{e:#}"));
-                }
+            if let Err(e) = region_text(&Recipe { id: id.clone(), name: "-".into(), outline: o.clone() }, true) {
+                return err(StatusCode::BAD_REQUEST, format!("{e:#}"));
             }
         }
         edit_or_queue(&s2, Queued::Edit { id, name: e.name, outline: e.outline })
@@ -527,6 +698,132 @@ pub async fn remove(State(s): State<S>, Path(id): Path<String>) -> Response {
     tokio::task::spawn_blocking(move || edit_or_queue(&s2, Queued::Remove { id }))
         .await
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+// ---- the input check's view of the regions ------------------------------------------------------
+
+/// The regions' records on the NAS: the accepted index and the held report, each when named and
+/// read (through the pool).
+fn records(s: &crate::AppState, pool: &IoPool) -> Option<(Option<pipeline::inputs::Index>, Option<pipeline::inputs::Report>)> {
+    let root = s.data.nas_root()?;
+    let read = |p: &str| pool.read_all(&root.join(p)).ok();
+    let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&read(pipeline::inputs::served::RECORDS)?).ok()?;
+    let unit = pipeline::inputs::regions::UNIT;
+    let index = m.get(&pipeline::inputs::logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
+    let held = m.get(&pipeline::inputs::held_logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
+    Some((index, held))
+}
+
+/// Each region's state in the input check: held (with the findings holding it), accepted (its
+/// name and parts as the accepted version has them), or checking; none when the records can't be
+/// read now.
+fn states(s: &crate::AppState, pool: &IoPool, list: &mut [Listed]) {
+    let Some((index, held)) = records(s, pool) else { return };
+    for r in list.iter_mut() {
+        let findings: Vec<Value> = held.iter().flat_map(|h| h.findings.iter()).filter(|f| f.files.contains(&r.path)).map(|f| json!({ "id": f.id, "message": f.message })).collect();
+        if held.as_ref().is_some_and(|h| h.held.contains(&r.path)) {
+            r.state = "held".into();
+            r.held = findings;
+            continue;
+        }
+        let same = index.as_ref().and_then(|i| i.files.get(&r.path)).is_some_and(|e| e.facts.get("name").and_then(Value::as_str) == Some(r.name.as_str()) && e.facts.get("outline") == Some(&json!(r.outline)));
+        r.state = if same { "accepted" } else { "checking" }.into();
+    }
+}
+
+/// The Regions list's tree (docs/inputs.md §6.1.2): the accepted version's folders, their names
+/// from their `_group.toml`, and their regions (pipeline::inputs::regions::read::tree), from the
+/// copy kept on this Mac; with none yet, the folders of the files listed, by their own names.
+fn tree(s: &crate::AppState, listed: &[Listed]) -> pipeline::inputs::regions::read::Folder {
+    sync_accepted(s);
+    let kept: Option<pipeline::inputs::served::Kept> = std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let index = kept.map(|k| k.index).unwrap_or_else(|| {
+        let mut i = pipeline::inputs::Index::default();
+        for l in listed {
+            let mut facts = serde_json::Map::new();
+            facts.insert("id".into(), l.id.clone().into());
+            facts.insert("geometry".into(), "-".into());
+            i.files.insert(l.path.clone(), pipeline::inputs::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts });
+        }
+        i
+    });
+    pipeline::inputs::regions::read::tree(&index)
+}
+
+/// Where this Mac keeps the regions' accepted version (its drawn files with it).
+fn accepted_dir(s: &crate::AppState) -> std::path::PathBuf {
+    crate::accepted::local_dir(&s.data.home, pipeline::inputs::regions::UNIT)
+}
+
+/// The regions' accepted version kept on this Mac in step with the records, with each region's
+/// drawn file (what the layer draws); nothing while the NAS is away.
+pub fn sync_accepted(s: &crate::AppState) {
+    let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool()) else { return };
+    if !pool.is_online() {
+        return;
+    }
+    let read = |p: &str| -> anyhow::Result<Vec<u8>> { Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?) };
+    if let Err(e) = pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"]) {
+        eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
+    }
+}
+
+/// A region's colour, from its id's hash (stable: a region keeps its colour whatever is added).
+pub fn colour(id: &str) -> String {
+    let h = store::naming::hash16(id.as_bytes());
+    let v = u64::from_str_radix(&h[..8], 16).unwrap_or(0);
+    // A hue from the hash, at a fixed saturation and lightness, for the dark map.
+    let hue = (v % 360) as f64;
+    let (s, l) = (0.65, 0.6);
+    let c = (1.0 - (2.0 * l - 1.0f64).abs()) * s;
+    let x = c * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (hue / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    format!("#{:02x}{:02x}{:02x}", to(r), to(g), to(b))
+}
+
+/// The region layer (docs/inputs.md §6.1.9): every region's accepted outline, from the drawn files
+/// kept on this Mac, a feature per stored shape with the region's id, name, colour and whether it's
+/// held now; the catalog's regions (as built) until this Mac has the accepted copy.
+pub async fn layer(State(s): State<S>) -> Response {
+    let s2 = s.clone();
+    tokio::task::spawn_blocking(move || -> Result<Response> {
+        sync_accepted(&s2);
+        let held: std::collections::BTreeSet<String> = s2.data.pool().filter(|p| p.is_online()).and_then(|p| records(&s2, &p)).and_then(|(_, h)| h).map(|h| h.held.into_iter().collect()).unwrap_or_default();
+        let dir = accepted_dir(&s2);
+        let kept = pipeline::inputs::served::files(&dir);
+        let mut feats = Vec::new();
+        let source = if kept.is_some() {
+            let index: Option<pipeline::inputs::served::Kept> = std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            for (path, e) in index.map(|k| k.index.files).unwrap_or_default() {
+                let Some(drawn) = e.facts.get("drawn").and_then(Value::as_str) else { continue };
+                let Some(d) = std::fs::read(dir.join(drawn)).ok().and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok()) else { continue };
+                for (from, coords) in &d.shapes {
+                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": d.id, "name": d.name, "from": from, "colour": colour(&d.id), "held": held.contains(&path) } }));
+                }
+            }
+            "accepted"
+        } else {
+            for r in recorded(&s2.data.catalog()) {
+                for (from, coords) in &r.shapes {
+                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": r.id, "name": r.name, "from": from, "colour": colour(&r.id), "held": false } }));
+                }
+            }
+            "catalog"
+        };
+        Ok(Json(json!({ "type": "FeatureCollection", "features": feats, "source": source })).into_response())
+    })
+    .await
+    .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 #[derive(Deserialize)]
@@ -780,10 +1077,33 @@ mod tests {
         assert_eq!((ok, bad.len()), (vec![recipe("borders", "Scottish Borders")], 1));
         // Changed through a temporary file, also over one an unfinished edit left.
         apply(&pool, &dir, &rename("borders", "The Borders")).unwrap();
-        std::fs::write(dir.join("borders.toml.tmp"), "half a recipe, and then some").unwrap();
+        std::fs::write(dir.join(".borders.toml.tmp"), "half a recipe, and then some").unwrap();
         apply(&pool, &dir, &Queued::Edit { id: "borders".into(), name: None, outline: Some(vec!["osm:1".into()]) }).unwrap();
         assert_eq!(load(&pool, &dir).unwrap().0, [Recipe { outline: vec!["osm:1".into()], ..recipe("borders", "The Borders") }]);
-        assert!(!dir.join("borders.toml.tmp").exists());
+        assert!(!dir.join(".borders.toml.tmp").exists());
+        // In every folder: a region found by id where it lies, a plain one edited, another refused
+        // ("edit the file"); old kinds of part refused.
+        std::fs::create_dir_all(dir.join("eu/pt")).unwrap();
+        std::fs::write(dir.join("eu/pt/azores.toml"), "id = \"azores\"\nname = \"Azores\"\noutline = [{ buffer = \"osm:1629145\", by = \"12 nmi\" }]\n").unwrap();
+        std::fs::write(dir.join("eu/pt/madeira.toml"), "id = \"madeira\"\nname = \"Madeira\"\noutline = [\"osm:1\"]\n").unwrap();
+        std::fs::write(dir.join("pins.toml"), "osm = \"2026-09-28\"\n").unwrap();
+        let (all, _) = load_all(&pool, &dir).unwrap();
+        let by: std::collections::BTreeMap<&str, &Listed> = all.iter().map(|l| (l.id.as_str(), l)).collect();
+        assert_eq!((by["azores"].path.as_str(), by["azores"].plain), ("eu/pt/azores.toml", false));
+        assert_eq!((by["madeira"].path.as_str(), by["madeira"].plain), ("eu/pt/madeira.toml", true));
+        std::fs::write(dir.join("eu/pt/madeira.toml"), "# Madeira and Porto Santo\nid = \"madeira\"\nname = \"Madeira\"   \noutline = [\"osm:1\"]  # the islands\n").unwrap();
+        apply(&pool, &dir, &rename("madeira", "Madeira Islands")).unwrap();
+        let t = std::fs::read_to_string(dir.join("eu/pt/madeira.toml")).unwrap();
+        assert!(t.contains("Madeira Islands") && t.starts_with("# Madeira and Porto Santo\n"), "the owner's comment kept: {t}");
+        let e = apply(&pool, &dir, &rename("azores", "X")).unwrap_err();
+        assert!(format!("{e:#}").contains("edit the file"), "{e:#}");
+        assert!(apply(&pool, &dir, &Queued::Add { recipe: Recipe { id: "p".into(), name: "P".into(), outline: vec!["place:1,2,3".into()] } }).is_err());
+        // Before the readers' switch (no records here), only osm: parts: the drop box's readers know no other.
+        let e = apply(&pool, &dir, &Queued::Add { recipe: Recipe { id: "s".into(), name: "S".into(), outline: vec!["shape:s.geojson".into()] } }).unwrap_err();
+        assert!(format!("{e:#}").contains("after the switch"), "{e:#}");
+        assert!(apply(&pool, &dir, &Queued::Add { recipe: recipe("madeira", "again") }).is_err(), "an id in a subfolder is taken");
+        apply(&pool, &dir, &Queued::Remove { id: "madeira".into() }).unwrap();
+        assert!(dir.join("eu/pt/madeira.toml.removed").exists());
         // Removed: renamed to .removed, kept for undoing.
         apply(&pool, &dir, &Queued::Remove { id: "borders".into() }).unwrap();
         assert!(load(&pool, &dir).unwrap().0.is_empty());

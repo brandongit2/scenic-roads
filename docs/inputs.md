@@ -164,7 +164,7 @@ What moves (each in its task; §11):
 ## 4. The input check (#134)
 
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
-the languages (§6.2), the translations and the descriptions (§6.3, §6.4) and, while it's on, the
+the languages (§6.2), the translations and the descriptions (§6.3, §6.4), the regions (§6.1) and, while it's on, the
 test unit `_gate-test` (§4.10); each other input joins `inputs::UNITS` in its own task (#135,
 #138–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
 section isn't built yet is marked planned.
@@ -192,7 +192,8 @@ section isn't built yet is marked planned.
   as a member doesn't list.)
 - `scenic inputs check [<unit>]` lists now (an ask to this Mac's agent, `inputs-asks/` in its
   folder, as an acceptance asked of it is). The Regions panel's own writes asking for a listing at
-  once, so a new region is checked within seconds, come with the regions (#135, planned).
+  once, so a new region is checked within seconds, ask this Mac's agent to check `regions` (built,
+  #135).
 - A file whose time is within the last 10 s is left for the next listing (listed again 11 s
   later), by its time alone (the same size and time in two listings a few seconds apart don't prove
   it whole). The check is given the listing and acceptances its key was made from (`--listing`,
@@ -418,7 +419,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 - **The map's build panel** (`web/src/ui/buildstatus.ts`): the same banners, compact, a link to
   the place on the map, and a warning sign on the build item (`/api/build/inputs`, an ask to this
   Mac's agent). Built. The Regions panel marking a held recipe "held: <finding>" comes with the
-  regions (#135, planned).
+  regions (built, #135: the panel's states, §6.1.9).
 - **`scenic status`** prints a line per unit held or checking; `scenic inputs` lists every unit's
   version, state, findings and acceptances (stale ones marked). Built.
 
@@ -621,9 +622,17 @@ deleted.
 
 ### 6.1 Regions (#135)
 
-**Status: planned; reviewed by the owner on 15 October 2026** (the decisions in §6.1.11, three of
-them against the picks: unknown files ignored, the antimeridian supported, the panel editing only
-names and part lists). Today a recipe is `<id>.toml` directly in
+**Status: built, publish 1 of 2 (#135)**, reviewed by the owner on 15 October 2026 (the decisions in
+§6.1.11, three of them against the picks: unknown files ignored, the antimeridian supported, the
+panel editing only names and part lists). Built: the check (crate::inputs::regions: `file`,
+`shapes`, `geom`, `resolve`, `stored`, `extract`), the stored geometry, both read paths
+(crate::inputs::regions::read: the readers read the accepted version once the records say they
+switched, `sources/inputs/regions/@switched`, which the check records when the migration's proof
+says the same of that version; the drop box's recipes before),
+the `regions-extract` job, `scenic-build regions-proof`, `scenic regions convert-poly`, the server's
+panel states and region layer (`/api/regions`, `/api/regions/layer`) and the map's. Publish 2 (the
+fallback and the old kinds deleted, §6.1.10) is the next app. Until it, the old kinds (`geofabrik:`,
+`poly:`, `place:`) still read on the drop box's path; the check refuses them. Today a recipe is `<id>.toml` directly in
 `inputs/regions/`, its `outline` a list of `osm:`, `geofabrik:`, `poly:` and `place:` entries whose
 union is the region (crates/pipeline/src/agent/recipes.rs, `Outline`; plan §5), read straight from
 the drop box by every reader listed in §6.1.7. Everything below is the design.
@@ -639,11 +648,25 @@ checks each region's definition, not how regions fit together: no partition repo
 
 #### 6.1.2 Files and folders
 
-- One region per file, `<id>.toml`, anywhere under `inputs/regions/`. Subfolders only group
-  (`europe/portugal/azores.toml`): the build and the app ignore them. An id is unique across all
+- One region per file, `<id>.toml`, anywhere under `inputs/regions/`. Subfolders group
+  (`europe/portugal/azores.toml`): the build ignores them, the Regions panel shows them (below). An id is unique across all
   folders, so moving a file between folders changes nothing (not its id, the coverage or a key).
 - Custom shapes are GeoJSON files, `<name>.geojson`, anywhere under `inputs/regions/`, named by
   their file name alone (unique across all folders, for the same reason).
+- **Folders are the Regions list's groups** (the owner's requirement, 15 October): the map's
+  Regions panel shows the folders as a collapsible tree, nested as on disk, each region inside its
+  folder's group and those at the top at the top level, with each group's count; its open or closed
+  state is remembered per viewer (in the browser). A group's name is its folder's, or the `name` of
+  an optional `_group.toml` in it (for names a folder can't hold, `/` or `:`), with an optional
+  integer `order` among its siblings (those with one first, lower first; then by name). It's the one
+  `_`-named file the regions take (every other is passed over, §3); a region's id can't start with
+  `_`, so it never collides. The check reads it (a TOML that doesn't parse, an unknown field or an
+  empty name is an error, `rg-group`); the accepted version carries it (its `facts.group`), and the
+  tree is made from the index alone (crate::inputs::regions::read::tree), so the server and the map
+  never read the drop box for it. A folder with no region at any depth isn't shown. The grouping is
+  the index's alone: moving a region to another folder changes its group, never its id, its stored
+  geometry or any key (its geometry file is the same), though the regions' index, and so the
+  catalog, is new.
 - `inputs/regions/pins.toml` names the OSM snapshot the folder is written against (§6.1.5).
 - `how/`, `todo/` and names starting with `.`, `@`, `#` or `_` are ignored, as in every drop box
   (§3); a `<id>.toml.removed` is a removal the owner made (the Regions panel's), not a finding.
@@ -681,7 +704,7 @@ Unknown fields are an error, so a typo (`minsu`) can't silently do nothing. The 
   a line (left or right as the line is drawn, first point to last). Each separate piece the line
   crosses from edge to edge is split and its `keep` side kept; where the line runs on past a piece,
   the extra is ignored; a piece the line doesn't meet is kept whole if it lies on the `keep` side
-  (judged from the line extended straight from its nearer end), else dropped. A line ending inside a
+  (judged by the side of the line, extended straight from both its ends, it lies on), else dropped. A line ending inside a
   piece can't cut it: an error.
 
 `buffer` and `cut` take any part, so they nest (`{ cut = { buffer = "osm:…", by = "12 nmi" }, … }`).
@@ -818,8 +841,8 @@ of the seam.
 
 **The stored geometry** (the accepted version, §4.6): the check resolves every region it accepts and
 stores, besides the region files, two content-named files per region:
-- `sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`, what the coverage reads: zstd-compressed,
-  the magic `RGEO0001`, a JSON head, then each shape's rings as zigzag varint deltas of E7 points
+- `sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`, what the coverage reads: uncompressed (so the
+  same geometry is the same bytes whatever compression library a Mac has), the magic `RGEO0001`, a JSON head, then each shape's rings as zigzag varint deltas of E7 points
   (binary because a region's rings are the outline set's at full detail: Nunavut's coast alone is
   millions of points, which JSON would make hundreds of megabytes). The head:
   ```json
@@ -846,7 +869,7 @@ when it crosses the antimeridian, above). The index (§4.6) names each region's 
 `facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry file's content name, so an
 edit that doesn't change a region's result (a comment, a line renamed) reruns nothing.
 
-**Reading it:** `Coverage::accepted(root, manifest)` (planned) reads the index through
+**Reading it:** `Coverage::accepted(root, accepted)` (built: crate::inputs::regions::read) reads the index through
 `inputs::open(root, manifest, "regions")` and builds the coverage from the stored shapes, regions in
 id order, each region's shapes in stored order (today's order is the recipes' file-name order, which
 is id order). No reader makes the coverage again from the pass's outlines, a GeoJSON or a region file.
@@ -890,9 +913,12 @@ file of exactly those ids' geometry, made from the pinned pass.
   and never shrinks within a pass, so removing and restoring a region doesn't remake it.
 - **From:** the pass's planet PBF in `sources/osm/<date>/`, read with the pipeline's PBF reader
   (`osmpbf`) in three scans: relations (their member ways), ways (their nodes), nodes.
-- **Size and time:** kilobytes per relation or way; each scan reads the whole planet file, so an
-  extract takes three sequential reads of it (planned: measured on the first and kept as the step's
-  timing, not a figure here). Today no region needs one: all 88 recipes name relations in the
+- **Which file, size and time:** kilobytes per relation or way. The job reads the pass's filtered
+  planet first (60 GB for 2026-09-28; it keeps the relations and ways of the pipeline's tags with
+  their members, not every relation), and the planet itself (95 GB; GC sweeps a pass's planet only
+  once the pass is retired) only for the ids the filtered one lacks: three sequential scans of each
+  it reads, a long whole-file read, so the step runs alone on its Mac. Its time is the step's
+  measured timing (none yet: no region needs an extract today). Today no region needs one: all 88 recipes name relations in the
   outline set (§6.1.10).
 
 #### 6.1.7 Readers moved to the accepted version
@@ -960,6 +986,7 @@ over the files and ids named.
 | `rg-empty` | a result with no area (a `minus` taking everything, an `intersect` meeting nothing) |
 | `rg-pin` | no OSM pin (neither `pins.toml` nor `[pins]`), or one that isn't a date |
 | `rg-pin-mismatch` | a pin naming another pass than the build's current one (§6.1.5) |
+| `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name` and `order`, or an empty name |
 | `rg-extract` | a relation or way not in the pass's outline set that the current extract lacks: the files wait (held) while the extract is made (§6.1.6), then are checked again |
 
 A held region keeps its last accepted geometry; a region new since the accepted version and held is
@@ -986,17 +1013,27 @@ it out with the next accepted version.
 
 #### 6.1.10 Migration, in two publishes, with a runbook
 
-Today all 88 recipes use `osm:` entries alone, all in the pass's outline set (checked on the NAS,
-2026-10-10: `inputs/regions/*.toml`; two more are `.toml.removed`), and none uses an operation. So
+Today all 88 recipes use `osm:` entries alone, 122 of them, all in the pass's outline set (checked
+on the NAS, 2026-10-15: `inputs/regions/*.toml`; two more are `.toml.removed`), and none uses an
+operation. So
 every region is stored as its parts unchanged (§6.1.4): the build reads the same shapes, in the same
 order, with the same tolerance, and so the same `Coverage::fingerprint` and `shapes_key` everywhere.
 
 **Publish 1** (the check, the stored geometry, both read paths):
 - The `regions` unit goes through the input check. Every reader in §6.1.7 reads `Coverage::accepted`
-  once the records name an accepted regions version and the proof (runbook step 2) has passed, and
-  **today's path otherwise** (the drop box through `recipes::load`), so the coverage is never empty
-  while no version is accepted. The server reads its Mac's accepted copy once it has it, and the
-  drop box until then (as #137's first publish, §6.3).
+  once **the records say the readers switched** (`sources/inputs/regions/@switched`, written once by
+  the regions' check job when the migration's proof, runbook step 2, says the same of exactly the
+  accepted version the records name then), and **today's path otherwise** (the drop box through
+  `recipes::load`), so the coverage is never empty while no version is accepted. The switch is a
+  records entry, merged like any other, so no reader decides it from a file it may fail to read;
+  the proof's own file is read by the check alone, and only its absence means "not proved" (a read
+  that fails or a file that doesn't parse fails the check). The server's region layer reads its
+  Mac's accepted copy once it has it, and the catalog's regions until then.
+- **Not ready:** while the current pass has no outline set yet (its outlines step pending, #201),
+  the check does nothing: no finding, no extract asked for, nothing taken in; the outline set's
+  name is in its key, so it runs once it's made.
+- Before the switch the Regions panel takes `osm:` parts alone (a `shape:` part is "available after
+  the switch"): the drop box's readers know no other kind.
 - `regions_digest` and `catalog_key` take the index's content name once readers use it.
 - The check refuses `geofabrik:`, `poly:` and `place:` (`rg-part`); the fallback still reads them.
 - The operations, subfolders, lines, `region:`, pins, the extract and the region layer ship here
@@ -1007,15 +1044,30 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
 **Runbook, with publish 1 on every Mac** (the menu bar item's and `/api/catalog`'s app versions):
 1. Write `inputs/regions/pins.toml` naming the current pass's date. The check runs; expect no
    findings (any is a recipe today's path takes and the new check doesn't: fix the file or report).
-2. Proof (`scenic-build regions-proof`, planned): build the coverage both ways (`recipes::load` +
+   From here until step 2's switch, **no edits to `inputs/regions/`**: the switch is only for the
+   version proved.
+2. Proof (`scenic-build regions-proof --root <root> --write`, built; it refuses while any pool
+   member's heartbeat names an app older than its own): build the coverage both ways (`recipes::load` +
    `from_recipes` on the pass's outlines; `Coverage::accepted`) and compare `fingerprint` and
    `shapes_key` on every z6 tile either meets and every job box in the records (`rekey_records`'
-   boxes), then plan dry: zero build steps change key. It writes `state/inputs/regions-proof.json`
-   with the accepted index's name and `same: true`; readers switch only for that index (a
-   difference keeps today's path and stops the migration).
+   boxes), then plan dry: no build step changes key except the catalog's (its regions digest). It writes `state/inputs/regions-proof.json`
+   with the accepted index's name and `same: true`; readers switch then, for good (later versions
+   are the owner's edits taken in by the check); a difference writes `same: false`, keeps today's
+   path and stops the migration. It compares the coverages' fingerprints and shapes keys on every
+   z6 tile either meets and every tile-named target of the records' keys, then the unit keys and a
+   dry plan made with each coverage (all other inputs the same), and the catalog's drawn regions
+   both ways. Then `scenic inputs check --full regions`: the check records the switch
+   (`sources/inputs/regions/@switched`) if the accepted version is still the one proved; `scenic
+   inputs` shows it. If an edit got in between, run the proof again. The switch records the app
+   the proof ran on: from then on no Mac on an older app leads or is handed the lead (the pool's
+   views say "app too old"), and a lead on one builds nothing and says why. **No rollback past
+   publish 1 after this step** (`scenic lead take --force --downgrade` to an older app would build
+   from the drop box again).
 3. Let the lead plan with it: no build step reruns; the catalog is remade once (its key names the
-   regions' index now) and lists the same regions with the same drawn shapes.
-4. Convert every `.poly` to GeoJSON (`scenic regions convert-poly`, planned): ours
+   regions' index now) and lists the same regions with the same drawn shapes (look at the map's
+   coverage once, by eye, beside the region layer). **From the switch on, the coverage follows
+   `pins.toml`, not the newest pass:** a new pass changes nothing until the pin is moved (§6.1.5).
+4. Convert every `.poly` to GeoJSON (`scenic regions convert-poly`, built): ours
    (`inputs/outlines/azores.poly`, `madeira.poly`, `portugal-mainland.poly`) to
    `inputs/regions/shapes/<name>.geojson`, Geofabrik's 31 (`inputs/outlines/geofabrik/`) to
    `inputs/regions/shapes/geofabrik/<id, / as ->.geojson`, each a Feature naming its `.poly` in its

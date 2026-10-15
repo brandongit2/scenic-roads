@@ -528,6 +528,7 @@ async fn main() -> Result<()> {
         .route("/api/names", get(names_h))
         .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list).post(regions::add))
+        .route("/api/regions/layer", get(regions::layer))
         .route("/api/regions/{id}", axum::routing::put(regions::edit).delete(regions::remove))
         .route("/api/areas", get(regions::at))
         .route("/api/areas/search", get(regions::search))

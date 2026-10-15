@@ -2345,14 +2345,14 @@ impl Agent {
                 let plan = if idle && !unsent && self.caches_task.is_none() { self.helper_job(root, &c, &mut waiting) } else { Vec::new() };
                 let regions = match &self.planned {
                     Some(p) if !plan_due => p.regions.clone(),
-                    _ => recipes::load(&root.join("inputs/regions")).0,
+                    _ => load_regions(root).0,
                 };
                 self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad: Vec::new() });
                 plan
             }
             Some(root) if plan_due => {
                 let plan = self.plan(root, &c, &mut waiting);
-                let (regions, bad) = recipes::load(&root.join("inputs/regions"));
+                let (regions, bad) = load_regions(root);
                 self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad });
                 plan
             }
@@ -4331,7 +4331,6 @@ impl Agent {
     /// `region_work`'s jobs before the lake fill's hold; `held` set when the pass's lake fill holds
     /// the jobs that read it (`hold_for_lakefill`).
     fn region_jobs(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>, held: &mut bool) -> Vec<JobSpec> {
-        let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
             Ok(r) => r,
@@ -4340,6 +4339,21 @@ impl Agent {
                 return Vec::new();
             }
         };
+        // (Once the regions' switch is recorded, an app older than the one it was proved on reads
+        // the wrong regions: it builds nothing, and says so.)
+        let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| std::fs::read(root.join(n)).with_context(|| format!("read {n}"))).map_err(|e| format!("{e:#}"));
+        if let Err(why) = crate::inputs::regions::read::may_lead(&self.app, &regions_app) {
+            waiting.push(Waiting { step: None, what: "All building".into(), why: format!("this Mac can't build now: {why}") });
+            return Vec::new();
+        }
+        // (The regions from the same records as the coverage.)
+        let (recipes, unread) = match crate::inputs::regions::read::source(root, &manifest) {
+            Ok(src) => crate::inputs::regions::read::recipes(root, &src),
+            Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
+        };
+        if let Some((_, why)) = unread.iter().find(|(f, _)| f == "regions") {
+            waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("the regions can't be read now: {why}") });
+        }
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let build_bin = s(&self.o.bin.join("scenic-build"));
         let mut jobs: Vec<JobSpec> = self.gate_work(root, &manifest, &keys, waiting);
@@ -5045,7 +5059,7 @@ impl Agent {
     /// units wait for them.)
     fn rekey_records(&self, root: &Path) -> Result<Option<rekey::Rekeyed>> {
         let Some(date) = self.latest_pass(root) else { return Ok(None) };
-        let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
+        let (recipes, unread) = load_regions(root);
         if recipes.is_empty() || !unread.is_empty() {
             return Ok(None);
         }
@@ -5088,7 +5102,7 @@ impl Agent {
     /// derived), for a job's `--expect-same`; as they are when what that reads can't be told now.
     fn as_read(&self, root: &Path, mut keys: build::Keys) -> build::Keys {
         let Some(date) = self.latest_pass(root) else { return keys };
-        let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
+        let (recipes, unread) = load_regions(root);
         if recipes.is_empty() || !unread.is_empty() {
             return keys;
         }
@@ -5141,7 +5155,13 @@ impl Agent {
     fn coverage(&self, root: &Path, manifest: &BTreeMap<String, String>, date: &str, recipes: &[recipes::Recipe], edits: bool) -> Result<std::rc::Rc<Coverages>, String> {
         let dir = root.join("inputs/outlines");
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).cloned();
-        let (key, seen) = coverage_key(recipes, outlines.as_deref(), &dir).unzip();
+        // (The accepted version, once the readers read it: keyed by its index's name, an edit being
+        // a new version.)
+        let src = crate::inputs::regions::read::source(root, manifest).map_err(|e| format!("the regions' accepted version: {e:#}"))?;
+        let (key, seen) = match &src {
+            crate::inputs::regions::read::Source::Accepted(a) => (Some(format!("accepted {}", a.version)), Some(a.version.clone())),
+            crate::inputs::regions::read::Source::DropBox => coverage_key(recipes, outlines.as_deref(), &dir).unzip(),
+        };
         if let Some(e) = seen.filter(|_| edits) {
             if self.edits.borrow().as_ref().is_some_and(|last| *last != e) {
                 let now = std::time::SystemTime::now();
@@ -5155,8 +5175,13 @@ impl Agent {
                 return Ok(c.clone());
             }
         }
-        let o = outlines.map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose().map_err(|e| format!("the pass's outlines: {e:#}"))?;
-        let all = crate::coverage::Coverage::from_recipes(recipes, o.as_ref(), &dir).map_err(|e| format!("{e:#}"))?;
+        let all = match &src {
+            crate::inputs::regions::read::Source::Accepted(a) => crate::coverage::Coverage::accepted(root, a, None).map_err(|e| format!("{e:#}"))?,
+            crate::inputs::regions::read::Source::DropBox => {
+                let o = outlines.map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose().map_err(|e| format!("the pass's outlines: {e:#}"))?;
+                crate::coverage::Coverage::from_recipes(recipes, o.as_ref(), &dir).map_err(|e| format!("{e:#}"))?
+            }
+        };
         let c = std::rc::Rc::new(Coverages { each: all.by_region(), all });
         // (Not kept when the outline files couldn't be listed: made again next time.)
         *self.coverage.borrow_mut() = key.map(|k| (k, c.clone()));
@@ -6372,6 +6397,13 @@ impl Agent {
                 jobs.push(JobSpec { id, what: format!("Checking the inputs dropped in {unit}{}", if full { ", every file" } else { "" }), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "inputs".into(), targets: vec![(target, key)] }) });
             }
         }
+        // The regions' extract, when their check holds files waiting for ids it lacks (its held
+        // report's `needs`, of the current pass): a job extracting them with those it has.
+        if !self.o.helper {
+            if let Some(job) = self.extract_job(root, manifest, keys) {
+                jobs.push(job);
+            }
+        }
         // A unit off the gate whose records were asked to be forgotten (`scenic inputs test off
         // --forget`): a job that removes them from the records.
         if !self.o.helper {
@@ -6388,6 +6420,34 @@ impl Agent {
         let accepted = self.inputs.watch.as_ref().map(|(_, w)| w.accepted()).unwrap_or_default();
         *self.inputs.view.borrow_mut() = crate::inputs::view::of(root, manifest, &units, &checking, &accepted, &mut self.inputs.cache.borrow_mut());
         jobs
+    }
+
+    /// The regions' extract job (docs/inputs.md §6.1.6), when the regions' held report needs ids of
+    /// the current pass and the job for them (and those the extract has) isn't done.
+    fn extract_job(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys) -> Option<JobSpec> {
+        use crate::inputs::regions::extract;
+        let held = manifest.get(&crate::inputs::held_logical(crate::inputs::regions::UNIT))?;
+        let report = crate::inputs::read_report(root, held).ok()?;
+        let date = report.needs.first()?.strip_prefix("pass ")?.to_string();
+        if crate::osmpass::latest_pass_in(manifest).as_deref() != Some(date.as_str()) {
+            return None;
+        }
+        let mut ids: BTreeSet<extract::Id> = report.needs.iter().skip(1).filter_map(|s| s.parse().ok()).collect();
+        if ids.is_empty() {
+            return None;
+        }
+        if let Some(e) = manifest.get(&extract::logical(&date)).and_then(|n| std::fs::read(root.join(n)).ok()).and_then(|b| extract::Extract::read(&b).ok()) {
+            ids.extend(e.ids());
+        }
+        let key = extract::key(&date, &ids);
+        let target = format!("regions-extract/{date}");
+        if keys.lo.get(&target) == Some(&key) {
+            return None;
+        }
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let list: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+        let cmd = vec![s(&self.o.bin.join("scenic-build")), "regions-extract".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("regions-extract")), "--pass".into(), date.clone(), "--ids".into(), list.join(",")];
+        Some(JobSpec { id: format!("regions-extract {date}"), what: "Extracting the regions' OSM relations and ways".into(), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "regions-extract".into(), targets: vec![(target, key)] }) })
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
@@ -6415,7 +6475,7 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     }
     // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
     // then waits).
-    inputs.insert("regions".into(), regions_digest(root).unwrap_or_else(|| "?".into()));
+    inputs.insert("regions".into(), crate::inputs::regions::read::digest(root, || regions_digest(root)).unwrap_or_else(|| "?".into()));
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
     // The 3D buildings' sources: what each z6 tile's bldprep reads, and its rows.
     inputs.extend(crate::bld::sources::digests(root, crate::buildtiles::RELEASE));
@@ -6434,6 +6494,16 @@ fn key_names(path: &Path) -> Option<String> {
     names.sort_unstable();
     names.dedup();
     Some(names.join(","))
+}
+
+/// The regions as the readers read them now (crate::inputs::regions::read: the accepted version
+/// once the migration's proof has passed, the drop box's recipes before), sorted by id, and those
+/// that can't be read (the accepted version unreadable now: one line naming why).
+fn load_regions(root: &Path) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
+    match crate::inputs::regions::read::source_now(root) {
+        Ok(src) => crate::inputs::regions::read::recipes(root, &src),
+        Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
+    }
 }
 
 /// The recipes, and the outline files they name (by size and time), hashed; None when a read fails.
@@ -8243,6 +8313,25 @@ mod tests {
         assert_eq!(shared(build::TREES).as_deref(), Some("tiles"), "the pieces, not the assemblies");
         assert_eq!(shared(build::TILES), None);
         assert_eq!(shared(build::PUBLISH), None);
+    }
+
+    #[test]
+    fn an_app_older_than_the_regions_switch_plans_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        let sw = crate::inputs::switched_logical(crate::inputs::regions::UNIT);
+        let name = format!("{sw}.1111111111111111.json");
+        put(&root.join(&name), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#);
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&BTreeMap::from([(sw.clone(), name)])).unwrap());
+        let a = agent(&root, &home);
+        let (mut w, mut held) = (Vec::new(), false);
+        assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
+        assert!(w.iter().any(|x| x.why.contains("older than the one the regions' switch was proved on")), "{w:?}");
+        // Its file unreadable: unknown, so nothing either.
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&BTreeMap::from([(sw, "gone.json".to_string())])).unwrap());
+        let mut w = Vec::new();
+        assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
+        assert!(w.iter().any(|x| x.why.contains("can't be read now")), "{w:?}");
     }
 
     #[test]

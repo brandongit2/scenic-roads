@@ -956,10 +956,11 @@ mod tests {
     /// The coverage of `out`'s regions, as scenic-build's steps read it (the latest pass's outlines).
     fn live_coverage(out: &Out) -> Coverage {
         let root = out.root();
-        let (recipes, _) = crate::agent::recipes::load(&root.join("inputs/regions"));
+        let src = crate::inputs::regions::read::source(root, &out.manifest).unwrap();
+        let (recipes, _) = crate::inputs::regions::read::recipes(root, &src);
         let date = crate::osmpass::latest_pass(root);
         let outlines = date.as_deref().and_then(|d| out.get(&format!("sources/osm/{d}/outlines")).map(|n| out.path(n))).map(|p| crate::outlines::Outlines::open(&p).unwrap());
-        Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")).unwrap()
+        crate::inputs::regions::read::coverage_with(root, &src, &recipes, outlines.as_ref()).unwrap()
     }
 
     /// By hand, on the build's own data (docs/workers.md §3): pieces `TT_PIECES` ("6/x/y,…") made

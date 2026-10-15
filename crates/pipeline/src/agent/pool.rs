@@ -479,11 +479,26 @@ impl Side {
     /// wouldn't answer the offer (its driver's `ready_for` takes `Give::able`), so the views and the
     /// asks refuse it up front, saying why, rather than offer and give up a minute on.
     pub fn hand_to(&self, to: &str) -> std::result::Result<(), String> {
+        self.hand_to_with(to, &self.regions_app())
+    }
+
+    /// `hand_to`, the regions' switch's app (`regions_app`) read already: a view reads it once.
+    pub fn hand_to_with(&self, to: &str, regions: &std::result::Result<Option<String>, String>) -> std::result::Result<(), String> {
         self.driver().hand_to(&self.io(), to)?;
+        let app = self.heartbeat(to).map(|h| h.pool.app).unwrap_or_default();
+        crate::inputs::regions::read::may_lead(&app, regions)?;
         match self.heartbeat(to).and_then(|h| h.conds) {
             Some(c) if !c.able => Err(c.why_unable()),
             _ => Ok(()),
         }
+    }
+
+    /// The app the regions' switch was proved on, when the records have it
+    /// (crate::inputs::regions::read::switch_app): no member on an older one leads.
+    pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
+        let read = |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
+        let m: BTreeMap<String, String> = serde_json::from_slice(&read("state/build/manifest.json").map_err(|e| format!("{e:#}"))?).map_err(|e| format!("the records: {e}"))?;
+        crate::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 
     /// What a takeover from this Mac needs now, and why (`Driver::takeover`, §11).

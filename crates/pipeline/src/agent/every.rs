@@ -38,7 +38,7 @@ pub fn on(root: &Path) -> Option<bool> {
 /// crate::agent's catalog and sweep), the 3D buildings' sources' fetch (written outside the records,
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, the backup, the input checks, the names to do).
-pub const LEAD_ONLY: [&str; 9] = ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "backup", "inputs", "names-todo"];
+pub const LEAD_ONLY: [&str; 10] = ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "backup", "inputs", "names-todo", "regions-extract"];
 
 /// Whether the lead offers its members `step`'s targets with the switch on: a step of the steps
 /// table of targets by area (not a worldwide one: `names_target` of its name, a run alone, the

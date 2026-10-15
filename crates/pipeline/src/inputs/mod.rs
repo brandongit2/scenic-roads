@@ -29,6 +29,7 @@ pub mod gate;
 pub mod gatetest;
 pub mod languages;
 pub mod lint;
+pub mod regions;
 pub mod served;
 pub mod translations;
 pub mod view;
@@ -38,7 +39,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 3] = [languages::UNIT, translations::UNIT, descriptions::UNIT];
+pub const UNITS: [&str; 4] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -75,6 +76,10 @@ pub fn units(root: &Path) -> Vec<&'static str> {
     v
 }
 
+/// The regions' checks as a file's own checks and the listing read them (the check job's are
+/// `Checks::prepared`'s, with the pass's outlines).
+static REGIONS: std::sync::LazyLock<regions::Regions> = std::sync::LazyLock::new(regions::Regions::default);
+
 /// The checks of unit `unit`; None for a unit this app doesn't know.
 pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
     match unit {
@@ -83,6 +88,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
         languages::UNIT => Some(&languages::Languages { codes: None }),
         translations::UNIT => Some(&translations::Translations),
         descriptions::UNIT => Some(&descriptions::Descriptions),
+        regions::UNIT => Some(&*REGIONS),
         _ => None,
     }
 }
@@ -91,7 +97,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
 /// its last listing. A `@` starts no component of a drop-box path (`ignored`) nor of a unit's name
 /// (`valid_unit`), so these are never a copy's name nor a nested unit's (`a`'s copy of `b/x.json`
 /// and unit `a/b`'s index can't be confused).
-pub const RECORDS: [&str; 3] = ["@index", "@held", "@listed"];
+pub const RECORDS: [&str; 4] = ["@index", "@held", "@listed", "@switched"];
 
 /// A unit's name: `/`-separated components of lower-case letters, digits, `-` and `_`
 /// (`timetables/gtfs`).
@@ -108,6 +114,13 @@ pub fn logical(unit: &str) -> String {
 /// The records' entry naming unit `unit`'s report while a change is held.
 pub fn held_logical(unit: &str) -> String {
     format!("{}/@held", store_dir(unit))
+}
+
+/// The records' entry recording that the build's readers read unit `unit`'s accepted version, for a
+/// unit moved from a drop box read directly (the regions, §6.1.10): written once, by the unit's
+/// check job, naming the migration's proof it was switched on.
+pub fn switched_logical(unit: &str) -> String {
+    format!("{}/@switched", store_dir(unit))
 }
 
 /// The records' entry naming the files' sizes and times unit `unit`'s last check listed (`Listed`:
@@ -268,6 +281,45 @@ pub trait Checks: Sync {
     fn partners(&self, _path: &str, _all: &BTreeSet<String>) -> Vec<String> {
         Vec::new()
     }
+    /// Whether it takes a file of its drop box at all (the regions take their region files, shapes
+    /// and `pins.toml` alone): a file it doesn't take is ignored, neither listed nor read.
+    fn takes(&self, _path: &str) -> bool {
+        true
+    }
+    /// Whether it takes a file whose name every drop box passes over (`ignored`): the regions'
+    /// `_group.toml`, a folder's group's name (§6.1.2).
+    fn takes_ignored(&self, _name: &str) -> bool {
+        false
+    }
+    /// Whether a finding of `whole` about a file that didn't change holds it too (kept as accepted
+    /// and shown as held): the regions' pins, which a new pass makes wrong without any file
+    /// changing (docs/inputs.md §6.1.5). `whole` then runs on every check, changes or none.
+    fn holds_unchanged(&self) -> bool {
+        false
+    }
+    /// What the check needs made before it can take the files it holds for it (the regions'
+    /// extract's ids, `r<id>` and `w<id>`), as the last `whole` found: in the held report.
+    fn needs(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// What's derived from the next version whole (§4.3, after step 5): facts for its files (set
+    /// over the file check's, with the `keyed` digest when given), and files to store with them
+    /// (content name → bytes: the regions' stored geometry). `keep`: the files whose accepted entry
+    /// stays as it is (held), given nothing.
+    fn derive(&self, _v: &Version, _keep: &BTreeSet<String>) -> Result<Derived> {
+        Ok(Derived::default())
+    }
+    /// Why the check can't run now (the regions' while the current pass has no outline set yet):
+    /// the job then changes nothing, and runs again when its key does. None: ready.
+    fn not_ready(&self) -> Option<String> {
+        None
+    }
+    /// The bytes to record as the unit's `@switched` (`switched_logical`), when its readers are to
+    /// switch to accepted version `index` now (the regions': the migration's proof says the same of
+    /// exactly that index); None otherwise. Asked only while the records have none.
+    fn switch(&self, _root: &Path, _index: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
     /// The content names of what else its checks read from the records (the pass's outlines): in
     /// the check's key.
     fn context(&self, _manifest: &BTreeMap<String, String>) -> Vec<String> {
@@ -278,6 +330,15 @@ pub trait Checks: Sync {
     fn prepared(&self, _root: &Path, _manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
         Ok(None)
     }
+}
+
+/// What `Checks::derive` gives.
+#[derive(Clone, Debug, Default)]
+pub struct Derived {
+    /// By drop-box path: facts set over the file check's, and the `keyed` digest (None: as it was).
+    pub facts: BTreeMap<String, (serde_json::Map<String, serde_json::Value>, Option<String>)>,
+    /// Files stored with the version, by their content names (under `sources/inputs/<unit>/`).
+    pub store: BTreeMap<String, std::sync::Arc<Vec<u8>>>,
 }
 
 // ---- The accepted version ----------------------------------------------------------------------
@@ -293,6 +354,14 @@ pub struct FileEntry {
     /// Facts read from its content at check time.
     #[serde(default)]
     pub facts: serde_json::Map<String, serde_json::Value>,
+}
+
+impl FileEntry {
+    /// The files stored with it: its copy, and those its facts name (a content name under
+    /// `sources/inputs/`: a region's stored geometry), which GC keeps while it's kept.
+    pub fn stored(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.file.as_str()).chain(self.facts.values().filter_map(|v| v.as_str()).filter(|s| s.starts_with("sources/inputs/") && store::naming::parse_content_name(s).is_some()))
+    }
 }
 
 /// A unit's accepted version (§4.6): `sources/inputs/<unit>/index.<hash16>.json`.
@@ -367,6 +436,10 @@ pub struct Report {
     /// any more).
     #[serde(default)]
     pub raised: Vec<String>,
+    /// What the check needs made first (`Checks::needs`: the regions' extract's ids), which the
+    /// lead plans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
 }
 
 /// A unit's accepted version as a step reads it: the files by their drop-box paths.
@@ -469,11 +542,14 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
         for e in std::fs::read_dir(&dir).with_context(|| format!("list {}", dir.display()))? {
             let e = e.with_context(|| format!("list {}", dir.display()))?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if ignored(&name) {
+            if ignored(&name) && !checks(unit).is_some_and(|c| c.takes_ignored(&name)) {
                 continue;
             }
             let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
             let md = e.metadata().with_context(|| format!("stat {}", e.path().display()))?;
+            if !md.is_dir() && checks(unit).is_some_and(|c| !c.takes(&path)) {
+                continue;
+            }
             if md.is_dir() {
                 if rel.is_empty() && (name == "todo" || name == "how") {
                     continue;

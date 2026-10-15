@@ -24,13 +24,24 @@ export interface Area {
   bbox: [number, number, number, number];
 }
 
-/** A region's recipe: its outline is the union of the entries ("osm:<relation>", "geofabrik:<id>",
- * "poly:<file>", "place:<lon>,<lat>,<km>"). */
+/** A region as the server lists it (docs/inputs.md §6.1): a checked input in the drop box's
+ * inputs/regions/. Its outline is the union of its parts ("osm:<relation>", "shape:<name>.geojson");
+ * a region made with more than those (minus, intersect, a buffer, a cut, pins) isn't `plain`: its
+ * outline comes as texts to read, and it's edited in its file only. */
 export interface Region {
   id: string;
   name: string;
   outline: string[];
+  /** Its file under inputs/regions/ ("europe/portugal/azores.toml"); its folder groups the list. */
+  path?: string;
+  plain?: boolean;
+  /** accepted: checked and in use; checking: being checked; held: a finding holds it back (its
+   * last accepted outline stays in use); pending: an edit made away from home, kept on this Mac. */
+  state?: 'accepted' | 'checking' | 'held' | 'pending';
+  held?: { id: string; message: string }[];
 }
+/** What a new region or an edit sends: osm: and shape: parts only. */
+export type RegionEdit = Pick<Region, 'id' | 'name' | 'outline'>;
 
 const NAS_AWAY = 'The NAS isn’t reachable: try again at home';
 
@@ -58,10 +69,19 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 /** The regions; away from home, the last list read with the edits still waiting to go (`pending`). */
-export const listRegions = () => call<{ regions: Region[]; bad: [string, string][]; pending?: number; offline?: boolean }>('/api/regions');
+export const listRegions = () => call<{ regions: Region[]; bad: [string, string][]; pending?: number; offline?: boolean; tree?: Folder }>('/api/regions');
+/** A folder under inputs/regions/ holding regions at some depth: they group the list. `name`: its
+ * _group.toml's name, else the folder's; `folders` come sorted (by order, then name). */
+export interface Folder {
+  path: string;
+  name: string;
+  order?: number;
+  regions: string[];
+  folders: Folder[];
+}
 /** An edit: done on the NAS, or (away from home) kept on this Mac until it's reachable: `queued`. */
 export type EditResult = { done?: boolean; queued?: boolean };
-export const addRegion = (r: Region) => call<EditResult>('/api/regions', json('POST', r));
+export const addRegion = (r: RegionEdit) => call<EditResult>('/api/regions', json('POST', r));
 export const editRegion = (id: string, patch: { name?: string; outline?: string[] }) => call<EditResult>(`/api/regions/${encodeURIComponent(id)}`, json('PUT', patch));
 export const removeRegion = (id: string) => call<EditResult>(`/api/regions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 /** What to say after an edit kept on this Mac. */
@@ -77,6 +97,11 @@ export const searchAreas = (q: string, signal?: AbortSignal) => call<{ areas: Ar
  * no `regions`: its outlines are then the recipes', and which regions it holds isn't known.
  */
 export type Coverage = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { regions?: Region[]; catalog?: number };
+/** Every region's accepted outline for drawing, a feature per stored shape (properties: region,
+ * name, from, colour, held). `source` 'catalog': the catalog's coverage stands in until this Mac
+ * has the accepted copy. */
+export type RegionsLayer = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { source?: 'accepted' | 'catalog' };
+export const getRegionsLayer = () => call<RegionsLayer>('/api/regions/layer');
 export const getCoverage = () => call<Coverage>('/api/coverage').then((fc) => ({ ...fc, features: fc.features.map(nested) }));
 
 /** An area's outline (simplified), kept once loaded. */
@@ -158,6 +183,7 @@ export function entryLabel(entry: string, area?: Pick<Area, 'name' | 'en' | 'lev
     const last = v.split('/').pop() ?? v;
     return `${last.split('-').map(cap).join(' ')} (Geofabrik)`;
   }
+  if (kind === 'shape') return `${v.replace(/\.geojson$/i, '')} (drawn)`;
   if (kind === 'poly') return `${v} (drawn)`;
   if (kind === 'place') {
     const [lon, lat, km] = v.split(',').map(Number);
@@ -185,6 +211,8 @@ export class RegionLayers {
   private ready = false;
   private coverageOn = false;
   private coverage: GeoJSON.Feature[] = [];
+  private regionsOn = false;
+  private regions: GeoJSON.Feature[] = [];
 
   constructor(private map: MLMap) {}
 
@@ -202,6 +230,20 @@ export class RegionLayers {
     for (const src of ['coverage', 'region-draft', 'region-hover']) map.addSource(src, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'coverage-fill', type: 'fill', source: 'coverage', layout: hidden, paint: { 'fill-color': COVERAGE, 'fill-opacity': 0.05 } }, before);
     map.addLayer({ id: 'coverage-line', type: 'line', source: 'coverage', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': COVERAGE, 'line-width': width(1), 'line-opacity': 0.65 } }, before);
+    // Every region in its own colour: a light fill, so overlaps mix and gaps show, and a thin line,
+    // dashed while a finding holds the region back (its last accepted outline is what's drawn).
+    map.addSource('regions', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    const colour: ExpressionSpecification = ['coalesce', ['get', 'colour'], COVERAGE];
+    const held: ExpressionSpecification = ['to-boolean', ['get', 'held']];
+    map.addLayer({ id: 'regions-fill', type: 'fill', source: 'regions', layout: hidden, paint: { 'fill-color': colour, 'fill-opacity': 0.07 } }, before);
+    map.addLayer({ id: 'regions-line', type: 'line', source: 'regions', filter: ['!', held], layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75 } }, before);
+    map.addLayer({ id: 'regions-held', type: 'line', source: 'regions', filter: held, layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': colour, 'line-width': width(1), 'line-opacity': 0.75, 'line-dasharray': [3, 2] } }, before);
+    // The names on top: a symbol layer isn't draped, so it can't split the draping.
+    map.addLayer({
+      id: 'regions-label', type: 'symbol', source: 'regions',
+      layout: { ...hidden, 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-padding': 8 },
+      paint: { 'text-color': colour, 'text-halo-color': '#0b0e13', 'text-halo-width': 1.2, 'text-opacity': 0.85 },
+    });
     map.addLayer({ id: 'region-draft-fill', type: 'fill', source: 'region-draft', layout: hidden, paint: { 'fill-color': PREVIEW, 'fill-opacity': 0.08 } }, before);
     map.addLayer({ id: 'region-draft-line', type: 'line', source: 'region-draft', layout: { ...hidden, 'line-join': 'round' }, paint: { 'line-color': PREVIEW, 'line-width': width(1.4), 'line-opacity': 0.9 } }, before);
     map.addLayer({ id: 'region-hover-fill', type: 'fill', source: 'region-hover', layout: hidden, paint: { 'fill-color': PREVIEW, 'fill-opacity': 0.05 } }, before);
@@ -219,7 +261,8 @@ export class RegionLayers {
     const map = this.map;
     const vis = on && features.length ? 'visible' : 'none';
     if (features.length) map.getSource<GeoJSONSource>(src)?.setData({ type: 'FeatureCollection', features });
-    for (const id of [`${src}-fill`, `${src}-line`]) if (map.getLayoutProperty(id, 'visibility') !== vis) map.setLayoutProperty(id, 'visibility', vis);
+    const ids = src === 'regions' ? ['regions-fill', 'regions-line', 'regions-held', 'regions-label'] : [`${src}-fill`, `${src}-line`];
+    for (const id of ids) if (map.getLayoutProperty(id, 'visibility') !== vis) map.setLayoutProperty(id, 'visibility', vis);
   }
 
   /** The coverage shown or not, and its outlines (kept for when it's shown). */
@@ -227,6 +270,13 @@ export class RegionLayers {
     this.coverageOn = on;
     if (data) this.coverage = data.features;
     this.put('coverage', this.coverage, this.coverageOn);
+  }
+
+  /** The regions layer shown or not, and its features (kept for when it's shown). */
+  setRegions(on: boolean, data?: GeoJSON.FeatureCollection) {
+    this.regionsOn = on;
+    if (data) this.regions = data.features;
+    this.put('regions', this.regions, this.regionsOn);
   }
 
   /** The areas chosen for a new region (their union). */

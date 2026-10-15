@@ -135,7 +135,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
             (p.clone(), b)
         })
         .collect();
-    if !changes.is_empty() || !g.listing.strays.is_empty() {
+    if !changes.is_empty() || !g.listing.strays.is_empty() || g.checks.holds_unchanged() {
         let rd = reader(&candidate, prev, g.read_old);
         findings.extend(g.checks.whole(&Version { paths: candidate.keys().cloned().collect(), read: &rd })?);
     }
@@ -145,6 +145,13 @@ pub fn decide(g: &Given) -> Result<Decision> {
     for f in findings.iter().filter(|f| f.holds(g.accepted)) {
         held.extend(f.files.iter().filter(|p| changes.contains_key(*p)).cloned());
     }
+    // (Files unchanged that a finding holds, for a unit whose findings can: kept as accepted, and
+    // shown held.)
+    let stuck: BTreeSet<String> = if g.checks.holds_unchanged() {
+        findings.iter().filter(|f| f.holds(g.accepted)).flat_map(|f| f.files.iter()).filter(|p| !changes.contains_key(*p) && prev.files.contains_key(*p)).cloned().collect()
+    } else {
+        BTreeSet::new()
+    };
     loop {
         let mut more: BTreeSet<String> = BTreeSet::new();
         for p in &held {
@@ -208,6 +215,26 @@ pub fn decide(g: &Given) -> Result<Decision> {
             findings.extend(bad);
         }
     }
+    // What's derived from the version whole (the regions' stored geometry): for every file but
+    // those kept as accepted.
+    if files != prev.files || (g.checks.holds_unchanged() && !changes.is_empty()) {
+        let keep: BTreeSet<String> = held.iter().chain(&stuck).cloned().collect();
+        let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files.keys().map(|p| (p.clone(), candidate.get(p).cloned().flatten().filter(|_| !held.contains(p)))).collect();
+        let rd = reader(&next, prev, g.read_old);
+        let derived = g.checks.derive(&Version { paths: next.keys().cloned().collect(), read: &rd }, &keep)?;
+        for (p, (facts, keyed)) in derived.facts {
+            if keep.contains(&p) {
+                continue;
+            }
+            if let Some(e) = files.get_mut(&p) {
+                e.facts.extend(facts);
+                if let Some(k) = keyed {
+                    e.keyed = k;
+                }
+            }
+        }
+        taken.extend(derived.store);
+    }
     // The warnings the version is taken with: those still about files of it unchanged, and those
     // that let a change in, about files still in it (one about none of its files no longer counts:
     // its acceptance is stale).
@@ -238,14 +265,17 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let listed_changed = listed != *g.prev_listed;
     // The report.
     let strays: BTreeSet<String> = g.listing.strays.iter().chain(&g.listing.misplaced).cloned().collect();
-    let report = (!held.is_empty() || !strays.is_empty()).then(|| {
-        let mut shown: Vec<Finding> = findings.iter().filter(|f| f.holds(g.accepted) && (f.files.iter().any(|p| held.contains(p) || strays.contains(p)) || together.is_some())).cloned().collect();
+    let report = (!held.is_empty() || !strays.is_empty() || !stuck.is_empty()).then(|| {
+        let mut shown: Vec<Finding> = findings.iter().filter(|f| f.holds(g.accepted) && (f.files.iter().any(|p| held.contains(p) || strays.contains(p) || stuck.contains(p)) || together.is_some())).cloned().collect();
         shown.sort_by(|a, b| (a.level, &a.files, &a.id).cmp(&(b.level, &b.files, &b.id)));
         shown.dedup_by(|a, b| a.id == b.id);
         let mut raised: Vec<String> = findings.iter().chain(&whole_found).map(|f| f.id.clone()).collect();
         raised.sort();
         raised.dedup();
-        Report { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), held: held.iter().chain(&strays).cloned().collect(), findings: shown, together, raised }
+        let mut needs = g.checks.needs();
+        needs.sort();
+        needs.dedup();
+        Report { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), held: held.iter().chain(&strays).chain(&stuck).cloned().collect::<BTreeSet<String>>().into_iter().collect(), findings: shown, together, raised, needs }
     });
     Ok(Decision { index, changed, listed, listed_changed, report, store: taken, read })
 }
@@ -308,6 +338,11 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     let p = phase("the accepted version and the drop box listed", Class::NasRead);
     let prepared = checks.prepared(&root, &out.manifest)?;
     let checks: &dyn Checks = prepared.as_deref().unwrap_or(checks);
+    // (Not ready: nothing read, nothing held or taken, nothing asked for; its key changes when it is.)
+    if let Some(why) = checks.not_ready() {
+        drop(p);
+        return Ok(format!("{unit}: not checked now: {why}"));
+    }
     let prev_name = out.get(&super::logical(unit)).map(str::to_string);
     let prev = prev_name.as_ref().map(|n| super::read_index(&root, n)).transpose()?;
     let state = super::read_listed(&root, &out.manifest, unit)?;
@@ -358,6 +393,17 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     }
     if let Some(r) = &d.report {
         said += &format!("; held: {} ({} finding{})", r.held.join(", "), r.findings.len(), if r.findings.len() == 1 { "" } else { "s" });
+    }
+    // (The readers' switch to the accepted version, recorded once, when the migration's proof is of
+    // the version the records name now.)
+    if out.get(&super::switched_logical(unit)).is_none() {
+        if let Some(index) = out.get(&super::logical(unit)).map(str::to_string) {
+            if let Some(b) = checks.switch(&root, &index)? {
+                let name = out.store_bytes(&super::switched_logical(unit), "json", &b)?;
+                out.set(&super::switched_logical(unit), Some(name.clone()));
+                said += &format!("; the readers switch to it: {name}");
+            }
+        }
     }
     out.save()?;
     drop(p);

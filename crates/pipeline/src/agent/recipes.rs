@@ -82,7 +82,9 @@ pub fn load(dir: &Path) -> (Vec<Recipe>, Vec<(String, String)>) {
     let mut ok = Vec::new();
     let mut bad = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else { return (ok, bad) };
-    let names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".toml")).collect();
+    let names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".toml") && n != "pins.toml" && !crate::inputs::ignored(n)).collect();
+    // (Above: the input check's `pins.toml` and the names every drop box passes over, `_group.toml`
+    // among them, aren't recipes: docs/inputs.md §6.1.2.)
     // (Read 16 at a time: on the NAS each waits a round trip or two, and the share answers many at
     // once about as fast as one. Sorted after, so in no order that matters.)
     let next = std::sync::atomic::AtomicUsize::new(0);

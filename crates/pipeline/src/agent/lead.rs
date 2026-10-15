@@ -527,6 +527,11 @@ fn view(run: &Run, auto: bool) -> View {
     let pool_beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
     let mut beats: Vec<(String, Heartbeat)> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
+    // (The app a member needs: the term's, and once the regions' switch is recorded, the one it was
+    // proved on, whichever is newer: an older one is "app too old".)
+    // (Read once for the view: every member's handover and state is judged by it.)
+    let regions = side.regions_app();
+    let need = crate::inputs::regions::read::needed_app(cur.lead.as_ref().map(|t| t.app.as_str()), regions.as_ref().ok().and_then(|r| r.as_deref()));
     for id in ids {
         let h = side.heartbeat(&id).unwrap_or_default();
         // (Not a shadow run's heartbeat, nor one of another time's member that never beat.)
@@ -537,7 +542,7 @@ fn view(run: &Run, auto: bool) -> View {
         let (can, why) = if is_lead {
             (false, Some("it leads".to_string()))
         } else {
-            match side.hand_to(&id) {
+            match side.hand_to_with(&id, &regions) {
                 Ok(()) => (true, None),
                 Err(w) => (false, Some(w)),
             }
@@ -551,7 +556,10 @@ fn view(run: &Run, auto: bool) -> View {
             beat: h.pool.beat,
             me: id == me,
             leads: is_lead,
-            state: state_of(&h, now, cur.lead.as_ref().map(|t| t.app.as_str())),
+            state: match &regions {
+                Err(e) => format!("the regions' switch's app unknown ({e})"),
+                Ok(_) => state_of(&h, now, need.as_deref()),
+            },
             out_of_touch: h.pool.beat == 0 || h.pool.out_of_touch(now),
             away: h.conds.is_some_and(|c| !c.home),
             can_lead: can,
@@ -1478,6 +1486,38 @@ mod tests {
             b.go();
             let kept = Controls::open(&b.home.join("pool")).kept;
             assert_eq!(kept.asked.map(|a| a.state), Some(State::Passed));
+        }
+
+        #[test]
+        fn the_regions_switch_bars_older_apps_from_the_lead() {
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = pool(d.path());
+            pass_all(&mut [&mut a, &mut b], 60);
+            let ib = b.id();
+            let root = a.root.clone();
+            let switch_to = |file: &str| {
+                let p = root.join("state/build/manifest.json");
+                let mut m: std::collections::BTreeMap<String, String> = std::fs::read(&p).ok().and_then(|x| serde_json::from_slice(&x).ok()).unwrap_or_default();
+                m.insert(crate::inputs::switched_logical(crate::inputs::regions::UNIT), file.to_string());
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
+            };
+            // Proved on an app newer than theirs: B can't be handed the lead, and the view says why.
+            std::fs::write(a.root.join("sw.json"), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();
+            switch_to("sw.json");
+            assert!(a.run.side.hand_to(&ib).unwrap_err().contains("older than the one the regions' switch was proved on"));
+            a.run.controls.stale = true;
+            a.go();
+            let v = a.view();
+            let mb = v.members.iter().find(|m| m.member == ib).unwrap();
+            assert!(!mb.can_lead && mb.state == "app too old", "{mb:?}");
+            // The switch's file unreadable: unknown, refused, and said.
+            switch_to("gone.json");
+            assert!(a.run.side.hand_to(&ib).unwrap_err().contains("can't be read now"));
+            a.run.controls.stale = true;
+            a.go();
+            let v = a.view();
+            assert!(v.members.iter().all(|m| m.state.starts_with("the regions' switch's app unknown")), "{:?}", v.members);
         }
     }
 }

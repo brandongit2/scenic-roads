@@ -548,7 +548,7 @@ fn kept_key(regions: &Path, outlines: Option<&Path>, outline_dir: &Path) -> Opti
 
 /// The coverage's shapes as kept (`Coverage::load`): their source, country, buffer and rings, and
 /// the recipes that didn't read.
-fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
+pub(crate) fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
     let mut b = KEPT_MAGIC.to_vec();
     let s = |b: &mut Vec<u8>, t: &str| {
         b.extend_from_slice(&(t.len() as u64).to_le_bytes());
@@ -575,7 +575,7 @@ fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
 
 /// `kept_bytes` read back: the shapes made again from their rings (`Shape::new`, as
 /// `from_recipes` makes them); None when they don't read.
-fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
+pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
     struct Rd<'a>(&'a [u8]);
     impl<'a> Rd<'a> {
         fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -856,7 +856,7 @@ fn drawn_entry(entry: &str, outlines: Option<&Outlines>, outline_dir: &Path) -> 
 /// How far a drawn outline may stray from its file's: about a pixel when the whole outline fills a
 /// screen, within the pass's own range for the panel (1 km for countries, 60 m for the smallest
 /// areas).
-fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
+pub(crate) fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
     let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     for p in rings.iter().flatten() {
         bb = [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])];
@@ -871,7 +871,7 @@ fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
 }
 
 /// A ring in degrees to 5 decimals, closed as GeoJSON has it.
-fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
+pub(crate) fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
     let d = |v: i32| (v as f64 / 100.0).round() / 1e5;
     let mut out: Vec<[f64; 2]> = r.iter().map(|p| [d(p[0]), d(p[1])]).collect();
     if out.len() > 1 && out.first() != out.last() {

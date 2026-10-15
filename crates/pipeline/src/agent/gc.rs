@@ -171,7 +171,7 @@ pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, St
     named.extend(um.records.iter().filter_map(ours));
     named.extend(um.changes.iter().filter_map(ours));
     let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
-        keep.extend(crate::inputs::read_index(root, c)?.files.into_values().map(|f| f.file));
+        keep.extend(crate::inputs::read_index(root, c)?.files.values().flat_map(|f| f.stored().map(str::to_string)).collect::<Vec<_>>());
         keep.insert(c.to_string());
         Ok(())
     };

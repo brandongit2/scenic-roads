@@ -626,10 +626,11 @@ mod tests {
         let t0 = std::time::Instant::now();
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
         let date = crate::osmpass::latest_pass(&root).unwrap();
-        let (recipes, bad) = crate::agent::recipes::load(&root.join("inputs/regions"));
+        let src = crate::inputs::regions::read::source(&root, &m).unwrap();
+        let (recipes, bad) = crate::inputs::regions::read::recipes(&root, &src);
         assert!(bad.is_empty(), "{bad:?}");
         let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c)).unwrap());
-        let cov = Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")).unwrap();
+        let cov = crate::inputs::regions::read::coverage_with(&root, &src, &recipes, outlines.as_ref()).unwrap();
         let tt = targets(&cov, &m);
         eprintln!("pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)", recipes.len(), tt.pieces.len(), tt.lo.len(), t0.elapsed().as_secs_f64());
         let out = Out::unbound(&data.join("no-root"), &data.join("scratch")).unwrap();

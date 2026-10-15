@@ -1,6 +1,8 @@
 // The Regions panel (Layers → Regions; docs/plan.md §1): the regions the map is built for, the
 // coverage they add up to on the map, and new regions made of administrative areas, found by name
-// or by a click on the map. Edits go to the recipes on the NAS; the build Mac builds what they
+// or by a click on the map. Regions are files in the drop box's inputs/regions/ (docs/inputs.md
+// §6.1), each checked before it's used: the list shows each one's check, and edits only a plain
+// region's name and parts (areas and drawn shapes); any other is edited in its file. Edits go to the NAS; the build Mac builds what they
 // change when it can (the status bar shows it). Renaming rebuilds nothing.
 // The coverage drawn is the one the map's catalog was built for; a recipe it doesn't have (added
 // or redrawn since, or waiting on this Mac to go to the NAS) is listed as pending.
@@ -10,8 +12,8 @@
 import { dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type RegionDl, type ViewDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
-  QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
-  type Area, type Coverage, type Region,
+  QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, getRegionsLayer, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
+  type Area, type Coverage, type Folder, type Region, type RegionsLayer,
 } from '../regions';
 import { fmt, h } from './dom';
 
@@ -63,6 +65,9 @@ export class RegionsPanel {
 
   private covBox = h('input', { type: 'checkbox' });
   private covCount = h('span', { class: 'km' });
+  private regBox = h('input', { type: 'checkbox' });
+  private regNote = h('span', { class: 'km' });
+  private layer: RegionsLayer | null = null;
   private list = h('div', { class: 'rg-list' });
   private note = h('div', { class: 'rg-note' });
   private search = h('input', { type: 'search', class: 'rg-q', placeholder: 'Find a place by name', spellcheck: false, autocomplete: 'off' });
@@ -111,6 +116,8 @@ export class RegionsPanel {
   private viewEls = new Map<string, HTMLElement>();
 
   private regions: Region[] = [];
+  /** The folders the list is grouped by (null: a server from before folders). */
+  private tree: Folder | null = null;
   private bad: [string, string][] = [];
   private coverage: Coverage | null = null;
   /** The outlines of the regions the catalog doesn't have yet, from their osm: entries' areas. */
@@ -141,6 +148,12 @@ export class RegionsPanel {
       prefs.save('regions.coverage', this.covBox.checked);
       this.layers.setCoverage(this.covBox.checked, this.coverage ?? undefined);
       if (this.covBox.checked && !this.coverage) void this.refresh();
+    });
+    this.regBox.checked = prefs.load('regions.layer', false);
+    this.regBox.addEventListener('change', () => {
+      prefs.save('regions.layer', this.regBox.checked);
+      this.layers.setRegions(this.regBox.checked, this.layer ?? undefined);
+      if (this.regBox.checked && !this.layer) void this.refresh();
     });
     this.search.addEventListener('input', () => {
       clearTimeout(this.searchTimer);
@@ -184,6 +197,7 @@ export class RegionsPanel {
     this.resBtn.addEventListener('click', () => void this.saveReserve());
     this.nodes = [
       h('label', { class: 'tog', title: 'Every region’s outline on the map: the map is built within them' }, this.covBox, h('span', {}, 'Coverage on the map'), this.covCount),
+      h('label', { class: 'tog', title: 'Each region’s accepted outline in its own colour, with its name: overlaps and gaps show; dashed while a finding holds it' }, this.regBox, h('span', {}, 'Regions on the map'), this.regNote),
       h('div', { class: 'subhd', title: 'What’s downloaded to this Mac, for when it’s away from the NAS: nothing else is copied here' }, 'Downloads on this Mac'),
       this.dlSum,
       this.resRow,
@@ -208,7 +222,7 @@ export class RegionsPanel {
 
   /** The map is ready: the coverage drawn if it's on. */
   start() {
-    if (this.covBox.checked) void this.refresh();
+    if (this.covBox.checked || this.regBox.checked) void this.refresh();
   }
 
   /** The map's catalog now (catalog.ts). A new one was built for its own coverage: drawn again
@@ -243,15 +257,26 @@ export class RegionsPanel {
   private async refresh() {
     const tok = ++this.loadTok;
     if (!this.regions.length) this.note.replaceChildren(h('span', { class: 'spin' }), ' Loading the regions…');
-    const [list, cov] = await Promise.allSettled([listRegions(), getCoverage()]);
+    // (The regions layer only while it's shown: it's every region's full outline.)
+    const [list, cov, layer] = await Promise.allSettled([listRegions(), getCoverage(), this.regBox.checked ? getRegionsLayer() : Promise.resolve(null)]);
     if (tok !== this.loadTok) return;
     this.loadedAt = performance.now();
+    if (layer.status === 'fulfilled' && layer.value) {
+      this.layer = layer.value;
+      this.layers.setRegions(this.regBox.checked, layer.value);
+      this.regNote.textContent = layer.value.source === 'catalog' ? 'as built' : '';
+      this.regNote.title = layer.value.source === 'catalog' ? 'This Mac doesn’t have the accepted outlines yet: these are the ones the map was built for' : '';
+    } else if (layer.status === 'rejected') {
+      this.regNote.textContent = 'unavailable';
+      this.regNote.title = says(layer.reason);
+    }
     if (cov.status === 'fulfilled') {
       this.coverage = cov.value;
       this.layers.setCoverage(this.covBox.checked, cov.value);
     }
     if (list.status === 'fulfilled') {
       this.regions = list.value.regions;
+      this.tree = list.value.tree ?? null;
       this.bad = list.value.bad;
       this.note.replaceChildren();
       this.note.classList.remove('warn');
@@ -309,8 +334,30 @@ export class RegionsPanel {
     this.dlEls.clear();
     const n = this.regions.length;
     this.covCount.textContent = n ? `${n} region${n === 1 ? '' : 's'}` : '';
+    // Grouped by the folder their files are in under inputs/regions/: the top level first, then the
+    // folders in order.
+    const byId = new Map(this.regions.map((r) => [r.id, r]));
+    const placed = new Set<string>();
+    const rows = (ids: string[]) => ids.flatMap((id) => {
+      const r = byId.get(id);
+      if (!r) return [];
+      placed.add(id);
+      return [this.regionRow(r)];
+    });
+    const count = (f: Folder): number => f.regions.filter((id) => byId.has(id)).length + f.folders.reduce((n, g) => n + count(g), 0);
+    const group = (f: Folder): HTMLElement => {
+      const key = `regions.folder.${f.path}`;
+      const box = h('details', { class: 'rg-dir', open: prefs.load(key, true) }) as HTMLDetailsElement;
+      box.addEventListener('toggle', () => prefs.save(key, box.open));
+      box.append(h('summary', { title: `inputs/regions/${f.path}/` }, f.name, h('span', { class: 'faint' }, ` ${count(f)}`)), ...rows(f.regions), ...f.folders.map(group));
+      return box;
+    };
+    const tree = this.tree;
+    const nested = tree ? [...rows(tree.regions), ...tree.folders.map(group)] : [];
+    // Regions the tree doesn't hold (pending ones, kept on this Mac) at the top level.
     this.list.replaceChildren(
-      ...this.regions.map((r) => this.regionRow(r)),
+      ...this.regions.filter((r) => !placed.has(r.id)).map((r) => this.regionRow(r)),
+      ...nested,
       ...this.bad.map(([file, e]) => h('div', { class: 'rg-bad', title: e }, h('b', {}, file), ` doesn’t parse: ${e}`)),
     );
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
@@ -330,6 +377,13 @@ export class RegionsPanel {
    * heartbeat; else pending while the map's catalog doesn't have it, built when the heartbeat or
    * the catalog says so. */
   private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
+    // The check comes first: a region not accepted yet isn't what's built.
+    if (r.state === 'checking') return { text: 'checking…', cls: 'wait', title: 'Its file changed: being checked before it’s used' };
+    if (r.state === 'pending') return { text: 'pending', cls: 'wait', title: 'Edited away from home: kept on this Mac until the NAS is reachable' };
+    if (r.state === 'held') {
+      const fs = r.held ?? [];
+      return { text: `held: ${fs[0]?.message ?? 'a finding holds it'}${fs.length > 1 ? ` (+${fs.length - 1})` : ''}`, cls: 'held', title: `Its last accepted outline stays in use until these are fixed:\n${fs.map((f) => `${f.id}: ${f.message}`).join('\n')}` };
+    }
     const p = this.progress[r.id];
     if (p?.total && p.built < p.total) return p.built === 0 ? { text: 'waiting to build', cls: 'wait' } : { text: `building · ${p.built} of ${p.total} areas`, cls: 'on' };
     if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the build Mac next publishes the map data' };
@@ -341,6 +395,8 @@ export class RegionsPanel {
     const fs = this.outlinesOf(r);
     const summary = r.outline.map((e) => entryLabel(e, fs.find((f) => f.properties?.entry === e)?.properties as Area | undefined)).join(' + ');
     const row = h('div', { class: 'rg' });
+    // (A list from before the server said: plain.)
+    const plain = r.plain !== false;
     const show = () => {
       const state = this.stateOf(r);
       const name = h('span', { class: 'rg-name', title: `${r.name}: show it` }, r.name);
@@ -354,10 +410,11 @@ export class RegionsPanel {
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint' }, r.id),
           ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
-          h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.rename(r, row, show) }, '✎'),
+          ...(plain ? [h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.rename(r, row, show) }, '✎')] : []),
           h('button', { class: 'rg-act', type: 'button', title: 'Remove the region…', onclick: () => this.askRemove(r, row, show) }, '×'),
           slot),
-        h('div', { class: 'rg2' }, h('span', { class: 'rg2s', title: summary }, summary), sz),
+        h('div', { class: 'rg2' }, plain && r.outline.length > 1 ? this.partChips(r, fs) : h('span', { class: 'rg2s', title: summary }, summary), sz),
+        ...(plain ? [] : [h('div', { class: 'rg-file faint', title: 'Made with more than areas and drawn shapes: its parts are edited in its file' }, `edit the file (inputs/regions/${r.path ?? `${r.id}.toml`})`)]),
       );
       this.showDl(r.id);
     };
@@ -371,6 +428,26 @@ export class RegionsPanel {
       this.layers.setHover(null);
     });
     return row;
+  }
+
+  /** A plain region's parts, each with a button taking it out of the outline (a region keeps one at
+   * least: removing the last is removing the region). */
+  private partChips(r: Region, fs: Outline[]): HTMLElement {
+    return h('div', { class: 'rg-chips rg2s' }, ...r.outline.map((e) => {
+      const label = entryLabel(e, fs.find((f) => f.properties?.entry === e)?.properties as Area | undefined);
+      return h('span', { class: 'rg-chip', title: e }, label,
+        h('button', { type: 'button', title: 'Take it out of the region', onclick: () => void this.dropPart(r, e, label) }, '×'));
+    }));
+  }
+
+  private async dropPart(r: Region, entry: string, label: string) {
+    try {
+      const res = await editRegion(r.id, { outline: r.outline.filter((e) => e !== entry) });
+      this.say(res.queued ? QUEUED : `Took ${label} out of “${r.name}”. It’s checked, then built; the status bar shows progress.`);
+      this.changed();
+    } catch (e) {
+      this.say(says(e), true);
+    }
   }
 
   private rename(r: Region, row: HTMLElement, back: () => void) {

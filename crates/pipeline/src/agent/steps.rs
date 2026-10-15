@@ -75,7 +75,7 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
-pub const TABLE: [Step; 47] = [
+pub const TABLE: [Step; 48] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
     // planet with room to spare, less the pack cache it clears).
     Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },
@@ -105,6 +105,9 @@ pub const TABLE: [Step; 47] = [
     // aside); reading the drop boxes and the accepted copies on the NAS, never beside another of
     // the heavy NAS readers.
     Step { beside: Some(0), groups: &[Group::NasReads], ..base("inputs", w_inputs) },
+    // The regions' extract (crate::inputs::regions::extract): the pass's planet read three times,
+    // a heavy NAS reader.
+    Step { alone: true, groups: &[Group::NasReads], ..base("regions-extract", w_regions_extract) },
     Step { ..base("names-todo", w_none) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
     // before pieces): each z6 tile's raw tiles' archive copied here and the new raw tiles held
@@ -307,13 +310,13 @@ pub const SHARED: [&str; 8] = set_of(Set::Shared);
 /// The steps a Mac's second job takes, in its order of preference.
 pub const SECOND: [&str; 14] = set_of(Set::Beside);
 /// The steps that run alone, never beside another job.
-pub const ALONE: [&str; 13] = set_of(Set::Alone);
+pub const ALONE: [&str; 14] = set_of(Set::Alone);
 /// The steps that read AWS's raw terrain tiles here: never two at once.
 pub const RAW: [&str; 5] = set_of(Set::Raw);
 /// The steps that ask Wikidata and Wikipedia a great deal from this Mac's address: never two at once.
 pub const WIKI: [&str; 2] = set_of(Set::Wiki);
 /// The steps that read gigabytes of the NAS's sources a target: never two at once on one Mac.
-pub const NAS_READS: [&str; 2] = set_of(Set::NasReads);
+pub const NAS_READS: [&str; 3] = set_of(Set::NasReads);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -507,6 +510,10 @@ fn w_inputs(l: &str, _: bool) -> bool {
     crate::inputs::record_of(l).is_some()
 }
 
+fn w_regions_extract(l: &str, _: bool) -> bool {
+    matches!(parts(l).as_slice(), ["sources", "osm", d, "regions-extract"] if crate::osmpass::is_date(d))
+}
+
 fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
@@ -650,11 +657,11 @@ mod tests {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
         assert_eq!(SECOND, ["inputs", "heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
-        assert_eq!(ALONE, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "heritage-sites", "gc"]);
+        assert_eq!(ALONE, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "heritage-sites", "gc", "regions-extract"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&RAW), set(&["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"]));
         assert_eq!(set(&WIKI), set(&["items", "heritage"]));
-        assert_eq!(set(&NAS_READS), set(&["bldprep", "inputs"]));
+        assert_eq!(set(&NAS_READS), set(&["bldprep", "inputs", "regions-extract"]));
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
     }
 
@@ -767,7 +774,7 @@ mod tests {
 
     #[test]
     fn entries_within_their_write_sets() {
-        let ok: [(&str, &[(&str, bool)]); 27] = [
+        let ok: [(&str, &[(&str, bool)]); 28] = [
             ("lakefill", &[("work/lakefill/2026-09-28", false), ("work/lakefill/2026-03-01", true)]),
             ("inputs", &[("sources/inputs/_gate-test/@index", false), ("sources/inputs/_gate-test/@held", true), ("sources/inputs/_gate-test/@listed", false), ("sources/inputs/_gate-nest/inner/@index", false), ("sources/inputs/_gate-nest/inner/@listed", false)]),
             ("osm-pass", &[("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-09-28/pass", false), ("layers/basemap/world-2026-09-28", false), ("sources/osm/2026-08-01/sets/water", true), ("work/heritage/2026-08-01/base/heritage", true), ("work/summits/2026-08-01", true)]),
@@ -776,6 +783,7 @@ mod tests {
             ("water", &[("layers/water/root/0-0-0", false), ("layers/water/lo/3-1-2", false), ("layers/water/hi/6-1-2", false), ("layers/smallwater/hi/6-1-2", true)]),
             ("labels", &[("layers/labels/hi/6-1-2", false), ("layers/labels/root/0-0-0", true)]),
             ("spoken", &[("global/spoken", false)]),
+            ("regions-extract", &[("sources/osm/2026-09-28/regions-extract", false)]),
             ("heritage-sites", &[("work/heritage/2026-09-28/pos/6-1-2", false), ("work/heritage/2026-09-28/base/area-shapes", false), ("work/heritage/2026-09-28/areas/6-3-3", true)]),
             ("terrain", &[("layers/terrain/hi/6-10-20", false), ("work/terrain-mid/6-10-20", false), ("layers/terrain/lo/3-1-2", false)]),
             ("terrain-lo", &[("layers/terrain/lo/3-1-2", false)]),

@@ -41,27 +41,11 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/coverage.rs", "file_rings", "\"inputs/outlines/{f}\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "catalog_coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "water_key_check", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "water_key_check", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "pois_step", "\"inputs/regions\"", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "pois_step", "\"inputs/outlines\"", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "pass_and_coverage", "\"inputs/regions\"", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "pass_and_coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "coverage_of", "\"inputs/regions\"", "the regions' recipes or outline files [#135], --regions' default"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "coverage_of", "\"inputs/outlines\"", "the regions' recipes or outline files [#135], --regions' default"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", "\"inputs/keys.env\"", "inputs/keys.env, not an input (§2): its key names enter keys, never its values"),
-    ("crates/pipeline/src/bin/terrain.rs", "scan", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/bin/terrain.rs", "scan", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::add(&root(&args, true)?.join(\"inputs/regions\")", "`scenic add`: the owner's tool's write of a recipe (§2)"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "recipes::remove(&root(&args, true)?.join(\"inputs/regions\")", "`scenic remove`: the owner's tool's write of a recipe (§2)"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
+    ("crates/pipeline/src/bin/scenic.rs", "main", "convert_poly(&root.join(\"inputs/outlines\")", "`scenic regions convert-poly`: the owner's tool converting the .poly files to shapes in the drop box (§6.1.10, runbook step 4) [#135]"),
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9): the drop boxes, and the old translations/ and descriptions/ (#137), whose drops the input check flags"),
@@ -69,15 +53,11 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/build.rs", "record", "matches!(step, \"inputs\" | ", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/build.rs", "label", "\"inputs\" => \"Checking the inputs dropped\"", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every drop box and the acceptances, by design (§4.9)"),
-    ("crates/pipeline/src/agent/mod.rs", "step", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/agent/mod.rs", "plan", "w.step == \"inputs\"", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
-    ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/regions\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
     ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/hold-catalog\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
     ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog and keys.env (not inputs, §2)"),
     ("crates/pipeline/src/agent/mod.rs", "checklist", "\"inputs/hold-catalog\"", "the regions' recipes or outline files [#135]; inputs/hold-catalog, a control"),
-    ("crates/pipeline/src/agent/mod.rs", "rekey_records", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
-    ("crates/pipeline/src/agent/mod.rs", "as_read", "\"inputs/regions\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/agent/mod.rs", "coverage", "\"inputs/outlines\"", "the regions' recipes or outline files [#135]"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs\".into()", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
@@ -109,9 +89,11 @@ const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/heritage_eu.py", "wd_search_labels", "\"languages\": \"|\".join(langs)", "Wikidata's API parameter `languages`, not the languages drop box"),
 ];
 
-/// Each gate unit's name as code would write it in a path.
+/// Each gate unit's name as code would write it in a path. (The regions' aside: "regions" is a
+/// word every reader of the coverage and the catalog says, and their drop box is only ever named
+/// `inputs/regions`, which `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).map(|u| format!("\"{u}")).collect()
+    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| **u != pipeline::inputs::regions::UNIT).map(|u| format!("\"{u}")).collect()
 }
 
 /// The lines naming a drop box outside the accessor, and the exemptions that matched none.

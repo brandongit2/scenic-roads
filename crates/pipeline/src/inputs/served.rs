@@ -51,6 +51,12 @@ pub enum Synced {
 /// `read` (a path relative to it: the server's reads go through its pool, so a slow NAS trips its
 /// breaker rather than hang). An error leaves the copy as it was.
 pub fn sync(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path) -> Result<Synced> {
+    sync_with(read, unit, local, &[])
+}
+
+/// `sync`, copying besides each accepted file the stored files its facts `facts` name (the regions'
+/// drawn files, `facts.drawn`: what the map's region layer draws).
+pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path, facts: &[&str]) -> Result<Synced> {
     let records: BTreeMap<String, String> = serde_json::from_slice(&read(RECORDS)?).with_context(|| format!("parse {RECORDS}"))?;
     let Some(version) = records.get(&logical(unit)) else { return Ok(Synced::None) };
     if files(local).is_some_and(|(v, _)| &v == version) {
@@ -58,14 +64,16 @@ pub fn sync(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path) ->
     }
     let index: Index = serde_json::from_slice(&read(version)?).with_context(|| format!("parse {version}"))?;
     anyhow::ensure!(index.unit == unit, "{version} is {}'s index, not {unit}'s", index.unit);
-    for f in index.files.values() {
-        let p = local.join(&f.file);
-        if std::fs::metadata(&p).is_ok_and(|m| m.len() == f.size) {
+    // (Each accepted file, and the stored files its facts `facts` name, by content name.)
+    let wanted: Vec<(String, Option<u64>)> = index.files.values().flat_map(|f| std::iter::once((f.file.clone(), Some(f.size))).chain(facts.iter().filter_map(|k| f.facts.get(*k).and_then(|v| v.as_str())).map(|n| (n.to_string(), None)))).collect();
+    for (name, size) in &wanted {
+        let p = local.join(name);
+        if std::fs::metadata(&p).is_ok_and(|m| size.is_none_or(|s| m.len() == s)) {
             continue;
         }
-        let bytes = read(&f.file)?;
-        let want = super::hash_of(&f.file).with_context(|| format!("{} isn't a content name", f.file))?;
-        anyhow::ensure!(store::naming::hash16(&bytes) == want, "{}: its bytes aren't its name's (copied while being written?)", f.file);
+        let bytes = read(name)?;
+        let want = super::hash_of(name).with_context(|| format!("{name} isn't a content name"))?;
+        anyhow::ensure!(store::naming::hash16(&bytes) == want, "{name}: its bytes aren't its name's (copied while being written?)");
         if let Some(d) = p.parent() {
             std::fs::create_dir_all(d).with_context(|| format!("create {}", d.display()))?;
         }
@@ -74,7 +82,7 @@ pub fn sync(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path) ->
     std::fs::create_dir_all(local)?;
     crate::whole::write(&local.join(LOCAL), &serde_json::to_vec(&Kept { version: version.clone(), index: index.clone() })?)?;
     // (The files the version kept no longer names go.)
-    let named: BTreeSet<PathBuf> = index.files.values().map(|f| local.join(&f.file)).collect();
+    let named: BTreeSet<PathBuf> = wanted.iter().map(|(n, _)| local.join(n)).collect();
     let mut stack = vec![local.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
