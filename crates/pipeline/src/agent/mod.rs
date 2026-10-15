@@ -5728,16 +5728,21 @@ impl Agent {
         self.tend_brokers();
         // (The lead's coordinator told, with this Mac's room now, each loop; its round with the
         // plan's offers: `offer_round`.)
+        // (Placement worked out once a loop: the history read once.)
+        let placed = self.placement_now();
         if let Some(c) = &self.coord {
             c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
-            c.set_placement(self.placement_now());
+            c.set_placement(placed.clone());
             if !self.every_on() {
                 c.set_round(None);
             }
         }
-        // (A member's broker draws its pages' tasks the same way.)
+        // (A member's broker draws its pages' tasks the same way: by their paces at the kind as
+        // that broker measured them, its own jobs' tasks against this Mac's runs. It has no
+        // history and no forecast, so no member speeds nor slack: those only order the plan's
+        // targets, which a broker doesn't offer.)
         if let Some(b) = &self.broker {
-            b.set_placement(self.placement_now());
+            b.set_placement(placed);
         }
         if let Some(on) = pool::slots_on(r) {
             if on != self.slots_on {

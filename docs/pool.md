@@ -1535,7 +1535,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       them, and a member passes by a
       target drawn to another; a cold start stays the most room's, undrawn. A page's or worker's
       task is drawn likewise among those that could take it, weighted by one over their measured
-      pace at its kind. Every job is told to offer ahead (`SCENIC_OFFER_AHEAD`): a terrain job
+      pace at its kind (a member's broker draws its own jobs' tasks the same way, by the paces
+      it measured; it has no history or forecast, which only order the plan's targets). Every job is told to offer ahead (`SCENIC_OFFER_AHEAD`): a terrain job
       offers its next piece's subtrees as it begins a piece, and each task of a terrain piece or a
       tree cover row says its head start (`ahead`: the tiles or blocks this Mac makes before it
       needs the task, over the task's own, so many tasks' worth of this Mac's time); the

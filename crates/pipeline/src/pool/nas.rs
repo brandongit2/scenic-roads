@@ -104,7 +104,17 @@ impl Nas for Share {
     fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
         let p = self.at(path);
         self.parent_made(&p)?;
-        let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+        let open = || std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
+        // (Its folder gone since it was made, an outside reset: made again, and tried once more.)
+        let opened = match open() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.forget(&p);
+                self.parent_made(&p)?;
+                open()
+            }
+            r => r,
+        };
+        let mut f = match opened {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Created::There),
             Err(e) => {
@@ -128,7 +138,13 @@ impl Nas for Share {
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let p = self.at(path);
         self.parent_made(&p)?;
-        let r = crate::whole::write(&p, bytes);
+        let mut r = crate::whole::write(&p, bytes);
+        // (Its folder gone since it was made, an outside reset: made again, and written once more.)
+        if r.as_ref().is_err_and(not_found) {
+            self.forget(&p);
+            self.parent_made(&p)?;
+            r = crate::whole::write(&p, bytes);
+        }
         if r.is_err() {
             self.forget(&p);
         }
@@ -176,6 +192,11 @@ impl Nas for Share {
             Err(e) => Err(e).with_context(|| format!("remove {}", p.display())),
         }
     }
+}
+
+/// Whether an error is a path's not being there (its folder gone).
+fn not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound))
 }
 
 /// Whether bytes read of a file made with create-new aren't all there: empty, or JSON cut short (its
@@ -246,11 +267,13 @@ mod tests {
         std::fs::remove_file(d.path().join("state/pool/members")).unwrap();
         s.write_whole("state/pool/members/m-1.json", b"a").unwrap();
         assert!(s.made.lock().unwrap().contains(&d.path().join("state/pool/members")));
-        // Gone: the next write fails and forgets it; the one after makes it again.
+        // Gone (an outside reset): the write makes it again and goes through, create-new's too.
         std::fs::remove_dir_all(d.path().join("state/pool/members")).unwrap();
-        assert!(s.write_whole("state/pool/members/m-1.json", b"b").is_err());
         s.write_whole("state/pool/members/m-1.json", b"b").unwrap();
         assert_eq!(s.read("state/pool/members/m-1.json").unwrap().as_deref(), Some(&b"b"[..]));
+        std::fs::remove_dir_all(d.path().join("state/pool/members")).unwrap();
+        assert!(matches!(s.create_new("state/pool/members/m-3.json", b"c").unwrap(), Created::Made));
+        assert_eq!(s.read("state/pool/members/m-3.json").unwrap().as_deref(), Some(&b"c"[..]));
     }
 
     #[test]

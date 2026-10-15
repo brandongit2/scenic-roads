@@ -578,12 +578,19 @@ impl Shared {
         let mut ids: Vec<&task::Task> = self.tasks.by_id.values().filter(|t| self.tasks.may_take(t, &a.worker, &a.can, a.mem_mb, now)).collect();
         ids.sort_by_key(|t| (t.offered, t.id));
         // (The others around and asking, once an ask: each task then by its kind and memory.)
-        let around: Vec<(&String, &Worker)> = self.workers.iter().filter(|(n, w)| *n != &a.worker && !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)).collect();
+        // (Each by its own last ask, as `placed_start`'s: an agent on another app than this one's
+        // gets nothing; a page asks with none.)
+        let around: Vec<(&String, &Ask)> = self
+            .workers
+            .iter()
+            .filter(|(n, w)| *n != &a.worker && !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING))
+            .filter_map(|(n, w)| w.ask.as_ref().filter(|x| x.kind != "native" || x.app.as_ref().is_none_or(|v| *v == self.app)).map(|x| (n, x)))
+            .collect();
         ids.into_iter()
             .find(|t| {
                 let mut who: Vec<(String, f64)> = around
                     .iter()
-                    .filter(|(n, w)| self.tasks.may_take(t, n, &w.can, w.mem_mb, now))
+                    .filter(|(n, x)| self.tasks.may_take(t, n, &x.can, x.mem_mb, now))
                     .map(|(n, _)| {
                         let n = n.to_string();
                         let w = self.tasks.pace(&n, &t.kind).map_or(1.0, |p| 1.0 / p.max(1e-6));
