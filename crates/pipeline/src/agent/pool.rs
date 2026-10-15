@@ -65,6 +65,23 @@ pub fn by_measure_on(root: &Path) -> Option<bool> {
     }
 }
 
+/// The switch that puts every job's connections out through its agent's proxy, which takes each
+/// Wikimedia request from the pool's one budget on the NAS (crate::budget; docs/pool.md §7.7, §12
+/// phase 4's seventh batch), the job run under a sandbox that denies any other way out; the
+/// answers' lease taken; the Wikidata and heavy NAS reads' groups gone (`on` in it, or present;
+/// `off` in it, or missing: off, the agent as it was).
+pub const BUDGETS: &str = "state/pool/budgets";
+
+/// Whether the budgets are on, as the switch at `root` says (`BUDGETS`); None when it can't be read
+/// now.
+pub fn budgets_on(root: &Path) -> Option<bool> {
+    match std::fs::read_to_string(root.join(BUDGETS)) {
+        Ok(s) => Some(s.trim() != "off"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// Whether a member's part changes in its process, as the switch at `root` says (`SLOTS`); None
 /// when it can't be read now.
 pub fn slots_on(root: &Path) -> Option<bool> {

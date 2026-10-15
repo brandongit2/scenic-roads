@@ -67,6 +67,7 @@ from xml.etree import ElementTree as ET
 from pyproj import Transformer
 from shapely.geometry import shape
 
+import budget
 from timings import phase
 
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
@@ -88,6 +89,8 @@ def fetch(url: str, path: Path, params: dict | None = None) -> Path:
             with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=600) as r:
                 tmp.write_bytes(r.read())
         except urllib.error.URLError as e:
+            if isinstance(e, urllib.error.HTTPError):
+                budget.seen(url, e.code, e.headers.get("Retry-After"))
             # Servers that send an incomplete certificate chain: curl verifies them against the
             # system trust store (which fetches the missing intermediate); verification stays on.
             if "CERTIFICATE_VERIFY_FAILED" not in str(e):
@@ -244,6 +247,7 @@ def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl"
                 with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
+                budget.seen(url, e.code, e.headers.get("Retry-After"))
                 if e.code != 429 or attempt == 5:
                     raise
                 time.sleep(float(e.headers.get("Retry-After") or 5) * (attempt + 1))

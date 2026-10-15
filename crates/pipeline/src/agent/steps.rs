@@ -177,8 +177,16 @@ pub fn grouped(a: &str, b: &str) -> bool {
 /// once, a raw tile read under store::cachefile's lock and packing deleting only tiles no job
 /// holds; the Wikidata and heavy NAS reads' groups stay until batch 7's locks at the resource).
 pub fn grouped_but_raw(a: &str, b: &str) -> bool {
+    grouped_in(a, b, |g| g != Group::Raw)
+}
+
+/// Whether `a` and `b` are in one of the groups of which two never run at once on one Mac, of those
+/// that still hold (`holds`): the raw tiles' goes with the Mac shared by measure, the Wikidata and
+/// heavy NAS reads' with the budgets (docs/pool.md §7.7: the pool's one Wikimedia budget at the
+/// proxy; two heavy NAS readers measured only to slow each other, 2026-10-14).
+pub fn grouped_in(a: &str, b: &str, holds: impl Fn(Group) -> bool) -> bool {
     match (row(a), row(b)) {
-        (Some(x), Some(y)) => x.groups.iter().any(|g| *g != Group::Raw && y.groups.contains(g)),
+        (Some(x), Some(y)) => x.groups.iter().any(|g| holds(*g) && y.groups.contains(g)),
         _ => false,
     }
 }
@@ -628,6 +636,16 @@ mod tests {
         assert!(grouped("terrain", "peaks") && !grouped_but_raw("terrain", "peaks") && !grouped_but_raw("terrain-z8", "terrain"));
         assert!(grouped_but_raw("items", "heritage") && grouped_but_raw("bldprep", "bldprep"));
         assert!(!grouped_but_raw("unit", "pack") && !grouped_but_raw("not a step", "items"));
+    }
+
+    #[test]
+    fn with_the_budgets_the_wikidata_and_nas_reads_groups_go() {
+        let budgets = |g: Group| !matches!(g, Group::Wiki | Group::NasReads);
+        assert!(!grouped_in("items", "heritage", budgets) && !grouped_in("bldprep", "bldprep", budgets) && !grouped_in("inputs", "bldprep", budgets));
+        assert!(grouped_in("terrain", "peaks", budgets), "the raw tiles' stays with the budgets alone");
+        // (Both switches on: no group holds.)
+        let both = |_: Group| false;
+        assert!(!grouped_in("terrain", "peaks", both) && !grouped_in("items", "heritage", both));
     }
 
     #[test]

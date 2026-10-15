@@ -42,6 +42,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import budget
 from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -82,6 +83,8 @@ def sparql(q: str) -> list[dict]:
         try:
             return json.loads(r.stdout)["results"]["bindings"]
         except (json.JSONDecodeError, KeyError):
+            if b"429" in r.stdout[:200]:
+                budget.seen(WDQS, 429, None)
             time.sleep((45 if b"429" in r.stdout[:200] else 10) * (attempt + 1))
     raise RuntimeError(f"WDQS failed: {r.stdout[:300]!r}")
 
@@ -137,6 +140,8 @@ def shortdescs(titles: list[str]) -> dict[str, str]:
                 r = subprocess.run(["curl", "-sS", "--fail", "-m", "60", "-A", UA, url], capture_output=True)
                 try:
                     if r.returncode != 0:
+                        if b"error: 429" in r.stderr:
+                            budget.seen(url, 429, None)
                         raise ValueError(f"curl exit {r.returncode}: {r.stderr.decode(errors='replace').strip()}")
                     d = json.loads(r.stdout)
                     if "error" in d or "query" not in d:

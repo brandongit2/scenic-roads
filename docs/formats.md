@@ -497,8 +497,11 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         pairs), registers-<id>/ (the registers' archives, extracted),
                         heritage-<date>-<id>/ (the pass's copy of the snapshot, which the heritage
                         scripts add their answers to; its .kept.json as items/'s), heritage-venv/
-                        (the heritage scripts' old Python environment: their next run removes it)
-                        and unit-stages.json (the unit stages' times here).
+                        (the heritage scripts' old Python environment: their next run removes it),
+                        unit-stages.json (the unit stages' times here) and answers.gate and
+                        answers.use (with state/pool/budgets on, the flocks holding this Mac's
+                        answers: the steps keeping them shared, the agent's seed alone, writer
+                        first: crate::answers::Local).
                         When a job starts with too little free, raw tiles waiting are packed onto
                         the NAS (not kept here), then chm10/, aws-terrarium/, blobs/ and
                         items/months/ lose files: chm10/'s, the archives', blobs/' and the months'
@@ -904,6 +907,17 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/by-measure`: the switch for the Mac shared by measure and its disk guard
     (docs/pool.md §7.7): present (or `on` in it) on, `off` in it or missing off. Read by every
     agent, the pool on or off.
+  - `state/pool/budgets`: the switch for the budgets (docs/pool.md §7.7, crate::budget): every
+    job's connections through its agent's proxy, sandboxed, Wikimedia's metered by the pool's one
+    budget; the answers' lease. Present (or `on` in it) on, `off` in it or missing off. Read by
+    every agent, the pool on or off.
+  - `state/pool/wiki/<class>/<window>-<slot>`: a lease of the Wikimedia budget (`wiki`: its sites;
+    `query`: the query services), made with create-new, the leaser's member id (or name) in it;
+    `<window>` the ten-second window since the epoch, `<slot>` its batch of the window's tokens.
+    Removed by its name once its window is 30 windows past.
+  - `state/pool/answers.lease`: the answers' lease (crate::answers::Lease), `{by, token, until}`
+    (`until` unix seconds; renewed by its holder, lapsing after), made with create-new; a lapsed
+    one is moved aside as `answers.lease.lapsed-<token>` by its breaker, then removed.
   - `state/pool/mail/<to>/<from>.json`: the messages `from` sent `to`, its last 64, `{msgs: [[n,
     msg], …]}`, `n` rising (the sender's clock in ms, and on), `msg` one of `{"Tell": [keys]}`,
     `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`, `{"HandTo": member}`.

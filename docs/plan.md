@@ -1853,7 +1853,10 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     beside a job of the same step unless it's a shared one (its targets are held apart, as a
     helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots),
     nor the items' facts beside the heritage chain (both ask Wikidata, each paced as if alone),
-    nor a bldprep beside another (each reads up to ~3 GB of the NAS's parquet a tile);
+    nor a bldprep beside another (each reads up to ~3 GB of the NAS's parquet a tile); with
+    `state/pool/budgets` on (docs/pool.md §7.7, phase 4's seventh batch), those two rules go: every
+    job's Wikimedia requests are taken from the pool's one budget at its agent's proxy, and two
+    heavy NAS readers measured only to slow each other;
   - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
     second's within three quarters of the Mac's, and the second's free now with 2 GB to spare (a
     target's prediction never below its floor, what a run saw it hold: docs/pool.md §7.2);
@@ -1887,8 +1890,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     if more), and the second's disk with what the first has still to take and the reserve within
     the disk's free space. A cold start (a step none of whose targets has run) runs alone, and
     nothing starts beside it; the first slot waits for its next job that doesn't fit beside the
-    second's, as above. Two Wikidata steps, two heavy NAS readers and two jobs of one step that
-    isn't shared still never run at once (batch 7). Beside another job, a job's room on the disk is
+    second's, as above. Two jobs of one step that isn't shared still never run at once; two
+    Wikidata steps and two heavy NAS readers neither, unless `state/pool/budgets` is on (batch 7). Beside another job, a job's room on the disk is
     the reserve and its measured disk; alone in the first slot, room is made for the reserve, its
     measured disk and the owner's target as the caches allow, but the job waits only for the
     reserve and the target (a disk floor only rises: a stale or high one never holds the build),
@@ -2773,6 +2776,13 @@ At each phase's end an Opus agent reviews the work against this plan.
      job's `Out` and the merge share, not a type only the function can construct (pool.md §7.7's
      design): a step's code can still form a name outside, which fails its job as it's written
      (pool.md §7.3, §12 phase 4's sixth batch);
+   - the budgets (`state/pool/budgets`, off while missing; crate::budget, pool.md §7.7) meter a
+     Wikimedia request's rate, not how many run at once (dumps.wikimedia.org asks for two
+     connections an address at most: pageviews.py's months are one at a time by its own code); a
+     429 pageviews.py's curl gets fails its month and isn't told to the proxy; a window is each
+     Mac's clock's (Macs a second apart may spend one over its length and a second); the sandbox
+     lets a job reach any service on its own Mac; and the heavy NAS reads' group went on plain reads
+     of the share measured two at once (pool.md §7.7), not two `bldprep` measured;
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
      snapshot, older than today's files. `scenic pool off` moves its files aside once the agents
@@ -2938,7 +2948,8 @@ choices: power (the battery's pause of CPU work) and home (the wait for home of 
 jobs) go with no replacement, as does the rule of only network work beside the first job while the
 Mac is in use; the run-alone and second-job lists go once disk is measured like memory (a job beside
 another only if both jobs' measures fit); the groups go to accessors (the raw tiles' safety is
-`store::cachefile`'s already; Wikidata's politeness a budget per public address shared on the NAS).
+`store::cachefile`'s already; Wikidata's politeness one budget for the pool on the NAS, taken at
+each agent's proxy: built, behind `state/pool/budgets`, docs/pool.md §7.7).
 The batches after the memory guard were reordered around it.
 
 **The pool's phase 4 in batches (2026-10-10):** docs/pool.md §12, item 4. Why the plan is so:

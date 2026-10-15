@@ -5,6 +5,7 @@ pub mod basepack;
 pub mod bld;
 pub mod buildings;
 pub mod buildtiles;
+pub mod budget;
 pub mod candidates;
 pub mod chain;
 pub mod climbs;

@@ -459,6 +459,10 @@ pub struct Status {
     /// now, what it last did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<memguard::View>,
+    /// The budgets, while they're on (crate::budget, docs/pool.md §7.7): the proxy's address, what
+    /// it has opened, holds told, the NAS out of reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budgets: Option<crate::budget::View>,
     /// The gate (docs/inputs.md §4.7): an entry per gate unit, its version, whether it's checking
     /// or held, and what holds it (the lead's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -793,6 +797,12 @@ pub struct Agent {
     /// only if both jobs' measured memory and disk fit what the Mac has left, a cold start alone, in
     /// place of the steps table's run-alone, second-job and raw-tile lists; the disk guard on.
     by_measure: bool,
+    /// The budgets (docs/pool.md §7.7, `pool::BUDGETS`): every job's connections out through this
+    /// agent's proxy (`proxy`), each Wikimedia request taken from the pool's one budget on the NAS,
+    /// the job sandboxed so it has no other way out; the answers' lease; the Wikidata and heavy NAS
+    /// reads' groups gone.
+    budgets: bool,
+    proxy: Option<crate::budget::Proxy>,
     /// The disk guard's room-making for the jobs it froze (when it began): its result decides
     /// whether they go on or one is given back.
     disk_room: Option<Instant>,
@@ -1043,7 +1053,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2257,6 +2267,7 @@ impl Agent {
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone() }),
             memory: Some(self.guard_view()),
+            budgets: self.proxy.as_ref().filter(|_| self.budgets).map(|p| p.view()),
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
         };
         let body = serde_json::to_vec_pretty(&status)?;
@@ -2523,7 +2534,7 @@ impl Agent {
     fn passable(&self, spec: &JobSpec) -> bool {
         let Some(r) = self.slots[1].running.as_ref() else { return false };
         let (s, b) = (step_of(&spec.id).unwrap_or_default(), step_of(&r.spec.id).unwrap_or_default());
-        let grouped = if self.by_measure { steps::grouped_but_raw(&s, &b) } else { steps::grouped(&s, &b) };
+        let grouped = steps::grouped_in(&s, &b, |g| self.group_holds(g));
         let only_grouped = grouped && !self.runs_alone(spec) && !self.runs_alone(&r.spec) && self.guard_held(1).is_none();
         only_grouped && self.passed_over.get(&spec.id).is_none_or(|t| t.elapsed() < PASS_MAX)
     }
@@ -2539,6 +2550,10 @@ impl Agent {
     fn wait_reason(&self, spec: &JobSpec, c: &Conditions) -> Option<String> {
         if let Some(why) = lapsed(&spec.needs, c) {
             return Some(why);
+        }
+        // (With the budgets on, a job's only way out is the proxy: none starts without it.)
+        if self.budgets && self.proxy.is_none() && !self.o.dry_run {
+            return Some("waits for the budgets' proxy to start (every job's connections go through it)".into());
         }
         // (A job of no targets of its own, the OSM pass's: held by the memory guard when what it
         // held before passes this Mac's limit, the targets of a job with them dropped from the plan
@@ -2642,7 +2657,9 @@ impl Agent {
             return false;
         }
         // (Nor an items or heritage job while the answers they keep go to the NAS: `seed_answers`.)
-        if self.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) && step_of(&spec.id).is_some_and(|s| ANSWERED.contains(&s.as_str())) {
+        // (With the budgets on, the steps' own hold on the answers here waits for it instead:
+        // crate::answers::Local.)
+        if !self.budgets && self.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) && step_of(&spec.id).is_some_and(|s| ANSWERED.contains(&s.as_str())) {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: "the pass's Wikidata and Wikipedia answers here are going to the NAS (seconds)".into() });
             return false;
         }
@@ -3202,13 +3219,28 @@ impl Agent {
 
     /// Whether jobs of steps `a` and `b` can't run at once on this Mac by the groups and the steps
     /// alone (`clash`); by measure, the raw tiles' group and the run-alone list gone (a raw tile is
-    /// read under its accessor's lock, packing deletes only tiles no job holds: store::cachefile),
-    /// the Wikidata and heavy NAS reads' groups kept (pool.md §12, batch 7).
+    /// read under its accessor's lock, packing deletes only tiles no job holds: store::cachefile);
+    /// with the budgets on, the Wikidata and heavy NAS reads' groups gone (`group_holds`).
     fn clashes(&self, a: &str, b: &str) -> bool {
+        let grouped = steps::grouped_in(a, b, |g| self.group_holds(g));
+        let same = a == b && !steps::SHARED.contains(&a);
         if self.by_measure {
-            steps::grouped_but_raw(a, b) || (a == b && !steps::SHARED.contains(&a))
+            grouped || same
+        } else if self.budgets {
+            steps::alone(a) || steps::alone(b) || grouped || same
         } else {
             clash(a, b)
+        }
+    }
+
+    /// Whether the steps table's group `g` still keeps its steps apart on this Mac: the raw tiles'
+    /// not by measure (docs/pool.md §7.7); the Wikidata steps' not with the budgets on (every
+    /// Wikimedia request through the proxy, taken from the pool's one budget: crate::budget), nor
+    /// the heavy NAS readers' (two at once measured only to slow each other, 2026-10-14: §7.7).
+    fn group_holds(&self, g: steps::Group) -> bool {
+        match g {
+            steps::Group::Raw => !self.by_measure,
+            steps::Group::Wiki | steps::Group::NasReads => !self.budgets,
         }
     }
 
@@ -3435,7 +3467,10 @@ impl Agent {
         let Some(root) = root.filter(|_| !self.answers_seeded && !busy && !self.o.helper && self._lock.is_some() && !self.o.dry_run) else { return };
         self.answers_seeded = true;
         let (root, cache, scratch) = (root.to_path_buf(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
-        match std::thread::Builder::new().name("answers".into()).spawn(move || crate::answers::seed(&root, &cache, &scratch)) {
+        // (With the budgets on, alone among the steps keeping answers here by their lock, and each
+        // archive sent under the answers' lease on the NAS: crate::answers::Local, Lease.)
+        let leased = self.budgets;
+        match std::thread::Builder::new().name("answers".into()).spawn(move || crate::answers::seed(&root, &cache, &scratch, leased)) {
             Ok(t) => self.answers_seed = Some(t),
             Err(e) => eprintln!("agent: the pass's answers not sent to the NAS now (its thread didn't start: {e})"),
         }
@@ -3780,7 +3815,16 @@ impl Agent {
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
-        let scratch = spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
+        // With the budgets on: its connections out through the proxy (Wikimedia's metered by the
+        // pool's budget), this Mac's own direct, and no other way out (the sandbox).
+        let sandbox = match (&self.proxy, self.budgets) {
+            (Some(p), true) => {
+                env.extend(p.env());
+                Some(crate::budget::SANDBOX)
+            }
+            _ => None,
+        };
+        let scratch =spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
@@ -3797,7 +3841,7 @@ impl Agent {
             _ => None,
         };
         let (w_step, w_targets) = (step.clone().unwrap_or_default(), targets.clone());
-        self.slots[k].running = Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done))?);
+        self.slots[k].running = Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
         self.slots[k].beaten = None;
         if let Some(pgid) = self.slots[k].running.as_ref().map(|r| r.pgid) {
             self.sampler.watch(k, memguard::Watch { pgid, costs, done: done.clone(), step: w_step, targets: w_targets, own_key, written, scratch, ..Default::default() });
@@ -4927,6 +4971,32 @@ impl Agent {
         self.restart_for.clone().or_else(|| self.pool.as_ref().and_then(|p| p.restart.clone()))
     }
 
+    /// The budgets' proxy, as the switch says: started once they're on (taking from the pool's
+    /// budget on the NAS's project folder `root`, as this agent), stopped once they're off; told the
+    /// members this Mac knows (its share of the rate with the NAS away).
+    fn tend_proxy(&mut self, root: &Path) {
+        if !self.budgets {
+            if let Some(p) = self.proxy.take() {
+                eprintln!("agent: the budgets' proxy stopped ({})", p.url());
+            }
+            return;
+        }
+        if self.proxy.is_none() {
+            let me = self.pool.as_ref().map_or_else(|| self.me.clone(), |r| r.side.member().id.clone());
+            match crate::budget::start_proxy(root, &me) {
+                Ok(p) => {
+                    eprintln!("agent: the budgets' proxy listens on {}", p.url());
+                    self.proxy = Some(p);
+                }
+                Err(e) => eprintln!("agent: the budgets' proxy didn't start ({e:#}); no job starts until it has"),
+            }
+        }
+        let n = self.pool.as_ref().map_or(1, |r| r.side.members().len().max(1));
+        if let Some(p) = &self.proxy {
+            p.set_members(n);
+        }
+    }
+
     /// The pool's switch on the NAS, looked at each loop: a change from the one this process
     /// started with restarts it (into the new one: on, the agent's part is the terms'); off as it
     /// started, the agent is as it was. Shadowed, the shadow run beside it (crate::agent::shadow,
@@ -4939,6 +5009,13 @@ impl Agent {
             }
             self.by_measure = on;
         }
+        if let Some(on) = pool::budgets_on(r) {
+            if on != self.budgets {
+                eprintln!("agent: the budgets are {}", if on { "on (every job's connections through this agent's proxy, sandboxed; the answers' lease)" } else { "off" });
+            }
+            self.budgets = on;
+        }
+        self.tend_proxy(r);
         if let Some(on) = pool::slots_on(r) {
             if on != self.slots_on {
                 eprintln!("agent: a part changing in this process is {}", if on { "on" } else { "off" });
@@ -6170,6 +6247,70 @@ mod tests {
         a.start_second(&[job("peaks", "6/2/2")], &cond, Some(&root));
         assert!(a.slots[1].running.is_none());
         stop(&mut a);
+    }
+
+    /// The budgets (docs/pool.md §7.7, `state/pool/budgets`): on, the agent's proxy runs and every
+    /// job goes out through it, sandboxed (a connection around it denied); the Wikidata steps share
+    /// the Mac, as do two heavy NAS readers; no job starts without the proxy. Off: as before.
+    #[test]
+    fn with_the_budgets_jobs_go_out_through_the_proxy_and_the_groups_go() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/pool")).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.free_set = Some(100 << 30);
+        a.mem_set = Some((48 << 10, 42 << 10));
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let seen = d.path().join("seen");
+        let job = |step: &str, t: &str| {
+            let script = format!("env > {0}/{step}.env; /usr/bin/nc -v -z -G 5 192.0.2.1 9 2> {0}/{step}.out; echo done >> {0}/{step}.out; sleep 3600", seen.display());
+            JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), script], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) }
+        };
+        std::fs::create_dir_all(&seen).unwrap();
+        let stop = |a: &mut Agent| {
+            for k in 0..SLOTS {
+                if let Some(r) = a.slots[k].running.as_mut() {
+                    r.stop(Duration::from_secs(5));
+                    a.end_lease(k, Outcome::Interrupted, &[], "stopped");
+                    a.release_claims(k, Some(&root));
+                }
+                a.slots[k].running = None;
+            }
+        };
+        // Off (the switch missing): the Wikidata steps one at a time, no proxy.
+        a.pool_switch(Some(&root));
+        assert!(!a.budgets && a.proxy.is_none());
+        assert!(a.clashes("items", "heritage") && a.clashes("inputs", "bldprep"));
+        // On: the proxy up; the groups gone, the rest as they were.
+        std::fs::write(root.join(pool::BUDGETS), "").unwrap();
+        a.pool_switch(Some(&root));
+        assert!(a.budgets);
+        let url = a.proxy.as_ref().map(|p| p.url()).expect("the proxy started");
+        assert!(!a.clashes("items", "heritage") && !a.clashes("inputs", "bldprep") && !a.clashes("bldprep", "bldprep"));
+        assert!(a.clashes("terrain", "peaks") && a.clashes("items", "items") && a.clashes("labels", "unit"), "the raw tiles', the same unshared step, a step alone: as before");
+        assert!(a.try_start(0, job("items", "items"), &cond, Some(&root), &mut Vec::new()));
+        a.start_second(&[job("heritage", "heritage")], &cond, Some(&root));
+        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("heritage heritage"), "{:?}", a.beside_why);
+        // (Each job's own word that it's done looking: no clock.)
+        for step in ["items", "heritage"] {
+            let out = seen.join(format!("{step}.out"));
+            while !std::fs::read_to_string(&out).unwrap_or_default().contains("done") {
+                std::thread::yield_now();
+            }
+            let env = std::fs::read_to_string(seen.join(format!("{step}.env"))).unwrap();
+            assert!(env.contains(&format!("HTTPS_PROXY={url}\n")) && env.contains(&format!("{}={url}\n", crate::budget::PROXY_ENV)) && env.contains("NO_PROXY=localhost,127.0.0.1,::1\n"), "{env}");
+            assert!(std::fs::read_to_string(&out).unwrap().contains("Operation not permitted"), "{step}: sandboxed");
+        }
+        stop(&mut a);
+        // No proxy: no job starts.
+        let p = a.proxy.take();
+        assert!(a.wait_reason(&job("items", "items"), &cond).is_some_and(|w| w.contains("proxy")));
+        a.proxy = p;
+        // Off again: the proxy stopped, the groups back.
+        std::fs::write(root.join(pool::BUDGETS), "off").unwrap();
+        a.pool_switch(Some(&root));
+        assert!(!a.budgets && a.proxy.is_none() && a.clashes("items", "heritage"));
+        assert!(a.wait_reason(&job("items", "items"), &cond).is_none());
     }
 
     /// The disk guard (by measure): short of the reserve, the job growing fastest frozen, room made

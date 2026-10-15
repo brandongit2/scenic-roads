@@ -62,6 +62,7 @@ from shapely.ops import transform as shp_transform
 from tqdm import tqdm
 
 import heritage_eu
+import budget
 from timings import phase
 
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
@@ -86,7 +87,9 @@ def get(url: str, params: dict | None = None, accept: str | None = None) -> byte
             except urllib.error.HTTPError as e:
                 if attempt == 11:
                     raise
-                # Respect rate limits (the Wikidata query service may allow only 1 request/min).
+                # Respect rate limits (the Wikidata query service may allow only 1 request/min);
+                # with the budgets on, every process and Mac waits too (budget.py).
+                budget.seen(url, e.code, e.headers.get("Retry-After"))
                 wait = int(e.headers.get("Retry-After") or 0) or (65 if e.code == 429 else 2 ** attempt)
                 print(f"  HTTP {e.code}; waiting {wait} s", file=sys.stderr)
                 time.sleep(wait)

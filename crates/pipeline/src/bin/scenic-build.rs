@@ -2189,8 +2189,11 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
     drop(p);
     // The pass's answers: this Mac's and the NAS's made one.
+    // (With the budgets on: this Mac's answers held while the step runs, after the agent sending
+    // them if it is, and each sync and keep under the answers' lease on the NAS.)
+    let _hold = pipeline::answers::Local::for_job(cache.parent().unwrap_or(&cache))?;
     let p = phase("the pass's answers made one with the NAS's", Class::NasRead);
-    let kept = pipeline::answers::items(out.root(), &cache, &date);
+    let kept = pipeline::answers::items(out.root(), &cache, &date).leased(out.root(), pipeline::answers::budgets_on_for_job());
     let answers = || pipeline::answers::items_files(&cache, &date);
     eprintln!("items: the pass's answers {}", kept.sync(&answers(), &scratch.join("answers"))?.words());
     drop(p);
@@ -2506,6 +2509,8 @@ struct Epoch {
     dir: PathBuf,
     snap: PathBuf,
     kept: pipeline::answers::Kept,
+    /// This Mac's answers held while the step runs, with the budgets on (pipeline::answers::Local).
+    _hold: Option<pipeline::answers::Local>,
 }
 
 impl Epoch {
@@ -2539,6 +2544,7 @@ impl<F: FnMut()> Drop for OnEnd<F> {
 /// NAS too (pipeline::answers: `sources/items/<date>/heritage-<id>.tar.zst`), made one with this
 /// Mac's here.
 fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result<Epoch> {
+    let hold = pipeline::answers::Local::for_job(cache)?;
     let snap = registers_extract(out, "sources/registers/legacy", cache)?;
     let id = snap.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("registers-")).context("registers folder")?.to_string();
     let p = phase("the pass's copy of the snapshot made", Class::Disk);
@@ -2564,7 +2570,7 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     }
     drop(p);
     let _p = phase("the pass's answers made one with the NAS's", Class::NasRead);
-    let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, &snap, date, &id), dir: epoch, snap };
+    let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, &snap, date, &id).leased(out.root(), pipeline::answers::budgets_on_for_job()), dir: epoch, snap, _hold: hold };
     eprintln!("heritage: the pass's answers {}", e.kept.sync(&pipeline::answers::heritage_files(&e.dir, &e.snap), &scratch.join("answers"))?.words());
     Ok(e)
 }

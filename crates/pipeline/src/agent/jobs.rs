@@ -96,8 +96,9 @@ use crate::sys::{group_members, process_start};
 impl Running {
     /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS) and `env`, its output
     /// appended to `log`, and records it in `record` (with `done_file`, where it notes the targets
-    /// it finishes).
-    pub fn start(spec: JobSpec, threads: usize, env: &[(&str, &str)], log: PathBuf, record: &Path, done_file: Option<&Path>) -> Result<Running> {
+    /// it finishes); under `sandbox`, a profile of `sandbox-exec` (crate::budget::SANDBOX: no way
+    /// out but through its agent's proxy), when given.
+    pub fn start(spec: JobSpec, threads: usize, env: &[(&str, &str)], log: PathBuf, record: &Path, done_file: Option<&Path>, sandbox: Option<&str>) -> Result<Running> {
         if let Some(d) = log.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -108,7 +109,11 @@ impl Running {
         let err = out.try_clone()?;
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
         let mut c = Command::new("/usr/sbin/taskpolicy");
-        c.args(["-c", "utility"]).arg(prog).args(args);
+        c.args(["-c", "utility"]);
+        if let Some(profile) = sandbox {
+            c.args(["/usr/bin/sandbox-exec", "-p", profile]);
+        }
+        c.arg(prog).args(args);
         // (The Python steps' output reaches the log, and so the status, as they print it: piped, it
         // would wait in their buffers, for minutes.)
         c.env("RAYON_NUM_THREADS", threads.to_string()).env("PYTHONUNBUFFERED", "1").envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
@@ -483,7 +488,7 @@ mod tests {
     fn runs_pauses_and_stops() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 3600"]), 2, &[], d.path().join("log"), &rec, None).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 3600"]), 2, &[], d.path().join("log"), &rec, None, None).unwrap();
         assert!(rec.exists());
         // Running: what it says reaches its log. Paused, it hasn't ended; stopped, it has, by the
         // stop's signal.
@@ -515,7 +520,7 @@ mod tests {
             echo "unit $t" >> "$SCENIC_DONE"
         done"#;
         let env = [(crate::control::CONTROL_ENV, control.to_str().unwrap()), (crate::control::DONE_ENV, done.to_str().unwrap()), ("ON", on.to_str().unwrap())];
-        let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json"), Some(&done)).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json"), Some(&done), None).unwrap();
         wait_for(&mut r, "on its third target", |_| std::fs::read_to_string(&on).is_ok_and(|s| s.trim() == "6/1/3").then_some(()));
         std::fs::write(&control, b"drain").unwrap();
         let st = wait_for(&mut r, "stopped at its next safe point", |r| r.poll().unwrap());
@@ -615,10 +620,59 @@ mod tests {
         assert_eq!(seen, [0.5, 1.0]);
     }
 
+    /// A job under the budgets' sandbox (crate::budget::SANDBOX) can't connect out but to this
+    /// Mac: a step that goes around the proxy fails at once (denied, not timed out); through the
+    /// proxy, its request is metered (a plain HTTP request to a Wikimedia host, answered here).
+    #[test]
+    fn a_sandboxed_job_reaches_out_only_through_the_proxy() {
+        use crate::budget::{Budget, Proxy, StepClock};
+        use std::sync::Arc;
+        let d = tempfile::tempdir().unwrap();
+        // (This Mac's own: a listener here, its backlog answering nc's connect; the upstream the
+        // proxy is told every host is.)
+        let here = store::spawn::listen("127.0.0.1:0").unwrap();
+        let port = here.local_addr().unwrap().port();
+        let up = store::spawn::listen("127.0.0.1:0").unwrap();
+        let up_addr = up.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            up.set_nonblocking(false).ok();
+            // (One request: its head read, an answer, closed.)
+            #[allow(clippy::disallowed_methods)]
+            let (mut s, _) = up.accept().unwrap();
+            let mut b = [0u8; 4096];
+            let n = s.read(&mut b).unwrap();
+            let first = String::from_utf8_lossy(&b[..n]).lines().next().unwrap_or_default().to_string();
+            write!(s, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nupstream saw: {first}\n").unwrap();
+        });
+        let budget = Arc::new(Budget::new(&d.path().join("nas"), "m-test", Arc::new(StepClock::at(1_800_000_000_000))).with_ledger());
+        let proxy = Proxy::start(budget.clone(), Some(Arc::new(move |_: &str, _: u16| Some(up_addr)))).unwrap();
+        let env: Vec<(String, String)> = proxy.env();
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let script = format!(
+            "/usr/bin/nc -v -z -G 5 192.0.2.1 9; echo \"out=$?\"; /usr/bin/nc -z -G 5 127.0.0.1 {port}; echo \"here=$?\"; /usr/bin/curl -sS -m 20 http://en.wikipedia.org/w/api.php; echo \"curl=$?\""
+        );
+        let log = d.path().join("log");
+        let mut r = Running::start(spec(&["/bin/sh", "-c", &script]), 1, &env, log.clone(), &d.path().join("job.json"), None, Some(crate::budget::SANDBOX)).unwrap();
+        let st = loop {
+            if let Some(s) = r.poll().unwrap() {
+                break s;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(st.success());
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("Operation not permitted") && text.contains("out=1"), "{text}");
+        assert!(text.contains("here=0"), "{text}");
+        assert!(text.contains("upstream saw: GET /w/api.php HTTP/1.1") && text.contains("curl=0"), "{text}");
+        assert_eq!(budget.ledger().len(), 1, "the Wikimedia request metered");
+        drop(here);
+    }
+
     #[test]
     fn exit_status() {
         let d = tempfile::tempdir().unwrap();
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, &[], d.path().join("log"), &d.path().join("job.json"), None).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, &[], d.path().join("log"), &d.path().join("job.json"), None, None).unwrap();
         let st = loop {
             if let Some(s) = r.poll().unwrap() {
                 break s;
@@ -633,7 +687,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         // The shell leaves a sleep behind in its group and exits: an orphan, as after a crash.
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 3600 & echo started"]), 1, &[], d.path().join("log"), &rec, None).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 3600 & echo started"]), 1, &[], d.path().join("log"), &rec, None, None).unwrap();
         while r.poll().unwrap().is_none() {
             std::thread::sleep(Duration::from_millis(50));
         }

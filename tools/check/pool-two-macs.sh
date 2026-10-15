@@ -43,6 +43,24 @@
 #                                                   on a small disk image (hdiutil, never the Mac's
 #                                                   own volume), the image stands for a disk past
 #                                                   the 30 GB reserve, and a fill lands in it
+#   pool-two-macs.sh budgets <folder> [off]         state/pool/budgets in the scratch folder: every
+#                                                   job's connections through its agent's proxy,
+#                                                   sandboxed, Wikimedia's metered by the pool's one
+#                                                   budget there (`off`: the switch removed)
+#   pool-two-macs.sh wiki <dir> <n> [hold-s]        each fake job asks Wikimedia <n> times through
+#                                                   its proxy (http://en.wikipedia.org/budget-test,
+#                                                   answered on the Mac: `upstream`), noting each
+#                                                   answer's time (<dir>/v/app/wiki-<step>-<pid>),
+#                                                   and tries to reach the NAS's SMB port around the
+#                                                   proxy (denied, with the switch on); `hold-s`: the
+#                                                   next job first tells its proxy a 429 of that many
+#                                                   seconds (once)
+#   pool-two-macs.sh upstream <dir> <port>          a server on 127.0.0.1:<port> answering the fake
+#                                                   jobs' requests (python's http.server, in the
+#                                                   foreground); the agent's proxy, from its next
+#                                                   start, opens every connection to it
+#                                                   (SCENIC_TEST_PROXY_TO), so nothing reaches
+#                                                   Wikimedia
 #   pool-two-macs.sh stop <dir>                     the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -85,7 +103,7 @@
 # mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
 # kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra or stop}
+cmd=${1:?root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -131,6 +149,22 @@ if [ -n "$scratch" ] && [ "$fill" -gt 0 ]; then
   mkdir -p "$scratch"
   dd if=/dev/zero of="$scratch/fill-$$.bin" bs=1048576 count="$fill" 2>/dev/null
 fi
+# (Wikimedia through the proxy, metered: `wiki`; a 429 told first: its hold.)
+wiki=$(cat "$d/../job-wiki" 2>/dev/null || echo 0)
+if [ "$wiki" -gt 0 ] && [ -n "$SCENIC_BUDGETS" ]; then
+  out="$d/wiki-$step-$$"
+  if [ -e "$d/../job-hold" ] && mv "$d/../job-hold" "$d/../job-hold-$$" 2>/dev/null; then
+    hs=$(cat "$d/../job-hold-$$"); rm -f "$d/../job-hold-$$"
+    echo "hold $hs $(/usr/bin/python3 -c 'import time; print(int(time.time()*1000))') $(/usr/bin/curl -sS --noproxy '*' -X POST "$SCENIC_BUDGETS/hold?s=$hs")" >> "$out"
+  fi
+  i=0
+  while [ $i -lt "$wiki" ]; do
+    code=$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' -m 600 http://en.wikipedia.org/budget-test)
+    echo "got $code $(/usr/bin/python3 -c 'import time; print(int(time.time()*1000))')" >> "$out"
+    i=$((i + 1))
+  done
+  /usr/bin/nc -v -z -G 5 "$(cat "$d/../nas-ip" 2>/dev/null || echo 192.168.2.2)" 445 >> "$out" 2>&1; echo "nas-direct $?" >> "$out"
+fi
 sleep "$(cat "$d/../job-seconds" 2>/dev/null || echo 5)"
 [ -n "$scratch" ] && rm -f "$scratch/fill-$$.bin"
 if [ -n "$SCENIC_HANDOFF" ]; then
@@ -173,7 +207,7 @@ EOF
     rm -f $d/v/app/stop
     while [[ ! -e $d/v/app/stop ]]; do
       print "launcher: $(date '+%H:%M:%S') starting $(readlink $d/v/app/current)" >> $d/agent.log
-      SCENIC_TEST_DISK_EXTRA_MB=$(cat $d/disk-extra-mb 2>/dev/null || echo 0) SCENIC_COORD_PORT=18091 nice -n 19 $d/v/app/current/scenic agent --root $r --home $d/agent >> $d/agent.log 2>&1 < /dev/null &
+      SCENIC_TEST_PROXY_TO=$(cat $d/proxy-to 2>/dev/null) SCENIC_TEST_DISK_EXTRA_MB=$(cat $d/disk-extra-mb 2>/dev/null || echo 0) SCENIC_COORD_PORT=18091 nice -n 19 $d/v/app/current/scenic agent --root $r --home $d/agent >> $d/agent.log 2>&1 < /dev/null &
       print $! > $d/agent.pid
       print "launcher: $(date '+%H:%M:%S') agent pid $!" >> $d/agent.log
       wait $! || true
@@ -183,6 +217,24 @@ EOF
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
   outside) : > ${2:?its folder}/v/app/job-outside ;;
   extra) print -n ${3:?MB} > ${2:?its folder}/disk-extra-mb ;;
+  budgets)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/budgets; else mkdir -p $r/state/pool; : > $r/state/pool/budgets; fi
+    ;;
+  wiki)
+    d=${2:?its folder}
+    print -n ${3:?requests a job} > $d/v/app/job-wiki
+    [[ -n ${4:-} ]] && print -n $4 > $d/v/app/job-hold
+    # (The NAS's address, for the job's try around the proxy.)
+    route -n get fishandchips.local >/dev/null 2>&1 && dscacheutil -q host -a name fishandchips.local | awk '/ip_address/ {print $2; exit}' | tr -d '\n' > $d/v/app/nas-ip || true
+    ;;
+  upstream)
+    d=${2:?its folder}; d=${d:a} port=${3:?a port}
+    print -n 127.0.0.1:$port > $d/proxy-to
+    mkdir -p $d/upstream
+    cd $d/upstream && exec /usr/bin/python3 -m http.server --bind 127.0.0.1 $port
+    ;;
   fill) print -n ${3:?MB} > ${2:?its folder}/v/app/job-fill-mb ;;
   measure)
     r=${2:?the scratch folder}
@@ -202,5 +254,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream or stop"; exit 2 ;;
 esac
