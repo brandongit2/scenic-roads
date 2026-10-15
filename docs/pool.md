@@ -488,7 +488,10 @@ nobody reads: invariant 5.
   operations, which may hang; the loop reads what it needs then without the lock (the member's id,
   the run as its last pool step left it), passes its own pool step over (granting and starting
   nothing on its behalf), keeps its jobs' hand-offs for the next, and at shutdown waits a minute at
-  most for the tick.
+  most for the tick. A tick that has held the run past five minutes (`STALL_S`) is taken for hung
+  on the share: a lead's coordinator grants nothing ("its pool step hangs") and its contact comes
+  off the NAS, and the status says the pool's step has hung, the NAS not answering it (also after
+  three steps of the loop passed over); all until a pool step runs again.
 - **The lead stays awake** while it leads with leases out, at any charge (an idle-sleep assertion,
   `caffeinate -i` held for the agent, as jobs hold one), so no member stalls behind a lead that
   dozed off with no job of its own (with the part changing in its process: §12, phase 4's fourth

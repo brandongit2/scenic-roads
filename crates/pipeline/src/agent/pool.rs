@@ -973,6 +973,37 @@ pub struct Run {
     /// Terms a tick took up whose coordinator's part is the agent's (`took_up`: the state handed
     /// over loaded, its own host's leases from before dropped), at its loop's next step.
     pub pending_took_up: Vec<Event>,
+    /// Whether a tick holds the run, and since when: read without the lock (`Ticking`).
+    pub ticking: Ticking,
+}
+
+/// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
+/// without the run's lock, so the agent's loop tells a tick (maybe hung on the share) from the
+/// pool's thread's moment's check of whether one is due.
+#[derive(Clone, Default)]
+pub struct Ticking(Arc<std::sync::atomic::AtomicU64>);
+
+static AWAKE_FROM: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+impl Ticking {
+    /// This process's awake clock (s): a monotonic clock that stops while the Mac sleeps (on macOS,
+    /// `Instant`), from a day on, so a time before it is never 0.
+    pub fn awake() -> u64 {
+        86_400 + AWAKE_FROM.get_or_init(Instant::now).elapsed().as_secs()
+    }
+    pub fn start(&self) {
+        self.start_at(Self::awake());
+    }
+    pub fn start_at(&self, awake: u64) {
+        self.0.store(awake.max(1), std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn end(&self) {
+        self.0.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Since when a tick has held the run; None: none does.
+    pub fn since(&self) -> Option<u64> {
+        Some(self.0.load(std::sync::atomic::Ordering::SeqCst)).filter(|&t| t > 0)
+    }
 }
 
 /// What the pool's own thread needs of the agent to step the driver while the agent's loop is busy
@@ -1051,7 +1082,11 @@ impl Ticker {
                         break;
                     }
                     if r.tick_due() {
+                        // (Said outside the lock: the loop tells a tick holding the run from this
+                        // check's moment, and how long a tick has held it: `Ticking`.)
+                        r.ticking.start();
                         r.tick();
+                        r.ticking.end();
                     }
                 }
             })
@@ -1108,7 +1143,7 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default() }
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for

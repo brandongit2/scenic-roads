@@ -123,6 +123,13 @@ pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, Canada's missing lakes, water";
 const WORLDWIDE_STEPS: [&str; 9] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water"];
 
+/// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
+/// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
+const HUNG_SKIPS: u32 = 3;
+/// How long the loop tries for the run when no tick is said to hold it (the pool's thread's moment's
+/// check, or a tick begun and not yet said), before passing its pool step over.
+const TRY_FOR: Duration = Duration::from_millis(200);
+
 /// Whether job `id` is one of the lead's duties (a catalog, a sweep: crate::agent::pool's
 /// `PUBLISHES`, `SWEEPS`).
 fn is_duty(id: &str) -> bool {
@@ -952,6 +959,12 @@ pub struct Agent {
     /// switch's part change likewise (`pool::SLOTS`).
     held_entries: Vec<(crate::pool::journal::Entry, Option<PathBuf>)>,
     in_process_owed: Option<bool>,
+    /// Whether a tick holds the run, and since when (`pool::Ticking`, read without its lock); the
+    /// loop's pool steps passed over in a row for it, and since when it's taken for hung
+    /// (`pool_skipped`).
+    ticking: Option<pool::Ticking>,
+    pool_skips: u32,
+    pool_hung: Option<u64>,
     shadow: Option<shadow::Shadow>,
     shadow_failed: bool,
     restart_for: Option<String>,
@@ -1090,7 +1103,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2032,6 +2045,8 @@ impl Agent {
         if let Some(t) = self.ticker.take() {
             t.stop(Duration::from_secs(60));
         }
+        // (Hand-offs held for a pool step that never came, `held_entries`, are lost with this
+        // process: their folders stay, and the next one hands them off, `take_left`.)
         // A trim or a clear under way: asked to end at its next file (also when a newer app takes
         // over), and waited for a minute at most: a call to a NAS that hangs may not return, and
         // the launcher waits for the agent. Left mid-way, nothing's lost: copies are written by
@@ -2208,6 +2223,8 @@ impl Agent {
                 self.published = None;
             }
         }
+        // (Not while the pool's step is taken for hung: its contact stays off, `pool_skipped`.)
+        let leading = leading && self.pool_hung.is_none();
         if let (Some(c), Some(r), true) = (&self.coord, &root, leading) {
             if self.published.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
                 match c.publish(r) {
@@ -5611,11 +5628,26 @@ impl Agent {
         {
             // (A tick under way, on a share slow to answer: this loop goes on without the pool's
             // step, nothing granted or started on its behalf, rather than wait on it.)
-            let Some(mut run) = pool::try_lock(&shared) else {
-                waiting.push(Waiting { step: None, what: "The pool".into(), why: "its step is under way on the pool's thread (its share slow to answer)".into() });
-                let g = self.pool_seen.as_ref().map(|p| p.gates.clone()).unwrap_or_default();
-                return Some(pool::Gates { term: g.term, leads: g.leads, ..Default::default() });
+            // (Held only for the pool's thread's moment's check, or a tick just begun and not yet
+            // said: tried again a while, `TRY_FOR`, never waited on for good.)
+            let ticking = self.ticking.clone().unwrap_or_default();
+            let since = Instant::now();
+            let run = loop {
+                if let Some(r) = pool::try_lock(&shared) {
+                    break Some(r);
+                }
+                if ticking.since().is_some() || since.elapsed() >= TRY_FOR {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
             };
+            let Some(mut run) = run else {
+                return Some(self.pool_skipped(root, ticking.since(), waiting));
+            };
+            if std::mem::take(&mut self.pool_hung).is_some() {
+                eprintln!("agent: the pool's thread's step ended; the pool steps again");
+            }
+            self.pool_skips = 0;
             run.in_step = true;
             if let Some(on) = self.in_process_owed.take() {
                 run.in_process = on;
@@ -5630,6 +5662,44 @@ impl Agent {
         run.stepped_full();
         self.pool_seen = Some(run.pool_view());
         g
+    }
+
+    /// The loop's pool step passed over, a tick holding the run since `since` (this Mac's clock):
+    /// the gates held (nothing granted or started on its behalf). Held past `STALL_S`, the tick is
+    /// taken for hung on the share: a lead's coordinator stops granting and its contact comes off
+    /// the NAS (members find no lead to ask, rather than one that won't answer them), and from
+    /// `HUNG_SKIPS` passed over the status says so, naming the cause; all of it until a pool step
+    /// runs again.
+    fn pool_skipped(&mut self, root: Option<&Path>, since: Option<u64>, waiting: &mut Vec<Waiting>) -> pool::Gates {
+        self.pool_skips += 1;
+        // (By the awake clock: a sleep isn't a hang.)
+        let held = since.map_or(0, |t| pool::Ticking::awake().saturating_sub(t));
+        if held > crate::pool::driver::STALL_S {
+            if self.pool_hung.is_none() {
+                eprintln!("agent: the pool's thread's step has held its state {} min: taken for hung (the NAS not answering); its coordinator grants nothing", held / 60);
+            }
+            self.pool_hung = since;
+            if let Some(co) = &self.coord {
+                co.set_moving(Some("its pool step hangs (the NAS not answering)".into()));
+                if let (Some(r), true) = (root, self.published.is_some()) {
+                    // (On a thread of its own, not waited for: the NAS it reads and removes on
+                    // hangs.)
+                    let (c, r) = (co.clone(), r.to_path_buf());
+                    std::thread::spawn(move || c.unpublish(&r));
+                    self.published = None;
+                }
+            }
+        }
+        let why = if self.pool_hung.is_some() {
+            format!("its step on the pool's thread has hung for {} min (the NAS isn't answering it): nothing is granted or started on its behalf until it ends", held / 60)
+        } else if self.pool_skips >= HUNG_SKIPS {
+            format!("its step on the pool's thread has been under way {held} s (its share slow to answer): nothing is granted or started on its behalf until it ends")
+        } else {
+            "its step is under way on the pool's thread (its share slow to answer)".to_string()
+        };
+        waiting.push(Waiting { step: None, what: "The pool".into(), why });
+        let g = self.pool_seen.as_ref().map(|p| p.gates.clone()).unwrap_or_default();
+        pool::Gates { term: g.term, leads: g.leads, ..Default::default() }
     }
 
     fn pool_step_in(&mut self, root: Option<&Path>, c: &Conditions, waiting: &mut Vec<Waiting>) -> Option<pool::Gates> {
@@ -8257,6 +8327,85 @@ mod pool_tests {
         assert!(a.pool_restart().is_some_and(|w| w.contains("on")), "{:?}", a.pool_restart());
         let st = read_status(Some(&r), &a.o.home).unwrap();
         assert!(st.waiting.iter().any(|w| w.why.starts_with("restarting")), "{:?}", st.waiting);
+    }
+
+    #[test]
+    fn a_tick_that_never_returns_stops_the_leads_grants_and_says_so() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        let bin = app(d.path());
+        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("app-folder/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
+        a.mem.last_ok.insert("backup".into(), now_s());
+        a.mem.last_ok.insert("gc".into(), now_s());
+        a.step().unwrap();
+        assert!(a.published.is_some() && a.pool_hung.is_none(), "it leads, its contact on the NAS");
+        let moving = |a: &Agent| a.coord.as_ref().unwrap().shared.lock().unwrap().moving.clone();
+        // The pool's thread's moment's check (no tick): waited for, never a skip.
+        let shared = a.pool.clone().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let s2 = shared.clone();
+        let t = std::thread::spawn(move || {
+            let _g = pool::lock(&s2);
+            held_tx.send(()).unwrap();
+            rx.recv().ok();
+        });
+        held_rx.recv().unwrap();
+        tx.send(()).unwrap();
+        a.step().unwrap();
+        t.join().unwrap();
+        assert_eq!(a.pool_skips, 0);
+        // A tick that took the lock and hasn't said so yet, and then hangs: the loop tries a while
+        // (`TRY_FOR`), never waits on it for good, and passes its step over.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let s2 = shared.clone();
+        let t = std::thread::spawn(move || {
+            let _g = pool::lock(&s2);
+            held_tx.send(()).unwrap();
+            rx.recv().ok();
+        });
+        held_rx.recv().unwrap();
+        a.step().unwrap();
+        assert_eq!(a.pool_skips, 1, "passed over, not waited on");
+        tx.send(()).unwrap();
+        t.join().unwrap();
+        a.step().unwrap();
+        assert_eq!(a.pool_skips, 0);
+        // A tick that never returns (the share hung): held past STALL_S by its own account.
+        let ticking = a.ticking.clone().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let s2 = shared.clone();
+        let t = std::thread::spawn(move || {
+            let _g = pool::lock(&s2);
+            held_tx.send(()).unwrap();
+            rx.recv().ok();
+        });
+        held_rx.recv().unwrap();
+        ticking.start_at(pool::Ticking::awake() - 60);
+        a.step().unwrap();
+        assert!(a.pool_skips == 1 && a.pool_hung.is_none() && a.published.is_some(), "a minute: under way");
+        ticking.start_at(pool::Ticking::awake() - crate::pool::driver::STALL_S - 1);
+        a.step().unwrap();
+        assert_eq!(moving(&a).as_deref(), Some("its pool step hangs (the NAS not answering)"));
+        assert!(a.published.is_none() && a.pool_hung.is_some(), "its contact off the NAS");
+        a.step().unwrap();
+        assert!(a.published.is_none(), "kept off while it hangs");
+        let st = read_status(Some(&r), &a.o.home).unwrap();
+        assert!(st.waiting.iter().any(|w| w.why.contains("has hung") && w.why.contains("the NAS isn't answering")), "{:?}", st.waiting);
+        // It returns: cleared, granting and published again.
+        ticking.end();
+        tx.send(()).unwrap();
+        t.join().unwrap();
+        a.step().unwrap();
+        assert!(a.pool_hung.is_none() && a.pool_skips == 0 && a.published.is_some());
+        assert_ne!(moving(&a).as_deref(), Some("its pool step hangs (the NAS not answering)"));
+        let st = read_status(Some(&r), &a.o.home).unwrap();
+        assert!(!st.waiting.iter().any(|w| w.why.contains("has hung")), "{:?}", st.waiting);
+        stop_jobs(&mut a);
     }
 
     #[test]
