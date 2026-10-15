@@ -5,8 +5,11 @@
 //! - **Every step of the plan offered** (`offered`): the lead's coordinator offers its members the
 //!   plan's steps, not only the shared ones (the map tiles' `pack` and `lo` among them; each Mac's
 //!   saves reach the records only through the journal, so a member's are merged as any). Kept to
-//!   the lead: its duties (`LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch) and
-//!   the steps that keep the pass's answers (the agent seeds them as it starts).
+//!   the lead: its duties (`LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch),
+//!   the steps that keep the pass's answers (the agent seeds them as it starts), and the worldwide
+//!   steps (one target, the world: the roads' index, the rail stops, the ferries, the world's roots,
+//!   the landmarks' and overlays' draws, the rail chain, the terrain's water; the pass's own), whose
+//!   inputs this batch doesn't follow onto a member's Mac.
 //! - **By the measures** (crate::coord's `pick_every`): a member offered a target only when its
 //!   measured memory and disk fit what the member spares; a cold start (a step none of whose
 //!   targets has run) only to the member with the most room, the lead's own counted, alone; a job's
@@ -38,10 +41,11 @@ pub fn on(root: &Path) -> Option<bool> {
 pub const LEAD_ONLY: [&str; 9] = ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "backup", "inputs", "names-todo"];
 
 /// Whether the lead offers its members `step`'s targets with the switch on: a step of the steps
-/// table that isn't the lead's (`LEAD_ONLY`) and doesn't keep the pass's answers
+/// table of targets by area (not a worldwide one: `names_target` of its name, a run alone, the
+/// spoken languages) that isn't the lead's (`LEAD_ONLY`) and doesn't keep the pass's answers
 /// (crate::agent::steps::ANSWERED), the shared steps among them.
 pub fn offered(step: &str) -> bool {
-    super::steps::row(step).is_some() && !LEAD_ONLY.contains(&step) && !super::steps::ANSWERED.contains(&step)
+    super::steps::row(step).is_some() && !LEAD_ONLY.contains(&step) && !super::steps::ANSWERED.contains(&step) && names_target(step) && !super::steps::alone(step) && step != "spoken"
 }
 
 /// Whether a job's command names target `t` (a step's worldwide target, its own name or a world
@@ -70,13 +74,13 @@ mod tests {
 
     #[test]
     fn every_step_but_the_leads_and_the_answers_is_offered() {
-        for s in ["pack", "lo", "terrain-lo", "slope-lo", "trees-lo", "bldfield-lo", "roadunits", "stations", "terrain-root", "marks", "overlays", "rail"] {
+        for s in ["pack", "lo", "terrain-lo", "slope-lo", "trees-lo", "bldfield-lo"] {
             assert!(offered(s), "{s}");
         }
         for s in super::super::steps::SHARED {
             assert!(offered(s), "{s}");
         }
-        for s in ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "inputs", "items", "heritage", "heritage-sites", "tail", "a step of a newer app"] {
+        for s in ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "inputs", "items", "heritage", "heritage-sites", "tail", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "marks", "overlays", "rail", "rail-feeds", "terrain-water", "water", "labels", "spoken", "a step of a newer app"] {
             assert!(!offered(s), "{s}");
         }
     }

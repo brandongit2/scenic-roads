@@ -533,14 +533,23 @@ What's planned of placement (phase 4, §12):
 
 - **Every step offered to every member** (crate::agent::every and crate::coord's `pick_every`,
   built: phase 4's ninth batch, behind `state/pool/every-step`, §12): the plan's every step but
-  the lead's own (`every::LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch; and
-  the steps keeping the pass's answers), the map tiles' `pack` and `lo` among them, to a member
-  whose measured room fits each target's measures (memory against what it spares, disk against the
-  room its ask says, `disk_mb`); a cold start only to the member with the most room, the lead's own
-  counted (its guard's limit less what its jobs hold, its free disk less the reserve and the
-  owner's target; none while its slots are full or a job runs alone there), alone; a
-  round's step granted with the round's units (`as_of`), which its job reads as the lead's own
-  does. Off, a member takes the shared steps alone, and the lead the rest.
+  the lead's own (`every::LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch; the
+  steps keeping the pass's answers; and the worldwide steps, a target the world's: the road index,
+  the rail stops, the ferries, the world's roots, the landmarks' and overlays' draws, the rail
+  chain, the terrain's water), so the targets by area: the map tiles' `pack` and `lo`, the
+  assemblies (`terrain-lo`, `slope-lo`, `trees-lo`, `bldfield-lo`) and the shared steps, to a member
+  whose measured room fits each target's measures (memory against what it spares, disk against its
+  free space less the reserve and the owner's target, its ask's `disk_mb`); a cold start only while
+  no job of its step is under way (a lease held, the lead's own jobs' too), to the member with the
+  most room, the lead's own counted (its guard's limit less what its jobs hold, its free disk less
+  the same reserve and target; none while its slots are full or a job runs alone there), alone.
+  The memory compared isn't alike: the lead's is its guard's limit, a member's what it spares (three
+  eighths of its Mac's, the owner's choice), so a lead with room takes cold starts before a member
+  of the same Mac's size would. `pack` and `lo` are a round's steps: granted only with the round's
+  units (`as_of`, told to the coordinator with the plan's offers, cleared as the round ends), which
+  their job reads as the lead's own does; with no round under way, none is granted. Whatever the
+  switch, the lead's plan leaves out what other workers' leases hold. Off, a member takes the
+  shared steps alone, and the lead the rest.
 - **Order and locality** (built with it): a member gets work as a contiguous run of the plan's
   targets (a target held, done, kept from it or past its room ends the run), from the plan's front,
   or just after its last target of the step when that one's open; as many targets as fit a quarter
@@ -1347,18 +1356,21 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    9. **Every step to every member: built** (§7.2, §7.7; crate::agent::every, crate::coord's
       `pick_every`), behind `state/pool/every-step` (off while missing: the agent as it was; it acts
       only in the pool). The lead's coordinator offers the plan's every step but its own
-      (`every::LEAD_ONLY`, and the steps keeping the pass's answers) to every member whose measured
-      room fits the target's measures, the map tiles' `pack` and `lo` among them (each Mac's saves
-      reach the records only through the journal; a round's step granted with the round's units,
-      `as_of`); a cold start only to the member with the most room, the lead counted, alone; a
+      (`every::LEAD_ONLY`, the steps keeping the pass's answers, the worldwide steps) to every member
+      whose measured room fits the target's measures, the map tiles' `pack` and `lo` among them
+      (each Mac's saves reach the records only through the journal; a round's step granted only
+      with the round's units, `as_of`); a cold start only with no job of its step under way, to the
+      member with the most room, the lead counted, alone; a
       job's targets as many as fit a quarter of an hour by their measured times (`pack` and `lo`
       now note their targets' costs); contiguous runs from the front of the plan, or just after the
       member's last; claims neither made nor read. The pass's worldwide jobs stay the lead's (they
       aren't the plan's work; plan.md §10). Tests: a member offered `pack`, with the round's units,
       no claim made, and its entry merged, two agents in one process, and off as before; a member
       short of a target's measured memory or disk offered none of it; a cold start alone on the
-      largest asking, none while the lead has more; runs contiguous; batches by time, and one a job
-      with none measured. **Scratch state (§13): both Macs, run in part** (15 Oct 2026, the M4
+      largest asking, none while a job of its step is under way or the lead has more; a round's step
+      only with the round's units, none with no round; others' leases left out of the lead's plan
+      (the coordinator's `held_by_others`); runs contiguous; batches by time, and one a job with
+      none measured. **Scratch state (§13): both Macs, run in part** (15 Oct 2026, the M4
       leading, the M1 a member, `root`, `region`, `every`): the switch read on both, no claim file
       made; the lead running its pass's sets (a step alone, so no room free now), the region's
       terrain and tree cover pieces, never run, went to the M1 as cold starts, one target a job, and

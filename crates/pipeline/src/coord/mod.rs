@@ -474,21 +474,22 @@ impl Shared {
             let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
             !held.contains(t) && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k) && !backoff
         };
-        let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d);
+        let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
+        let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d);
         let cold_here = std::cell::OnceCell::new();
         let takeable = |i: usize| {
             let (t, k, _) = &o.targets[i];
             open(t, k)
                 && match self.measured(&o.step, t) {
                     Some(m) => fits(&m),
-                    None => *cold_here.get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str())),
+                    // (Alone: no job of its step under way anywhere, the lead's own held by a lease too.)
+                    None => held.is_empty() && *cold_here.get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str())),
                 }
         };
         let after = self.last.get(&(a.worker.clone(), o.step.clone())).and_then(|l| o.targets.iter().position(|t| t.0 == *l)).map(|i| i + 1);
         let Some(start) = after.filter(|&i| i < o.targets.len() && takeable(i)).or_else(|| (0..o.targets.len()).find(|&i| takeable(i))) else { return Vec::new() };
         let first = &o.targets[start];
         let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
-        let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
         let mut pick = vec![(first.0.clone(), first.1.clone())];
         let (mut secs, mut disk) = (self.secs_of(&o.step, &first.0, &a.worker), m0.disk_mb);
         for (t, k, _) in &o.targets[start + 1..] {
@@ -980,6 +981,8 @@ impl Coordinator {
         s.done = done.into_iter().filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str())).collect();
         s.pass = pass.to_string();
         s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
+        let steps: BTreeSet<String> = s.offers.iter().map(|o| o.step.clone()).collect();
+        s.last.retain(|(_, st), _| steps.contains(st));
     }
 
     /// Every step to every member on (`Some`: the lead's own room in it) or off (docs/pool.md §12,
@@ -1027,6 +1030,13 @@ impl Coordinator {
     pub fn held(&self, step: &str) -> BTreeSet<String> {
         let s = self.shared.lock().unwrap();
         s.leases.held(step, s.now())
+    }
+
+    /// The targets of `step` leases of other workers than this Mac hold (its own jobs' aside).
+    pub fn held_by_others(&self, step: &str) -> BTreeSet<String> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.leases.all(now).iter().filter(|l| l.worker != self.me && matches!(&l.work, Work::Job { step: st, .. } if st == step)).flat_map(|l| l.targets().iter().map(|t| t.0.clone())).collect()
     }
 
     /// Leases past their deadline dropped (their workers went quiet): a task's offered again.
@@ -1652,6 +1662,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 let passes = if every { &[false][..] } else { passes };
                 for &away in passes {
                     for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
+                        // (A round's step only with the round's units to grant it with.)
+                        if every && s.round.is_none() && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
+                            continue;
+                        }
                         let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
                         if pick.is_empty() {
                             continue;
@@ -3161,6 +3175,8 @@ mod tests {
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         c.set_every(Some(Every { own: Some(own) }));
+        // (A round under way: its steps, `pack` and `lo`, are granted with it.)
+        c.set_round(Some(AsOf { began: 1, units: BTreeMap::new() }));
         (d, c, w, clock)
     }
 
@@ -3233,16 +3249,59 @@ mod tests {
         let (_d, c, m1, clock) = every((1000, 1000));
         let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
         measured_offer(&c, "lo", &[("3/1/1", None), ("3/1/2", None), ("3/1/3", None)]);
-        assert_eq!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)), ["3/1/1"], "alone, the largest asking");
+        let g = m2.ask(&every_ask("m2", "lo", 8192, 100_000)).unwrap().unwrap();
+        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1 && targets[0].0 == "3/1/1"), "alone, the largest asking");
+        // While a job of the step is under way (a member's, or the lead's own: its lease), no other
+        // cold start of it.
+        assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "one under way");
+        m2.give_back(g.lease, "the test").unwrap();
+        let own = c.hold("lo", &[("3/1/3".into(), "k 3/1/3".into())]).unwrap();
+        assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "the lead's own under way");
+        c.finish(own, &[]);
         assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "the larger asked lately");
         clock.advance(ASKING);
-        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2"], "the larger no longer asking");
+        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/1"], "the larger no longer asking");
         // The lead with more room than any: it starts them itself.
         c.set_every(Some(Every { own: Some((16_000, 200_000)) }));
         assert!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)).is_empty());
         // Once a target of the step has run, the others are offered by its measures, batched.
         c.add_costs(&[(cost_key("lo", "3/1/1"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo") })]);
-        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/3"]);
+        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2", "3/1/3"]);
+    }
+
+    /// A round's step (`pack`) is granted only with the round's units, as the lead last told them;
+    /// with no round under way (none begun, or it ended), none of it is granted.
+    #[test]
+    fn every_step_a_rounds_step_goes_only_with_the_rounds_units() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let m = Some((500, 10, 60));
+        measured_offer(&c, "pack", &[("6/1/1", m), ("6/1/2", m)]);
+        c.set_round(None);
+        let a = every_ask("m1", "pack", 4096, 10_000);
+        assert!(w.ask(&a).unwrap().is_none(), "no round: none");
+        let units: BTreeMap<String, String> = [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into();
+        c.set_round(Some(AsOf { began: 7, units: units.clone() }));
+        let g = w.ask(&a).unwrap().unwrap();
+        assert_eq!(g.as_of, Some(AsOf { began: 7, units }));
+        w.give_back(g.lease, "the test").unwrap();
+        c.set_round(None);
+        assert!(w.ask(&a).unwrap().is_none(), "the round over: none");
+        // (A step not a round's: granted without.)
+        measured_offer(&c, "slope", &[("3/1/1", m)]);
+        let g = w.ask(&every_ask("m1", "slope", 4096, 10_000)).unwrap().unwrap();
+        assert!(g.as_of.is_none());
+    }
+
+    /// The lead's plan leaves out what other workers' leases hold, its own jobs' aside.
+    #[test]
+    fn the_targets_other_workers_hold_are_theirs_alone() {
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("6/1/1", Some((500, 10, 60)))]);
+        let own = c.hold("pack", &[("6/1/2".into(), "k".into())]).unwrap();
+        let _ = w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap().unwrap();
+        assert_eq!(c.held("pack").len(), 2);
+        assert_eq!(c.held_by_others("pack"), ["6/1/1".to_string()].into());
+        c.finish(own, &[]);
     }
 
     /// Runs are contiguous in plan order: a target held (by the lead's own job, or another worker's)

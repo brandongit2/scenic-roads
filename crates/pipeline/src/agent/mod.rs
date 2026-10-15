@@ -1320,7 +1320,9 @@ impl Agent {
             more_mb: away.then(|| helper_memory(true)),
             max_secs: away.then_some(AWAY_JOB),
             limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0),
-            disk_mb: every.then(|| self.disk_free().saturating_add(cheap).saturating_sub(HELPER_RESERVE + self.floor()) >> 20),
+            // (Its free space now, less the reserve and the owner's target, as the lead reckons its
+            // own: `own_room`. What its caches could free isn't counted: nothing frees it first.)
+            disk_mb: every.then(|| self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20),
             ..Default::default()
         };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
@@ -4072,7 +4074,20 @@ impl Agent {
 
     /// The round under way is over (its catalog made, or nothing left it would publish): kept
     /// without its units, for when it began.
+    /// The round under way told to this Mac's coordinator, with the plan's offers made from the
+    /// same round (every step to every member: a round's step is granted only with it).
+    fn offer_round(&self, c: &crate::coord::Coordinator) {
+        let round = self.round.borrow().as_ref().filter(|r| !r.over && self.every_on()).map(|r| (r.began, r.units.clone()));
+        if round.as_ref().map(|r| r.0) != c.round_began() {
+            c.set_round(round.map(|(began, units)| crate::coord::AsOf { began, units }));
+        }
+    }
+
     fn end_round(&self) {
+        // (Its units no longer granted with a round's step.)
+        if let Some(c) = &self.coord {
+            c.set_round(None);
+        }
         let mut kept = self.round.borrow_mut();
         let Some(r) = kept.as_mut().filter(|r| !r.over) else { return };
         r.over = true;
@@ -4435,6 +4450,14 @@ impl Agent {
         for w in plan.iter_mut() {
             w.targets.retain(|t| !holds.all.contains(&(w.step.clone(), t.0.clone())));
         }
+        // What other workers hold leases of isn't planned here, whatever the switch (one switched off
+        // while a member runs a job of a step only it offered).
+        if let Some(c) = &self.coord {
+            for w in plan.iter_mut().filter(|w| !steps::SHARED.contains(&w.step.as_str())) {
+                let others = c.held_by_others(&w.step);
+                w.targets.retain(|t| !others.contains(&t.0));
+            }
+        }
         // (Every step to every member: the plan's every step offered but the lead's own,
         // crate::agent::every.)
         for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str()) || (every_on && every::offered(&w.step))) {
@@ -4470,6 +4493,7 @@ impl Agent {
         // (The shared steps by their rank, then the others in plan order.)
         offers.sort_by_key(|o| steps::SHARED.iter().position(|s| *s == o.step).unwrap_or(usize::MAX));
         if let Some(c) = &self.coord {
+            self.offer_round(c);
             c.offer(date, offers);
         }
         // (Held here: left to a Mac with room. A target whose floor past this Mac's limit was a
@@ -5410,13 +5434,12 @@ impl Agent {
             }
             self.every = on;
         }
-        // (The lead's coordinator told, with this Mac's room now, each loop; and its round under
-        // way, which a member's job of a round's step reads as this Mac's own would.)
+        // (The lead's coordinator told, with this Mac's room now, each loop; its round with the
+        // plan's offers: `offer_round`.)
         if let Some(c) = &self.coord {
             c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
-            let round = self.round.borrow().as_ref().filter(|r| !r.over && self.every_on()).map(|r| (r.began, r.units.clone()));
-            if round.as_ref().map(|r| r.0) != c.round_began() {
-                c.set_round(round.map(|(began, units)| crate::coord::AsOf { began, units }));
+            if !self.every_on() {
+                c.set_round(None);
             }
         }
         if let Some(on) = pool::slots_on(r) {
@@ -8209,6 +8232,8 @@ mod pool_tests {
         switch_on(&r, every::SWITCH);
         *lead.round.borrow_mut() = Some(build::Round { began: 1_791_000_000, regions: Vec::new(), last: true, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false });
         lead.pool_switch(Some(&r));
+        // (Told with the plan's offers, as the lead's planning does.)
+        lead.offer_round(lead.coord.as_ref().unwrap());
         m.pool_switch(Some(&r));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_some_and(|e| e.own.is_some()));
         until(&mut m, |m| m.slots[0].running.is_some() || bin.join("env-pack").exists());
@@ -8221,8 +8246,8 @@ mod pool_tests {
         assert!(as_of.ends_with("/round.json#1791000000"), "{as_of}");
         let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(bin.join("as-of-pack")).unwrap()).unwrap();
         assert_eq!(kept["units"]["base/6-1-1"], "base/6-1-1.1111111111111111.base");
-        *lead.round.borrow_mut() = None;
-        lead.pool_switch(Some(&r));
+        // The round over: its units no longer granted.
+        lead.end_round();
         assert!(lead.coord.as_ref().unwrap().round_began().is_none());
         assert!(!r.join("state/build/claims").exists() || std::fs::read_dir(r.join("state/build/claims")).unwrap().next().is_none(), "no claim made");
         // Its entry merged by the lead, within pack's write-set.

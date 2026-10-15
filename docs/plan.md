@@ -2929,10 +2929,11 @@ At each phase's end an Opus agent reviews the work against this plan.
      job as a cold start on its own slots (pool.md §7.7, §12);
    - every step to every member (pool.md §12, batch 9): the pass's worldwide jobs (its sets, the
      reach, the summits, the labels, the water, the lake fill, …), the catalogs and prune, GC, the
-     backup, the input checks and the steps keeping the pass's answers stay the lead's; a step's
-     time per target is its targets' cost lines alone (a step whose jobs note none, as the roads'
-     chain's steps but `pack` and `lo`, goes to a member one target a job); a member's room is what
-     it spares (three eighths of its memory, `helper_memory`), not its guard's limit; the forecast
+     backup, the input checks, the steps keeping the pass's answers and the worldwide steps of the
+     plan (the road index, the rail stops, the world's roots, …) stay the lead's; a step's
+     time per target is its targets' cost lines alone (a step whose jobs note none goes to a member
+     one target a job); a member's room is what it spares (three eighths of its memory,
+     `helper_memory`), not its guard's limit, against the lead's guard's limit for a cold start; the forecast
      doesn't model it;
    - a records snapshot, saved whole after each merge, holds the lease that last set each target
      (one per step and target, as the job keys are: about as large as the keys again) and every
