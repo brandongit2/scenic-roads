@@ -8065,8 +8065,9 @@ mod pool_tests {
         assert!(!planned(&lead).0);
         resume::release(&r, &im, &pass).unwrap();
         assert!(planned(&lead).0);
-        // Switched off again: the offer taken back, the plan as before.
-        resume::write(&r, &held(now_s() - 60, false)).unwrap();
+        // Switched off again: the offer taken back, the plan as before. (Progress begun a minute
+        // before the released one: not that release's.)
+        resume::write(&r, &held(at - 60, false)).unwrap();
         assert!(!planned(&lead).0 && lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_some());
         std::fs::write(r.join(resume::SWITCH), "off").unwrap();
         lead.pool_switch(Some(&r));
