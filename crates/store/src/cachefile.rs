@@ -20,7 +20,9 @@
 //! it's closed, and free nothing until then.)
 //!
 //! (A child process being started has copies of its parent's open files, their locks with them,
-//! until it starts its program: a file looks in use for that moment, and is passed over.)
+//! until it starts its program: so the deletes wait for this process's children being started
+//! (store::spawn's `no_child_starting`), and a file only this process let go of is never passed
+//! over as in use.)
 //!
 //! A cache file read whole at once (a raw terrain tile) is locked only while it's read (`read`).
 //! Folders go file by file, then empty folders (`remove_tree`). dem/cachefile.py is the same for
@@ -411,7 +413,7 @@ pub fn create_bytes(path: &Path, b: &[u8]) -> io::Result<()> {
 /// name checked to still be that file; unlinked while locked). Never through a link.
 pub fn try_remove(path: &Path) -> Removed {
     #[cfg(unix)]
-    {
+    return crate::spawn::no_child_starting(|| {
         use std::os::unix::fs::OpenOptionsExt;
         let f = match File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
             Ok(f) => f,
@@ -436,7 +438,7 @@ pub fn try_remove(path: &Path) -> Removed {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Removed::Gone,
             Err(_) => Removed::InUse,
         }
-    }
+    });
     #[cfg(not(unix))]
     match std::fs::metadata(path) {
         Ok(m) => std::fs::remove_file(path).map_or(Removed::InUse, |_| Removed::Freed(m.len())),
@@ -449,7 +451,7 @@ pub fn try_remove(path: &Path) -> Removed {
 /// together: the DEM seed). Their bytes when deleted; None when one is in use.
 pub fn try_remove_all(paths: &[PathBuf]) -> Option<u64> {
     #[cfg(unix)]
-    {
+    return crate::spawn::no_child_starting(|| {
         use std::os::unix::fs::OpenOptionsExt;
         let mut locked = Vec::new();
         for p in paths {
@@ -474,7 +476,7 @@ pub fn try_remove_all(paths: &[PathBuf]) -> Option<u64> {
             }
         }
         Some(n)
-    }
+    });
     #[cfg(not(unix))]
     Some(paths.iter().map(|p| match try_remove(p) {
         Removed::Freed(n) => n,

@@ -62,6 +62,15 @@ pub fn sockets<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Runs `f` once no child of this process is part way started, and starts none until it's done:
+/// a child started by fork and exec holds copies of this process's open files, their `flock`s
+/// with them, until its exec, so a lock this process let go of would still look taken for that
+/// moment (store::cachefile's `try_remove`, which would pass over a file no one uses).
+pub fn no_child_starting<T>(f: impl FnOnce() -> T) -> T {
+    let _g = making();
+    f()
+}
+
 /// A listener on `addr` (an address, not a name to look up), made by `sockets`.
 pub fn listen(addr: impl ToSocketAddrs) -> io::Result<TcpListener> {
     sockets(|| TcpListener::bind(addr))
