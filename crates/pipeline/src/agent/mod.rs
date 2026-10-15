@@ -6263,7 +6263,7 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let seen = d.path().join("seen");
         let job = |step: &str, t: &str| {
-            let script = format!("env > {0}/{step}.env; /usr/bin/nc -v -z -G 5 192.0.2.1 9 2> {0}/{step}.out; echo done >> {0}/{step}.out; sleep 3600", seen.display());
+            let script = format!("env > {0}/{step}.env; /usr/bin/nc -v -z -G 5 192.0.2.1 9 2> {0}/{step}.out; echo done >> {0}/{step}.out", seen.display());
             JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), script], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) }
         };
         std::fs::create_dir_all(&seen).unwrap();
@@ -6291,12 +6291,14 @@ mod tests {
         assert!(a.try_start(0, job("items", "items"), &cond, Some(&root), &mut Vec::new()));
         a.start_second(&[job("heritage", "heritage")], &cond, Some(&root));
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("heritage heritage"), "{:?}", a.beside_why);
-        // (Each job's own word that it's done looking: no clock.)
+        // (Each job ends by itself once it has looked: its exit waited for, bounded by nc's own
+        // five seconds at most; no clock in the test.)
+        for k in 0..SLOTS {
+            assert!(a.slots[k].running.as_mut().unwrap().wait().unwrap().success());
+        }
         for step in ["items", "heritage"] {
             let out = seen.join(format!("{step}.out"));
-            while !std::fs::read_to_string(&out).unwrap_or_default().contains("done") {
-                std::thread::yield_now();
-            }
+            assert!(std::fs::read_to_string(&out).unwrap().contains("done"));
             let env = std::fs::read_to_string(seen.join(format!("{step}.env"))).unwrap();
             assert!(env.contains(&format!("HTTPS_PROXY={url}\n")) && env.contains(&format!("{}={url}\n", crate::budget::PROXY_ENV)) && env.contains("NO_PROXY=localhost,127.0.0.1,::1\n"), "{env}");
             assert!(std::fs::read_to_string(&out).unwrap().contains("Operation not permitted"), "{step}: sandboxed");

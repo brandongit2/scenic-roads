@@ -152,6 +152,12 @@ impl Running {
         Ok(self.child.try_wait()?)
     }
 
+    /// Waits for it to finish (the tests': a job that ends by itself), its exit status.
+    #[cfg(test)]
+    pub fn wait(&mut self) -> Result<ExitStatus> {
+        Ok(self.child.wait()?)
+    }
+
     /// Stops the whole group: SIGTERM (after SIGCONT, so a paused job can handle it), then SIGKILL
     /// after `grace` to whatever of it is left.
     pub fn stop(&mut self, grace: Duration) {
@@ -654,12 +660,7 @@ mod tests {
         );
         let log = d.path().join("log");
         let mut r = Running::start(spec(&["/bin/sh", "-c", &script]), 1, &env, log.clone(), &d.path().join("job.json"), None, Some(crate::budget::SANDBOX)).unwrap();
-        let st = loop {
-            if let Some(s) = r.poll().unwrap() {
-                break s;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let st = r.wait().unwrap();
         assert!(st.success());
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(text.contains("Operation not permitted") && text.contains("out=1"), "{text}");

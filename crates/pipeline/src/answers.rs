@@ -50,6 +50,37 @@ pub struct Kept {
     /// The answers' lease on the NAS (`LEASE`), taken around each sync and keep, with the budgets on
     /// (`leased`); None: none taken (the agent as it was).
     pub lease: Option<PathBuf>,
+    /// The lease while a sync or keep holds it: checked still this holder's before each write to
+    /// the NAS (`still_ours`).
+    pub holding: std::sync::Mutex<Option<Lease>>,
+}
+
+/// A sync's or keep's hold of the answers' lease: given back as it ends.
+struct Holding<'a>(&'a Kept);
+
+impl Drop for Holding<'_> {
+    fn drop(&mut self) {
+        self.0.holding.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+impl Kept {
+    /// The answers' lease taken for a sync or keep (when it's `leased`).
+    fn hold(&self) -> Result<Option<Holding<'_>>> {
+        let Some(p) = self.lease.as_deref() else { return Ok(None) };
+        let l = Lease::take(p)?;
+        *self.holding.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
+        Ok(Some(Holding(self)))
+    }
+
+    /// Before a write to the NAS: the lease, when one's held, still this holder's (a lease lost, its
+    /// renewal failed or another taker's since, stops the sync or keep before it writes).
+    fn still_ours(&self) -> Result<()> {
+        match self.holding.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some(l) => l.ours(),
+            None => Ok(()),
+        }
+    }
 }
 
 /// What `Kept::sync` did.
@@ -113,7 +144,7 @@ impl Kept {
     /// At the step's start: this Mac's answers (`files`, by name under `dir`) and the NAS's made one,
     /// as the module's doc says; `scratch` for the archive's copies.
     pub fn sync(&self, files: &[String], scratch: &Path) -> Result<Synced> {
-        let _lease = self.lease.as_deref().map(Lease::take).transpose()?;
+        let _held = self.hold()?;
         let here = hashes(&self.dir, files)?;
         let mark = self.read_mark();
         let Some(nas) = self.fetch(scratch)? else {
@@ -155,7 +186,7 @@ impl Kept {
     /// changed since they last matched its archive (made one with another writer's archive there
     /// since, where they can be, else left: the next start takes the NAS's); whether they were.
     pub fn keep(&self, files: &[String], scratch: &Path) -> Result<bool> {
-        let _lease = self.lease.as_deref().map(Lease::take).transpose()?;
+        let _held = self.hold()?;
         let here = hashes(&self.dir, files)?;
         let mark = self.read_mark();
         // (Nothing changed here since: nothing to send, whatever the NAS has now.)
@@ -227,6 +258,7 @@ impl Kept {
                 }
                 aside = self.nas.with_file_name(format!("{}.bad-{now}-{k}", self.name()));
             }
+            self.still_ours()?;
             crate::whole::rename_over(&self.nas, &aside).with_context(|| format!("move {} aside", self.nas.display()))?;
             eprintln!("answers: {} doesn't read whole ({e:#}): moved aside as {}", self.nas.display(), aside.display());
             return Ok(None);
@@ -245,6 +277,7 @@ impl Kept {
             if let Some(d) = self.nas.parent() {
                 std::fs::create_dir_all(d)?;
             }
+            self.still_ours()?;
             crate::whole::copy(&local, &self.nas)?;
             self.write_mark(&Mark { archive, files: here.clone() })
         })();
@@ -514,7 +547,7 @@ pub fn items_files(dir: &Path, date: &str) -> Vec<String> {
 
 /// The items job's for pass `date`: its cache `dir`, its archive in the NAS's project folder `root`.
 pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
-    Kept { nas: root.join(format!("sources/items/{date}/answers.tar.zst")), dir: dir.to_path_buf(), mark: dir.join(format!("kept-{date}.json")), base: None, lease: None }
+    Kept { nas: root.join(format!("sources/items/{date}/answers.tar.zst")), dir: dir.to_path_buf(), mark: dir.join(format!("kept-{date}.json")), base: None, lease: None, holding: Default::default() }
 }
 
 /// What the heritage chain makes again on every run from the pass, in its working copy: not answers.
@@ -544,7 +577,7 @@ pub fn heritage_files(epoch: &Path, snap: &Path) -> Vec<String> {
 /// The heritage chain's for pass `date`: its working copy `epoch` of the registers' snapshot `snap`
 /// (`registers-<id>`), its archive in the NAS's project folder `root`.
 pub fn heritage(root: &Path, epoch: &Path, snap: &Path, date: &str, id: &str) -> Kept {
-    Kept { nas: root.join(format!("sources/items/{date}/heritage-{id}.tar.zst")), dir: epoch.to_path_buf(), mark: epoch.join(".kept.json"), base: Some(snap.to_path_buf()), lease: None }
+    Kept { nas: root.join(format!("sources/items/{date}/heritage-{id}.tar.zst")), dir: epoch.to_path_buf(), mark: epoch.join(".kept.json"), base: Some(snap.to_path_buf()), lease: None, holding: Default::default() }
 }
 
 /// The answers this Mac's agent cache (`cache`) has for the newest complete pass on the NAS
@@ -635,6 +668,8 @@ pub struct Lease {
     path: PathBuf,
     token: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by the renewer when the lease is found not to be this holder's any more.
+    lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     renewer: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -657,7 +692,8 @@ impl Lease {
             }
         }
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (p, t, s) = (path.to_path_buf(), token.clone(), stop.clone());
+        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (p, t, s, lo) = (path.to_path_buf(), token.clone(), stop.clone(), lost.clone());
         let renewer = std::thread::Builder::new()
             .name("answers-lease".into())
             .spawn(move || {
@@ -667,13 +703,31 @@ impl Lease {
                     if last.elapsed() >= std::time::Duration::from_secs(LEASE_S / 4) {
                         last = std::time::Instant::now();
                         if !renew_lease(&p, &t, crate::agent::jobs::now_s()) {
-                            eprintln!("answers: the answers' lease isn't this process's any more (lapsed and taken): what it sends may be merged again by the next start");
+                            lo.store(true, std::sync::atomic::Ordering::SeqCst);
+                            eprintln!("answers: the answers' lease isn't this process's any more (lapsed and taken): its sync or keep stops before its next write to the NAS");
                         }
                     }
                 }
             })
             .ok();
-        Ok(Lease { path: path.to_path_buf(), token, stop, renewer })
+        Ok(Lease { path: path.to_path_buf(), token, stop, lost, renewer })
+    }
+
+    /// Whether it's still this holder's, as the NAS says now: its renewer hasn't lost it, and the
+    /// file names this holder and hasn't lapsed. An error to stop the work it guards, else.
+    pub fn ours(&self) -> Result<()> {
+        anyhow::ensure!(!self.lost.load(std::sync::atomic::Ordering::SeqCst), "the answers' lease was lost (lapsed and taken by another): nothing written");
+        lease_is(&self.path, &self.token, crate::agent::jobs::now_s())
+    }
+}
+
+/// Whether the lease at `path` is the holder of `token`'s at `now`: an error saying why not.
+pub fn lease_is(path: &Path, token: &str, now: u64) -> Result<()> {
+    match read_lease(path).with_context(|| format!("read {}", path.display()))? {
+        Some(h) if h.token == token && h.until > now => Ok(()),
+        Some(h) if h.token == token => anyhow::bail!("the answers' lease lapsed ({} s past its end): nothing written", now - h.until),
+        Some(h) => anyhow::bail!("the answers' lease is {}'s now: nothing written", h.by),
+        None => anyhow::bail!("the answers' lease is gone (broken by another taker): nothing written"),
     }
 }
 
@@ -712,6 +766,12 @@ fn read_lease(path: &Path) -> std::io::Result<Option<LeaseFile>> {
 /// the lapsed one; one renewed meanwhile, or another's made since, is put back with create-new),
 /// then tried again.
 pub fn try_lease(path: &Path, by: &str, token: &str, now: u64) -> Result<Tried> {
+    try_lease_with(path, by, token, now, &mut || {})
+}
+
+/// `try_lease`, with `between` run after a lapsed lease is read and before it's moved aside (the
+/// tests': its holder renewing meanwhile).
+fn try_lease_with(path: &Path, by: &str, token: &str, now: u64, between: &mut dyn FnMut()) -> Result<Tried> {
     let mine = LeaseFile { by: by.to_string(), token: token.to_string(), until: now + LEASE_S };
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).with_context(|| format!("make {}", d.display()))?;
@@ -730,12 +790,16 @@ pub fn try_lease(path: &Path, by: &str, token: &str, now: u64) -> Result<Tried> 
             return Ok(Tried::Held(held.until, held.by));
         }
         // (Lapsed: broken.)
+        between();
         let aside = path.with_file_name(format!("{}.lapsed-{token}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
         match std::fs::rename(path, &aside) {
             Ok(()) => {
                 let moved = read_lease(&aside)?;
-                if moved.as_ref().is_some_and(|m| m.until > now && m.token != held.token) {
-                    // (Not the lapsed one: another's, made or renewed since. Put back.)
+                // (Not the lapsed one as it was read: renewed since (its `until` moved on, the same
+                // token), or another's made since. Put back. Put back over a lease a third taker
+                // made meanwhile (AlreadyExists), the one moved aside is lost: its holder finds so at
+                // its next check, before it writes, or its next renewal.)
+                if moved.as_ref().is_some_and(|m| *m != held) {
                     let b = std::fs::read(&aside)?;
                     match create_new(path, &b) {
                         Ok(()) => {}
@@ -811,8 +875,14 @@ impl Local {
 
     /// The sender's hold: alone, once the readers under way have ended; no reader starts meanwhile.
     pub fn writer(cache: &Path) -> Result<Local> {
+        Self::writer_then(cache, || {})
+    }
+
+    /// `writer`, `gated` run once it holds the gate, before it waits for the readers (the tests').
+    fn writer_then(cache: &Path, gated: impl FnOnce()) -> Result<Local> {
         let gate = Self::open(cache, "answers.gate")?;
         flock(&gate, true)?;
+        gated();
         let u = Self::open(cache, "answers.use")?;
         flock(&u, true)?;
         Ok(Local { _gate: Some(gate), _use: u })
@@ -1235,6 +1305,62 @@ mod tests {
         assert_eq!(try_lease(&p, "m1", "c", t).unwrap(), Tried::Taken);
     }
 
+    /// A holder that renews between a taker's read of its lapsed lease and the taker's move aside
+    /// keeps it: the taker puts it back (it differs from what was read), and neither holds it twice.
+    #[test]
+    fn a_lease_renewed_while_it_is_being_broken_is_put_back() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nas/state/pool/answers.lease");
+        let t = 1_800_000_000;
+        assert_eq!(try_lease(&p, "m4", "a", t).unwrap(), Tried::Taken);
+        let late = t + LEASE_S + 1;
+        let (p2, mut renewed) = (p.clone(), false);
+        let r = try_lease_with(&p, "m1", "b", late, &mut || renewed = renew_lease(&p2, "a", late)).unwrap();
+        assert!(renewed);
+        assert_eq!(r, Tried::Held(late + LEASE_S, "m4".into()));
+        assert!(lease_is(&p, "a", late).is_ok() && lease_is(&p, "b", late).is_err());
+        assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1, "nothing left aside");
+    }
+
+    /// A put-back over a lease a third taker made meanwhile: the one moved aside is lost, and its
+    /// holder's check says so (it writes nothing more); one holder only.
+    #[test]
+    fn a_put_back_after_a_third_taker_leaves_one_holder() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nas/state/pool/answers.lease");
+        let t = 1_800_000_000;
+        assert_eq!(try_lease(&p, "m4", "a", t).unwrap(), Tried::Taken);
+        let late = t + LEASE_S + 1;
+        // (B, the breaker, has moved A's lease aside; C takes the path; B's put-back of A's fails.)
+        let aside = p.with_file_name("answers.lease.lapsed-x");
+        std::fs::rename(&p, &aside).unwrap();
+        assert_eq!(try_lease(&p, "m2", "c", late).unwrap(), Tried::Taken);
+        assert!(create_new(&p, &std::fs::read(&aside).unwrap()).is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists));
+        std::fs::remove_file(&aside).unwrap();
+        // (A finds its lease gone at its check, and can't renew it; C holds it alone.)
+        assert!(lease_is(&p, "a", late).is_err() && !renew_lease(&p, "a", late));
+        assert!(lease_is(&p, "c", late).is_ok());
+    }
+
+    /// A keep whose lease was lost (here: taken by another after it lapsed) writes nothing to the NAS.
+    #[test]
+    fn a_keep_whose_lease_is_lost_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
+        put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
+        let k = items(&root, &cache.join("items"), "2026-09-28").leased(&root, true);
+        let _held = k.hold().unwrap().unwrap();
+        // (Another takes the path: the holder's file replaced.)
+        std::fs::remove_file(root.join(LEASE)).unwrap();
+        assert_eq!(try_lease(&root.join(LEASE), "m1", "other", crate::agent::jobs::now_s()).unwrap(), Tried::Taken);
+        let e = k.send(&hashes(&cache.join("items"), &items_files(&cache.join("items"), "2026-09-28")).unwrap(), &scratch).unwrap_err();
+        assert!(format!("{e:#}").contains("nothing written"), "{e:#}");
+        assert!(!k.nas.exists(), "no archive written");
+        // (Its lease, given back, leaves the other's.)
+        drop(_held);
+        assert!(lease_is(&root.join(LEASE), "other", crate::agent::jobs::now_s()).is_ok());
+    }
+
     /// Writer preference on this Mac: a sender waits for the step under way, and a step starting
     /// while it waits waits for it.
     #[test]
@@ -1247,18 +1373,18 @@ mod tests {
         drop(r0);
         let (got_tx, got_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let (gated_tx, gated_rx) = std::sync::mpsc::channel::<()>();
         let c = cache.clone();
         let w = std::thread::spawn(move || {
-            let l = Local::writer(&c).unwrap();
+            let l = Local::writer_then(&c, || gated_tx.send(()).unwrap()).unwrap();
             got_tx.send(()).unwrap();
             go_rx.recv().unwrap();
             drop(l);
         });
-        // (Until the writer holds the gate: a look at the lock, no clock.)
+        // (Until the writer holds the gate: its own word, a channel; it dropping it ends the wait.)
+        gated_rx.recv().expect("the writer took the gate");
         let gate = std::fs::File::open(cache.join("answers.gate")).unwrap();
-        while could_lock(&gate, false) {
-            std::thread::yield_now();
-        }
+        assert!(!could_lock(&gate, false));
         let (r2_tx, r2_rx) = std::sync::mpsc::channel();
         let c = cache.clone();
         let r2 = std::thread::spawn(move || {

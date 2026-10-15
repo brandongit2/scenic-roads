@@ -134,6 +134,50 @@ fn the_nas_away_divides_the_rate_by_the_members() {
     assert_eq!(b.held_until(), clock.now_ms() + 20_000);
 }
 
+/// After an idle gap of any length, a process's next lease removes every long-past lease (by one
+/// listing: the gap's windows can't be known by name), another Mac's left in the gap among them.
+#[test]
+fn old_leases_are_removed_after_any_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(StepClock::at(T0));
+    let (a, b) = (budget(dir.path(), "m-a", &clock), budget(dir.path(), "m-b", &clock));
+    let w0 = a.take(Class::Wiki).window;
+    // (B leases a thousand windows later, A idle all the while.)
+    clock.set((w0 + 1000) * 10_000);
+    let w1 = b.take(Class::Wiki).window;
+    clock.set((w1 + 5000) * 10_000);
+    a.take(Class::Wiki);
+    let d = a.dir(Class::Wiki);
+    assert!(!d.join(format!("{w0}-0")).exists() && !d.join(format!("{w1}-0")).exists());
+    assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "only the window just leased");
+}
+
+/// The state's lock isn't held while a thread leases on the NAS: what the status reads, and a hold
+/// told here, answer while the leasing lock is held.
+#[test]
+fn the_status_never_waits_on_the_share() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(StepClock::at(T0));
+    let a = budget(dir.path(), "m-a", &clock);
+    let _leasing = a.leasing.lock().unwrap();
+    assert!(a.away().is_none() && a.held_until() == 0);
+    assert_eq!(a.hold_here(10).1, T0 + 10_000);
+    a.charge(Class::Query, 5_000);
+}
+
+/// A hold's NAS part is bounded: at most `HOLD_NAS_MAX_S` of windows leased.
+#[test]
+fn a_holds_cost_on_the_nas_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(StepClock::at(T0));
+    let a = budget(dir.path(), "m-a", &clock);
+    assert!(a.hold(HOLD_MAX_S));
+    let n: usize = Class::ALL.iter().map(|c| std::fs::read_dir(a.dir(*c)).unwrap().count()).sum();
+    let windows = (HOLD_NAS_MAX_S * 1000 / 10_000) as usize + 1;
+    assert!(n <= windows * 10, "{n} files");
+    assert_eq!(a.held_until(), T0 + HOLD_MAX_S * 1000, "held here the whole wait");
+}
+
 /// The leases' files of windows long past are removed by their names as new windows are leased.
 #[test]
 fn old_leases_are_removed() {

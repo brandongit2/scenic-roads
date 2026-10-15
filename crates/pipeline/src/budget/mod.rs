@@ -103,6 +103,10 @@ pub const DIR: &str = "state/pool/wiki";
 pub const KEEP: u64 = 30;
 /// The longest a 429's hold lasts (s): a `Retry-After` past it is taken as this.
 pub const HOLD_MAX_S: u64 = 900;
+/// How much of a hold is taken on the NAS (s): its windows' slots leased, a create each.
+pub const HOLD_NAS_MAX_S: u64 = 300;
+/// The most windows behind a process's last cleaning it cleans by name; past it, by a listing.
+pub const CLEAN_BY_NAME: u64 = 64;
 /// The hold a 429 without a `Retry-After` gives (s).
 pub const HOLD_DEFAULT_S: u64 = 60;
 /// The environment variable a job is told its proxy's address by (`http://127.0.0.1:<port>`), to
@@ -294,11 +298,13 @@ pub struct Budget {
     /// them.
     pub members: Arc<AtomicUsize>,
     st: Mutex<State>,
+    /// Held by the one thread leasing (or holding on the NAS) at a time: never with `st`.
+    leasing: Mutex<()>,
 }
 
 impl Budget {
     pub fn new(root: &Path, me: &str, clock: Arc<dyn Clock>) -> Budget {
-        Budget { root: root.to_path_buf(), me: me.to_string(), clock, members: Arc::new(AtomicUsize::new(1)), st: Mutex::new(State::default()) }
+        Budget { root: root.to_path_buf(), me: me.to_string(), clock, members: Arc::new(AtomicUsize::new(1)), st: Mutex::new(State::default()), leasing: Mutex::new(()) }
     }
 
     /// One that keeps what it gives (`ledger`): the tests'.
@@ -330,51 +336,55 @@ impl Budget {
         self.root.join(DIR).join(class.name())
     }
 
-    /// A token of `class`, waiting for one as long as it takes (with what it owes paid first).
+    /// A token of `class`, waiting for one as long as it takes (with what it owes paid first). The
+    /// state's lock is never held across the NAS's I/O (a status or a connection not metered never
+    /// waits on the share); one thread leases at a time (`leasing`), the others waiting for its batch.
     pub fn take(&self, class: Class) -> Token {
         let rate = class.rate();
         loop {
-            let mut st = self.state();
-            let now = self.clock.now_ms();
-            if now < st.hold_until {
-                let until = st.hold_until;
-                drop(st);
-                self.clock.sleep_until_ms(until);
-                continue;
-            }
-            let w = now / rate.window_ms;
-            let h = st.held.entry(class).or_default();
-            if h.window != w {
-                h.left = 0;
-            }
-            // (What's owed first, then the token itself.)
-            while h.left > 0 && h.owed > 0 {
-                h.left -= 1;
-                h.owed -= 1;
-            }
-            if h.left > 0 {
-                h.left -= 1;
-                let t = Token { class, window: w, source: Source::Nas };
-                if let Some(l) = st.ledger.as_mut() {
-                    l.push(t);
+            // (From the batch held, when it has tokens: no I/O.)
+            let w = {
+                let mut st = self.state();
+                let now = self.clock.now_ms();
+                if now < st.hold_until {
+                    let until = st.hold_until;
+                    drop(st);
+                    self.clock.sleep_until_ms(until);
+                    continue;
                 }
-                return t;
+                let w = now / rate.window_ms;
+                if let Some(t) = Self::from_batch(&mut st, class, w) {
+                    return t;
+                }
+                w
+            };
+            let leasing = self.leasing.lock().unwrap_or_else(|e| e.into_inner());
+            // (Another thread may have leased while this one waited: its batch first.)
+            {
+                let st = self.state();
+                if self.clock.now_ms() < st.hold_until || st.held.get(&class).is_some_and(|h| h.window == w && h.left > 0) {
+                    continue;
+                }
             }
             match self.lease(class, w) {
                 Leased::Slot => {
-                    st.away = None;
-                    let h = st.held.entry(class).or_default();
-                    h.window = w;
-                    h.left = rate.batch;
-                    let cleaned = h.cleaned;
+                    let cleaned = {
+                        let mut st = self.state();
+                        st.away = None;
+                        let h = st.held.entry(class).or_default();
+                        h.window = w;
+                        h.left = rate.batch;
+                        h.cleaned
+                    };
                     let next = self.clean(class, w, cleaned);
-                    st.held.entry(class).or_default().cleaned = Some(next);
+                    self.state().held.entry(class).or_default().cleaned = Some(next);
                 }
                 Leased::Full => {
-                    drop(st);
+                    drop(leasing);
                     self.clock.sleep_until_ms((w + 1) * rate.window_ms);
                 }
                 Leased::Away(e) => {
+                    let mut st = self.state();
                     st.away = Some(format!("{}: {e}", self.dir(class).display()));
                     // (This Mac's share, in memory: the rate divided by the members it knows.)
                     let n = self.members.load(Ordering::Relaxed).max(1) as u32;
@@ -396,10 +406,33 @@ impl Budget {
                         return t;
                     }
                     drop(st);
+                    drop(leasing);
                     self.clock.sleep_until_ms((w + 1) * rate.window_ms);
                 }
             }
         }
+    }
+
+    /// A token from the batch `class` holds for window `w` (what's owed paid from it first), if it
+    /// has one.
+    fn from_batch(st: &mut State, class: Class, w: u64) -> Option<Token> {
+        let h = st.held.entry(class).or_default();
+        if h.window != w {
+            h.left = 0;
+        }
+        while h.left > 0 && h.owed > 0 {
+            h.left -= 1;
+            h.owed -= 1;
+        }
+        if h.left == 0 {
+            return None;
+        }
+        h.left -= 1;
+        let t = Token { class, window: w, source: Source::Nas };
+        if let Some(l) = st.ledger.as_mut() {
+            l.push(t);
+        }
+        Some(t)
     }
 
     /// A slot of `class`'s window `w`, leased by create-new.
@@ -429,18 +462,33 @@ impl Budget {
     }
 
     /// The leases' files of the windows long past (`KEEP` behind `w`) that this process hasn't
-    /// removed yet (from `cleaned`; a process's first look reaches 64 windows further back), by
-    /// their names: no listing (docs/pool.md §3). Where it has reached.
+    /// removed yet (from `cleaned`), by their names: no listing (docs/pool.md §3). After a gap past
+    /// `CLEAN_BY_NAME` windows (this process's first lease, or one after a long idle), by one
+    /// listing of the class's folder instead: the windows no process leased in can't be known by
+    /// name without walking every one of them, and files another Mac leased while this one was idle
+    /// may lie anywhere in the gap. Where it has reached.
     fn clean(&self, class: Class, w: u64, cleaned: Option<u64>) -> u64 {
         let to = w.saturating_sub(KEEP);
-        let from = cleaned.unwrap_or(to.saturating_sub(64)).max(to.saturating_sub(64));
         let dir = self.dir(class);
-        for old in from..to {
-            for slot in 0..class.rate().slots() {
-                std::fs::remove_file(dir.join(format!("{old}-{slot}"))).ok();
+        match cleaned {
+            Some(from) if to.saturating_sub(from) <= CLEAN_BY_NAME => {
+                for old in from..to {
+                    for slot in 0..class.rate().slots() {
+                        std::fs::remove_file(dir.join(format!("{old}-{slot}"))).ok();
+                    }
+                }
+                to.max(from)
+            }
+            _ => {
+                for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name.split_once('-').and_then(|(win, _)| win.parse::<u64>().ok()).is_some_and(|win| win < to) {
+                        std::fs::remove_file(e.path()).ok();
+                    }
+                }
+                to
             }
         }
-        to.max(from)
     }
 
     /// A connection of `class` lasted `ms`: what it took past its token's time is owed, paid before
@@ -457,9 +505,15 @@ impl Budget {
     }
 
     /// A 429 or a `Retry-After` of `secs` (capped at `HOLD_MAX_S`): every class held here until it
-    /// ends, and every slot of the windows it spans leased on the NAS, so every other process and
-    /// Mac waits too. Whether the NAS took it (false: held here alone, the NAS out of reach).
+    /// ends (`hold_here`), and on the NAS (`hold_nas`), so every other process and Mac waits too.
+    /// Whether the NAS took it (false: held here alone, the NAS out of reach).
     pub fn hold(&self, secs: u64) -> bool {
+        let (now, until) = self.hold_here(secs);
+        self.hold_nas(now, until)
+    }
+
+    /// The hold in this process: until `secs` from now (capped); (now, its end) in ms.
+    pub fn hold_here(&self, secs: u64) -> (u64, u64) {
         let secs = secs.clamp(1, HOLD_MAX_S);
         let now = self.clock.now_ms();
         let until = now + secs * 1000;
@@ -468,11 +522,20 @@ impl Budget {
         for h in st.held.values_mut() {
             h.left = 0;
         }
-        drop(st);
+        (now, until)
+    }
+
+    /// The hold from `now` to `until` (ms) on the NAS: every slot of each window it spans leased,
+    /// up to `HOLD_NAS_MAX_S` of it (a hold's cost on the share: a create a slot, ten slots a
+    /// window across the classes, so 300 creates at most, some 6 to 15 s on the share; past that,
+    /// the other Macs, if they're still asking, meet their own 429). Whether the NAS took it.
+    pub fn hold_nas(&self, now: u64, until: u64) -> bool {
+        let until = until.min(now + HOLD_NAS_MAX_S * 1000);
+        let _leasing = self.leasing.lock().unwrap_or_else(|e| e.into_inner());
         let mut all = true;
         for class in Class::ALL {
             let r = class.rate();
-            for w in now / r.window_ms..=(until - 1) / r.window_ms {
+            for w in now / r.window_ms..=(until.max(now + 1) - 1) / r.window_ms {
                 // (Each slot taken in turn till the window's full; a lease made elsewhere meanwhile
                 // is as good.)
                 loop {

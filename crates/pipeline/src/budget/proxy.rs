@@ -24,6 +24,22 @@ const HEAD_MAX: usize = 64 << 10;
 /// How long a connection out may take to open.
 const CONNECT_WAIT: Duration = Duration::from_secs(30);
 
+/// The proxy's bounds: a client's head within `head`, a connection idle (nothing either way) for
+/// `idle` ended (a query's tunnel charged as it ends), and at most `conns` connections at once (one
+/// more is answered 503 and closed).
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub head: Duration,
+    pub idle: Duration,
+    pub conns: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits { head: Duration::from_secs(30), idle: Duration::from_secs(600), conns: 256 }
+    }
+}
+
 /// What the proxy has done, for the status and the tests.
 #[derive(Default)]
 pub struct Counts {
@@ -34,6 +50,22 @@ pub struct Counts {
     pub other: AtomicU64,
     /// Holds told.
     pub holds: AtomicU64,
+    /// Connections refused, `Limits::conns` under way.
+    pub refused: AtomicU64,
+}
+
+/// What every connection's thread shares.
+struct Ctx {
+    budget: Arc<Budget>,
+    counts: Arc<Counts>,
+    resolve: Option<Resolve>,
+    limits: Limits,
+    /// Connections under way.
+    live: std::sync::atomic::AtomicUsize,
+    /// A hold being taken on the NAS (one at a time; a hold told meanwhile is held here at once).
+    holding: AtomicBool,
+    /// The thread taking it.
+    hold_thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 /// The proxy, running.
@@ -43,19 +75,34 @@ pub struct Proxy {
     pub counts: Arc<Counts>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    ctx: Arc<Ctx>,
 }
 
 impl Proxy {
     /// Starts one on a port of its own on 127.0.0.1, taking from `budget`.
     pub fn start(budget: Arc<Budget>, resolve: Option<Resolve>) -> Result<Proxy> {
+        Self::start_with(budget, resolve, Limits::default())
+    }
+
+    /// `start`, within `limits`.
+    pub fn start_with(budget: Arc<Budget>, resolve: Option<Resolve>, limits: Limits) -> Result<Proxy> {
         let listener = store::spawn::listen("127.0.0.1:0").context("the budgets' proxy: listen")?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let counts = Arc::new(Counts::default());
-        let (b, s, c) = (budget.clone(), stop.clone(), counts.clone());
-        let thread = std::thread::Builder::new().name("budgets-proxy".into()).spawn(move || serve(listener, b, s, c, resolve))?;
-        Ok(Proxy { addr, budget, counts, stop, thread: Some(thread) })
+        let ctx = Arc::new(Ctx { budget: budget.clone(), counts: counts.clone(), resolve, limits, live: Default::default(), holding: AtomicBool::new(false), hold_thread: Default::default() });
+        let (s, c) = (stop.clone(), ctx.clone());
+        let thread = std::thread::Builder::new().name("budgets-proxy".into()).spawn(move || serve(listener, c, s))?;
+        Ok(Proxy { addr, budget, counts, stop, thread: Some(thread), ctx })
+    }
+
+    /// Waits for the hold last told to be taken on the NAS (the tests'; the agent never waits).
+    pub fn settle_hold(&self) {
+        let t = self.ctx.hold_thread.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(t) = t {
+            t.join().ok();
+        }
     }
 
     /// The members the agent knows (itself among them): the NAS away, its share of the rate.
@@ -123,7 +170,7 @@ fn readable(fd: i32, ms: i32) -> bool {
     unsafe { libc::poll(&mut p, 1, ms) > 0 }
 }
 
-fn serve(listener: TcpListener, budget: Arc<Budget>, stop: Arc<AtomicBool>, counts: Arc<Counts>, resolve: Option<Resolve>) {
+fn serve(listener: TcpListener, ctx: Arc<Ctx>, stop: Arc<AtomicBool>) {
     use std::os::fd::AsRawFd;
     let fd = listener.as_raw_fd();
     while !stop.load(Ordering::SeqCst) {
@@ -132,14 +179,25 @@ fn serve(listener: TcpListener, budget: Arc<Budget>, stop: Arc<AtomicBool>, coun
             continue;
         }
         match store::spawn::accept(&listener) {
-            Ok((s, _)) => {
-                let (b, c, r) = (budget.clone(), counts.clone(), resolve.clone());
-                std::thread::Builder::new().name("budgets-conn".into()).spawn(move || {
-                    if let Err(e) = handle(s, &b, &c, r.as_ref()) {
-                        // (A client gone, a host that didn't answer: the client sees it.)
-                        let _ = e;
-                    }
-                }).ok();
+            Ok((mut s, _)) => {
+                if ctx.live.fetch_add(1, Ordering::SeqCst) >= ctx.limits.conns {
+                    ctx.live.fetch_sub(1, Ordering::SeqCst);
+                    ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
+                    // (Answered and closed at once: the listener's thread never waits on a client.)
+                    let _ = s.set_nonblocking(true);
+                    let _ = answer(&mut s, "503 Service Unavailable", "too many connections through the proxy at once\n");
+                    let _ = s.shutdown(Shutdown::Write);
+                    continue;
+                }
+                let c = ctx.clone();
+                let spawned = std::thread::Builder::new().name("budgets-conn".into()).spawn(move || {
+                    // (A client gone, a host that didn't answer: the client sees it.)
+                    let _ = handle(s, &c);
+                    c.live.fetch_sub(1, Ordering::SeqCst);
+                });
+                if spawned.is_err() {
+                    ctx.live.fetch_sub(1, Ordering::SeqCst);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) => eprintln!("budgets' proxy: accept: {e}"),
@@ -232,14 +290,18 @@ fn meter(host: &str, budget: &Budget, counts: &Counts) -> Option<Class> {
     class
 }
 
-fn handle(mut s: TcpStream, budget: &Budget, counts: &Counts, resolve: Option<&Resolve>) -> io::Result<()> {
+fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
+    let (budget, counts, resolve) = (&*ctx.budget, &*ctx.counts, ctx.resolve.as_ref());
     s.set_nonblocking(false)?;
+    s.set_read_timeout(Some(ctx.limits.head))?;
     let head = read_head(&mut s)?;
+    // (From here on a connection idle that long ends.)
+    s.set_read_timeout(Some(ctx.limits.idle))?;
     if head.method.eq_ignore_ascii_case("CONNECT") {
         let Some((host, port)) = host_port(&head.target, 443) else { return answer(&mut s, "400 Bad Request", "CONNECT host:port\n") };
         let class = meter(&host, budget, counts);
         let began = budget.now_ms();
-        let up = match open(&host, port, resolve) {
+        let up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
             Ok(u) => u,
             Err(e) => return answer(&mut s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")),
         };
@@ -255,8 +317,21 @@ fn handle(mut s: TcpStream, budget: &Budget, counts: &Counts, resolve: Option<&R
         if let Some(q) = head.target.strip_prefix("/hold") {
             let secs = q.trim_start_matches('?').split('&').find_map(|kv| kv.strip_prefix("s=")).and_then(|v| v.parse::<f64>().ok()).map_or(super::HOLD_DEFAULT_S, |v| v.ceil().max(1.0) as u64);
             counts.holds.fetch_add(1, Ordering::Relaxed);
-            let all = budget.hold(secs);
-            return answer(&mut s, "200 OK", if all { "held\n" } else { "held here (the NAS out of reach)\n" });
+            // (Held here at once; on the NAS on a thread of its own, one at a time, so the teller
+            // isn't kept waiting on the share: told is told.)
+            let (now, until) = budget.hold_here(secs);
+            if !ctx.holding.swap(true, Ordering::SeqCst) {
+                let c = ctx.clone();
+                let spawned = std::thread::Builder::new().name("budgets-hold".into()).spawn(move || {
+                    c.budget.hold_nas(now, until);
+                    c.holding.store(false, Ordering::SeqCst);
+                });
+                match spawned {
+                    Ok(t) => *ctx.hold_thread.lock().unwrap_or_else(|e| e.into_inner()) = Some(t),
+                    Err(_) => ctx.holding.store(false, Ordering::SeqCst),
+                }
+            }
+            return answer(&mut s, "200 OK", "held\n");
         }
         return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, or /hold\n");
     }
@@ -269,7 +344,7 @@ fn handle(mut s: TcpStream, budget: &Budget, counts: &Counts, resolve: Option<&R
     let Some((host, port)) = host_port(hp, 80) else { return answer(&mut s, "400 Bad Request", "bad host\n") };
     let class = meter(&host, budget, counts);
     let began = budget.now_ms();
-    let mut up = match open(&host, port, resolve) {
+    let mut up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
         Ok(u) => u,
         Err(e) => return answer(&mut s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")),
     };
@@ -295,16 +370,24 @@ fn charge(budget: &Budget, class: Option<Class>, began: u64) {
     }
 }
 
-/// Copies each way until both have ended, `done` run before the client's side is closed (what it
+/// Copies each way until both have ended (or either has been idle its read timeout: both then
+/// shut, so the other way ends too), `done` run before the client's side is closed (what it
 /// does is done before the client sees its answer end).
 fn relay(client: TcpStream, up: TcpStream, done: impl FnOnce()) -> io::Result<()> {
     let (mut c_r, mut u_w) = (client.try_clone()?, up.try_clone()?);
     let t = std::thread::Builder::new().name("budgets-relay".into()).spawn(move || {
-        let _ = io::copy(&mut c_r, &mut u_w);
+        if io::copy(&mut c_r, &mut u_w).is_err() {
+            // (Idle, or broken: the whole connection ends.)
+            let _ = c_r.shutdown(Shutdown::Both);
+            let _ = u_w.shutdown(Shutdown::Both);
+        }
         let _ = u_w.shutdown(Shutdown::Write);
     })?;
     let (mut u_r, mut c_w) = (up, client);
-    let _ = io::copy(&mut u_r, &mut c_w);
+    if io::copy(&mut u_r, &mut c_w).is_err() {
+        let _ = u_r.shutdown(Shutdown::Both);
+        let _ = c_w.shutdown(Shutdown::Read);
+    }
     done();
     let _ = c_w.shutdown(Shutdown::Write);
     t.join().ok();
@@ -448,11 +531,82 @@ mod tests {
         let (a, b) = (proxy(dir.path(), "m-a", &clock, &up), proxy(dir.path(), "m-b", &clock, &up));
         let r = request(&a.addr, "POST /hold?s=40 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
         assert!(r.starts_with("HTTP/1.1 200") && r.ends_with("held\n"), "{r}");
+        // (Its proxy held at once; the NAS's part on a thread: waited for here.)
+        assert!(a.budget.held_until() >= T0 + 40_000);
+        a.settle_hold();
         assert_eq!(tunnel(&b.addr, "qlever.dev", b"q\n"), b"q\n");
         let t = b.budget.ledger()[0];
         assert!(t.window >= (T0 + 40_000) / 10_000, "{t:?}");
         assert_eq!(t.source, Source::Nas);
         assert!(request(&a.addr, "GET /other HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
+    }
+
+    fn proxy_within(root: &Path, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {
+        let b = Arc::new(Budget::new(root, "m-a", clock.clone()).with_ledger());
+        let a = up.addr;
+        Proxy::start_with(b, Some(Arc::new(move |_: &str, _: u16| Some(a))), limits).unwrap()
+    }
+
+    /// The bounds: a client that never ends its head is closed; a tunnel idle in both ways is ended,
+    /// and charged (a query's: seven seconds on the budget's clock, moved by the upstream as it
+    /// answers); one connection past the most at once is answered 503. (Each outcome is the same
+    /// however long the waits take: no clock in the asserts.)
+    #[test]
+    fn a_silent_client_an_idle_tunnel_and_too_many_connections_are_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let c = clock.clone();
+        let up = upstream(Arc::new(move || c.set(c.now_ms() + 7_000)));
+        let short = Duration::from_millis(100);
+        let a = proxy_within(dir.path(), &clock, &up, Limits { head: short, idle: short, conns: 8 });
+        // (A head never ended: closed, no answer.)
+        let mut s = TcpStream::connect(a.addr).unwrap();
+        s.write_all(b"CONNECT en.wikipedia").unwrap();
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).unwrap();
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        // (A query's tunnel: a byte through, then left idle, never closed by the client: ended.)
+        let mut s = TcpStream::connect(a.addr).unwrap();
+        write!(s, "CONNECT query.wikidata.org:443 HTTP/1.1\r\n\r\n").unwrap();
+        let mut head = [0u8; 39];
+        s.read_exact(&mut head).unwrap();
+        assert!(head.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&head));
+        s.write_all(b"q").unwrap();
+        let mut rest = Vec::new();
+        s.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"q");
+        // (Charged as it ended, before the client saw its end: three owed past its token, so the
+        // window's five slots are leased by the next query, or it's the next window's.)
+        let w = a.budget.ledger()[0].window;
+        assert_eq!(tunnel(&a.addr, "query.wikidata.org", b"x"), b"x");
+        let next = a.budget.ledger()[1].window;
+        let leased = (0..5).filter(|s| a.budget.dir(Class::Query).join(format!("{w}-{s}")).is_file()).count();
+        assert!(next > w || leased == 5, "charged: {leased} slots of window {w}");
+        // (One connection at most: while one is open, another is answered 503.)
+        let b = proxy_within(&dir.path().join("b"), &clock, &up, Limits { conns: 1, ..Limits::default() });
+        let mut open = TcpStream::connect(b.addr).unwrap();
+        write!(open, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n").unwrap();
+        open.read_exact(&mut head).unwrap();
+        // (Answered as it's taken: read before sending anything, so no unread request resets it.)
+        let mut r = String::new();
+        TcpStream::connect(b.addr).unwrap().read_to_string(&mut r).unwrap();
+        assert!(r.starts_with("HTTP/1.1 503"), "{r}");
+        assert_eq!(b.counts.refused.load(Ordering::Relaxed), 1);
+        drop(open);
+    }
+
+    /// A hold told to a proxy whose NAS is away is held there at once all the same (told is told).
+    #[test]
+    fn a_hold_is_held_before_the_nas_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let up = upstream(Arc::new(|| {}));
+        let a = proxy(&dir.path().join("away"), "m-a", &clock, &up);
+        let r = request(&a.addr, "POST /hold?s=30 HTTP/1.1\r\n\r\n");
+        assert!(r.ends_with("held\n"), "{r}");
+        assert_eq!(a.budget.held_until(), T0 + 30_000);
+        a.settle_hold();
+        assert!(!dir.path().join("away").exists());
     }
 
     /// A query's tunnel open for seven seconds owes three tokens past its own, paid before the next.
