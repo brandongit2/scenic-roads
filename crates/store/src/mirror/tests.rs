@@ -535,3 +535,19 @@ fn a_changed_reserve_counts_from_the_next_sync_and_raising_it_deletes_nothing() 
     assert_eq!((s.waiting, s.pending), (0, 0), "{s:?}");
     assert!(w2.items.iter().all(|i| m.is_here(i)));
 }
+
+#[test]
+fn the_buildings_and_their_field_are_copied_after_the_other_hi_packs_their_lo_in_the_world() {
+    let mut c = Catalog::new(1);
+    for (name, enc) in [("roads", "rt7"), ("buildings", "mvt"), ("buildings-field", "field5-webp")] {
+        let mut l = Layer { encoding: enc.into(), minzoom: 4, maxzoom: 14, ..Default::default() };
+        l.hi.insert("6/18/24".into(), format!("layers/{name}/hi/6-18-24"));
+        l.lo.insert("3/2/3".into(), format!("layers/{name}/lo/3-2-3"));
+        c.layers.insert(name.into(), l);
+    }
+    let mut v = ["layers/buildings-field/hi/6-18-24", "layers/buildings/hi/6-18-24", "layers/roads/hi/6-18-24", "layers/buildings-field/lo/3-2-3", "layers/roads/lo/3-2-3"];
+    copy_order(&c, &mut v);
+    assert_eq!(v, ["layers/buildings-field/lo/3-2-3", "layers/roads/lo/3-2-3", "layers/roads/hi/6-18-24", "layers/buildings-field/hi/6-18-24", "layers/buildings/hi/6-18-24"]);
+    let e = essential_logicals(&c);
+    assert!(e.contains("layers/buildings-field/lo/3-2-3") && !e.contains("layers/buildings-field/hi/6-18-24"));
+}

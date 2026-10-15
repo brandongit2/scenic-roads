@@ -593,7 +593,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **Copies:** one file or piece at a time, in large sequential reads through the I/O pool, in
   the order the downloads were made, the World first; within each, small worldwide files, root and
   lo packs, hi data and road values (and the per-tile records), base packs, hi packs, the 3D
-  buildings' hi packs (a city's z6 tile is a few hundred MB: the roads and terrain first), then the
+  buildings' hi packs and their field's (a city's z6 tile is a few hundred MB to 2 GB: the roads and
+  terrain first), then the
   basemap's pieces. While the build runs (the build Mac's heartbeat on the NAS says a job runs,
   as the copies' pause read it before downloads), copies keep to 20 MB/s, so the build's uploads
   have the NAS first, and the panel says why a download is slower; the rest of the time, at full

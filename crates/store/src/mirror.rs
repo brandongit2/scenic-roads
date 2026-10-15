@@ -959,15 +959,16 @@ pub fn essentials(cat: &Catalog) -> Vec<String> {
 }
 
 /// Sorts logical names in copy order: small worldwide files, root and lo packs, hi data and road
-/// values (and the per-tile records), base packs, hi packs, the 3D buildings' hi packs (a city's z6
-/// tile is hundreds of MB: the roads and terrain first), and anything else; by name within each.
+/// values (and the per-tile records), base packs, hi packs, the 3D buildings' hi packs and their
+/// field's (a city's z6 tile is hundreds of MB to 2 GB: the roads and terrain first), and anything
+/// else; by name within each. (The field's lo packs are lo packs: in the World download.)
 pub fn copy_order(cat: &Catalog, logicals: &mut [&str]) {
     let g = groups(cat);
     logicals.sort_by(|a, b| g.get(a).copied().unwrap_or(LAST_GROUP).cmp(&g.get(b).copied().unwrap_or(LAST_GROUP)).then(a.cmp(b)));
 }
 
-/// The 3D buildings' layer in the catalog (pipeline::bld::LAYER).
-const BUILDINGS_LAYER: &str = "buildings";
+/// The 3D buildings' layers in the catalog (pipeline::bld::LAYER, pipeline::bld::field::LAYER).
+const BUILDINGS_LAYERS: [&str; 2] = ["buildings", "buildings-field"];
 const LAST_GROUP: u8 = 6;
 
 fn groups(cat: &Catalog) -> HashMap<&str, u8> {
@@ -986,7 +987,7 @@ fn groups(cat: &Catalog) -> HashMap<&str, u8> {
         for v in l.lo.values() {
             set(&mut g, v, 1);
         }
-        let hi = if name == BUILDINGS_LAYER { 5 } else { 4 };
+        let hi = if BUILDINGS_LAYERS.contains(&name.as_str()) { 5 } else { 4 };
         for v in l.hi.values() {
             set(&mut g, v, hi);
         }
