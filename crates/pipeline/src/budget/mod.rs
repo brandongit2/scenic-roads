@@ -158,12 +158,12 @@ impl Class {
     }
 
     /// The pool's rate, the politeness of one client (the owner's policy, not a step's figure):
-    /// Wikimedia's sites two requests a second, serially as their etiquette asks; the query
+    /// Wikimedia's sites four requests a second (the owner's choice, 14 Oct 2026); the query
     /// services one query in two seconds, and two seconds of query time a token (so at most half
     /// of the Wikidata Query Service's minute of query time a minute).
     pub fn rate(self) -> Rate {
         match self {
-            Class::Wiki => Rate { window_ms: 10_000, tokens: 20, batch: 4, per_token_ms: 0 },
+            Class::Wiki => Rate { window_ms: 10_000, tokens: 40, batch: 4, per_token_ms: 0 },
             Class::Query => Rate { window_ms: 10_000, tokens: 5, batch: 1, per_token_ms: 2_000 },
         }
     }
@@ -526,8 +526,8 @@ impl Budget {
     }
 
     /// The hold from `now` to `until` (ms) on the NAS: every slot of each window it spans leased,
-    /// up to `HOLD_NAS_MAX_S` of it (a hold's cost on the share: a create a slot, ten slots a
-    /// window across the classes, so 300 creates at most, some 6 to 15 s on the share; past that,
+    /// up to `HOLD_NAS_MAX_S` of it (a hold's cost on the share: a create a slot, fifteen slots a
+    /// window across the classes (ten and five), so 450 creates at most, some 8 to 23 s on the share; past that,
     /// the other Macs, if they're still asking, meet their own 429). Whether the NAS took it.
     pub fn hold_nas(&self, now: u64, until: u64) -> bool {
         let until = until.min(now + HOLD_NAS_MAX_S * 1000);

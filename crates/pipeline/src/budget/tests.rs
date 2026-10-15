@@ -174,7 +174,8 @@ fn a_holds_cost_on_the_nas_is_bounded() {
     assert!(a.hold(HOLD_MAX_S));
     let n: usize = Class::ALL.iter().map(|c| std::fs::read_dir(a.dir(*c)).unwrap().count()).sum();
     let windows = (HOLD_NAS_MAX_S * 1000 / 10_000) as usize + 1;
-    assert!(n <= windows * 10, "{n} files");
+    let slots: usize = Class::ALL.iter().map(|c| c.rate().slots() as usize).sum();
+    assert!(n <= windows * slots, "{n} files");
     assert_eq!(a.held_until(), T0 + HOLD_MAX_S * 1000, "held here the whole wait");
 }
 
