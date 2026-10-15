@@ -64,6 +64,14 @@ export function roofGround(texels: Uint8Array, n: number, T: number, ee: Float32
   return { dg, dgc };
 }
 
+/** A mesh tile as the z14 (`maxZoom`) tile it's of: itself, or its ancestor at that zoom when it's
+ * deeper; null when it's coarser (it isn't one: the source has z14 alone). */
+export function meshKey(z: number, x: number, y: number, maxZoom: number): string | null {
+  if (z < maxZoom) return null;
+  const d = z - maxZoom;
+  return `${maxZoom}/${x >> d}/${y >> d}`;
+}
+
 /** A level's box mean, as generateMipmap makes one (for the check): `comps` floats a texel. */
 export function boxMip(a: Float32Array, size: number, comps: number): Float32Array {
   const h = size >> 1, o = new Float32Array(h * h * comps);

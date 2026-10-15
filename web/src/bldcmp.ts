@@ -12,6 +12,7 @@ import type { Map as MLMap, LayerSpecification, SourceSpecification } from 'mapl
 import type { AppState } from './state';
 import type { FieldLayer } from './bldfield';
 import { paletteFn } from './palettes';
+import { keepWhole } from './buildings';
 
 const q = new URLSearchParams(location.search);
 export const CMP = q.has('bldcmp') ? { dpr: Number(q.get('dpr')) || 0, colour: q.get('bc') ?? '#b9c4d4', byHeight: q.get('bcol') === 'height' } : null;
@@ -156,6 +157,9 @@ export function installCmp(map: MLMap, field: FieldLayer | null) {
     // the bounds, from its z12–13 parent, the tall buildings drawn again.)
     const src = { ...(orig.src as object), ...(bounds ? { bounds } : {}), ...(k > 0 ? { minzoom: 14 } : {}) } as SourceSpecification;
     map.addSource('bld', src);
+    // (the app's own source, made again, as the app makes it: z14's buildings kept whole above z14,
+    // not sliced into deeper tiles; buildings.ts)
+    if (k === 0) keepWhole(map);
     // (MapLibre refuses a vector source's tileSize other than 512 when made; its cover takes it after.)
     (map.getSource('bld') as unknown as { tileSize: number }).tileSize = 512 >> k;
     // (A reference's tiles all at one zoom: MapLibre otherwise takes coarser ones away from the centre.)

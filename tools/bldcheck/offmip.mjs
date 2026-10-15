@@ -8,11 +8,12 @@
 //     as the march makes them: each roof (its top plus its roof ground, clamped under the cell's
 //     start) never above the start (its cell's tallest top plus largest roof ground). And, unclamped,
 //     a level-0 read never above it either (the cells' bound is right where the march reads finest);
-//     coarser reads need the clamp, counted.
+//     coarser reads need the clamp, counted;
+//  3. the hand-over's mesh tiles taken by their z14 tile, slices deeper than z14 too.
 // `--mutate nodilate` leaves the texel around a cell out of its largest roof ground: level-0 reads
 // then come out above, and the check fails. Exits 1 on a failure.
 //   node tools/bldcheck/offmip.mjs [--mutate nodilate]
-import { roofGround, groundAt, shareOf, boxMip } from '../../web/src/bldfield.offsets.ts';
+import { roofGround, groundAt, shareOf, boxMip, meshKey } from '../../web/src/bldfield.offsets.ts';
 
 const mutate = process.argv.includes('--mutate') ? process.argv[process.argv.indexOf('--mutate') + 1] : '';
 let failed = 0;
@@ -154,6 +155,14 @@ const code = (f) => Math.round(Math.sqrt(f) * 255);
   console.log(`2. no run below a roof: ${reads} reads at levels 0–4 (${points.length} points, edges included): ${above} roofs above their cell's start`);
   console.log(`   unclamped reads above it, by level: ${unclamped.map((u, L) => `${L}: ${u} of ${perLevel[L]}`).join(', ')}`);
   if (above || unclamped[0]) failed++;
+}
+// 3. The hand-over's mesh tiles: a z14 tile itself, a deeper slice by its z14 ancestor, a coarser
+// tile none (bldfield.ts's meshTiles).
+{
+  const cases = [[[14, 8504, 5833], '14/8504/5833'], [[16, 34017, 23334], '14/8504/5833'], [[15, 17009, 11667], '14/8504/5833'], [[13, 4252, 2916], null]];
+  const bad = cases.filter(([[z, x, y], want]) => meshKey(z, x, y, 14) !== want);
+  console.log(`3. mesh tiles by their z14 tile: ${cases.length - bad.length} of ${cases.length} as expected`);
+  if (bad.length) failed++;
 }
 if (failed) {
   console.log(`${failed} failed`);

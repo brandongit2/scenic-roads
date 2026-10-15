@@ -152,7 +152,7 @@ const CACHE_TILES = 8;
  * it): a warning in the console when they're missing, or when a tile deeper than z14 is in view
  * once the map is above z15 (slices: the hook no longer takes).
  */
-function keepWhole(map: MLMap) {
+export function keepWhole(map: MLMap) {
   type TileLike = { tileID?: { canonical?: { z?: number } } };
   type TM = {
     update: (...args: unknown[]) => void;

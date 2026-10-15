@@ -40,6 +40,7 @@
 // depth so far (a mesh or the terrain inside a column stops the ray) on the flat map; on the globe
 // the faces are tested against it and the march stops at its own ground.
 
+import { meshKey } from './bldfield.offsets';
 import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MLMap } from 'maplibre-gl';
 import { link } from './roads/layer';
 import { hostFor } from './hosts';
@@ -754,7 +755,9 @@ export class FieldLayer implements CustomLayerInterface {
 
   /** The meshes' tiles MapLibre has loaded in view (the buildings' source `bld`, z14), while its
    * extruded layer shows. */
-  private meshTiles(): Set<string> {
+  /** The mesh tiles MapLibre has loaded in view, as the z14 tiles they're of: a tile deeper than z14
+   * (a slice of one, where the source isn't kept whole) by its z14 ancestor. */
+  meshTiles(): Set<string> {
     const out = new Set<string>();
     // (Its layer's least zoom too, where one is set: the comparison's references lower it.)
     const layer = this.map.getLayer('buildings');
@@ -762,7 +765,10 @@ export class FieldLayer implements CustomLayerInterface {
     const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { state: string; tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
     for (const t of tm?._inViewTiles?.getAllTiles?.() ?? []) {
       const c = t.tileID.canonical;
-      if (c.z === this.maxZoom && (t.state === 'loaded' || t.state === 'reloading')) out.add(`${c.z}/${c.x}/${c.y}`);
+      if (t.state === 'loaded' || t.state === 'reloading') {
+        const k = meshKey(c.z, c.x, c.y, this.maxZoom);
+        if (k) out.add(k);
+      }
     }
     return out;
   }
