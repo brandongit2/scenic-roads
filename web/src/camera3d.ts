@@ -22,6 +22,12 @@ let roofUnder: (ll: LngLat) => number = () => -Infinity;
 export function setRoofs(f: (ll: LngLat) => number): void {
   roofUnder = f;
 }
+/** The tallest building drawn as a mesh (rendered metres above its ground; 0: none drawn): main.ts
+ * sets it (buildings.tallestDrawn), for the near plane (tuneDepth). */
+let tallestDrawn: () => number = () => 0;
+export function setTallest(f: () => number): void {
+  tallestDrawn = f;
+}
 
 /** The lowest the camera may be over a point: 30 m above the ground, and a few above any roof. */
 function floorAt(map: MLMap, ll: LngLat): number {
@@ -603,22 +609,41 @@ function pointAt(map: MLMap, tr: Tr, px: number, py: number, elev: number): LngL
 }
 
 /**
+ * The nearest anything drawn can be along the camera's forward axis (m), given how far the camera is
+ * above the highest point anything drawn reaches (`clearM`), its pitch from straight down and its
+ * vertical field of view (degrees); 0 when it isn't above it. A point `v` metres below the camera,
+ * on a ray through the screen at height y (tan of its angle from the axis, + up), is at depth
+ * v ÷ (cos p − y sin p): least at the screen's bottom edge, y = −tan(fov / 2).
+ */
+export function nearestDepth(clearM: number, pitchDeg: number, fovDeg: number): number {
+  if (!(clearM > 0)) return 0;
+  const p = Math.min(Math.max(pitchDeg, 0), 89.9) * DEG;
+  return clearM / (Math.cos(p) + Math.tan((fovDeg * DEG) / 2) * Math.sin(p));
+}
+
+/**
  * Depth precision on the globe. MapLibre's globe view uses a 0.5 px near plane (its 2D layers
  * compute their own depth, so it didn't matter to them), but the terrain mesh, its depth texture
  * and 3D custom layers use the perspective depth, where everything then lives in the last pixel
  * of sums of ~2.6 million: float32 leaves it good to only ~20 % of the distance, so roads and
  * terrain z-fight (roads hatched with the terrain's triangles, flickering as you move) and the
- * terrain fights itself. While the globe renders, use the flat map's near plane (viewport height
- * ÷ 50), at most half the camera's height above the ground so nothing close is clipped: 28× the
- * precision. (Circles and symbols test themselves against the terrain depth texture with the same
- * perspective depth: our MapLibre's circle and symbol vertex shaders.) Call on every camera change;
- * the flat map keeps MapLibre's own planes.
+ * terrain fights itself. The flat map's near plane (viewport height ÷ 50) was still too close for
+ * the buildings: at zoom 14.9 and 48° over Toronto's Exhibition Place (the camera 1.3 km up) the
+ * depth's float32 noise was some metres at the buildings, so the roofs of large low buildings, 6–10 m
+ * over the terrain, fought it as the map moved, whole roofs coming and going. So the near plane is
+ * half the nearest anything drawn can be (`nearestDepth`: the camera's height above the highest
+ * ground of the terrain tiles drawn plus the tallest mesh building), and never closer than the flat
+ * map's (at most half the camera's height above the ground under it): ~20× the precision there.
+ * (Circles and symbols test themselves against the terrain depth texture with the same perspective
+ * depth: our MapLibre's circle and symbol vertex shaders.) Call on every camera change; the flat
+ * map keeps MapLibre's own planes.
  */
 let depthTuned = false;
 export function tuneDepth(map: MLMap): void {
   const tr = transform(map) as unknown as {
     isGlobeRendering?: boolean; overrideNearFarZ?: (n: number, f: number) => void; clearNearFarZOverride?: () => void;
     nearZ: number; farZ: number; height: number; worldSize: number; cameraToCenterDistance: number; pixelsPerMeter: number;
+    pitch: number; fov: number;
     getCameraAltitude: () => number; getCameraLngLat: () => LngLat;
   } | undefined;
   if (!tr?.overrideNearFarZ || !tr.clearNearFarZOverride) return;
@@ -631,7 +656,18 @@ export function tuneDepth(map: MLMap): void {
   }
   const ground = map.getTerrain() ? map.queryTerrainElevation(tr.getCameraLngLat()) ?? 0 : 0;
   const clearance = Math.max(1, tr.getCameraAltitude() - ground) * tr.pixelsPerMeter;
-  const near = Math.max(0.5, Math.min(tr.height / 50, clearance * 0.5));
+  const flat = Math.max(0.5, Math.min(tr.height / 50, clearance * 0.5));
+  // (the highest ground drawn: the terrain tiles' ranges, exaggerated; sea level without terrain)
+  let top = 0;
+  const terrain = (map as unknown as { terrain?: { tileManager: { getRenderableTiles(): { tileID: unknown }[] }; getMinMaxElevation(id: unknown): { maxElevation: number | null } } | null }).terrain;
+  if (terrain) {
+    const tiles = terrain.tileManager.getRenderableTiles();
+    top = -Infinity;
+    for (const t of tiles) top = Math.max(top, terrain.getMinMaxElevation(t.tileID).maxElevation ?? Infinity);
+    if (!tiles.length) top = Infinity;
+  }
+  const safe = 0.5 * nearestDepth(tr.getCameraAltitude() - top - tallestDrawn(), tr.pitch, tr.fov) * tr.pixelsPerMeter;
+  const near = Math.max(flat, safe);
   const lat = map.getCenter().lat;
   const far = tr.cameraToCenterDistance + (2 * tr.worldSize) / (2 * Math.PI) / Math.cos((lat * Math.PI) / 180);
   if (depthTuned && Math.abs(tr.nearZ - near) < near * 0.02 && Math.abs(tr.farZ - far) < far * 0.02) return;

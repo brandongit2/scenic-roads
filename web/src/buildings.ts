@@ -196,6 +196,12 @@ export function keepWhole(map: MLMap) {
   map.on('render', check);
 }
 
+/** The highlights (the heritage tint, the hover) are the buildings drawn again a little larger: drawn
+ * pulled this far toward the camera (our MapLibre's `scenic:depth-bias`, a polygon offset), they win
+ * over the buildings under them where the depth can't tell the two apart (far off, their walls a few
+ * tenths of a metre apart), where they fought as the map moved. */
+const DEPTH_BIAS = 4;
+
 /** Adds the source and layers (when the catalog has buildings): the extrusions after the road and
  * rail layers (`before`: the first symbol layer), the footprints among the draped layers
  * (`flatBefore`: the first boundary layer). */
@@ -222,12 +228,12 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
   }, before);
   map.addSource('bld-heritage', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({
-    id: HERITAGE, type: 'fill-extrusion', source: 'bld-heritage',
+    id: HERITAGE, type: 'fill-extrusion', source: 'bld-heritage', metadata: { 'scenic:depth-bias': DEPTH_BIAS },
     paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-vertical-gradient': true },
   }, before);
   map.addSource('bld-hover', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({
-    id: HOVER, type: 'fill-extrusion', source: 'bld-hover',
+    id: HOVER, type: 'fill-extrusion', source: 'bld-hover', metadata: { 'scenic:depth-bias': DEPTH_BIAS },
     paint: { 'fill-extrusion-color': '#ffd27a', 'fill-extrusion-opacity': 0.7, 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-vertical-gradient': false },
   }, before);
 }
@@ -415,6 +421,14 @@ function watchTall(map: MLMap) {
     if (t.wantDist) t.onDist?.(heightsInView(map));
     setHeritage(map, t);
   });
+}
+
+/** The tallest mesh building in the loaded tiles (rendered metres above its ground: its height ×
+ * the scale; the pipeline's bound until they're read), or 0 while the meshes aren't drawn: what the
+ * near plane keeps clear (camera3d.tuneDepth). */
+export function tallestDrawn(map: MLMap): number {
+  const t = tallOf(map);
+  return t.k > 0 ? (t.dm / 10) * t.k : 0;
 }
 
 /** The least height (rendered m) of a roof the camera is kept above: under this, its clearance

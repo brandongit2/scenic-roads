@@ -23,6 +23,30 @@ export function drawFillExtrusion(painter: Painter, tileManager: TileManager, la
     }
 
     if (renderContext.currentPass === 'translucent') {
+        // Scenic Roads: a layer whose metadata sets `scenic:depth-bias` (n > 0) is drawn pulled toward
+        // the camera by a polygon offset of −n, −n: a copy of other extrusions drawn again over them
+        // (the app's highlights: a building a little larger in a colour of its own) wins over them
+        // wherever the two are as near as the depth can tell, rather than fighting them as the map moves.
+        const bias = (layer.metadata as Record<string, unknown> | undefined)?.['scenic:depth-bias'];
+        const gl = painter.context.gl;
+        const biased = typeof bias === 'number' && bias > 0;
+        if (biased) {
+            gl.enable(gl.POLYGON_OFFSET_FILL);
+            gl.polygonOffset(-bias, -bias);
+        }
+        try {
+            drawTranslucent(painter, tileManager, layer, coords, renderContext, opacity);
+        } finally {
+            if (biased) {
+                gl.polygonOffset(0, 0);
+                gl.disable(gl.POLYGON_OFFSET_FILL);
+            }
+        }
+    }
+}
+
+function drawTranslucent(painter: Painter, tileManager: TileManager, layer: FillExtrusionStyleLayer, coords: OverscaledTileID[], renderContext: RenderContext, opacity: number): void {
+    {
         const depthMode = new DepthMode(painter.context.gl.LEQUAL, DepthMode.ReadWrite, renderContext.depthRangeFor3D);
 
         if (opacity === 1 && !layer.paint.get('fill-extrusion-pattern').constantOr(1 as any)) {

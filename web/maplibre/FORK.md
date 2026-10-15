@@ -89,6 +89,11 @@ now source changes:
   centroid's ground).
 - **Fog on the extrusions** (`fill_extrusion.fragment.glsl`, `fill_extrusion_program.ts`,
   `draw_fill_extrusion.ts`): they take the terrain's fog, as the terrain sets it for the same tile.
+- **A depth bias on request** (`draw_fill_extrusion.ts`): a fill-extrusion layer whose metadata
+  sets `scenic:depth-bias` to n > 0 is drawn (both its passes) with a polygon offset of −n, −n,
+  reset after. The app's highlights (the heritage tint, the hover) are buildings drawn again a few
+  tenths of a metre larger; far off the depth couldn't tell them from the buildings under them and
+  the two fought as the map moved. Its unit test: `draw_fill_extrusion.test.ts`.
 - **Trilinear mipmaps on request** (`draw_raster.ts`): a raster layer whose metadata has
   `"scenic:mipmap": "linear"` is minified between its two nearest mipmap levels (the app's water).
 
