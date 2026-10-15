@@ -621,8 +621,9 @@ deleted.
 
 ### 6.1 Regions (#135)
 
-**Status: planned, for the owner's review before any code** (#135 starts with this section; the
-points the owner is asked to settle are in §6.1.11). Today a recipe is `<id>.toml` directly in
+**Status: planned; reviewed by the owner on 15 October 2026** (the decisions in §6.1.11, three of
+them against the picks: unknown files ignored, the antimeridian supported, the panel editing only
+names and part lists). Today a recipe is `<id>.toml` directly in
 `inputs/regions/`, its `outline` a list of `osm:`, `geofabrik:`, `poly:` and `place:` entries whose
 union is the region (crates/pipeline/src/agent/recipes.rs, `Outline`; plan §5), read straight from
 the drop box by every reader listed in §6.1.7. Everything below is the design.
@@ -646,8 +647,9 @@ checks each region's definition, not how regions fit together: no partition repo
 - `inputs/regions/pins.toml` names the OSM snapshot the folder is written against (§6.1.5).
 - `how/`, `todo/` and names starting with `.`, `@`, `#` or `_` are ignored, as in every drop box
   (§3); a `<id>.toml.removed` is a removal the owner made (the Regions panel's), not a finding.
-  Any other file (a `.poly`, a `.txt`) is an error (`regions.unknown-file`), so nothing is silently
-  ignored.
+  Any other file (a `.poly`, a `.txt`, a `.toml.bak`) is ignored too: neither checked nor read, nor
+  copied into the accepted version (decided by the owner, 15 October: §6.1.11, 5). Only
+  `<id>.toml`, `<name>.geojson` and `pins.toml` are the input.
 
 #### 6.1.3 The region file
 
@@ -691,7 +693,7 @@ as the relation's rings with a 1 km tolerance, exactly as today (what keeps ever
 §6.1.10). Anywhere else (in `minus` or `intersect`, under `buffer` or `cut`) an `osm:` part is the
 relation's exact area; and a region with `minus` or `intersect` has its direct `osm:` outline parts
 grown by a real 1 km buffer before the operations, so its coast is as generous as today's while
-subtracting a neighbour removes exactly its area (open question 2).
+subtracting a neighbour removes exactly its area (§6.1.11, 2).
 
 **Lines** are named in the file and used only to cut or buffer, never as outlines:
 - `coords = [[<lon>, <lat>], …]`: drawn by hand, at least two distinct points;
@@ -758,11 +760,14 @@ from (`gadm = "4.1"`) as a record: the app checks only that such a value is a no
 (`Shape::rings`, `[i32; 2]`). GeoJSON is rounded to E7 when read; the pass's outlines and the
 extract are E7 already. All set operations run on these integers.
 
-**Set operations** (`outline`'s union, `minus`, `intersect`, a `cut`'s split): the `geo` crate's
-boolean operations, which run on the `i_overlay` crate (planned dependencies; neither is in the
-workspace). `i_overlay` works in integer coordinates with exact predicates, so it doesn't fail or
-leave slivers on the near-coincident edges of shared borders, and the same input gives the same
-output on every machine. Results are snapped to E7 and put in a canonical form: outer rings
+**Set operations** (`outline`'s union, `minus`, `intersect`, a `cut`'s split): the `i_overlay`
+crate's boolean operations on its 64-bit integer engine, called directly on the E7 integers (the
+`geo` crate's are the same engine behind floating-point coordinates, which would only add a
+rounding step). `i_overlay` works in integer coordinates with exact predicates, so it doesn't fail
+or leave slivers on the near-coincident edges of shared borders, and the same input gives the same
+output on every machine (built single-threaded: no feature that parallelises it). Its 64-bit engine
+takes coordinates up to 2⁶² in size, so E7 longitudes shifted by whole turns (below) fit with room
+to spare. Results are E7 and put in a canonical form: outer rings
 counter-clockwise, holes clockwise, each ring starting at its smallest vertex (longitude, then
 latitude), repeated and collinear vertices removed, rings sorted by their first vertex. Equal
 geometry is then equal bytes, so the fingerprints that key jobs are stable.
@@ -774,27 +779,72 @@ within 5 m of the true arc, and the pieces unioned as above. **Cuts** test sides
 extended straight from its ends (§6.1.3) and split by intersecting the shape with each side's
 polygon (the line and its extensions closed round a box around the shape).
 
-**Not supported:** a part crossing the antimeridian (±180°) is an error (`regions.antimeridian`):
-every ring in the pipeline is a plain lon/lat ring (open question 6).
+**The antimeridian** (decided by the owner, 15 October: §6.1.11, 6): regions crossing ±180°
+(Fiji, Chukotka, the Aleutians, Kiribati) are supported, and no reader of the coverage has to know:
+- **Every stored ring lies within −180°…180°.** A region's result crossing the line is stored split
+  at it, its pieces east of the line (longitudes up to 180°) and west of it (from −180°) each a
+  shape of its own (`from` ending ` (east of 180°)` or ` (west of 180°)`), so each shape's box
+  stays tight (one box spanning the world would make every reader that walks a shape's box walk
+  the world). The seam is a plain edge along ±180° in both pieces. So `Shape`, its grid, the
+  fingerprints, `shapes_key`, the catalog's drawn regions, the map's layer and `dem/bldfetch.py`
+  read plain lon/lat rings as they always have.
+- **OSM's relations are split at ±180° already** (OSM draws a boundary crossing the line as ways
+  along it on both sides), so an `osm:` part's rings are plain rings, as the outline set holds them,
+  and a region of only such parts (Alaska today, `osm:1116270`, the Aleutians beyond 180°) is
+  stored unchanged like any other.
+- **Computing in a region's own frame.** Before its operations, every part of a region is put in
+  one longitude frame: a ring or line whose consecutive points differ by more than 180° in
+  longitude crosses the line, and is unwrapped there (the later points shifted by a whole turn, so
+  the edge is the short way round); then the region's frame is chosen from all its parts' points
+  as the turn that leaves the widest empty band of longitudes outside it (its middle the frame's
+  edge), each part shifted by whole turns into it. A region nowhere near the line has the plain
+  frame (−180°…180°) and nothing moves. All set operations, buffers and cuts run in that frame
+  (64-bit, so a frame past 180° fits), and the result is split at each odd multiple of 180° it
+  crosses and every piece shifted back into −180°…180°.
+- **Buffers across the line** grow in the frame like any other (the 200 km maximum is far less
+  than any empty band a region could leave), then are split as above: a 12 nmi buffer of an island
+  at 179.9° E reaches past 180° and is stored as two shapes.
+- **GeoJSON** (`shape:`): RFC 7946 asks for geometry crossing the line to be split there; both a
+  split shape and one drawn across it (an edge from 179° to −179°) are read, the latter unwrapped as
+  above. Hand-drawn lines (`coords`) likewise.
+- **Lines** used to cut work in the frame too, so a cut line drawn across ±180° cuts as drawn.
+
+The tests carry fixtures crossing the line: an island group astride it buffered by 12 nmi (two
+shapes, each within ±180°, each point within the distance in or out as it should be); a GeoJSON
+polygon drawn across it and the same polygon split at it giving the same stored geometry; a
+`minus` and a `cut` whose parts lie on both sides; a region whose `osm:` relation is split at the
+line stored unchanged; and the coverage's point tests, fingerprints and `shapes_key` on both sides
+of the seam.
 
 **The stored geometry** (the accepted version, §4.6): the check resolves every region it accepts and
-stores, besides the region files, one content-named file per region,
-`sources/inputs/regions/@geometry/<id>.<hash16>.json`:
-```json
-{"fmt": 1, "id": "azores", "name": "Azores", "osm": "2026-09-29",
- "shapes": [{"from": "{buffer osm:1629145 12 nmi}", "country": "PT", "tolerance_m": 0,
-             "rings": [[[-311234567, 378123456], …]]}],
- "box": [-317000000, 366000000, -246000000, 401000000], "names": {"osm": [1629145], "ways": []}}
-```
+stores, besides the region files, two content-named files per region:
+- `sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`, what the coverage reads: zstd-compressed,
+  the magic `RGEO0001`, a JSON head, then each shape's rings as zigzag varint deltas of E7 points
+  (binary because a region's rings are the outline set's at full detail: Nunavut's coast alone is
+  millions of points, which JSON would make hundreds of megabytes). The head:
+  ```json
+  {"fmt": 1, "id": "azores", "osm": "2026-09-29",
+   "shapes": [{"from": "{buffer osm:1629145 12 nmi}", "country": "PT", "tolerance_m": 0, "rings": 3, "points": 2210}],
+   "box": [-317000000, 366000000, -246000000, 401000000], "names": {"osm": [1629145], "ways": []}}
+  ```
+  (No name: renaming a region changes no geometry file, so no key.)
+- `sources/inputs/regions/@drawn/<id>.<hash16>.json`, what the catalog and the map's region layer
+  draw: each shape's polygons simplified for drawing as the catalog's are today (an `osm:` part's
+  as the pass simplified it, `Outlines::simple_polygons`; a computed shape by
+  `draw_tolerance_m`), GeoJSON coordinates in degrees to 5 decimals, by `from`
+  (`{"fmt": 1, "id": "azores", "name": "Azores", "shapes": {"<from>": [[[[lon, lat], …]]]}}`).
+
 `shapes` is in the order the coverage reads them (what `shape_at` and `shapes_key` depend on);
 `tolerance_m` is 1,000 for an `osm:` outline part kept with today's coast tolerance, else 0;
 `country` as today's `Shape::country` (the relation's ISO code from the pass's outlines; for a
-computed shape, its first `osm:` part's, or none); rings E7, closed, canonical. A region with only
-`osm:` and `shape:` parts in `outline` and no operation is stored as **one shape per part,
-unchanged** (the relation's rings as the outline set holds them): exactly today's
-`Coverage::from_recipes`. Any operation gives one shape, the region's result. The index (§4.6) names
-each region's geometry file in its `facts.geometry`, and its `keyed` digest is that file's content
-name, so an edit that doesn't change a region's result (a comment, a line renamed) reruns nothing.
+computed shape, its first `osm:` part's, or none); rings E7, unclosed (the last point joins the
+first, as `Shape::rings` has them). A region with only `osm:` and `shape:` parts in `outline` and no
+operation is stored as **one shape per part, unchanged** (the relation's rings as the outline set
+holds them; a `shape:` part's as its file has them, rounded to E7): exactly today's
+`Coverage::from_recipes`. Any operation gives one shape, the region's result in canonical form (two
+when it crosses the antimeridian, above). The index (§4.6) names each region's files in its
+`facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry file's content name, so an
+edit that doesn't change a region's result (a comment, a line renamed) reruns nothing.
 
 **Reading it:** `Coverage::accepted(root, manifest)` (planned) reads the index through
 `inputs::open(root, manifest, "regions")` and builds the coverage from the stored shapes, regions in
@@ -806,12 +856,14 @@ is id order). No reader makes the coverage again from the pass's outlines, a Geo
 - The check resolves a region only against the OSM pass its pin names, and only if that is the
   build's current pass. The build reads the stored geometry, so the coverage changes only when a
   region file changes and passes the check, never because a pass came in.
-- A pin naming another pass is an error (`regions.pin-mismatch`): those files are held and the map
+- A pin naming another pass is an error (`rg-pin-mismatch`): those files are held and the map
   keeps the last accepted geometry; nothing rebuilds because of the new pass. The finding lists, for
-  every relation and way the file names (through `region:` too), whether the new pass still has it
-  and whether its geometry changed (canonical rings compared), so the owner can check the ids and
-  move the pin: "pinned to OSM 2026-09-29; the build's pass is 2026-12-28. Changed: osm:1629145
-  (moved up to 340 m). Unchanged: 2. Missing: none."
+  every relation the file names (through `region:` too) in the outline set, whether the new pass
+  still has it and whether its rings changed (compared point for point with the pinned pass's
+  outline set, while the records still name it; "not compared" once that pass is retired), so the
+  owner can check the ids and move the pin: "pinned to OSM 2026-09-29; the build's pass is
+  2026-12-28. Changed: osm:1629145. Unchanged: 2. Missing: none." (Relations and ways from the
+  extract are listed by id, not compared: the new pass's extract is made only once the pin moves.)
 - With one folder-wide pin, each new pass holds every region at once until `pins.toml` is edited:
   meanwhile the map keeps its coverage and no new or edited region is taken in either (they fail the
   same check). Moving the pin is the first thing to do after a pass, and the banner says so.
@@ -828,9 +880,13 @@ file of exactly those ids' geometry, made from the pinned pass.
   <node>], "line": […]} | null}}`, `null` for an id the pass doesn't have (so "missing" is a fact of
   the extract, not a failure to make it). Relations' rings are assembled as the outline set's are
   (crates/pipeline/src/outlines.rs).
-- **When:** a check needing an id the current extract lacks plans an extract job first
-  (`regions-extract`, keyed by the pass's date and the sorted id set; a hand-off like every job,
-  pool.md §5), and is planned again once it's done. The extract covers every id the drop box names
+- **When:** a check needing an id the current extract lacks holds the files naming it
+  (`rg-extract`) and says which ids it needs in its held report (`needs`: `r<id>` and `w<id>`,
+  with the pass); the lead, reading the report, plans an extract job (`regions-extract <date>`,
+  keyed by the pass's date and the sorted id set: those needed and those already extracted; a
+  hand-off like every job, pool.md §5) naming the extract in the records as
+  `sources/osm/<date>/regions-extract`. The extract's content name is in the check's key
+  (`Checks::context`), so the check runs again once it's made. The extract covers every id the drop box names
   and never shrinks within a pass, so removing and restoring a region doesn't remake it.
 - **From:** the pass's planet PBF in `sources/osm/<date>/`, read with the pipeline's PBF reader
   (`osmpbf`) in three scans: relations (their member ways), ways (their nodes), nodes.
@@ -885,27 +941,26 @@ today, so their expected values stand).
 
 #### 6.1.8 Checks
 
-All errors (regions have no warnings, §13 item 19); ids `regions.<check>.<hash16>` (§4.4), the hash
+All errors (regions have no warnings, §13 item 19); ids `rg-<check>.<hash16>` (§4.4: a finding id has one dot, as the other units' `la-`, `tr-`), the hash
 over the files and ids named.
 
 | Check | Raised when |
 |---|---|
-| `regions.toml` | the TOML doesn't parse; a field unknown or of the wrong type |
-| `regions.id` | `id` invalid or not the file's name; `name` or `outline` empty |
-| `regions.part` | a part of an unknown kind (`geofabrik:`, `poly:`, `place:` among them), a malformed `osm:` id, a distance that doesn't parse or is out of range, `keep` not `left`/`right` |
-| `regions.dup-id` | two region files with one id, or two GeoJSON files with one name (naming every path) |
-| `regions.unknown-file` | a file that's neither a region, a shape, `pins.toml` nor ignored |
-| `regions.osm-missing` | a relation or way the pinned pass doesn't have (outline set and extract) |
-| `regions.osm-no-area` | a relation whose rings don't close into an area |
-| `regions.shape` | a GeoJSON missing, not GeoJSON, not a (Multi)Polygon, or invalid (§5.3: self-crossing, fewer than four points, unclosed) |
-| `regions.line` | a line with fewer than two points, ways that don't join (naming the pair), a cut line crossing itself |
-| `regions.cut` | a cut line ending inside a piece it meets |
-| `regions.ref` | a `region:` or `line:` naming nothing |
-| `regions.loop` | a loop of `region:` references, naming every region in it |
-| `regions.empty` | a result with no area (a `minus` taking everything, an `intersect` meeting nothing) |
-| `regions.antimeridian` | a part crossing ±180° |
-| `regions.pin` | no OSM pin (neither `pins.toml` nor `[pins]`), or one that isn't a date |
-| `regions.pin-mismatch` | a pin naming another pass than the build's current one (§6.1.5) |
+| `rg-toml` | the TOML doesn't parse; a field unknown or of the wrong type |
+| `rg-id` | `id` invalid or not the file's name; `name` or `outline` empty |
+| `rg-part` | a part of an unknown kind (`geofabrik:`, `poly:`, `place:` among them), a malformed `osm:` id, a distance that doesn't parse or is out of range, `keep` not `left`/`right` |
+| `rg-dup-id` | two region files with one id, or two GeoJSON files with one name (naming every path) |
+| `rg-osm-missing` | a relation or way the pinned pass doesn't have (outline set and extract) |
+| `rg-osm-no-area` | a relation whose rings don't close into an area |
+| `rg-shape` | a GeoJSON missing, not GeoJSON, not a (Multi)Polygon, or invalid (§5.3: self-crossing, fewer than four points, unclosed) |
+| `rg-line` | a line with fewer than two points, ways that don't join (naming the pair), a cut line crossing itself |
+| `rg-cut` | a cut line ending inside a piece it meets |
+| `rg-ref` | a `region:` or `line:` naming nothing |
+| `rg-loop` | a loop of `region:` references, naming every region in it |
+| `rg-empty` | a result with no area (a `minus` taking everything, an `intersect` meeting nothing) |
+| `rg-pin` | no OSM pin (neither `pins.toml` nor `[pins]`), or one that isn't a date |
+| `rg-pin-mismatch` | a pin naming another pass than the build's current one (§6.1.5) |
+| `rg-extract` | a relation or way not in the pass's outline set that the current extract lacks: the files wait (held) while the extract is made (§6.1.6), then are checked again |
 
 A held region keeps its last accepted geometry; a region new since the accepted version and held is
 not in the coverage yet. Removing a region (its file deleted, or the panel's `.toml.removed`) takes
@@ -916,14 +971,16 @@ it out with the next accepted version.
 - **The Regions panel** (Settings → Regions) keeps writing region files (new ones at the folder's
   top, edits where the file lies, found by `id`), asks for a listing at once so a change is checked
   within seconds, lists regions by folder, and shows each as accepted, checking, or "held:
-  <finding>". It edits `name` and `outline` lists of `osm:` and `shape:` parts; a region with any
-  `minus`, `intersect`, line, `buffer`, `cut` or `[pins]` shows its parts read-only, "edit the file".
+  <finding>". It edits only `name` and the `outline` list of `osm:` and `shape:` parts (decided by
+  the owner, 15 October: §6.1.11, 11); a region with any `minus`, `intersect`, line, `buffer`,
+  `cut` or `[pins]` shows its parts read-only, "edit the file". Drawing a shape in the panel and
+  saving it as a `shape:` GeoJSON is a task of its own (#200), not this one.
 - **The region layer** (a switch in Settings → Regions, beside "Coverage on the map"): every
   region's stored outline with a light fill in a colour from its id's hash (so a region keeps its
   colour) and its name as a label, so overlaps (fills mixing) and gaps (no fill) show by eye; a held
-  region draws its accepted geometry with a dashed outline. The server reads the geometry files the
-  lead's manifest names, copied to the Mac as the translations are (crates/server/src/accepted.rs),
-  simplified for drawing as the catalog's are (`draw_tolerance_m`, coverage.rs).
+  region draws its accepted geometry with a dashed outline. The server reads the drawn files
+  (§6.1.4) the lead's manifest's regions index names, copied to the Mac as the translations are
+  (crates/server/src/accepted.rs): already simplified, as the catalog's are.
 - **The banner and the menu bar** (§4.7): each held region with its finding; after a new pass, one
   finding per file, the banner leading with "move the pin in inputs/regions/pins.toml".
 
@@ -941,7 +998,7 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
   while no version is accepted. The server reads its Mac's accepted copy once it has it, and the
   drop box until then (as #137's first publish, §6.3).
 - `regions_digest` and `catalog_key` take the index's content name once readers use it.
-- The check refuses `geofabrik:`, `poly:` and `place:` (`regions.part`); the fallback still reads them.
+- The check refuses `geofabrik:`, `poly:` and `place:` (`rg-part`); the fallback still reads them.
 - The operations, subfolders, lines, `region:`, pins, the extract and the region layer ship here
   and change nothing until a file uses them.
 - Older apps (§4.11, minutes): an older lead reads `inputs/regions/*.toml` alone, not subfolders,
@@ -988,43 +1045,51 @@ twice; `region:` of a region with the coast tolerance.
 and the runbook's proofs passed (fingerprints and shapes keys unchanged, no build step rerun, the
 catalog remade once; each converted `.poly` selecting the same coverage).
 
-#### 6.1.11 Open questions for the owner
+#### 6.1.11 Decisions (the owner, 15 October 2026)
 
-Each is a choice made above, with the option picked and why; each is easy to change before code.
+The owner reviewed the open questions of this section on 15 October and agreed with every pick but
+three (5, 6 and 11), decided otherwise; the section above is written to the decisions.
 
-1. **Geometry library: `geo` on `i_overlay` (picked)**, over GEOS (a C library to build on both
-   Macs, robust only through snapping) or a hand-written clipper. Integer coordinates match the
-   pipeline's E7 rings and give byte-identical results, which stable keys need.
-2. **The 1 km coast tolerance with operations.** Picked: today's tolerance for plain regions (so
+1. **Geometry library: `i_overlay` (decided)**, over GEOS (a C library to build on both Macs,
+   robust only through snapping) or a hand-written clipper. Integer coordinates match the
+   pipeline's E7 rings and give byte-identical results, which stable keys need. (Picked as `geo` on
+   `i_overlay`; `i_overlay`'s own integer engine is called directly, `geo` adding only a conversion
+   to floating point and back: §6.1.4.)
+2. **The 1 km coast tolerance with operations (decided):** today's tolerance for plain regions (so
    nothing rebuilds); a real 1 km buffer of the direct `osm:` outline parts of a region with `minus`
    or `intersect`, so a subtracted neighbour is removed exactly. The alternative, no tolerance in
    such regions, trims coasts drawn on the low-water side.
-3. **Buffers per edge in a local projection (picked)**, under 0.1 % error at 200 km, over one
+3. **Buffers per edge in a local projection (decided)**, under 0.1 % error at 200 km, over one
    projection per region (wrong for regions spanning many degrees) or exact geodesic offsets (no
    maintained Rust crate does them).
-4. **An empty result is an error (picked):** almost always a mistake (a minus of the wrong
+4. **An empty result is an error (decided):** almost always a mistake (a minus of the wrong
    relation). A warning would let the owner keep a placeholder region.
-5. **Unknown files are an error (`regions.unknown-file`, picked)**, so a stray `.poly` or a `.tml`
-   isn't silently ignored; `how/` is the place for notes.
-6. **The antimeridian is refused (picked).** No region crosses it today; supporting it (Fiji,
-   Chukotka, the Aleutians) means splitting rings at ±180° in every reader of the coverage, its own
-   task when wanted.
-7. **One shape per part for plain regions, one per region with operations (picked):** the first
+5. **Unknown files are ignored (decided by the owner, against the pick):** a file in
+   `inputs/regions/` that's neither a region, a shape nor `pins.toml` is neither checked nor read
+   (§6.1.2). The pick was an error (`regions.unknown-file`), so a stray `.poly` or a `.tml` wouldn't
+   pass unnoticed; the owner prefers to keep notes and leftovers beside the regions.
+6. **The antimeridian is supported now (decided by the owner, against the pick):** regions crossing
+   ±180° (Fiji, Chukotka, the Aleutians, Kiribati) work: each region's operations run in its own
+   longitude frame and the result is stored split at the line, so every stored ring lies within
+   −180°…180° and no reader of the coverage changes (§6.1.4). The pick was to refuse them
+   (`regions.antimeridian`) until a task of its own.
+7. **One shape per part for plain regions, one per region with operations (decided):** the first
    keeps every key unchanged. One shape per region always would be simpler but changes `shapes_key`
    and reruns the buildings and terrain everywhere.
-8. **Stored geometry per region, content-named (picked)**, over one file for the folder: an edit
+8. **Stored geometry per region, content-named (decided)**, over one file for the folder: an edit
    stores and copies one small file, and the region layer and `region:` read only what they need.
-9. **The extract never shrinks within a pass (picked)**, so removing and restoring a region doesn't
+9. **The extract never shrinks within a pass (decided)**, so removing and restoring a region doesn't
    cost three planet scans; a new pass starts it afresh.
-10. **`--regions <dir>` keeps working on a scratch folder (picked)**, through the check's code in
+10. **`--regions <dir>` keeps working on a scratch folder (decided)**, through the check's code in
     memory, so a proof can try a region before it's dropped.
-11. **The panel edits only `name` and lists of `osm:`/`shape:` parts (picked)**; the rest in the
-    file. Its drawing (plan §1) saving a `shape:` GeoJSON is a later task.
-12. **Converted shapes in `inputs/regions/shapes/` and `shapes/geofabrik/` (picked)**, plain
+11. **The panel edits only `name` and part lists (decided by the owner):** the `outline` list of
+    `osm:` and `shape:` parts; the rest in the file. Drawing a shape in the panel (plan §1) and
+    saving it as a `shape:` GeoJSON is its own board task, #200, not part of #135.
+12. **Converted shapes in `inputs/regions/shapes/` and `shapes/geofabrik/` (decided)**, plain
     grouping folders like any other.
-13. **A colour per region from its id's hash (picked)**, stable everywhere, over a palette assigned
+13. **A colour per region from its id's hash (decided)**, stable everywhere, over a palette assigned
     in order (prettier, but colours shift when a region is added).
-14. **The 200 km buffer limit (picked)**: past 12 nmi and any coastal band asked for so far; it
+14. **The 200 km buffer limit (decided)**: past 12 nmi and any coastal band asked for so far; it
     bounds the buffer's error and the time one buffer can take.
 
 ### 6.2 Languages by territory (#136)
@@ -2186,3 +2251,8 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
     extract of exactly the ids the regions name, made from the pinned pass's planet once per pass
     and per set of ids, content-named, which the check reads. A region naming a relation or way
     not yet in the extract makes the check run the extract again against the pinned pass first.
+22. **The regions' open questions (decided by the owner, 15 Oct):** every pick of §6.1.11 kept but
+    three: a file in `inputs/regions/` that's neither a region, a shape nor `pins.toml` is ignored,
+    not an error; regions crossing the antimeridian are supported now (each region computed in its
+    own longitude frame, stored split at ±180°); the Regions panel edits only names and part lists,
+    drawing a shape being its own task (#200).
