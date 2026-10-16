@@ -169,6 +169,15 @@ impl Leases {
         self.live(now).filter(|l| matches!(&l.work, Work::Job { step: s, .. } if s == step)).flat_map(|l| l.targets().iter().map(|t| t.0.clone())).collect()
     }
 
+    /// Which leases are held, as a number that changes whenever one is granted, finished, given
+    /// back, dropped or lapses (ids never repeat): what an idle agent's plan digest folds in.
+    pub fn generation(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.next, self.by_id.keys().collect::<Vec<_>>()).hash(&mut h);
+        h.finish()
+    }
+
     /// A lease of `work` to `worker`; its id. (The caller makes sure no one else holds it.)
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
         let id = self.next;

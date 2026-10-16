@@ -978,6 +978,9 @@ pub struct Agent {
     /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
     /// plan made them, what they read, and the units a full check was asked of.
     inputs: Gate,
+    /// The last start held by something on a short timer (the pool's step under way, the answers
+    /// going to the NAS, the budgets' proxy starting): the idle agent plans again next loop.
+    start_soon: std::cell::Cell<bool>,
 }
 
 /// The agent's part of the gate (docs/inputs.md §4.2, §4.7).
@@ -1028,9 +1031,11 @@ struct Heard {
 /// The last plan's view, kept for the heartbeat between plans.
 struct Planned {
     at: Instant,
-    /// What the plan depended on when made (`plan_seen`), and whether it had jobs.
+    /// What the plan depended on when made (`plan_seen`); whether a start was held by something on
+    /// a short timer (`Agent::start_soon`); when its timed waits end (`Agent::replan_at`).
     seen: u64,
-    had_jobs: bool,
+    soon: bool,
+    replan_at: Option<u64>,
     waiting: Vec<Waiting>,
     regions: Vec<recipes::Recipe>,
     bad: Vec<(String, String)>,
@@ -1110,7 +1115,7 @@ impl Agent {
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, pass_max: PASS_MAX, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, pass_max: PASS_MAX, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default(), start_soon: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2336,7 +2341,7 @@ impl Agent {
         }
 
         // The plan: start the first job that can run. Made when a job ends; with the first job's
-        // slot free, when what it depends on changed or as a fallback (`plan_due`; once each loop
+        // slot free, when what it depends on changed, a start held briefly, a timed wait ended, or as a fallback (`plan_due`; once each loop
         // took a core on an idle lead, task #154); while it runs, each minute for the second slot,
         // else every five minutes for the heartbeat (between, its last view is shown).
         let second_free = self.second_allowed() && self.slots[1].running.is_none();
@@ -2348,7 +2353,8 @@ impl Agent {
             (Some(r), true) => self.plan_seen(r),
             _ => 0,
         };
-        let plan_due = plan_due(idle && !self.o.helper, ended, self.planned.as_ref().map(|p| (p.at.elapsed(), p.seen, p.had_jobs)), seen, every);
+        let last = self.planned.as_ref().map(|p| LastPlan { age: p.at.elapsed(), seen: p.seen, soon: p.soon, at: p.replan_at });
+        let plan_due = plan_due(idle && !self.o.helper, ended, last, seen, now_s(), every);
         let plan = match &root {
             Some(root) if self.o.helper => {
                 // A helper plans nothing: it asks the build Mac for work, once its last is handed back.
@@ -2359,7 +2365,7 @@ impl Agent {
                     Some(p) if !plan_due => p.regions.clone(),
                     _ => load_regions(root).0,
                 };
-                self.planned = Some(Planned { at: Instant::now(), seen: 0, had_jobs: false, waiting: waiting.clone(), regions, bad: Vec::new() });
+                self.planned = Some(Planned { at: Instant::now(), seen: 0, soon: false, replan_at: None, waiting: waiting.clone(), regions, bad: Vec::new() });
                 plan
             }
             Some(root) if plan_due => {
@@ -2367,7 +2373,7 @@ impl Agent {
                 let seen = if seen == 0 { self.plan_seen(root) } else { seen };
                 let plan = self.plan(root, &c, &mut waiting);
                 let (regions, bad) = load_regions(root);
-                self.planned = Some(Planned { at: Instant::now(), seen, had_jobs: !plan.is_empty(), waiting: waiting.clone(), regions, bad });
+                self.planned = Some(Planned { at: Instant::now(), seen, soon: false, replan_at: None, waiting: waiting.clone(), regions, bad });
                 plan
             }
             Some(_) => {
@@ -2375,6 +2381,10 @@ impl Agent {
                 Vec::new()
             }
             None => {
+                // (The NAS back: planned at once, whatever the digest.)
+                if let Some(p) = self.planned.as_mut() {
+                    p.seen = 0;
+                }
                 waiting.push(Waiting { step: None, what: "All building".into(), why: "the NAS isn't reachable (away from home, or it's off)".into() });
                 Vec::new()
             }
@@ -2396,12 +2406,22 @@ impl Agent {
         }
         // (A trim, a clear or a freeing toward the room target under way: jobs start meanwhile, what
         // they use held, store::cachefile.)
-        if idle && !newer && self.pause.is_none() && pool_holds.is_none() {
+        // (Idle and not planned again: nothing to try, the last plan's waits shown.)
+        if idle && !newer && self.pause.is_none() && pool_holds.is_none() && (plan_due || !plan.is_empty()) {
+            self.start_soon.set(false);
             self.start_first(&plan, &c, root.as_deref(), &mut waiting);
+            // (A start held by something on a short timer: planned again next loop; timed waits, at
+            // the earliest's end: `plan_due`.)
+            if self.budgets && self.proxy.is_none() && !self.o.dry_run && !plan.is_empty() {
+                self.start_soon.set(true);
+            }
+            let (soon, at) = (self.start_soon.get(), self.replan_at(&plan, now_s()));
             // (Why the jobs before it wait: kept with the plan, so the status says so while the job
             // started runs, not only between jobs.)
             if let Some(p) = self.planned.as_mut() {
                 p.waiting = waiting.clone();
+                p.soon = soon;
+                p.replan_at = at;
             }
         } else if plan_due && !self.o.helper && !plan.is_empty() {
             // (Planned again while the first job runs: why the jobs before the next it would start
@@ -2908,6 +2928,7 @@ impl Agent {
         // crate::answers::Local.)
         if !self.budgets && self.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) && step_of(&spec.id).is_some_and(|s| ANSWERED.contains(&s.as_str())) {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: "the pass's Wikidata and Wikipedia answers here are going to the NAS (seconds)".into() });
+            self.start_soon.set(true);
             return false;
         }
         // The pool's lead publishes only once its records reflect the journal, and sweeps only on a
@@ -2920,6 +2941,7 @@ impl Agent {
             let st = step_of(&spec.id).unwrap_or_default();
             let Some(mut run) = run else {
                 waiting.push(Waiting { step: Some(st), what: spec.what.clone(), why: "the pool's step is under way (its share slow to answer)".into() });
+                self.start_soon.set(true);
                 return false;
             };
             if run.gates.leads.is_some() && !run.gates.duties {
@@ -4329,8 +4351,36 @@ impl Agent {
         }
         (self.pool_mode, self.switch_seen).hash(&mut h);
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
+        // (Faster publishing's switches, the hold on catalogs, the catalogs' folders.)
+        for f in [publish::UPDATE_PER_REGION, publish::LOW_ZOOM_LATER, publish::UPDATE_SHARE, publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
+            stat(&mut h, &root.join(f));
+        }
+        // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
+        self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
+        self.newer_app().hash(&mut h);
         // (Never 0: that's "not read".)
         h.finish() | 1
+    }
+
+    /// When the plan's timed waits end (epoch seconds, past `now`), the earliest: a job's failure or
+    /// memory guard wait, room-making's ten minutes, the regions' edit hold, the next map update's
+    /// gap. An idle agent plans again then (`plan_due`).
+    fn replan_at(&self, plan: &[JobSpec], now: u64) -> Option<u64> {
+        let mut at: Vec<u64> = Vec::new();
+        for spec in plan {
+            at.extend(self.guard_backoff.get(&spec.id).map(|(u, _)| *u));
+            at.extend(self.mem.retry.get(&spec.id).map(|(_, u)| *u));
+        }
+        if let Some((_, _, t)) = self.floor_short {
+            at.push(now + Duration::from_secs(600).saturating_sub(t.elapsed()).as_secs());
+        }
+        if let Some((_, left)) = edit_held(self.edited_at.get(), std::time::SystemTime::now()) {
+            at.push(now + left.as_secs());
+        }
+        if let Some(u) = self.update_decision.borrow().as_ref().filter(|u| u.left_s > 0) {
+            at.push(now + u.left_s);
+        }
+        earliest_after(at, now)
     }
 
     fn plan(&self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
@@ -6625,23 +6675,38 @@ fn key_names(path: &Path) -> Option<String> {
     Some(names.join(","))
 }
 
-/// How often an idle agent whose last plan was empty plans again when nothing it depends on
-/// (`Agent::plan_seen`) changed.
+/// How often an idle agent plans again when nothing it depends on (`Agent::plan_seen`) changed
+/// and no timed wait ends sooner: the fallback for what the digest doesn't cover.
 const IDLE_REPLAN: Duration = Duration::from_secs(300);
 
+/// The last plan, as `plan_due` weighs it: its age, its digest, whether a start was held by
+/// something on a short timer, and when its timed waits end (epoch seconds).
+#[derive(Clone, Copy, Debug)]
+struct LastPlan {
+    age: Duration,
+    seen: u64,
+    soon: bool,
+    at: Option<u64>,
+}
+
 /// Whether the loop plans: when a job ended; with no plan yet; idle (the first job's slot free),
-/// each loop while its last plan had jobs (held, say: the jobs to start come from the plan), else
-/// when what the plan depends on changed (`seen` against the last plan's) or `IDLE_REPLAN` passed;
-/// while the first job runs, every `every`. `last`: the last plan's age, digest and whether it had jobs.
-fn plan_due(idle: bool, ended: bool, last: Option<(Duration, u64, bool)>, seen: u64, every: Duration) -> bool {
-    let Some((age, was, had_jobs)) = last else { return true };
+/// when a start was held by something on a short timer, what the plan depends on changed (`seen`
+/// against the last plan's), its timed waits' earliest end (`at`) came (`now`, epoch seconds), or
+/// `IDLE_REPLAN` passed; while the first job runs, every `every`.
+fn plan_due(idle: bool, ended: bool, last: Option<LastPlan>, seen: u64, now: u64, every: Duration) -> bool {
+    let Some(l) = last else { return true };
     if ended {
         return true;
     }
     if idle {
-        return had_jobs || was != seen || age >= IDLE_REPLAN;
+        return l.soon || l.seen != seen || l.at.is_some_and(|t| now >= t) || l.age >= IDLE_REPLAN;
     }
-    age >= every
+    l.age >= every
+}
+
+/// The earliest of `at` past `now`.
+fn earliest_after(at: impl IntoIterator<Item = u64>, now: u64) -> Option<u64> {
+    at.into_iter().filter(|t| *t > now).min()
 }
 
 /// The regions as the readers read them now (the accepted version: crate::inputs::regions::read),
@@ -7033,26 +7098,53 @@ fn test_agent(o: Options) -> Result<Agent> {
 mod tests {
     use super::*;
 
-    /// An idle agent plans again only when what its plan depends on changed, or its fallback is
-    /// due (task #154); a job ended, or none planned yet, always; a busy one every `every`.
+    /// An idle agent plans again only when what its plan depends on changed, a start was held by
+    /// something on a short timer, a timed wait ended, or its fallback is due (task #154); a job
+    /// ended, or none planned yet, always; a busy one every `every`. (Times passed in: no clock.)
     #[test]
     fn an_idle_agent_plans_when_something_changed() {
         let s = Duration::from_secs;
         let every = s(60);
-        assert!(plan_due(true, false, None, 7, every));
-        assert!(plan_due(false, true, Some((s(0), 7, false)), 7, every));
-        // Idle, nothing changed: not each loop, nor at the busy interval.
-        assert!(!plan_due(true, false, Some((s(20), 7, false)), 7, every));
-        assert!(!plan_due(true, false, Some((s(120), 7, false)), 7, every));
-        assert!(!plan_due(true, false, Some((IDLE_REPLAN - s(1), 7, false)), 7, every));
-        assert!(plan_due(true, false, Some((IDLE_REPLAN, 7, false)), 7, every));
-        // Idle with jobs it couldn't start: each loop (they start from the plan).
-        assert!(plan_due(true, false, Some((s(0), 7, true)), 7, every));
-        // Idle, something changed: at once.
-        assert!(plan_due(true, false, Some((s(0), 7, false)), 8, every));
+        let last = |age: u64, soon: bool, at: Option<u64>| Some(LastPlan { age: s(age), seen: 7, soon, at });
+        assert!(plan_due(true, false, None, 7, 1000, every));
+        assert!(plan_due(false, true, last(0, false, None), 7, 1000, every));
+        // Idle, nothing changed (paused with jobs left, say: the pause is in the digest): not each
+        // loop, nor at the busy interval; at the fallback.
+        assert!(!plan_due(true, false, last(20, false, None), 7, 1000, every));
+        assert!(!plan_due(true, false, last(120, false, None), 7, 1000, every));
+        assert!(!plan_due(true, false, last(IDLE_REPLAN.as_secs() - 1, false, None), 7, 1000, every));
+        assert!(plan_due(true, false, last(IDLE_REPLAN.as_secs(), false, None), 7, 1000, every));
+        // Idle, something changed (the pause lifted): at once.
+        assert!(plan_due(true, false, last(0, false, None), 8, 1000, every));
+        // A start held by something on a short timer: next loop.
+        assert!(plan_due(true, false, last(0, true, None), 7, 1000, every));
+        // A timed wait (a failure's, say) ending at 1100: not before, then.
+        assert!(!plan_due(true, false, last(20, false, Some(1100)), 7, 1099, every));
+        assert!(plan_due(true, false, last(20, false, Some(1100)), 7, 1100, every));
         // Busy: every `every`, whatever the digest.
-        assert!(!plan_due(false, false, Some((s(59), 7, false)), 8, every));
-        assert!(plan_due(false, false, Some((s(60), 7, false)), 7, every));
+        assert!(!plan_due(false, false, last(59, true, Some(0)), 8, 1000, every));
+        assert!(plan_due(false, false, last(60, false, None), 7, 1000, every));
+    }
+
+    /// A job's failure wait and the memory guard's set when an idle agent plans again: the earliest
+    /// end to come, none past.
+    #[test]
+    fn a_timed_wait_sets_when_to_plan_again() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec![], needs: Needs { nas: true }, restart_after_sleep: true, record: None };
+        let plan = vec![job("backup"), job("gc"), job("pass-sets d")];
+        assert_eq!(a.replan_at(&plan, 1000), None);
+        a.mem.retry.insert("backup".into(), (2, 1600));
+        a.mem.retry.insert("gc".into(), (1, 900));
+        a.guard_backoff.insert("pass-sets d".into(), (1300, "held".into()));
+        a.mem.retry.insert("not planned".into(), (1, 1001));
+        assert_eq!(a.replan_at(&plan, 1000), Some(1300));
+        assert_eq!(a.replan_at(&plan, 1300), Some(1600));
+        assert_eq!(a.replan_at(&plan, 1600), None);
+        assert_eq!(earliest_after([5, 3, 9], 3), Some(5));
     }
 
     /// The digest of what an idle agent's plan depends on: the same while nothing changes; changed
@@ -7082,6 +7174,34 @@ mod tests {
         assert_ne!(now, last);
         last = now;
         a.switch_seen = Some(pool::Mode::On);
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        assert_eq!(a.plan_seen(&root), now);
+        last = now;
+        // Faster publishing's switches and the hold on catalogs.
+        for f in [publish::UPDATE_PER_REGION, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
+            std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+            std::fs::write(root.join(f), "on").unwrap();
+            let now = a.plan_seen(&root);
+            assert_ne!(now, last, "{f}");
+            last = now;
+        }
+        // A held catalog's folder made.
+        std::fs::create_dir_all(root.join("catalog-held")).unwrap();
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        // The coordinator's leases: one taken, then given back.
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.coord = Some(co.clone());
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        let id = co.hold("gc", &[("t".into(), "k".into())]).unwrap();
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        co.shared.lock().unwrap().leases.cancel(id).unwrap();
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         assert_eq!(a.plan_seen(&root), now);

@@ -1960,11 +1960,15 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
   start, when one ends, and while one runs every five minutes for the heartbeat (each minute while
-  its second slot is free). With its first slot free it plans again only when what the plan depends
-  on changed — the manifest's or the jobs' records' size and time, the hand-offs' folders, the
-  gate's view of the inputs, the pool's members, role and gates, its mode and switch, the pause —
-  or else every five minutes, not each loop; while its last plan had jobs it couldn't start (held,
-  paused), each loop, the jobs to start coming from the plan (`plan_due`, `plan_seen`) (planning reads the manifest, the keys, a dozen NAS folders and the terrain packs'
+  its second slot is free). With its first slot free it plans again, not each loop, only when what
+  the plan depends on changed — the manifest's or the jobs' records' size and time, the hand-offs'
+  folders, the gate's view of the inputs, the pool's members, role and gates, its mode and switch,
+  the pause, a newer app installed, faster publishing's switch files, `inputs/hold-catalog`, the
+  `catalog/` and `catalog-held/` folders, the coordinator's leases (`plan_seen`); when a start
+  was held by something on a short timer (the pool's step under way, the answers going to the NAS,
+  the budgets' proxy starting): next loop; at the earliest end of its timed waits (a job's failure
+  or memory guard wait, room-making's ten minutes, the regions' edit hold, the next map update's
+  gap: `replan_at`); and otherwise every five minutes (`plan_due`) (planning reads the manifest, the keys, a dozen NAS folders and the terrain packs'
   indexes, which the units' keys read: each read once by its pack's content name, two range reads,
   and kept in the agent's `pack-idx/`, so after the first plan only a terrain job's new packs;
   13–64 s for the build's 529 on 2026-10-06, and a unit's terrain worked out again only when a pack
