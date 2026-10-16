@@ -2553,10 +2553,12 @@ between jobs into the other way. On:
      all off on the live state. Regions stay the publishing unit.
      - **Renamed** (task #209: a map update was a "round" before, and two Macs may run apps either
        side of the change for a while). The switches `round-per-region` and `round-share` are
-       `update-per-region` and `update-share`: a switch is read by its new name; while that's
-       missing, by its old, which is copied to the new name as it's read (`publish::on_renamed`),
-       once: from then on the new name is the switch, and the old stays for an older app until it's
-       cleared by hand. The agent's `round.json` is `map-update.json`: it's written under both names
+       `update-per-region` and `update-share`: a switch is read by whichever of its two names was
+       written last (mtime; the new on a tie), so an edit under either, by an app of either age, is
+       the one both Macs obey; with only the old there, it's copied to the new as it's read
+       (`publish::on_renamed`). The old stays for an older app until the cleanup; to switch one off,
+       write `off` under either name (deleting one leaves the other in force).
+       The agent's `round.json` is `map-update.json`: it's written under both names
        and read from the one that began later (`agent::read_map_update`). The history's event
        "round" is "map-update", the forecast's `rounds` `updates` (written under both names
        until the cleanup: an older app requires `rounds` and drops a status without it) and its

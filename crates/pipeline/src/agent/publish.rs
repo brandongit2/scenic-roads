@@ -2,7 +2,8 @@
 //! off while missing or `off` in it (the agent as it was, exactly), `on` in it (or present) on. They
 //! act whatever the pool (map updates are the agent's), but `update-share` needs the lead's coordinator.
 //! `update-per-region` and `update-share` were `round-per-region` and `round-share` before task #209:
-//! read by those names while the new are missing, and copied to the new once (`on_renamed`).
+//! read by whichever name was written last, the old copied to the new when only it is there
+//! (`on_renamed`).
 //!
 //! - **A map update per region** (`update-per-region`): a map update for a region done as soon as the last
 //!   map update's time allows (`update_gap`: twice the map updates' measured time, so a map update begins at least
@@ -52,24 +53,32 @@ fn on(root: &Path, switch: &str) -> Option<bool> {
     }
 }
 
-/// A renamed switch (`switch`, before task #209 `old`): by its new name when that's there; else by
-/// its old, copied to the new name as it reads (once: from then on the new name is the switch),
-/// the old left in place for an older app still running elsewhere, until it's cleared by hand.
+/// A renamed switch (`switch`, before task #209 `old`): while both names are there, by whichever
+/// was written last (mtime; the new on a tie), so an edit under either name, by an app of either
+/// age, is the one every app obeys; with only the old there, by it, copied to the new name as it
+/// reads; with only the new, by it. The old is left for an older app until the cleanup. (To switch
+/// one off, write `off` under either name; deleting one name leaves the other in force.)
 fn on_renamed(root: &Path, switch: &str, old: &str) -> Option<bool> {
-    match std::fs::read_to_string(root.join(switch)) {
-        Ok(s) => return Some(s.trim() != "off"),
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return None,
-        Err(_) => {}
-    }
-    match std::fs::read_to_string(root.join(old)) {
-        Ok(s) => {
+    // (A name's text and when it was written; None: not there; Err: not readable now.)
+    let read = |name: &str| -> Result<Option<(String, std::time::SystemTime)>, ()> {
+        match std::fs::read_to_string(root.join(name)) {
+            Ok(s) => Ok(Some((s, std::fs::metadata(root.join(name)).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        }
+    };
+    let on = |s: &str| s.trim() != "off";
+    match (read(switch).ok()?, read(old)) {
+        (Some((n, nt)), Ok(Some((o, ot)))) => Some(on(if ot > nt { &o } else { &n })),
+        (Some((n, _)), _) => Some(on(&n)),
+        (None, Ok(Some((o, _)))) => {
             // (Not copied now, say the share is read-only here: read by the old name again next
             // time, the same.)
-            let _ = crate::whole::write(&root.join(switch), s.as_bytes());
-            Some(s.trim() != "off")
+            let _ = crate::whole::write(&root.join(switch), o.as_bytes());
+            Some(on(&o))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
+        (None, Ok(None)) => Some(false),
+        (None, Err(())) => None,
     }
 }
 
@@ -132,28 +141,37 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_switch_is_read_by_its_old_name_and_copied_to_its_new_once() {
+    fn a_renamed_switch_is_read_by_whichever_name_was_written_last() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         let read = |f: &str| std::fs::read_to_string(d.path().join(f)).ok();
+        // (Each write at a time of its own, so the order doesn't hang on the clock's grain.)
+        let put = |f: &str, s: &str, at: u64| {
+            std::fs::write(d.path().join(f), s).unwrap();
+            std::fs::File::options().write(true).open(d.path().join(f)).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at)).unwrap();
+        };
         // Only the old names (as an older app knew them): read, and copied to the new; the old kept.
-        std::fs::write(d.path().join(OLD_UPDATE_PER_REGION), "on\n").unwrap();
-        std::fs::write(d.path().join(OLD_UPDATE_SHARE), "off\n").unwrap();
+        put(OLD_UPDATE_PER_REGION, "on\n", 1000);
+        put(OLD_UPDATE_SHARE, "off\n", 1000);
         let s = Switches::read(d.path(), Switches::default());
         assert!(s.per_region && !s.share);
         assert_eq!((read(UPDATE_PER_REGION), read(UPDATE_SHARE)), (Some("on\n".into()), Some("off\n".into())));
         assert_eq!((read(OLD_UPDATE_PER_REGION), read(OLD_UPDATE_SHARE)), (Some("on\n".into()), Some("off\n".into())));
-        // From then on the new name is the switch: the old one changed, nothing changes.
-        std::fs::write(d.path().join(OLD_UPDATE_SHARE), "on").unwrap();
-        assert!(!Switches::read(d.path(), Switches::default()).share);
-        std::fs::write(d.path().join(UPDATE_SHARE), "on").unwrap();
+        // Both there: the one written last, under either name (an older app's edit obeyed too).
+        put(UPDATE_SHARE, "off", 2000);
+        put(OLD_UPDATE_SHARE, "on", 3000);
         assert!(Switches::read(d.path(), Switches::default()).share);
-        // Neither name: off. The new name unreadable (a folder): as it was, the old not read.
+        put(UPDATE_SHARE, "off", 4000);
+        assert!(!Switches::read(d.path(), Switches::default()).share);
+        // (A tie: the new.)
+        put(OLD_UPDATE_SHARE, "on", 4000);
+        assert!(!Switches::read(d.path(), Switches::default()).share);
+        // Neither name: off. The new name unreadable (a folder): as it was.
         std::fs::remove_file(d.path().join(OLD_UPDATE_PER_REGION)).unwrap();
         std::fs::remove_file(d.path().join(UPDATE_PER_REGION)).unwrap();
         assert!(!Switches::read(d.path(), Switches { per_region: true, ..Default::default() }).per_region);
         std::fs::create_dir_all(d.path().join(UPDATE_PER_REGION)).unwrap();
-        std::fs::write(d.path().join(OLD_UPDATE_PER_REGION), "off").unwrap();
+        put(OLD_UPDATE_PER_REGION, "off", 5000);
         assert!(Switches::read(d.path(), Switches { per_region: true, ..Default::default() }).per_region);
     }
 
