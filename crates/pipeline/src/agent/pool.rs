@@ -79,6 +79,10 @@ const KEPT: usize = 64;
 /// heartbeat takes to go out of touch (crate::pool::beat::OUT_OF_TOUCH_S), so no view of it lags
 /// that by more.
 const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TOUCH_S / 5);
+/// A member whose heartbeat file a listing doesn't find is forgotten once listings have missed it
+/// this long (twice the time a heartbeat takes to go out of touch): never on a failed listing, nor
+/// on one that misses this member's own heartbeat (the folder not there, the NAS away).
+pub const FORGET_AFTER: Duration = Duration::from_secs(2 * crate::pool::beat::OUT_OF_TOUCH_S);
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -279,6 +283,11 @@ pub struct Side {
     members: BTreeSet<String>,
     members_listed: Option<Instant>,
     members_queued: bool,
+    /// The members the listings missed, since when (`FORGET_AFTER`).
+    missed: BTreeMap<String, Instant>,
+    /// The members forgotten: not known again from a message or a term until a listing finds
+    /// their heartbeat.
+    forgotten: BTreeSet<String>,
     /// The listings asked for and not made yet, the one being made, those made and not handed back,
     /// and when one last failed.
     asked: VecDeque<Listing>,
@@ -299,6 +308,8 @@ pub struct Side {
     /// last read them: handed to each step (`Heard::reports`), so the driver's `hand_to` reads
     /// none from the NAS.
     pub beats: Vec<Beat>,
+    /// When (unix s) `beats` were last read whole: a round with a read failing keeps the last.
+    pub beats_at: Option<u64>,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -328,7 +339,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, missed: BTreeMap::new(), forgotten: BTreeSet::new(), asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), beats_at: None, ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -354,7 +365,41 @@ impl Side {
     /// Knows member `m` (its mail read from now on), before a listing of the heartbeats finds it.
     pub fn know(&mut self, m: &str) {
         if crate::pool::is_member_id(m) {
+            self.forgotten.remove(m);
             self.members.insert(m.to_string());
+        }
+    }
+
+    /// Knows member `m` from a message or a term, unless it was forgotten (its heartbeat gone).
+    fn heard_of(&mut self, m: &str) {
+        if !self.forgotten.contains(m) {
+            self.members.insert(m.to_string());
+        }
+    }
+
+    /// The members heard from lately (their heartbeats as last read whole, not out of touch then),
+    /// this one among them: what the budgets divide by.
+    pub fn heard_lately(&self) -> usize {
+        let at = self.beats_at.unwrap_or(0);
+        let mut ids: BTreeSet<&str> = self.beats.iter().filter(|b| b.beat > 0 && !b.out_of_touch(at)).map(|b| b.member.as_str()).collect();
+        ids.insert(&self.me.id);
+        ids.len()
+    }
+
+    /// A listing of the heartbeats taken in at `now` (`names` the files found): the members found
+    /// known, those missed `FORGET_AFTER` forgotten; members.json written.
+    fn take_members(&mut self, names: &[String], now: Instant) {
+        let found: BTreeSet<String> = names.iter().filter_map(|n| n.strip_suffix(".json")).filter(|m| crate::pool::is_member_id(m)).map(str::to_string).collect();
+        let gone = forget(&mut self.members, &mut self.missed, &found, &self.me.id, self.beat.is_some(), now, FORGET_AFTER);
+        for m in &found {
+            self.forgotten.remove(m);
+        }
+        for m in gone {
+            eprintln!("pool: member {m} forgotten: its heartbeat not on the NAS for {} min", FORGET_AFTER.as_secs() / 60);
+            self.forgotten.insert(m);
+        }
+        if let Ok(b) = serde_json::to_vec(&self.members) {
+            crate::whole::write(&self.dir.join("members.json"), &b).ok();
         }
     }
 
@@ -392,7 +437,13 @@ impl Side {
 
     /// Member `m`'s heartbeat as it wrote it (None: none, or one that can't be read now).
     pub fn heartbeat(&self, m: &str) -> Option<Heartbeat> {
-        self.nas.read(&crate::pool::beat::path(m)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
+        self.read_heartbeat(m).ok().flatten()
+    }
+
+    /// Member `m`'s heartbeat: none when there's none (or it doesn't parse), an error when the NAS
+    /// couldn't be read.
+    pub fn read_heartbeat(&self, m: &str) -> Result<Option<Heartbeat>> {
+        Ok(self.nas.read(&crate::pool::beat::path(m))?.and_then(|b| serde_json::from_slice(&b).ok()))
     }
 
     /// This Mac's wall clock, as its steps read it.
@@ -483,7 +534,7 @@ impl Side {
             return out;
         }
         if let Some(t) = self.driver().current().lead.clone() {
-            self.members.insert(t.member);
+            self.heard_of(&t.member);
         }
         for (to, m) in std::mem::take(&mut out.send) {
             self.post(&to, m.clone());
@@ -548,7 +599,7 @@ impl Side {
 
     /// Queues message `m` to member `to` (a Tell the same as the last, sent lately, is passed over).
     fn post(&mut self, to: &str, m: Msg) {
-        self.members.insert(to.to_string());
+        self.heard_of(to);
         if let Msg::Tell(keys) = &m {
             let now = self.clock.now();
             if self.told.get(to).is_some_and(|(k, at)| k == keys && now.saturating_duration_since(*at) < TELL_AGAIN) {
@@ -637,11 +688,8 @@ impl Side {
             (Kind::Members, Ok(names)) => {
                 self.members_listed = Some(self.clock.now());
                 self.members_queued = false;
-                let found: Vec<String> = names.iter().filter_map(|n| n.strip_suffix(".json")).filter(|m| crate::pool::is_member_id(m)).map(str::to_string).collect();
-                self.members.extend(found);
-                if let Ok(b) = serde_json::to_vec(&self.members) {
-                    crate::whole::write(&self.dir.join("members.json"), &b).ok();
-                }
+                let now = self.clock.now();
+                self.take_members(&names, now);
             }
             (Kind::Members, Err(e)) => {
                 eprintln!("pool: listing the members: {e:#}");
@@ -667,6 +715,30 @@ impl Side {
             self.making = Some(Making { what: Kind::Members, thread });
         }
     }
+}
+
+/// A listing of the heartbeats that found the members `found` at `now`, taken into `members`: those
+/// found known (and no longer missed); those not found missed from now, and forgotten (taken out,
+/// and returned) once missed `after`. A listing without member `me`'s own heartbeat, once it has
+/// written one (`written`), forgets nothing and starts no miss: the folder isn't all there.
+fn forget(members: &mut BTreeSet<String>, missed: &mut BTreeMap<String, Instant>, found: &BTreeSet<String>, me: &str, written: bool, now: Instant, after: Duration) -> Vec<String> {
+    members.extend(found.iter().cloned());
+    missed.retain(|m, _| !found.contains(m) && members.contains(m));
+    if !written || !found.contains(me) {
+        return Vec::new();
+    }
+    let mut gone = Vec::new();
+    for m in members.iter().filter(|m| *m != me && !found.contains(*m)) {
+        let since = *missed.entry(m.clone()).or_insert(now);
+        if now.saturating_duration_since(since) >= after {
+            gone.push(m.clone());
+        }
+    }
+    for m in &gone {
+        members.remove(m);
+        missed.remove(m);
+    }
+    gone
 }
 
 /// The state saved at `p`, and its bytes as read; an empty one when there's none or it can't be
@@ -1257,7 +1329,12 @@ impl Run {
             if let Some(l) = lead.as_ref().filter(|l| !ids.contains(l)) {
                 ids.push(l.clone());
             }
-            self.side.beats = ids.iter().filter_map(|id| self.side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
+            // (A read failing, the NAS away: the last round's kept whole, for the budgets.)
+            let read: Result<Vec<Option<Heartbeat>>> = ids.iter().map(|id| self.side.read_heartbeat(id)).collect();
+            if let Ok(read) = read {
+                self.side.beats = read.into_iter().flatten().filter(|h| !h.shadow).map(|h| h.pool).collect();
+                self.side.beats_at = Some(now);
+            }
             if let Some(l) = &lead {
                 let urls = self.side.heartbeat(l).and_then(|h| h.broker).map(|b| b.urls).filter(|u| !u.is_empty()).unwrap_or_else(|| self.cx.lead_urls.clone());
                 if !urls.is_empty() {
@@ -1728,6 +1805,101 @@ mod tests {
     }
 
     const WATCHDOG: Duration = Duration::from_secs(300);
+
+    const ME: &str = "m-0000000000000001";
+    const B: &str = "m-0000000000000002";
+    const PH: &str = "m-00000000000000ff";
+
+    fn set(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_member_missed_by_the_listings_is_forgotten_after_the_grace() {
+        let t0 = Instant::now();
+        let after = FORGET_AFTER;
+        let (mut members, mut missed) = (set(&[ME, B, PH]), BTreeMap::new());
+        // (Its file gone: missed from the first listing, kept until the grace has passed.)
+        assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0, after).is_empty());
+        assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after - Duration::from_secs(1), after).is_empty());
+        assert!(members.contains(PH));
+        assert_eq!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after, after), vec![PH.to_string()]);
+        assert_eq!(members, set(&[ME, B]));
+        assert!(missed.is_empty());
+    }
+
+    #[test]
+    fn a_member_found_again_is_no_longer_missed() {
+        let t0 = Instant::now();
+        let after = FORGET_AFTER;
+        let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
+        forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0, after);
+        // (Its file back, as a member restarting rewrites it: the miss starts over.)
+        forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after / 2, after);
+        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0 + after + Duration::from_secs(1), after).is_empty());
+        assert!(members.contains(B));
+        // (A Mac asleep for hours, its file still there: never missed.)
+        let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
+        for h in 0..24 {
+            assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + Duration::from_secs(3600 * h), after).is_empty());
+        }
+        assert!(missed.is_empty());
+    }
+
+    #[test]
+    fn a_listing_without_its_own_heartbeat_forgets_nobody() {
+        let t0 = Instant::now();
+        let after = FORGET_AFTER;
+        let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
+        // (The folder not there, the NAS away: an empty listing, hours of it.)
+        for h in 0..10 {
+            assert!(forget(&mut members, &mut missed, &set(&[]), ME, true, t0 + Duration::from_secs(3600 * h), after).is_empty());
+        }
+        // (Before it has written its own heartbeat, likewise.)
+        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, false, t0 + Duration::from_secs(36000), after).is_empty());
+        assert_eq!(members, set(&[ME, B]));
+        assert!(missed.is_empty());
+    }
+
+    #[test]
+    fn a_forgotten_member_is_known_again_only_from_its_heartbeat() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("home");
+        let mut s = side(&r, &home);
+        let me = s.member().id.clone();
+        s.know(PH);
+        s.beat = Some((Heartbeat::default(), s.clock.now(), 0));
+        let t0 = s.clock.now();
+        let files = |ids: &[&str]| ids.iter().map(|i| format!("{i}.json")).collect::<Vec<_>>();
+        s.take_members(&files(&[&me]), t0);
+        s.take_members(&files(&[&me]), t0 + FORGET_AFTER);
+        assert!(!s.members().contains(PH));
+        // (Another Mac's message or term naming it, an older app re-advertising it: not again.)
+        s.heard_of(PH);
+        assert!(!s.members().contains(PH));
+        let saved: BTreeSet<String> = serde_json::from_slice(&std::fs::read(home.join("pool/members.json")).unwrap()).unwrap();
+        assert!(!saved.contains(PH));
+        // (Its heartbeat found again: known.)
+        s.take_members(&files(&[&me, PH]), t0 + FORGET_AFTER * 2);
+        assert!(s.members().contains(PH));
+    }
+
+    #[test]
+    fn the_budgets_count_the_members_heard_lately() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let mut s = side(&r, &d.path().join("home"));
+        for m in [PH, B] {
+            s.know(m);
+        }
+        assert_eq!(s.heard_lately(), 1);
+        let now = 1_000_000;
+        let beat = |m: &str, at: u64| Beat { member: m.into(), beat: at, ..Default::default() };
+        s.beats = vec![beat(B, now - 30), beat(PH, now - crate::pool::beat::OUT_OF_TOUCH_S - 1)];
+        s.beats_at = Some(now);
+        assert_eq!(s.heard_lately(), 2);
+    }
 
     fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {
         let l = format!("base/{}", target.replace('/', "-"));

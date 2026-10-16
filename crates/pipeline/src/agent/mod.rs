@@ -5145,7 +5145,7 @@ impl Agent {
         }
         let n = match self.try_pooled() {
             None => 1,
-            Some(Some(run)) => run.side.members().len().max(1),
+            Some(Some(run)) => run.side.heard_lately(),
             Some(None) => self.pool_seen.as_ref().map_or(1, |p| p.members.len().max(1)),
         };
         if let Some(p) = &self.proxy {

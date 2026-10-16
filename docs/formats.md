@@ -624,7 +624,8 @@ agent/pool/             the pool's part of the agent (crate::agent::pool):
                         step that changed it; `saved.earlier.json`: one set aside, naming a term
                         while the NAS has none), mail.json ({read: {member: n}, the last message taken
                         from each; sent: {member: [[n, msg], …]}, the last sent each; n}),
-                        members.json (the members it knows, by id), jobs/<term>-<n>/ (a job's
+                        members.json (the members it knows, by id: those its listings of
+                        the heartbeats found, a member missed by them for twenty minutes dropped), jobs/<term>-<n>/ (a job's
                         folder under its lease: work.json {step, targets: [[target, key], …],
                         lease: "<term>-<n>"}, its saves as hand-offs, done.txt, costs.jsonl; removed
                         once a saved state holds its entry), lead.json (the owner's lead asks, crate::

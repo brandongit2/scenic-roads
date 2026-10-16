@@ -1189,7 +1189,12 @@ once every member's heartbeat shows the app that has it.
      - **The listings** it asks for are made on a thread, one at a time, each handed back, a failed
        one made again a minute on; the members' heartbeats are listed the same way, every fifth
        of the time a heartbeat takes to go out of touch (two minutes), on the lead (whose mail it
-       reads) and a member alike.
+       reads) and a member alike. A member whose heartbeat file the listings miss for twice that
+       time (twenty minutes) is forgotten: no mail read for it, out of the views and of the
+       count the budgets divide by, and not known again from a message, a term or another Mac's
+       heartbeat naming it until a listing finds its file. A failed listing, or one without this
+       Mac's own heartbeat (the folder not there, the NAS away), forgets nobody; a Mac asleep or
+       restarting keeps its file, so it stays known.
      - **Messages** by mailbox on the NAS (§9: the pool's API is planned).
      - **The heartbeat**, `state/pool/members/<id>.json`: the driver's fields and the members it
        knows, written when it changes and every two minutes; the agent's status says the member,
@@ -1414,7 +1419,8 @@ once every member's heartbeat shows the app that has it.
       made with create-new, a file a slot of a ten-second window, `state/pool/wiki/<class>/`;
       Wikimedia's sites four requests a second, the query services one in two seconds and two
       seconds of query time a token), a 429 told to it (dem/budget.py) holding every process and
-      Mac, the NAS away giving each Mac the rate divided by the members it knows; no job starts
+      Mac, the NAS away giving each Mac the rate divided by the members heard lately (their
+      heartbeats, as last read whole, not out of touch); no job starts
       without the proxy; the lint (`tests/budgets.rs`: every file of the jobs' code naming a metered
       host listed with how it asks, the Python that asks telling a 429, nothing turning the proxy
       off unlisted, dem/budget.py's hosts crate::budget's) gating publish. The heavy NAS reads
