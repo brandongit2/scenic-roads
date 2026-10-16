@@ -304,7 +304,7 @@ def build(check=False):
             label='with what the trains’, the landmarks’ and the 3D buildings’ chains made by then', at=(n_rd.r + 30, p_cat.my - 5))
     d.to_layer('mix', p_cat, b_cat)
     y1 = max(n_rd.b, s_rd.b, b_cat.b) + PAD
-    d.lane('PUBLISHING · IN ROUNDS', y0, y1)
+    d.lane('PUBLISHING · MAP UPDATES', y0, y1)
     h = y1 + 8
 
     # ---- connectors between rows (clear of the tabs, which sit top right) ---------------------
