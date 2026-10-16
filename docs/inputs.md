@@ -2075,16 +2075,16 @@ downloaded or stored twice before the rename. The rollout, in order:
    declarations' (the three DEM entries of `rules::CREDITS` replaced by their `what`, MRDEM's and
    3DEP's lines beside HRDEM's, GSI's five layers one line), so the catalog is remade once; no build
    step reruns (nothing reads the datasets yet).
-4. *The counts:* `scenic-build elevation-proof --root <nas> --out <scratch> --count`: of the units
-   recorded, those built again at the switch (more than one dataset meets them) and those re-keyed
-   (one alone). Measured on 16 Oct from the declarations in #143's worktree: 242 built again, 43
-   re-keyed.
-5. *The proof:* `scenic-build elevation-proof --root <nas> --out <scratch> --store <nas>/sources
-   --write` (`--write` needs `--store`): each unit's vertices sampled by today's code and by the
-   generic sampler; every difference must lie in a blend band with the same source byte. It refuses
-   up front when any unit the records list has no kept samples (it would be unproved). Only when
-   every recorded unit passed does it write `state/inputs/elevation-proof.json`: the accepted index
-   proved, the app, the sampler's version (publish 1's `generic::SAMPLER_V`), the units proved and recorded.
+4. *The counts:* publish 1's proof tool (scenic-build's `elevation-proof` step) with `--count`:
+   of the units recorded, those built again at the switch (more than one dataset meets them) and
+   those re-keyed (one alone). Measured on 16 Oct from the declarations in #143's worktree: 242
+   built again, 43 re-keyed.
+5. *The proof:* the same tool with `--store <nas>/sources --write` (`--write` needs `--store`):
+   each unit's vertices sampled by today's code and by the generic sampler; every difference must
+   lie in a blend band with the same source byte. It refuses up front when any unit the records
+   list has no kept samples (it would be unproved). Only when every recorded unit passed does it
+   write `state/inputs/elevation-proof.json`: the accepted index proved, the app, the sampler's
+   version (publish 1's `generic::SAMPLER_V`), the units proved and recorded.
 6. *The switch:* the next check records it (`sources/inputs/elevation/@switched`) when the proof
    names the accepted index, the sampler this app has, and as many units proved as recorded; a
    declaration edited between, or a newer sampler, makes the proof stale, so it runs again. From the
