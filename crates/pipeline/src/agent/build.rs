@@ -681,15 +681,35 @@ impl Walk<'_> {
 }
 
 /// The heritage sites and designated areas the units read (crate::heritage), once per pass,
-/// coverage and registers' snapshot. (2: an area across the antimeridian sliced by its parts; 3:
-/// the World Heritage components' `parts` slices too, for the 3D buildings' heritage lists. The
-/// `pos` and `areas` slices are the same bytes, so the units' keys don't change.)
-pub const HERITAGE_SITES_V: u32 = 3;
+/// coverage, accepted registers meeting it and accepted matches. (2: an area across the
+/// antimeridian sliced by its parts; 3: the World Heritage components' `parts` slices too, for the
+/// 3D buildings' heritage lists. The `pos` and `areas` slices are the same bytes, so the units'
+/// keys don't change. 4: the registers read generically from the input check's accepted version,
+/// docs/inputs.md §6.5.)
+pub const HERITAGE_SITES_V: u32 = 4;
 
-pub fn heritage_sites_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+/// The key of the heritage sites: the pass's areas set, the registers meeting the cover by their
+/// keyed digests (`inputs` "heritage": crate::heritage::registers_line, from the records' accepted
+/// version, which the agent reads; a plan given no such line keys on the accepted version whole),
+/// the matches' accepted version and the coverage. None while the registers have no accepted
+/// version, or it can't be read now ("?").
+pub fn heritage_sites_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> Option<String> {
     let set = m.get(&crate::osmpass::set_name(date, "areas"))?;
-    let registers = m.get("sources/registers/legacy")?;
-    let k = h(&[&format!("heritage-sites {HERITAGE_SITES_V}"), date, set, registers, &coverage_all(cov)]);
+    let index = m.get(&crate::inputs::logical(crate::inputs::heritage::UNIT))?;
+    let regs: Vec<String> = match inputs.get("heritage").map(String::as_str) {
+        Some("?") => return None,
+        Some(line) => {
+            let cover = crate::heritage::cover_boxes(cov);
+            crate::heritage::parse_registers(line).into_iter().filter(|(_, _, b)| b.is_some_and(|b| crate::heritage::meets(&cover, b))).map(|(id, keyed, _)| format!("{id} {keyed}")).collect()
+        }
+        None => vec![format!("index {index}")],
+    };
+    let matches = m.get(&crate::inputs::logical(crate::inputs::heritage_matches::UNIT)).map(String::as_str).unwrap_or("-");
+    Some(h(&[&format!("heritage-sites {HERITAGE_SITES_V}"), date, set, &regs.join(","), &format!("matches {matches}"), &coverage_all(cov)]))
+}
+
+pub fn heritage_sites_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    let k = heritage_sites_key(cov, date, m, inputs)?;
     (done.lo.get("heritage-sites").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "heritage-sites".into(), targets: vec![("heritage-sites".into(), k)] })
 }
 
@@ -762,25 +782,15 @@ pub const FERRIES_V: u32 = 1;
 /// The landmark points from the candidates (crate::marksjob).
 pub const MARKS_V: u32 = 1;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
-/// area overlays from it with the marks' World Heritage dots (ovconv::overlays).
-pub const HERITAGE_V: u32 = 1;
+/// area overlays from it with the marks' World Heritage dots (ovconv::overlays). (2: the registers
+/// read generically, their caches the pass's answers alone, docs/inputs.md §6.5.)
+pub const HERITAGE_V: u32 = 2;
 pub const OVERLAYS_V: u32 = 1;
 
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
 /// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq).
 pub const RAIL_FEEDS_V: u32 = 1;
 pub const RAIL_V: u32 = 1;
-
-/// Where the marks' and overlays' heritage comes from (markconv::heritage_source): the pass's
-/// heritage job's outputs when there are any, else today's.
-fn heritage_src(m: &BTreeMap<String, String>, date: &str) -> String {
-    let job = format!("work/heritage/{date}");
-    if ["layer-heritage", "details-heritage", "props-heritage"].iter().all(|s| m.contains_key(&format!("{job}/{s}"))) {
-        job
-    } else {
-        crate::markconv::LEGACY.to_string()
-    }
-}
 
 /// The current units' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
@@ -1599,7 +1609,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
 
     // The heritage sites and designated areas the units read: first, once per pass and coverage (one
     // job). Not waited for: terrain still runs while it waits out a failure.
-    let sites = heritage_sites_work(cov, date, m, done);
+    let sites = heritage_sites_work(cov, date, m, done, inputs);
     let sites_pending = sites.is_some();
     work.extend(sites);
     // What the terrain's targets read of the water, as digests (one job, minutes, once a basemap
@@ -1630,7 +1640,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // (`landmarks_work`: none waits for the units but the overlays), listed after the regions'
     // work. A second job beside the regions' takes them first (crate::agent, Two jobs at once), a
     // helper the candidates and peaks, the lead's own job once the regions' work is done.
-    let chains = |last: bool| -> Vec<Work> { rail_chain(cov, date, m, done, inputs).into_iter().chain(landmarks_work(cov, date, m, done, &terrain_left, last)).collect() };
+    let chains = |last: bool| -> Vec<Work> { rail_chain(cov, date, m, done, inputs).into_iter().chain(landmarks_work(cov, date, m, done, inputs, &terrain_left, last)).collect() };
     let Some(reach) = reach.filter(|_| !waiting) else {
         push(&mut work, "terrain", terrain);
         push(&mut work, "terrain-lo", terrain_lo);
@@ -2199,8 +2209,8 @@ fn items_key(date: &str, pois_now: &[&str]) -> String {
     h(&refs)
 }
 
-/// The rest of the heritage chain's key (network), on the pass's heritage sites; None before
-/// they're made (the marks then take today's).
+/// The rest of the heritage chain's key (network), on the pass's heritage sites (the registers'
+/// fields the chain reads are in their heritage-sources); None before they're made (the marks wait).
 fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     if !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
@@ -2210,7 +2220,7 @@ fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Opt
     for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
         ins.push(get(&crate::heritage::base_logical(date, stem)).to_string());
     }
-    for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/filtered"), "sources/registers/legacy".into(), "sources/registers/legacy-seeds".into()] {
+    for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/filtered"), "sources/registers/legacy-seeds".into()] {
         ins.push(get(&l).to_string());
     }
     ins.push(coverage_all(cov));
@@ -2219,10 +2229,11 @@ fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Opt
 }
 
 /// The landmark points' key: every current unit's candidates and peaks (`units`: pois_keys), the
-/// items' facts and pageviews, the heritage sites (the files markconv reads: the pass's or today's).
+/// items' facts and pageviews, the heritage sites (the files markconv reads: the pass's heritage
+/// job's).
 fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[(Unit, String)]) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let src = heritage_src(m, date);
+    let src = crate::markconv::heritage_source(date);
     let mut ins = vec![format!("marks {MARKS_V}"), get(&format!("sources/items/{date}/facts")).to_string(), get(&format!("sources/items/{date}/views")).to_string()];
     for stem in ["layer-heritage", "details-heritage", "props-heritage"] {
         ins.push(get(&format!("{src}/{stem}")).to_string());
@@ -2237,12 +2248,12 @@ fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[(Unit, String)])
 }
 
 /// The area overlays' key: the pass's heritage, with the dots the marks gave the World Heritage
-/// sites, and the built units (their hi tiles are where the units are); None when the heritage is
-/// today's (no overlays made from it).
+/// sites, and the built units (their hi tiles are where the units are); None before the pass's
+/// heritage job has made its outputs.
 fn overlays_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let src = heritage_src(m, date);
-    if src == crate::markconv::LEGACY {
+    let src = crate::markconv::heritage_source(date);
+    if !["layer-heritage", "details-heritage", "props-heritage"].iter().all(|s| m.contains_key(&format!("{src}/{s}"))) {
         return None;
     }
     let mut ins = vec![format!("overlays {OVERLAYS_V}"), get(crate::markconv::HERITAGE_DOTS).to_string()];
@@ -2300,7 +2311,9 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
         return Some(Work { step: "items".into(), targets: vec![("items".into(), k)] });
     }
-    if let Some(k) = heritage_key(cov, date, m).filter(|k| done.lo.get("heritage") != Some(k)) {
+    // (The heritage chain once the pass's heritage sites are made; the marks wait for it.)
+    let k = heritage_key(cov, date, m)?;
+    if done.lo.get("heritage") != Some(&k) {
         return Some(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
     }
     let k = marks_key(date, m, &units);
@@ -2320,7 +2333,7 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
 /// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
 /// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
 /// more of network) runs beside the candidates.
-fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, terrain_left: &BTreeSet<String>, last: bool) -> Vec<Work> {
+fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, terrain_left: &BTreeSet<String>, last: bool) -> Vec<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let mut out = Vec::new();
     let units: Vec<(Unit, String)> = pois_keys(cov, date, m);
@@ -2349,15 +2362,16 @@ fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done
         }
     }
     // (Not before the heritage sites are made as the coverage wants them; with none for the pass
-    // and none to make, the marks take today's.)
-    let sites_due = heritage_sites_work(cov, date, m, done).is_some();
+    // (no registers accepted yet), the marks wait.)
+    let sites_due = heritage_sites_work(cov, date, m, done, inputs).is_some();
     let heritage_built = match heritage_key(cov, date, m) {
         _ if sites_due => false,
+        None => false,
         Some(k) if done.lo.get("heritage") != Some(&k) => {
             out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
             false
         }
-        _ => true,
+        Some(_) => true,
     };
     if peaks_built && items_built && heritage_built {
         let k = marks_key(date, m, &units);
@@ -2815,7 +2829,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let group = |what: &str, steps: &[&str], left: Option<usize>| Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left, ..Default::default() };
     let mut out = Vec::new();
     let ts = terrain_slope_targets(cov, m, tiles);
-    let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
+    let sites_left = heritage_sites_work(cov, date, m, done, inputs).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
     let mut sites = group(SITES, &["heritage-sites"], Some(sites_left as usize));
     if sites_left {
         sites.next = vec![label("heritage-sites").into()];
@@ -2994,12 +3008,12 @@ pub(crate) mod tests {
         Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap()
     }
 
-    /// The heritage-sites job's inputs (the pass's areas set, the registers' snapshot).
-    /// What the units wait for besides terrain and slope: the heritage-sites job's inputs, and the
-    /// release's roadside buildings.
+    /// What the units wait for besides terrain and slope: the heritage-sites job's inputs (the
+    /// pass's areas set, the heritage registers' accepted version), and the release's roadside
+    /// buildings.
     pub(crate) fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
-        m.insert("sources/registers/legacy".into(), "sources/registers/legacy.3434343434343434.tar.zst".into());
+        m.insert(crate::inputs::logical(crate::inputs::heritage::UNIT), "sources/inputs/heritage/@index.3434343434343434.json".into());
         m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
     }
 
@@ -4633,6 +4647,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_heritage_sites_key_names_the_registers_meeting_the_cover() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        unit_inputs(&mut m, "d");
+        let reg = |id: &str, keyed: &str, b: [f64; 4]| crate::inputs::heritage::Register { id: id.into(), geojson: String::new(), toml: String::new(), keyed: keyed.into(), bbox: Some(b) };
+        let iceland = [-22.5, 63.8, -21.0, 64.5];
+        let japan = [129.0, 31.0, 146.0, 45.0];
+        let ins = |regs: &[crate::inputs::heritage::Register]| BTreeMap::from([("heritage".to_string(), crate::heritage::registers_line(regs))]);
+        // (The line read back as written.)
+        let line = crate::heritage::registers_line(&[reg("is-minjar", "a b", iceland), crate::inputs::heritage::Register { bbox: None, ..reg("empty", "c d", japan) }]);
+        assert_eq!(crate::heritage::parse_registers(&line), [("is-minjar".to_string(), "a b".to_string(), Some(iceland)), ("empty".to_string(), "c d".to_string(), None)]);
+        let k = heritage_sites_key(&c, "d", &m, &ins(&[reg("is-minjar", "a b", iceland), reg("jp-bunkacho", "x y", japan)])).unwrap();
+        // A register on another continent changed, added or removed: the same key.
+        assert_eq!(heritage_sites_key(&c, "d", &m, &ins(&[reg("is-minjar", "a b", iceland), reg("jp-bunkacho", "x z", japan)])), Some(k.clone()));
+        assert_eq!(heritage_sites_key(&c, "d", &m, &ins(&[reg("is-minjar", "a b", iceland)])), Some(k.clone()));
+        // One meeting the cover changed: another; the matches' accepted version too.
+        assert_ne!(heritage_sites_key(&c, "d", &m, &ins(&[reg("is-minjar", "a c", iceland)])), Some(k.clone()));
+        let mut mm = m.clone();
+        mm.insert(crate::inputs::logical(crate::inputs::heritage_matches::UNIT), "sources/inputs/heritage-matches/@index.1111111111111111.json".into());
+        assert_ne!(heritage_sites_key(&c, "d", &mm, &ins(&[reg("is-minjar", "a b", iceland)])), Some(k.clone()));
+        // Registers that can't be read now, or none accepted: none (the sites wait).
+        assert_eq!(heritage_sites_key(&c, "d", &m, &BTreeMap::from([("heritage".to_string(), "?".to_string())])), None);
+        m.remove(&crate::inputs::logical(crate::inputs::heritage::UNIT));
+        assert_eq!(heritage_sites_key(&c, "d", &m, &ins(&[reg("is-minjar", "a b", iceland)])), None);
+    }
+
+    #[test]
     fn the_chains_wait_for_the_passs_jobs_they_read_to_be_made_again() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
@@ -4643,9 +4684,9 @@ pub(crate) mod tests {
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         heritage_done(&mut m, &mut done, "d", &w[0]);
         assert!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())).contains(&"heritage".to_string()));
-        // The registers' snapshot changed: the heritage sites are made again first, the rest of the
-        // chain (an hour and a half on them) only after.
-        m.insert("sources/registers/legacy".into(), "sources/registers/legacy.ffffffffffffffff.tar.zst".into());
+        // The registers' accepted version changed: the heritage sites are made again first, the
+        // rest of the chain (an hour and a half on them) only after.
+        m.insert(crate::inputs::logical(crate::inputs::heritage::UNIT), "sources/inputs/heritage/@index.ffffffffffffffff.json".into());
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "heritage-sites");
         assert!(!steps(&w).contains(&"heritage".to_string()), "{:?}", steps(&w));

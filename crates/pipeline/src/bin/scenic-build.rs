@@ -408,7 +408,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // overlays [--pass <date>]: the area overlays and parks from the pass's heritage
             // outputs, the World Heritage outlines with the marks job's dots (ovconv::overlays).
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
-            let src = pipeline::markconv::heritage_source(&out, &date);
+            let src = pipeline::markconv::heritage_source(&date);
             stage(0, 1, "making the area overlays' tiles");
             let p = phase("the marks' heritage dots read", Class::NasRead);
             let dots = pipeline::ovconv::marks_dots(&out)?;
@@ -416,7 +416,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::ovconv::overlays(&mut out, &src, &dots)?;
             out.save()?;
         }
-        "registers-import" => registers_import(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "terrain-lo" => terrain_lo_step(&mut out, &args)?,
         "slope-lo" => slope_lo_step(&mut out, &args)?,
@@ -2284,9 +2283,9 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let summits = pipeline::marksjob::summits_list(&pts);
     let mut all = pts;
     drop(p);
-    // The pass's heritage (the heritage job's outputs), else the converted build's (plan §10).
+    // The pass's heritage (the heritage job's outputs).
     let p = phase("the heritage sites read", Class::NasRead);
-    let src = pipeline::markconv::heritage_source(out, &date);
+    let src = pipeline::markconv::heritage_source(&date);
     eprintln!("marks: heritage from {src}");
     all.extend(pipeline::markconv::heritage_marks(out, &src)?);
     drop(p);
@@ -2375,9 +2374,10 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 /// it (one clip per pass and cover, kept in the cache). The seeds' park facts and pageview months
 /// seed the caches (`sources/registers/legacy-seeds`); the pageview months are the items job's
 /// cache, the epoch's months; the layers' English names use the seeds' names table.
-/// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`. What the
-/// chain fetched goes to the NAS as it ends, finished or not, or at the next start when it was
-/// stopped (`Epoch`).
+/// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`. Its
+/// caches are the pass's answers (`Epoch`: this Mac's working copy, made one with the NAS's
+/// archive); what the chain fetched goes to the NAS as it ends, finished or not, or at the next
+/// start when it was stopped.
 fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::heritage::{base_logical, cover_tiles, tiles_geojson, COVER_Z};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
@@ -2405,7 +2405,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         (4, "layers.py", vec![]),
     ];
     parts.start(0);
-    stage(0, 5, "reading the registers' snapshot and the heritage sites");
+    stage(0, 5, "reading the pass's answers and the heritage sites");
     let epoch = heritage_epoch(out, &date, &cache, scratch)?;
     // As it ends, finished or failed (stopped by a signal, it doesn't run: the next start sends what
     // it fetched): the named places' export gone (made again each run, 3 GB), and what the chain
@@ -2416,7 +2416,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     });
     let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
     let p = phase("the heritage sites copied here", Class::NasRead);
-    let root = heritage_root(scratch, &dem, &epoch.dir)?;
+    let root = heritage_root(scratch, &dem, Some(&epoch.dir))?;
     let b = root.join("data/build");
     // The heritage-sites job's outputs, as heritage.py left them.
     for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
@@ -2617,40 +2617,10 @@ fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result
     Ok(dest)
 }
 
-/// registers-import --from <dir> [--name legacy]: a registers' snapshot (a folder laid out as
-/// heritage.py reads it, without osm/, which the pass's sets replace: docs/plan.md §6, Hand-made
-/// inputs) as one archive in the manifest,
-/// `sources/registers/<name>` (tar.zst, files in sorted order): what the heritage jobs extract,
-/// once per archive (thousands of small files are slow to copy over SMB one by one).
-fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
-    let from = std::fs::canonicalize(opt(args, "--from").context("--from <dir>")?)?;
-    let name = opt(args, "--name").unwrap_or_else(|| "legacy".into());
-    std::fs::create_dir_all(scratch)?;
-    let (list, tar) = (scratch.join("registers.list"), scratch.join("registers.tar.zst"));
-    // (By its path: with the PATH changed, a program looked up is started by fork and exec.)
-    let mut c = store::spawn::command("/bin/sh");
-    c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
-    c.arg("-c")
-        .arg(r#"set -e; cd "$1"; find . -type f ! -path './osm/*' ! -name .DS_Store | LC_ALL=C sort > "$2"; tar -cf - -T "$2" | zstd -T0 -10 -q -f -o "$3""#)
-        .arg("sh")
-        .arg(&from)
-        .arg(&list)
-        .arg(&tar);
-    let st = store::spawn::status(&mut c).context("tar | zstd")?;
-    anyhow::ensure!(st.success(), "archiving {} failed: {st}", from.display());
-    let files = std::fs::read_to_string(&list)?.lines().count();
-    let size = std::fs::metadata(&tar)?.len();
-    let got = out.put_file(&format!("sources/registers/{name}"), "tar.zst", &tar)?;
-    out.save()?;
-    eprintln!("registers-import: {files} files, {} MB → {got}", size >> 20);
-    Ok(())
-}
-
-/// This pass's working copy of the registers' snapshot (`dir`, a copy of `snap`), with the answers
-/// the heritage chain fetched, which the NAS keeps too (`kept`).
+/// This pass's working copy of the heritage chain's answers (`dir`, `cache/heritage-<date>`), which
+/// the chain's scripts add their caches to, and the NAS's archive of them (`kept`).
 struct Epoch {
     dir: PathBuf,
-    snap: PathBuf,
     kept: pipeline::answers::Kept,
     /// This Mac's answers held while the step runs, with the budgets on (pipeline::answers::Local).
     _hold: Option<pipeline::answers::Local>,
@@ -2661,7 +2631,7 @@ impl Epoch {
     /// signal doesn't run this, and the next start sends it).
     fn keep(&self, scratch: &Path) {
         let _p = phase("the pass's answers sent to the NAS", Class::NasWrite);
-        match self.kept.keep(&pipeline::answers::heritage_files(&self.dir, &self.snap), &scratch.join("answers")) {
+        match self.kept.keep(&pipeline::answers::heritage_files(&self.dir), &scratch.join("answers")) {
             Ok(true) => eprintln!("heritage: the pass's answers sent to the NAS"),
             Ok(false) => {}
             Err(e) => eprintln!("heritage: the pass's answers not sent to the NAS now ({e:#}); the next start sends them"),
@@ -2679,49 +2649,38 @@ impl<F: FnMut()> Drop for OnEnd<F> {
     }
 }
 
-/// This pass's working copy of the registers' snapshot, which the heritage scripts add their caches
-/// to: the archive extracted once (`cache/registers-<id>`), then cloned per pass
-/// (`cache/heritage-<date>-<id>`, APFS clones cost nothing; a copy elsewhere keeps the files'
-/// times), so a pass's runs share their caches and a new pass or snapshot starts again from the
-/// snapshot. Other passes' and snapshots' copies go. What the chain fetched for the pass is on the
-/// NAS too (pipeline::answers: `sources/items/<date>/heritage-<id>.tar.zst`), made one with this
-/// Mac's here.
+/// This pass's working copy of the heritage chain's answers (`cache/heritage-<date>`), made one with
+/// the NAS's (pipeline::answers: `sources/items/<date>/heritage.tar.zst`); a new pass's starts from
+/// the last pass's answers (pipeline::answers::heritage_start). Other passes' copies go, and the
+/// copies of the registers' snapshot the chain worked in before the registers became an input
+/// (`heritage-<date>-<id>`).
 fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result<Epoch> {
     let hold = pipeline::answers::Local::for_job(cache)?;
-    let snap = registers_extract(out, "sources/registers/legacy", cache)?;
-    let id = snap.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("registers-")).context("registers folder")?.to_string();
-    let p = phase("the pass's copy of the snapshot made", Class::Disk);
-    let epoch = cache.join(format!("heritage-{date}-{id}"));
-    if !epoch.join(".done").exists() {
-        std::fs::remove_dir_all(&epoch).ok();
-        let st = store::spawn::status(store::spawn::command("cp").arg("-c").arg("-R").arg(&snap).arg(&epoch))?;
-        if !st.success() {
-            std::fs::remove_dir_all(&epoch).ok();
-            let st = store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch))?;
-            anyhow::ensure!(st.success(), "copying {} failed: {st}", snap.display());
-        }
-        std::fs::write(epoch.join(".done"), b"")?;
-    }
+    let p = phase("the pass's answers made ready", Class::Disk);
+    let epoch = cache.join(format!("heritage-{date}"));
+    std::fs::create_dir_all(&epoch)?;
     for e in std::fs::read_dir(cache)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        let other_epoch = n.strip_prefix("heritage-").is_some_and(|r| r.len() > 11 && pipeline::osmpass::is_date(&r[..10])) && e.path() != epoch;
-        // (heritage-data: the first heritage job's rsync'd copy; heritage-venv: the scripts' own
-        // Python environment, before they ran in the app's.)
-        if other_epoch || n == "heritage-data" || n == "heritage-venv" {
+        let other_epoch = n.strip_prefix("heritage-").is_some_and(|r| r.len() >= 10 && pipeline::osmpass::is_date(&r[..10])) && e.path() != epoch;
+        if other_epoch {
             std::fs::remove_dir_all(e.path()).ok();
         }
     }
     drop(p);
     let _p = phase("the pass's answers made one with the NAS's", Class::NasRead);
-    let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, &snap, date, &id).leased(out.root(), pipeline::answers::budgets_on_for_job()), dir: epoch, snap, _hold: hold };
-    eprintln!("heritage: the pass's answers {}", e.kept.sync(&pipeline::answers::heritage_files(&e.dir, &e.snap), &scratch.join("answers"))?.words());
+    if let Some(a) = pipeline::answers::heritage_start(out.root(), &epoch, date)? {
+        eprintln!("heritage: the pass's answers start from {}", a.display());
+    }
+    std::fs::write(epoch.join(".done"), b"")?;
+    let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, date).leased(out.root(), pipeline::answers::budgets_on_for_job()), dir: epoch, _hold: hold };
+    eprintln!("heritage: the pass's answers {}", e.kept.sync(&pipeline::answers::heritage_files(&e.dir), &scratch.join("answers"))?.words());
     Ok(e)
 }
 
 /// An archive of `sources/registers/` extracted once into the cache (`registers-<id>`, by its
-/// content), the current ones kept: the snapshot and the seeds.
+/// content), the current ones kept: the seeds (docs/inputs.md §6.5.3, until #139).
 fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
-    let content = out.get(logical).with_context(|| format!("no {logical} in the manifest (scenic-build registers-import)"))?.to_string();
+    let content = out.get(logical).with_context(|| format!("no {logical} in the manifest"))?.to_string();
     let id = store::naming::hash16(content.as_bytes())[..12].to_string();
     // (Once per archive: copied from the NAS and extracted.)
     let _p = phase("the registers' archives extracted (once each)", Class::NasRead);
@@ -2754,8 +2713,9 @@ fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> 
 }
 
 /// A stand-in root laid out as the repository for the heritage scripts: `dem/` the app's
-/// scripts and their Python project, `data/heritage` this pass's copy of the registers' snapshot.
-fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
+/// scripts and their Python project, `data/heritage` this pass's working copy of the chain's
+/// answers (`epoch`; an empty folder for heritage.py, which fetches nothing).
+fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<PathBuf> {
     let _p = phase("the scripts' stand-in root made", Class::Disk);
     let root = scratch.join("heritage-root");
     std::fs::remove_dir_all(&root).ok();
@@ -2768,7 +2728,10 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
             store::sys::copy_data(e.path(), root.join("dem").join(&n))?;
         }
     }
-    pipeline::sys::symlink(&epoch, &root.join("data/heritage"))?;
+    match epoch {
+        Some(e) => pipeline::sys::symlink(&e, &root.join("data/heritage"))?,
+        None => std::fs::create_dir_all(root.join("data/heritage"))?,
+    }
     Ok(root)
 }
 
@@ -2789,27 +2752,67 @@ fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&s
     Ok(())
 }
 
-/// heritage-sites [--pass <date>] [--dem dir] [--cache dir]: the heritage sites and designated
-/// areas the units read (pipeline::heritage): heritage.py in a stand-in root, over the
-/// tiles within 20 km of the coverage, on the registers' snapshot and the pass's protected areas
-/// (its `areas` set within those tiles, as heritage.py's areas.geojsonseq). Its outputs go to
+/// The accepted version of input `unit` the step reads: the index the agent names (`--<unit>-index`,
+/// from the records it planned with), else the records' now (by hand).
+fn accepted_input(out: &Out, args: &[String], unit: &str) -> Result<Option<pipeline::inputs::Accepted>> {
+    match opt(args, &format!("--{unit}-index")) {
+        Some(index) => {
+            let m = std::collections::BTreeMap::from([(pipeline::inputs::logical(unit), index)]);
+            pipeline::inputs::open(out.root(), &m, unit)
+        }
+        None => pipeline::inputs::open(out.root(), &out.manifest, unit),
+    }
+}
+
+/// The accepted registers meeting the cover, laid out for heritage.py in `dir` (`<id>.geojson` and
+/// `<id>.toml`, links to the checked copies), and the accepted matches in `matches` (None without
+/// any). The registers, by id.
+fn heritage_inputs(out: &Out, args: &[String], cov: &pipeline::coverage::Coverage, dir: &Path, matches: &Path) -> Result<(Vec<String>, Option<PathBuf>)> {
+    use pipeline::inputs::{heritage, heritage_matches};
+    let _p = phase("the accepted registers laid out", Class::Disk);
+    let a = accepted_input(out, args, heritage::UNIT)?.context("no accepted heritage registers (the input check takes inputs/heritage/ in)")?;
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::create_dir_all(dir)?;
+    let regs = pipeline::heritage::registers_meeting(cov, &a);
+    for r in &regs {
+        pipeline::sys::symlink(&out.root().join(&r.geojson), &dir.join(format!("{}.geojson", r.id)))?;
+        pipeline::sys::symlink(&out.root().join(&r.toml), &dir.join(format!("{}.toml", r.id)))?;
+    }
+    std::fs::remove_dir_all(matches).ok();
+    let m = match accepted_input(out, args, heritage_matches::UNIT)? {
+        Some(m) if !m.index.files.is_empty() => {
+            std::fs::create_dir_all(matches)?;
+            for (k, (p, copy)) in m.files().enumerate() {
+                let name = format!("{k:04}-{}", p.replace('/', "+"));
+                pipeline::sys::symlink(&copy, &matches.join(name))?;
+            }
+            Some(matches.to_path_buf())
+        }
+        _ => None,
+    };
+    Ok((regs.into_iter().map(|r| r.id).collect(), m))
+}
+
+/// heritage-sites [--pass <date>] [--dem dir] [--heritage-index i] [--heritage-matches-index i]:
+/// the heritage sites and designated areas the units read (pipeline::heritage): heritage.py in a
+/// stand-in root, over the tiles within 20 km of the coverage, on the accepted heritage registers
+/// meeting them (docs/inputs.md §6.5: the indexes the agent names, from the records it planned
+/// with; by hand, the records' now), the owner's matches, and the pass's protected areas (its
+/// `areas` set within those tiles, as heritage.py's areas.geojsonseq). Its outputs go to
 /// `work/heritage/<date>/base/<file>`, and per z6 tile the sites' positions and the area polygons.
-/// What heritage.py fetched goes to the NAS as it ends, finished or not, or at the next start when
-/// it was stopped (`Epoch`).
 fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::heritage::{base_logical, cover_tiles, put_parts, put_slices, slice_areas, slice_parts, slice_sites, tiles_bytes, tiles_geojson, COVER_Z};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
-    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
-    let parts = Parts(&["Reading the registers' snapshot", "Clipping the protected areas to the coverage (osmium)", "Locating the registers' sites (heritage.py)", "Slicing them per area", "Uploading"]);
+    let parts = Parts(&["Reading the heritage registers", "Clipping the protected areas to the coverage (osmium)", "Locating the registers' sites (heritage.py)", "Slicing them per area", "Uploading"]);
     parts.start(0);
-    let epoch = heritage_epoch(out, &date, &cache, scratch)?;
-    let _end = OnEnd(|| epoch.keep(scratch));
-    let root = heritage_root(scratch, &dem, &epoch.dir)?;
+    let root = heritage_root(scratch, &dem, None)?;
     let b = root.join("data/build");
+    let (regs, matches) = heritage_inputs(out, args, &cov, &scratch.join("registers"), &scratch.join("matches"))?;
+    eprintln!("heritage-sites: {} registers meet the cover ({})", regs.len(), regs.join(", "));
     // The cover: its tiles for heritage.py, as rectangles for osmium.
     let p = phase("the cover worked out", Class::Compute);
     let tiles = cover_tiles(&cov);
@@ -2822,7 +2825,12 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     parts.start(1);
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     parts.start(2);
-    heritage_script(&root, &dem, out.root(), "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
+    let (reg_arg, match_arg, zoom) = (scratch.join("registers").to_string_lossy().into_owned(), matches.map(|m| m.to_string_lossy().into_owned()), COVER_Z.to_string());
+    let mut hargs = vec!["../data/build", "--registers", reg_arg.as_str(), "--tiles", "../data/build/cover.idx", "--zoom", zoom.as_str(), "--date", &date];
+    if let Some(m) = &match_arg {
+        hargs.extend(["--matches", m.as_str()]);
+    }
+    heritage_script(&root, &dem, out.root(), "heritage.py", &hargs)?;
     parts.start(3);
     // The units' slices, then the whole files.
     let p = phase("the sites and areas sliced per area", Class::Compute);

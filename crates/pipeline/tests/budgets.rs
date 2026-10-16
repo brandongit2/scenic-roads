@@ -27,17 +27,15 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/pipeline/src/budget/tests.rs", "the budget's tests"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("dem/budget.py", "the steps' side of the budget: its lists of the metered hosts, and the hold it tells the proxy"),
-    ("dem/heritage.py", "urllib (honours HTTPS_PROXY); a 429 told (budget.seen)"),
-    ("dem/heritage_eu.py", "urllib, curl (both honour HTTPS_PROXY); a 429 told (budget.seen)"),
     ("dem/heritagewd.py", "curl (honours HTTPS_PROXY); a 429 told (budget.seen)"),
     ("dem/items.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
     ("dem/areadetails.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
-    ("dem/federal.py", "names an item's page as a link, asks nothing"),
+    ("dem/whsshapes.py", "urllib (honours HTTPS_PROXY), a query its cache lacks; a 429 told (budget.seen)"),
     ("dem/pageviews.py", "curl and urllib (both honour HTTPS_PROXY): a month's dump a connection; a 429 fails the month (curl --fail), tried again by the step's next run, not told"),
 ];
 
 /// The Python that asks, so reports a 429 (`budget.seen`).
-const REPORTS: &[&str] = &["dem/heritage.py", "dem/heritage_eu.py", "dem/heritagewd.py"];
+const REPORTS: &[&str] = &["dem/heritagewd.py", "dem/whsshapes.py"];
 
 /// What turns the proxy off, in a line.
 const OFF: &[&str] = &[".proxy(None)", "ProxyHandler({})", "--noproxy", "no_proxy", "NO_PROXY"];

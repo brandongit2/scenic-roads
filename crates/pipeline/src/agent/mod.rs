@@ -4337,6 +4337,9 @@ impl Agent {
             } else if table.is_none() && manifest.contains_key(&format!("sources/osm/{date}/outlines")) {
                 waiting.push(Waiting { step: Some("spoken".into()), what: "Mapping the languages spoken where, for names".into(), why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into() });
             }
+            if !manifest.contains_key(&crate::inputs::logical(crate::inputs::heritage::UNIT)) {
+                waiting.push(Waiting { step: Some("heritage-sites".into()), what: build::label("heritage-sites").into(), why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)".into() });
+            }
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
             // a new app), the jobs that read the fill wait (`hold_for_lakefill`: the water, the
@@ -4690,6 +4693,15 @@ impl Agent {
             // (The timetable feeds' declarations: the accepted version it was planned with.)
             if w.step == "rail-feeds" {
                 extra.extend(["--feeds-index".to_string(), manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)).cloned().unwrap_or_default()]);
+            }
+            // (The heritage registers' and matches' accepted versions the plan read: the job reads
+            // them, never the drop boxes.)
+            if w.step == "heritage-sites" {
+                for unit in [crate::inputs::heritage::UNIT, crate::inputs::heritage_matches::UNIT] {
+                    if let Some(i) = manifest.get(&crate::inputs::logical(unit)) {
+                        extra.extend([format!("--{unit}-index"), i.clone()]);
+                    }
+                }
             }
             // (Tree cover pieces made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
@@ -6296,6 +6308,17 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
         files.sort();
         let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
         inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
+    }
+    // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
+    // "?" when they can't be read now (the heritage sites then wait), none without an accepted version.
+    match crate::heritage::registers_now(root) {
+        Ok(Some(line)) => {
+            inputs.insert("heritage".into(), line);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            inputs.insert("heritage".into(), "?".into());
+        }
     }
     // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
     // then waits).
@@ -8171,7 +8194,7 @@ mod tests {
         m.insert(crate::reach::logical(date), rc);
         // (What the units wait for: the heritage sites' inputs and outputs, the buildings' index.)
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
-        m.insert("sources/registers/legacy".into(), "sources/registers/legacy.3434343434343434.tar.zst".into());
+        crate::inputs::heritage::accept_fixture(root, &mut m);
         m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
         m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
         let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";
@@ -8195,7 +8218,7 @@ mod tests {
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut keys = build::Keys::default();
         keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
-        keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys).unwrap().targets);
+        keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys, &input_digests(root)).unwrap().targets);
         keys.record("terrain", &rekey::v1::terrain_slope_targets(&cov, &m).0);
         keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
         let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root)).pop().unwrap();

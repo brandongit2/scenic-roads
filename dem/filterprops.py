@@ -10,7 +10,8 @@ then computed.
                   rest areas, picnic sites, trailheads: fac (bits: 1 toilets, 2 drinking water,
                   4 shelter, 8 tables, 16 barbecue, 32 parking)
   heritage.json   by (year built), dy (year designated), sl (Wikipedia/Wikimedia sitelinks),
-                  wp (has a Wikipedia article), t (kind of designation, heritagetiers.py)
+                  wp (has a Wikipedia article), t (kind of designation: the register's `tier`, else
+                  by level: `tier`)
   heritage-areas.json, special.json, indigenous.json   a (area km²)
 
 usage: filterprops.py   (after heritagedetails.py and areadetails.py)
@@ -22,10 +23,21 @@ import re
 import sys
 from pathlib import Path
 
-from heritagetiers import tier
 from timings import phase
 
 B = Path(__file__).resolve().parent.parent / "data" / "build"
+
+
+def tier(p: dict) -> str:
+    """A site's kind of designation for the Heritage sites toggles (web/src/basemap.ts
+    HERITAGE_TIERS): its register's (`t`, from the entry's `tier`: docs/inputs.md §6.5), else by
+    its level, World Heritage by its category."""
+    if p.get("t"):
+        return p["t"]
+    lv = p.get("level") or 5
+    if lv == 1:
+        return "w.n" if p.get("category") in ("Natural", "Mixed") else "w.c"
+    return {2: "n.top", 3: "n.second", 4: "p.des"}.get(lv, "m.des")
 
 
 def num(v) -> float | None:

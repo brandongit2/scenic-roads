@@ -503,7 +503,8 @@ fn landmarks(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, done
                     "designation": pr.get("designation").or_else(|| inf.pointer("/props/category")),
                     "at": [(lon * 1e5).round() / 1e5, (lat * 1e5).round() / 1e5],
                     "enwiki": article, "wiki": other, "register": register,
-                    "source": inf.pointer("/props/source"), "fame": (fame * 1000.0).round() / 1000.0,
+                    // (Its heritage register's id: the catalog's credits name the register.)
+                    "source": inf.pointer("/props/register").or_else(|| inf.pointer("/props/source")), "fame": (fame * 1000.0).round() / 1000.0,
                 }),
             });
         }

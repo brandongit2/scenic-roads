@@ -55,12 +55,12 @@
 //! too, and the others a later job fills again from the NAS or makes again from what's there
 //! (`kind`): the pack cache, the DEM seed (only while the NAS has it whole), the local copies of the
 //! NAS's files and the heritage jobs' clip of the planet. Kept: the Wikidata and Wikipedia answers
-//! the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, the
-//! items' 13 MB and the heritage copy's own ~0.4 GB, which is whole or nothing), the heritage
+//! the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, and
+//! the heritage chain's working copy, `heritage-<date>/`, is whole or nothing), the heritage
 //! scripts' old Python environment (`heritage-venv/`: their next run removes it), what frees next to
-//! nothing (the registers' snapshot, which the pass's heritage folder is an APFS clone of; the
-//! trains' stop pairs, under a MB), the agent's own timings (`unit-stages.json`) and what units kept
-//! that isn't on the NAS yet (`dem-units/`, `scenic-units/`).
+//! nothing (the registers' seeds, extracted: `registers-<id>/`; the trains' stop pairs, under a
+//! MB), the agent's own timings (`unit-stages.json`) and what units kept that isn't on the NAS yet
+//! (`dem-units/`, `scenic-units/`).
 //!
 //! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
@@ -1603,7 +1603,7 @@ mod tests {
         // nothing, the agent's own timings, what units kept that isn't on the NAS yet; and
         // everything outside the caches (the agent's state, logs, work and outbox, the map's
         // mirror).
-        let kept = ["items/facts-2026-09-28.jsonl", "items/months/2026-05.tsv.zst", "heritage-2026-09-28-0123456789ab/.done", "registers-0123456789ab/.done", "rail/pairs-0123456789abcdef.bin", "unit-stages.json", "dem-units/6-1-1.dem", "scenic-units/6-1-1/canopy.keys"];
+        let kept = ["items/facts-2026-09-28.jsonl", "items/months/2026-05.tsv.zst", "heritage-2026-09-28/.done", "registers-0123456789ab/.done", "rail/pairs-0123456789abcdef.bin", "unit-stages.json", "dem-units/6-1-1.dem", "scenic-units/6-1-1/canopy.keys"];
         for f in kept {
             file(&c.join(f), 100, 60);
         }

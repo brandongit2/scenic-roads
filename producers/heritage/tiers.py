@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Kinds of designation for the Heritage sites sub-toggles: each site's `t`, from its designation
-(and level, for World Heritage and anything not recognised). Grouped as in the Layers panel
+"""Kinds of designation for the Heritage sites sub-toggles: each heritage entry's `tier`
+(registers.py), the map's `t`, from its designation (and level, for World Heritage and anything not
+recognised). Grouped as in the Layers panel
 (web/src/basemap.ts HERITAGE_TIERS, same keys): World Heritage (w.*), National (n.*), Provincial
 / state (p.*), Municipal (m.*). Kinds cut across jurisdictions: England's Grade I, Scotland's
 Category A and France's monuments classés are all "top grade".
 
-usage: heritagetiers.py   (prints the designations per kind in data/build/heritage.json)
+usage: tiers.py <register>.geojson …   (prints the designations per kind)
 """
 from __future__ import annotations
 
@@ -50,14 +51,14 @@ def tier(p: dict) -> str:
 
 if __name__ == "__main__":
     import json
+    import sys
     from collections import Counter, defaultdict
-    from pathlib import Path
 
-    fc = json.load(open(Path(__file__).resolve().parent.parent / "data" / "build" / "heritage.json"))
     by = defaultdict(Counter)
-    for f in fc["features"]:
-        p = f["properties"]
-        by[tier(p)][re.sub(r"\s*\([^)]*\)$", "", p.get("designation", "?"))[:70]] += 1
+    for path in sys.argv[1:]:
+        for f in json.load(open(path))["features"]:
+            p = f["properties"]
+            by[tier(p)][re.sub(r"\s*\([^)]*\)$", "", p.get("designation", "?"))[:70]] += 1
     for k in sorted(by):
         print(f"{k:9s} {sum(by[k].values()):7d}")
         for d, n in by[k].most_common():

@@ -1,7 +1,7 @@
 //! A unit's area flags (`grid.areas.u8`: the PARK, HERITAGE, SPECIAL_AREA and INDIGENOUS bits of
 //! roadcore::scenic::flag), rasterised onto its own z11 grid (`grid.idx`) from the heritage-sites
-//! job's flagged polygons near it (`area-shapes.geojsonseq`, crate::heritage::unit_inputs), as
-//! heritage.py rasterises them for a whole build (docs/phase5.md "Heritage and area flags"). Each
+//! job's flagged polygons near it (`area-shapes.geojsonseq`, crate::heritage::unit_inputs)
+//! (docs/phase5.md "Heritage and area flags"). Each
 //! tile is the union of its polygons' burns, so units agree wherever their grids overlap.
 //!
 //! The bytes are those rasterio (GDAL 3.12) burns:

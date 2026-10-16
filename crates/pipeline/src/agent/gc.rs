@@ -705,12 +705,12 @@ mod tests {
         put("sources/osm/2026-09-28/pass.3333333333333333.json", 20);
         put("sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", 25);
         put("sources/osm/2027-03-01/planet.osm.pbf", 1);
-        put("sources/registers/legacy.5555555555555555.tar.zst", 300);
+        put("sources/registers/legacy-seeds.5555555555555555.tar.zst", 300);
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.retired_removed, 3, "{r:?}");
         assert!(!root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(), "the retired pass's folders, emptied, go too");
-        for kept in ["sources/osm/2026-09-28/planet.osm.pbf", "sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", "sources/osm/2027-03-01/planet.osm.pbf", "sources/registers/legacy.5555555555555555.tar.zst"] {
+        for kept in ["sources/osm/2026-09-28/planet.osm.pbf", "sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", "sources/osm/2027-03-01/planet.osm.pbf", "sources/registers/legacy-seeds.5555555555555555.tar.zst"] {
             assert!(root.join(kept).exists(), "{kept}");
         }
         // A newer pass completed only days ago: the old planet waits (its content-named files don't).
@@ -750,7 +750,7 @@ mod tests {
         put(&format!("{u}/@held.7777777777777777.json"), "{}", 60);
         put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
         put("inputs/_gate-test/a.jsonl", "x", 300); // the drop box: never
-        put("sources/registers/legacy.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
+        put("sources/registers/legacy-seeds.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         // A nested unit (`timetables/gtfs`'s kind): its index named, its copy kept; an old copy of
@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(r.inputs_skipped, None);
         assert_eq!(r.inputs_removed, 3, "{r:?}");
         assert!(!root.join(format!("{u}/a.2222222222222222.jsonl")).exists() && !root.join(format!("{u}/@held.8888888888888888.json")).exists() && !root.join(format!("{n}/c.aaaaaaaaaaaaaaac.zip")).exists());
-        for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/@index.5555555555555555.json"), format!("{u}/@index.6666666666666666.json"), format!("{u}/@held.7777777777777777.json"), format!("{n}/c.aaaaaaaaaaaaaaab.zip"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy.9999999999999999.tar.zst".into()] {
+        for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/@index.5555555555555555.json"), format!("{u}/@index.6666666666666666.json"), format!("{u}/@held.7777777777777777.json"), format!("{n}/c.aaaaaaaaaaaaaaab.zip"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy-seeds.9999999999999999.tar.zst".into()] {
             assert!(root.join(&k).exists(), "{k}");
         }
         // A version replaced: its index touched as the check replaced it (yesterday), the copy it

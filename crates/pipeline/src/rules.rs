@@ -8,9 +8,10 @@
 //! world: changing it reruns every unit, as it may change any of them.
 //!
 //! The data sources' credits are here too, another rule by location: each with the areas whose data
-//! comes from it, the boxes its source's code tests or, for a heritage register, its territory. A
-//! catalog lists the credits whose areas meet what it serves (`catalog_credits`), and the map shows
-//! the catalog's (© Credits). They enter no key: a credit changes what the map says, not its data.
+//! comes from it, the boxes its source's code tests. A catalog lists the credits whose areas meet
+//! what it serves (`catalog_credits`), and the map shows the catalog's (© Credits). They enter no
+//! key: a credit changes what the map says, not its data. The inputs' credits come from their own
+//! descriptions instead (crate::inputs::credits: the heritage registers' among them).
 
 use crate::coverage::DrawnRegion;
 use crate::hipack::{grow, meets};
@@ -128,53 +129,10 @@ fn anywhere(areas: &&'static [[f64; 4]]) -> bool {
 /// `NORTH_AMERICA`).
 const EEA_LEAF: &[[f64; 4]] = &[[-40.0, 20.0, 40.0, 75.0]];
 
-// The heritage registers' territories (dem/heritage.py, heritage_eu.py, crhp.py): a register's
-// sites lie there, and a run keeps those near the coverage. Generous, since a site missing its
-// credit would break the register's terms, where one credited too many costs a line.
-
-/// Mérimée and the sites patrimoniaux remarquables cover the overseas departments too.
-const FRANCE: &[[f64; 4]] = &[
-    [-5.2, 42.3, 8.3, 51.2],    // metropolitan France
-    [8.5, 41.3, 9.6, 43.1],     // Corsica
-    [-56.5, 46.7, -56.1, 47.2], // Saint-Pierre-et-Miquelon
-    [-63.2, 14.3, -60.8, 18.2], // Guadeloupe, Martinique, Saint-Martin, Saint-Barthélemy
-    [-54.7, 2.1, -51.5, 5.9],   // French Guiana
-    [55.2, -21.4, 55.9, -20.8], // Réunion
-    [44.9, -13.1, 45.4, -12.6], // Mayotte
-];
-const ENGLAND: &[[f64; 4]] = &[[-6.5, 49.8, 1.8, 55.85]];
-const SCOTLAND: &[[f64; 4]] = &[[-9.0, 54.6, -0.7, 60.9]];
-const WALES: &[[f64; 4]] = &[[-5.7, 51.3, -2.6, 53.5]];
-const NORTHERN_IRELAND: &[[f64; 4]] = &[[-8.2, 54.0, -5.4, 55.4]];
-/// The Bailiwick: Guernsey, Alderney, Sark and Herm.
-const GUERNSEY: &[[f64; 4]] = &[[-2.7, 49.4, -2.1, 49.75]];
-const IRELAND: &[[f64; 4]] = &[[-10.7, 51.3, -5.9, 55.5]];
-/// The regions whose registers have locations, all on the mainland.
-const SPAIN: &[[f64; 4]] = &[[-9.4, 35.9, 3.4, 43.8]];
-/// The atlas covers the mainland only.
-const PORTUGAL: &[[f64; 4]] = &[[-9.6, 36.9, -6.1, 42.2]];
 const CANADA: &[[f64; 4]] = &[[-141.1, 41.6, -52.5, 83.2]];
-const QUEBEC: &[[f64; 4]] = &[[-79.8, 44.9, -57.1, 62.6]];
-const ONTARIO: &[[f64; 4]] = &[[-95.2, 41.6, -74.3, 56.9]];
-const NOVA_SCOTIA: &[[f64; 4]] = &[[-66.4, 43.3, -59.6, 47.1]];
-/// dem/crhp.py's provinces and territories (its `PROVINCES` boxes): New Brunswick, Prince Edward
-/// Island, Newfoundland and Labrador, the western provinces and the territories.
-const CRHP_PROVINCES: &[[f64; 4]] = &[
-    [-69.1, 44.5, -63.7, 48.1],
-    [-64.5, 45.9, -61.9, 47.1],
-    [-67.9, 46.5, -52.5, 60.5],
-    [-102.1, 48.9, -88.9, 60.1],
-    [-110.0, 49.0, -101.3, 60.0],
-    [-120.0, 49.0, -110.0, 60.0],
-    [-139.1, 48.2, -114.0, 60.0],
-    [-141.0, 60.0, -123.8, 69.7],
-    [-136.5, 60.0, -101.9, 78.8],
-    [-120.7, 51.6, -61.0, 83.2],
-];
-/// The states dem/heritage.py asks the National Register for (`STATES`): New York and New England.
-const NRHP_STATES: &[[f64; 4]] = &[[-79.8, 40.4, -66.9, 47.5]];
 
-/// Every data source's credit, in the order the map lists them. The app's own (the colour ramps it
+/// Every data source's credit, in the order the map lists them, but the inputs' (their descriptions':
+/// crate::inputs::credits; the heritage registers' since #138). The app's own (the colour ramps it
 /// ships) are the app's: web/src/ui/strip.ts.
 pub const CREDITS: &[Credit] = &[
     Credit {
@@ -236,138 +194,6 @@ pub const CREDITS: &[Credit] = &[
         source: "ESA WorldCover 2021",
         terms: "CC BY 4.0",
         areas: WORLD,
-    },
-    Credit {
-        what: "UNESCO World Heritage",
-        source: "UNESCO World Heritage Centre, World Heritage List (data.unesco.org)",
-        terms: "© UNESCO World Heritage Centre, CC BY-SA 4.0",
-        areas: WORLD,
-    },
-    Credit {
-        what: "France heritage",
-        source: "Ministère de la Culture, base Mérimée (POP); sites patrimoniaux remarquables via the Géoportail de l'Urbanisme",
-        terms: "Licence Ouverte 2.0",
-        areas: FRANCE,
-    },
-    Credit {
-        what: "Andorra heritage",
-        source: "Govern d'Andorra, Inventari general del patrimoni cultural (IDE Andorra)",
-        terms: "Private, personal use only",
-        areas: ANDORRA,
-    },
-    Credit {
-        what: "Canadian federal designations",
-        source: "Parks Canada Directory of Federal Heritage Designations",
-        terms: "OGL–Canada",
-        areas: CANADA,
-    },
-    Credit {
-        what: "US designations",
-        source: "NPS National Register of Historic Places",
-        terms: "Public domain",
-        areas: NRHP_STATES,
-    },
-    Credit {
-        what: "Québec heritage",
-        source: "MCC Répertoire du patrimoine culturel",
-        terms: "CC BY 4.0",
-        areas: QUEBEC,
-    },
-    Credit {
-        what: "Ontario heritage",
-        source: "Ontario Heritage Act Register (Ontario Heritage Trust)",
-        terms: "Personal non-commercial use only",
-        areas: ONTARIO,
-    },
-    Credit {
-        what: "Nova Scotia heritage",
-        source: "Registered Heritage Properties; Halifax (HRM) municipal heritage",
-        terms: "NS Open Government Licence; HRM open data",
-        areas: NOVA_SCOTIA,
-    },
-    Credit {
-        what: "NB, PEI, NL, western & northern Canada heritage",
-        source: "Canadian Register of Historic Places; Moncton open data",
-        terms: "Non-commercial reproduction with credit",
-        areas: CRHP_PROVINCES,
-    },
-    Credit {
-        what: "Biosphere reserves, geoparks, dark-sky places",
-        source: "UNESCO MAB & Global Geoparks, DarkSky International, RASC",
-        terms: "Facts from the official registries",
-        areas: WORLD,
-    },
-    Credit {
-        what: "England heritage",
-        source: "© Historic England, National Heritage List for England; contains Ordnance Survey data © Crown copyright and database right",
-        terms: "OGL v3",
-        areas: ENGLAND,
-    },
-    Credit {
-        what: "Scotland heritage",
-        source: "Contains Historic Environment Scotland and Ordnance Survey data © Historic Environment Scotland – Scottish Charity No. SC045925 © Crown copyright and database right",
-        terms: "OGL v3",
-        areas: SCOTLAND,
-    },
-    Credit {
-        what: "Wales heritage",
-        source: "Designated Historic Asset GIS Data, The Welsh Historic Environment Service (Cadw), via DataMapWales",
-        terms: "OGL v3",
-        areas: WALES,
-    },
-    Credit {
-        what: "Northern Ireland heritage",
-        source: "Department for Communities, Historic Environment Division",
-        terms: "OGL v3",
-        areas: NORTHERN_IRELAND,
-    },
-    Credit {
-        what: "Guernsey heritage",
-        source: "States of Guernsey Development & Planning Authority",
-        terms: "gov.gg terms: research and private use",
-        areas: GUERNSEY,
-    },
-    Credit {
-        what: "Ireland heritage",
-        source: "National Inventory of Architectural Heritage; National Monuments Service (Department of Housing, Local Government and Heritage)",
-        terms: "CC BY 4.0",
-        areas: IRELAND,
-    },
-    Credit {
-        what: "Spain heritage",
-        source: "Generalitat de Catalunya; Junta de Castilla y León; Gobierno de Aragón; Generalitat Valenciana; Xunta de Galicia; Gobierno de Navarra (IDENA); Junta de Extremadura; IAPH (Junta de Andalucía)",
-        terms: "Per region: CC BY / CC BY-SA / free use with credit",
-        areas: SPAIN,
-    },
-    Credit {
-        what: "Portugal heritage",
-        source: "Património Cultural, I.P., Atlas do Património Classificado e em Vias de Classificação",
-        terms: "CC BY-NC 4.0",
-        areas: PORTUGAL,
-    },
-    Credit {
-        what: "Hong Kong heritage",
-        source: "Antiquities and Monuments Office, via the Common Spatial Data Infrastructure (CSDI) Portal",
-        terms: "DATA.GOV.HK terms",
-        areas: HONG_KONG,
-    },
-    Credit {
-        what: "Japan heritage",
-        source: "出典：文化庁 国指定文化財等データベース（https://kunishitei.bunka.go.jp/）を加工して作成 (Agency for Cultural Affairs, Database of National Cultural Properties, edited); preservation districts: 国土数値情報（伝統的建造物群保存地区データ）(MLIT)",
-        terms: "PDL 1.0 (CC BY 4.0 compatible); CC BY 4.0",
-        areas: JAPAN,
-    },
-    Credit {
-        what: "Taiwan heritage",
-        source: "文化部文化資產局 2026 文化資產個案 (Bureau of Cultural Heritage, Ministry of Culture). The Open Data is made available to the public under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. Open Government Data License: https://data.gov.tw/license",
-        terms: "Open Government Data License 1.0",
-        areas: TAIWAN,
-    },
-    Credit {
-        what: "Singapore heritage",
-        source: "Contains information from Monuments (NHB), Historic Sites (NHB) and Master Plan 2019 SDCP Conservation Area layer (URA) accessed on 2026-09-29 from data.gov.sg which is made available under the terms of the Singapore Open Data Licence version 1.0 https://data.gov.sg/open-data-licence",
-        terms: "Singapore Open Data Licence 1.0",
-        areas: SINGAPORE,
     },
     Credit {
         what: "Local-language names (some UNESCO sites, biosphere reserves, geoparks, Québec federal sites)",
@@ -502,20 +328,20 @@ mod tests {
     fn credits_by_what_a_catalog_serves() {
         // Around Tokyo: Japan's sources and the world's, no one else's.
         let tokyo = whats(catalog_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[]));
-        for w in ["Road elevation, Japan", "Japan heritage", "Rail service frequency", "UNESCO World Heritage"] {
+        for w in ["Road elevation, Japan", "Rail service frequency", "Land cover"] {
             assert!(tokyo.contains(&w), "{w}");
         }
         assert!(tokyo[0].starts_with("Roads, water") && tokyo.contains(&"Road elevation, Europe, Hong Kong, Singapore, Taiwan"));
-        for w in ["Road elevation, North America", "France heritage", "Taiwan heritage", "Forest leaf type, Europe"] {
+        for w in ["Road elevation, North America", "Lakes missing from OpenStreetMap in parts of Canada", "Forest leaf type, Europe"] {
             assert!(!tokyo.contains(&w), "{w}");
         }
-        // Heritage sites reach 20 km past the coverage: Andorra's register for a region 11 km south
-        // of Andorra, not for one 50 km south.
-        assert!(whats(catalog_credits(&[region("urgell", 1.5, 42.25, 1.6, 42.32)], &[])).contains(&"Andorra heritage"));
-        assert!(!whats(catalog_credits(&[region("solsona", 1.5, 41.9, 1.6, 41.97)], &[])).contains(&"Andorra heritage"));
-        // A unit's ways in France, its region since removed: France's credits stay with its data.
+        // The data reaches 20 km past the coverage: Japan's box for a region about 10 km west of
+        // it, not for one 70 km west.
+        assert!(whats(catalog_credits(&[region("near", 122.3, 24.0, 122.4, 24.1)], &[])).contains(&"Road elevation, Japan"));
+        assert!(!whats(catalog_credits(&[region("far", 121.7, 24.0, 121.8, 24.1)], &[])).contains(&"Road elevation, Japan"));
+        // A unit's ways in France, its region since removed: Europe's credits stay with its data.
         let both = whats(catalog_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[e7(2.2, 48.7, 2.5, 48.9)]));
-        assert!(both.contains(&"France heritage") && both.contains(&"Forest leaf type, Europe") && both.contains(&"Japan heritage"));
+        assert!(both.contains(&"Forest leaf type, Europe") && both.contains(&"Road elevation, Japan"));
         // Nothing served: the world's only.
         assert!(whats(catalog_credits(&[], &[])).iter().all(|w| CREDITS.iter().any(|c| c.what == *w && c.areas.is_empty())));
     }
@@ -535,18 +361,11 @@ mod tests {
         let has = |what: &str, terms: &str| CREDITS.iter().any(|c| c.what == what && c.terms.contains(terms));
         assert!(has("Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries", "© OpenStreetMap contributors, ODbL"));
         assert!(has("Road elevation, Europe, Hong Kong, Singapore, Taiwan", "CC BY-NC-SA 4.0"));
-        assert!(has("UNESCO World Heritage", "CC BY-SA 4.0"));
-        assert!(has("Portugal heritage", "CC BY-NC 4.0"));
-        assert!(has("Ontario heritage", "Personal non-commercial use only"));
-        assert!(has("Andorra heritage", "Private, personal use only"));
-        assert!(has("Guernsey heritage", "research and private use"));
-        assert!(has("Taiwan heritage", "Open Government Data License 1.0"));
         assert!(has("Road elevation, Japan", "Public Data License 1.0"));
-        assert!(has("England heritage", "OGL v3"));
         assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
         // (The 3D buildings' credit names the release they're built from.)
         assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::RELEASE)));
-        assert_eq!(CREDITS.len(), 44);
+        assert_eq!(CREDITS.len(), 22);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
         assert!(v[0].get("areas").is_none() && v[1]["areas"][0][2] == -40.0);

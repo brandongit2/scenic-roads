@@ -1,7 +1,7 @@
 //! What the internet answered the steps that ask it a great deal, kept on the NAS (docs/pool.md §2,
 //! durable state on the NAS): the items job's Wikidata facts and Wikipedia articles, and the
-//! heritage chain's (heritagewd.py's, areadetails.py's park facts, heritage.py's labels, a register
-//! a script downloaded). A step keeps them on its Mac, in its cache, where its scripts add to them as
+//! heritage chain's (heritagewd.py's, heritagedetails.py's and whsshapes.py's Wikidata and Wikipedia
+//! caches, areadetails.py's park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
 //! they fetch (a chunk or a file at a time), and on the NAS as one archive a pass (`Kept::nas`: tar,
 //! zstd with its checksum), written whole (crate::whole) when the step starts and the NAS hasn't what
 //! this Mac has, and when it ends, failed or not, if it changed them: a few large writes a run, never
@@ -20,11 +20,12 @@
 //! this Mac's seed it.
 //!
 //! At its end (`Kept::keep`), what the step changed goes to the NAS the same way, but never over an
-//! archive that isn't the one this Mac last matched: another writer's since (the heritage-sites and
-//! heritage jobs share one, and once the lead can move, another Mac may run a step meanwhile) is made
-//! one with this Mac's where it can be, else left as it is, and the next start takes it. The
-//! lead's agent sends what its caches have of the pass's answers as it starts, where the NAS hasn't
-//! their archive (`seed`).
+//! archive that isn't the one this Mac last matched: another writer's since (once the lead can
+//! move, another Mac may run a step meanwhile) is made one with this Mac's where it can be, else
+//! left as it is, and the next start takes it. The lead's agent sends what its caches have of the
+//! pass's answers as it starts, where the NAS hasn't their archive (`seed`). A pass's heritage
+//! answers start from the last pass's (`heritage_start`): what the chain asked before is asked
+//! again only when its cache entry is deleted.
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -43,10 +44,6 @@ pub struct Kept {
     pub dir: PathBuf,
     /// This Mac's mark: the NAS's archive its files last matched, and their hashes then.
     pub mark: PathBuf,
-    /// Where a file the answers lack is as it was made (the registers' snapshot the heritage
-    /// chain's copy of it was made from: a file of it that isn't an answer is the snapshot's); None:
-    /// such a file isn't there at all (the items job's).
-    pub base: Option<PathBuf>,
     /// The answers' lease on the NAS (`LEASE`), taken around each sync and keep, with the budgets on
     /// (`leased`); None: none taken (the agent as it was).
     pub lease: Option<PathBuf>,
@@ -134,7 +131,7 @@ enum Do {
     Keep,
     /// The NAS's.
     Take,
-    /// Gone here (the snapshot's again, where there's one).
+    /// Gone here.
     Drop,
     /// Both's, merged.
     Write(Vec<u8>),
@@ -303,7 +300,7 @@ impl Kept {
     }
 
     /// The NAS's archive (`nas`) taken over this Mac's answers (`here`), whole: its files put in
-    /// place, this Mac's others gone (each the snapshot's again, where there's one); the mark says
+    /// place, this Mac's others gone; the mark says
     /// so.
     fn take(&self, nas: &Fetched, here: &Files, scratch: &Path) -> Result<()> {
         self.unpacked(nas, scratch, |tmp, theirs| {
@@ -385,16 +382,9 @@ impl Kept {
         Ok(())
     }
 
-    /// Answer `n` gone here: the snapshot's file again (`base`, its time too, so it's no answer),
-    /// where there's one, else none.
+    /// Answer `n` gone here.
     fn drop_here(&self, n: &str) -> Result<()> {
         let to = self.dir.join(n);
-        if let Some(from) = self.base.as_ref().map(|b| b.join(n)).filter(|p| p.is_file()) {
-            crate::whole::copy(&from, &to)?;
-            let t = std::fs::metadata(&from)?.modified()?;
-            std::fs::File::options().write(true).open(&to)?.set_modified(t)?;
-            return Ok(());
-        }
         match std::fs::remove_file(&to) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("remove {}", to.display())),
             _ => Ok(()),
@@ -404,7 +394,7 @@ impl Kept {
 
 /// A file both sides changed made one (`Kept::reconcile`), by its name: answers kept as a JSON line
 /// per item (`.jsonl`: by its "qid", or its "prop" and "id"), or as a JSON object's entries
-/// (heritagewd.py's short descriptions, areadetails.py's park facts, heritage.py's labels), which
+/// (heritagewd.py's short descriptions, areadetails.py's park facts), which
 /// runs only add to: the NAS's, then this Mac's the NAS's lack; and the days the items job fetched
 /// (`fetched-<date>.json`), the first and the last. None for any other file, or one that isn't
 /// what its name says.
@@ -547,7 +537,7 @@ pub fn items_files(dir: &Path, date: &str) -> Vec<String> {
 
 /// The items job's for pass `date`: its cache `dir`, its archive in the NAS's project folder `root`.
 pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
-    Kept { nas: root.join(format!("sources/items/{date}/answers.tar.zst")), dir: dir.to_path_buf(), mark: dir.join(format!("kept-{date}.json")), base: None, lease: None, holding: Default::default() }
+    Kept { nas: root.join(format!("sources/items/{date}/answers.tar.zst")), dir: dir.to_path_buf(), mark: dir.join(format!("kept-{date}.json")), lease: None, holding: Default::default() }
 }
 
 /// What the heritage chain makes again on every run from the pass, in its working copy: not answers.
@@ -555,35 +545,57 @@ pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
 /// planet (`whs/`) and heritagewd.py's matches (`wd/items.jsonl`).
 const REMADE: [&str; 6] = ["whs/tagged.osm.pbf", "whs/ids.txt", "whs/whs.osm.pbf", "whs/whs.geojsonseq", "whs/relations.opl", "wd/items.jsonl"];
 
-/// The heritage chain's answers in this pass's working copy `epoch` of the registers' snapshot
-/// `snap`: the files there the snapshot lacks, or has at another size or time (a script rewrites a
-/// cache whole), but what the chain makes again each run (`REMADE`, `osm/`), the marks (names from
-/// a dot) and temporary files.
-pub fn heritage_files(epoch: &Path, snap: &Path) -> Vec<String> {
+/// The heritage chain's answers in this pass's working copy `epoch` (`heritage-<date>` in the cache):
+/// its files, but what the chain makes again each run (`REMADE`, `osm/`), the marks (names from a
+/// dot) and temporary files.
+pub fn heritage_files(epoch: &Path) -> Vec<String> {
     let mut names = Vec::new();
     files_under(epoch, epoch, &mut names);
-    let same = |n: &str| match (std::fs::metadata(epoch.join(n)), std::fs::metadata(snap.join(n))) {
-        (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
-        _ => false,
-    };
-    let mut out: Vec<String> = names
-        .into_iter()
-        .filter(|n| !n.split('/').any(|c| c.starts_with('.')) && !crate::whole::is_tmp(Path::new(n)) && !n.starts_with("osm/") && !REMADE.contains(&n.as_str()) && !same(n))
-        .collect();
+    let mut out: Vec<String> = names.into_iter().filter(|n| !n.split('/').any(|c| c.starts_with('.')) && !crate::whole::is_tmp(Path::new(n)) && !n.starts_with("osm/") && !REMADE.contains(&n.as_str())).collect();
     out.sort();
     out
 }
 
-/// The heritage chain's for pass `date`: its working copy `epoch` of the registers' snapshot `snap`
-/// (`registers-<id>`), its archive in the NAS's project folder `root`.
-pub fn heritage(root: &Path, epoch: &Path, snap: &Path, date: &str, id: &str) -> Kept {
-    Kept { nas: root.join(format!("sources/items/{date}/heritage-{id}.tar.zst")), dir: epoch.to_path_buf(), mark: epoch.join(".kept.json"), base: Some(snap.to_path_buf()), lease: None, holding: Default::default() }
+/// The heritage chain's for pass `date`: its working copy `epoch`, its archive in the NAS's project
+/// folder `root`.
+pub fn heritage(root: &Path, epoch: &Path, date: &str) -> Kept {
+    Kept { nas: heritage_archive(root, date), dir: epoch.to_path_buf(), mark: epoch.join(".kept.json"), lease: None, holding: Default::default() }
+}
+
+/// The heritage chain's archive of pass `date`'s answers.
+pub fn heritage_archive(root: &Path, date: &str) -> PathBuf {
+    root.join(format!("sources/items/{date}/heritage.tar.zst"))
+}
+
+/// A new working copy `epoch` of pass `date`'s heritage answers, when the NAS has none for the pass
+/// yet: the newest earlier pass's answers unpacked into it (they're mostly still right; what's
+/// wanted again is what's deleted from the caches), so the chain doesn't ask everything again. The
+/// archive it started from, when there was one.
+pub fn heritage_start(root: &Path, epoch: &Path, date: &str) -> Result<Option<PathBuf>> {
+    if heritage_archive(root, date).exists() || epoch.join(".kept.json").exists() {
+        return Ok(None);
+    }
+    let mut earlier: Vec<String> = match std::fs::read_dir(root.join("sources/items")) {
+        Ok(rd) => rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|d| crate::osmpass::is_date(d) && d.as_str() < date).collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).context("list sources/items"),
+    };
+    earlier.sort();
+    for d in earlier.iter().rev() {
+        let a = heritage_archive(root, d);
+        if a.is_file() {
+            std::fs::create_dir_all(epoch)?;
+            unpack(&a, epoch)?;
+            return Ok(Some(a));
+        }
+    }
+    Ok(None)
 }
 
 /// The answers this Mac's agent cache (`cache`) has for the newest complete pass on the NAS
 /// (`root`), sent there where it hasn't their archive: the items job's (`items/`), and the heritage
-/// chain's (each copy of the registers' snapshot made for the pass, `heritage-<date>-<id>/`, its
-/// snapshot here too). The lead's agent, as it starts, so a cache from before the NAS kept
+/// chain's (the pass's working copy, `heritage-<date>/`). The lead's agent, as it starts, so a
+/// cache from before the NAS kept
 /// answers, or one a stopped job left, needn't wait for the step's next run (for the next pass,
 /// perhaps months away). What it sent, in words.
 ///
@@ -606,15 +618,9 @@ pub fn seed(root: &Path, cache: &Path, scratch: &Path, leased: bool) -> Result<V
     if !files.is_empty() && lacks(&k)? && k.keep(&files, scratch)? {
         said.push(format!("the items job's answers for the {date} pass sent to the NAS ({} files)", files.len()));
     }
-    let mut copies: Vec<PathBuf> = std::fs::read_dir(cache).into_iter().flatten().flatten().map(|e| e.path()).collect();
-    copies.sort();
-    for epoch in copies {
-        let Some(id) = epoch.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(&format!("heritage-{date}-"))).map(str::to_string) else { continue };
-        let snap = cache.join(format!("registers-{id}"));
-        if !epoch.join(".done").is_file() || !snap.join(".done").is_file() {
-            continue;
-        }
-        let (k, files) = (heritage(root, &epoch, &snap, &date, &id).leased(root, leased), heritage_files(&epoch, &snap));
+    let epoch = cache.join(format!("heritage-{date}"));
+    if epoch.join(".done").is_file() {
+        let (k, files) = (heritage(root, &epoch, &date).leased(root, leased), heritage_files(&epoch));
         if !files.is_empty() && lacks(&k)? && k.keep(&files, scratch)? {
             said.push(format!("the heritage chain's answers for the {date} pass sent to the NAS ({} files)", files.len()));
         }
@@ -1067,34 +1073,27 @@ mod tests {
         assert!(!m1.join("facts-2026-09-28.jsonl").exists());
         // The heritage chain's park facts, cut short by a stopped run (sent at the next start), then
         // deleted by hand for the step to seed them again: they stay deleted.
-        let snap = d.path().join("cache/registers-7acb8655abb6");
-        put(&snap.join("crhp.json"), "{}");
-        let epoch = d.path().join("cache/heritage-2026-09-28-7acb8655abb6");
-        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap().success());
-        let h = heritage(&root, &epoch, &snap, "2026-09-28", "7acb8655abb6");
+        let epoch = d.path().join("cache/heritage-2026-09-28");
+        let h = heritage(&root, &epoch, "2026-09-28");
         put(&epoch.join("areas-wikidata.json"), "{\"Q1\": {}}");
-        assert!(h.keep(&heritage_files(&epoch, &snap), &scratch).unwrap());
+        assert!(h.keep(&heritage_files(&epoch), &scratch).unwrap());
         put(&epoch.join("areas-wikidata.json"), "{\"Q1\": {}, \"Q2");
-        assert_eq!(h.sync(&heritage_files(&epoch, &snap), &scratch).unwrap(), Synced::Sent);
+        assert_eq!(h.sync(&heritage_files(&epoch), &scratch).unwrap(), Synced::Sent);
         std::fs::remove_file(epoch.join("areas-wikidata.json")).unwrap();
-        assert_eq!(h.sync(&heritage_files(&epoch, &snap), &scratch).unwrap(), Synced::Sent);
+        assert_eq!(h.sync(&heritage_files(&epoch), &scratch).unwrap(), Synced::Sent);
         assert!(!epoch.join("areas-wikidata.json").exists(), "the cut-short file isn't back");
         assert!(archived(&h, &scratch).is_empty());
-        // A file of the snapshot's the archive no longer has: the snapshot's again where it's taken.
-        put(&epoch.join("crhp.json"), "{\"changed\": 1}");
-        assert!(h.keep(&heritage_files(&epoch, &snap), &scratch).unwrap());
-        let other = d.path().join("m1/heritage-2026-09-28-7acb8655abb6");
-        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&other)).unwrap().success());
-        let o = heritage(&root, &other, &snap, "2026-09-28", "7acb8655abb6");
-        assert_eq!(o.sync(&heritage_files(&other, &snap), &scratch).unwrap(), Synced::Took);
-        assert_eq!(read(&other.join("crhp.json")), "{\"changed\": 1}");
-        put(&epoch.join("crhp.json"), "{}");
-        std::fs::File::options().write(true).open(epoch.join("crhp.json")).unwrap().set_modified(std::fs::metadata(snap.join("crhp.json")).unwrap().modified().unwrap()).unwrap();
-        assert!(heritage_files(&epoch, &snap).is_empty());
-        assert!(h.keep(&heritage_files(&epoch, &snap), &scratch).unwrap());
-        assert_eq!(o.sync(&heritage_files(&other, &snap), &scratch).unwrap(), Synced::Took);
-        assert_eq!(read(&other.join("crhp.json")), "{}");
-        assert!(heritage_files(&other, &snap).is_empty(), "the snapshot's, its time too");
+        // A file deleted here, which another Mac has: gone there too at its next start.
+        put(&epoch.join("wd/ids.jsonl"), "{}");
+        assert!(h.keep(&heritage_files(&epoch), &scratch).unwrap());
+        let other = d.path().join("m1/heritage-2026-09-28");
+        let o = heritage(&root, &other, "2026-09-28");
+        assert_eq!(o.sync(&heritage_files(&other), &scratch).unwrap(), Synced::Took);
+        assert_eq!(read(&other.join("wd/ids.jsonl")), "{}");
+        std::fs::remove_file(epoch.join("wd/ids.jsonl")).unwrap();
+        assert!(h.keep(&heritage_files(&epoch), &scratch).unwrap());
+        assert_eq!(o.sync(&heritage_files(&other), &scratch).unwrap(), Synced::Took);
+        assert!(!other.join("wd/ids.jsonl").exists());
     }
 
     #[test]
@@ -1193,44 +1192,44 @@ mod tests {
     }
 
     #[test]
-    fn the_heritage_chains_answers_are_what_it_changed_in_its_copy_of_the_snapshot() {
+    fn the_heritage_chains_answers_are_its_working_copys_files_and_a_new_pass_starts_from_the_last() {
         let d = tempfile::tempdir().unwrap();
         let (root, scratch) = (d.path().join("nas"), d.path().join("scratch"));
-        let snap = d.path().join("cache/registers-7acb8655abb6");
-        for f in ["crhp.json", "wd/ids.jsonl", "wd/items.jsonl", "whs/whs.osm.pbf", "whs/wd-p757.json", "special-wd-labels.json", ".done"] {
-            put(&snap.join(f), f);
-        }
-        // The pass's copy (cp -c -R keeps the times; -p in its fallback).
-        let epoch = d.path().join("cache/heritage-2026-09-28-7acb8655abb6");
-        let st = store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap();
-        assert!(st.success());
-        assert!(heritage_files(&epoch, &snap).is_empty(), "a fresh copy holds no answers");
-        let k = heritage(&root, &epoch, &snap, "2026-09-28", "7acb8655abb6");
-        assert_eq!(k.sync(&heritage_files(&epoch, &snap), &scratch).unwrap(), Synced::None);
-        // A run: the caches it asked more for, a park facts file and a register it downloaded; what
-        // it makes again each run; a temporary file; a marker.
-        put(&epoch.join("wd/ids.jsonl"), "wd/ids.jsonl and more");
+        let epoch = d.path().join("cache/heritage-2026-09-28");
+        assert_eq!(heritage_start(&root, &epoch, "2026-09-28").unwrap(), None, "no earlier pass's: an empty copy");
+        let k = heritage(&root, &epoch, "2026-09-28");
+        assert_eq!(k.sync(&heritage_files(&epoch), &scratch).unwrap(), Synced::None);
+        // A run: the caches it asked, a park facts file; what it makes again each run; a temporary
+        // file; a marker.
+        put(&epoch.join("wd/ids.jsonl"), "wd/ids.jsonl");
+        put(&epoch.join("whs/wd-p757.json"), "whs/wd-p757.json");
         put(&epoch.join("areas-wikidata.json"), "{}");
-        put(&epoch.join("es/new-register.json"), "[]");
-        for f in ["wd/items.jsonl", "whs/whs.osm.pbf", "osm/named.geojsonseq", "wd/wp.jsonl.tmp", ".kept-old"] {
+        for f in ["wd/items.jsonl", "whs/whs.osm.pbf", "osm/named.geojsonseq", "wd/wp.jsonl.tmp", ".done"] {
             put(&epoch.join(f), "made again");
         }
-        let files = heritage_files(&epoch, &snap);
-        assert_eq!(files, ["areas-wikidata.json", "es/new-register.json", "wd/ids.jsonl"]);
+        let files = heritage_files(&epoch);
+        assert_eq!(files, ["areas-wikidata.json", "wd/ids.jsonl", "whs/wd-p757.json"]);
         assert!(k.keep(&files, &scratch).unwrap());
-        assert!(root.join("sources/items/2026-09-28/heritage-7acb8655abb6.tar.zst").is_file());
-        // A Mac without the pass's copy makes it from the snapshot and takes the answers over it.
-        let other = d.path().join("m1/heritage-2026-09-28-7acb8655abb6");
-        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&other)).unwrap().success());
-        let k1 = heritage(&root, &other, &snap, "2026-09-28", "7acb8655abb6");
-        assert_eq!(k1.sync(&heritage_files(&other, &snap), &scratch).unwrap(), Synced::Took);
-        assert_eq!(read(&other.join("wd/ids.jsonl")), "wd/ids.jsonl and more");
-        assert_eq!(read(&other.join("es/new-register.json")), "[]");
-        assert_eq!(read(&other.join("whs/wd-p757.json")), "whs/wd-p757.json");
-        assert_eq!(heritage_files(&other, &snap), files);
-        // Its run adds nothing: nothing sent.
-        assert!(!k1.keep(&heritage_files(&other, &snap), &scratch).unwrap());
+        assert!(root.join("sources/items/2026-09-28/heritage.tar.zst").is_file());
+        // A Mac without the pass's copy takes the answers.
+        let other = d.path().join("m1/heritage-2026-09-28");
+        assert_eq!(heritage_start(&root, &other, "2026-09-28").unwrap(), None, "the pass has its own");
+        let k1 = heritage(&root, &other, "2026-09-28");
+        assert_eq!(k1.sync(&heritage_files(&other), &scratch).unwrap(), Synced::Took);
+        assert_eq!(read(&other.join("wd/ids.jsonl")), "wd/ids.jsonl");
+        assert_eq!(heritage_files(&other), files);
+        assert!(!k1.keep(&heritage_files(&other), &scratch).unwrap(), "its run adds nothing: nothing sent");
+        // A new pass: its copy starts from the last pass's answers, and sends them as its own.
+        let next = d.path().join("cache/heritage-2027-03-01");
+        assert_eq!(heritage_start(&root, &next, "2027-03-01").unwrap(), Some(heritage_archive(&root, "2026-09-28")));
+        assert_eq!(heritage_files(&next), files);
+        let k2 = heritage(&root, &next, "2027-03-01");
+        assert_eq!(k2.sync(&heritage_files(&next), &scratch).unwrap(), Synced::Sent);
+        assert!(heritage_archive(&root, "2027-03-01").is_file());
+        // (Once it has its own, or a copy of its own: never again over it.)
+        std::fs::remove_file(next.join("wd/ids.jsonl")).unwrap();
+        assert_eq!(heritage_start(&root, &next, "2027-03-01").unwrap(), None);
+        assert!(!next.join("wd/ids.jsonl").exists());
     }
 
     #[test]
@@ -1259,15 +1258,12 @@ mod tests {
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
         // (An older pass's: not this pass's to seed.)
         put(&cache.join("items/facts-2026-08-31.jsonl"), &qids(&["Q0"]));
-        let snap = cache.join("registers-7acb8655abb6");
-        put(&snap.join(".done"), "");
-        put(&snap.join("crhp.json"), "{}");
-        let epoch = cache.join("heritage-2026-09-28-7acb8655abb6");
-        assert!(store::spawn::status(store::spawn::command("cp").arg("-R").arg("-p").arg(&snap).arg(&epoch)).unwrap().success());
+        let epoch = cache.join("heritage-2026-09-28");
+        put(&epoch.join(".done"), "");
         put(&epoch.join("areas-wikidata.json"), "{}");
         let said = seed(&root, &cache, &scratch, false).unwrap();
         assert_eq!(said.len(), 2, "{said:?}");
-        let (k, h) = (items(&root, &cache.join("items"), "2026-09-28"), heritage(&root, &epoch, &snap, "2026-09-28", "7acb8655abb6"));
+        let (k, h) = (items(&root, &cache.join("items"), "2026-09-28"), heritage(&root, &epoch, "2026-09-28"));
         assert_eq!(archived(&k, &scratch).keys().collect::<Vec<_>>(), ["facts-2026-09-28.jsonl"]);
         assert_eq!(archived(&h, &scratch).keys().collect::<Vec<_>>(), ["areas-wikidata.json"]);
         // The NAS has them: nothing more, whatever this Mac changed since (the steps' to send).

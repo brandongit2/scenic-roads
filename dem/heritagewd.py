@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """Wikidata facts for heritage sites, matched by their register ID, else through OpenStreetMap.
 
-Each site in data/build/heritage.json whose register has a Wikidata property (NHLE P1216, Mérimée
-P380, HES P709, NRHP P649, Cadw P1459/P3007, DGPC P1702, CRHP P477, RPCQ P633, IPAC P1600, UNESCO
-P757, Irish SMR P4057, Japan's national cultural properties P4275, Taiwan's NCHDB P6890; Parks Canada DFHD links to the item itself) is looked up on the Wikidata
-Query Service in batches: descriptions (en, fr, es, pt, ca), Wikipedia article titles in those
-languages, the number of Wikipedia/Wikimedia sitelinks (a notability measure), inception, and the
-labels of its type (P31), architectural style (P149) and architect (P84). English Wikipedia's
-short descriptions ("Cathedral in Salisbury, England") are then fetched for the English titles.
+Each site in data/build/heritage.json whose register declares a Wikidata property
+(`wikidata_property` in its description, docs/inputs.md §6.5, as heritage.py lists them in
+heritage-sources.json: Mérimée's P380, the NHLE's P1216 …) is looked up by its reference there
+(`ref`; a World Heritage site by its site's id, `site`), and a site whose record links its
+Wikidata item (a wikidata.org link) by that item, on the Wikidata Query Service in batches:
+descriptions (en, fr, es, pt, ca), Wikipedia article titles in those languages, the number of
+Wikipedia/Wikimedia sitelinks (a notability measure), inception, and the labels of its type (P31),
+architectural style (P149) and architect (P84). English Wikipedia's short descriptions ("Cathedral
+in Salisbury, England") are then fetched for the English titles.
 
 Queries go to QLever's Wikidata endpoint (qlever.dev, University of Freiburg): the Wikidata Query
 Service was rate-limiting to one request a minute during an outage (2026-09-28).
 
 Sites with no item, or whose register item has no Wikipedia article, are then linked through
 OpenStreetMap: an OSM feature tagged with a Wikidata item (data/heritage/osm/named.geojsonseq)
-at the site (its outline within 40 m) that carries the same register ID (ref:mhs, HE_ref, ref:nrhp
-…) or clearly the same name (three quarters of the two names' words shared). Registers with no Wikidata property (Ontario, Andalusia, Northern
-Ireland, Castilla y León …) are linked this way only, and the item carrying a register ID is often
-not the one with the article.
+at the site (its outline within 40 m) that carries the same register ID (in one of the OSM tags a
+register declares, `osm_ref_tags`: ref:mhs, HE_ref …) or clearly the same name (three quarters
+of the two names' words shared). Registers with no Wikidata property are linked this way only,
+and the item carrying a register ID is often not the one with the article.
 
 Every item's Wikipedia articles in any language are counted (`wpn`); an item with none in the
 languages above links its article in another language (Welsh, Galician, Chinese …).
@@ -56,23 +58,8 @@ PREFIXES = ("PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://ww
 LANGS = ["en", "fr", "es", "pt", "ca"]
 BATCH = 300
 
-# (property, pattern on the site's url) — the first group is the register ID.
-RULES = [
-    ("P1216", r"historicengland\.org\.uk/listing/the-list/list-entry/(\d+)"),
-    ("P380", r"pop\.culture\.gouv\.fr/notice/merimee/(\w+)"),
-    ("P709", r"portal\.historicenvironment\.scot/designation/(\w+)"),
-    ("P1459", r"cadwpublic-api\.azurewebsites\.net/reports/listedbuilding/FullReport\?lang=en&id=(\d+)"),
-    ("P3007", r"cadwpublic-api\.azurewebsites\.net/reports/sam/FullReport\?lang=en&id=(\w+)"),
-    ("P1702", r"patrimoniocultural\.pt/.*/view/(\d+)"),
-    ("P477", r"historicplaces\.ca/en/rep-reg/place-lieu\.aspx\?id=(\d+)"),
-    ("P633", r"patrimoine-culturel\.gouv\.qc\.ca/rpcq/detail\.do\?methode=consulter&id=(\d+)"),
-    ("P1600", r"invarquit\.cultura\.gencat\.cat/card/(\d+)"),
-    ("P757", r"whc\.unesco\.org/en/list/(\d+)"),
-    ("P4275", r"kunishitei\.bunka\.go\.jp/heritage/detail/(\d+/\d+)"),
-    ("P6890", r"nchdb\.boch\.gov\.tw/assets/advanceSearch/(\w+/\d+)"),
-    ("P4057", r"query=[^&]*?%2CSMRS%2C([A-Z]{2}\d{3}-\d{3}(?:\d{3})?)"),
-    ("QID", r"wikidata\.org/wiki/(Q\d+)"),
-]
+# A Wikidata item linked from a site's record.
+QID_LINK = r"wikidata\.org/wiki/(Q\d+)"
 
 
 def sparql(q: str) -> list[dict]:
@@ -169,9 +156,8 @@ def shortdescs(titles: list[str]) -> dict[str, str]:
 
 # ---- linking through OpenStreetMap -----------------------------------------------------------
 
-# OSM tags holding a register's IDs (by the site's Wikidata property).
-OSM_REF = {"P380": ("ref:mhs",), "P1216": ("HE_ref", "ref:GB:nhle"), "P649": ("ref:nrhp",), "P4057": ("ref:IE:smr",),
-           "P1702": ("ref:dgpc",), "P709": ("ref:hs", "ref:GB:hs")}
+# The OSM tags holding a register's IDs, by register (their `osm_ref_tags`, from heritage-sources.json).
+OSM_REF: dict[str, list[str]] = {}
 STOP = {"the", "of", "and", "de", "du", "des", "la", "le", "les", "l", "d", "et", "y", "del", "dels", "da", "do", "das", "dos",
         "e", "a", "an", "en", "el", "els", "i", "o", "at", "in", "on", "au", "aux", "sur", "near", "former", "ancien", "ancienne"}
 NAME_KEYS = ("name", "name:en", "name:fr", "name:es", "name:pt", "name:ca", "official_name", "alt_name", "old_name", "loc_name")
@@ -292,33 +278,25 @@ def other_article(arts: list[str]) -> tuple[str, str] | None:
 
 
 def main():
-    with phase("the sites and NRHP numbers read", "disk"):
+    with phase("the sites and their registers read", "disk"):
         W.mkdir(parents=True, exist_ok=True)
         feats = json.load(open(B / "heritage.json"))["features"]
-        # NRHP sites carry the National Archives link; their reference numbers come from the NPS layer.
-        nara = {}
-        nr = ROOT / "data" / "heritage" / "nrhp.json"
-        if nr.exists():
-            for f in json.load(open(nr))["features"]:
-                p = f["properties"]
-                if p.get("NARA_URL") and p.get("NRIS_Refnum"):
-                    nara[p["NARA_URL"]] = p["NRIS_Refnum"]
+        registers = json.load(open(B / "heritage-sources.json")).get("registers", {})
+        OSM_REF.update({r: d["osm_ref_tags"] for r, d in registers.items() if d.get("osm_ref_tags")})
     with phase("the register IDs matched", "compute"):
         by_prop: dict[str, dict[str, list[int]]] = {}
         for i, f in enumerate(feats):
-            url = f["properties"].get("url") or ""
-            if url in nara:
-                by_prop.setdefault("P649", {}).setdefault(nara[url], []).append(i)
+            p = f["properties"]
+            d = registers.get(p.get("register"), {})
+            prop = d.get("wikidata_property")
+            if prop:
+                key = p.get("site") if d.get("class") == "world-heritage" else p.get("ref")
+                if key:
+                    by_prop.setdefault(prop, {}).setdefault(key, []).append(i)
                 continue
-            m = re.search(r"npgallery\.nps\.gov/AssetDetail/NRIS/(\d+)", url)
+            m = re.search(QID_LINK, p.get("url") or "")
             if m:
-                by_prop.setdefault("P649", {}).setdefault(m.group(1), []).append(i)
-                continue
-            for prop, pat in RULES:
-                m = re.search(pat, url)
-                if m:
-                    by_prop.setdefault(prop, {}).setdefault(m.group(1), []).append(i)
-                    break
+                by_prop.setdefault("QID", {}).setdefault(m.group(1), []).append(i)
         print({p: len(v) for p, v in by_prop.items()}, file=sys.stderr)
 
     # Results per register ID (data/heritage/wd/ids.jsonl: prop, id, result rows, [] = no item),
@@ -403,7 +381,7 @@ def main():
         osm_sites: dict[str, list[int]] = {}
         for i in todo:
             prop, rid = rid_of.get(i, (None, None))
-            q = osm_link(feats[i], rid if prop in OSM_REF else None, grid, ofeats)
+            q = osm_link(feats[i], rid if feats[i]["properties"].get("register") in OSM_REF else None, grid, ofeats)
             if q and (i, q) not in have_q:
                 osm_sites.setdefault(q, []).append(i)
         new_q = sorted(q for q in osm_sites if ("QID", q) not in seen)

@@ -2,7 +2,7 @@
 """Provincial and municipal historic places for New Brunswick, Prince Edward Island,
 Newfoundland and Labrador, the western provinces and the territories from the Canadian Register of
 Historic Places (historicplaces.ca, Parks Canada with the provinces). These publish no open
-dataset with coordinates (Quebec, Ontario and Nova Scotia do: heritage.py reads those).
+dataset with coordinates (Quebec, Ontario and Nova Scotia do: na.py reads those).
 
 1. A map-bounds search per province (all results on one page) lists every place with its
    coordinates.
@@ -12,10 +12,10 @@ dataset with coordinates (Quebec, Ontario and Nova Scotia do: heritage.py reads 
 Terms (historicplaces.ca "Important notices"): non-commercial reproduction with credit to the
 source; not presented as an official version. The register is no longer actively maintained.
 
-Output: <dir>/crhp.json (GeoJSON points), level 4 provincial / 5 municipal, which heritage.py
-reads; --dir is a registers' snapshot folder (docs/plan.md "Hand-made inputs").
+Output: <dir>/crhp.json (GeoJSON points), level 4 provincial / 5 municipal, which registers.py
+reads (the ca-crhp register); --dir is registers.py's data folder.
 
-usage: crhp.py --dir <registers folder>
+usage: crhp.py --dir <data folder>
 """
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def place(pid: str) -> dict:
 def main():
     global H, CACHE
     if sys.argv[1:2] != ["--dir"] or len(sys.argv) != 3:
-        sys.exit("usage: crhp.py --dir <registers folder>")
+        sys.exit("usage: crhp.py --dir <data folder>")
     H = Path(sys.argv[2])
     CACHE = H / "crhp"
     feats = []

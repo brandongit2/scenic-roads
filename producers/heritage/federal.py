@@ -11,13 +11,13 @@ matched by normalised English/French name, within the same province, to:
 Anything still unlocated is flagged. Wikidata items claiming a federal designation that is not
 in the official list are flagged too, and left off the map.
 
-Reads, in --dir (a registers' snapshot folder: docs/plan.md "Hand-made inputs"): fhd.xlsx (the
+Reads, in --dir (registers.py's data folder): fhd.xlsx (the
 DFHD's open data), wd-canada.csv (Wikidata's Canadian heritage items), osm/prov.geojsonseq (the
 provinces) and osm/named.geojsonseq (named OSM features). Writes there federal.json (located
-places), which heritage.py reads, and federal-report.csv (every record with its status), with a
+places), which registers.py reads (the ca-dfhd register), and federal-report.csv (every record with its status), with a
 summary on stdout.
 
-usage: federal.py --dir <registers folder>
+usage: federal.py --dir <data folder>
 """
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ def province_of(provs, lon, lat):
 def main():
     global H
     if sys.argv[1:2] != ["--dir"] or len(sys.argv) != 3:
-        sys.exit("usage: federal.py --dir <registers folder>")
+        sys.exit("usage: federal.py --dir <data folder>")
     H = Path(sys.argv[2])
     provs = load_provinces()
     print(f"provinces: {sorted(provs)}")
@@ -151,7 +151,7 @@ def main():
             })
     print(f"DFHD: {len(dfhd)} place designations in our provinces")
 
-    # Wikidata (cached by heritage.py).
+    # Wikidata (cached in the data folder).
     wd = []
     for r in csv.DictReader(open(H / "wd-canada.csv", encoding="utf-8")):
         m = re.match(r"Point\(([-\d.eE]+) ([-\d.eE]+)\)", r["coord"] or "")

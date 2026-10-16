@@ -1,11 +1,10 @@
-"""Heritage designations outside North America, from the designating authorities' open data.
+"""Heritage designations outside North America, from the designating authorities' open data: the
+readers registers.py runs for these registers (docs/inputs.md §6.5).
 
-Each source function returns (points, areas) as GeoJSON features in heritage.py's format:
-level 1 World Heritage · 2 national, highest grade · 3 national, other grades · 4 regional ·
-5 local. Downloads are cached under data/heritage/<country>/: to fetch one again, delete it there
-(the build agent's: the pass's copy of the registers' snapshot, cache/heritage-<date>-<id>/ in its
-folder; the heritage job that reads it next fetches it, and it goes to the NAS with the pass's
-answers, pipeline::answers; a new pass starts again from the snapshot's).
+Each source function returns (points, areas) as GeoJSON features: level 1 World Heritage · 2
+national, highest grade · 3 national, other grades · 4 regional · 5 local; `source` is the
+credit string registers.py sorts them into registers by. Downloads are cached under the data
+folder (registers.py --data, `H`), <country>/: to fetch one again, delete it there.
 
   World Heritage: UNESCO World Heritage List, data.unesco.org dataset whc001 (CC BY-SA 4.0)
   France:  Ministère de la Culture, base Mérimée (POP): monuments historiques classés (2) and
@@ -67,10 +66,14 @@ from xml.etree import ElementTree as ET
 from pyproj import Transformer
 from shapely.geometry import shape
 
-import budget
-from timings import phase
+from contextlib import nullcontext
 
-H = Path(__file__).resolve().parent.parent / "data" / "heritage"
+# The folder the registers' downloads are cached in (registers.py --data).
+H = Path()
+
+
+def phase(*_):
+    return nullcontext()
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 csv.field_size_limit(1 << 26)
 
@@ -89,8 +92,6 @@ def fetch(url: str, path: Path, params: dict | None = None) -> Path:
             with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=600) as r:
                 tmp.write_bytes(r.read())
         except urllib.error.URLError as e:
-            if isinstance(e, urllib.error.HTTPError):
-                budget.seen(url, e.code, e.headers.get("Retry-After"))
             # Servers that send an incomplete certificate chain: curl verifies them against the
             # system trust store (which fetches the missing intermediate); verification stays on.
             if "CERTIFICATE_VERIFY_FAILED" not in str(e):
@@ -247,7 +248,6 @@ def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl"
                 with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
-                budget.seen(url, e.code, e.headers.get("Retry-After"))
                 if e.code != 429 or attempt == 5:
                     raise
                 time.sleep(float(e.headers.get("Retry-After") or 5) * (attempt + 1))
@@ -594,16 +594,6 @@ def guernsey() -> tuple[list[dict], list[dict]]:
     return pts, []
 
 
-SOURCES = [
-    ("UNESCO World Heritage (all)", unesco),
-    ("France: Mérimée + SPR", france),
-    ("Andorra: inventari", andorra),
-    ("England: NHLE", england),
-    ("Scotland: HES", scotland),
-    ("Wales: Cadw", wales),
-    ("Northern Ireland: HED", northern_ireland),
-    ("Guernsey", guernsey),
-]
 
 
 # ---- helpers for projected sources -------------------------------------------------------------
@@ -1157,12 +1147,3 @@ def singapore() -> tuple[list[dict], list[dict]]:
     return pts, areas
 
 
-SOURCES += [
-    ("Ireland: NIAH + SMR", ireland),
-    ("Spain: regional BIC registers", spain),
-    ("Portugal: Atlas do Património", portugal),
-    ("Hong Kong: AMO", hong_kong),
-    ("Japan: Agency for Cultural Affairs", japan),
-    ("Taiwan: Bureau of Cultural Heritage", taiwan),
-    ("Singapore: NHB + URA", singapore),
-]

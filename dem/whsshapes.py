@@ -2,7 +2,7 @@
 """World Heritage Sites as their lines and areas, from OpenStreetMap, and one dot per site.
 
 Outlines: a canal, a wall, a site boundary drawn through the view, where UNESCO's data
-(heritage_eu.unesco) has only one point per component (the Rideau Canal's dots sit at its locks and
+(the unesco-whc register) has only one point per component (the Rideau Canal's dots sit at its locks and
 forts; the canal between them is not marked). A site's OSM objects are those tagged with the
 Wikidata item of the site or of one of its components (P757, the World Heritage id, "430" or
 "430-001"), or of an item that is part of one (P361: Hadrian's Wall, part of the Frontiers of the
@@ -23,8 +23,9 @@ and components alike). So a winding canal's dot is on the canal, and a site in s
 has it on the piece nearest the middle. The components are drawn small from zoom 10 (layers.py).
 A site with one component keeps UNESCO's point.
 
-Input: data/build/heritage.json (the sites in our regions: components, names), merged.osm.pbf,
-UNESCO's list (heritage_eu, cached), Wikidata (cached).
+Input: data/build/heritage.json (the sites in our regions: components, names; a World Heritage
+register's entries carry their site's id, `site`, its inscribed area, `site_area_km2`, and a
+component's UNESCO reference, `ref`: docs/inputs.md §6.5), merged.osm.pbf, Wikidata (cached).
 Writes data/build/whs-shapes.json: lines and polygons with id (World Heritage id), n (the site's
 name as the dots show it), c (Cultural, Natural or Mixed), a (1 for areas), simplified to ~15 m;
 and data/build/whs-sites.json, per site id: q, its Wikidata items (its own and those of its
@@ -40,6 +41,9 @@ import json
 import math
 import re
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
@@ -48,7 +52,7 @@ import shapely
 from shapely.geometry import mapping, shape
 from shapely.ops import polylabel
 
-import heritage_eu
+import budget
 from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,11 +80,28 @@ def run(*cmd: str, ok: tuple[int, ...] = (0,)) -> None:
 
 
 def whs_id(p: dict) -> str | None:
-    """The World Heritage id of a heritage.json site (UNESCO's), else None."""
-    if p.get("level") != 1:
-        return None
-    m = re.search(r"whc\.unesco\.org/en/list/(\d+)", p.get("url") or "")
-    return m.group(1) if m else None
+    """The World Heritage id of a heritage.json site (its register's `site`), else None."""
+    return str(p["site"]) if p.get("level") == 1 and p.get("site") else None
+
+
+def wd_sparql(query: str, cache: Path) -> list[dict]:
+    """A Wikidata query's answer (JSON bindings), from its cache (asked once, when it isn't there)."""
+    if not (cache.exists() and cache.stat().st_size > 0):
+        with phase("sources downloaded", "net"):
+            url = "https://query.wikidata.org/sparql?" + urllib.parse.urlencode({"query": query, "format": "json"})
+            req = urllib.request.Request(url, headers={"User-Agent": "scenic-roads/0.1 (personal offline map)"})
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    body = r.read()
+            except urllib.error.HTTPError as e:
+                budget.seen(url, e.code, e.headers.get("Retry-After"))
+                raise
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(cache.suffix + ".part")
+            tmp.write_bytes(body)
+            tmp.replace(cache)
+    d = json.loads(cache.read_text())
+    return [{k: v["value"] for k, v in b.items()} for b in d["results"]["bindings"]]
 
 
 def tagged_whs(tags: dict) -> bool:
@@ -104,11 +125,14 @@ def linear(tags: dict) -> bool:
             or tags.get("historic") in ("citywalls", "aqueduct") or tags.get("man_made") in LINEAR_MAN_MADE)
 
 
-def our_sites() -> tuple[dict[str, str], dict[str, str], dict[str, list[tuple[float, float]]]]:
-    """Our World Heritage Sites (heritage.json): id → the name the dots show, category, components."""
+def our_sites() -> tuple[dict[str, str], dict[str, str], dict[str, list[tuple[float, float]]], dict[str, set[str]], dict[str, float]]:
+    """Our World Heritage Sites (heritage.json): id → the name the dots show, category, components'
+    places, components' UNESCO references, inscribed area (km², where it's known)."""
     names: dict[str, str] = {}
     cats: dict[str, str] = {}
     comps: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    refs: dict[str, set[str]] = defaultdict(set)
+    km2: dict[str, float] = {}
     for f in json.loads((B / "heritage.json").read_text())["features"]:
         p = f["properties"]
         sid = whs_id(p)
@@ -116,34 +140,24 @@ def our_sites() -> tuple[dict[str, str], dict[str, str], dict[str, list[tuple[fl
             names.setdefault(sid, p.get("name") or p.get("name_en") or "")
             cats.setdefault(sid, p.get("category") or "Cultural")
             comps[sid].append((round(f["geometry"]["coordinates"][0], 6), round(f["geometry"]["coordinates"][1], 6)))
-    return names, cats, comps
+            if p.get("ref"):
+                refs[sid].add(p["ref"])
+            if p.get("site_area_km2"):
+                km2[sid] = p["site_area_km2"]
+    return names, cats, comps, refs, km2
 
 
-def unesco_list() -> list[dict]:
-    """UNESCO's World Heritage List (heritage_eu's cached copy)."""
-    return json.loads(heritage_eu.fetch("https://data.unesco.org/api/explore/v2.1/catalog/datasets/whc001/exports/json",
-                                        heritage_eu.H / "unesco" / "whc001.json").read_text())
-
-
-def site_items(names: dict[str, str], comps: dict[str, list[tuple[float, float]]], d: list[dict]) -> dict[str, list[str]]:
+def site_items(names: dict[str, str], refs: dict[str, set[str]]) -> dict[str, list[str]]:
     """Per site, its Wikidata items: its own (P757 "1221", "320bis") and its components' here
-    (P757 "1221-001", by the UNESCO reference of the component at that point)."""
+    (P757 "1221-001", by the components' UNESCO references)."""
     plain = lambda ref: re.sub(r"(?<=\d)(bis|ter|quater|quinquies|rev)", "", ref.strip())  # noqa: E731 ("430ter-038" → "430-038")
-    ours: dict[str, set[str]] = defaultdict(set)
-    for s in d:
-        sid = str(s.get("id_no"))
-        if sid not in names:
-            continue
-        here = set(comps[sid])
-        for _n, ref, la, lo in heritage_eu.COMPONENT.findall(s.get("components_list") or ""):
-            if (round(float(lo), 6), round(float(la), 6)) in here:
-                ours[sid].add(plain(ref))
+    ours: dict[str, set[str]] = {sid: {plain(r) for r in rs} for sid, rs in refs.items()}
     items: dict[str, list[str]] = defaultdict(list)
-    for r in heritage_eu.wd_sparql("SELECT ?item ?id WHERE { ?item wdt:P757 ?id }", W / "wd-p757.json"):
+    for r in wd_sparql("SELECT ?item ?id WHERE { ?item wdt:P757 ?id }", W / "wd-p757.json"):
         v = plain(r["id"])
         sid = v.split("-", 1)[0]
         q = r["item"].rsplit("/", 1)[-1]
-        if sid in names and ("-" not in v or v in ours[sid]) and q not in items[sid]:
+        if sid in names and ("-" not in v or v in ours.get(sid, set())) and q not in items[sid]:
             items[sid].append(q)
     return items
 
@@ -154,11 +168,11 @@ def outlines(names: dict[str, str], km2: dict[str, float]) -> dict[str, list[tup
     # Its Wikidata items: the site and its components (P757), and items part of one (P361).
     site_of: dict[str, str] = {}
     with phase("the Wikidata items read", "disk"):
-        for r in heritage_eu.wd_sparql("SELECT ?item ?id WHERE { ?item wdt:P757 ?id }", W / "wd-p757.json"):
+        for r in wd_sparql("SELECT ?item ?id WHERE { ?item wdt:P757 ?id }", W / "wd-p757.json"):
             base = re.match(r"\d+", r["id"])
             if base and base.group() in names:
                 site_of[r["item"].rsplit("/", 1)[-1]] = base.group()
-        parts = heritage_eu.wd_sparql("SELECT ?part ?whole WHERE { ?whole wdt:P757 ?id . ?part wdt:P361 ?whole }", W / "wd-parts.json")
+        parts = wd_sparql("SELECT ?part ?whole WHERE { ?whole wdt:P757 ?id . ?part wdt:P361 ?whole }", W / "wd-parts.json")
         for r in parts:
             whole, part = r["whole"].rsplit("/", 1)[-1], r["part"].rsplit("/", 1)[-1]
             if whole in site_of:
@@ -320,11 +334,8 @@ def centre(geoms: list[tuple[shapely.Geometry, bool]], comps: list[tuple[float, 
 def main() -> None:
     W.mkdir(parents=True, exist_ok=True)
     with phase("the sites read", "disk"):
-        names, cats, comps = our_sites()
+        names, cats, comps, refs, km2 = our_sites()
     print(f"{len(names)} World Heritage Sites in our regions")
-    with phase("UNESCO's list read", "disk"):
-        unesco = unesco_list()
-        km2 = {str(x["id_no"]): x["area_hectares"] / 100 for x in unesco if x.get("area_hectares")}
     shapes = outlines(names, km2)
 
     with phase("the outlines' features made", "compute"):
@@ -341,7 +352,7 @@ def main() -> None:
         print(f"  {names[s]}: {n}")
 
     with phase("the sites' items found", "compute"):
-        items = site_items(names, comps, unesco)
+        items = site_items(names, refs)
     with phase("the sites' dots placed", "compute"):
         sites: dict[str, dict] = {}
         for s in names:

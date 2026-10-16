@@ -1,6 +1,8 @@
 //! Heritage sites and designated areas for the units (docs/phase5.md "Heritage and area flags").
-//! The `heritage-sites` job runs heritage.py on the registers' snapshot and the pass's
-//! protected areas over the cover (the z12 tiles within 20 km of the coverage), then slices what
+//! The `heritage-sites` job runs heritage.py on the heritage registers meeting the cover (the
+//! accepted version of inputs/heritage/, docs/inputs.md §6.5: `registers_meeting`), the owner's
+//! matches and the pass's protected areas over the cover (the z12 tiles within 20 km of the
+//! coverage), then slices what
 //! the units read per z6 tile, so a unit's key names only the slices near it: the sites' positions
 //! (`work/heritage/<d>/pos/6-x-y`), and the flagged area polygons
 //! (`work/heritage/<d>/areas/6-x-y`, those whose bounding box meets the tile, each line keyed by
@@ -28,6 +30,51 @@ pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
         .collect();
     out.sort_unstable();
     out
+}
+
+/// The boxes (degrees) of the z6 tiles holding the cover (`cover_tiles`' parents).
+pub fn cover_boxes(cov: &Coverage) -> Vec<[f64; 4]> {
+    crate::agent::build::coverage_tiles(cov).into_values().flatten().map(|(x, y)| crate::stage::tile_box_grown(6, x, y, 0.0)).collect()
+}
+
+/// Whether a register's box meets the cover's boxes (`cover_boxes`).
+pub fn meets(cover: &[[f64; 4]], b: [f64; 4]) -> bool {
+    cover.iter().any(|c| b[0] <= c[2] && b[2] >= c[0] && b[1] <= c[3] && b[3] >= c[1])
+}
+
+/// The accepted registers as the agent's inputs carry them (`registers_line`): a line each, its id,
+/// its files' keyed digests and its box (`-` without entries).
+pub fn registers_line(regs: &[crate::inputs::heritage::Register]) -> String {
+    regs.iter()
+        .map(|r| format!("{}\t{}\t{}", r.id, r.keyed, r.bbox.map_or("-".to_string(), |b| b.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","))))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `registers_line`'s lines read: (id, keyed digests, box).
+pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
+    s.lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let (id, keyed, b) = (f.next()?, f.next()?, f.next()?);
+            let v: Vec<f64> = b.split(',').filter_map(|x| x.parse().ok()).collect();
+            Some((id.to_string(), keyed.to_string(), <[f64; 4]>::try_from(v).ok()))
+        })
+        .collect()
+}
+
+/// The accepted registers as the records now name them (`registers_line`), for the agent's plan
+/// (crate::agent::input_digests): None without an accepted version.
+pub fn registers_now(root: &Path) -> Result<Option<String>> {
+    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
+    Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?.map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
+}
+
+/// The registers of accepted version `a` whose entries meet the cover (`cover_boxes`): what the
+/// heritage-sites job reads, and its key names. (A register without entries meets nothing.)
+pub fn registers_meeting(cov: &Coverage, a: &crate::inputs::Accepted) -> Vec<crate::inputs::heritage::Register> {
+    let cover = cover_boxes(cov);
+    crate::inputs::heritage::registers(a).into_iter().filter(|r| r.bbox.is_some_and(|b| meets(&cover, b))).collect()
 }
 
 /// The tiles as uint32 (x, y) pairs, little-endian (heritage.py's `--tiles`).

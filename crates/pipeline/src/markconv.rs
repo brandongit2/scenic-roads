@@ -17,20 +17,9 @@ pub const HERITAGE_DOTS: &str = "work/marks/heritage-dots";
 /// The stops & sights kinds (each its own file; heritage is one more).
 pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
 
-/// The converted build's heritage files' folder (`global/legacy`), what heritage_source falls back to
-/// (agent::build::heritage_src the same).
-pub const LEGACY: &str = "global/legacy";
-
-/// Where a pass's heritage comes from: the heritage job's outputs (`work/heritage/<date>`) when
-/// it has made them, else the converted build's (`LEGACY`; plan §10).
-pub fn heritage_source(out: &Out, date: &str) -> String {
-    let job = format!("work/heritage/{date}");
-    let has = |stem: &str| out.get(&format!("{job}/{stem}")).is_some();
-    if has("layer-heritage") && has("details-heritage") && has("props-heritage") {
-        job
-    } else {
-        LEGACY.to_string()
-    }
+/// Where a pass's heritage comes from: the heritage job's outputs (`work/heritage/<date>`).
+pub fn heritage_source(date: &str) -> String {
+    format!("work/heritage/{date}")
 }
 
 /// A heritage file's bytes (`<src>/<stem>`): this Mac's mirror copy when there is one,

@@ -169,7 +169,7 @@ pub fn run(dir: &Path) -> Result<()> {
 pub fn flags(dir: &Path) -> Result<()> {
     let idx = GridIndex::load(dir)?;
     // Designation areas on the grid; one from before the grid changed (the network grew) is
-    // ignored until `heritage.py` rebuilds it.
+    // ignored until the unit's area flags are made again (crate::areaflags).
     let terrain_cells = Layer::<i16>::open(&dir.join("grid.terrain.i16"))?.data().len();
     let areas = Layer::<u8>::open(&dir.join("grid.areas.u8")).ok().filter(|a| a.data().len() == terrain_cells);
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
