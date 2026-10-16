@@ -68,13 +68,8 @@ class Register:
     notes: str = ""
 
 
-# Spain's regional portals whose reuse terms weren't checked: the old app credited them "free use
-# with credit", which nobody verified. Not asserted as a licence; the owner checks each.
-ES_UNVERIFIED = "unverified"
-ES_NOTES = ("Licence unverified: the old app said \"free use with credit\". The owner must check the portal's "
-            "aviso legal or reuse conditions (an open licence such as CC BY 4.0, or Spain's default reuse terms "
-            "under Ley 37/2007 with attribution), whether commercial reuse and redistribution in a map are allowed, "
-            "and the attribution it asks for, then set the licence.")
+ES_CT_LICENCE = "Reuse with the source and update date cited (Llei 19/2014, art. 17.1)"
+ES_CT_NOTES = ("Licence accepted by the owner 2026-10-16 from the reuse notice found for the Inventari (Llei 19/2014 de transparencia, art. 17.1: reuse allowed when the source and the date of the last update are cited); the Generalitat's terms pages (cultura.gencat.cat, invarquit.cultura.gencat.cat) disallow automated reading, so the notice wasn't read directly. No named licence; commercial reuse not stated.")
 
 
 # Checked 2026-10-16 (terms pages read; see each register's notes).
@@ -174,9 +169,9 @@ REGISTERS: dict[str, Register] = {
         wikidata_property="P4057", ref_pattern=r"query=[^&]*?%2CSMRS%2C([A-Z]{2}\d{3}-\d{3}(?:\d{3})?)", osm_ref_tags=["ref:IE:smr"]),
     "es-ct-bcin": Register(
         "Béns culturals d'interès nacional", "Spain heritage: Catalonia", "Generalitat de Catalunya, Inventari del Patrimoni Cultural",
-        ES_UNVERIFIED, "https://sig.gencat.cat/", ["ES-CT"], eu.spain,
+        ES_CT_LICENCE, "https://sig.gencat.cat/", ["ES-CT"], eu.spain,
         src("Generalitat de Catalunya, Inventari del Patrimoni Cultural"), ["es/cat-*"],
-        wikidata_property="P1600", ref_pattern=r"invarquit\.cultura\.gencat\.cat/card/(\d+)", notes=ES_NOTES),
+        wikidata_property="P1600", ref_pattern=r"invarquit\.cultura\.gencat\.cat/card/(\d+)", notes=ES_CT_NOTES),
     "es-cl-bic": Register(
         "Bienes de interés cultural de Castilla y León", "Spain heritage: Castilla y León", "\u00a9Junta de Castilla y León",
         "IGCYL-NC (non-commercial use)", "https://idecyl.jcyl.es/", ["ES-CL"], eu.spain, src("Junta de Castilla y León"), ["es/cyl-*"], notes=ES_CL_NOTES),
