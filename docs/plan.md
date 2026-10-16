@@ -1492,7 +1492,7 @@ folder> --scratch <local dir>` as for every step.
 - **The timetable feeds' declarations** (`inputs/timetables/feeds/`, docs/inputs.md §6.7.1): a
   `<id>.toml` per feed and one for the catalogue, written by hand; how the feeds were found is in
   its `how/` (`gtfs-feeds.md`, `operators.txt`). A feed's zip fetched before the app fetched it
-  goes in as its first pin with `scenic-build feeds-seed --day <the day it was fetched> <id>.zip…`.
+  goes in as its first pin by its declaration's `pin` (its path and day), which rail-feeds takes.
 - **Ferry timetables looked up by hand** (`inputs/ferries/freq/timetables-*.json`, which the
   ferries job reads): sailings from operators' published timetables, each with its page: the
   researchers' brief, batches and not-found lists are in `inputs/ferries/research/` (`PROMPT.md`).
@@ -1591,7 +1591,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   its own version: a change in the tiling it shares with pack bumps both);
 - **rail-feeds:** what decides which feeds there are: the feeds' declarations (their accepted
   index), the catalogue's copy, the coverage, the pass's outlines (the countries it's in), and which
-  keys `inputs/keys.env` holds, by name (never their values). Not what it writes (the feeds' lists,
+  of the keys the declarations fetch with `inputs/keys.env` holds, by name (never their values). Not what it writes (the feeds' lists,
   its checks and zips), so it doesn't run again for its own sake; it waits while `inputs/keys.env`
   can't be read;
 - **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
@@ -3145,9 +3145,8 @@ At each phase's end an Opus agent reviews the work against this plan.
     feed just waits); a feed's box isn't kept in the index's facts (rail-feeds reads it from
     the zip's stops each run), so the declarations' credits are listed in no catalog yet (the
     catalog keeps `rules::CREDITS`' "Rail service frequency" and "Ferry sailings"); rail-feeds' key
-    names the declarations' accepted index and every key name `inputs/keys.env` holds, not the
-    `keyed` digests of the declarations it reads nor only the keys they use, so an edited note or a
-    new key runs it again (it then finds the same feeds, and rail doesn't run).
+    names the declarations' accepted index, not the `keyed` digests of the declarations it reads,
+    so an edited note runs it again (it then finds the same feeds, and rail doesn't run).
 
 ## 11. Risks and checks
 

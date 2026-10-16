@@ -1524,6 +1524,7 @@ in its `how/` (`gtfs-feeds.md`, `operators.txt`).
 | `order` | whole number | yes | where it comes among the declared feeds (then by id); the declared come before the catalogue's, so a train they share with an aggregate counts as theirs |
 | `replaces` | list of feed ids | yes | feeds left out while this one has a zip (an operator's own over copies) |
 | `ferry_routes` | list of route ids | yes | routes counted as ferries though their `route_type` says otherwise |
+| `pin` | table `{zip, day}` | yes | a zip fetched before the app fetched the feed (its path from the project folder) and the day it was fetched: rail-feeds pins it, counting from that day, when the feed has no zip yet, instead of fetching |
 | `operator` | string | no | shown |
 
 `territory` (§5.1) and `name`, `licence` and `source` are keyed too: `territory` says which
@@ -1568,8 +1569,10 @@ keyed method without its `header`, a `key` that isn't a key's name, a `get-key-j
 number; `replaces`, `exclude` or `country` naming a malformed id; a `country` or `own_code` value
 that isn't ISO 3166 syntax; two catalogue declarations. Warnings: `replaces` or `exclude` naming a
 feed neither declared nor in the catalogue's copy (when there is one); an `own_code` key no outline
-of the pass has; two declarations with one URL. A declaration that `replaces` another is held with
-it. (A `key` that `inputs/keys.env` doesn't hold isn't a finding: the feed waits. Plan §10.)
+of the pass has; two declarations with one URL. A declaration that `replaces` declared feeds is
+held with them: a held `<id>.toml` holds a feed declaration whose `replaces` names it, and the
+catalogue's declaration when its `replaces` names it. (A `key` that `inputs/keys.env` doesn't hold
+isn't a finding: the feed waits. Plan §10.)
 
 What a fetch brings back (a zip that isn't one, a feed without rail) isn't a finding of the input
 check: the data isn't the owner's drop. It's the fetching job's status (a refusal leaves the feed
@@ -1580,12 +1583,21 @@ agent names: `--feeds-index`) and the catalogue's pinned copy, and writes two li
 (`sources/rail/feeds`) and the ferry feeds (`sources/rail/ferry-feeds`), each feed's zip pinned by
 content in `sources/rail/gtfs/<id>` with the day it was fetched (`sources/rail/fetched`). Its key
 names the declarations' accepted index, the catalogue's copy, the coverage, the pass's outlines and
-the key names `inputs/keys.env` holds. `rail` names the rail list (the zips by content);
+which of the keys the declarations fetch with `inputs/keys.env` holds (their names). `rail` names the rail list (the zips by content);
 `ferries` names the ferry list (the zips by content and their days) and waits for it. While the
 rail sources have a catalogue's copy and the accepted version has no catalogue declaration (held),
-rail-feeds fails rather than read the catalogue without its corrections.
-`scenic-build feeds-seed --day <day> <id>.zip…` pins a zip fetched before the app fetched it, with
-that day.
+rail-feeds fails rather than read the catalogue without its corrections. A declaration's `pin` is
+put in by rail-feeds itself, handed off as its downloads are, the first time it runs with that
+declaration accepted and no zip for the feed: whatever the order of the drop and the publish, a
+pinned feed is never fetched before its pin is in.
+
+**Rollout** (#140): (1) the declarations (the ferry feeds' with their `pin`s, naming
+`inputs/ferries/gtfs/<id>.zip` and 2026-09-28) dropped in `inputs/timetables/feeds/`, the feed
+finders' notes in its `how/`, before or after the publish; (2) the publish; (3) the catalogue's
+declaration's `own_code` warning (seven territories no outline of the pass has) accepted: till
+then it's held, rail-feeds fails and the ferries wait, their outputs as they were; (4) after the
+first rail-feeds and ferries, the `gtfs-*.json` files, `gtfs-feeds.json` and (the pins being in
+the sources) `inputs/ferries/gtfs/` removed, and the `pin`s may go from the declarations.
 
 **Migration** (done in #140; the proof in its report):
 1. **Rail:** declarations written from the lists railfeeds.py had (SNCF, two of Renfe's, Great
