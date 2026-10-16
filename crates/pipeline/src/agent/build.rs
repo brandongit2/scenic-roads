@@ -708,6 +708,15 @@ pub fn heritage_sites_key(cov: &Coverage, date: &str, m: &BTreeMap<String, Strin
     Some(h(&[&format!("heritage-sites {HERITAGE_SITES_V}"), date, set, &regs.join(","), &format!("matches {matches}"), &coverage_all(cov)]))
 }
 
+/// Why the units wait when the pass has no heritage sites and the registers have no accepted
+/// version (no key: just after the publish that made them an input), in words; None otherwise.
+/// The hold is the owner's (heritage must not go out wrong), the reason said so it isn't a silent
+/// stall.
+pub fn heritage_awaits_acceptance(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> Option<String> {
+    (!m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) && heritage_sites_key(cov, date, m, inputs).is_none())
+        .then(|| "the heritage registers await their first acceptance (inputs/heritage/ on the NAS: `scenic inputs check heritage`, then `scenic inputs accept heritage`)".to_string())
+}
+
 pub fn heritage_sites_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
     let k = heritage_sites_key(cov, date, m, inputs)?;
     (done.lo.get("heritage-sites").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "heritage-sites".into(), targets: vec![("heritage-sites".into(), k)] })
@@ -1652,7 +1661,11 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         let each: Vec<&Coverage> = updates.each.iter().map(|(_, c)| c).collect();
         work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
         work.extend(backfill.iter().cloned());
-        let update = UpdateDecision { why: "the regions' units wait for the pass's heritage sites, reaches or roadside buildings".into(), gap_s: updates.way.gap.unwrap_or(PUBLISH_EVERY_S), since_last_s: updates.since_last, ..Default::default() };
+        let why = match heritage_awaits_acceptance(cov, date, m, inputs) {
+            Some(r) => format!("the regions' units wait for the pass's heritage sites: {r}"),
+            None => "the regions' units wait for the pass's heritage sites, reaches or roadside buildings".into(),
+        };
+        let update = UpdateDecision { why, gap_s: updates.way.gap.unwrap_or(PUBLISH_EVERY_S), since_last_s: updates.since_last, ..Default::default() };
         return Plan { work, backfill, update, ..Default::default() };
     };
 
@@ -4702,6 +4715,12 @@ pub(crate) mod tests {
             d0.record("heritage", &[("heritage".to_string(), heritage_key(&c, "d", &m0).unwrap())]);
             let w = plan(&c, "d", &m0, &d0, &BTreeMap::new());
             assert!(!steps(&w).iter().any(|s| held.contains(&s.as_str())), "{:?}", steps(&w));
+            // The units' wait says why while the pass has no heritage sites: the registers await
+            // their first acceptance (with an older heritage-sources there, they don't wait).
+            assert_eq!(heritage_awaits_acceptance(&c, "d", &m0, &BTreeMap::new()), None);
+            m0.remove(&crate::heritage::base_logical("d", "heritage-sources"));
+            assert!(heritage_awaits_acceptance(&c, "d", &m0, &BTreeMap::new()).is_some_and(|w| w.contains("scenic inputs accept heritage")));
+            assert_eq!(heritage_awaits_acceptance(&c, "d", &m, &BTreeMap::new()), None, "accepted");
         }
         // The registers' accepted version changed: the heritage sites are made again first, the
         // rest of the chain (an hour and a half on them) only after.

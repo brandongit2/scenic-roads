@@ -4466,6 +4466,10 @@ impl Agent {
             rekey::as_read(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
             build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::MapUpdates { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held, way })
         };
+        // The units held until the heritage registers are first accepted: said, not a silent stall.
+        if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
+            waiting.push(Waiting { step: Some("heritage-sites".into()), what: build::SITES.into(), why: format!("the regions' units wait: {why}") });
+        }
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
         if !planned.unknown.is_empty() {
             let why = self.tiles.borrow().unread().next().map(|(c, e)| format!(": {c}, {e}")).unwrap_or_default();
