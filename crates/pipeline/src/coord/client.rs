@@ -124,6 +124,11 @@ impl Client {
         *self.round.lock().unwrap() = Some(None);
     }
 
+    /// Whether the coordinator didn't answer a request this round (its later requests not tried).
+    pub fn round_failed(&self) -> bool {
+        matches!(&*self.round.lock().unwrap(), Some(Some(_)))
+    }
+
     /// When the coordinator last answered a request, and as what (`Answered`); None: not yet.
     pub fn answered(&self) -> Option<Answered> {
         self.answered.lock().unwrap().clone()
@@ -156,25 +161,28 @@ impl Client {
         if let Some(Some(why)) = &*self.round.lock().unwrap() {
             bail!("not tried: the coordinator didn't answer earlier in this round ({why})");
         }
-        let r = self.request_now(method, path, body);
-        // (No answer at all, rather than an answer this caller can't use: the round's later
-        // requests not tried.)
-        if let Err(e) = &r {
-            if e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some()) {
-                let mut g = self.round.lock().unwrap();
-                if let Some(down) = g.as_mut() {
-                    *down = Some(format!("{e:#}"));
-                }
+        let mut unanswered = false;
+        let r = self.request_now(method, path, body, &mut unanswered);
+        // (No answer: every address failed while connecting or closed its connection unanswered,
+        // or an answer broke off before it was whole. Not a connected lead's slow request run past
+        // its time, nor any HTTP answer.)
+        if let (Err(e), true) = (&r, unanswered) {
+            let mut g = self.round.lock().unwrap();
+            if let Some(down) = g.as_mut() {
+                *down = Some(format!("{e:#}"));
             }
         }
         r
     }
 
-    fn request_now(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<(u16, Vec<u8>)> {
+    fn request_now(&self, method: &str, path: &str, body: Option<&[u8]>, unanswered: &mut bool) -> Result<(u16, Vec<u8>)> {
         let mut last = None;
         // (Whether every address failed while connecting: only that says it can't be reached, not
         // a long request that ran past its time.)
         let mut connecting = None;
+        // (Whether no address answered at all: each failed while connecting, or closed or broke
+        // its connection before an answer; not one that ran past its time once connected.)
+        let mut silent = None;
         for fresh in [false, true] {
             if fresh {
                 let Some(root) = &self.root else { break };
@@ -196,7 +204,14 @@ impl Client {
                 match r {
                     Ok(mut resp) => {
                         let code = resp.status().as_u16();
-                        let b = resp.body_mut().with_config().limit(u64::MAX).read_to_vec().context("the coordinator's answer")?;
+                        let b = match resp.body_mut().with_config().limit(u64::MAX).read_to_vec() {
+                            Ok(b) => b,
+                            Err(e) => {
+                                // (Broken off, not run past its time.)
+                                *unanswered = !matches!(e, ureq::Error::Timeout(_));
+                                return Err(anyhow::Error::from(e).context("the coordinator's answer"));
+                            }
+                        };
                         if code == 401 {
                             last = Some(anyhow::anyhow!("the coordinator refused the token"));
                             break;
@@ -214,12 +229,16 @@ impl Client {
                     }
                     Err(e) => {
                         connecting = Some(connecting.unwrap_or(true) && connect_phase(&e));
+                        silent = Some(silent.unwrap_or(true) && (connect_phase(&e) || !matches!(e, ureq::Error::Timeout(_))));
                         last = Some(anyhow::Error::from(e).context(format!("reach the coordinator at {url}")));
                     }
                 }
             }
         }
         let e = last.unwrap_or_else(|| anyhow::anyhow!("the coordinator has no address"));
+        if silent == Some(true) {
+            *unanswered = true;
+        }
         if connecting == Some(true) {
             *self.failed.lock().unwrap() = Some((crate::agent::jobs::now_s(), format!("{e:#}")));
         }
@@ -346,7 +365,7 @@ fn read_contact(root: &Path) -> Result<Option<Contact>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -365,6 +384,75 @@ mod tests {
             }
         });
         (url, n)
+    }
+
+    /// A coordinator answering every request with `status` and `{}`, counting them.
+    pub(crate) fn answering(status: u16) -> (String, Arc<AtomicUsize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let n = Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; len];
+                r.read_exact(&mut body).ok();
+                seen.fetch_add(1, Ordering::SeqCst);
+                write!(s, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").ok();
+            }
+        });
+        (url, n)
+    }
+
+    /// An address nothing listens at (a listener's, closed): a connection to it refused.
+    pub(crate) fn dead() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    }
+
+    #[test]
+    fn a_refused_connection_fails_the_round() {
+        let c = Client::at(vec![dead()], "t".into(), "m");
+        c.new_round();
+        assert!(c.beat(1, None).is_err());
+        assert!(c.round_failed());
+        assert!(c.failed().is_some());
+    }
+
+    #[test]
+    fn any_http_answer_leaves_the_round_open() {
+        for status in [500, 409, 401, 200] {
+            let (url, tried) = answering(status);
+            let c = Client::at(vec![url], "t".into(), "m");
+            c.new_round();
+            let _ = c.post_json("/work/x", &serde_json::json!({}));
+            assert!(!c.round_failed(), "{status}");
+            let _ = c.post_json("/work/x", &serde_json::json!({}));
+            assert_eq!(tried.load(Ordering::SeqCst), 2, "{status}: both tried");
+        }
+    }
+
+    #[test]
+    fn one_address_answering_leaves_the_round_open() {
+        let (url, tried) = answering(200);
+        let c = Client::at(vec![dead(), url], "t".into(), "m");
+        c.new_round();
+        c.post_json("/work/x", &serde_json::json!({})).unwrap();
+        assert!(!c.round_failed());
+        c.post_json("/work/x", &serde_json::json!({})).unwrap();
+        assert_eq!(tried.load(Ordering::SeqCst), 2);
     }
 
     #[test]

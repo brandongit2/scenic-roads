@@ -883,7 +883,8 @@ pub struct Agent {
     client: Option<crate::coord::client::Client>,
     /// Its own jobs' ends owed to the lead: ended while this process led a term it had lost without
     /// its step knowing yet (it froze, a later term made meanwhile), told to the lead through its
-    /// client once its part has changed (`end_lease`, `tell_owed`), each until `OWED_S` after it
+    /// client once its part has changed (`end_lease`, `tell_owed`); and a member's ends the lead
+    /// didn't take when they ended (it didn't answer). Each told each loop until `OWED_S` after it
     /// ended (its lease has lapsed by then).
     owed: Vec<(u64, Tell)>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
@@ -1663,8 +1664,8 @@ impl Agent {
                     if self.coord.is_some() {
                         eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
                         self.owed.push((now_s(), tell));
-                    } else if let Some(c) = &self.client {
-                        tell.to(c);
+                    } else {
+                        self.tell_or_owe(tell);
                     }
                 }
                 let held = match (entry, self.try_pooled()) {
@@ -1716,6 +1717,25 @@ impl Agent {
         let Some(Some(run)) = self.try_pooled() else { return false };
         let Some(e) = run.side.driver().leads() else { return false };
         crate::pool::term::next(run.side.nas(), e).unwrap_or(false)
+    }
+
+    /// Tells the lead a job's end, or owes it (not told: the lead didn't answer, its round failed
+    /// already, or there's no client): told again each loop until `OWED_S` (`tell_owed`), never
+    /// lost to a fast fail.
+    fn tell_or_owe(&mut self, tell: Tell) {
+        if !self.client.as_ref().is_some_and(|c| tell.to(c)) {
+            self.owed.push((now_s(), tell));
+        }
+    }
+
+    /// Begins a round of the lead's client, at each loop's start (`step`): once the lead doesn't
+    /// answer, the loop's later calls to it fail at once rather than each waiting out its timeout;
+    /// the next loop tries it again, so a lead back is heard within a loop
+    /// (crate::coord::client::Client::new_round).
+    fn begin_round(&self) {
+        if let Some(c) = &self.client {
+            c.new_round();
+        }
     }
 
     /// The ends owed to the lead (`owed`), told once this process works as a member, through the
@@ -2171,12 +2191,7 @@ impl Agent {
         self.pool_switch(root.as_deref());
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut ended = false;
-        // (A loop is a round of the lead's client: once the lead doesn't answer, the loop's later
-        // calls to it fail at once rather than each waiting out its timeout; the next loop tries
-        // it again, so a lead back is heard within a loop. crate::coord::client::Client::new_round.)
-        if let Some(c) = &self.client {
-            c.new_round();
-        }
+        self.begin_round();
         // The build's pause: this Mac's ask passed on; the build Mac's coordinator's.
         self.sync_pause(root.as_deref(), &mut waiting);
         // (A crashed agent's jobs' finished targets, recorded now the NAS answers.)
@@ -7221,6 +7236,44 @@ mod tests {
         // A job ended since: tried again.
         a.mem.worked_at = now_s() + 1;
         assert_eq!(a.toward_due(), Some(target));
+    }
+
+    /// A job's end the lead doesn't take (it doesn't answer, or its round failed already) is owed,
+    /// not lost; the lead answering, it's told and not owed.
+    #[test]
+    fn an_end_the_lead_doesnt_take_is_owed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = test_agent(Options { root: None, home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        let fail = |id| Tell::Fail { id, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 };
+        a.tell_or_owe(fail(1));
+        assert_eq!(a.owed.len(), 1, "no client: owed");
+        a.client = Some(crate::coord::client::Client::at(vec![crate::coord::client::tests::dead()], "t".into(), "m1"));
+        a.begin_round();
+        a.tell_or_owe(fail(2));
+        assert!(a.client.as_ref().unwrap().round_failed());
+        a.tell_or_owe(Tell::GiveBack { id: 3, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 });
+        a.tell_or_owe(Tell::Done(Box::new(crate::coord::Done { lease: 4, ..Default::default() })));
+        assert_eq!(a.owed.iter().map(|(_, t)| match t { Tell::Fail { id, .. } | Tell::GiveBack { id, .. } => *id, Tell::Done(d) => d.lease }).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        let (url, tried) = crate::coord::client::tests::answering(200);
+        a.client = Some(crate::coord::client::Client::at(vec![url], "t".into(), "m1"));
+        a.owed.clear();
+        a.tell_or_owe(fail(5));
+        assert!(a.owed.is_empty(), "taken");
+        assert_eq!(tried.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Each loop begins a round of the lead's client: a round the lead failed is open again.
+    #[test]
+    fn a_loop_begins_a_round() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = test_agent(Options { root: None, home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        a.begin_round();
+        a.client = Some(crate::coord::client::Client::at(vec![crate::coord::client::tests::dead()], "t".into(), "m1"));
+        a.begin_round();
+        assert!(a.client.as_ref().unwrap().beat(1, None).is_err());
+        assert!(a.client.as_ref().unwrap().round_failed());
+        a.begin_round();
+        assert!(!a.client.as_ref().unwrap().round_failed());
     }
 
     #[test]
