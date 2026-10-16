@@ -24,7 +24,10 @@ fn opt(args: &[String], name: &str) -> Option<String> {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let all: Vec<String> = std::env::args().collect();
+    // (Checked first: `--help` or an unknown flag runs nothing.)
+    pipeline::cli::tables::COASTCHECK.gate(&all);
+    let args: Vec<String> = all[1..].to_vec();
     match args.first().map(String::as_str) {
         Some("build") => build(&args),
         Some("serve") => serve(&args),

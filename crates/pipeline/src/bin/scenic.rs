@@ -51,7 +51,9 @@
 //!                                       build's (its coordinator's log, asked of it from another
 //!                                       Mac), or with --here this Mac's own jobs' alone
 //!
-//! `--root <dir>` points at the NAS project folder (default: the mounted share).
+//! `--root <dir>` points at the NAS project folder (default: the mounted share). `--help` (or `-h`)
+//! on any command prints its usage and does nothing; an unknown flag or an argument too many is
+//! refused before anything runs (pipeline::cli::tables::SCENIC, the commands' table).
 
 use anyhow::{bail, Context, Result};
 use pipeline::agent::{self, backup, gc, jobs::now_s, Options};
@@ -640,7 +642,8 @@ fn clean(args: &[String]) -> Result<()> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let cmd = args.get(1).cloned().unwrap_or_else(|| "status".into());
+    // (Its flags and arguments checked first: `--help` or a flag it doesn't know runs nothing.)
+    let cmd = pipeline::cli::tables::SCENIC.gate(&args).name.split(' ').next().unwrap_or_default().to_string();
     match cmd.as_str() {
         "status" => status(&args),
         "lead" => lead(&args),
@@ -762,6 +765,6 @@ fn main() -> Result<()> {
         }
         "timings" => timings(&args),
         "inputs" => inputs(&args),
-        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup, timings, inputs"),
+        c => bail!("{c}: in the table (pipeline::cli::tables::SCENIC) but not run here"),
     }
 }

@@ -1422,7 +1422,7 @@ impl Agent {
                     cmd.push(format!("{}={}#{}", crate::out::UNITS_AS_OF_ENV, f.display(), a.began));
                 }
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
-                cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t)));
+                cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != step));
                 cmd.extend(self.step_args(&step, &pass));
                 // (Pieces made again as they are, by the build's records as read: expected the
                 // same. Records that can't be read now expect nothing.)
@@ -4206,7 +4206,19 @@ impl Agent {
     }
 
     /// The work there is, in order (docs/plan.md §8, Order).
-    fn plan(&self, root: &Path, _c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn plan(&self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        let jobs = self.plan_unchecked(root, c, waiting);
+        // (In the tests, every planned command checked against its program's table, crate::cli.)
+        #[cfg(test)]
+        for j in &jobs {
+            if let Some(Err(e)) = crate::cli::tables::check_command(&j.cmd) {
+                panic!("{e}");
+            }
+        }
+        jobs
+    }
+
+    fn plan_unchecked(&self, root: &Path, _c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let mut out = Vec::new();
         let me = self.o.bin.join("scenic");
         let s = |p: &Path| p.to_string_lossy().into_owned();
@@ -4720,7 +4732,7 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t)).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != w.step).collect();
             extra.extend(self.step_args(&w.step, date));
             // (Tree cover pieces made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
@@ -6822,6 +6834,57 @@ fn test_agent(o: Options) -> Result<Agent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as
+    /// named, the OSM pass's), passes the steps' table (crate::cli): none refused at its start.
+    #[test]
+    fn the_agents_commands_pass_the_steps_table() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        let a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        for st in steps::TABLE.iter() {
+            let step = st.name.to_string();
+            // (gc and backup: `scenic`'s, their commands checked as the plan makes them.)
+            // (catalog-held: `catalog --held --ready …`, as the plan makes it.)
+            if crate::cli::tables::SCENIC.get(&step).is_some() || step == "catalog-held" {
+                continue;
+            }
+            for target in [step.as_str(), "6/1/1", "3/1/1", "inputs/regions"] {
+                if crate::cli::tables::SCENIC_BUILD.get(&step).is_some_and(|c| c.pos == 0) && target != step {
+                    continue;
+                }
+                let mut cmd = vec!["SCENIC_X=1".to_string(), s(&a.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(&root), "--scratch".into(), s(&home.join("scratch").join(&step))];
+                cmd.extend([target.to_string()].into_iter().filter(|t| every::names_target(t) && *t != step));
+                cmd.extend(a.step_args(&step, "2026-10-01"));
+                if matches!(step.as_str(), "trees" | "terrain" | "slope") {
+                    cmd.extend(["--expect-same".to_string(), "6/1/1".into()]);
+                }
+                if let Some(Err(e)) = crate::cli::tables::check_command(&cmd) {
+                    panic!("{e}");
+                }
+            }
+        }
+        let pass = a.osm_pass_cmd(&root, &root.join("planet.osm.pbf"), "2026-10-01");
+        assert_eq!(crate::cli::tables::check_command(&pass), Some(Ok(())));
+    }
+
+    /// A unit's tail as it runs its programs (scenic-metrics and the rest: crate::unit::tail)
+    /// passes their tables.
+    #[test]
+    fn a_units_programs_pass_their_tables() {
+        let u = crate::legacy::Unit::parse("6/1/1").unwrap();
+        let mut seen = 0;
+        for r in crate::unit::tail(u, true, true) {
+            let cmd: Vec<String> = std::iter::once(format!("/app/{}", r.prog)).chain(r.args.iter().cloned()).collect();
+            if let Some(c) = crate::cli::tables::check_command(&cmd) {
+                c.unwrap();
+                seen += 1;
+            }
+        }
+        assert!(seen >= 5, "{seen}");
+    }
 
     #[test]
     fn a_terrain_run_reads_its_own_areas_archives() {

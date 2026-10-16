@@ -42,6 +42,10 @@ nothing built depends on how the coverage is divided into regions.
   resumes the whole build, hands over the lead, sets the disk room and clears that Mac's build
   caches once the build is done (`scenic clean` too). It sends a notification for every change, on
   time even while a menu is open.
+- `scenic`, `scenic-build`, `scenic-metrics`, `lakefill` and `coastcheck` check their command line
+  before doing anything (pipeline::cli, each program's table of commands): `--help` or `-h` on any
+  command, or alone, prints its usage and does nothing; a flag the command doesn't know, a flag
+  missing its value or an argument too many is refused with its usage (exit 2).
 - The server mounts the NAS itself when it's missing, at home: at start, then from its periodic
   check.
 

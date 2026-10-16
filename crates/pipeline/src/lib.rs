@@ -8,6 +8,7 @@ pub mod buildtiles;
 pub mod budget;
 pub mod candidates;
 pub mod chain;
+pub mod cli;
 pub mod climbs;
 pub mod control;
 pub mod coord;

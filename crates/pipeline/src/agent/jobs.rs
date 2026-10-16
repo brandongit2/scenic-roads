@@ -107,6 +107,12 @@ impl Running {
         // its progress, parts and last lines.)
         std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}) ===\n", spec.id, now_s()).as_bytes())?;
         let err = out.try_clone()?;
+        // (In the tests, every job's command as the agent made it, checked against its program's
+        // table: one the program would refuse fails the test.)
+        #[cfg(test)]
+        if let Some(Err(e)) = crate::cli::tables::check_command(&spec.cmd) {
+            panic!("{e}");
+        }
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
         let mut c = store::spawn::command("/usr/sbin/taskpolicy");
         c.args(["-c", "utility"]);

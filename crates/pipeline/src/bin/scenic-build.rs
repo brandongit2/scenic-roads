@@ -130,7 +130,9 @@
 //!                                made again as pieces and why, the work left and its time by the
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
 //!
-//! `--cache` is where base packs are kept locally (copied from the NAS when missing).
+//! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
+//! `-h`) on any step prints its usage and does nothing; a flag the step doesn't know or an argument
+//! too many is refused before anything runs (pipeline::cli::tables::SCENIC_BUILD, the steps' table).
 
 use anyhow::{bail, Context, Result};
 use pipeline::basepack::BasePack;
@@ -183,7 +185,8 @@ fn positional(args: &[String]) -> Vec<String> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let step = args.get(1).cloned().unwrap_or_default();
+    // (Its flags and arguments checked first: `--help` or a flag the step doesn't know runs nothing.)
+    let step = pipeline::cli::tables::SCENIC_BUILD.gate(&args).name.to_string();
     // Its phases' times (pipeline::timings: the log's table, the agent's record), however it ends.
     pipeline::timings::job(&step, || step_main(&args, &step))
 }

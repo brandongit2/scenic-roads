@@ -38,6 +38,8 @@ use std::path::Path;
 
 fn main() -> Result<()> {
     let a: Vec<String> = std::env::args().collect();
+    // (Checked first: `--help` or an unknown flag runs nothing.)
+    pipeline::cli::tables::LAKEFILL.gate(&a);
     match a.get(1).map(String::as_str) {
         Some("survey") if a.len() == 5 => {
             let rows = run::survey(Path::new(&a[2]), Path::new(&a[3]), &|d, n| eprintln!("lakefill: {d}/{n} z5 tiles"))?;

@@ -34,6 +34,12 @@ use std::sync::LazyLock;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // (Checked as `<step> <unit_dir> …`, its table's order: `--help` or an unknown flag runs nothing.)
+    let mut swapped = args.clone();
+    if swapped.len() >= 3 && !swapped[1].starts_with('-') {
+        swapped.swap(1, 2);
+    }
+    pipeline::cli::tables::SCENIC_METRICS.gate(&swapped);
     ensure!(args.len() >= 3, "usage: scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags");
     let dir = PathBuf::from(&args[1]);
     let step = args[2].as_str();
