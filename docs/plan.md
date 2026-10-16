@@ -2558,11 +2558,13 @@ between jobs into the other way. On:
        once: from then on the new name is the switch, and the old stays for an older app until it's
        cleared by hand. The agent's `round.json` is `map-update.json`: it's written under both names
        and read from the one that began later (`agent::read_map_update`). The history's event
-       "round" is "map-update", the forecast's `rounds` `updates` and its lanes' step "round"
-       "map-update"; the readers (the worker page, the map, the menu bar, `Forecast`'s serde alias,
+       "round" is "map-update", the forecast's `rounds` `updates` (written under both names
+       until the cleanup: an older app requires `rounds` and drops a status without it) and its
+       lanes' step "round" "map-update" (strings an older app parses, shown as a plain step); the readers (the worker page, the map, the menu bar, `Forecast`'s serde alias,
        the shadow's log) take the old names too. The cleanup, once every Mac runs an app from
        #209 on: `state/pool/round-per-region`, `state/pool/round-share` and the agent's
-       `round.json` deleted, then the old names' reads and writes dropped (planned).
+       `round.json` deleted, then the old names' reads and writes dropped, and the forecast's `rounds`
+       (planned).
      - `update-per-region`: a region's map update begins `publish::update_gap` after the last began instead
        of the hour: twice the map updates' measured time (`forecast::update_secs`, the last five map updates'
        times from beginning to catalog, from the history, whoever ran their jobs; task #209: it
