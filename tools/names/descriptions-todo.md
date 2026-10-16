@@ -1,10 +1,9 @@
 # Descriptions to write
 
-Written by the lead after each build (`names-todo`): the landmarks (`landmarks.jsonl`: the
-eight kinds of points, heritage sites among them) and the parks and protected areas
-(`areas.jsonl`) that have an English Wikipedia article or a heritage register entry and no
-description yet, by fame, highest first: how far down to go is a choice. The lists are made again
-after every build; don't edit them.
+Written after each build (`names-todo`): landmarks (`landmarks.jsonl`, heritage sites among
+them) and parks and protected areas (`areas.jsonl`) with an English Wikipedia article or a
+register entry but no description, by fame, highest first; how far down to go is a choice. The
+lists are remade every build: don't edit them.
 
 ## An entry
 
@@ -17,22 +16,21 @@ after every build; don't edit them.
 
 ## The answer
 
-Files anywhere in `inputs/descriptions/` but `todo/` and `how/` (say
+Files anywhere in `inputs/descriptions/` except `todo/` and `how/` (say
 `inputs/descriptions/written/5-batch-000.jsonl`), one line each: `{"qid": "Q243", "long": "…",
-"src": [{"t": "<title>", "u": "<url>"}]}`, or with `"id": "w123"` for a thing without a Wikidata
-item. `{"qid": …, "drop": true}` removes an earlier one. Later file names win. The app's input
-check takes a batch in within a few minutes; a line out of shape holds the file, and a description
-over 55 words or without `src` holds it until the owner accepts those lines.
+"src": [{"t": "<title>", "u": "<url>"}]}`, or `"id": "w123"` for a thing without a Wikidata item.
+`{"qid": …, "drop": true}` removes an earlier one; later file names win. The input check takes a
+batch in within a few minutes; a malformed line holds the file, and one over 55 words or without
+`src` holds it until the owner accepts it.
 
 ## The voice
 
 Write like a good reference book or a museum label, not a tour guide.
 
-- **Open with a noun phrase that says what the place is and why it is known**, the claim to fame
-  first ("The first Cistercian abbey in Wales", "Former Royal Navy home for retired sailors").
-  The name is shown just above: don't open with it.
-- Then at most two supporting facts in one or two ordinary sentences: who built it and when, what
-  happened there, what it became. Years, not full dates, unless the day is the point.
+- **Open with a noun phrase saying what the place is and why it is known** ("The first
+  Cistercian abbey in Wales"). The name is shown just above: don't open with it.
+- Then at most two supporting facts (who built it and when, what happened there, what it became).
+  Years, not full dates, unless the day is the point.
 - **Up to 55 words**, one to three sentences, in English. Ordinary places get one plain sentence
   (10–20 words).
 - **Don't inflate mundane places.** If the sources give no real claim to fame, say plainly what
@@ -44,8 +42,8 @@ Write like a good reference book or a museum label, not a tour guide.
 
 - Write from the English article (`enwiki`) where there is one; else from the other-language
   article (`wiki`), translated, or the register entry (`register`).
-- Where the article is about something else (a château's pumping station listed, the article
-  about the château), research the place from other reliable sources, or leave it.
+- Where the article is about something else, research the place from other reliable sources,
+  or leave it.
 - Use only facts the sources state; paraphrase (no run of six or more words copied, names and
   titles aside).
 - **Credit every source** in `src`: its title and address.

@@ -1,9 +1,0 @@
-[
-{"id": "cn-z12", "z": 12, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "boxKm": 1.0},
-{"id": "cn-z11", "z": 11, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "boxKm": 1.0},
-{"id": "cn-z10", "z": 10, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "boxKm": 1.0},
-{"id": "cn-z9", "z": 9, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "boxKm": 1.0},
-{"id": "cn-z8", "z": 8, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "boxKm": 1.0},
-{"id": "cn-z10-p70", "z": 10, "lat": 43.6426, "lon": -79.3871, "pitch": 70, "bearing": 0, "boxKm": 1.0},
-{"id": "cn-z10-city", "z": 10, "lat": 43.6426, "lon": -79.3871, "pitch": 80, "bearing": 0, "maxRefK": 0}
-]

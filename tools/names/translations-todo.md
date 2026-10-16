@@ -1,11 +1,10 @@
 # Names to translate
 
-Written by the lead after each build (`names-todo`): the names on the map that something has
-with no English of its own and no translation line in any language spoken where it is. Each list
-is one language's, `<language>.jsonl` (ISO 639: `fr` French, `ja` Japanese, `zh` Chinese as
-Mandarin reads it, `yue` Cantonese, `es`, `pt`, `ca`, `gl`, `eu`, `cy`, `gd`, `ga`, `br`, …),
-sorted by priority, highest first: how far down to go is a choice. The lists are made again after
-every build, so don't edit them; answers go elsewhere (below).
+Written after each build (`names-todo`): names on the map with no English of their own and no
+translation line in any language spoken where they are. One list per language, `<language>.jsonl`
+(ISO 639: `fr`, `ja`, `zh` as Mandarin reads it, `yue` Cantonese, `es`, `pt`, `ca`, `gl`, `eu`,
+`cy`, `gd`, `ga`, `br`, …), highest priority first; how far down to go is a choice. The lists are
+remade every build: don't edit them; answers go elsewhere (below).
 
 ## An entry
 
@@ -14,43 +13,35 @@ every build, so don't edit them; answers go elsewhere (below).
 - `n`: the name exactly as in OpenStreetMap.
 - `kind`: `road`, `settlement` (a city, town, village, hamlet, suburb, quarter, neighbourhood or
   isolated dwelling) or `other` (water, parks, peaks, sights, stations, lines, regions).
-- `langs`: the languages the name may be in, the list's own first: those spoken where the things
-  lacking English are, narrowed by OpenStreetMap's language tags and the name's script.
-- `things`: how many things with the name lack English; `example`: one of them, its OSM object
-  (`osm`: `n123` a node, `w123` a way, `r123` a relation: openstreetmap.org/node/123), else its
-  Wikidata item (`qid`), else its label's row (`label`, labels made before they carried their OSM
-  object), and where it is (`at`: lon, lat).
-- `priority`: fame, place class and population, road class (a city about 70, a village 50, a
-  hamlet 30; a landmark 30 plus 8 times its fame, Mount Rushmore about 70; a motorway 45, a
-  residential street 20), plus the log of `things`.
+- `langs`: the languages the name may be in, this list's first (spoken where it is, narrowed by
+  OSM's language tags and the script).
+- `things`: how many things with the name lack English; `example`: one of them, by OSM object
+  (`osm`: `n123` node, `w123` way, `r123` relation), else Wikidata item (`qid`), else label row
+  (`label`), with `at` (lon, lat).
+- `priority`: from fame, place class and population, or road class (a city ~70, a village 50, a
+  hamlet 30; a landmark 30 + 8 × fame; a motorway 45, a residential street 20), plus log `things`.
 
-Names with English of their own (OSM's `name:en`, a romanised name, a kana reading, a register's
-English) aren't listed: that English belongs to its thing, and shows. Nor are names already in
-English (where English is spoken, a name without another language's accents or words; elsewhere
-one with more English words than another language's), bilingual names with their English part,
-names without letters, or settlements in Latin script, which keep their own name (a well-known
-English one is OSM's `name:en`, their own).
+Not listed: names with English of their own (`name:en`, a romanised name, a kana reading, a
+register's English), names already English, bilingual names with an English part, names without
+letters, and settlements in Latin script (they keep their own name).
 
 ## The answer
 
-Put answer files anywhere in `inputs/translations/` but `todo/` and `how/` (say
-`inputs/translations/answers/fr-001.jsonl`; a new file per batch, not appended to an old one), one
-line per name: the entry's `n`, `kind` and `langs` as given, and the display (`main` always there,
-null for the name itself). The app's input check takes a batch in within a few minutes; a line out
-of this shape holds the whole file, and the lines `check.py` flags hold it until the owner accepts
-them (on the build page or the map's build panel).
+A new file per batch anywhere in `inputs/translations/` except `todo/` and `how/` (say
+`inputs/translations/answers/fr-001.jsonl`), one line per name: the entry's `n`, `kind` and `langs`
+as given, plus `main` and `sub`. The input check takes a batch in within a few minutes; a malformed
+line holds the whole file, and lines `check.py` flags hold it until the owner accepts them (build
+page or the map's build panel).
 
 `{"n": "Lac Bleu", "kind": "other", "langs": ["fr"], "main": "Lac Bleu", "sub": "Blue Lake", "via": "agent:haiku"}`
 
-- `main`: what the label shows (nearly always the name itself); `sub`: the English under it, or
-  `null` when English leaves the name alone (a settlement keeping its name, a name already
-  English). A line with `sub` null still answers the name: it leaves the list.
-- `kind` may be a list (`["settlement", "other"]`) and `langs` several languages when the English
+- `main`: what the label shows (nearly always the name); `sub`: the English under it, or `null`
+  when English leaves the name alone. A `null` line still answers the name.
+- `kind` may be a list (`["settlement", "other"]`), and `langs` several languages, when the English
   is the same in each.
-- `via`: how it was made, for the record (`agent:haiku`, `rule:…`, `hand`).
-- A later file name wins where lines share a name, kind and language. The map picks a file up
-  about a minute and a half after it lands (once it has stood still for 10 s); the list loses the
-  name after the next build.
+- `via`: how it was made (`agent:haiku`, `rule:…`, `hand`).
+- A later file name wins for the same name, kind and language. The list loses the name after the
+  next build.
 
 ## Conventions
 
@@ -94,7 +85,5 @@ them (on the build page or the map's build panel).
 
 ## Checking
 
-`python3 check.py <answers.jsonl>` (in this folder, standard library only) checks an answer file
-against the conventions: one valid line per name, no script left to romanise, no half
-translations or the original's word order, Hepburn without macrons in Japanese, accents and
-saints' names kept. It prints the problems, or "N lines, all good".
+`python3 check.py <answers.jsonl>` (in this folder, standard library only) checks a file against
+the conventions and prints the problems, or "N lines, all good".

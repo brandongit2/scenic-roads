@@ -1,22 +1,21 @@
 # Lines with no timetable
 
-Written by the lead after each rail and ferries run (`timetables-todo`): OpenStreetMap's rail and
-ferry lines in the regions that no timetable covers, highest priority first. How far down to go is
-a choice. The list is made again after every run; don't edit it.
+Written after each rail and ferries run (`timetables-todo`): OpenStreetMap's rail and ferry lines
+in the regions that no timetable covers, highest priority first; how far down to go is a choice.
+Remade every run: don't edit it.
 
 ## An entry
 
 `lines.jsonl`, one line each: `{"osm", "kind", "name", "ref", "operator", "from", "to", "km",
 "priority"}`.
 
-- `osm`: the line's OpenStreetMap object (`r123` a relation, `w123` a way): the line a route is
-  counted for, and its pin (below). A line is a service's direction variants together (one
-  network's `ref`, or the same two ends); `osm` is its first relation.
+- `osm`: the line's OSM object (`r123` relation, `w123` way), its first relation; a line is a
+  service's direction variants together. It is the pin (below).
 - `kind`: `rail` (a train, metro, tram, light rail, monorail or funicular route: on the list while
   less than half its length has trains) or `ferry` (a ferry line without a timetable's count: an
   OSM `interval` tag isn't one).
-- `km`: a rail line's length in the regions, a ferry line's whole length. `priority`: its length, a tenth of it for a line whose tags say
-  it carries no passengers (`passenger=no`, `service=freight`).
+- `km`: a rail line's length in the regions, a ferry line's whole length. `priority`: its length,
+  a tenth of it for lines tagged as carrying no passengers.
 
 ## The answer
 
@@ -39,6 +38,5 @@ A static GTFS zip in `inputs/timetables/gtfs/` (beside this folder, not in it), 
   timetable stays on the list.
 
 The input check takes a zip in within a few minutes; a mistake holds it, with the reason on the
-build page. A route that then matches nothing on the map (a pin naming no line, stops far from any
-track) is listed in the report of unmatched timetable routes on the build page and in
-`scenic status`.
+build page. A route matching nothing on the map is listed with the unmatched timetable routes on
+the build page and in `scenic status`.
