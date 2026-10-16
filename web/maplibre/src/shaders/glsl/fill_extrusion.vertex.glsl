@@ -15,8 +15,9 @@ layout(location = 1) in ivec4 a_normal_ed;
 
 
 out vec4 v_color;
-// Scenic Roads: the terrain's fog on the extrusions (fill_extrusion.fragment.glsl).
-uniform mat4 u_fog_matrix;
+// Scenic Roads: the terrain's distance fog on the extrusions (fill_extrusion.fragment.glsl):
+// clip w × x − y is 0 at the map's centre, 1 at the horizon (terrain_program.ts fogDepth).
+uniform vec2 u_fog_depth;
 out float v_fog_depth;
 
 #pragma maplibre: define highp float base
@@ -64,8 +65,7 @@ void main() {
     #else
         gl_Position = u_projection_matrix * vec4(posInTile, elevation, 1.0);
     #endif
-    vec4 fog_pos = u_fog_matrix * vec4(posInTile, elevation, 1.0);
-    v_fog_depth = fog_pos.z / fog_pos.w * 0.5 + 0.5;
+    v_fog_depth = gl_Position.w * u_fog_depth.x - u_fog_depth.y;
 
     // Relative luminance (how dark/bright is the surface color?)
     float colorvalue = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722;

@@ -1,13 +1,14 @@
 import {
     Uniform1i,
     Uniform1f,
-    UniformMatrix4f,
+    Uniform2f,
+    Uniform3f,
     UniformColor
 } from '../uniform_binding.ts';
 import {Color} from '@maplibre/maplibre-gl-style-spec';
+import {fogDepth} from '../../style/sky.ts';
 
-import type {Sky} from '../../style/sky.ts';
-import type {mat4} from 'gl-matrix';
+import type {FogTransform, Sky} from '../../style/sky.ts';
 import type {UniformValues, UniformLocations} from '../uniform_binding.ts';
 import type {Context} from '../../webgl/context.ts';
 
@@ -16,17 +17,19 @@ export type TerrainPreludeUniformsType = {
     'u_terrain': Uniform1i;
 };
 
+// Scenic Roads: the distance fog (Sky#fogRange); the extrusions take the same uniforms.
+export type FogUniformsType = {
+    'u_fog_depth': Uniform2f;
+    'u_fog': Uniform3f;
+    'u_fog_color': UniformColor;
+    'u_horizon_color': UniformColor;
+    'u_horizon_fog_blend': Uniform1f;
+};
+
 export type TerrainUniformsType = {
     'u_texture': Uniform1i;
     'u_ele_delta': Uniform1f;
-    'u_fog_matrix': UniformMatrix4f;
-    'u_fog_color': UniformColor;
-    'u_fog_ground_blend': Uniform1f;
-    'u_fog_ground_blend_opacity': Uniform1f;
-    'u_horizon_color': UniformColor;
-    'u_horizon_fog_blend': Uniform1f;
-    'u_is_globe_mode': Uniform1f;
-};
+} & FogUniformsType;
 
 export type TerrainDepthUniformsType = {
     'u_ele_delta': Uniform1f;
@@ -37,38 +40,47 @@ const terrainPreludeUniforms = (context: Context, locations: UniformLocations): 
     'u_terrain': new Uniform1i(context, locations.u_terrain)
 });
 
+const fogUniforms = (context: Context, locations: UniformLocations): FogUniformsType => ({
+    'u_fog_depth': new Uniform2f(context, locations.u_fog_depth),
+    'u_fog': new Uniform3f(context, locations.u_fog),
+    'u_fog_color': new UniformColor(context, locations.u_fog_color),
+    'u_horizon_color': new UniformColor(context, locations.u_horizon_color),
+    'u_horizon_fog_blend': new Uniform1f(context, locations.u_horizon_fog_blend),
+});
+
 const terrainUniforms = (context: Context, locations: UniformLocations): TerrainUniformsType => ({
     'u_texture': new Uniform1i(context, locations.u_texture),
     'u_ele_delta': new Uniform1f(context, locations.u_ele_delta),
-    'u_fog_matrix': new UniformMatrix4f(context, locations.u_fog_matrix),
-    'u_fog_color': new UniformColor(context, locations.u_fog_color),
-    'u_fog_ground_blend': new Uniform1f(context, locations.u_fog_ground_blend),
-    'u_fog_ground_blend_opacity': new Uniform1f(context, locations.u_fog_ground_blend_opacity),
-    'u_horizon_color': new UniformColor(context, locations.u_horizon_color),
-    'u_horizon_fog_blend': new Uniform1f(context, locations.u_horizon_fog_blend),
-    'u_is_globe_mode': new Uniform1f(context, locations.u_is_globe_mode)
+    ...fogUniforms(context, locations),
 });
 
 const terrainDepthUniforms = (context: Context, locations: UniformLocations): TerrainDepthUniformsType => ({
     'u_ele_delta': new Uniform1f(context, locations.u_ele_delta)
 });
 
+/**
+ * The distance fog's uniforms (Sky#fogRange): `u_fog_depth` (sky.ts fogDepth); `u_fog` the start, end
+ * and opacity (none without a sky, or with a transparent fog colour).
+ */
+const fogUniformValues = (sky: Sky | null | undefined, tr: FogTransform): UniformValues<FogUniformsType> => {
+    const fogColor = sky ? sky.properties.get('fog-color') : Color.transparent;
+    const [start, end, opacity] = sky ? sky.fogUniform() : [0, 1, 0];
+    return {
+        'u_fog_depth': fogDepth(tr),
+        'u_fog': [start, end, opacity * fogColor.a],
+        'u_fog_color': fogColor,
+        'u_horizon_color': sky ? sky.properties.get('horizon-color') : Color.transparent,
+        'u_horizon_fog_blend': sky ? sky.properties.get('horizon-fog-blend') : 1,
+    };
+};
+
 const terrainUniformValues = (
     eleDelta: number,
-    fogMatrix: mat4,
-    sky: Sky,
-    pitch: number,
-    isGlobeMode: boolean): UniformValues<TerrainUniformsType> => ({
+    sky: Sky | null | undefined,
+    tr: FogTransform): UniformValues<TerrainUniformsType> => ({
     'u_texture': 0,
     'u_ele_delta': eleDelta,
-    'u_fog_matrix': fogMatrix,
-    'u_fog_color': sky ? sky.properties.get('fog-color') : Color.white,
-    'u_fog_ground_blend': sky ? sky.properties.get('fog-ground-blend') : 1,
-    // Set opacity to 0 when in globe mode to disable fog
-    'u_fog_ground_blend_opacity': isGlobeMode ? 0 : (sky ? sky.calculateFogBlendOpacity(pitch) : 0),
-    'u_horizon_color': sky ? sky.properties.get('horizon-color') : Color.white,
-    'u_horizon_fog_blend': sky ? sky.properties.get('horizon-fog-blend') : 1,
-    'u_is_globe_mode': isGlobeMode ? 1 : 0
+    ...fogUniformValues(sky, tr),
 });
 
 const terrainDepthUniformValues = (
@@ -77,4 +89,4 @@ const terrainDepthUniformValues = (
     'u_ele_delta': eleDelta
 });
 
-export {terrainUniforms, terrainDepthUniforms, terrainPreludeUniforms, terrainUniformValues, terrainDepthUniformValues};
+export {terrainUniforms, terrainDepthUniforms, terrainPreludeUniforms, terrainUniformValues, terrainDepthUniformValues, fogUniforms, fogUniformValues};

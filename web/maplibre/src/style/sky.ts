@@ -3,10 +3,35 @@ import {Evented} from '../util/evented.ts';
 import {EvaluationParameters} from './evaluation_parameters.ts';
 import {validateStyle, validateAndEmit, type Validator} from './validate_style.ts';
 import {getProperties, type SkyProps, type SkyPropsPossiblyEvaluated} from './sky_properties.g.ts';
+import {earthRadius} from '../geo/lng_lat.ts';
 
 import type {Mesh} from '../render/mesh.ts';
 import type {SkySpecification} from '@maplibre/maplibre-gl-style-spec';
 import type {StyleSetterOptions} from './style.ts';
+
+/** Scenic Roads: the distance fog's range (Sky#fogRange). */
+export type FogRange = {start: number; end: number; opacity: number};
+
+/** What the distance fog needs of the transform. */
+export type FogTransform = {
+    readonly cameraToCenterDistance: number;
+    readonly pixelsPerMeter: number;
+    getCameraAltitude(): number;
+};
+
+/**
+ * The distance fog's depth (Sky#fogRange): a vertex's clip w (its distance from the camera along
+ * the view, in the projection's pixels, on the globe as on the flat map) × [0] − [1] is 0 at the
+ * map's centre and 1 at the horizon: the distance from the camera's altitude to where a line of
+ * sight grazes the sea-level sphere.
+ */
+export function fogDepth(tr: FogTransform): [number, number] {
+    const h = Math.max(tr.getCameraAltitude(), 1);
+    const horizon = Math.sqrt(h * (2 * earthRadius + h)) * tr.pixelsPerMeter;
+    const c = tr.cameraToCenterDistance;
+    const span = Math.max(horizon - c, c * 0.05, 1e-9);
+    return [1 / span, c / span];
+}
 
 export class Sky extends Evented {
     properties: PossiblyEvaluated<SkyProps, SkyPropsPossiblyEvaluated>;
@@ -71,18 +96,26 @@ export class Sky extends Evented {
     }
 
     /**
-     * Currently fog is a very simple implementation, and should only used
-     * to create an atmosphere near the horizon.
-     * But because the fog is drawn from the far-clipping-plane to
-     * map-center, and because the fog does nothing know about the horizon,
-     * this method does a fadeout in respect of pitch. So, when the horizon
-     * gets out of view, which is at about pitch 70, this methods calculates
-     * the corresponding opacity values. Below pitch 60 the fog is completely
-     * invisible.
+     * Scenic Roads: distance fog, in place of MapLibre's (which fogged the terrain alone, on the
+     * flat map alone, from 60° of pitch, by a depth running from the map's centre to the far plane).
+     * The terrain, the extrusions (and the app's buildings field) fade toward the sky's `fog-color`,
+     * then its `horizon-color` (past `horizon-fog-blend` of the ramp), by their distance from the
+     * camera measured from the map's centre (0) to the horizon (1; terrain_program.ts fogDepth):
+     * none nearer than `start`, the full `opacity` from `end`, the ramp between squared. The same
+     * on the globe and the flat map at any pitch (a view straight down sees little beyond its
+     * centre, so it stays clear). `fog-ground-blend` is no longer read. Not a style property: set
+     * with `Map#setFogRange`.
      */
-    calculateFogBlendOpacity(pitch: number): number {
-        if (pitch < 60) return 0; // disable
-        if (pitch < 70) return (pitch - 60) / 10; // fade in
-        return 1;
+    fogRange: FogRange = {start: 0.02, end: 0.45, opacity: 0.9};
+
+    /** fogDepth, for a custom layer that fogs alike (the app's buildings field). */
+    fogDepth(tr: FogTransform): [number, number] {
+        return fogDepth(tr);
+    }
+
+    /** The fragment shaders' `u_fog`: start, end (0 the map's centre, 1 the horizon), opacity. */
+    fogUniform(): [number, number, number] {
+        const r = this.fogRange;
+        return [r.start, Math.max(r.end, r.start + 1e-3), Math.min(Math.max(r.opacity, 0), 1)];
     }
 }

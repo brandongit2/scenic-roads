@@ -75,7 +75,7 @@ describe('render to texture', () => {
     const painter = {
         layersDrawn: 0,
         context: new Context(gl),
-        transform: {zoom: 10, calculatePosMatrix: () => {}, getProjectionData(_a) { return {}; }, calculateFogMatrix: () => {}},
+        transform: {zoom: 10, calculatePosMatrix: () => {}, getProjectionData(_a) { return {}; }, cameraToCenterDistance: 1000, pixelsPerMeter: 1, getCameraAltitude: () => 1000},
         options: {moving: false},
         colorModeForRenderPass: () => ColorMode.alphaBlended,
         getDepthModeFor3D: () => DepthMode.disabled,

@@ -38,7 +38,6 @@ function drawDepth(painter: Painter, terrain: Terrain): void {
 }
 
 function drawTerrain(painter: Painter, terrain: Terrain, tiles: Tile[], renderContext: RenderContext): void {
-    const {isRenderingGlobe} = renderContext;
     const context = painter.context;
     const gl = context.gl;
     const tr = painter.transform;
@@ -56,8 +55,7 @@ function drawTerrain(painter: Painter, terrain: Terrain, tiles: Tile[], renderCo
         context.activeTexture.set(gl.TEXTURE0);
         texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_LINEAR);
         const eleDelta = terrain.getSkirtLength(tr.zoom);
-        const fogMatrix = tr.calculateFogMatrix(tile.tileID.toUnwrapped());
-        const uniformValues = terrainUniformValues(eleDelta, fogMatrix, painter.style.sky, tr.pitch, isRenderingGlobe);
+        const uniformValues = terrainUniformValues(eleDelta, painter.style.sky, tr);
         const projectionData = getProjectionDataForTile(renderContext, tile.tileID, {applyTerrainMatrix: false});
         program.draw(context, gl.TRIANGLES, depthMode, StencilMode.disabled, colorMode, CullFaceMode.backCCW, uniformValues, terrainData, projectionData, 'terrain', mesh.vertexBuffer, mesh.indexBuffer, mesh.segments);
     }

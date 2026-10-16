@@ -87,8 +87,19 @@ now source changes:
 - **Walls on the terrain under each corner** (`fill_extrusion*.vertex.glsl`): a base of 0 is the
   ground under each corner less 2 m, never above the roof (upstream sank every base 10 m below the
   centroid's ground).
-- **Fog on the extrusions** (`fill_extrusion.fragment.glsl`, `fill_extrusion_program.ts`,
-  `draw_fill_extrusion.ts`): they take the terrain's fog, as the terrain sets it for the same tile.
+- **Distance fog, on the globe too** (`sky.ts` `fogRange`, `Map#setFogRange`, `terrain.*.glsl`,
+  `terrain_program.ts`, `draw_terrain.ts`): upstream fogged the terrain on the flat map only, from
+  60° of pitch, by a depth from the map's centre to the far plane, so the globe (all but street
+  level in the app) never had fog. Here a vertex's fog depth comes from its clip w (its distance
+  from the camera along the view, in pixels in both projections), scaled to run from 0 at the
+  map's centre to 1 at the horizon (`fogDepth`: where a line of sight from the camera's altitude
+  grazes the sea-level sphere); the fog runs from the range's `start` to its `end` on that scale,
+  squared, to its `opacity`, from `fog-color` to `horizon-color` past `horizon-fog-blend` of the
+  ramp. At any pitch, either projection (a view straight down stays clear; the whole globe seen
+  from afar fades toward its rim). `fog-ground-blend` and the transforms' fog matrix are no longer
+  read. `Sky#fogUniform` and `Sky#fogDepth` give a custom layer the same values.
+- **Fog on the extrusions** (`fill_extrusion.*.glsl`, `fill_extrusion_program.ts`,
+  `draw_fill_extrusion.ts`): they take the terrain's distance fog, the same uniforms.
 - **Trilinear mipmaps on request** (`draw_raster.ts`): a raster layer whose metadata has
   `"scenic:mipmap": "linear"` is minified between its two nearest mipmap levels (the app's water).
 

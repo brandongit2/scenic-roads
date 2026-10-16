@@ -40,6 +40,7 @@ import type {RequestTransformFunction} from '../util/request_manager.ts';
 import type {LngLatLike} from '../geo/lng_lat.ts';
 import type {LngLatBoundsLike} from '../geo/lng_lat_bounds.ts';
 import type {AddLayerObject, FeatureIdentifier, StyleOptions, StyleSetterOptions} from '../style/style.ts';
+import type {FogRange} from '../style/sky.ts';
 import type {StyleImage, StyleImageInterface, StyleImageMetadata} from '../style/style_image.ts';
 import type {PointLike} from './camera.ts';
 import type {ScrollZoomHandler} from './handler/scroll_zoom.ts';
@@ -3902,6 +3903,22 @@ export class Map extends Evented<MapEventType> {
      */
     getSky(): SkySpecification {
         return this.style.getSky();
+    }
+
+    /**
+     * Scenic Roads: the distance fog's range (Sky#fogRange): no fog nearer than `start`, the full
+     * `opacity` from `end`, both on a scale from the map's centre (0) to the horizon (1). The
+     * fog's colours are the sky's `fog-color` and `horizon-color` (a transparent one: no fog). Once
+     * the style has loaded.
+     */
+    setFogRange(range: FogRange): this {
+        if (!this.style?.sky) return this;
+        this.style.sky.fogRange = {...range};
+        return this._update(true);
+    }
+
+    getFogRange(): FogRange | undefined {
+        return this.style?.sky ? {...this.style.sky.fogRange} : undefined;
     }
 
     /**
