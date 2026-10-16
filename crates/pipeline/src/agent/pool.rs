@@ -139,7 +139,7 @@ pub const QUIET_S: u64 = 25;
 pub const VIEW: &str = "view.json";
 
 /// How the pool runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// Off: the agent as it was.
@@ -893,7 +893,7 @@ pub fn said(e: &Event) -> String {
 /// (`Run::open`), and kept for its life. A process whose member takes up a term, or stops leading
 /// one, restarts into its new part once its first job's slot is free (phase 1: the lead's jobs run
 /// in its own process; phase 2 moves them into its slots).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     /// It leads: it plans, grants jobs through its coordinator, does the lead's duties.

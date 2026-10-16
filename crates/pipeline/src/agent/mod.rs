@@ -1028,6 +1028,9 @@ struct Heard {
 /// The last plan's view, kept for the heartbeat between plans.
 struct Planned {
     at: Instant,
+    /// What the plan depended on when made (`plan_seen`), and whether it had jobs.
+    seen: u64,
+    had_jobs: bool,
     waiting: Vec<Waiting>,
     regions: Vec<recipes::Recipe>,
     bad: Vec<(String, String)>,
@@ -2332,14 +2335,20 @@ impl Agent {
             self.tend_gate(r);
         }
 
-        // The plan: start the first job that can run. Made when one could start (the first job's
-        // slot free; the second's, each minute), when a job ends, and otherwise every five minutes
-        // for the heartbeat (between, its last view is shown).
+        // The plan: start the first job that can run. Made when a job ends; with the first job's
+        // slot free, when what it depends on changed or as a fallback (`plan_due`; once each loop
+        // took a core on an idle lead, task #154); while it runs, each minute for the second slot,
+        // else every five minutes for the heartbeat (between, its last view is shown).
         let second_free = self.second_allowed() && self.slots[1].running.is_none();
         // (Not while the first runs alone: nothing would start beside it.)
         let alone = self.slots[0].running.as_ref().is_some_and(|r| self.runs_alone(&r.spec));
         let every = Duration::from_secs(if second_free && !alone { 60 } else { 300 });
-        let plan_due = idle || ended || self.planned.as_ref().is_none_or(|p| p.at.elapsed() >= every);
+        // (Idle, made again only when something it depends on changed, or as a fallback: `plan_due`.)
+        let seen = match (&root, idle && !ended && !self.o.helper) {
+            (Some(r), true) => self.plan_seen(r),
+            _ => 0,
+        };
+        let plan_due = plan_due(idle && !self.o.helper, ended, self.planned.as_ref().map(|p| (p.at.elapsed(), p.seen, p.had_jobs)), seen, every);
         let plan = match &root {
             Some(root) if self.o.helper => {
                 // A helper plans nothing: it asks the build Mac for work, once its last is handed back.
@@ -2350,13 +2359,15 @@ impl Agent {
                     Some(p) if !plan_due => p.regions.clone(),
                     _ => load_regions(root).0,
                 };
-                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad: Vec::new() });
+                self.planned = Some(Planned { at: Instant::now(), seen: 0, had_jobs: false, waiting: waiting.clone(), regions, bad: Vec::new() });
                 plan
             }
             Some(root) if plan_due => {
+                // (What it depends on read before planning: a change while it plans is seen next loop.)
+                let seen = if seen == 0 { self.plan_seen(root) } else { seen };
                 let plan = self.plan(root, &c, &mut waiting);
                 let (regions, bad) = load_regions(root);
-                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad });
+                self.planned = Some(Planned { at: Instant::now(), seen, had_jobs: !plan.is_empty(), waiting: waiting.clone(), regions, bad });
                 plan
             }
             Some(_) => {
@@ -4288,6 +4299,40 @@ impl Agent {
     }
 
     /// The work there is, in order (docs/plan.md §8, Order).
+    /// A digest of what an idle agent's plan depends on, read cheaply: the build's records (the
+    /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
+    /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
+    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
+    fn plan_seen(&self, root: &Path) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let stat = |h: &mut std::collections::hash_map::DefaultHasher, p: &Path| {
+            let m = std::fs::metadata(p).ok();
+            m.as_ref().map(|m| (m.len(), m.modified().ok())).hash(h);
+        };
+        for f in ["state/build/manifest.json", "state/build/jobs.json"] {
+            stat(&mut h, &root.join(f));
+        }
+        for b in self.handoff_bases(root) {
+            stat(&mut h, &b);
+            let mut hosts: Vec<PathBuf> = std::fs::read_dir(&b).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+            hosts.sort();
+            for d in hosts {
+                d.hash(&mut h);
+                stat(&mut h, &d);
+            }
+        }
+        serde_json::to_string(&*self.inputs.view.borrow()).unwrap_or_default().hash(&mut h);
+        if let Some(p) = &self.pool_seen {
+            (&p.member, p.role, &p.members).hash(&mut h);
+            serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
+        }
+        (self.pool_mode, self.switch_seen).hash(&mut h);
+        serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
+        // (Never 0: that's "not read".)
+        h.finish() | 1
+    }
+
     fn plan(&self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let jobs = self.plan_unchecked(root, c, waiting);
         // (In the tests, every planned command checked against its program's table, crate::cli.)
@@ -6580,8 +6625,28 @@ fn key_names(path: &Path) -> Option<String> {
     Some(names.join(","))
 }
 
+/// How often an idle agent whose last plan was empty plans again when nothing it depends on
+/// (`Agent::plan_seen`) changed.
+const IDLE_REPLAN: Duration = Duration::from_secs(300);
+
+/// Whether the loop plans: when a job ended; with no plan yet; idle (the first job's slot free),
+/// each loop while its last plan had jobs (held, say: the jobs to start come from the plan), else
+/// when what the plan depends on changed (`seen` against the last plan's) or `IDLE_REPLAN` passed;
+/// while the first job runs, every `every`. `last`: the last plan's age, digest and whether it had jobs.
+fn plan_due(idle: bool, ended: bool, last: Option<(Duration, u64, bool)>, seen: u64, every: Duration) -> bool {
+    let Some((age, was, had_jobs)) = last else { return true };
+    if ended {
+        return true;
+    }
+    if idle {
+        return had_jobs || was != seen || age >= IDLE_REPLAN;
+    }
+    age >= every
+}
+
 /// The regions as the readers read them now (the accepted version: crate::inputs::regions::read),
 /// sorted by id, and why none can be read when it can't (one line).
+
 fn load_regions(root: &Path) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
     match crate::inputs::regions::read::source_now(root) {
         Ok(a) => match crate::inputs::regions::read::recipes(&a) {
@@ -6967,6 +7032,60 @@ fn test_agent(o: Options) -> Result<Agent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An idle agent plans again only when what its plan depends on changed, or its fallback is
+    /// due (task #154); a job ended, or none planned yet, always; a busy one every `every`.
+    #[test]
+    fn an_idle_agent_plans_when_something_changed() {
+        let s = Duration::from_secs;
+        let every = s(60);
+        assert!(plan_due(true, false, None, 7, every));
+        assert!(plan_due(false, true, Some((s(0), 7, false)), 7, every));
+        // Idle, nothing changed: not each loop, nor at the busy interval.
+        assert!(!plan_due(true, false, Some((s(20), 7, false)), 7, every));
+        assert!(!plan_due(true, false, Some((s(120), 7, false)), 7, every));
+        assert!(!plan_due(true, false, Some((IDLE_REPLAN - s(1), 7, false)), 7, every));
+        assert!(plan_due(true, false, Some((IDLE_REPLAN, 7, false)), 7, every));
+        // Idle with jobs it couldn't start: each loop (they start from the plan).
+        assert!(plan_due(true, false, Some((s(0), 7, true)), 7, every));
+        // Idle, something changed: at once.
+        assert!(plan_due(true, false, Some((s(0), 7, false)), 8, every));
+        // Busy: every `every`, whatever the digest.
+        assert!(!plan_due(false, false, Some((s(59), 7, false)), 8, every));
+        assert!(plan_due(false, false, Some((s(60), 7, false)), 7, every));
+    }
+
+    /// The digest of what an idle agent's plan depends on: the same while nothing changes; changed
+    /// by the records, a hand-off waiting, the pool's switch.
+    #[test]
+    fn the_plans_digest_follows_what_it_depends_on() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let mut last = a.plan_seen(&root);
+        assert_ne!(last, 0);
+        assert_eq!(a.plan_seen(&root), last);
+        // (Each change a different length: the digest doesn't rest on the file times' resolution.)
+        std::fs::write(root.join("state/build/manifest.json"), "{\"a\":\"b\"}").unwrap();
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        std::fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        std::fs::create_dir_all(crate::handoff::nas_base(&root).join("other-mac")).unwrap();
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        a.switch_seen = Some(pool::Mode::On);
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        assert_eq!(a.plan_seen(&root), now);
+    }
 
     /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as
     /// named, the OSM pass's), passes the steps' table (crate::cli): none refused at its start.
