@@ -201,7 +201,7 @@ now source changes:
   `movingRedraws` existing textures are redrawn a frame, whatever the reason (a source's tiles, a
   revision, a custom layer's `drapeRevision`), the others kept a few frames longer. A terrain tile
   without textures is drawn at once; at rest, as upstream. Until task #155 this was the app's
-  `web/src/drape.ts`, patching these internals. Tested in `render_to_texture.test.ts`.
+  `web/src/drape.ts`, patching these internals. Tested in `render_to_texture.test.ts` and `terrain_tile_manager.test.ts`.
 
 ### Custom layers: their place in the passes, and the frame's depth
 
