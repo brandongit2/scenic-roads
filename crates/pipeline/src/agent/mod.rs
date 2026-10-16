@@ -4944,13 +4944,13 @@ impl Agent {
         // (A worker that takes tails around: each of this Mac's units the moment its job gives it to
         // take its tail, crate::offload.)
         let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) { crate::offload::LEASE_WAIT.as_secs_f64() } else { 0.0 };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s }];
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, equal: false, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s }];
         // Its second job: what fits beside the first (a quarter of its memory, say); while the Mac's
         // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
             let mem_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
-            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, mem_mb, busy_s: busy(1, speed), unit_extra_s });
+            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, equal: false, mem_mb, busy_s: busy(1, speed), unit_extra_s });
         }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
@@ -4959,7 +4959,7 @@ impl Agent {
             let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
             let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
             let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s, unit_extra_s: 0.0 });
+            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, equal: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s, unit_extra_s: 0.0 });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -4973,7 +4973,7 @@ impl Agent {
                 running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
             }
         }
-        for (worker, step, targets, _) in leased {
+        for (worker, step, targets, _) in leased.iter().cloned() {
             if let Some(m) = machines.iter().position(|m| m.name == worker && m.helper) {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
@@ -4984,7 +4984,58 @@ impl Agent {
         let idle: Vec<forecast::Job> = backfill.iter().flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t)))).collect();
         // (A region's map update an hour after the last began, or a map update per region's gap.)
         let gap_s = if self.publishing.get().per_region { publish::update_gap(self.update_measured.get()) } else { build::PUBLISH_EVERY_S } as f64;
-        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, update_s, last_update_s, blind, chains: chain_jobs, after, idle, since_last, gap_s, under_way, machines, running })
+        let inp = forecast::Input { now: now_s(), before, regions, cost: &cost, update_s, last_update_s, blind, chains: chain_jobs, after, idle, since_last, gap_s, under_way, machines, running };
+        let mut f = forecast::forecast(&inp);
+        // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
+        // alone: each member's slots as lanes (this Mac's first: its map updates), the pages as one,
+        // each at its speed measured against this Mac (placement::measured_speeds; one not
+        // measured, this Mac's), its memory as it asks, busy with its lease's targets left.
+        if let (Some(c), true) = (&self.coord, self.pool.is_some()) {
+            let workers = c.workers();
+            let names: Vec<String> = workers.iter().map(|(n, _)| n.clone()).filter(|n| *n != self.host).collect();
+            let measured = placement::measured_speeds(&events, &self.host, &names);
+            let speed_of = |n: &str| measured.get(n).copied().map_or((1.0, false), |s| (s, true));
+            let lease_left = |n: &str, speed: f64| leased.iter().filter(|l| l.0 == n).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed.max(0.1) - *age as f64).fold(0.0, f64::max);
+            let lane = |name: &str, speed: f64, measured: bool, helper: bool, mem_mb: u64, busy_s: f64| Machine { name: name.to_string(), speed, measured, helper, second: false, equal: false, mem_mb, busy_s, unit_extra_s: 0.0 };
+            let mut lanes = vec![Machine { unit_extra_s, ..lane(&self.host, 1.0, true, false, u64::MAX, busy(0, 1.0)) }];
+            if self.second_allowed() {
+                let (sp, m) = speed_of(&second);
+                lanes.push(lane(&second, sp, m, false, u64::MAX, busy(1, sp)));
+            }
+            let (mut pages, mut pages_measured, mut pages_mem, mut any_page) = (0.0, true, 0u64, false);
+            for (n, w) in &workers {
+                if *n == self.host || *n == second {
+                    continue;
+                }
+                let (sp, m) = speed_of(n);
+                if w.kind == "web" {
+                    (pages, pages_measured, pages_mem, any_page) = (pages + sp, pages_measured && m, pages_mem.max(w.mem_mb), true);
+                } else {
+                    lanes.push(lane(n, sp, m, false, if w.mem_mb > 0 { w.mem_mb } else { 6144 }, lease_left(n, sp)));
+                }
+            }
+            if any_page {
+                lanes.push(lane("pages", pages, pages_measured, true, pages_mem.max(1), 0.0));
+            }
+            let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
+            for k in 0..SLOTS {
+                let Some(m) = lanes.iter().position(|m| m.name == self.worker_of(k)) else { continue };
+                let Some(r) = self.slots[k].running.as_ref() else { continue };
+                if let Some(b) = inp.before.iter().find(|b| b.0 == step_of(&r.spec.id)) {
+                    running.insert((b.0.clone(), b.1.clone()), m);
+                }
+                if let Some(w) = r.spec.record.as_ref() {
+                    running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
+                }
+            }
+            for (worker, step, targets, _) in &leased {
+                if let Some(m) = lanes.iter().position(|m| m.name == *worker) {
+                    running.extend(targets.iter().map(|t| ((step.clone(), t.clone()), m)));
+                }
+            }
+            f.equal = Some(Box::new(forecast::equal_machines(&inp, lanes, running)));
+        }
+        f
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its

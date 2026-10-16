@@ -690,8 +690,14 @@ What's planned of placement (phase 4, §12):
   unoffered, until the records hold it, and if its entry is refused, until the day is out. Built
   for the OSM pass (its stages' markers); a terrain area's raw tiles and the other progress in §2's
   table are done again elsewhere (planned).
-- **The forecast** is rewritten for equal machines (each member's slots as lanes, the pages as one):
-  a large piece of phase 4, not a detail.
+- **The forecast for equal machines** (crate::agent::forecast::equal_machines, built: phase 4's
+  twelfth batch, §12; reports only): in the pool, the lead's forecast carries a second one
+  (`equal`) run through on each member's slots as lanes (the lead's first slot first, which alone
+  makes the map updates; every other slot takes any work that fits its memory in the build Mac's
+  order), the pages as one lane (the shared steps alone, their measured speeds summed), each at its
+  speed measured against the lead (placement::measured_speeds; one not measured, the lead's), busy
+  with its lease's targets left. Nothing is placed or decided by it: the slack placement reads, and
+  everything else, is the forecast's as before.
 
 **A job far over its memory** (crate::agent::memguard, built: phase 4's second batch, §12). macOS
 swaps rather than kills, so a job holding more than its Mac has (terrain's whole-area run on the
@@ -1585,8 +1591,12 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       the long poles' order across steps with measured times and a slower page given a task ahead
       were shown only by the tests (the scratch state's fake jobs offer no subtrees and the region
       reached no map update).
-   12. **The forecast for equal machines** (§7.2): each member's slots as lanes, the pages as one,
-      from the measures and the placement. Reports only: no switch.
+   12. **The forecast for equal machines: built** (§7.2; crate::agent::forecast::equal_machines):
+      each member's slots as lanes, the pages as one, from the measures and the placement, as the
+      lead's forecast's `equal`. Reports only: no switch. Tests: every step shared by an equal
+      lane (the work before the regions and the units too), the map updates the first lane's
+      alone, the pages' lane only the shared steps, the same input the same forecast and more
+      lanes done no later; a lane given only what fits its memory, its running targets its own.
    13. **What goes:** the steps table (its last columns replaced: §7.7), the claims
       (crate::agent::claims, `state/build/claims/`), once no app that reads them runs; `install.sh`
       without `--agent` and `--helper` (a launch file passing them still accepted and ignored); the
