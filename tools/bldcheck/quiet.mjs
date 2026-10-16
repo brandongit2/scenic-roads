@@ -1,5 +1,5 @@
 // The quiet-Mac gate for the field's timings (task #102): a GPU timing taken while other work runs
-// isn't the renderer's. The build Mac shares its GPU's memory with the CPU, and builds heat it; on
+// isn't the renderer's. The M4 shares its GPU's memory with the CPU, and builds heat it; on
 // 10 Oct, under other agents' builds (1-minute load 110–150), Manhattan at 70° timed 5.3 ms in one
 // session and 8.1–8.3 in another, the same code.
 //

@@ -42,8 +42,8 @@ impl Conditions {
 
 /// What an agent reads of the Mac it runs on: its power, its user's idleness, whether it's at
 /// home, its memory. The real Mac's; or a test's, fixed, so the agents a test runs do the same
-/// whichever Mac runs it, unplugged or loaded, at home or away, its owner at the keyboard or not (a
-/// build Mac unplugged at 18 % failed the pool's tests, 8 Oct).
+/// whichever Mac runs it, unplugged or loaded, at home or away, its owner at the keyboard or not (the
+/// M4 unplugged at 18 % failed the pool's tests, 8 Oct).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mac {
     Real,

@@ -1,5 +1,5 @@
 //! A unit job's tasks (docs/workers.md §3): the part of a unit's tail any worker can run, offered
-//! through the build Mac's coordinator (crate::coord) while the job prepares its next units. The
+//! through the lead's coordinator (crate::coord) while the job prepares its next units. The
 //! steps that read the caches (the canopy files) run here, where the data is; those that read only
 //! the unit's folder (`Run::reads`) may run anywhere: the files they read are cloned into the task's
 //! own folder (copy-on-write: instant, and the job may go on in the unit's), the coordinator serves
@@ -99,7 +99,7 @@ pub enum Settled {
 
 impl Offload {
     /// The coordinator this job may offer tasks through (`SCENIC_COORD`, `SCENIC_COORD_TOKEN`: the
-    /// agent's, on the build Mac); tasks' folders under `scratch`.
+    /// agent's, on the lead); tasks' folders under `scratch`.
     pub fn from_env(scratch: &Path) -> Option<Offload> {
         let url = std::env::var("SCENIC_COORD").ok()?;
         let token = std::env::var("SCENIC_COORD_TOKEN").ok()?;
@@ -436,7 +436,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     // (What the steps write is told by its time: after this.)
     std::thread::sleep(std::time::Duration::from_millis(20));
     let started = std::time::SystemTime::now();
-    // (The NAS's places, here: as the build Mac has them. A worker without the NAS fails only a
+    // (The NAS's places, here: as the lead has them. A worker without the NAS fails only a
     // task whose steps read it.)
     let uses = |k: &str| runs.iter().any(|r| r.args.iter().chain(r.env.iter().map(|(_, v)| v)).any(|v| v.contains(k)));
     let nas = |p: &str| -> Result<Option<PathBuf>> {

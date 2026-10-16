@@ -2415,7 +2415,7 @@ mod tests {
 
     #[test]
     fn a_listing_lost_is_asked_for_again_once_overdue() {
-        // A lead that never sleeps (the build Mac, on power) whose agent loses its take-up's
+        // A lead that never sleeps (the M4, on power) whose agent loses its take-up's
         // listing, never handing it back. (Re-review 3: it was never caught up again, so no
         // catalog and no GC, and nothing said why.) Nothing else is asked for while it's out; two
         // hours on with none back, it's said and asked for again; once that one's back it's caught
@@ -2533,7 +2533,7 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         mem.create_new(records::FIRST, b"").unwrap();
-        let t1 = Term { term: 1, member: A.into(), host: "Mac-mini".into(), app: V1.into(), since: T0, how: "the build Mac when the pool began".into(), from: 0, seq: None };
+        let t1 = Term { term: 1, member: A.into(), host: "Mac-mini".into(), app: V1.into(), since: T0, how: "the first Mac in the pool".into(), from: 0, seq: None };
         mem.create_new(&term::path(1), &serde_json::to_vec_pretty(&t1).unwrap()).unwrap();
         let ia = Mac::new(&mem);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved { member: A.into(), ..Default::default() });

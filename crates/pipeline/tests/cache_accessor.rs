@@ -196,7 +196,7 @@ fn the_python_steps_hold_what_they_read() {
 #[test]
 fn every_internet_request_asks_first() {
     const ASKED_ELSEWHERE: &[(&str, &str, &str)] = &[
-        ("crates/pipeline/src/coord/client.rs", "*", "the build Mac's coordinator, on the LAN"),
+        ("crates/pipeline/src/coord/client.rs", "*", "the lead's coordinator, on the LAN"),
         ("crates/pipeline/src/bin/scenic-metrics.rs", "meta_get", "fetch_file asks before its first"),
     ];
     let root = root();

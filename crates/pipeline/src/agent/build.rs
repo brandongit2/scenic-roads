@@ -1,4 +1,4 @@
-//! What the build Mac builds for the regions (docs/plan.md §6, Job keys; §8, Order): per z3 pack,
+//! What the lead builds for the regions (docs/plan.md §6, Job keys; §8, Order): per z3 pack,
 //! the terrain and then the slope of its z6 tiles near the coverage; base(U) for every unit whose
 //! piece meets the coverage, a region at a time; pack(T) for the z6 tiles near changed units, the
 //! lo packs above them; then a catalog, as each region is done (`plan`).
@@ -1629,7 +1629,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // The trains' and the landmarks' chains: from the start, each step once what it reads is built
     // (`landmarks_work`: none waits for the units but the overlays), listed after the regions'
     // work. A second job beside the regions' takes them first (crate::agent, Two jobs at once), a
-    // helper the candidates and peaks, the build Mac's own job once the regions' work is done.
+    // helper the candidates and peaks, the lead's own job once the regions' work is done.
     let chains = |last: bool| -> Vec<Work> { rail_chain(cov, date, m, done, inputs).into_iter().chain(landmarks_work(cov, date, m, done, &terrain_left, last)).collect() };
     let Some(reach) = reach.filter(|_| !waiting) else {
         push(&mut work, "terrain", terrain);
@@ -2619,7 +2619,7 @@ pub struct Step {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Which of its jobs a helper may do (crate::agent::steps::SHARED, `mark_shared`): "all", or
-    /// the parts by name ("candidates and peaks"); none, the build Mac's alone.
+    /// the parts by name ("candidates and peaks"); none, the lead's alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
 }

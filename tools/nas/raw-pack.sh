@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Pack the NAS's loose raw terrain tiles into its archives (pipeline::rawpack: grouped as the terrain
 # is, named in sources/aws-terrarium/packs/index.json). The NAS lists them (one walk), this Mac puts
-# the list in the areas' order, and the NAS's own tar sends them in that order over SSH: the build
+# the list in the areas' order, and the NAS's own tar sends them in that order over SSH: this
 # Mac packs an area at a time, putting each archive on the NAS whole (a large file each, where a tile
 # at a time over SMB the NAS takes ~23 a second), with a GB or two on its own disk at most. The run
 # fails unless the stream carried every file listed. The list leaves out the tiles the archives hold

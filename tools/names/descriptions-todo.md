@@ -1,6 +1,6 @@
 # Descriptions to write
 
-Written by the build Mac after each build (`names-todo`): the landmarks (`landmarks.jsonl`: the
+Written by the lead after each build (`names-todo`): the landmarks (`landmarks.jsonl`: the
 eight kinds of points, heritage sites among them) and the parks and protected areas
 (`areas.jsonl`) that have an English Wikipedia article or a heritage register entry and no
 description yet, by fame, highest first: how far down to go is a choice. The lists are made again

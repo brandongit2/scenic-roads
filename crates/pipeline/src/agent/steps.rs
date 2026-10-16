@@ -59,13 +59,11 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 
 /// The table, in no order of its own (the ranks order what's ranked).
 pub const TABLE: [Step; 48] = [
-    // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
-    // planet with room to spare, less the pack cache it clears).
+    // The OSM pass: the planet filtered, its sets, pieces and road values.
     Step { alone: true, ..base("osm-pass", w_osm_pass) },
     Step { alone: true, ..base("pass-sets", w_pass_sets) },
     // (osmium's export of the outline set and the assembly: 8.3 GB at most measured, the
-    // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15; its export's files and the outlines,
-    // 2.7 GB, here.)
+    // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15.)
     Step { mem_mb: 9216, alone: true, ..base("outlines", w_outlines) },
     Step { alone: true, ..base("trailends", w_trailends) },
     Step { alone: true, ..base("reach", w_reach) },
@@ -74,10 +72,10 @@ pub const TABLE: [Step; 48] = [
     Step { alone: true, ..base("summits", w_summits) },
     Step { alone: true, ..base("labels", w_labels) },
     // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
-    // merged fill's, 10.4 GB at most measured, 2026-10-15; its runs' files, under a GB each, here.)
+    // merged fill's, 10.4 GB at most measured, 2026-10-15.)
     Step { mem_mb: 12288, alone: true, ..base("lakefill", w_lakefill) },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
-    // 2026-10-08; its tiles' archive, 1.8 GB worldwide, and their packs written here first.)
+    // 2026-10-08.)
     Step { mem_mb: 8192, alone: true, ..base("water", w_water) },
     Step { alone: true, answered: true, ..base("heritage-sites", w_heritage_sites) },
     Step { alone: true, ..base("gc", w_none) },
@@ -93,8 +91,7 @@ pub const TABLE: [Step; 48] = [
     Step { alone: true, ..base("regions-extract", w_regions_extract) },
     Step { ..base("names-todo", w_none) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
-    // before pieces): each z6 tile's raw tiles' archive copied here and the new raw tiles held
-    // twice while they're packed onto the NAS, 5 GB past the reserve.
+    // before pieces).
     Step { shared: Some(0), batch: 8, ..base("terrain", w_terrain) },
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its pieces' z9 means, up to 4 MB a
     // piece, and half a GB besides.)

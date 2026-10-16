@@ -5,7 +5,7 @@
 //! So it runs beside other jobs: a job's files are young, or named by its entry once it's written.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
-//! 2026-10-02), and the build Mac can't use SSH unattended (1Password asks each session).
+//! 2026-10-02), and the M4 can't use SSH unattended (1Password asks each session).
 //!
 //! Only the folders catalogs index are swept (`base/`, `global/`, `layers/`, `hidata/`, …: the
 //! first path component of every referenced file), and the sources of passes older than the newest

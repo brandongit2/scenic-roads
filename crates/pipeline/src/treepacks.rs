@@ -610,7 +610,7 @@ mod tests {
         }
     }
 
-    /// Byte identity on the build's own data (docs/plan.md §6, Trees), by hand on the build Mac, the
+    /// Byte identity on the build's own data (docs/plan.md §6, Trees), by hand on the M4, the
     /// NAS only read: for each z3 tile of `P5T_AREAS` ("3/7/3,3/7/2"), its whole run as the build
     /// makes it today (the baseline), and its pieces' runs and their assembly, from the live coverage
     /// and squares (`P5T_ROOT`, the NAS's project folder; the canopy squares read in place where

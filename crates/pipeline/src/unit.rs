@@ -621,7 +621,7 @@ pub fn stage_said(stage: &str, frac: f64, took: Option<std::time::Duration>) {
 }
 
 /// A unit's stages in the order they run (`Laps::lap`'s and the programs' names), each with about
-/// how long it takes (seconds: the build Mac's, over its areas of 2026-10): how far an area is, by
+/// how long it takes (seconds: the M4's, over its areas of 2026-10): how far an area is, by
 /// the stages it's through (`Areas`), until this Mac has timed its own.
 pub const STAGES: [(&str, f64); 25] = [
     ("piece copied from the NAS", 10.0),

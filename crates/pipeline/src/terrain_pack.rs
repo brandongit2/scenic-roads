@@ -628,7 +628,7 @@ enum Opened {
 /// The tiles of an area read straight from the NAS's archives before they're copied here whole.
 const RANGED: usize = 16;
 
-/// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, then on
+/// AWS's raw tiles, kept so each is downloaded once: in the lead's cache as they come, then on
 /// the NAS packed (crate::rawpack: archives grouped as the terrain is, packed at the end of the job
 /// that fetched them, or by room-making), read from there (`Opened`: a few tiles of an area by
 /// range, else its archives copied here whole); and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
@@ -2362,7 +2362,7 @@ pub(crate) mod tests {
         assert!(build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap_err().to_string().contains("no mid"));
     }
 
-    /// Byte identity on the build's own data, by hand on the build Mac (§10): the terrain and slope
+    /// Byte identity on the build's own data, by hand on the M4 (§10): the terrain and slope
     /// packs of the z3 tiles `P5_AREAS` ("3/2/2,3/0/2") in two roots' manifests, `P5_A` (an area's
     /// whole run, main's) and `P5_B` (its pieces and assembly), and `P5_LIVE` (the NAS's, if set):
     /// each pack's content name, and every tile's pixels (terrain's heights, slope's quarters),

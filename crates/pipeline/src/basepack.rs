@@ -1,4 +1,4 @@
-//! Reading base packs (docs/formats.md "Base pack") and road values from local files (the build
+//! Reading base packs (docs/formats.md "Base pack") and road values from local files (this
 //! Mac's cache), memory-mapped, as typed slices.
 
 use crate::legacy::Unit;

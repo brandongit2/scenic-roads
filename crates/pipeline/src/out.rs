@@ -1,16 +1,16 @@
 //! Where build steps put their outputs: the NAS project folder (docs/plan.md §3), as immutable
 //! content-named files, with a build manifest (logical name → file) the catalog is made from.
 //!
-//! A file is first written locally (the build Mac's SSD), hashed, then copied to `<name>.tmp` on
+//! A file is first written locally (this Mac's SSD), hashed, then copied to `<name>.tmp` on
 //! the NAS, read back past the client's cache and checked against its hash, and renamed into place
 //! (`store::naming::write_atomic`). A file already there is reused and touched, so GC sees it as
 //! in use. `verify` can also check uploads on the NAS itself (SHA-256 over SSH, run by hand).
 //!
-//! Several steps may run at once on the build Mac (the agent's job and a manual one): each records
+//! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
 //! when it saves. A helper's job on the other Mac (docs/plan.md §8, Two Macs; `SCENIC_HANDOFF`)
-//! saves its changes as hand-offs instead (crate::handoff), which the build Mac's agent merges: the
-//! build Mac alone writes the manifest.
+//! saves its changes as hand-offs instead (crate::handoff), which the lead's agent merges: the
+//! lead alone writes the manifest.
 
 use anyhow::{bail, Context, Result};
 use sha2::Digest;
@@ -407,7 +407,7 @@ impl Out {
         self.save_held(&lock)
     }
 
-    /// Takes in a hand-off's changes (the build Mac's agent merging them: crate::handoff::merge).
+    /// Takes in a hand-off's changes (the lead's agent merging them: crate::handoff::merge).
     pub fn absorb(&mut self, h: &crate::handoff::Handoff) {
         for (k, v) in &h.changes {
             match v {

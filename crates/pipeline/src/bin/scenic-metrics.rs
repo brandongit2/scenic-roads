@@ -617,7 +617,7 @@ fn canopy_tiff(file: File) -> Result<Tiff> {
 
 /// After error `e` reading canopy file `path`: this Mac's copy is deleted so it's taken again, the
 /// second time the NAS's too; the third time, the error. One read where it lies (`read_only`): the
-/// error at once (it's the NAS's copy, which the build Mac takes again if it's damaged).
+/// error at once (it's the NAS's copy, which the lead takes again if it's damaged).
 fn damaged(path: &Path, store: Option<&Path>, read_only: bool, taken: &mut usize, e: anyhow::Error) -> Result<()> {
     if read_only {
         return Err(e.context(format!("{} (read where it lies)", path.display())));
@@ -1205,7 +1205,7 @@ mod tests {
         assert!(fetch_file(&agent, never, &store.join("b.tif"), None, true).unwrap().is_none());
         std::fs::write(store.join("d.tif"), &b[..b.len() - 1]).unwrap();
         assert!(fetch_file(&agent, never, &store.join("d.tif"), None, true).is_err());
-        assert!(store.join("d.tif").exists(), "a copy cut short is left to the build Mac");
+        assert!(store.join("d.tif").exists(), "a copy cut short is left to the lead");
         assert!(fetch_file(&agent, std::slice::from_ref(&url), &store.join("e.tif"), None, true).is_err());
         assert!(!store.join("e.tif").exists());
         assert_eq!(mtime(&a), at, "not touched");

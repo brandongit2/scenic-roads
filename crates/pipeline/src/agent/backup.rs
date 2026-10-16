@@ -1,6 +1,6 @@
 //! Dated copies of the user's folders (docs/plan.md §3, Backups): `inputs/` (every drop box, the
 //! translations and descriptions among them since #137) and the input check's acceptances (`state/inputs/accepted/`), kept 30 days under
-//! `state/backups/` on the NAS and mirrored to the build Mac.
+//! `state/backups/` on the NAS and mirrored to the lead.
 //!
 //! Content-addressed, so an unchanged file is stored once however many days keep it:
 //! `blobs/<hash16>` holds each version of a file, and `<YYYY-MM-DD>.json` lists the folder as it
@@ -218,7 +218,7 @@ fn prune(dir: &Path, today: &str, keep_days: u64) -> Result<(usize, usize)> {
     Ok((removed, blobs_removed))
 }
 
-/// Mirrors the backups to the build Mac: missing blobs and days copied, the same pruning.
+/// Mirrors the backups to the lead: missing blobs and days copied, the same pruning.
 fn mirror(dir: &Path, local: &Path, today: &str, keep_days: u64) -> Result<()> {
     std::fs::create_dir_all(local.join("blobs"))?;
     for d in days(dir) {

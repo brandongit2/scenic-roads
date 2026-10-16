@@ -12,19 +12,19 @@
 //! all those after it (archives from the first that isn't are merged into one), so an area has a
 //! dozen at most, and a tile is rewritten a dozen times at most, however it came.
 //!
-//! On the NAS, the build Mac's archives are named by the index or listed in its `gone`, with when:
+//! On the NAS, the lead's archives are named by the index or listed in its `gone`, with when:
 //! an archive is listed before it's put there and taken off once named (named only once it's there
 //! whole), and one the index stops naming (merged) is listed then. A day later, unnamed, it's
 //! deleted: so a job that read the index before stays right, and one cut short putting an archive
 //! there leaves nothing behind (its temporary file is swept a day later too). An archive the index
-//! names that's gone from the NAS is passed over and taken out of it. The build Mac alone changes
+//! names that's gone from the NAS is passed over and taken out of it. The lead alone changes
 //! the index (it alone writes the build's records: crate::out::check_writer), under its build lock.
 //! A helper's jobs pack too, every loose tile in its cache (`SCENIC_HANDOFF`): they put their
-//! archives on the NAS unlisted and hand them off; the build Mac names them as it merges the
+//! archives on the NAS unlisted and hand them off; the lead names them as it merges the
 //! hand-off (`name_handed`). One a day old that's still neither named nor listed (its hand-off
 //! never came) is listed to go then, so it's deleted a day after that.
 //!
-//! The build Mac's cache keeps the tiles AWS just gave (`<z>/<x>/<y>.png`, `.none`) until they're
+//! The lead's cache keeps the tiles AWS just gave (`<z>/<x>/<y>.png`, `.none`) until they're
 //! packed, and copies of the archives it reads (`packs/`), each copied whole from the NAS once and
 //! checked against its name.
 
@@ -268,9 +268,9 @@ pub struct Packer {
     /// Whether the archives made stay in `dir/packs` (a job's: read again soon) or go once on the
     /// NAS (the NAS's own tiles packed: tens of GB).
     pub keep: bool,
-    /// A helper's job's outbox (`SCENIC_HANDOFF`): its archives go onto the NAS, and the build Mac,
+    /// A member's job's outbox (`SCENIC_HANDOFF`): its archives go onto the NAS, and the lead,
     /// which alone writes the index, names them from its hand-off (`handed`, crate::handoff). None:
-    /// the build Mac's own packing, the index changed here.
+    /// the lead's own packing, the index changed here.
     handoff: Option<PathBuf>,
     handed: Vec<(String, Pack)>,
 }
@@ -405,7 +405,7 @@ impl Packer {
     pub fn finish_with(mut self, progress: Progress) -> Result<Vec<String>> {
         self.flush()?;
         let touched: Vec<String> = std::mem::take(&mut self.touched).into_iter().collect();
-        // A helper's: its archives handed off for the build Mac to name (and merge, when it packs
+        // A member's: its archives handed off for the lead to name (and merge, when it packs
         // those areas next).
         if let Some(dir) = self.handoff.clone() {
             if !self.handed.is_empty() {
@@ -781,7 +781,7 @@ pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progre
     pack_local_to(dir, store, root, keep, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from), progress)
 }
 
-/// `pack_local_with`, for a helper's job's outbox `handoff` or (None) the build Mac.
+/// `pack_local_with`, for a member's job's outbox `handoff` or (None) the lead.
 fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Option<PathBuf>, progress: Progress) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
@@ -1175,7 +1175,7 @@ mod tests {
             assert!(there(&store, p) && named_for(&p.name, area), "{}", p.name);
             assert!(!dir.join("packs").join(&p.name).exists());
         }
-        // The build Mac names them; a missing one isn't.
+        // The lead names them; a missing one isn't.
         let lock = crate::out::BuildLock::take(&root).unwrap();
         let ghost = ("6-1-1".to_string(), Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 });
         assert_eq!(name_handed(&store, &[raw.clone(), vec![ghost]].concat(), &lock).unwrap().new, 2);
@@ -1233,7 +1233,7 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");
         std::fs::create_dir_all(&outbox).unwrap();
-        // (The build Mac's store has its index: one missing while there are archives isn't written.)
+        // (The lead's store has its index: one missing while there are archives isn't written.)
         put(&dir, "8/128/85.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);

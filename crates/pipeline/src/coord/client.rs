@@ -1,6 +1,6 @@
 //! A worker's side of the coordinator (the M1's agent, a job offering tasks). It finds the
 //! coordinator in `state/coordinator.json` on the NAS and reads that again whenever it can't reach
-//! it, or the token is refused: the build Mac may have restarted, moved networks, or made a new
+//! it, or the token is refused: the lead may have restarted, moved networks, or made a new
 //! token.
 
 use super::{Ask, Contact, Done, Fail, Grant};
@@ -32,7 +32,7 @@ pub struct Client {
 /// What the coordinator answered: its status and its JSON (Null for none).
 pub type Reply = (u16, serde_json::Value);
 
-/// Work refused to this worker as it is (an agent on an older app than the build Mac's, or the build
+/// Work refused to this worker as it is (an agent on an older app than the lead's, or the build
 /// paused): why, in words for its status, and the build's pause, when that's why.
 #[derive(Debug)]
 pub struct Refused {
@@ -148,7 +148,7 @@ impl Client {
     }
 
     /// The HTTP client for a request to `path`: a file (a task's input or output, `/work/in/`,
-    /// `/work/out/`) has two minutes; anything else 15 s, so a build Mac that doesn't answer (asleep,
+    /// `/work/out/`) has two minutes; anything else 15 s, so a lead that doesn't answer (asleep,
     /// its agent stopped) holds no worker's loop up for long.
     fn agent(path: &str) -> ureq::Agent {
         let files = path.starts_with("/work/in/") || path.starts_with("/work/out/");
@@ -188,7 +188,7 @@ impl Client {
                 let Some(root) = &self.root else { break };
                 match read_contact(root) {
                     Ok(Some(c)) => *self.contact.lock().unwrap() = c,
-                    Ok(None) => bail!("the build Mac's coordinator is gone (no {})", super::contact_path(root).display()),
+                    Ok(None) => bail!("the lead's coordinator is gone (no {})", super::contact_path(root).display()),
                     Err(e) => return Err(e),
                 }
             }
@@ -262,7 +262,7 @@ impl Client {
         let a = Ask { worker: self.worker.clone(), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
             (200, v) => Ok(Some(serde_json::from_value(v)?)),
-            (409, v) => Err(Refused { why: v["error"].as_str().unwrap_or("the build Mac gives this Mac no work as it is").to_string(), pause: serde_json::from_value(v["pause"].clone()).ok().flatten() }.into()),
+            (409, v) => Err(Refused { why: v["error"].as_str().unwrap_or("the lead gives this Mac no work as it is").to_string(), pause: serde_json::from_value(v["pause"].clone()).ok().flatten() }.into()),
             _ => Ok(None),
         }
     }

@@ -22,8 +22,8 @@
 //! At its end (`Kept::keep`), what the step changed goes to the NAS the same way, but never over an
 //! archive that isn't the one this Mac last matched: another writer's since (the heritage-sites and
 //! heritage jobs share one, and once the lead can move, another Mac may run a step meanwhile) is made
-//! one with this Mac's where it can be, else left as it is, and the next start takes it. The build
-//! Mac's agent sends what its caches have of the pass's answers as it starts, where the NAS hasn't
+//! one with this Mac's where it can be, else left as it is, and the next start takes it. The
+//! lead's agent sends what its caches have of the pass's answers as it starts, where the NAS hasn't
 //! their archive (`seed`).
 
 use anyhow::{ensure, Context, Result};
@@ -583,7 +583,7 @@ pub fn heritage(root: &Path, epoch: &Path, snap: &Path, date: &str, id: &str) ->
 /// The answers this Mac's agent cache (`cache`) has for the newest complete pass on the NAS
 /// (`root`), sent there where it hasn't their archive: the items job's (`items/`), and the heritage
 /// chain's (each copy of the registers' snapshot made for the pass, `heritage-<date>-<id>/`, its
-/// snapshot here too). The build Mac's agent, as it starts, so a cache from before the NAS kept
+/// snapshot here too). The lead's agent, as it starts, so a cache from before the NAS kept
 /// answers, or one a stopped job left, needn't wait for the step's next run (for the next pass,
 /// perhaps months away). What it sent, in words.
 ///
@@ -974,7 +974,7 @@ mod tests {
     fn the_first_run_seeds_the_nas_and_another_mac_takes_its_answers() {
         let d = tempfile::tempdir().unwrap();
         let (root, scratch) = (d.path().join("nas"), d.path().join("scratch"));
-        // The build Mac's cache, from before the NAS kept answers: two epochs' (only this pass's go).
+        // The lead's cache, from before the NAS kept answers: two epochs' (only this pass's go).
         let m4 = d.path().join("m4/items");
         put(&m4.join("facts-2026-09-28.jsonl"), "{\"qid\":\"Q1\"}\n");
         put(&m4.join("wp-2026-09-28.jsonl"), "{\"qid\":\"Q1\",\"n\":2}\n");
@@ -1020,7 +1020,7 @@ mod tests {
         // A run stopped before its end (no keep): sent at the next one's start.
         put(&facts(&m4), &qids(&["Q1", "Q2", "Q3"]));
         assert_eq!(k4.sync(&files(&m4), &scratch).unwrap(), Synced::Sent);
-        // The other Mac takes them and fetches more (the lead moved); the build Mac's run, begun
+        // The other Mac takes them and fetches more (the lead moved); the lead's run, begun
         // before, fetches others: its start makes the two one, each's kept.
         assert_eq!(k1.sync(&files(&m1), &scratch).unwrap(), Synced::Took);
         put(&facts(&m1), &qids(&["Q1", "Q2", "Q3", "Q5"]));
@@ -1060,7 +1060,7 @@ mod tests {
         put(&m1.join("facts-2026-09-28.jsonl"), "{\"qid\":\"Q1\",\"old\":1}\n");
         put(&m1.join("wp-2026-09-28.jsonl"), "{\"qid\":\"Q1\"}\n");
         let k1 = items(&root, &m1, "2026-09-28");
-        // (Its mark, as the build Mac's was before the deletion: an archive it matched then.)
+        // (Its mark, as the lead's was before the deletion: an archive it matched then.)
         let first = Mark { archive: "0".repeat(16), files: hashes(&m1, &items_files(&m1, "2026-09-28")).unwrap() };
         k1.write_mark(&first).unwrap();
         assert_eq!(k1.sync(&items_files(&m1, "2026-09-28"), &scratch).unwrap(), Synced::Took);
@@ -1109,14 +1109,14 @@ mod tests {
         put(&m4.join("facts-2026-09-28.jsonl"), &qids(&["Q1"]));
         let (k4, k1) = (items(&root, &m4, "2026-09-28"), items(&root, &m1, "2026-09-28"));
         assert_eq!(k4.sync(&files(&m4), &scratch).unwrap(), Synced::Sent);
-        // The build Mac's run starts (Same) and runs long; the other Mac takes the archive,
+        // The lead's run starts (Same) and runs long; the other Mac takes the archive,
         // fetches articles, keeps them.
         assert_eq!(k4.sync(&files(&m4), &scratch).unwrap(), Synced::Same);
         assert_eq!(k1.sync(&files(&m1), &scratch).unwrap(), Synced::Took);
         put(&m1.join("wp-2026-09-28.jsonl"), &qids(&["Q1"]));
         put(&m1.join("fetched-2026-09-28.json"), "{\"first\":\"2026-10-06\",\"last\":\"2026-10-06\"}");
         assert!(k1.keep(&files(&m1), &scratch).unwrap());
-        // The build Mac's run ends: its facts and the other's articles both kept, here and there.
+        // The lead's run ends: its facts and the other's articles both kept, here and there.
         put(&m4.join("facts-2026-09-28.jsonl"), &qids(&["Q1", "Q2"]));
         put(&m4.join("fetched-2026-09-28.json"), "{\"first\":\"2026-10-05\",\"last\":\"2026-10-05\"}");
         assert!(k4.keep(&files(&m4), &scratch).unwrap());

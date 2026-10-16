@@ -9,7 +9,7 @@ COLS = {'src': (16, 180), 'd1': (224, 196), 'd2': (448, 196), 'd3': (672, 196), 
         'srv': (1114, 154), 'brw': (1288, 180)}
 CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
 TAB = {'area': 'PER AREA', 'pack': 'PER Z3 PACK', 'global': 'WORLDWIDE', 'task': 'TASK'}
-# Before a step's language: the M1's helper may take its jobs (agent::claims::SHARED).
+# Before a step's language: members may take its jobs (agent::steps::SHARED).
 SHARED = '⇄'
 # How reproducible a curated input is today: its method written down, partly, not at all, or its maker gone.
 REPRO = {'doc': 'method written down', 'part': 'partly written down', 'none': 'undocumented', 'gone': 'maker gone, frozen'}

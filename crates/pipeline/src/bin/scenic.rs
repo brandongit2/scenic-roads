@@ -376,7 +376,7 @@ fn status(args: &[String]) -> Result<()> {
         bail!("no status yet: the build agent hasn't run (or the NAS isn't mounted)");
     };
     let c = &st.conditions;
-    println!("Build Mac {} (app {}), seen {}", st.host, st.app, ago(st.beat));
+    println!("Lead {} (app {}), seen {}", st.host, st.app, ago(st.beat));
     println!(
         "  {} · {} · {}",
         if c.ac { "on power" } else { "on battery" },

@@ -1,9 +1,9 @@
 //! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
-//! each job the build Mac started and ended, each lease a worker took, handed back, failed or let
+//! each job the lead started and ended, each lease a worker took, handed back, failed or let
 //! lapse, each task done or failed, the map updates begun and their catalogs, the pauses,
-//! the workers first heard from, the devices let help or not, the agents started, the build
-//! Mac's conditions changing, and each Mac's build caches trimmed or cleared. Kept on the build
-//! Mac's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
+//! the workers first heard from, the devices let help or not, the agents started, the
+//! lead's conditions changing, and each Mac's build caches trimmed or cleared. Kept on the
+//! lead's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
 //! `/work/history` (the events after a number) and summed by the hour for the page (`rates`).
 
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,11 @@ pub struct Event {
     /// When (unix seconds).
     #[serde(default)]
     pub t: u64,
-    /// What: "start" and "end" (a build Mac's job), "lease", "done", "fail" and "lapse" (a worker's
+    /// What: "start" and "end" (a lead's job), "lease", "done", "fail" and "lapse" (a worker's
     /// job), "task" and "task-fail", "map-update" (a map update began: its regions; "round" before task #209, still read by forecast::update_secs while the week's history holds one) and
     /// "catalog", "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
-    /// "conditions" (the build Mac's changed), "caches" (a Mac's build caches trimmed after the
+    /// "conditions" (the lead's changed), "caches" (a Mac's build caches trimmed after the
     /// build, or cleared on its owner's ask: what was freed, in the note).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,7 +160,7 @@ impl History {
     }
 
     /// The last `hours` hours to `now`, an hour a row (`Rates`): each worker's targets finished
-    /// (the build Mac's jobs' at their end, a worker's at its hand-off, a task at its end) and the
+    /// (the lead's jobs' at their end, a worker's at its hand-off, a task at its end) and the
     /// seconds it was busy (a job from its start to its end, a lease from its grant to its end, a
     /// task its time back from its end), and the seconds the build was paused.
     pub fn rates(&self, now: u64, hours: u64) -> Rates {
@@ -284,7 +284,7 @@ mod tests {
         let mut h = History::load(None);
         // (Hours of a day ago: kept, as the last week's are.)
         let t = (now_s() / 3600 - 24) * 3600;
-        // The build Mac's job over the hour's end, a worker's lease within the first, a page's task.
+        // The lead's job over the hour's end, a worker's lease within the first, a page's task.
         h.add(Event { step: Some("unit".into()), ..ev("start", t + 1800, "m4") });
         h.add(Event { step: Some("unit".into()), targets: vec!["6/1/1".into(), "6/1/2".into()], ok: Some(true), ..ev("end", t + 4500, "m4") });
         h.add(Event { lease: Some(7), step: Some("terrain".into()), ..ev("lease", t + 600, "m1") });

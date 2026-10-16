@@ -42,9 +42,9 @@
 //!   the pageview months, for an items or heritage job; a unit's canopy squares and packs) goes
 //!   last.
 //!
-//! After the build (`trim`): once the build has nothing left to build (the build Mac's forecast:
+//! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
 //! no work, no map update under way), jobs running here or not, the agent empties those caches by the same
-//! rules, once (again only after a job has run here since): a helper all of them, the build Mac all
+//! rules, once (again only after a job has run here since): a member all of them, the lead all
 //! but the canopy squares, which every pass's areas read again and which never change. (Not down
 //! to the reserve: room-making makes that much room before each job, so the build ends with about
 //! that free, and a trim to it would free little or nothing, while that Mac's mirror copies nothing
@@ -100,8 +100,8 @@ use std::time::SystemTime;
 /// The free space a job starts with, at least, when the caches can make it.
 pub const RESERVE: u64 = 30 << 30;
 
-/// What's freed past a job's `need` once the disk is short of it: a sixth more (5 GB past the
-/// build Mac's 30), so the jobs after it start without deleting again. (Not for the OSM pass, whose
+/// What's freed past a job's `need` once the disk is short of it: a sixth more (5 GB past
+/// `RESERVE`'s 30), so the jobs after it start without deleting again. (Not for the OSM pass, whose
 /// need is what its conditions admitted it with.)
 pub fn margin(need: u64) -> u64 {
     need / 6
@@ -122,7 +122,7 @@ const CHEAP: [(&str, &str); 4] = [("chm10", "canopy"), ("aws-terrarium", "aws-te
 /// The pageview months' indexes here (dem/pageviews.py's copies of the NAS's `sources/pageviews/`).
 pub const MONTHS: &str = "items/months";
 
-/// Bytes the cheap caches hold (what `make_room` can free on the build Mac: a helper's,
+/// Bytes the cheap caches hold (what `make_room` can free on the lead: a member's,
 /// `helper_cheap_bytes`): of the pageview months, the indexes the NAS's `sources` has at their size
 /// (`months_bytes`), none without it.
 pub fn cheap_bytes(cache: &Path, sources: Option<&Path>) -> u64 {
@@ -404,7 +404,7 @@ pub fn clear_answered(home: &Path) {
 
 /// Empties the cheap caches at `cache` once the build is done (the module's doc, After the build):
 /// every file that may go by room-making's rules, each once the NAS's `sources` has it, but those
-/// `spare` keeps (the build Mac's canopy squares). What it freed, and what stays but the spared.
+/// `spare` keeps (the lead's canopy squares). What it freed, and what stays but the spared.
 pub fn trim(cache: &Path, sources: &Path, spare: &dyn Fn(&Path) -> bool) -> Result<Freed> {
     // (None yet: no job has run here.)
     if !cache.is_dir() {
@@ -1525,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn the_build_macs_trim_keeps_the_canopy_squares_and_packs_raw_tiles_first() {
+    fn the_leads_trim_keeps_the_canopy_squares_and_packs_raw_tiles_first() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let root = &d.path().join("nas");
@@ -1553,7 +1553,7 @@ mod tests {
     #[test]
     fn a_clear_names_the_pageview_months_it_frees() {
         // (The review's case, 2026-10-06.) The months the NAS has: in what a clear would free (the
-        // owner's confirmation), freed as themselves by a clear and by the build Mac's trim; one it
+        // owner's confirmation), freed as themselves by a clear and by the lead's trim; one it
         // lacks stays, said as kept; the counts from before the indexes neither.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("app/agent/cache");
@@ -1572,7 +1572,7 @@ mod tests {
         assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists());
         assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 600)]), 50));
         assert!(f.say().contains("pageview months 0 MB"), "{}", f.say());
-        // The build Mac's trim (the canopy squares spared) takes them too.
+        // The lead's trim (the canopy squares spared) takes them too.
         file(&c.join(MONTHS).join("2026-05.tsv.zst"), 600, 7200);
         let t = trim(c, nas, &|p| p.starts_with(c.join("chm10"))).unwrap();
         assert_eq!((t.freed.get("months"), t.left), (Some(&600), 50));
@@ -1883,7 +1883,7 @@ mod tests {
 
     #[test]
     fn a_linked_tile_folder_is_neither_packed_nor_deleted() {
-        // (The review's case.) The build Mac's aws-terrarium/12/2048 a link to a folder elsewhere:
+        // (The review's case.) The lead's aws-terrarium/12/2048 a link to a folder elsewhere:
         // its tiles aren't this cache's to pack, nor to delete where they lie.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");

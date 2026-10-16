@@ -42,7 +42,7 @@ impl Remote {
     }
 }
 
-// (Who may be answered and what a request must name: pipeline::net, the build Mac's coordinator's
+// (Who may be answered and what a request must name: pipeline::net, the lead's coordinator's
 // too.)
 pub use pipeline::net::local_origin;
 use pipeline::net::{from_the_page, ours, reached};

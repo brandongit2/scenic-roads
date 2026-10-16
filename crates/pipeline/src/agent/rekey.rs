@@ -7,9 +7,8 @@
 //! the inputs its new key names (§8, Determinism), and those are what they were when it was built.
 //! Any other record is left as it is: one stale under the old scheme is stale under the new too (its
 //! key can't be either scheme's now). Idempotent: a new key never equals an old one, so a second
-//! pass finds nothing. The build Mac's agent runs it under the build lock after merging hand-offs,
-//! writing `state/build/jobs.json` whole when it changed anything, and on the keys it plans with
-//! (a dry run plans as the switch will); `scenic-build rekey-check` shows what it would do. An old
+//! pass finds nothing. Applied in memory by every reader of the records (`as_read`), never saved:
+//! a record changes only by a job's save; `scenic-build rekey-check` shows what it would do. An old
 //! scheme (`v1`) stays one release after its switch, for the records of jobs an older app ran.
 //!
 //! Units (2026-10-06): their keys named the terrain hi packs of the z6 tiles within 30 km

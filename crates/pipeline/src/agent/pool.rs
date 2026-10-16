@@ -782,7 +782,7 @@ pub fn said(e: &Event) -> String {
 pub enum Role {
     /// It leads: it plans, grants jobs through its coordinator, does the lead's duties.
     Lead,
-    /// A member: it asks the lead for work, as a helper did.
+    /// A member: it asks the lead for work.
     Member,
 }
 
@@ -833,7 +833,7 @@ pub const SWEEPS: [&str; 1] = ["gc"];
 pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
 /// Lease numbers at and above this are hand-offs from before the pool, drained into the journal by
 /// the member that had them (term 0: before any term; below it, a helper's outbox keeps the lease
-/// the build Mac's coordinator gave it, numbered by the clock in ms, far below).
+/// the lead's coordinator gave it, numbered by the clock in ms, far below).
 pub const DRAINED: u64 = 1 << 62;
 
 /// The agent's part in the pool while it's on, in this process.
@@ -1550,7 +1550,7 @@ pub fn left_jobs(home: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
 
 /// A helper's outbox from before the pool (`outbox/<lease>/`): each leased job's hand-off as the
 /// helper would have sent it (its saves and done record, or what it noted done when it stopped),
-/// as an entry of this member under its lease from the build Mac's coordinator (term 0: before any
+/// as an entry of this member under its lease from the lead's coordinator (term 0: before any
 /// term). A task's folder (its outputs went to its broker) and a job that handed off nothing are
 /// left to the outbox's own sending, or nothing.
 fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
@@ -1588,7 +1588,7 @@ pub fn state_path(term: u64) -> String {
 /// The pool's copy of the workers' token (§8: the same on every member).
 pub const TOKEN: &str = "state/coord/token";
 
-/// The workers' token made the pool's (§12, seeding): this Mac's (the build Mac's, as the pool is
+/// The workers' token made the pool's (§12, seeding): this Mac's (the lead's, as the pool is
 /// switched on) copied to the NAS when it has none (create-new: the first lead's stays), else the
 /// NAS's copied here before its coordinator starts, so the Macs' agents keep working with this
 /// one.
@@ -1643,7 +1643,7 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
     Ok(())
 }
 
-/// The agents' statuses on the NAS: the build Mac's (`state/status.json`) and the helpers'
+/// The agents' statuses on the NAS: the lead's (`state/status.json`) and the members'
 /// (`state/helpers/<host>.json`), by file name.
 fn statuses(root: &Path) -> Vec<(String, super::Status)> {
     let mut out = Vec::new();
@@ -2068,7 +2068,7 @@ mod tests {
         let (m4, m1) = (d.path().join("m4/coord"), d.path().join("m1/coord"));
         std::fs::create_dir_all(&m4).unwrap();
         std::fs::write(m4.join("workers-token"), "t0k3n").unwrap();
-        // The build Mac's, copied to the NAS as the pool begins.
+        // The lead's, copied to the NAS as the pool begins.
         seed(&nas, &m4).unwrap();
         assert_eq!(nas.read(TOKEN).unwrap().as_deref(), Some(&b"t0k3n"[..]));
         // Another lead's coordinator starts with them.

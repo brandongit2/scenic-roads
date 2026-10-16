@@ -2,7 +2,7 @@
 //! step, each region and the whole build will be done, when each region reaches the map, and what
 //! each machine does next.
 //!
-//! The work left is run through in the order the agent runs it: the build Mac takes the first it
+//! The work left is run through in the order the agent runs it: the lead takes the first it
 //! can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with none
 //! it can do now, the slope, tree cover and the chains' work), its second job the first of its
 //! steps (crate::agent::SECOND: the trains' and the landmarks' network steps, the candidates and
@@ -12,7 +12,7 @@
 //! landmarks' chains run from the start, each step once what it reads is built. The map update under way
 //! goes first, with its own regions. A map update goes out as the plan makes one: once a
 //! region not on the map is done, an hour after the last map update began (its slope and tree cover,
-//! made by the build Mac while it waits, then the map update's chain); after the last unit and terrain
+//! made by the lead while it waits, then the map update's chain); after the last unit and terrain
 //! area, the slope and tree cover left, the last map update, then the overlays and a catalog with what
 //! the chains made since; while the 3D buildings are being raised after it, a map update each gap
 //! after the last began (task #209: not hourly). Whether one is due is the lead's own test (build::map_update_due). Each target takes its last run's time (else its step's mean, else a first
@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // The shared steps a helper takes, in its order of preference.
 use super::steps::SHARED;
 
-// The steps the build Mac's second job takes, in its order of preference, and those it takes while
+// The steps the lead's second job takes, in its order of preference, and those it takes while
 // the Mac is in use: the agent's.
 use super::SECOND;
 
@@ -34,20 +34,20 @@ use super::SECOND;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Machine {
     pub name: String,
-    /// Its speed against the build Mac's (1), and whether that's measured.
+    /// Its speed against the lead's (1), and whether that's measured.
     pub speed: f64,
     pub measured: bool,
     /// A helper: the shared steps alone, what fits its memory.
     pub helper: bool,
-    /// The build Mac's second job: its steps alone (`SECOND`), what fits its memory.
+    /// The lead's second job: its steps alone (`SECOND`), what fits its memory.
     pub second: bool,
-    /// A lane of the forecast for equal machines (`equal_machines`): any work in the build Mac's
+    /// A lane of the forecast for equal machines (`equal_machines`): any work in the lead's
     /// order that fits its memory, the map updates the first lane's alone.
     pub equal: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
-    /// What each unit takes it more (seconds): the build Mac's, while a worker that takes tails is
+    /// What each unit takes it more (seconds): the lead's, while a worker that takes tails is
     /// around, the moment its job gives one to take its tail (crate::offload::LEASE_WAIT). (A
     /// terrain piece's subtrees out with workers, crate::terrain_task, take none: they're offered as
     /// the piece begins and waited for only after its own run, by then taken or not, and its
@@ -55,7 +55,7 @@ pub struct Machine {
     pub unit_extra_s: f64,
 }
 
-/// What a target takes: its time at the build Mac's pace (seconds), whether that time was measured,
+/// What a target takes: its time at the lead's pace (seconds), whether that time was measured,
 /// and its memory (MB).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Cost {
@@ -64,13 +64,13 @@ pub struct Cost {
     pub peak_mb: u64,
 }
 
-/// A job of the build Mac's alone, or one of the chains': (step, target, cost).
+/// A job of the lead's alone, or one of the chains': (step, target, cost).
 pub type Job = (String, String, Cost);
 
 /// The work left, as the plan sees it (build::Plan), and what each target takes.
 pub struct Input<'a> {
     pub now: u64,
-    /// The build Mac's jobs before the regions' (the pass's worldwide jobs, the heritage sites).
+    /// The lead's jobs before the regions' (the pass's worldwide jobs, the heritage sites).
     pub before: Vec<Job>,
     /// The regions' work left, in the order they're built (build::Plan::regions).
     pub regions: &'a [RegionLeft],
@@ -101,7 +101,7 @@ pub struct Input<'a> {
     /// The map update under way (crate::agent::build::MapUpdate): its regions, whether it's the last, and its
     /// chain's time left (the map tiles, road index, rail stops and catalog it has still to make).
     pub under_way: Option<(Vec<String>, bool, f64)>,
-    /// The build Mac first, then the helpers.
+    /// The lead first, then the members.
     pub machines: Vec<Machine>,
     /// Targets being built now: (step, target) → the machine building it.
     pub running: BTreeMap<(String, String), usize>,
@@ -124,7 +124,7 @@ pub struct Forecast {
     pub why: Option<String>,
     /// The share of the time left that was measured (the rest guessed).
     pub measured: f64,
-    /// Each machine's speed against the build Mac's, as used, and the machines whose speed is a
+    /// Each machine's speed against the lead's, as used, and the machines whose speed is a
     /// guess (not yet measured).
     pub speed: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -166,7 +166,7 @@ pub struct Lane {
 pub struct StepFc {
     pub step: String,
     pub left: usize,
-    /// Its time at the build Mac's pace (seconds), and how many of its targets' times are measured.
+    /// Its time at the lead's pace (seconds), and how many of its targets' times are measured.
     pub work_s: u64,
     pub known: usize,
     /// Whether helpers may do it.
@@ -206,7 +206,7 @@ pub struct NextFc {
 }
 
 /// When a job runs: before the regions, a region's (terrain, units), late (slope and tree cover:
-/// the build Mac's in map updates and after the last unit), a chain's (the trains' and the landmarks':
+/// the lead's in map updates and after the last unit), a chain's (the trains' and the landmarks':
 /// from the start, once what it reads is built), or after the last map update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -449,7 +449,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         if all_assigned && final_map_update_done {
             break;
         }
-        // The machine free first (the build Mac on a tie).
+        // The machine free first (the lead on a tie).
         let (m, t) = free.iter().copied().enumerate().fold((0, f64::INFINITY), |a, (i, f)| if f < a.1 - 1e-9 { (i, f) } else { a });
         if !t.is_finite() {
             break;
@@ -462,7 +462,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             end
         };
         if mac.helper {
-            // The far end of the first shared step it can do (terrain's near end: the build Mac's
+            // The far end of the first shared step it can do (terrain's near end: the lead's
             // next units wait on it, as crate::coord picks).
             let pick = SHARED.iter().find_map(|s| {
                 let fits = |&i: &usize| items[i].shared && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t);
@@ -475,7 +475,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             continue;
         }
         if mac.equal {
-            // Any work it can do that fits its memory, in the build Mac's order: the pass's, the
+            // Any work it can do that fits its memory, in the lead's order: the pass's, the
             // regions' (in order), slope and tree cover, the chains', then what comes after.
             let fits = |items: &[Item], i: usize| items[i].cost.peak_mb <= mac.mem_mb && runnable(items, i, t);
             let pick = [Phase::Before, Phase::Region, Phase::Late, Phase::Chain, Phase::After].iter().find_map(|&p| (0..items.len()).find(|&i| items[i].phase == p && fits(&items, i)));
@@ -494,7 +494,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             };
             continue;
         }
-        // The build Mac. The map update under way first: its regions' slope and tree cover left (after
+        // The lead. The map update under way first: its regions' slope and tree cover left (after
         // the last, all that's left), then its chain.
         if let Some((ks, last, left)) = under_way.take() {
             let mut at = t;
@@ -718,7 +718,7 @@ pub fn forecast(inp: &Input) -> Forecast {
             }
         }
         f.next.insert(mac.name.clone(), next);
-        // Its schedule: its runs of a step, and the build Mac's map updates.
+        // Its schedule: its runs of a step, and the lead's map updates.
         let mut runs: Vec<(String, f64, f64, usize)> = expected.items.iter().filter(|i| i.by == Some(m)).map(|i| (i.step.clone(), i.from, i.end, 1)).collect();
         if m == 0 {
             runs.extend(expected.updates.iter().map(|r| ("map-update".to_string(), r.0, r.1, r.2.len())));
@@ -852,10 +852,10 @@ pub fn update_secs(events: &[crate::coord::history::Event]) -> Option<f64> {
     (!last.is_empty()).then(|| last.iter().sum::<f64>() / last.len() as f64)
 }
 
-/// Each helper's speed against the build Mac's, from the history: for each shared step both did,
-/// the build Mac's mean time a target over the helper's (the last week's, three or more each),
+/// Each member's speed against the lead's, from the history: for each shared step both did,
+/// the lead's mean time a target over the member's (the last week's, three or more each),
 /// their middle; `default` where there's too little to tell.
-pub fn speeds(events: &[crate::coord::history::Event], build_mac: &str, helpers: &[String], default: f64) -> BTreeMap<String, (f64, bool)> {
+pub fn speeds(events: &[crate::coord::history::Event], lead: &str, helpers: &[String], default: f64) -> BTreeMap<String, (f64, bool)> {
     // (worker, step) → seconds a target.
     let mut per: BTreeMap<(String, String), Vec<f64>> = BTreeMap::new();
     for e in events {
@@ -873,7 +873,7 @@ pub fn speeds(events: &[crate::coord::history::Event], build_mac: &str, helpers:
                 .iter()
                 .filter_map(|s| {
                     let mine = per.get(&(h.clone(), s.to_string())).filter(|v| v.len() >= 3)?;
-                    let theirs = per.get(&(build_mac.to_string(), s.to_string())).filter(|v| v.len() >= 3)?;
+                    let theirs = per.get(&(lead.to_string(), s.to_string())).filter(|v| v.len() >= 3)?;
                     Some(mean(theirs) / mean(mine))
                 })
                 .collect();
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn a_tree_cover_assembly_after_its_pieces_and_mids_in_idle_time_last() {
         // Region a: three tree cover pieces of z3 tile 3/3/2 and its assembly; a helper beside the
-        // build Mac; and a piece's mid made in idle time.
+        // lead; and a piece's mid made in idle time.
         let mut a = region("a", &[], &[], &[]);
         a.trees = vec!["6/28/16".into(), "6/28/17".into(), "6/29/16".into()];
         a.trees_lo = vec!["3/3/2".into()];
@@ -985,7 +985,7 @@ mod tests {
         inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
         let sim = run(&inp, &|c| c.secs);
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
-        // The assembly once its pieces are made (the helper takes some), by the build Mac alone.
+        // The assembly once its pieces are made (the member takes some), by the lead alone.
         let lo = item("trees-lo", "3/3/2");
         assert!(["6/28/16", "6/28/17", "6/29/16"].iter().all(|t| item("trees", t).end <= lo.from + 1e-9));
         assert!(sim.items.iter().any(|i| i.step == "trees" && i.by == Some(1)), "the helper's pieces");
@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn a_worldwide_job_running_alone_is_work_left() {
-        // (The review's case.) The build Mac runs the pass's labels, an hour left; every region
+        // (The review's case.) The lead runs the pass's labels, an hour left; every region
         // built and on the map, no chain work.
         let regions = [RegionLeft { id: "a".into(), on_map: Some(true), ..Default::default() }];
         let busy = |inp: &mut Input| {
@@ -1084,7 +1084,7 @@ mod tests {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
         // The M1 takes b's terrain (the far end) at half the pace (1,200 s), then b's unit, its terrain
-        // built (600 s); the build Mac a's terrain and unit (900 s), then a's map update (600), then waits.
+        // built (600 s); the lead a's terrain and unit (900 s), then a's map update (600), then waits.
         assert_eq!(f.next["m1"].iter().map(|n| (n.step.as_str(), n.targets[0].as_str())).collect::<Vec<_>>(), [("terrain", "3/2/2"), ("unit", "6/16/16")]);
         assert_eq!((f.regions[0].ready_at, f.regions[0].map_at), (Some(1_000_000 + 900), Some(1_000_000 + 1500)));
         // b done at 1,800: the last of the regions', so the last map update goes out at once after.
@@ -1096,7 +1096,7 @@ mod tests {
     fn a_helper_takes_the_next_regions_terrain_not_the_last_ones() {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[]), region("c", &["3/3/3"], &["6/24/24"], &[])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
-        // The build Mac takes a's terrain; the M1 b's (whose units the build Mac builds next), not c's.
+        // The lead takes a's terrain; the M1 b's (whose units the lead builds next), not c's.
         assert_eq!(f.next["m1"].first().map(|n| (n.step.as_str(), n.targets[0].as_str())), Some(("terrain", "3/2/2")));
     }
 
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn a_region_whose_terrain_a_helper_builds_waits_for_it() {
-        // One region: the M1 has its terrain now (900 s left); the build Mac waits for it.
+        // One region: the M1 has its terrain now (900 s left); the lead waits for it.
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), Machine { busy_s: 900.0, ..mac("m1", 0.5, true) }], &cost);
         inp.running.insert(("terrain".into(), "3/1/1".into()), 1);
@@ -1204,9 +1204,9 @@ mod tests {
 
     #[test]
     fn a_helper_isnt_stranded_by_a_map_update_or_a_worldwide_job() {
-        // The build Mac runs a worldwide job (no item) for an hour; the helper takes the terrain at
+        // The lead runs a worldwide job (no item) for an hour; the member takes the terrain at
         // once (terrain waits for nothing), then the units once their region's terrain is built
-        // and the job the units need is done: it wakes when the build Mac is free.
+        // and the job the units need is done: it wakes when the lead is free.
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &[])];
         let mut inp = input(&regions, vec![Machine { busy_s: 0.0, ..mac("m4", 1.0, false) }, mac("m1", 1.0, true)], &cost);
         inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 3600.0, known: true, peak_mb: 0 })];
@@ -1272,7 +1272,7 @@ mod tests {
     #[test]
     fn the_chains_go_on_beside_the_regions_on_the_second_job() {
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
-        // The build Mac alone: terrain 600, the units 600, the slope 200 and the last map update 600;
+        // The lead alone: terrain 600, the units 600, the slope 200 and the last map update 600;
         // then the chains, one after another (3,200 s).
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         (inp.chains, inp.after) = (chains(), Vec::new());
@@ -1300,7 +1300,7 @@ mod tests {
         // Half the units, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), second.clone()], &cost));
         assert_eq!(f.lanes.get("m4 (second job)").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()), 4);
-        // The build Mac's first job two hours from done: the second job takes the units from now.
+        // The lead's first job two hours from done: the second job takes the units from now.
         let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, second], &cost));
         let lane = &f.lanes["m4 (second job)"];
         assert_eq!((lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()), ("unit", 1_000_000, 8));
@@ -1312,7 +1312,7 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
         (inp.chains, inp.after) = (chains(), Vec::new());
         let f = forecast(&inp);
-        // While the build Mac builds the terrain the units wait for, the helper makes the candidates
+        // While the lead builds the terrain the units wait for, the member makes the candidates
         // (from the far end), 200 s each at its pace.
         let m1 = &f.lanes["m1"];
         assert_eq!((m1[0].step.as_str(), m1[0].from, m1[0].until, m1[0].n), ("pois", 1_000_000, 1_000_400, 2));

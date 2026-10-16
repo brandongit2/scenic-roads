@@ -1,4 +1,4 @@
-//! The OSM pass (docs/plan.md §6): the planet, fetched onto the NAS, turned on the build Mac into
+//! The OSM pass (docs/plan.md §6): the planet, fetched onto the NAS, turned on the lead into
 //! what every later step reads: the filtered planet, pieces per z6 unit (10 km buffer, ways whole,
 //! multipolygons complete), the worldwide sets, the basemap, and worldwide road values.
 //!
@@ -169,7 +169,7 @@ fn run_planetiler(mut c: Command, what: &str) -> Result<()> {
 }
 
 /// How far Planetiler is (0–1) by a line of its log: its phases weighted by their times on the
-/// build Mac (2026-09-28's pass: its sources 4.5 min, the first pass over the planet 3, the second
+/// M4 (2026-09-28's pass: its sources 4.5 min, the first pass over the planet 3, the second
 /// 20, the sort 3, the tiles 15 of 46), the second pass and the tiles each through by the share
 /// they say they're done.
 pub fn planetiler_fraction(line: &str) -> Option<f64> {

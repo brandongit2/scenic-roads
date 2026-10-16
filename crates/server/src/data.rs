@@ -559,7 +559,7 @@ impl Data {
         Ok(Src::Local(m))
     }
 
-    /// Whether the build Mac is running a job (its heartbeat on the NAS, fresh, with a job that
+    /// Whether the lead is running a job (its heartbeat on the NAS, fresh, with a job that
     /// isn't paused). Read at most every 30 s.
     pub fn agent_busy(&self) -> bool {
         let mut g = self.busy.lock().unwrap();
@@ -578,8 +578,8 @@ impl Data {
         b
     }
 
-    /// Whether this Mac's own agent runs a job: this is the build Mac, whose pack and lo jobs read
-    /// this mirror's base packs (nothing is deleted from it meanwhile: downloads::once). Only the build Mac's
+    /// Whether this Mac's own agent runs a job: this is the lead, whose pack and lo jobs read
+    /// this mirror's base packs (nothing is deleted from it meanwhile: downloads::once). Only the lead's
     /// agent writes the heartbeat (a helper writes `helper.json`), and its copy in this home is
     /// fresh while it runs here, as the menu bar reads it (`build_status`). Read at most every
     /// 10 s.
@@ -692,7 +692,7 @@ fn unix_now() -> u64 {
 }
 
 /// Whether heartbeat `v` beat in the last `fresh_s` seconds with a job in one of `slots` ("job";
-/// the build Mac's second, "beside") that isn't paused.
+/// the lead's second, "beside") that isn't paused.
 fn runs(v: &serde_json::Value, fresh_s: u64, slots: &[&str]) -> bool {
     runs_at(v, fresh_s, slots, unix_now())
 }
@@ -721,7 +721,7 @@ mod tests {
         // A helper's status: a helper's jobs don't read the mirror.
         write("helper.json", json!({"beat": now, "job": {"id": "terrain 6/52/27"}}));
         assert!(!job_in_at(home.path(), now));
-        // The build Mac's agent, running a job, in either slot; not when it's paused, or between
+        // The lead's agent, running a job, in either slot; not when it's paused, or between
         // jobs, or when the agent stopped writing.
         write("status.json", json!({"beat": now, "job": {"id": "pack 6/52/27"}, "beside": null}));
         assert!(job_in_at(home.path(), now));
@@ -733,7 +733,7 @@ mod tests {
         assert!(!job_in_at(home.path(), now));
         write("status.json", json!({"beat": now - 600, "job": {"id": "pack 6/52/27"}}));
         assert!(!job_in_at(home.path(), now));
-        // The NAS's heartbeat (the build Mac's, read by every Mac): the first slot, fresh for ten
+        // The NAS's heartbeat (the lead's, read by every Mac): the first slot, fresh for ten
         // minutes.
         assert!(runs_at(&json!({"beat": now - 300, "job": {"id": "pack 6/52/27"}}), 600, &["job"], now));
         assert!(!runs_at(&json!({"beat": now - 300, "job": null, "beside": {"id": "lo"}}), 600, &["job"], now));

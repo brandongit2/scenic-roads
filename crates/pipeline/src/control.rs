@@ -1,7 +1,7 @@
 //! Pausing the build (docs/plan.md §8, Pausing): what a pause is, how a Mac asks for one, and the
 //! channel a running job hears it on.
 //!
-//! One pause holds for every machine. The build Mac's coordinator keeps it (crate::coord: on its
+//! One pause holds for every machine. The lead's coordinator keeps it (crate::coord: on its
 //! disk, mirrored to the NAS) and tells its workers, in its answers to their asks and beats. Each
 //! Mac's agent asks for a pause, or for the build to go on, as that Mac's menu, `scenic pause` or the
 //! map says (`Request`: a file in the agent's folder, taken up within seconds), and passes it on to

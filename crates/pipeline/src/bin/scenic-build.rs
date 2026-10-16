@@ -1611,7 +1611,7 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
 /// it (the trees program, or trees.py before it, by their files' times), and so re-keyed (its
 /// pieces and assembly recorded, their mids made in idle time, expected the same) or made again as
 /// pieces; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
-/// runs (`--costs`: the coordinator's costs.json; a helper's at the build Mac's pace, twice its
+/// runs (`--costs`: the coordinator's costs.json; a member's at the lead's pace, twice its
 /// speed) and the packs made again (their size now).
 /// `p5-check terrain`: what switching terrain and slope from a z3 tile's whole run to pieces and
 /// assemblies (pipeline::agent::rekey::derive) does now: each z3 tile's records read as its pieces
@@ -1632,7 +1632,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         None => BTreeMap::new(),
     };
     let me = pipeline::agent::cond::host();
-    // (An area's last whole run of `step`, at the build Mac's pace.)
+    // (An area's last whole run of `step`, at the lead's pace.)
     let last_run = |step: &str, q: &str| costs.get(&pipeline::coord::cost_key(step, q)).map(|c| if c.worker.as_deref().is_none_or(|w| w == me) { c.secs as f64 } else { c.secs as f64 / 2.0 });
     let t0 = std::time::Instant::now();
     let mut tiles = TerrainTiles::new(None);
@@ -1735,7 +1735,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         mids_needed.iter().max().unwrap_or(&0)
     );
     println!(
-        "its time by the areas' last runs (at the build Mac's pace, a piece its area's share): slope's pieces left {:.2} h; the backfill: terrain {:.1} h, slope {:.1} h; a terrain piece {:.0} s on average; the assemblies a minute each",
+        "its time by the areas' last runs (at the lead's pace, a piece its area's share): slope's pieces left {:.2} h; the backfill: terrain {:.1} h, slope {:.1} h; a terrain piece {:.0} s on average; the assemblies a minute each",
         slope_left_s / 3600.0,
         backfill_t / 3600.0,
         backfill_s / 3600.0,
@@ -1921,7 +1921,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
         None => BTreeMap::new(),
     };
     let me = pipeline::agent::cond::host();
-    // (A z3 tile's last run, at the build Mac's pace.)
+    // (A z3 tile's last run, at the lead's pace.)
     let last_run = |q: &str| costs.get(&pipeline::coord::cost_key("trees", q)).map(|c| if c.worker.as_deref().is_none_or(|w| w == me) { c.secs as f64 } else { c.secs as f64 / 2.0 });
     let t0 = std::time::Instant::now();
     let times = rekey::FileTimes::new(root);
@@ -1989,7 +1989,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
         w.backfill.len()
     );
     println!(
-        "its time by the z3 tiles' last runs (at the build Mac's pace): made again {:.1} h{}, the packs uploaded again {:.2} GB; the mids backfilled {:.1} h; the assemblies seconds each",
+        "its time by the z3 tiles' last runs (at the lead's pace): made again {:.1} h{}, the packs uploaded again {:.2} GB; the mids backfilled {:.1} h; the assemblies seconds each",
         rebuild / 3600.0,
         if unknown_s > 0 { format!(" ({unknown_s} z3 tiles' runs unknown)") } else { String::new() },
         bytes as f64 / 1e9,
@@ -3036,7 +3036,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // The next unit's piece and packs, copied while this one builds (one stream: large sequential
     // reads, nothing the unit building now waits on).
     let mut ahead: Option<std::thread::JoinHandle<()>> = None;
-    // Other workers, through the build Mac's coordinator (the agent's jobs there), and the units
+    // Other workers, through the lead's coordinator (the agent's jobs there), and the units
     // whose tails' last steps are out with them.
     let offload = pipeline::offload::Offload::from_env(scratch);
     let mut out_now: std::collections::VecDeque<(Built, pipeline::offload::Offered)> = Default::default();
@@ -3261,7 +3261,7 @@ struct Built {
     anywhere: Vec<pipeline::unit::Run>,
 }
 
-/// A tail's time on the build Mac until it has timed its stages (seconds).
+/// A tail's time on the lead until it has timed its stages (seconds).
 const TAIL_GUESS_S: f64 = 120.0;
 
 /// Settles the units whose last steps are out with other workers (pipeline::offload), in order,
@@ -3617,7 +3617,7 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let names: Vec<String> = ts.iter().map(|t| format!("Raising the 3D buildings of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    // Other workers, through the build Mac's coordinator (the agent's jobs there): some of a tile's
+    // Other workers, through the lead's coordinator (the agent's jobs there): some of a tile's
     // z8 areas offered as tasks while it builds the others.
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
     for (k, &t) in ts.iter().enumerate() {
@@ -3828,7 +3828,7 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
-    // Other workers, through the build Mac's coordinator: some of each piece's z8 subtrees
+    // Other workers, through the lead's coordinator: some of each piece's z8 subtrees
     // (pipeline::terrain_task).
     // (Each piece's offered as it begins; offering ahead (`offer_ahead`), the next's then too, its
     // head start the piece under way's tiles.)

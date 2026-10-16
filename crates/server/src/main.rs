@@ -255,8 +255,8 @@ impl AppState {
                 }
             }
         };
-        // Its own status, fresh, in place of what the build Mac last read of it (which stops while
-        // the build Mac sleeps); not when it's the status shown.
+        // Its own status, fresh, in place of what the lead last read of it (which stops while
+        // the lead sleeps); not when it's the status shown.
         if let (Some(h), Some(obj)) = (helper.filter(|h| !helping && h["host"] != status["host"]), status.as_object_mut()) {
             let host = h["host"].clone();
             let mut list: Vec<serde_json::Value> = obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -802,7 +802,7 @@ async fn build_h(State(s): State<S>) -> Response {
 
 /// The whole build paused (`{"mode": "drain"}`: every Mac's job at its next safe point; `"freeze"`:
 /// frozen at once) or going on (`{"mode": null}`), from the map: an ask to this Mac's agent, which
-/// passes it on to the build Mac (pipeline::control).
+/// passes it on to the lead (pipeline::control).
 async fn build_pause_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
     use pipeline::control::{Mode, Pause};
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();

@@ -36,7 +36,6 @@ fn writes_records(l: &str, c: &str) -> bool {
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/coord/mod.rs", "raw_again", "crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN)", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
     ("crates/pipeline/src/coord/mod.rs", "route", "crate::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
-    ("crates/pipeline/src/handoff.rs", "merge_from", "write(&b.join(RAW_AGAIN), &Handoff { raw: again", "the merge keeping the raw tiles' archives it couldn't name yet (outside the manifest)"),
     ("crates/pipeline/src/rawpack.rs", "finish_with", "crate::handoff::write(&dir, &crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
     ("crates/pipeline/src/agent/pool.rs", "write_today", "nas.write_whole(\"state/build/manifest.json\"", "the lead writing today's files from its merged records, for their readers"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),

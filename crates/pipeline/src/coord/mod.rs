@@ -1,4 +1,4 @@
-//! The coordinator (docs/workers.md): the build Mac's agent hands work to any worker over HTTP and
+//! The coordinator (docs/workers.md): the lead's agent hands work to any worker over HTTP and
 //! takes the results back. One planner, many workers: the agent plans from the build's records,
 //! which it alone writes; a worker only asks for work that fits it, does it, and hands it back.
 //!
@@ -77,7 +77,7 @@ pub fn contact_path(root: &Path) -> PathBuf {
 }
 
 /// What a job's target cost last time (a unit's, another shared step's, a task's): its peak memory
-/// (MB) and its wall time, the worker it was measured on (None: the build Mac, or not said), and
+/// (MB) and its wall time, the worker it was measured on (None: the lead, or not said), and
 /// the way its step was run then (`cost_version`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
@@ -143,7 +143,7 @@ pub fn cost_key(step: &str, target: &str) -> String {
 /// piece, with one of the unit's programs: `size` its bytes too); another step's what it took last
 /// time, else `size`, the estimate it was offered with.
 /// How long `target` of `step` is predicted to take `worker`: its last run's time (twice another
-/// worker's: the helpers run at about half the build Mac's pace); None when it hasn't run the way
+/// worker's: the members run at about half the lead's pace); None when it hasn't run the way
 /// the step runs now.
 pub fn job_secs(costs: &BTreeMap<String, Cost>, step: &str, target: &str, worker: &str) -> Option<u64> {
     let c = costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step))?;
@@ -406,9 +406,9 @@ impl Shared {
             None => false,
         };
         let n = if o.step == "unit" { a.max.max(1) } else { o.batch.max(1) };
-        // Terrain from the near end: the build Mac's next units wait on it, so a helper builds the
-        // next region's while the build Mac builds this one's units. The rest from the far end,
-        // away from the build Mac's own (and near each other, for the caches).
+        // Terrain from the near end: the lead's next units wait on it, so a member builds the
+        // next region's while the lead builds this one's units. The rest from the far end,
+        // away from the lead's own (and near each other, for the caches).
         let open: Vec<&(String, String, u64)> = {
             let order: Box<dyn Iterator<Item = &(String, String, u64)>> = if o.step == "terrain" { Box::new(o.targets.iter()) } else { Box::new(o.targets.iter().rev()) };
             order.filter(|(t, k, _)| !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t)).collect()
@@ -2196,7 +2196,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             Ok((200, serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
         }
         "/work/swarm" => {
-            // The whole build at a glance, for the worker page: the build Mac's heartbeat (its
+            // The whole build at a glance, for the worker page: the lead's heartbeat (its
             // agent's status, written each loop beside this folder: its job, the checklist to the
             // end, the forecast, the regions, its helpers), the leases, the workers, the tasks and
             // the history's hours.
@@ -2694,7 +2694,7 @@ mod http {
         let local = crate::net::own(ip, req.headers());
         // (No Host at all: not a browser.)
         if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !crate::net::ours(h)) {
-            return error(StatusCode::FORBIDDEN, "not this build Mac's address");
+            return error(StatusCode::FORBIDDEN, "not this lead's address");
         }
         if !crate::net::from_the_page(req.headers()) && member_page(&c, req.headers()).is_none() {
             return error(StatusCode::FORBIDDEN, "not from the build page");
@@ -2713,7 +2713,7 @@ mod http {
         if path.starts_with("/task/") {
             return match () {
                 _ if !job => error(StatusCode::UNAUTHORIZED, "not this Mac's job's"),
-                _ if !local => error(StatusCode::FORBIDDEN, "that comes from the build Mac itself"),
+                _ if !local => error(StatusCode::FORBIDDEN, "that comes from the lead itself"),
                 _ => next.run(req).await,
             };
         }
@@ -3865,7 +3865,7 @@ mod tests {
             Some(Granted::Job { step, targets, .. }) => format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")),
             _ => "none".into(),
         };
-        // Terrain: the plan's first, the build Mac's next units' (not the far end's).
+        // Terrain: the plan's first, the lead's next units' (not the far end's).
         c.offer("p", vec![o("terrain", &[("3/1/2", 3000), ("3/2/2", 3000)], 1)]);
         let can = |steps: &[&str], mem: u64| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(mem) };
         assert_eq!(next(&can(&["terrain"], 4096)), "terrain 3/1/2");
@@ -4274,7 +4274,7 @@ mod tests {
         let lease = c.hold("unit", &[("6/1/1".to_string(), "k".to_string())]).unwrap();
         assert_eq!(page("/work/beat", None, serde_json::json!({ "worker": "m4", "lease": lease, "progress": "x".repeat(10_000) })).1["ok"], false);
         assert_eq!(page("/work/fail", None, serde_json::json!({ "worker": "m4", "lease": lease, "error": "x" })).0, 410);
-        assert!(c.renew(lease, None), "the build Mac's own lease, untouched");
+        assert!(c.renew(lease, None), "the lead's own lease, untouched");
         assert_eq!(send(&addr, "GET", "/work/in/1/a", None, &[("X-Worker", "m4")], &serde_json::json!({})).0, 404);
         {
             let s = c.shared.lock().unwrap();

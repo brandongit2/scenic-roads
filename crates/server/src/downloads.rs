@@ -491,7 +491,7 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
 /// Keeps the mirror (store::mirror) on its own thread: every minute, or as soon as the downloads
 /// change, it lets go of what isn't downloaded and copies what is; a new catalog or a change of the
 /// downloads has it plan again at once. Away from home, it only lets go. While the build runs (the
-/// build Mac's heartbeat on the NAS says a job runs, as the copies' pause read it before
+/// lead's heartbeat on the NAS says a job runs, as the copies' pause read it before
 /// downloads), copies keep to 20 MB/s; while this Mac's own agent runs a job, nothing is deleted.
 /// Between copies it works out the basemap pieces' sizes (for the panel's sizes), those of what's
 /// downloaded first.

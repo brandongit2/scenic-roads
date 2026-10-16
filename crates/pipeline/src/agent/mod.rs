@@ -1,4 +1,4 @@
-//! The build agent (docs/plan.md §8): `scenic agent`, a login item on the build Mac under the
+//! The build agent (docs/plan.md §8): `scenic agent`, a login item on the lead under the
 //! launcher. It works out what needs doing, runs two jobs at once at most (the plan's first, and a
 //! second beside it: `SLOTS`, `SECOND`) when their conditions hold (power, the NAS), pauses each
 //! when they lapse, and writes a heartbeat the app shows.
@@ -16,7 +16,7 @@
 //!    is done; either on a thread of its own, the loop beating meanwhile and no job starting here;
 //! 5. the heartbeat: `state/status.json` on the NAS, and a copy in the agent's local folder.
 //!
-//! Nothing depends on the build Mac being available: until work is done, the map serves the last
+//! Nothing depends on the lead being available: until work is done, the map serves the last
 //! catalog. A job is a child process (see `jobs`) that resumes from its own completion markers, so
 //! stopping it at any time loses at most its current stage.
 
@@ -50,7 +50,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 
-/// Free space the OSM pass needs on the build Mac to start: the filtered planet (about half the
+/// Free space the OSM pass needs on the lead to start: the filtered planet (about half the
 /// planet's 95 GB) with room to spare. The planet is read from the NAS when there's no room to
 /// copy it, the filtered file too once space runs short, and the pieces are cut a quarter at a
 /// time, so the pass's peak stays near the filtered file's size.
@@ -91,7 +91,7 @@ pub struct Options {
     /// One loop, then exit (tests, `scenic agent --once`).
     pub once: bool,
     /// A helper on another Mac (`scenic agent --helper`, docs/plan.md §8, Two Macs): it plans
-    /// nothing, but asks the build Mac's coordinator (crate::coord) for work that fits it, and
+    /// nothing, but asks the lead's coordinator (crate::coord) for work that fits it, and
     /// reports to `state/helpers/<host>.json`, never the heartbeat.
     pub helper: bool,
 }
@@ -100,8 +100,8 @@ pub struct Options {
 /// before it's frozen where it is instead: a unit takes up to ~11 min, a map tile ~10.
 const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 
-/// How many jobs the build Mac runs at once (docs/plan.md §8, Two jobs at once): the plan's first it
-/// can run, and a second beside it (`SECOND`). A helper runs one, as the build Mac leases them.
+/// How many jobs the lead runs at once (docs/plan.md §8, Two jobs at once): the plan's first it
+/// can run, and a second beside it (`SECOND`). A member runs one, as the lead leases them.
 const SLOTS: usize = 2;
 
 /// The steps the second job takes, in its order of preference (the steps table's: crate::agent::
@@ -157,7 +157,7 @@ fn own_cost_key(id: &str) -> String {
     crate::coord::cost_key(s, t)
 }
 
-/// The build Mac's second job as a worker (the build's history, the forecast's machines, the worker
+/// The lead's second job as a worker (the build's history, the forecast's machines, the worker
 /// page): the Mac's name, marked.
 pub fn second_worker(host: &str) -> String {
     format!("{host} (second job)")
@@ -248,11 +248,11 @@ impl Tell {
 /// How long an end owed to the lead is tried (s): as long as its lease lasts unrenewed.
 const OWED_S: u64 = crate::coord::TTL.as_secs();
 
-/// The free space a helper's jobs start with (its Mac has less room than the build Mac), but for
+/// The free space a member's jobs start with (its Mac has less room than the lead), but for
 /// the steps that need more (`helper_need`).
 const HELPER_RESERVE: u64 = 15 << 30;
 
-/// The free space a helper's job of `step` needs: a terrain run's as on the build Mac (its area's
+/// The free space a member's job of `step` needs: a terrain run's as on the lead (its area's
 /// archives copied here and merged); a task's ("tail": a unit's last steps, its files fetched from
 /// the coordinator; "bldtile": a 3D buildings' z8 area, its blocks) 5 GB, but tree cover's row of
 /// z8 blocks ("treeblock": it reads the squares where they lie, and writes ~80 MB) and a terrain
@@ -320,8 +320,8 @@ fn bld_peak(step: &str, rows: u64) -> u64 {
     }
 }
 
-/// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the build
-/// Mac's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 area (taken as two fifths of
+/// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the
+/// M4's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 area (taken as two fifths of
 /// the rows), the field's cells in flight the fixed part. Measured 1.3–2.9 GB for tiles of up to
 /// 52 k records, 3.8 GB for Toronto's 9.5 M, 4.5 GB for Annecy's 10.0 M, 7.9 GB for New York's
 /// 14.6 M and 10.2 GB for Kantō's 30.3 M.
@@ -361,9 +361,9 @@ const AWAY_JOB: u64 = 20 * 60;
 /// The running job's lease.
 #[derive(Clone, Debug)]
 enum Held {
-    /// The build Mac's own job's, in its coordinator.
+    /// The lead's own job's, in its coordinator.
     Own(u64),
-    /// A helper's job's, from the build Mac's coordinator: the job saves into `dir` (its outbox),
+    /// A member's job's, from the lead's coordinator: the job saves into `dir` (its outbox),
     /// and the agent hands that back, with the job's record, as one.
     Leased { lease: u64, dir: PathBuf },
     /// A job's while the pool is on (docs/pool.md §7.3), the lead's own (`own`: its coordinator's
@@ -416,7 +416,7 @@ pub struct Status {
     pub started: u64,
     pub conditions: Conditions,
     pub job: Option<JobView>,
-    /// The build Mac's second job, beside the first (docs/plan.md §8, Two jobs at once), and why
+    /// The lead's second job, beside the first (docs/plan.md §8, Two jobs at once), and why
     /// there's none when its slot is free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beside: Option<JobView>,
@@ -452,7 +452,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<cond::Resources>,
     /// When each step and region will be done and on the map, and what each machine does next
-    /// (the build Mac's: crate::agent::forecast).
+    /// (the lead's: crate::agent::forecast).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
     /// The decision on the next map update as the lead last planned it, and why
@@ -744,7 +744,7 @@ pub struct Agent {
     app: String,
     started: u64,
     mem: Memory,
-    /// The jobs running: the first slot's, and on the build Mac a second's beside it (`SLOTS`).
+    /// The jobs running: the first slot's, and on the lead a second's beside it (`SLOTS`).
     slots: [Slot; SLOTS],
     /// Why the second slot has nothing, when it hasn't, for the status.
     beside_why: Option<String>,
@@ -854,10 +854,10 @@ pub struct Agent {
     /// The work the last plan had left (its steps and targets): what room-making lets go last
     /// (`hints`).
     queued: std::cell::RefCell<Vec<build::Work>>,
-    /// The build Mac's coordinator (crate::coord), and when its contact on the NAS was last checked.
+    /// The lead's coordinator (crate::coord), and when its contact on the NAS was last checked.
     coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     published: Option<Instant>,
-    /// A helper's way to the build Mac's coordinator (made once its contact is on the NAS).
+    /// A member's way to the lead's coordinator (made once its contact is on the NAS).
     client: Option<crate::coord::client::Client>,
     /// Its own jobs' ends owed to the lead: ended while this process led a term it had lost without
     /// its step knowing yet (it froze, a later term made meanwhile), told to the lead through its
@@ -871,12 +871,12 @@ pub struct Agent {
     last_catalog: std::cell::RefCell<Option<((PathBuf, u64), BTreeMap<String, Vec<String>>)>>,
     /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
     ready: std::cell::RefCell<Vec<String>>,
-    /// The build's pause as this agent knows it (crate::control): its coordinator's on the build
-    /// Mac; a helper's as heard in its asks and beats, or as asked for here and not yet passed on
+    /// The build's pause as this agent knows it (crate::control): its coordinator's on the
+    /// lead; a member's as heard in its asks and beats, or as asked for here and not yet passed on
     /// (`pause_local`). Kept in `pause.json`.
     pause: Option<crate::control::Pause>,
     pause_local: bool,
-    /// The build Mac's pause as last mirrored to the NAS, and whether this agent's own (kept from
+    /// The lead's pause as last mirrored to the NAS, and whether this agent's own (kept from
     /// before its coordinator was up) has been given to the coordinator.
     mirrored: Option<Option<crate::control::Pause>>,
     pause_pushed: bool,
@@ -884,16 +884,16 @@ pub struct Agent {
     /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
     /// again after a trim or a clear; and when.
     cache_size: std::sync::Arc<std::sync::Mutex<CacheCount>>,
-    /// A helper's view of the build: the build Mac's heartbeat as last read, at most each minute.
+    /// A member's view of the build: the lead's heartbeat as last read, at most each minute.
     heard: Option<Heard>,
     /// A trim or a clear under way, and when one last failed (it's tried again ten minutes later).
     caches_task: Option<CachesTask>,
     trim_failed: Option<Instant>,
-    /// The build Mac's: the pass's answers this Mac has sent to the NAS as the agent starts
+    /// The lead's: the pass's answers this Mac has sent to the NAS as the agent starts
     /// (crate::answers::seed), on a thread of its own; and whether it was started (once an agent).
     answers_seed: Option<std::thread::JoinHandle<Result<Vec<String>>>>,
     answers_seeded: bool,
-    /// The build Mac's: the helpers' last trim, clear or declined ask noted in the history (its
+    /// The lead's: the members' last trim, clear or declined ask noted in the history (its
     /// time), and what their last trim kept, by host.
     helper_caches: BTreeMap<String, (u64, u64)>,
     /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process
@@ -955,7 +955,7 @@ pub struct Agent {
 /// The agent's part of the gate (docs/inputs.md §4.2, §4.7).
 #[derive(Default)]
 struct Gate {
-    /// The drop boxes listed off the loop (the lead's, and a lone build Mac's), with the root it
+    /// The drop boxes listed off the loop (the lead's), with the root it
     /// lists.
     watch: Option<(PathBuf, crate::inputs::watch::Watch)>,
     view: std::cell::RefCell<Vec<crate::inputs::view::InputView>>,
@@ -988,9 +988,9 @@ struct CachesTask {
     thread: std::thread::JoinHandle<Result<room::Freed>>,
 }
 
-/// The build Mac's heartbeat as a helper last read it (`Agent::heard`).
+/// The lead's heartbeat as a member last read it (`Agent::heard`).
 struct Heard {
-    /// When it was read, and when the build Mac beat (None: it couldn't be read).
+    /// When it was read, and when the lead beat (None: it couldn't be read).
     read: Instant,
     beat: Option<u64>,
     /// Why the build isn't done (`work_left`; None: it is).
@@ -1075,7 +1075,7 @@ impl Agent {
             }
             lead::after(r, out, root, &o.home, coord.as_deref());
         }
-        // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
+        // The build's pause as this agent last knew it (a member that can't reach the lead stays
         // as it was).
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
@@ -1101,7 +1101,7 @@ impl Agent {
         self.o.home.join("outbox")
     }
 
-    /// A helper's way to the build Mac's coordinator; None (with why, in `waiting`) when there's none.
+    /// A member's way to the lead's coordinator; None (with why, in `waiting`) when there's none.
     fn client(&mut self, root: &Path, waiting: &mut Vec<Waiting>) -> Option<&crate::coord::client::Client> {
         if self.client.is_none() {
             match crate::coord::client::Client::from_nas(root, &self.host) {
@@ -1115,7 +1115,7 @@ impl Agent {
                     let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
                     let why = match lead {
                         Some(l) => format!("{} leads term {}, but its coordinator's address isn't on the NAS yet (it's taking up the term, or its agent stopped)", l.host, l.term),
-                        None => "the build Mac isn't coordinating (its agent isn't running, or is on an older app)".into(),
+                        None => "the lead isn't coordinating (its agent isn't running, or is on an older app)".into(),
                     };
                     waiting.push(Waiting { step: None, what: "Building".into(), why });
                 }
@@ -1130,7 +1130,7 @@ impl Agent {
     fn unreached_why(&self, e: &anyhow::Error) -> String {
         let text = format!("{e:#}");
         let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
-        let host = lead.as_ref().map_or("the build Mac".to_string(), |l| l.host.clone());
+        let host = lead.as_ref().map_or("the lead".to_string(), |l| l.host.clone());
         let cause = crate::pool::reachable::cause_of(&text);
         let r = crate::pool::reachable::Reach { member: String::new(), what: "coordinator".into(), ok: false, at: 0, since: 0, cause: Some(cause), why: text.clone() };
         match cause {
@@ -1204,7 +1204,7 @@ impl Agent {
     }
 
     /// What a job of `step` is given after its targets (the pass's `date`, where this Mac's caches
-    /// and programs are): the build Mac's own jobs' and a helper's alike.
+    /// and programs are): the lead's own jobs' and a member's alike.
     fn step_args(&self, step: &str, date: &str) -> Vec<String> {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let cache = self.o.home.join("cache");
@@ -1236,7 +1236,7 @@ impl Agent {
         }
     }
 
-    /// A helper's next job: work of the plan the build Mac's coordinator leases it (a job's worth of
+    /// A member's next job: work of the plan the lead's coordinator leases it (a job's worth of
     /// a shared step's targets, none needing more memory than it spares), built from the pass it
     /// says, saving into the lease's outbox folder. Asked only when it could start now.
     fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
@@ -1245,8 +1245,8 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
-        // Not while this Mac's own pause holds (its ask not yet with the build Mac: the start loop
-        // says so), nor while a newer app waits to start: nothing would start. (While the build Mac
+        // Not while this Mac's own pause holds (its ask not yet with the lead: the start loop
+        // says so), nor while a newer app waits to start: nothing would start. (While the lead
         // says the build is paused, it asks: the answer says when it goes on.)
         if self.pause_local {
             return Vec::new();
@@ -1357,7 +1357,7 @@ impl Agent {
                     return Vec::new();
                 }
                 let s = |p: &Path| p.to_string_lossy().into_owned();
-                // The build Mac's own command for it, its saves handed off (SCENIC_HANDOFF).
+                // The lead's own command for it, its saves handed off (SCENIC_HANDOFF).
                 let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display()), format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display())];
                 if resumed {
                     // (Its target the pass's date, its key the planet's path in the NAS's folder.)
@@ -1396,7 +1396,7 @@ impl Agent {
                 }
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("{} ({n} {}{}, for the build Mac)", build::label(&step), if matches!(step.as_str(), "trees" | "terrain" | "slope") { "tile" } else { "area" }, if n == 1 { "" } else { "s" });
+                let what = format!("{} ({n} {}{}, for the lead)", build::label(&step), if matches!(step.as_str(), "trees" | "terrain" | "slope") { "tile" } else { "area" }, if n == 1 { "" } else { "s" });
                 self.slots[0].lease = Some(match pooled {
                     Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                     None => Held::Leased { lease, dir },
@@ -1404,7 +1404,7 @@ impl Agent {
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
-                // A task (a unit's tail, or a 3D buildings' z8 area, for the build Mac's job), run here
+                // A task (a unit's tail, or a 3D buildings' z8 area, for the lead's job), run here
                 // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
                 // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
                 let dir = self.outbox().join(lease.to_string());
@@ -1439,13 +1439,13 @@ impl Agent {
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[0].lease = Some(Held::Leased { lease, dir });
                 let what = if task["runs"][0]["prog"] == crate::bld::task::KIND {
-                    format!("3D buildings of the build Mac's area {unit}")
+                    format!("3D buildings of the lead's area {unit}")
                 } else if task["runs"][0]["what"] == crate::trees::task::KIND {
-                    format!("Tree cover of the build Mac's blocks {}", task["blocks"].as_str().unwrap_or(&unit))
+                    format!("Tree cover of the lead's blocks {}", task["blocks"].as_str().unwrap_or(&unit))
                 } else if task["runs"][0]["what"] == crate::terrain_task::KIND {
-                    format!("Terrain of the build Mac's subtrees {}", task["subtrees"].as_str().unwrap_or(&unit))
+                    format!("Terrain of the lead's subtrees {}", task["subtrees"].as_str().unwrap_or(&unit))
                 } else {
-                    format!("Scenery for the build Mac's area {unit}")
+                    format!("Scenery for the lead's area {unit}")
                 };
                 vec![JobSpec { id: format!("task {id}"), what, cmd, needs: Needs { nas: true }, restart_after_sleep: false, record: None }]
             }
@@ -1474,7 +1474,7 @@ impl Agent {
             }
             Ok(None) => {
                 self.know_pause(None);
-                waiting.push(Waiting { step: None, what: "Building".into(), why: "the build Mac has nothing for this Mac now".into() });
+                waiting.push(Waiting { step: None, what: "Building".into(), why: "the lead has nothing for this Mac now".into() });
                 Vec::new()
             }
             Err(e) => {
@@ -1726,7 +1726,7 @@ impl Agent {
                     None => self.client.as_ref(),
                 };
                 match client.map(|c| c.beat_paused(lease, progress.as_deref())) {
-                    // (The build's pause as the build Mac says: this job stops with it, or goes on;
+                    // (The build's pause as the lead says: this job stops with it, or goes on;
                     // unless this Mac's own ask isn't with it yet.)
                     Some(Ok((alive, pause))) => {
                         if !self.pause_local {
@@ -1811,7 +1811,7 @@ impl Agent {
         }
     }
 
-    /// Whether this agent runs a second job: the build Mac's (a helper's are leased one at a time),
+    /// Whether this agent runs a second job: the lead's (a member's are leased one at a time),
     /// with its coordinator holding a shared step's targets apart, not a dry run.
     fn second_allowed(&self) -> bool {
         !self.o.helper && !self.o.dry_run && self._lock.is_some() && self.coord.is_some()
@@ -2068,7 +2068,7 @@ impl Agent {
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut ended = false;
         self.begin_round();
-        // The build's pause: this Mac's ask passed on; the build Mac's coordinator's.
+        // The build's pause: this Mac's ask passed on; the lead's coordinator's.
         self.sync_pause(root.as_deref(), &mut waiting);
 
         // The running jobs; then what they hold together, against this Mac's limit (the memory
@@ -2105,7 +2105,7 @@ impl Agent {
             (Some(g), None) if !self.o.helper && !g.duties => Some(if g.settle { "the lead is handing the build over".into() } else if g.leads.is_some() { "the lead re-asserts its term first".into() } else { "this Mac no longer leads the build".into() }),
             _ => None,
         };
-        // The pass's answers on the NAS, once this agent starts (the build Mac's).
+        // The pass's answers on the NAS, once this agent starts (the lead's).
         self.seed_answers(root.as_deref());
 
         // The coordinator: where the NAS is (tasks read it where it lies), how to reach it on the NAS
@@ -2166,7 +2166,7 @@ impl Agent {
         let plan_due = plan_due(idle && !self.o.helper, ended, last, seen, now_s(), every);
         let plan = match &root {
             Some(root) if self.o.helper => {
-                // A helper plans nothing: it asks the build Mac for work, once its last is handed back.
+                // A member plans nothing: it asks the lead for work, once its last is handed back.
                 let unsent = std::fs::read_dir(self.outbox()).map(|mut d| d.next().is_some()).unwrap_or(false);
                 // (Not while a trim or a clear runs here: `caches_busy`.)
                 let plan = if idle && !unsent && self.caches_task.is_none() { self.helper_job(root, &c, &mut waiting) } else { Vec::new() };
@@ -2205,7 +2205,7 @@ impl Agent {
         if newer && idle {
             waiting.push(Waiting { step: None, what: "Building".into(), why: "restarting into the newly installed app".into() });
         }
-        // The build paused: nothing new starts (the running jobs stop above), and on the build Mac
+        // The build paused: nothing new starts (the running jobs stop above), and on the lead
         // its coordinator gives its workers nothing and has their jobs stop too.
         if let Some(p) = &self.pause {
             waiting.push(Waiting { step: None, what: "Building".into(), why: p.why() });
@@ -2435,8 +2435,8 @@ impl Agent {
         let paused_job = self.slots[k].running.as_ref().unwrap().paused.is_some();
         if (!paused_job || self.pause.is_some()) && self.slots[k].lease.is_some() && self.slots[k].beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.beat(k, root) {
             // (A job paused for its conditions doesn't beat: its lease lapses, and its work may go
-            // to another. One paused by the user does, its lease kept, a helper hearing whether
-            // its build Mac's pause is over.)
+            // to another. One paused by the user does, its lease kept, a member hearing whether
+            // the lead's pause is over.)
             let r = self.slots[k].running.as_mut().unwrap();
             eprintln!("agent: {}'s lease lapsed and its work went to another worker; stopping it", r.spec.id);
             r.stop(Duration::from_secs(30));
@@ -3389,7 +3389,7 @@ impl Agent {
             let hints = self.hints();
             self.caches_start_toward(target, goal, move || room::toward(&cache, &s, at, &hints));
         } else if let Some(s) = sources.filter(|_| why.is_none() && home && self.trim_due() && self.trim_failed.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))) {
-            // (The build Mac keeps its canopy squares: every pass's areas read them again.)
+            // (The lead keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
             self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares)));
         }
@@ -3402,7 +3402,7 @@ impl Agent {
         self.caches_busy().or(why)
     }
 
-    /// The build Mac's, once an agent, when no job runs here: the pass's answers its cache has, sent
+    /// The lead's, once an agent, when no job runs here: the pass's answers its cache has, sent
     /// to the NAS where it hasn't their archive (crate::answers::seed: a cache from before the NAS
     /// kept them, or one a stopped job left, needn't wait for the steps' next run, perhaps the next
     /// pass's), on a thread of its own (a slow NAS doesn't hold the loop; no items or heritage job
@@ -3618,9 +3618,9 @@ impl Agent {
 
     /// Why this Mac's caches can't be trimmed or cleared now, if they can't: a job an earlier agent
     /// left runs here (`orphans`: its programs may not hold what they use), the NAS isn't reachable (what
-    /// goes must be kept there), or the build has work left (`work_left`: by the build Mac's
-    /// forecast, its own; a helper's, the one in the build Mac's heartbeat on the NAS, read at most
-    /// each minute, with no job of the build Mac's running, nor beside it).
+    /// goes must be kept there), or the build has work left (`work_left`: by the lead's
+    /// forecast, its own; a member's, the one in the lead's heartbeat on the NAS, read at most
+    /// each minute, with no job of the lead's running, nor beside it).
     fn caches_why_not(&mut self, root: Option<&Path>) -> Option<String> {
         // (A job of this agent's running is no reason: what it uses it holds, store::cachefile.)
         self.orphans.retain(jobs::Group::is_the_jobs);
@@ -3635,15 +3635,15 @@ impl Agent {
         if self.heard.as_ref().is_none_or(|h| h.read.elapsed() >= Duration::from_secs(60)) {
             let st: Option<Status> = std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             let left = st.as_ref().map(|s| match s.job.as_ref().or(s.beside.as_ref()) {
-                Some(j) => Some(format!("the build Mac runs a job ({})", j.what)),
+                Some(j) => Some(format!("the lead runs a job ({})", j.what)),
                 None => work_left(s.forecast.as_ref(), since),
             });
             self.heard = Some(Heard { read: Instant::now(), beat: st.map(|s| s.beat), left: left.flatten() });
         }
         match self.heard.as_ref().map(|h| (h.beat, &h.left)) {
-            Some((Some(beat), _)) if now_s().saturating_sub(beat) > 600 => Some(format!("the build Mac hasn't been heard from for {} min", now_s().saturating_sub(beat) / 60)),
+            Some((Some(beat), _)) if now_s().saturating_sub(beat) > 600 => Some(format!("the lead hasn't been heard from for {} min", now_s().saturating_sub(beat) / 60)),
             Some((Some(_), left)) => left.clone(),
-            _ => Some("the build Mac's status can't be read now".into()),
+            _ => Some("the lead's status can't be read now".into()),
         }
     }
 
@@ -3655,7 +3655,7 @@ impl Agent {
     }
 
     /// A job of `id` ran here: this Mac's caches may hold more, to trim once the build is done
-    /// again (not after the daily ones: they read no cache); the build Mac's heartbeat read again.
+    /// again (not after the daily ones: they read no cache); the lead's heartbeat read again.
     fn worked(&mut self, id: &str) {
         if !matches!(step_of(id).as_deref(), Some("backup" | "gc")) {
             self.mem.worked_at = now_s();
@@ -3672,7 +3672,7 @@ impl Agent {
         self.cheap = None;
     }
 
-    /// The build Mac's: the helpers' trims, clears and declined asks noted in the history as their
+    /// The lead's: the members' trims, clears and declined asks noted in the history as their
     /// statuses show them, each once (those from before this agent started were noted by the one
     /// before); a trim only when it freed something or what it keeps changed.
     fn note_helpers_caches(&mut self, helpers: &[Status]) {
@@ -3823,7 +3823,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Notes what happened in the build's history (the build Mac's coordinator's: a helper's jobs
+    /// Notes what happened in the build's history (the lead's coordinator's: a member's jobs
     /// are there by their leases).
     fn note(&self, e: crate::coord::history::Event) {
         if let Some(c) = &self.coord {
@@ -3840,7 +3840,7 @@ impl Agent {
         self.note(crate::coord::history::Event { worker: Some(self.worker_of(k)), step: (!step.is_empty()).then_some(step), targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), what, note: how.to_string(), ..crate::coord::history::Event::new("end") });
     }
 
-    /// Notes the build Mac's conditions as they change (mains or battery, the NAS, home or away, a
+    /// Notes the lead's conditions as they change (mains or battery, the NAS, home or away, a
     /// sleep), for the history.
     fn note_conditions(&mut self, c: &Conditions, slept: u64) {
         let mut said: Vec<String> = Vec::new();
@@ -4507,7 +4507,7 @@ impl Agent {
             alone.extend(one.into_iter().map(|t| build::Work { step: w.step.clone(), targets: vec![t] }));
         }
         plan.extend(alone);
-        // The forecast of the work left (crate::agent::forecast): the build Mac's, for the status (made
+        // The forecast of the work left (crate::agent::forecast): the lead's, for the status (made
         // again at most each minute: idle, the plan's made each loop).
         let stale = self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= 60);
         if !self.o.helper && stale {
@@ -4597,11 +4597,11 @@ impl Agent {
         jobs
     }
 
-    /// The forecast (crate::agent::forecast) of the work left: `before`, the build Mac's jobs before
+    /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
     /// the regions'; `regions`, the plan's; `backfill`, the pieces whose mids it makes in
     /// idle time (build::Plan::backfill); `chains`, the roads', trains' and landmarks' work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
-    /// the build Mac's pace: a time measured on a helper over its speed) and memory as last measured,
+    /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
@@ -4611,9 +4611,9 @@ impl Agent {
             Some(c) => c.for_forecast(),
             None => Default::default(),
         };
-        // Each worker's speed against the build Mac's, from the history (half until it's measured):
+        // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
-        // build Mac's pace by it); the helpers heard from lately are the machines.
+        // lead's pace by it); the members heard from lately are the machines.
         let helpers: Vec<Status> = helpers(root);
         let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
@@ -4626,7 +4626,7 @@ impl Agent {
         let names: Vec<String> = names.into_iter().collect();
         let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
         speeds.extend(forecast::speeds(&events, &self.host, std::slice::from_ref(&second), 0.8));
-        // (A time measured on a helper, at the build Mac's pace; one measured here or by a page, as it is.)
+        // (A time measured on a member, at the lead's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
@@ -4655,7 +4655,7 @@ impl Agent {
                 None => Cost { secs: per(step), known: false, peak_mb: peak(step, t) },
             }
         };
-        // The build Mac's own steps: what a target took here lately (measured), else a first guess.
+        // The lead's own steps: what a target took here lately (measured), else a first guess.
         let mine = |step: &str, n: usize| -> Cost {
             let (each, known) = self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
@@ -4992,8 +4992,8 @@ impl Agent {
 
     /// The build's pause as this agent knows it, brought up to date: this Mac's ask (its menu,
     /// `scenic pause`, the map: crate::control::Request) passed on, to this Mac's coordinator, or
-    /// from a helper to the build Mac's (and this Mac paused or going on meanwhile, while that can't
-    /// be reached); on the build Mac, then, its coordinator's, mirrored to the NAS
+    /// from a member to the lead's (and this Mac paused or going on meanwhile, while that can't
+    /// be reached); on the lead, then, its coordinator's, mirrored to the NAS
     /// (`state/build/pause.json`, for whoever reads the build's state there). A helper hears the
     /// build's otherwise in its asks and beats.
     fn sync_pause(&mut self, root: Option<&Path>, waiting: &mut Vec<Waiting>) {
@@ -5025,7 +5025,7 @@ impl Agent {
                             self.pause_local = false;
                         }
                         Some(Err(e)) => {
-                            waiting.push(Waiting { step: None, what: "Pausing".into(), why: format!("this Mac's ask isn't with the build Mac yet ({e:#}); it holds here meanwhile") });
+                            waiting.push(Waiting { step: None, what: "Pausing".into(), why: format!("this Mac's ask isn't with the lead yet ({e:#}); it holds here meanwhile") });
                             self.pause_local = true;
                         }
                         None => self.pause_local = true,
@@ -5936,7 +5936,7 @@ impl Agent {
         std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).filter(|cur| *cur != self.app)
     }
 
-    /// The gate's part of a loop: the listing thread started (on the lead, a lone build Mac, a dry
+    /// The gate's part of a loop: the listing thread started (on the lead or in a dry
     /// run: not a member's), and the asks of it taken up: a listing now (and a full check), and
     /// acceptances, which this Mac writes itself (docs/inputs.md §4.5).
     fn tend_gate(&mut self, root: &Path) {
@@ -6527,7 +6527,7 @@ fn secs_key(step: &str) -> String {
     }
 }
 
-/// About how long a target of `step` takes on the build Mac (seconds) until it's been timed there:
+/// About how long a target of `step` takes on the lead (seconds) until it's been timed there:
 /// the forecast's first guess (crate::agent::forecast), from the jobs' logs of 2026-10 (a tree cover
 /// piece's from its z3 tiles' whole runs: 8,171 s for ~370 z6 tiles).
 fn first_secs(step: &str) -> f64 {
@@ -6568,7 +6568,7 @@ fn first_secs(step: &str) -> f64 {
         "peaks" => 15.0,
         "marks" => 190.0,
         "overlays" => 50.0,
-        // (A z6 tile on average, B2's estimate from B1's pilot on the build Mac: bldprep 2.2–4.7 s a
+        // (A z6 tile on average, B2's estimate from B1's pilot on the M4: bldprep 2.2–4.7 s a
         // million rows and ~2.5 s to start, ~440 M rows over 380 tiles; bldtiles 0.5–2.9 s a
         // million buildings, ~342 M. Fetching what's there already: listings, and the coverage
         // unioned.)
@@ -7088,12 +7088,12 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_runs_any_shared_steps_job_the_build_mac_leases() {
+    fn a_member_runs_any_shared_steps_job_the_lead_leases() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        // The build Mac's coordinator offers slope, which this helper fits.
+        // The lead's coordinator offers slope, which this member fits.
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
         let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
@@ -7103,7 +7103,7 @@ mod tests {
         let jobs = a.helper_job(&root, &cond, &mut w);
         assert_eq!(jobs.len(), 1, "{w:?}");
         let j = &jobs[0];
-        // The build Mac's own command for slope, its saves handed off to its lease's outbox.
+        // The lead's own command for slope, its saves handed off to its lease's outbox.
         assert_eq!(j.id, "slope 3/2/2");
         assert!(j.cmd[1].starts_with("SCENIC_HANDOFF=") && j.cmd[2].starts_with("SCENIC_COSTS="));
         // (Its timings' record in its folder too, to go with its hand-off.)
@@ -7111,7 +7111,7 @@ mod tests {
         assert_eq!(&j.cmd[4..7], ["/app/scenic-build", "slope", "--root"]);
         assert!(j.cmd.contains(&"3/2/2".to_string()));
         assert_eq!(j.record.as_ref().map(|r| r.step.as_str()), Some("slope"));
-        assert!(j.what.contains("for the build Mac"), "{}", j.what);
+        assert!(j.what.contains("for the lead"), "{}", j.what);
     }
 
     #[test]
@@ -7601,7 +7601,7 @@ mod tests {
         assert_eq!(sizes(batches(vec![w("pack", 10)])), [("pack".to_string(), 10, 10)]);
     }
 
-    /// An agent that runs jobs (no dry run), the NAS at `root`: the build Mac's, or a helper's.
+    /// An agent that runs jobs (no dry run), the NAS at `root`: the lead's, or a member's.
     fn running_agent(root: &Path, home: &Path, helper: bool) -> Agent {
         test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper }).unwrap()
     }
@@ -7622,7 +7622,7 @@ mod tests {
     }
 
     #[test]
-    fn the_build_mac_trims_once_the_build_is_done_and_again_after_work() {
+    fn the_lead_trims_once_the_build_is_done_and_again_after_work() {
         // (The disk roomy: starting a job deletes nothing.)
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         let d = tempfile::tempdir().unwrap();
@@ -7810,11 +7810,11 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_trims_once_the_build_macs_heartbeat_says_the_build_is_done() {
+    fn a_member_trims_once_the_leads_heartbeat_says_the_build_is_done() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(root.join("state/build/writer"), "the-build-mac").unwrap();
+        std::fs::write(root.join("state/build/writer"), "the-lead").unwrap();
         let c = home.join("cache");
         let tif = crate::whole::testfiles::tiff(false);
         put(&c.join("chm10/a.tif"), &tif);
@@ -7823,23 +7823,23 @@ mod tests {
         let mut a = running_agent(&root, &home, true);
         let beat = |at: u64, done: bool, job: Option<&str>| {
             let job = job.map(|id| JobView { id: id.into(), what: format!("Ranking the world's place labels ({id})"), started: at, paused: None, pausing: None, tail: String::new(), parts: Vec::new(), part: None, progress: None, mem_mb: None, threads: None });
-            let st = Status { host: "the-build-mac".into(), beat: at, job, forecast: Some(forecast::Forecast { at, ..forecast_now(done) }), ..Default::default() };
+            let st = Status { host: "the-lead".into(), beat: at, job, forecast: Some(forecast::Forecast { at, ..forecast_now(done) }), ..Default::default() };
             std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
         };
-        // No word from the build Mac: nothing goes.
-        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the build Mac's status can't be read now"));
-        // Its heartbeat an hour old, the build with work left, or a job of the build Mac's running
+        // No word from the lead: nothing goes.
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the lead's status can't be read now"));
+        // Its heartbeat an hour old, the build with work left, or a job of the lead's running
         // (its forecast "done" all the same, as an older agent's said with a lone worldwide job):
         // still nothing.
         beat(now_s() - 3600, true, None);
         a.heard = None;
-        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the build Mac hasn't been heard from for 60 min"));
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the lead hasn't been heard from for 60 min"));
         beat(now_s(), false, None);
         a.heard = None;
         assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the build has work left")));
         beat(now_s(), true, Some("labels 2026-09-28"));
         a.heard = None;
-        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the build Mac runs a job (Ranking")));
+        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
         assert!(c.join("chm10/a.tif").exists());
         // Fresh, and the build done: every cheap cache goes, the canopy squares too.
         beat(now_s(), true, None);
@@ -7847,7 +7847,7 @@ mod tests {
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(!c.join("chm10/a.tif").exists() && !c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists());
         assert_eq!(a.mem.trimmed.as_ref().map(|f| (f.bytes(), f.left)), Some((tif.len() as u64 + 1000, 0)));
-        // (Its own status says so: the build Mac notes it in the history from there.)
+        // (Its own status says so: the lead notes it in the history from there.)
         assert!(a.mem.trimmed.as_ref().is_some_and(|f| f.why_not.is_none() && f.at >= a.started));
     }
 
@@ -7909,7 +7909,7 @@ mod tests {
     }
 
     #[test]
-    fn the_build_mac_notes_a_helpers_trims_in_the_history_once() {
+    fn the_lead_notes_a_members_trims_in_the_history_once() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
@@ -8679,7 +8679,7 @@ mod pool_tests {
     }
 
     #[test]
-    fn the_build_mac_leads_and_hands_its_jobs_off_once_the_pool_is_on() {
+    fn the_lead_leads_and_hands_its_jobs_off() {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());

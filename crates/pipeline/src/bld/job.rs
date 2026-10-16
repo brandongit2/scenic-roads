@@ -514,7 +514,7 @@ pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
 }
 
 /// Runs `bldtiles T`: its hi pack, its field's hi pack and its field's mid made and uploaded (or,
-/// with no building touching the coverage, those it had dropped). With `offload` (the build Mac's coordinator), some of its z8 areas are
+/// with no building touching the coverage, those it had dropped). With `offload` (the lead's coordinator), some of its z8 areas are
 /// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
 /// every area's tiles go into the pack in its turn, the same bytes wherever it was made.
 pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {

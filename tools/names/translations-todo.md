@@ -1,6 +1,6 @@
 # Names to translate
 
-Written by the build Mac after each build (`names-todo`): the names on the map that something has
+Written by the lead after each build (`names-todo`): the names on the map that something has
 with no English of its own and no translation line in any language spoken where it is. Each list
 is one language's, `<language>.jsonl` (ISO 639: `fr` French, `ja` Japanese, `zh` Chinese as
 Mandarin reads it, `yue` Cantonese, `es`, `pt`, `ca`, `gl`, `eu`, `cy`, `gd`, `ga`, `br`, …),

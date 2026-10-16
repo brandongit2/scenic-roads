@@ -969,7 +969,7 @@ impl World {
             if back && e.checked_sub(1).and_then(|p| term_at(self, p)).is_some_and(|p| !term::app_at_least(&t.app, &p.app)) {
                 self.count("take-backs from a newer app");
             }
-            let kind = ["handed over", "taken back", "taken over", "re-asserted", "restarted", "the build Mac"].into_iter().find(|k| t.how.starts_with(k)).unwrap_or("other");
+            let kind = ["handed over", "taken back", "taken over", "re-asserted", "restarted", "the first Mac in the pool"].into_iter().find(|k| t.how.starts_with(k)).unwrap_or("other");
             *self.counts.entry(kind).or_default() += 1;
             self.note(|| format!("term {e}: {} ({}{})", t.member, t.how, t.seq.map(|s| format!(", records at {s}")).unwrap_or_default()));
         } else if let Some(e) = records_of(path) {
