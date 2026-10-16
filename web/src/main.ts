@@ -147,12 +147,12 @@ async function main() {
   if (EVAL) installEval(map);
   // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
   // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from
-  // <url> (whatever the catalog says). Without it the meshes alone (z14), as before the field.
+  // <url>, a bare `?bldfield` the server's (either whatever the catalog says). Without it the meshes alone (z14), as before the field.
   // Its comparison mode: bldcmp.ts.
   const fieldParam = new URLSearchParams(location.search).get('bldfield');
   let field: FieldLayer | null = null;
   let fieldReady: Promise<FieldLayer> | null = null;
-  const wantField = (m: Meta) => fieldParam !== 'off' && (!!fieldParam || !!m.layers?.['buildings-field']);
+  const wantField = (m: Meta) => fieldParam !== 'off' && (fieldParam !== null || !!m.layers?.['buildings-field']);
   const loadField = () =>
     (fieldReady ??= import('./bldfield').then((m) => (field = new m.FieldLayer(fieldParam || null))));
   const fieldAtStart = wantField(meta) ? loadField() : null;
@@ -2110,6 +2110,7 @@ async function main() {
       addBuildings(map, 'water-name-line', 'boundary-county');
       applyBuildingsNow(store.s);
       heritageChanged(map, store.s.overlays.heritage);
+      addField();
     }
     // The field, once a catalog has its layer (not in the comparison mode: set up at start).
     if (!fieldReady && !CMP && wantField(m) && styleReady && map.getLayer('buildings')) {
