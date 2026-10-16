@@ -432,8 +432,8 @@ row) and `mid.sect` (the group's part of the piece's mid, as `work/terrain-mid/6
   after each catalog): `{"n", "kind", "langs", "things", "example": {"osm" (n123, w123, r123) | "qid" | "label"
   (its row, labels before `LABELS_V` 2), "at": [lon, lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
 - **To describe** (`inputs/descriptions/todo/landmarks.jsonl`, `areas.jsonl`, likewise): `{"qid", "id",
-  "name", "en", "kind", "designation", "at", "enwiki", "wiki", "register", "source", "fame"}`
-  (landmarks) and `{"qid", "id", "name", "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by
+  "name", "en", "kind", "designation", "at", "enwiki", "wiki", "register" (its record's link),
+  "source" (its heritage register's id, docs/inputs.md §6.5), "fame"}` (landmarks) and `{"qid", "id", "name", "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by
   fame; with `README.md`.
 
 ## Catalog (`catalog/<n>.json.zst`)
@@ -470,11 +470,12 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
 `files` holds every file the catalog references.
 - `credits`: the sources its data comes from (`pipeline::rules::CREDITS`, and the inputs' accepted
   descriptions beside them, a description in place of the table's entry of its `what`:
-  `pipeline::inputs::credits`, docs/inputs.md §4.8; none has one yet), those whose areas meet
-  the coverage, 20 km around it (how far heritage sites and terrain reach) or a built unit's ways
-  (its extent, so a removed region's data keeps its credit while it's served). `areas` is a list of
-  w, s, e, n boxes in degrees, left out for credits that hold everywhere (a description's: its
-  extent read from its data, one box).
+  `pipeline::inputs::credits`, docs/inputs.md §4.8: the heritage registers' so far), those whose
+  areas meet the coverage, 20 km around it (how far heritage sites and terrain reach) or a built
+  unit's ways (its extent, so a removed region's data keeps its credit while it's served). `areas`
+  is a list of w, s, e, n boxes in degrees, left out for credits that hold everywhere (a
+  description's: its extent read from its data, one box). A heritage register's credit has its id,
+  `register`, which the heritage features' popups name their source by (docs/inputs.md §6.5).
 - `coverage`: the regions the catalog's data is built for: those done at publish time as their
   recipes were then (`--ready <id>=<outline digest>,…`, the agent's plan: one redrawn since isn't),
   and those not done yet as the last catalog had
@@ -589,9 +590,9 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         too, with kept-<date>.json: {archive, files: {name: hash16}}, the NAS's
                         archive they last matched and their hashes then; months/: copies of the
                         NAS's pageview indexes, marked used when read), rail/ (the trains' stop
-                        pairs), registers-<id>/ (the registers' archives, extracted),
-                        heritage-<date>-<id>/ (the pass's copy of the snapshot, which the heritage
-                        scripts add their answers to; its .kept.json as items/'s), heritage-venv/
+                        pairs), registers-<id>/ (the registers' seeds' archive, extracted),
+                        heritage-<date>/ (the heritage chain's answers for the pass, which its
+                        scripts add to; its .kept.json as items/'s), heritage-venv/
                         (the heritage scripts' old Python environment: their next run removes it),
                         unit-stages.json (the unit stages' times here) and answers.gate and
                         answers.use (the flocks holding this Mac's
@@ -823,13 +824,13 @@ class, id) within a tile. The client sends the id with the clicked point.
   `{qid, …its facts (items.py `wikidata`)}`, or `{qid, sl: 0, missing: true}` for one QLever doesn't know;
   `wp-<date>.jsonl`, `{qid, n (its Wikipedia articles), arts: ["<lang>|<title>", …]}`;
   `fetched-<date>.json`, `{first, last}`: the days anything was fetched), and
-  `sources/items/<date>/heritage-<id>.tar.zst`, the heritage chain's: the files of the pass's copy
-  of the registers' snapshot `registers-<id>` (the first 12 hex digits of the hash16 of the
-  snapshot's content name) that the snapshot lacks or has at another size or time, by their paths
-  in it (heritagewd.py's `wd/ids.jsonl`, `wd/wp.jsonl`, `wd/enwiki-shortdesc.json`;
-  areadetails.py's `areas-wikidata.json`; heritage.py's `special-wd-labels.json`; a register a
-  script downloaded), but what the chain makes again each run (`osm/`, whsshapes.py's OSM extracts
-  in `whs/`, `wd/items.jsonl`); `sources/registers/<name>.tar.zst`;
+  `sources/items/<date>/heritage.tar.zst`, the heritage chain's: the files of its working copy
+  `heritage-<date>/`, by their paths in it (heritagewd.py's `wd/ids.jsonl`, `wd/wp.jsonl`,
+  `wd/enwiki-shortdesc.json`; heritagedetails.py's `desc/extracts.jsonl`; whsshapes.py's
+  `whs/wd-p757.json`, `whs/wd-parts.json`; areadetails.py's `areas-wikidata.json`), but what the
+  chain makes again each run (`osm/`, whsshapes.py's OSM extracts in `whs/`, `wd/items.jsonl`); a
+  new pass's copy starts from the newest earlier pass's archive; `sources/registers/<name>.tar.zst`
+  (the heritage chain's seeds, `legacy-seeds`);
   `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash, as in `2026-09-23-1`; not
   content-named: raw little-endian f32 `[xmin, ymin, xmax, ymax]` in degrees, per Overture building
   whose box's centre is in the z8 tile, sorted, bit-identical boxes once; no file for a tile

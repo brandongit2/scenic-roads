@@ -170,7 +170,7 @@ inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), timetables/feed
                check's test unit's drop box, checked while `state/inputs/gate-test` exists:
                inputs.md §4.10)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
-               (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/
+               (Planetiler's jar and data), registers/ (the heritage registers' seeds: §6), items/<date>/
                (the pass's items' facts and pageviews, and the answers Wikidata and Wikipedia gave
                the items job and the heritage chain: §4), pageviews/ (Wikipedia's monthly
                pageviews), dem-cache/ (today's per-vertex DEM cache, the units' seed),
@@ -179,8 +179,7 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
                rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v3,
-               copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), registers/ (the heritage
-               registers' snapshot and its seeds: §6, Hand-made inputs), inputs/<unit>/ (the input
+               copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), inputs/<unit>/ (the input
                check's checked copies of a drop box's files, its accepted indexes and held reports:
                inputs.md §4.6)
 base/          base packs, one per unit
@@ -264,7 +263,7 @@ directly once a term exists (`crate::out::check_writer`). The exceptions:
   manifest (or the newest records) names them, an accepted index it names lists them, a journal
   entry the newest records don't reflect yet does, or an index made or replaced in the last 14 days
   lists them (none swept the day one of those can't be read).
-- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (registers,
+- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (the seeds,
   the basemap's data, the DEM seed, the rail sources with the files they replaced), translations, descriptions, inputs, state, app and nas.
 
 **Backups.**
@@ -344,11 +343,11 @@ work from the lead's coordinator. Below, the M4 (48 GB) unless said.
   - **The Wikidata and Wikipedia answers** the items job and the heritage chain got for a pass
     (`pipeline::answers`): the items' facts and articles (dem/items.py's caches), and the heritage
     scripts' (heritagewd.py's answers by register ID, its items' articles and English short
-    descriptions, areadetails.py's park facts, heritage.py's labels, a register a script
-    downloaded: the files of the pass's copy of the registers' snapshot that the snapshot lacks or
-    has otherwise, but those the chain makes again each run). A step adds to them in its Mac's
+    descriptions, heritagedetails.py's Wikipedia extracts, whsshapes.py's World Heritage items,
+    areadetails.py's park facts: the files of the pass's working copy, but those the chain makes
+    again each run; a new pass's starts from the last pass's). A step adds to them in its Mac's
     cache as it fetches, and keeps them on the NAS as one archive a pass
-    (`sources/items/<date>/answers.tar.zst`, `heritage-<id>.tar.zst`), written whole as the step
+    (`sources/items/<date>/answers.tar.zst`, `heritage.tar.zst`), written whole as the step
     starts when the NAS hasn't what the Mac has, and as it ends, finished or not, when it changed
     them (a step stopped, as the agent stops one, sends them at its next start): ~10 MB for the
     2026-09-28 pass. Which counts as a step starts: the Mac's while the NAS's archive is the one
@@ -421,13 +420,10 @@ work from the lead's coordinator. Below, the M4 (48 GB) unless said.
   - Nothing is deleted through a link, nor anything in the NAS's project folder (§8, Room on the
     disk).
   - **Kept:** the Wikidata and Wikipedia answers the items and heritage jobs keep (`items/`, but
-    its pageview months, and the pass's copy of the registers' snapshot, which the heritage scripts
-    add theirs to: `heritage-<date>-<id>/`), which the NAS keeps too (Downloads, above) but which
-    free little (the items' 13 MB, the copy's own ~0.4 GB); the heritage scripts' old Python
+    its pageview months, and the heritage chain's working copy, `heritage-<date>/`), which the NAS
+    keeps too (Downloads, above) but which free little; the heritage scripts' old Python
     environment (`heritage-venv/`, which their next run removes: they run in the app's); the
-    registers' snapshot,
-    extracted (`registers-<id>/`: the pass's copy is an APFS clone of it, so deleting it would free
-    next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
+    registers' seeds, extracted (`registers-<id>/`); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
     (`unit-stages.json`); what a unit kept that isn't on the NAS yet (`dem-units/`,
     `scenic-units/`); and the regions' coverage as a job last read it (`coverage/<key>.cov`, ~18 MB:
     its shapes' rings, kept by `pipeline::coverage::Coverage::load` in the folder the agent names
@@ -758,7 +754,8 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
 3166-1 country or 3166-2 subdivision, with defaults:
 - DEM order (`pipeline::dem`, the `elev` program; Taiwan from FABDEM) and densification spacing (8 m in North America and Japan, 15 m
   elsewhere: `extract`);
-- heritage registers (the snapshot, `dem/heritage.py`);
+- heritage registers (the input check's `inputs/heritage/`, each register's territory and box its
+  own: docs/inputs.md §6.5);
 - timetables:
   - rail: the Mobility Database catalogue's feeds of the countries the coverage is in (worked out
     from the pass's outlines: `pipeline::rail::countries`), and the declared feeds (national
@@ -1469,23 +1466,10 @@ What no job makes, kept on the NAS with how it was made, so it can be made again
 the repository's `dem/` (`uv run python <script>`); `scenic-build` takes `--root <NAS project
 folder> --scratch <local dir>` as for every step.
 
-- **The heritage registers' snapshot** (`sources/registers/legacy`, a tar.zst; the heritage-sites
-  and heritage jobs read it): a folder as `dem/heritage.py` reads it, without `osm/` (the pass's
-  sets replace it). In it: the registers downloaded by hand (`fhd.xlsx`, Parks Canada's Directory of
-  Federal Heritage Designations, open data; the provinces' and countries' registers under `qc/`,
-  `on/`, `ns/`, `nb/`, `uk/`, `ie/`, `gg/`, `fr/`, `es/`, `pt/`, `ad/`, `jp/`, `tw/`, `hk/`,
-  `sg/`, UNESCO's under `unesco/` and `whc.xml`), what heritage.py and the chain cached (`wd-*.csv`,
-  `wd/`, `crhp/`), the descriptions written then (`desc/`), and what two scripts make from them:
-  - `federal.py --dir <folder>`: `federal.json`, the federal designations located. It reads
-    `fhd.xlsx`, `wd-canada.csv`, and the provinces and named places as GeoJSON lines in
-    `<folder>/osm/`: `osmium tags-filter <planet> r/admin_level=4 -o prov.osm.pbf` then `osmium
-    export prov.osm.pbf -f geojsonseq --geometry-types=polygon -o osm/prov.geojsonseq`, and the
-    pass's `named` set exported as `osm/named.geojsonseq`.
-  - `crhp.py --dir <folder>`: `crhp.json`, the Canadian Register of Historic Places' provincial and
-    municipal places (its pages cached in `<folder>/crhp/`).
-  - Then `scenic-build registers-import --from <folder>` puts it in as `sources/registers/legacy`;
-    the heritage jobs' keys follow it.
-- **Its seeds** (`sources/registers/legacy-seeds`): park facts (`areas/wikidata.json`), the
+- **The heritage registers** are an input (`inputs/heritage/`, one GeoJSON file and description per
+  register, made by `producers/heritage/`: docs/inputs.md §6.5); the owner's matches too
+  (`inputs/heritage-matches/`, §6.5.4).
+- **The heritage chain's seeds** (`sources/registers/legacy-seeds`): park facts (`areas/wikidata.json`), the
   pageview months the chain counted before the items job's cache (`pageviews/months/`), and the
   names table the heritage layers' English comes from (`names/english.json`, read by
   `dem/names.py` `english_at`). Nothing makes them again (§10).
@@ -1563,7 +1547,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   one: it can't be assembled until each has), so a piece made again to the same bytes changes
   nothing above it ("none" for a z3 tile with lo packs and no piece); its version, `TREES_LO_V`,
   changes likewise with the bytes of its lo packs;
-- **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
+- **heritage-sites:** the pass, its areas set, the heritage registers whose box meets the cover
+  (their accepted files' `keyed` digests) and the matches' accepted version, the coverage;
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
   go, its heritage slices, the roadside buildings' index, and the terrain tiles it reads, by their contents (`agent::build::unit_terrain`: each
@@ -2887,14 +2872,12 @@ At each phase's end an Opus agent reviews the work against this plan.
    and published (catalog 14, 2026-10-06). The build before the agent and its conversion are
    deleted from the code.
    - **Left:**
-     - the NAS's files from that build, which nothing reads now: `global/legacy/`,
-       `layers/basemap/legacy-*`, `sources/legacy/` (deleted once an app without their readers is
-       published);
-     - the fallbacks to them in `agent::build` (`heritage_src`, `overlays_key`) and
-       `markconv::heritage_source` (`markconv::LEGACY`), unused while the registers' snapshot is
-       there;
+     - the NAS's files from that build, which nothing reads now (their fallbacks went in #138):
+       `global/legacy/`, `layers/basemap/legacy-*`, `sources/legacy/` (deleted once an app without
+       their readers is published), and `sources/registers/legacy` (the registers' snapshot: the
+       registers are an input since #138);
      - names that still say legacy for live code and data: `pipeline::legacy` (the units' tile and
-       their base packs) and `sources/registers/legacy{,-seeds}` (to be `inputs/heritage/registers`);
+       their base packs) and `sources/registers/legacy-seeds` (#139);
      - the `terrain` and `slope` programs' build-folder modes (`terrain --scan` is live);
      - the registers' seeds, which nothing makes again (§6, Hand-made inputs).
 7. **Features,** each on its own.

@@ -1,8 +1,9 @@
 # Inputs: every input through a standard shape and a checked drop box
 
 **Status: the input check (§4) is built (#134: crate::inputs; its two-Mac trial of §4.10 ran on
-2026-10-10), with the translations and the descriptions its first real units (#137, §6.3, §6.4:
-built); the accessor's guard (§7.1) is built and growing with each input; the rest is planned.** It is the spec for the input standardisation series on the task board (#133 is this
+2026-10-10), with the regions, the languages, the translations and descriptions, and the heritage
+registers and matches its units (#135–#138, §6.1–§6.5: built); the accessor's guard (§7.1) is
+built and growing with each input; the rest is planned.** It is the spec for the input standardisation series on the task board (#133 is this
 document; #134–#147 build it). Each section says what of it is built; where it describes today's
 code or today's NAS, it says "today" and cites the file; everything else is the design.
 Companions: `docs/plan.md` (the pipeline, keys and order, which these tasks change),
@@ -164,8 +165,9 @@ What moves (each in its task; §11):
 
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
 the languages (§6.2), the translations and the descriptions (§6.3, §6.4), the regions (§6.1), the
-timetable feeds (§6.7.1) and, while it's on, the test unit `_gate-test` (§4.10); each other input
-joins `inputs::UNITS` in its own task (#138, #139, #141–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
+timetable feeds (§6.7.1), the heritage registers and matches (§6.5, §6.5.4) and, while it's on,
+the test unit `_gate-test` (§4.10); each other input joins `inputs::UNITS` in its own task (#139,
+#141–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
 section isn't built yet is marked planned.
 
 ### 4.1 Terms
@@ -370,7 +372,8 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 - **Keys:** a step names the content of the input files it reads: the index's content name when it
   reads the whole unit, or the `keyed` digests of the files it reads when it reads some (the
   heritage-sites job names the registers whose box meets its cover, so a register on another
-  continent changing reruns nothing there). Planned, with each input's readers. This replaces today's digests of `inputs/` beside the
+  continent changing reruns nothing there: built, #138, §6.5). Planned for the other inputs, with
+  their readers. This replaces today's digests of `inputs/` beside the
   manifest (`agent::input_digests`, crates/pipeline/src/agent/mod.rs:4638, which digests the
   recipes and the outline files they name by size and time: `regions_digest`, :4671).
 - **The map's server** reads its inputs the same way: the translations and descriptions from the
@@ -444,12 +447,11 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   When the descriptions can't be read now, the last digest the agent read stands (a failed read
   never changes the key), and with none read yet the catalog waits; `scenic-build catalog` fails
   then too, rather than publish credits without them.
-- **Popups name their source by register, not by a copied string.** Today the heritage outputs carry
-  each register's credit string in every feature's `source` (`source=QC_SRC`, dem/heritage.py:205;
-  `ON_SRC`, :264), which the map shows (web/src/overlays.ts:54, :860): a credit edit would need the
-  heritage chain rerun. Instead the features carry their register's id (`register`), and the server
-  resolves it to the register's `what` and `credit` from the catalog's credits (the catalog lists
-  each register's credit by id), so popups follow a credit edit with the next catalog.
+- **Popups name their source by register, not by a copied string** (built, #138). The heritage
+  outputs carry each feature's register id (`register`; `registers`, for a place merged from
+  several), and the map resolves it against the catalog's credits, which list each register's
+  credit by id (`register`, crate::inputs::credits `Described::credit`; web/src/overlays.ts
+  `sourceOf`), so popups follow a credit edit with the next catalog, no heritage job rerun.
 - The map's own credits for what the app makes (its colour ramps, `web/src/ui/strip.ts:330`) stay
   the app's.
 - The map server's fallback for catalogs without credits (`credits_of`,
@@ -1308,7 +1310,35 @@ owner's to delete).
 
 **Kind:** declare. **Drop box:** `inputs/heritage/`, one pair of files per register:
 `<register>.geojson` and `<register>.toml`. The register's id is the file's stem (`fr-merimee`,
-`ca-dfhd`, `unesco-whc`).
+`ca-dfhd`, `unesco-whc`): lower-case letters, digits and `-`.
+
+**Built** (#138: crate::inputs::heritage on the input check; `producers/heritage/` making today's
+registers; dem/heritage.py reading any register; the heritage-sites job reading the accepted
+version), with these choices where this section left room:
+- **Ids.** An entry's `id` is the register's own reference where the register has one the producer
+  can read (Mérimée's `PA…`, the NHLE's list entry, the NRHP's reference number, a UNESCO
+  component's `1221-001` …); where it has none (Northern Ireland's, Andalusia's, Hong Kong's …), the
+  producer makes one from the entry's name, designation and place (`h` and 16 hex digits), stable
+  while those don't change, and says so with `ref: ""`. Two entries sharing a reference (a
+  designation the register lists at two places) take `~2`, `~3` … in their ids, `ref` keeping the
+  reference.
+- **What the chain looks entries up by** is the shape's (`ref`, else the `id`; `site` for a
+  `world-heritage` register), with the register's `wikidata_property`; a register without one is
+  linked through OSM only (heritagewd.py, §6.5.1).
+- **The kind of designation** the map's Heritage sites toggles group by is the producer's (`tier`,
+  from today's patterns on designations, `producers/heritage/tiers.py`), a key the map knows
+  (web/src/basemap.ts HERITAGE_TIERS); without one, it's by level (World Heritage by its category).
+- **Other properties** pass through to the popup as they are (`category`, `criteria`, `notice`,
+  `built`, `dfhd_id` …), as today's outputs carry them; `null` is absent.
+- **`name`** is optional: an entry without one is a warning (`he-unnamed`), shown as its
+  designation; Andalusia's register has none today (its reader doesn't find IAPH's name field),
+  accepted as it is.
+- **Registers by source:** one register per credit string today's readers carried, so each
+  credit is a description of its own: France's Mérimée and its sites patrimoniaux remarquables;
+  Spain's eight regions; Ireland's NIAH and SMR; Wales's listed buildings, scheduled monuments and
+  parks (each with its own Wikidata property); Nova Scotia's and Halifax's; Singapore's three
+  datasets; the special places by certifier (`unesco-mab`, `unesco-iggp`, `darksky`, `rasc-dsp`):
+  40 registers.
 
 **Shape: `<register>.toml`,** a description (§5.1), plus:
 
@@ -1316,32 +1346,36 @@ owner's to delete).
 |---|---|---|---|
 | `class` | `heritage`, `world-heritage`, `special` | yes | how the map shows its entries: heritage sites and areas; UNESCO's World Heritage (dots, and outlines from OSM); special places (biosphere reserves, geoparks, dark-sky places) |
 | `territory` | list of ISO 3166 codes, or `"world"` | yes | required (§5.1); entries further than 20 km outside are a warning (§4.4) |
-| `wikidata_property` | string `P<digits>` | yes | the Wikidata property holding this register's ids, by which entries are matched to Wikidata items (today `heritagewd.RULES`, dem/heritagewd.py:59) |
-| `osm_ref_tags` | list of strings | yes | the OSM tags holding its ids (today `heritagewd.OSM_REF`, dem/heritagewd.py:168: `ref:mhs`, `HE_ref`…) |
+| `wikidata_property` | string `P<digits>` | yes | the Wikidata property holding this register's ids, by which entries are matched to Wikidata items |
+| `osm_ref_tags` | list of strings | yes | the OSM tags holding its ids (`ref:mhs`, `HE_ref`…), by which heritagewd.py links an entry through OSM |
 
 **Shape: `<register>.geojson`,** a FeatureCollection; each feature any geometry (Point, LineString,
 Polygon, or their Multi forms), with properties:
 
 | Property | Type | | Meaning |
 |---|---|---|---|
-| `id` | string | required, unique in the register | the register's own reference (stable across downloads) |
-| `name` | string | required | as the register gives it, in its language, tidied by the producer |
+| `id` | string | required, unique in the register | the register's own reference (stable across downloads), or one the producer made |
+| `ref` | string | optional | the register's reference when it isn't the `id` (an id with `~2`); `""`: the register gives it none |
+| `name` | string | optional (a warning without) | as the register gives it, in its language, tidied by the producer |
 | `name_en` | string | optional | the register's own English: a source of the thing's own English (plan §7) |
-| `level` | integer 1–5 | required for `heritage` | 1 World Heritage, 2 highest national grade, 3 other national grades, 4 regional, 5 local (today's levels, dem/heritage.py:5) |
+| `level` | integer 1–5 | required for `heritage` and `world-heritage` | 1 World Heritage, 2 highest national grade, 3 other national grades, 4 regional, 5 local |
 | `designation` | string | required for `heritage` | the register's designation ("Monument historique classé") |
+| `tier` | string | optional, `heritage` | the kind of designation (web/src/basemap.ts HERITAGE_TIERS keys) |
 | `kind` | string | required for `special` | `biosphere`, `geopark`, `dark_sky` |
+| `site`, `site_area_km2` | string, number | `world-heritage` | the World Heritage site's id (a component's `id` is its UNESCO reference), its inscribed area |
 | `wikidata` | string `Q<digits>` | optional | its item, where the register or the producer knows it |
-| `date` | date | optional | designated |
+| `date` | string | optional | designated |
 | `municipality`, `type`, `authority`, `url` | string | optional | shown in the popup |
-| `approx` | bool | optional | located loosely (by name, or a circle for a special place without a mapped boundary) |
+| `approx` | bool | optional | located loosely (by name) |
 | `area_km2` | number | optional, `special` | its designated area, for the circle drawn when OSM has no boundary |
-| `dot` | bool | optional | whether a polygon or line also shows as a dot (default: true for points, false otherwise) |
+| `osm_name` | string | optional, `special` | the name of the OSM boundary to look for (default: its name) |
+| `dot` | bool | optional | whether a polygon or line also shows as a dot (default: true for points and lines, false for polygons) |
 
 ```json
 {"type": "FeatureCollection", "features": [
   {"type": "Feature", "geometry": {"type": "Point", "coordinates": [2.3376, 48.8606]},
    "properties": {"id": "PA00088801", "name": "Palais du Louvre", "level": 2,
-                  "designation": "Monument historique classé", "wikidata": "Q19675",
+                  "designation": "Monument historique classé", "tier": "n.top",
                   "municipality": "Paris", "url": "https://www.pop.culture.gouv.fr/notice/merimee/PA00088801"}}]}
 ```
 ```toml
@@ -1350,92 +1384,126 @@ what = "France heritage"
 credit = "Ministère de la Culture, base Mérimée (POP)"
 licence = "etalab-2.0"
 source = "https://www.pop.culture.gouv.fr/"
-retrieved = 2026-09-14
+retrieved = 2026-09-28
 class = "heritage"
-territory = ["FR"]
+territory = ["FR", "GP", "MQ", "GF", "RE", "YT", "PM", "BL", "MF"]
 wikidata_property = "P380"
 osm_ref_tags = ["ref:mhs"]
 ```
 
 Every entry has a position when it's dropped: locating (Canada's federal designations, by
-`dem/federal.py` today) is the producer's job, never the app's.
+`producers/heritage/federal.py`) is the producer's job, never the app's.
 
-**Checks.**
-- Errors: invalid GeoJSON or geometry; a coordinate out of range; a required property missing or of
-  the wrong type; an `id` twice; a `level` outside 1–5; a description missing, or without its
-  credit or licence; an unknown `class`; a malformed `wikidata` or `wikidata_property`; a
-  `territory` that isn't ISO codes or `"world"`; a `.geojson` without its `.toml` or the reverse
-  (the two are held and taken together, §4.3).
-- Warnings: entries more than 20 km outside the declared territory's outline (from the pass's
-  outlines; one finding per register, its id naming the entries: NRHP's legation in Tangier is
-  real); a register losing more than 10 % of its entries since its accepted version; more than half
-  its entries `approx`. (Each count finding's id names its counts, §4.4.)
+**Checks** (crate::inputs::heritage).
+- Errors: a file that isn't a register's `.geojson` or `.toml`; invalid GeoJSON or geometry (a ring
+  of fewer than four positions, a line of fewer than two); a coordinate out of range; an `id`
+  missing or twice; a property of the wrong type (a `level` outside 1–5, a `tier` the map doesn't
+  know, a `kind` not one of the three, a malformed `wikidata`); entries missing what their class
+  needs (`level`; and `designation` for `heritage`; `kind` for `special`); a description missing,
+  or without its credit or licence; an unknown `class`; a malformed `wikidata_property` or
+  `osm_ref_tags`; a `territory` missing, or that isn't ISO codes or `"world"`; a `.geojson`
+  without its `.toml` or the reverse (the two are held and taken together, §4.3). One finding per
+  file and check, listing the entries (their feature number and id).
+- Warnings: entries more than 20 km outside the declared territory's outlines (the newest pass's
+  simplified outlines of those codes; one finding per register, its id naming the entries: NRHP's
+  legation in Tangier is real); a register losing more than 10 % of its entries since its accepted
+  version (its id naming the counts and both versions), or removed; more than half its entries
+  `approx`; entries without a name.
+- Derived: a `.geojson`'s box and entry count (`facts.box`, `facts.entries`), and its description's
+  extent, the same box (`facts.extent`), which the catalog's credits list it by (§4.8).
+
+Today's registers checked (the check run on the converted files, #138): five warnings, each to be
+accepted once: Mérimée's 8 entries outside France's outlines (in Belgium and Germany: Mérimée lists
+them), the NRHP's one off the Pacific coast, Nova Scotia's one with its coordinates swapped,
+Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas without one.
 
 **Ingesting and rebuilding.**
 - **One generic reader** replaces the function per register: the heritage-sites job (plan §6, Job
-  keys; docs/phase5.md, Heritage and area flags) reads every accepted register whose box meets its
-  cover, takes points as sites, polygons as heritage areas (flagging roads as today), lines as
-  lines, each register's `class` deciding which layer.
+  keys; docs/phase5.md, Heritage and area flags) lays out every accepted register whose box meets
+  its cover (`pipeline::heritage::registers_meeting`: the box meets one of the cover's z6 tiles)
+  for dem/heritage.py, which reads them in the order of their ids: a point is a site; a polygon a
+  heritage area (flagging roads as today), and a site too at its representative point with `dot`; a
+  line a site at its representative point (no layer draws lines); a `special` register's point is
+  matched to the OSM boundary named `osm_name` (else its name) as today, or drawn as a circle, and
+  its polygon is its boundary. Every site, area and special place carries its register's id
+  (`register`), and a site its reference (`ref`).
 - **Merging across registers stays a build step, by rule** (the owner's line: rules in the build,
-  judgment as an input): two entries are one place when they share a `wikidata` item, or when the
+  judgment as an input): two entries are one place when the matches say so (§6.5.4), or when the
   lower-graded one is local (level 5) and lies within 40 m of another register's entry of the same
-  or a higher level whose name shares a word of three letters or more (today's `dedupe`,
-  dem/heritage.py:319, unchanged). The merged place keeps every register it came from (for credits
-  and the popup), its level the highest. Registers are read in the order of their ids, so the result
-  doesn't depend on the drop box's listing order.
-- **The judgment calls** come from the matches input (§6.5.4), applied before the rules.
-- **Keys:** heritage-sites names the `keyed` digests of the registers meeting its cover and the
-  matches' accepted version (today it names the whole snapshot, `sources/registers/legacy`,
-  crates/pipeline/src/agent/build.rs:609); the heritage job likewise. The units follow through
-  their heritage slices, as today.
-- **Credits** from each register's description, for the registers whose entries meet what the
-  catalog serves (§4.8). A register of `territory = "world"` (UNESCO's list, the biosphere
-  reserves, geoparks and dark-sky places) is credited by its entries' box like any other.
-- **Popups' sources** come from each entry's `register` id, resolved against the catalog's credits
-  (§4.8), not from a credit string copied into every output feature as today.
+  or a higher level whose name shares a word of three letters or more (today's rule). Of two local
+  entries, the one of the register with fewer entries gives way (a city's list to the provincial
+  register), whichever is read first, so the result doesn't depend on the order. The place kept
+  lists every register it was merged from (`registers`), its level the highest.
+- **Keys:** heritage-sites names the registers meeting its cover by their `keyed` digests (the
+  agent reads them from the accepted index each loop, `pipeline::heritage::registers_now`), the
+  matches' accepted version and its version (4), and is given the two indexes it planned with
+  (`--heritage-index`, `--heritage-matches-index`). A register on another continent changing reruns
+  nothing. Without an accepted version, the heritage sites wait (and the units, the marks and the
+  overlays with them). The heritage job keys on heritage-sites' outputs, as before.
+- **Credits** from each register's description, for the registers whose box meets what the catalog
+  serves (§4.8): a register's whole box, so France's overseas departments stretch Mérimée's across
+  the Atlantic, and it's credited by a catalog in Canada too (a line too many, never one too few).
+- **Popups' sources** come from each feature's `register` (and `registers`, for a merged place),
+  resolved in the map against the catalog's credits, which name each register's credit by id
+  (`register`, §4.8; web/src/overlays.ts `sourceOf`): "Source: <credit> (<licence>)".
 
 **Migration.**
-1. **Producers outside the app** (in `producers/heritage/`, §8) convert each of today's registers
-   from the snapshot
-   (`sources/registers/legacy`, the folder `dem/heritage.py` reads) into its pair of files: the
-   function per register in `dem/heritage.py` (`federal`, :156; `nrhp`, :166; `quebec`, :197;
-   `ontario`, :244; `nova_scotia`, :277; `new_brunswick_moncton`, :301; `crhp`, :314; the special
-   places, :352 and :392) and in `dem/heritage_eu.py` (`unesco`, :270; `france`, :325; `andorra`,
-   :372; `england`, :414; `scotland`, :476; `wales`, :506; `northern_ireland`, :547; `guernsey`,
-   :575; `ireland`, :701; `spain`, :735, split into its eight regional registers; `portugal`, :885;
-   `hong_kong`, :918; `japan`, :996; `taiwan`, :1072; `singapore`, :1137), with `federal.py` and
-   `crhp.py`, move to `producers/heritage/`, each writing the shape. Their credit strings
-   (`QC_SRC`, `WHC_SRC`, … and `rules::CREDITS`' heritage entries, rules.rs:235–361) become the
-   descriptions; `heritagewd.RULES` and `OSM_REF` become `wikidata_property` and `osm_ref_tags`;
-   `heritagetiers.py`'s patterns on designation strings (dem/heritagetiers.py:15–36) become the
-   producers' `level`s.
-2. The heritage-sites and heritage jobs read the registers generically.
-3. **Proof:** the heritage-sites outputs (`work/heritage/<d>/base/*`, the `pos/` and `areas/` slices),
-   the heritage job's outputs, the marks and the overlays the same, or every difference explained
-   (expected: none in positions; the merge's order may change which register a merged place's popup
-   names first, to be shown and explained).
-4. **Then deleted:** the per-register code (the functions above, `heritage_eu.SOURCES`, the
-   register order at dem/heritage.py:561, `STATES`, the snapshot's paths), the registers' credits and
-   territory boxes in rules.rs (:131–175, :235–361), `registers-import` (scenic-build.rs:2440) and
-   `sources/registers/legacy` (after GC's window).
+1. **Producers outside the app** (`producers/heritage/`, §8): `registers.py --data <folder> --out
+   <folder> [<register> …]` writes each register's pair, its readers moved from the app (`eu.py`,
+   from dem/heritage_eu.py; `na.py`, from dem/heritage.py's per-register functions and the special
+   places' local names; `tiers.py`, from dem/heritagetiers.py; `federal.py` and `crhp.py`, which make
+   `federal.json` and `crhp.json` in the data folder as before). The data folder is laid out as the
+   registers' snapshot was (`sources/registers/legacy` extracted), so today's registers convert from
+   it without a download. Their credits and licences, Wikidata properties and OSM tags are in
+   `REGISTERS`.
+2. The heritage-sites job reads the registers generically, the chain reads the registers' fields
+   heritage-sites lists (`heritage-sources.json`'s `registers`), and the chain's own caches (its
+   Wikidata, Wikipedia and World Heritage answers, which lived in the snapshot) are the pass's
+   answers alone (`sources/items/<date>/heritage.tar.zst`, `pipeline::answers::heritage`), a new
+   pass starting from the last pass's.
+3. **Proof** (run for #138, the old app and this one on the same pass, cover and answers, seven
+   regions: Moncton, Halifax, Mont-Mégantic, Paris, Barcelona, Edinburgh, Kyoto; the new side's
+   answers made by `tools/check/heritage-answers-seed.sh`, so the chain asked nothing): the sites'
+   position slices and World Heritage parts the same bytes; the 11,769 sites the same with every
+   property but `source` (now `register`, `ref`, `t`, and `site` for World Heritage); the area
+   slices of the cover's tiles the same, the heritage areas those of the registers meeting the cover
+   (the old job took every register's, 418 more here: Ontario's districts, Singapore's areas, two of
+   Quebec's without coordinates, which the producer leaves out); the special places the same; the
+   chain's details and props the same but for the source; seven colocated pairs in Moncton (a
+   Moncton and a CRHP entry metres apart, which the rule doesn't merge) swap their zoom of
+   appearance, interest.py's tie-break following the order the registers are read in; the marks'
+   heritage points the same ids at the same places (`work/marks/heritage-dots`); the overlays the
+   same areas within the cover, with the register in place of the source.
+4. **Deleted:** the per-register code (dem/heritage_eu.py, dem/federal.py, dem/crhp.py,
+   dem/heritagetiers.py, dem/heritage.py's register functions, `STATES`, the register order),
+   heritagewd.py's `RULES` and NRHP case, whsshapes.py's reading of UNESCO's list, the registers'
+   credits and territory boxes in rules.rs, `registers-import`, the snapshot's readers
+   (`sources/registers/legacy`), and the old build's heritage fallbacks (`markconv::LEGACY`,
+   `agent::build::heritage_src`, `overlays_key`'s branch). The snapshot's archive on the NAS is the
+   PM's to retire once a published app reads the registers (§11).
 
 #### 6.5.1 What stays generic in the heritage chain
 
 The chain's other scripts (heritagewd.py, heritagedetails.py, areadetails.py, whsshapes.py,
 filterprops.py, pageviews.py, interest.py, layers.py: docs/phase5.md) are generic over OSM,
-Wikidata and the registers once they read the registers' fields instead of per-register knowledge:
-whsshapes.py matches World Heritage outlines by the `unesco-whc` register's `wikidata_property`
-(P757) and `osm_ref_tags`; heritagewd.py's NRHP special case (dem/heritagewd.py:293–310, reading
-`nrhp.json` for reference numbers) becomes the register's own `id`s. The languages they guess by
-location (`heritage_eu.lang_at`, dem/heritage_eu.py:178; `names.REGIONS`, dem/names.py:36) read the
-languages input's raster (`global/spoken`) instead.
+Wikidata and the registers, reading the registers' fields instead of per-register knowledge:
+heritagewd.py looks a site up by its `ref` under its register's `wikidata_property`, a World
+Heritage site by its `site`, and a site whose record links its Wikidata item by that item, and
+links through OSM by the tags the registers declare (`osm_ref_tags`); whsshapes.py finds a site by
+its `site`, its components' items by their `ref`s and its inscribed area by `site_area_km2`, and
+its outlines by OSM's own World Heritage tags (`ref:whc`, `heritage:operator=whc`: OSM's schema);
+filterprops.py takes `t` from the register's `tier`. The languages that pick a UNESCO site's or a
+special place's name (`lang_at`) are the producers' now (`producers/heritage/eu.py`), as those
+names are chosen there; `names.REGIONS` (dem/names.py:36) is #139's.
 
 #### 6.5.2 The heritage chain's stand-in root
 
 The chain runs in a stand-in root laid out as the old repository (`data/build`, `data/heritage`:
-scenic-build.rs:2573, :2636; docs/phase5.md). With the registers given on the command line, the
-layout's `data/heritage` goes; the rest of the stand-in (a scratch folder per run) stays until the
-scripts take paths for everything, which is cleanup, not this series.
+scenic-build's `heritage_root`; docs/phase5.md). The registers are given on heritage.py's command
+line (`--registers`, a folder of links to the accepted copies; `--matches` likewise), and
+`data/heritage` is the pass's working copy of the chain's answers (`cache/heritage-<date>/`), an
+empty folder for heritage-sites. The rest of the stand-in (a scratch folder per run) stays until
+the scripts take paths for everything, which is cleanup, not this series.
 
 #### 6.5.3 The frozen seeds retired (#139)
 
@@ -1470,10 +1538,15 @@ Then the seeds' extraction (scenic-build.rs:2232, :2290–2311) and the archive 
 joining two entries a `same: false` pair separates). Warnings: a pair naming an entry no accepted
 register has (a register's update dropped it).
 
-**Ingesting.** Applied before the rules: `same` pairs merge (transitively), `same: false` pairs are
-never merged by any rule. The matches enter heritage-sites' and heritage's keys by their accepted
-version. Today there are none; the to-do list of likely matches the rules didn't take (near, a
-similar name, different registers) is a later request–fulfil addition, not in this series.
+**Built** (#138: crate::inputs::heritage_matches on the input check; dem/heritage.py applying
+them). The nowhere warning reads the registers' accepted version (their content name is in the
+check's key, `Checks::context`, so a register's update checks the matches again).
+
+**Ingesting.** Applied before the rules: `same` pairs merge (transitively, the highest-graded
+entry kept), `same: false` pairs are never merged by any rule. The matches enter heritage-sites'
+key by their accepted version (and so the heritage job's, which keys on heritage-sites' outputs).
+Today there are none; the to-do list of likely matches the rules didn't take (near, a similar name,
+different registers) is a later request–fulfil addition, not in this series.
 
 ### 6.6 (reserved)
 
@@ -2022,33 +2095,22 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 
 ### 9.5 Heritage [#138, #139]
 
-- `dem/heritage.py:69` `NRHP`, `:70` `STATES`, `:156–314` the function per register, `:193`
-  `QC_SRC`, `:241` `ON_SRC`, `:352` `special_wikidata`, `:381` `LOCAL_NAMES`, `:392`
-  `special_official`, `:561–564` the register order: P (producers), credits D.
-- `dem/heritage.py:319` `dedupe`: G (the merging rule); `:101` `sparql`: G. `:205`
-  (`source=QC_SRC`), `:264` (`source=ON_SRC`) and the like in every register's function: the
-  register's credit copied into each output feature, shown by `web/src/overlays.ts:54`, `:860`:
-  features carry their register's id instead (§4.8).
-- `dem/heritage_eu.py:270–1137` the functions per register (listed in §6.5), `:593`, `:1156`
-  `SOURCES`, and the `*_SRC` credit strings beside each: P, credits D. `:77`, `:101`, `:149`,
-  `:610–684` (fetching, ArcGIS paging, WFS, shapefiles, ODS): P (move with the producers).
-  `:178` `lang_at`: G (reads the languages input).
-- `dem/federal.py` (whole; `:42` `TYPES`, `:49` `DFHD_URL`) and `dem/crhp.py` (whole; `:36` `BASE`,
-  `:38` `PROVINCES`, `:50` `CREDIT`), both run by hand: P.
-- `dem/heritagewd.py:51` `WDQS`, `:132` English Wikipedia's API: D (§6.9); `:59` `RULES`, `:168`
-  `OSM_REF`: D (the registers' fields); `:293–310` the NRHP case: P.
-- `dem/heritagetiers.py:15–36` designation patterns per register: P (the producers' `level`s).
-- `dem/whsshapes.py:82`, `:122–125` UNESCO's list URL and id pattern: D (the `unesco-whc`
-  register); the rest G.
+Done in #138 (the registers an input, §6.5): the functions per register, their credit strings,
+`STATES`, the register order and `SOURCES` moved to `producers/heritage/` (P; credits D, in the
+registers' descriptions); dem/federal.py and dem/crhp.py likewise; `dedupe` and `sparql` stay
+generic (dem/heritage.py's `merge`); the credit copied into each feature replaced by its register's
+id (§4.8); heritagewd.py's `RULES`, `OSM_REF` and NRHP case replaced by the registers' fields
+(`wikidata_property`, `osm_ref_tags`, `ref`), its `WDQS` and English Wikipedia's API left for §6.9;
+heritagetiers.py's patterns the producers' `tier`; whsshapes.py's reading of UNESCO's list replaced
+by the `unesco-whc` register's `site`, `site_area_km2` and `ref`; `lang_at` moved with the producers
+(the names it picks are chosen there); the snapshot's lines in the agent and scenic-build gone.
+Left:
 - `dem/names.py:19`, `:36` (`REGIONS` boxes): G (the languages input); the English table: retired
   (#139).
-- `crates/pipeline/src/agent/build.rs:609` (heritage-sites' key on the snapshot), `bin/scenic-build.rs:2232`
-  (the seeds), `:2290–2311` (the seeds laid out), `:2440–2459` (`registers-import`), `:2502` (the
-  snapshot), `:2573`, `:2636` (the stand-in root): G once they read the accepted registers; the
-  seeds' and snapshot's lines go.
-- `crates/pipeline/src/markconv.rs:88–92` the UNESCO site id from its URL, `:137–144` id schemes
-  (`reg:dfhd:`, `legacy:`): G (ids from the registers' `id`s; the `legacy:` prefixes stay, as ids
-  must not change: docs/phase5.md, Ids).
+- `bin/scenic-build.rs` the seeds (`sources/registers/legacy-seeds`, laid out for the chain): #139.
+- `crates/pipeline/src/markconv.rs` the UNESCO site id from its URL and the id schemes (`whc:`,
+  `reg:dfhd:` from the federal entries' `dfhd_id`, `legacy:`): kept as they are, as ids must not
+  change (docs/phase5.md, Ids).
 
 ### 9.6 Timetables [#140, #141, #142]
 
@@ -2140,20 +2202,18 @@ the dozen direct reads of drop boxes of §9.10.
 `make run` and `make dev` are gone: the Makefile and the Python steps only it ran were deleted
 (commit 2992c71), and nothing in the repository names them. What remains (plan §10, phase 6,
 "Cutover: done"), each checked in the code on 2026-10-10:
-- **Fallbacks to the old build's heritage files** (`global/legacy/`, still on the NAS):
-  `markconv::LEGACY` and `heritage_source` (crates/pipeline/src/markconv.rs:20–35),
-  `agent::build::heritage_src` (agent/build.rs:694–700) and `overlays_key`'s branch for it
-  (agent/build.rs:1944–1950). Never taken while a registers snapshot exists. **Removed in #138**
-  (once the registers go through the input check, the snapshot can't go missing: the last good
-  version stays),
-  then `global/legacy/` and `layers/basemap/legacy-*.pmtiles` deleted from the NAS once a published
-  app has no readers. (`sources/legacy/` is already gone: the owner deleted it on 9 October.)
-- **The registers' legacy names** (`sources/registers/legacy`, `legacy-seeds`): go with #138 and
-  #139.
+- **The old build's heritage files** (`global/legacy/`, still on the NAS): their readers, the
+  fallbacks `markconv::LEGACY`, `agent::build::heritage_src` and `overlays_key`'s branch, were
+  removed in #138 (the marks and overlays wait for the pass's heritage job instead); the files and
+  `layers/basemap/legacy-*.pmtiles` are to be deleted from the NAS once a published app has no
+  readers. (`sources/legacy/` is already gone: the owner deleted it on 9 October.)
+- **The registers' legacy names:** `sources/registers/legacy` has no reader since #138 (its archive
+  is the PM's to retire); `legacy-seeds` goes with #139.
 - **The `terrain` and `slope` programs' build-folder modes** (crates/pipeline/src/bin/terrain.rs:66,
   bin/slope.rs:185, defaulting to `data/build`): `terrain --scan` is live; the folder modes go in
   #144.
-- **The heritage chain's stand-in root** (`data/build` in a scratch root, §6.5.2): partly in #138.
+- **The heritage chain's stand-in root** (`data/build` in a scratch root, §6.5.2): its
+  `data/heritage` is the chain's answers since #138; the rest stays.
 - **Names that say legacy for live code:** `pipeline::legacy` (the units' tile and base packs: a
   rename, not a removal, out of this series), and the `legacy:` id prefixes (kept: ids don't change).
 - **Real-data tests and an example reading a checkout's `data/build`**

@@ -250,13 +250,13 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 | `trailends` (per pass) | the `hikes` set | `work/trailends/<d>`: every simple linear hiking route's two ends worldwide (way ends used once, exactly two), with the route's name and relation id |
 | `terrain-z8` (once; network) | AWS's raw z8 tiles (the lead's raw-tile cache) | `sources/terrain-z8-v3` (not served): every z8 tile repaired, and `-v3-max`: each tile's maximum after the repair |
 | `summits` (per pass) | the `summits` set, `terrain-z8` | `work/summits/<d>`: every summit (OSM id, E7 position, kind, `ele` as the candidates have them, its `z8` overlay value), nodes then ways, each by id |
-| `heritage-sites` (before the units) | the registers snapshot, the pass's `areas` set, the coverage | `work/heritage/<d>/base/…`, and per z6 tile the sites' positions and the designated areas' polygons ("Heritage and area flags") |
+| `heritage-sites` (before the units) | the heritage registers meeting the cover and the owner's matches (the input check's accepted versions: docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…`, and per z6 tile the sites' positions and the designated areas' polygons ("Heritage and area flags") |
 | `unit`, base(U) | as plan §6, with the heritage slices within U + 30 km | the base pack |
 | `pois` (per unit) | U's piece, `work/trailends/<d>`, the coverage near U | `work/pois/<u>`: U's candidates (below) |
 | `peaks` (per unit; network) | `work/pois/<u>`'s peaks, `work/summits/<d>`, z12 within 30 km of each peak (the terrain packs, else AWS's raw tile from the raw-tile cache, repaired), `terrain-z8` | `work/peaks/<u>`: prominence and isolation by candidate key |
 | `items` (per pass; network) | the QIDs of every current unit's candidates | `sources/items/<d>/{facts,views,meta}` |
-| `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the seeds | `work/heritage/<d>/…`: the chain's outputs ("Heritage and area flags") |
-| `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the items job's facts and views, the heritage points (the pass's heritage job's outputs; without them, the converted build's `global/legacy`, a fallback to go: plan §10) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
+| `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the pass's answers, the seeds | `work/heritage/<d>/…`: the chain's outputs ("Heritage and area flags") |
+| `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the items job's facts and views, the heritage points (the pass's heritage job's outputs, which it waits for) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` (off) | the heritage job's outputs, `work/marks/heritage-dots` | `ov-*` packs, `ovdata`, `global/heritage/{layer-summary,heritage-sources}` |
 | `stations` (roads chain) | the `rail` set, the built units' tiles | `stations` packs |
 | `ferries` (roads chain) | the `ferries` set (worldwide), the ferry feeds' list and zips (`sources/rail/ferry-feeds`, counted by `dem/ferrygtfs.py`), `inputs/ferries/freq`'s looked-up timetables | `ferries` packs |
@@ -276,8 +276,6 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 
 **Network jobs** (terrain, terrain-z8, peaks, items, heritage): a tile or answer that can't be
 fetched fails the job (retried later), never counts as "none".
-
-**Run by hand:** `registers-import` (the registers snapshot: plan §6, Hand-made inputs).
 
 **Determinism across units:**
 - **Peaks:**
@@ -446,21 +444,19 @@ and the server's switch to their outputs (checked below).
 areadetails.py, whsshapes.py, filterprops.py's heritage part, pageviews.py, interest.py's heritage
 part, layers.py) runs in Python.
 - It runs in a stand-in root laid out as the repository: `dem/` holds the app's scripts, and
-  `data/heritage/` the registers' snapshot.
+  `data/heritage/` the pass's working copy of the chain's answers (empty for heritage-sites).
 - It's split into two jobs: the units need only heritage.py's output, and the rest needs Wikidata and
   the pageview dumps, whose outages mustn't hold up the roads.
 
-- **The registers' snapshot** is one archive in the manifest, `sources/registers/legacy`.
-  - It's imported with `scenic-build registers-import` (plan §6, Hand-made inputs): 9,337 files,
-    261 MB, since thousands of small files copy slowly over SMB.
-  - The jobs extract it once per archive and clone it per pass (APFS). So a pass's runs share the
-    caches the scripts add, and a new pass or snapshot starts from the snapshot again.
-  - What the scripts fetched for the pass (the files of its copy the snapshot lacks or has
-    otherwise, but those the chain makes again each run) is kept on the NAS too, as the items
-    job's answers are (`sources/items/<d>/heritage-<id>.tar.zst`): taken over a fresh copy of the
-    snapshot on a Mac without it, sent as each heritage job ends, finished or not, or at its next
-    start when it was stopped. The heritage job's export of the pass's named places (3 GB) goes as
-    it ends (finished or failed): each run makes it again.
+- **The registers** are an input (docs/inputs.md §6.5): heritage-sites lays out the accepted
+  registers whose box meets the cover, and the owner's matches, as links in its scratch folder, and
+  heritage.py reads them whatever the register (its `--registers`, `--matches`).
+- **The chain's answers** (its Wikidata, Wikipedia and World Heritage caches) are kept per pass, as
+  the items job's are: a working copy in the cache (`heritage-<d>/`) and an archive on the NAS
+  (`sources/items/<d>/heritage.tar.zst`), taken on a Mac without the copy, sent as each heritage
+  job ends, finished or not, or at its next start when it was stopped; a new pass's copy starts
+  from the last pass's archive. The heritage job's export of the pass's named places (3 GB) goes as
+  it ends (finished or failed): each run makes it again.
 - **`heritage-sites`** runs after slope, before the units.
   - **The cover:** the z12 tiles within 20 km of the coverage (exact, `Coverage::meets_rect`),
     through heritage.py's `--tiles`.
@@ -472,8 +468,8 @@ part, layers.py) runs in Python.
     - those of World Heritage Sites' components among them: `parts/6-x-y` (the 3D buildings'
       heritage lists leave them out, as the map's dots do);
     - the polygons whose bounding box meets the tile: `areas/6-x-y`, keyed by content.
-  - **Key:** the step's version, the pass, its areas set, the snapshot, the coverage. It took 96 s for
-    the 34 regions of 2026-10-03.
+  - **Key:** the step's version, the pass, its areas set, the registers meeting the cover (their
+    files' `keyed` digests), the matches' accepted version, the coverage.
 - **The units** (`UNIT_V` 3) read the slices of the z6 tiles within U + 30 km.
   - `heritage.json` feeds the flags step.
   - The `areaflags` program (pipeline::areaflags) rasterises the
@@ -491,11 +487,13 @@ part, layers.py) runs in Python.
   - **Pageviews:** the months are the items job's cache, and pageviews.py takes the pass's months
     (`--epoch`, the items job's rule).
   - **English:** the layers' `en` comes from the seeds' names table.
-  - **Failures:** heritagewd's short descriptions, and the special areas' and UNESCO sites' Wikidata
-    labels, fail the run when a query fails. Every cache is written through a temporary file.
+  - **Failures:** heritagewd's short descriptions fail the run when a query fails. Every cache is
+    written through a temporary file. (The special places' and UNESCO sites' local names are the
+    producers': docs/inputs.md §6.5.)
   - **Outputs:** `work/heritage/<d>/<stem>`.
 - **Its readers.**
-  - Marks take the pass's heritage from the heritage job's outputs (`markconv::heritage_source`).
+  - Marks take the pass's heritage from the heritage job's outputs (`markconv::heritage_source`),
+    and wait for them.
   - **The marks job** saves the World Heritage dots' ids (`work/marks/heritage-dots`).
   - **The overlays job** (after marks) makes the area overlays and parks from the same outputs, with
     those ids, and the server reads its `global/heritage/…`.
@@ -554,8 +552,9 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
   summaries in hidata (below).
 - **Fame and isolation drift once recomputed** with new facts and pageviews: each pass moves them.
 - **Peaks read z8 terrain worldwide:** cached on the lead.
-- **Registers:** one snapshot, imported by hand (plan §6, Hand-made inputs). Planned: fetched per jurisdiction, with stable
-  record ids.
+- **Registers:** an input, one file per register (docs/inputs.md §6.5), converted from the old
+  snapshot's downloads by `producers/heritage/`. Planned: each producer fetching its register
+  again on its own.
 - **Fetch volume for ~1 M QIDs worldwide:** limited to the coverage's candidates; everything again at
   each pass (twice a year), only new QIDs in between.
 - **`global/railfreq`** is another whole-world file the client loads: per-z6 blocks before going
