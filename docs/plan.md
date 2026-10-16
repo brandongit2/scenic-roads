@@ -2565,7 +2565,8 @@ between jobs into the other way. On:
        `round.json` deleted, then the old names' reads and writes dropped (planned).
      - `update-per-region`: a region's map update begins `publish::update_gap` after the last began instead
        of the hour: twice the map updates' measured time (`forecast::update_secs`, the last five map updates'
-       chains and catalogs, from the history), at most the hour, the hour while none is measured.
+       times from beginning to catalog, from the history, whoever ran their jobs; task #209: it
+       counted the lead's own jobs alone, so with the members running the chain it measured none), at most the hour, the hour while none is measured.
        So the next map update begins at least one map update's length after the last ended: the regions done
        meanwhile go out together, and at most about half the time goes to map updates. (Measured on the
        live history, 15 Oct: the catalog alone 66–158 s, a map update's map tiles 201 s a job on

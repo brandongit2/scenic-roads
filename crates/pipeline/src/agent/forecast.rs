@@ -723,21 +723,35 @@ pub fn forecast(inp: &Input) -> Forecast {
     f
 }
 
-/// About how long a map update took lately (seconds): the last five catalogs', each the jobs of the
-/// map update's chain since the catalog before (the history's ends) and itself. None before one's gone.
+/// About how long a map update took lately (seconds): the last five's. Each from its beginning (the
+/// history's "map-update", "round" before task #209) to its catalog (the "catalog" event, or a
+/// held catalog's job's end): the time it took whoever ran its jobs. One whose beginning the
+/// history lacks (before the agent noted them): its chain's jobs summed since the catalog before,
+/// the lead's own ("end") and the members' ("done") alike. (Task #209: it counted the lead's own
+/// jobs alone, so with every step to every member, the members running the chain, it measured
+/// none, and the gaps stayed the hour. A lead new since a term change measures from its own
+/// history: none until its first map update's catalog.) None before one's gone.
 pub fn update_secs(events: &[crate::coord::history::Event]) -> Option<f64> {
-    const CHAIN: [&str; 9] = ["prune", "pack", "lo", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"];
+    const CHAIN: [&str; 8] = ["prune", "pack", "lo", "roadunits", "stations", "ferries", "terrain-root", "slope-root"];
     let mut updates: Vec<f64> = Vec::new();
-    let (mut sum, mut chain) = (0.0, false);
+    let (mut sum, mut chain, mut began): (f64, bool, Option<u64>) = (0.0, false, None);
     for e in events {
-        if e.kind == "end" && e.step.as_deref().is_some_and(|s| CHAIN.contains(&s)) {
+        let step = e.step.as_deref().unwrap_or("");
+        if matches!(e.kind.as_str(), "map-update" | "round") {
+            (sum, chain, began) = (0.0, false, Some(e.t));
+            continue;
+        }
+        let job = matches!(e.kind.as_str(), "end" | "done");
+        if job && (CHAIN.contains(&step) || step == "catalog") {
             sum += e.secs.unwrap_or(0.0);
-            chain |= e.step.as_deref() != Some("catalog");
+            chain |= step != "catalog";
         }
         // (A catalog after the trains' or the landmarks' chain alone is no map update.)
-        if e.kind == "catalog" {
-            if chain {
-                updates.push(sum);
+        if e.kind == "catalog" || (job && step == "catalog-held" && e.ok == Some(true)) {
+            match began.take() {
+                Some(b) => updates.push(e.t.saturating_sub(b) as f64),
+                None if chain => updates.push(sum),
+                None => {}
             }
             (sum, chain) = (0.0, false);
         }
@@ -957,6 +971,28 @@ mod tests {
         // Once they're raised, the catalog after the chains.
         let bld_end = f.lanes["m4"].iter().filter(|l| l.step == "bldtiles").map(|l| l.until).max().unwrap();
         assert!(f.done_at.unwrap() >= bld_end + 120);
+    }
+
+    #[test]
+    fn a_map_update_is_measured_from_its_beginning_to_its_catalog_whoever_ran_its_jobs() {
+        use crate::coord::history::Event;
+        let ev = |kind: &str, t: u64, step: &str, secs: f64| Event { t, step: (!step.is_empty()).then(|| step.to_string()), secs: (secs > 0.0).then_some(secs), ok: Some(true), ..Event::new(kind) };
+        assert_eq!(update_secs(&[]), None);
+        // The chain run by the members ("done"), the lead's catalog alone its own: measured
+        // (task #209: it was none, the gaps the hour).
+        let mut h = vec![ev("map-update", 1000, "", 0.0), ev("done", 1200, "pack", 190.0), ev("done", 1250, "roadunits", 40.0), ev("end", 1330, "catalog", 70.0), ev("catalog", 1330, "catalog", 0.0)];
+        assert_eq!(update_secs(&h), Some(330.0));
+        // An older app's "round", a held catalog: the same; the mean of the last five.
+        h.extend([ev("round", 2000, "", 0.0), ev("end", 2100, "prune", 20.0), ev("end", 2270, "catalog-held", 60.0)]);
+        assert_eq!(update_secs(&h), Some(300.0));
+        // A catalog of the trains' chain alone, no map update begun: none.
+        h.extend([ev("end", 3000, "rail", 500.0), ev("end", 3100, "catalog", 60.0), ev("catalog", 3100, "catalog", 0.0)]);
+        assert_eq!(update_secs(&h), Some(300.0));
+        // Before the beginnings were noted: the chain's jobs summed, the members' with the lead's.
+        let old = [ev("end", 10, "prune", 10.0), ev("done", 50, "pack", 100.0), ev("end", 120, "catalog", 50.0), ev("catalog", 120, "catalog", 0.0)];
+        assert_eq!(update_secs(&old), Some(160.0));
+        // A map update under way, its catalog not out: not counted yet.
+        assert_eq!(update_secs(&[ev("map-update", 5, "", 0.0), ev("done", 50, "pack", 40.0)]), None);
     }
 
     #[test]

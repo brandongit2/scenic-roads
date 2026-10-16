@@ -4887,7 +4887,7 @@ impl Agent {
         // (Each job before the regions' is a step of its own; one running now is its slot's
         // running item below, its time left its slot's.)
         let before: Vec<forecast::Job> = before.iter().map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
-        // A map update: as the last ones took (their chains' jobs and catalog), else the chain's steps'
+        // A map update: as the last ones took (beginning to catalog), else the chain's steps'
         // times; the last map update, the roads' chain as it stands now, if more (none when it's done),
         // less what the map update under way still does (the roads' chain counts its work too, which
         // goes out with it).
