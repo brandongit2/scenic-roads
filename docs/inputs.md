@@ -1317,9 +1317,11 @@ registers; dem/heritage.py reading any register; the heritage-sites job reading 
 version), with these choices where this section left room:
 - **Ids.** An entry's `id` is the register's own reference where the register has one the producer
   can read (Mérimée's `PA…`, the NHLE's list entry, the NRHP's reference number, a UNESCO
-  component's `1221-001` …); where it has none (Northern Ireland's, Andalusia's, Hong Kong's …), the
-  producer makes one from the entry's name, designation and place (`h` and 16 hex digits), stable
-  while those don't change, and says so with `ref: ""`. Two entries sharing a reference (a
+  component's `1221-001`, the IAPH's code for Andalusia …); where it has none (Northern Ireland's,
+  Hong Kong's …), the producer makes one from the entry's name, designation and place (`h` and 16
+  hex digits), stable while those don't change, and says so with `ref: ""`. A made id changes when
+  the register renames an entry or moves or reshapes it: a match naming the old id (§6.5.4) then
+  warns that no accepted register has it, and the owner writes it again with the new id. Two entries sharing a reference (a
   designation the register lists at two places) take `~2`, `~3` … in their ids, `ref` keeping the
   reference.
 - **What the chain looks entries up by** is the shape's (`ref`, else the `id`; `site` for a
@@ -1432,7 +1434,12 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
   lower-graded one is local (level 5) and lies within 40 m of another register's entry of the same
   or a higher level whose name shares a word of three letters or more (today's rule). Of two local
   entries, the one of the register with fewer entries gives way (a city's list to the provincial
-  register), whichever is read first, so the result doesn't depend on the order. The place kept
+  register), whichever is read first, so the result doesn't depend on the order. That order is the
+  registers' sizes now: a register that grows past the other (or shrinks below it) in an update
+  flips which of their colocated local entries is kept, its id, register and properties with it; a
+  `same` match (§6.5.4) keeps the highest-graded entry (among equals the first register by id)
+  whatever the sizes, and is the way to pin a
+  pair that matters. The place kept
   lists every register it was merged from (`registers`), its level the highest.
 - **Keys:** heritage-sites names the registers meeting its cover by their `keyed` digests (the
   agent reads them from the accepted index each loop, `pipeline::heritage::registers_now`), the
@@ -1455,7 +1462,12 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
    `federal.json` and `crhp.json` in the data folder as before). The data folder is laid out as the
    registers' snapshot was (`sources/registers/legacy` extracted), so today's registers convert from
    it without a download. Their credits and licences, Wikidata properties and OSM tags are in
-   `REGISTERS`.
+   `REGISTERS`. Six of Spain's regional registers (Catalonia, Castilla y León, Aragón, the
+   Comunitat Valenciana, Extremadura, Andalusia) have the licence `unverified`: the old app called
+   them "free use with credit", which nobody checked. Their descriptions' `notes` say what the
+   owner must check (each portal's legal notice or reuse conditions: an open licence or Spain's
+   default reuse terms, whether commercial reuse and redistribution in a map are allowed, the
+   attribution asked for) before setting the licence.
 2. The heritage-sites job reads the registers generically, the chain reads the registers' fields
    heritage-sites lists (`heritage-sources.json`'s `registers`), and the chain's own caches (its
    Wikidata, Wikipedia and World Heritage answers, which lived in the snapshot) are the pass's
