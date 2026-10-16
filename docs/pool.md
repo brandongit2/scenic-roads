@@ -703,7 +703,9 @@ What's planned of placement (phase 4, §12):
   and tree cover before its map update is due (every step to every member), where the lead's
   forecast waits for it.
 
-**A job waiting on a worker** (built: crate::offload's `WAITING_ENV`, the agent's `waiting_on`).
+**A job waiting on a worker** (built on the lead's own two slots only: crate::offload's
+`WAITING_ENV`, the agent's `waiting_on`; not on a member, which runs no second job and plans only
+while idle).
 A unit job whose last unit's tail a worker holds (a page, or another Mac), the job waiting on it
 because that worker's measured pace beats this Mac's (`offload::Patience`; a slower one is raced
 at once), keeps a small file saying so while it waits (`SCENIC_WAITING`, named by the agent per
@@ -714,10 +716,12 @@ beside rule above) counts the waiting job's memory as it holds now (the sampler'
 target's measure, and its cores as idle: the job beside starts with all the cores, not half. It's
 the existing second slot (`start_second`), no new kind of job; the waiting job stays its slot's
 until its tail is back and it commits the unit (or races it, past its patience). The job started
-beside it **yields**: when the first goes on and the two hold more than the limit together, the
-memory guard drains the one beside, the larger or not, and nothing else while it drains (it's
-stopped at once if it reaches no safe point in the time a pause gives, as any drained job); a job
-past the limit by itself is stopped as any. The status says the job waits on the worker (`waiting`,
+beside it **yields** (tied to that job's id: once it ends, nothing yields to it): when the first
+goes on and the two hold more than the limit together, or the Mac is short of memory, the job
+beside is stopped at once, the larger or not, no safe point waited for (a drain may take 15
+minutes, the Mac swapping meanwhile); it's given back as an interrupted job is, not kept from this
+Mac, and what it held is learned as no floor (it was placed by what the first held while it
+waited, not by anything it did). The status says the job waits on the worker (`waiting`,
 beside its progress), and the forecast lists it per machine (`waiting`).
 
 **A job far over its memory** (crate::agent::memguard, built: phase 4's second batch, §12). macOS

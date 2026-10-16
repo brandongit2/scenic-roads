@@ -185,9 +185,12 @@ struct Slot {
     /// Its own job's timings, taken as it ended, for the lead when this Mac no longer leads (the
     /// job's hand-off carries them: `end_lease`).
     timings_out: Option<crate::timings::RunRec>,
-    /// Its job started beside one that waited on a worker (`waiting_on`): it's the one that yields
+    /// Its job started beside one that waited on a worker (`waiting_on`), that job's id: while that
+    /// job runs (`yielding`), it's the one that yields
     /// to the memory guard when the two then hold too much together (memguard::decide).
-    yields: bool,
+    yields: Option<String>,
+    /// Its job is being stopped for yielding (`yield_stop`): given back, nothing learned of it.
+    yield_stopped: bool,
 }
 
 /// How long the first slot may pass over a job that can't share the Mac with the second's (it then
@@ -1534,7 +1537,9 @@ impl Agent {
             }
         }
         let watch = self.sampler.unwatch(k).unwrap_or_default();
-        let floors_of = |costs: &[(String, crate::coord::Cost)]| watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>());
+        // (None from a job stopped for yielding: what it held says nothing of its targets.)
+        let no_floors = self.slots[k].yield_stopped;
+        let floors_of = |costs: &[(String, crate::coord::Cost)]| if no_floors { Vec::new() } else { watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>()) };
         // (And what they took on the disk at least, and the job over its run: learned whatever the
         // switch, docs/pool.md §7.7.)
         let disks = watch.disk_floors();
@@ -2461,7 +2466,7 @@ impl Agent {
             self.slots[k].mem_drain = None;
             self.slots[k].mem_drain_alone = false;
             self.slots[k].running = None;
-            self.slots[k].yields = false;
+            self.slots[k].yields = None;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(true);
         }
@@ -2942,7 +2947,7 @@ impl Agent {
                 continue;
             }
             self.beside_why = None;
-            let beside_waiting = self.waiting_on(0).is_some();
+            let beside_waiting = self.waiting_on(0).and(self.slots[0].running.as_ref().map(|r| r.spec.id.clone()));
             if self.try_start(1, spec.clone(), c, root, &mut Vec::new()) {
                 self.slots[1].yields = beside_waiting;
                 return;
@@ -3045,6 +3050,18 @@ impl Agent {
         }
         let held: Vec<Option<u64>> = (0..SLOTS).map(|k| self.held_mb(k)).collect();
         let total: u64 = held.iter().flatten().sum();
+        // (A job started beside one waiting on a worker, that one gone on: stopped at once, not at
+        // a safe point, once the two hold more than the limit or the Mac is short of memory; it was
+        // placed by what the other held while it waited, so it did nothing wrong: `yield_stop`.)
+        if let Some(k) = (0..SLOTS).find(|&k| self.yielding(k)) {
+            let trouble = self.sampler.in_trouble();
+            if total > limit || trouble {
+                let gb = |mb: u64| mb as f64 / 1024.0;
+                let why = if trouble { "the Mac short of memory".to_string() } else { format!("the jobs here holding {:.1} GB together, past this Mac's limit of {:.1} GB", gb(total), gb(limit)) };
+                let beside = self.slots.iter().enumerate().find(|(b, _)| *b != k).and_then(|(_, s)| s.running.as_ref()).map(|r| r.spec.id.clone()).unwrap_or_default();
+                return self.yield_stop(k, &format!("given back by the memory guard: started beside {beside} while it waited on a worker, it yields now that {beside} goes on, {why}"));
+            }
+        }
         if total <= limit {
             return false;
         }
@@ -3052,7 +3069,7 @@ impl Agent {
         let late = (0..SLOTS).find(|&k| draining[k] && !self.slots[k].mem_drain_alone && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= self.grace));
         let gb = |mb: u64| mb as f64 / 1024.0;
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
-        let yields: Vec<bool> = self.slots.iter().map(|s| s.running.is_some() && s.yields).collect();
+        let yields: Vec<bool> = (0..SLOTS).map(|k| self.yielding(k)).collect();
         let stop = match (late, memguard::decide(&held, limit, &draining, &yields)) {
             (Some(k), _) => Some((k, format!("stopped by the memory guard: it reached no safe point in {} min while the jobs here held {:.1} GB together, past this Mac's limit of {:.1} GB", DRAIN_GRACE.as_secs() / 60, gb(total), gb(limit)))),
             (None, memguard::Act::Nothing) => None,
@@ -3089,6 +3106,39 @@ impl Agent {
         self.guard_stop(k, "memory guard", &why)
     }
 
+    /// Whether slot `k`'s job yields: started beside a job that waited on a worker (`yields`), that
+    /// job still running in another slot.
+    fn yielding(&self, k: usize) -> bool {
+        let Some(id) = self.slots[k].running.as_ref().and(self.slots[k].yields.as_ref()) else { return false };
+        self.slots.iter().enumerate().any(|(b, s)| b != k && s.running.as_ref().is_some_and(|r| &r.spec.id == id))
+    }
+
+    /// Stops slot `k`'s job at once for yielding (`yielding`), `why`: given back as an interrupted
+    /// job is, not kept from this Mac, and what it held learned as no floor (it was placed by what
+    /// the job beside held while it waited, not by anything it did). True when it stopped one.
+    fn yield_stop(&mut self, k: usize, why: &str) -> bool {
+        self.sampler.thaw(k);
+        self.sampler.thaw_disk(k);
+        let Some(r) = self.slots[k].running.as_mut() else { return false };
+        let (id, scratch) = (r.spec.id.clone(), scratch_of(&r.spec));
+        eprintln!("agent: memory guard: {id} {why}");
+        r.stop(Duration::from_secs(30));
+        self.guard_last = Some((now_s(), format!("{id} {why}")));
+        self.slots[k].yield_stopped = true;
+        self.stopped(k, why);
+        if let Some(d) = &scratch {
+            room::given_back_add(&self.o.home, d, now_s());
+        }
+        self.slots[k].running = None;
+        self.slots[k].drain_since = None;
+        self.slots[k].mem_drain = None;
+        self.slots[k].mem_drain_alone = false;
+        self.slots[k].yield_stopped = false;
+        self.slots[k].yields = None;
+        std::fs::remove_file(self.record_path(k)).ok();
+        true
+    }
+
     /// Stops slot `k`'s job for a guard (`what`: the memory guard, the disk guard), `why`: given back,
     /// not failed, kept from this Mac an hour (a member's lease ends as failed, so its lead keeps it
     /// from this Mac as long), what it took learned as its target's floors. True when it stopped one.
@@ -3116,7 +3166,7 @@ impl Agent {
         self.slots[k].mem_drain = None;
         self.slots[k].mem_drain_alone = false;
         self.slots[k].guard_stopped = false;
-        self.slots[k].yields = false;
+        self.slots[k].yields = None;
         std::fs::remove_file(self.record_path(k)).ok();
         true
     }
@@ -7371,15 +7421,38 @@ mod tests {
         assert!(a.job_view(0).and_then(|j| j.waiting).is_some_and(|w| w.contains("waiting on ipad")));
         a.start_second(&labels, &cond, Some(&root));
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("labels labels"), "{:?}", a.beside_why);
-        assert!(a.slots[1].yields);
+        assert_eq!(a.slots[1].yields.as_deref(), Some("unit 6/3/3"));
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.threads), Some(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)));
-        // The tail back, the unit going on (its file gone): the two past the limit together, the
-        // second the larger, and it's the one that stops at its next safe point; the unit goes on.
+        // The tail back, the unit going on (its file gone): within the limit, the Mac not short of
+        // memory, nothing.
         std::fs::remove_file(a.waiting_path(0)).unwrap();
+        tick(&mut a, vec![Some(5 << 10), Some(6 << 10)]);
+        assert!(!a.guard() && a.slots[1].running.is_some());
+        // Past the limit together, the second the larger: it's stopped at once (no safe point
+        // waited for), given back, not kept from this Mac, no floor learned of it; the unit goes on.
         tick(&mut a, vec![Some(5 << 10), Some(8 << 10)]);
-        assert!(!a.guard());
-        assert!(a.slots[1].mem_drain.is_some() && a.slots[0].mem_drain.is_none(), "{:?}", a.slots[0].mem_drain);
-        assert_eq!(a.guard_held(0), Some("unit 6/3/3".to_string()));
+        assert!(a.guard());
+        assert!(a.slots[1].running.is_none() && a.slots[1].yields.is_none() && a.slots[0].running.is_some() && a.slots[0].mem_drain.is_none());
+        assert!(a.guard_backoff.is_empty(), "{:?}", a.guard_backoff);
+        assert!(a.coord.as_ref().unwrap().floor("labels", "labels").is_none());
+        // Started beside it again, the Mac short of memory though within the limit: stopped at once.
+        assert!(note(pgid).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
+        tick(&mut a, vec![Some(1 << 10), None]);
+        a.start_second(&labels, &cond, Some(&root));
+        assert!(a.slots[1].running.is_some(), "{:?}", a.beside_why);
+        std::fs::remove_file(a.waiting_path(0)).unwrap();
+        a.sampler.set_test(Some(vec![Some(3 << 10), Some(3 << 10)]), Some(true));
+        a.sampler.tick();
+        assert!(a.guard() && a.slots[1].running.is_none());
+        // Its mark tied to the job it yields to: a job in the second slot marked for a job no
+        // longer running (the first slot's ended, another started) doesn't yield.
+        a.sampler.set_test(Some(vec![Some(1 << 10), None]), Some(false));
+        a.sampler.tick();
+        assert!(a.try_start(1, job("labels", "labels"), &cond, Some(&root), &mut Vec::new()));
+        a.slots[1].yields = Some("unit 6/3/3".into());
+        assert!(a.yielding(1));
+        a.slots[1].yields = Some("unit 6/9/9".into());
+        assert!(!a.yielding(1));
         for k in 0..SLOTS {
             if let Some(r) = a.slots[k].running.as_mut() {
                 r.stop(Duration::from_secs(5));

@@ -3138,8 +3138,10 @@ At each phase's end an Opus agent reviews the work against this plan.
    to measure it), and the job's Mac runs the tail anyway. The paces live in the coordinator
    alone: a restart measures each worker again. Built: while it waits so, the job says it does
    (`SCENIC_WAITING`), and the agent counts its memory as it holds now and its cores as idle, so
-   a second job may start beside it in the room it frees, and yields to the memory guard when the
-   first goes on (docs/pool.md §7.7, A job waiting on a worker). Not built: the job ending while
+   a second job may start beside it in the room it frees, stopped at once when the first goes on
+   and the two don't fit (docs/pool.md §7.7, A job waiting on a worker). Built on the lead's own
+   slots only: a member runs no second job (it plans only while idle), so a member's unit job
+   waiting on a worker still idles its slot. Not built: the job ending while
    the tail is out, its slot free and the agent committing the unit later; it would need a record
    of each unit held that the lead can see, task ids that outlive the coordinator's restarts, and
    the unit's folder kept past the slot's scratch being wiped. So the waiting job still holds its
