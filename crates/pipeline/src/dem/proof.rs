@@ -4,7 +4,9 @@
 //! lie in a blend band, with the same source; one that doesn't is a failure, not an explanation.
 //! Reads the NAS only; writes the report to a scratch folder, and the proof the input check reads
 //! (`state/inputs/elevation-proof.json`, crate::inputs::elevation::PROOF) only when asked
-//! (`write`), over every unit, and every one passed.
+//! (`write`, which needs the stores, `store`): over every unit the records list, each with its kept
+//! samples, and every one passed. The proof names the sampler's version (generic::SAMPLER_V): the
+//! switch refuses a proof of another.
 //!
 //! The declarations are the accepted version the records name, or (before any is accepted) a folder
 //! of them checked here as the input check would (`declarations`), their copies and index made in
@@ -29,7 +31,7 @@ pub struct Opts {
     pub units: Option<Vec<String>>,
     /// The stores' folder datasets declared `store` read from (read only).
     pub store: Option<PathBuf>,
-    /// Write the proof for the input check (every unit, all passed).
+    /// Write the proof for the input check (every unit recorded, all passed; needs `store`).
     pub write: bool,
     pub workers: usize,
 }
@@ -98,14 +100,16 @@ pub fn accept_folder(dir: &Path, scratch: &Path, root: &Path, m: &BTreeMap<Strin
     for (p, b) in &files {
         let c = &checked[p];
         let mut facts = c.facts.clone();
-        if let Some((more, _)) = derived.facts.get(p) {
+        let mut keyed = c.keyed.clone();
+        if let Some((more, k)) = derived.facts.get(p) {
             facts.extend(more.clone());
+            keyed = k.clone().or(keyed);
         }
         let h = store::naming::hash16(b);
         let copy = crate::inputs::copy_name(unit, p, &h).with_context(|| format!("{p}: no copy name"))?;
         std::fs::create_dir_all(scratch.join(&copy).parent().unwrap())?;
         std::fs::write(scratch.join(&copy), &**b)?;
-        entries.insert(p.clone(), crate::inputs::FileEntry { file: copy, size: b.len() as u64, keyed: c.keyed.clone().unwrap_or_else(|| h.clone()), facts });
+        entries.insert(p.clone(), crate::inputs::FileEntry { file: copy, size: b.len() as u64, keyed: keyed.unwrap_or_else(|| h.clone()), facts });
     }
     let index = crate::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", checks.version()), files: entries, accepted: BTreeMap::new() };
     let body = serde_json::to_vec_pretty(&index)?;
@@ -117,7 +121,24 @@ pub fn accept_folder(dir: &Path, scratch: &Path, root: &Path, m: &BTreeMap<Strin
 }
 
 /// The proof over the units: each's comparison; the report written to the scratch folder.
+/// Asked to `write`, it refuses first what couldn't be proved: no stores given, units or declarations
+/// of its own chosen, a unit the records list without kept samples.
 pub fn run(o: &Opts) -> Result<Vec<UnitProof>> {
+    // (The proof the input check reads is of every unit the records list, each with kept samples:
+    // one without is a unit unproved, and nothing is written. Known before any is sampled.)
+    let recorded: Vec<String> = if o.write {
+        ensure!(o.units.is_none() && o.declarations.is_none(), "the proof the input check reads is of every unit and of the accepted version");
+        ensure!(o.store.is_some(), "--write needs --store <nas>/sources: the datasets kept whole are proved from the stores the units read");
+        let keys = crate::agent::build::Keys::load_strict(&o.root)?;
+        let recorded: Vec<String> = keys.unit.keys().filter_map(|t| crate::legacy::Unit::parse(t)).map(|u| u.dash()).collect();
+        let files = crate::unit::dem_samples_files(&o.root.join("cache").join(crate::unit::DEM_UNITS));
+        let have: std::collections::BTreeSet<&str> = files.iter().map(|(u, ..)| u.as_str()).collect();
+        let lacking: Vec<&String> = recorded.iter().filter(|u| !have.contains(u.as_str())).collect();
+        ensure!(lacking.is_empty(), "{} of the {} units recorded have no kept samples ({}{}): they'd be unproved, so no proof is written", lacking.len(), recorded.len(), lacking.iter().take(5).map(|u| u.as_str()).collect::<Vec<_>>().join(", "), if lacking.len() > 5 { ", …" } else { "" });
+        recorded
+    } else {
+        Vec::new()
+    };
     let m: BTreeMap<String, String> = crate::out::read_record(&o.root.join("state/build/manifest.json"))?;
     std::fs::create_dir_all(&o.scratch)?;
     let accepted = match &o.declarations {
@@ -131,7 +152,9 @@ pub fn run(o: &Opts) -> Result<Vec<UnitProof>> {
     }
     let pool = rayon::ThreadPoolBuilder::new().num_threads(o.workers.max(1)).build().ok();
     let fetch = crate::fetch::Fetcher::from_env();
-    let go = super::generic::Opts { fetch: &fetch, store: o.store.clone(), read_only: true, pool: pool.as_ref() };
+    // (`store` is the sources' folder: the stores in its `fetched/`, FABDEM's earlier in its
+    // `fabdem/`, as the units read them.)
+    let go = super::generic::Opts { fetch: &fetch, store: o.store.as_ref().map(|s| s.join("fetched")), read_only: true, earlier: o.store.clone(), pool: pool.as_ref() };
     let mut out = Vec::new();
     for (u, _, p) in &chosen {
         let t = std::time::Instant::now();
@@ -154,7 +177,7 @@ pub fn run(o: &Opts) -> Result<Vec<UnitProof>> {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("verts.bin"), bytemuck::cast_slice::<[i32; 2], u8>(&pts))?;
-        let cfg = super::Config { build: dir.clone(), workers: o.workers, cache: dir.join("cache"), no_cache: true, fabdem_store: o.store.as_ref().map(|s| s.join("fabdem")), fabdem_read_only: true, store: None };
+        let cfg = super::Config { build: dir.clone(), workers: o.workers, cache: dir.join("cache"), no_cache: true, fabdem_store: o.store.as_ref().map(|s| s.join("fetched/fabdem")), fabdem_read_only: true, store: None, earlier_store: o.store.clone() };
         super::run(&cfg, &fetch)?;
         let today: Vec<f32> = bytemuck::pod_collect_to_vec(&std::fs::read(dir.join("elev.f32"))?);
         let today_src = std::fs::read(dir.join("src.u8"))?;
@@ -183,10 +206,12 @@ pub fn run(o: &Opts) -> Result<Vec<UnitProof>> {
     let report = serde_json::json!({ "index": accepted.version, "units": out, "failed": failed });
     std::fs::write(o.scratch.join("elevation-proof-report.json"), serde_json::to_vec_pretty(&report)?)?;
     if o.write {
-        ensure!(o.units.is_none() && o.declarations.is_none(), "the proof the input check reads is of every unit and of the accepted version");
         ensure!(failed == 0, "{failed} vertices differ outside the blend bands: no proof written");
+        let proved: std::collections::BTreeSet<&str> = out.iter().map(|r| r.unit.as_str()).collect();
+        let unproved: Vec<&String> = recorded.iter().filter(|u| !proved.contains(u.as_str())).collect();
+        ensure!(unproved.is_empty(), "{} of the {} units recorded weren't proved ({}{}): no proof written", unproved.len(), recorded.len(), unproved.iter().take(5).map(|u| u.as_str()).collect::<Vec<_>>().join(", "), if unproved.len() > 5 { ", …" } else { "" });
         let me = crate::agent::app_version(std::env::current_exe()?.parent().context("the program's folder")?);
-        let proof = serde_json::json!({ "index": accepted.version, "ok": true, "app": me, "units": out.len(), "vertices": out.iter().map(|r| r.vertices).sum::<usize>(), "blended": out.iter().map(|r| r.blended).sum::<usize>() });
+        let proof = serde_json::json!({ "index": accepted.version, "ok": true, "app": me, "sampler": super::generic::SAMPLER_V, "units": out.len(), "units_recorded": recorded.len(), "vertices": out.iter().map(|r| r.vertices).sum::<usize>(), "blended": out.iter().map(|r| r.blended).sum::<usize>() });
         crate::whole::write(&o.root.join(elevation::PROOF), &serde_json::to_vec_pretty(&proof)?)?;
     }
     Ok(out)
@@ -218,4 +243,24 @@ pub fn units_affected(root: &Path, accepted: &crate::inputs::Accepted) -> Result
         }
     }
     Ok((rebuilt, rekeyed, other))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(root: &Path, store: Option<PathBuf>) -> Opts {
+        Opts { root: root.to_path_buf(), declarations: None, scratch: root.join("scratch"), units: None, store, write: true, workers: 1 }
+    }
+
+    #[test]
+    fn the_proof_is_written_only_with_the_stores_and_every_unit_recorded_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let e = run(&opts(d.path(), None)).unwrap_err();
+        assert!(e.to_string().contains("--write needs --store"), "{e:#}");
+        std::fs::create_dir_all(d.path().join("state/build")).unwrap();
+        std::fs::write(d.path().join("state/build/jobs.json"), br#"{"unit": {"6/1/1": "k1", "6/1/2": "k2"}}"#).unwrap();
+        let e = run(&opts(d.path(), Some(d.path().join("sources")))).unwrap_err();
+        assert!(e.to_string().contains("2 of the 2 units recorded have no kept samples (6-1-1, 6-1-2)"), "{e:#}");
+    }
 }

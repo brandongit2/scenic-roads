@@ -1253,7 +1253,7 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
         what: "elevations (elev)".into(),
         prog: "elev".into(),
         args: vec!["{dir}".into(), "--cache".into(), "{dir}/dem-cache".into()],
-        env: env(&[("SCENIC_FABDEM_STORE", "{sources}/fetched/fabdem"), ("SCENIC_STORE", "{sources}/fetched"), ("SCENIC_FETCH_MIRROR", "{net}")]),
+        env: env(&[("SCENIC_FABDEM_STORE", "{sources}/fetched/fabdem"), ("SCENIC_STORE", "{sources}/fetched"), ("SCENIC_STORE_EARLIER", "{sources}"), ("SCENIC_FETCH_MIRROR", "{net}")]),
         reads: mine(&["verts.bin", "dem-cache/*", "elevation.json*"]),
     };
     let grade = Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new(), reads: mine(&["ways.bin", "verts.bin", "elev.f32", "strings.txt"]) };

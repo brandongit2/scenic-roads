@@ -5,9 +5,10 @@
 //!
 //! Checked: each declaration's shape (its description's, and its own: surface, height reference,
 //! code, data), each index's; then, over the version, what they name being there, and the data
-//! itself read where it lies (`measure`: a sample of each dataset's GeoTIFF headers, by range
-//! requests: their CRS, resolution and footprints; a tile pyramid's coverage from its territory's
-//! outlines). Errors: a shape broken, a height reference or encoding the app doesn't know, a CRS
+//! itself read where it lies (`measure`: each dataset's GeoTIFF headers by range requests, a sample
+//! of an index's and every one of the rest: their CRS and resolution; the coverage from an index's
+//! footprints, else from where each file has valid data at its coarsest overview; a tile pyramid's
+//! coverage from its territory's outlines, and one of its tiles read for its size). Errors: a shape broken, a height reference or encoding the app doesn't know, a CRS
 //! the app can't project, a file named that isn't there, data that can't be read. Warnings: a
 //! dataset's folder or an index no declaration names; two datasets of one rank and resolution
 //! meeting (their order would fall to their ids).
@@ -86,7 +87,43 @@ fn keyed(desc: &str, d: &Declaration) -> String {
     store::naming::hash16(format!("{desc}\n{}", serde_json::to_string(d).unwrap_or_default()).as_bytes())
 }
 
-/// The sample of a list's positions whose headers are read: the first, the last and seven between.
+/// The digest of what a declaration's data is beyond the declaration itself: its index's content and
+/// its dropped files' names and contents ("" for none). Part of its `keyed` (`derive`): adding a
+/// tile to an index, or a file to its folder, reruns the units it meets.
+fn data_digest(v: &Version, id: &str, d: &Declaration) -> String {
+    let Data::Geotiff { index, files, .. } = &d.data else { return String::new() };
+    let mut lines = Vec::new();
+    if let Some(i) = index {
+        lines.push(format!("index {}", (v.read)(i).map(|b| store::naming::hash16(&b)).unwrap_or_default()));
+    }
+    for p in &v.paths {
+        if let Some(rest) = p.strip_prefix(&format!("{id}/")) {
+            if files.iter().any(|g| declared::glob(g, rest)) {
+                lines.push(format!("file {rest} {}", (v.read)(p).map(|b| store::naming::hash16(&b)).unwrap_or_default()));
+            }
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    store::naming::hash16(lines.join("\n").as_bytes())
+}
+
+/// A declaration's `keyed` with its data's digest (`data_digest`): what the units' keys name.
+fn keyed_with_data(declared: &str, data: &str) -> String {
+    if data.is_empty() {
+        declared.to_string()
+    } else {
+        store::naming::hash16(format!("{declared} {data}").as_bytes())
+    }
+}
+
+/// Files whose valid data is read at their coarsest overview for the coverage: at most this many
+/// pixels there (a bigger one's coverage is its bounds).
+const MASK_MAX_PX: usize = 16 << 20;
+
+/// The sample of an index's positions whose headers are read: the first, the last and seven
+/// between. (Files without an index's footprint are each read: their coverage is their own.)
 fn sample_of(n: usize) -> Vec<usize> {
     let mut v: BTreeSet<usize> = (0..=8).map(|k| (k * n.saturating_sub(1)) / 8).collect();
     v.retain(|&i| i < n);
@@ -107,8 +144,9 @@ impl Elevation {
     fn measure_now(&self, id: &str, d: &Declaration, territory: &[String], v: &Version) -> std::result::Result<Measured, String> {
         let world = territory == ["world"];
         match &d.data {
-            Data::Tiles { zoom, .. } => {
+            Data::Tiles { zoom, url, encoding } => {
                 if world {
+                    self.tile_size(url, *zoom, encoding, &[[-1.0, -1.0, 1.0, 1.0]])?;
                     return Ok(Measured { crs: None, resolution: crate::dem::generic::tile_resolution(*zoom, 0.0), cover: None });
                 }
                 if territory.is_empty() {
@@ -133,6 +171,7 @@ impl Elevation {
                 if boxes.is_empty() {
                     return Err(format!("the pass's outlines have none of {}", territory.join(", ")));
                 }
+                self.tile_size(url, *zoom, encoding, &boxes)?;
                 let cells = declared::geographic_cells(&boxes);
                 let mid = cells.iter().map(|c| c.1 as f64 + 0.5).sum::<f64>() / cells.len() as f64;
                 Ok(Measured { crs: None, resolution: crate::dem::generic::tile_resolution(*zoom, mid), cover: Some(declared::cells_to_boxes(&cells)) })
@@ -168,9 +207,12 @@ impl Elevation {
                 }
                 let mut crs = None;
                 let mut resolution: f64 = 0.0;
-                let mut bounds: Vec<[f64; 4]> = Vec::new();
-                for k in sample_of(list.len()) {
-                    let (w, _) = &list[k];
+                // (The index's files sampled; every other file read, its coverage its own.)
+                let mut picks: BTreeSet<usize> = sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
+                picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
+                let mut masks: Vec<Mask> = Vec::new();
+                for k in picks {
+                    let (w, footprint) = &list[k];
                     let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") {
                         crate::dem::generic::open_url(&**fetch, w).map_err(|e| format!("{w}: {e:#}"))?.ok_or_else(|| format!("{w}: the server has no such file"))?
                     } else {
@@ -191,23 +233,52 @@ impl Elevation {
                     crs = Some(c);
                     let level = crate::dem::generic::level_for(&t, c, *read_resolution).map_err(|e| format!("{w}: {e:#}"))?;
                     resolution = resolution.max(crate::dem::generic::resolution(&t, c, level).map_err(|e| format!("{w}: {e:#}"))?);
-                    let gt = t.transform(0).map_err(|e| format!("{w}: {e:#}"))?;
-                    let img = t.level(0).map_err(|e| format!("{w}: {e:#}"))?;
-                    let (x1, y1) = (gt[0] + img.width as f64 * gt[1], gt[3] + img.height as f64 * gt[5]);
-                    bounds.push([gt[0].min(x1), gt[3].min(y1), gt[0].max(x1), gt[3].max(y1)]);
+                    if footprint.is_none() {
+                        masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
+                    }
                 }
                 let crs = crs.unwrap();
-                // (Its footprints: the index's, or the files' own bounds when there's no index.)
-                let boxes: Vec<[f64; 4]> = if list.iter().all(|(_, b)| b.is_some()) { list.iter().filter_map(|(_, b)| *b).collect() } else { bounds };
+                // (Its footprints: the index's, and where the other files have valid data.)
+                let boxes: Vec<[f64; 4]> = list.iter().filter_map(|(_, b)| *b).collect();
                 let cover = if world {
                     None
                 } else {
-                    let cells = if crs == 3979 { declared::projected_cells(crs, &boxes).map_err(|e| format!("{e:#}"))? } else { declared::geographic_cells(&boxes) };
+                    let cells = if crs == 3979 {
+                        declared::projected_cells_where(crs, &|x, y| boxes.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) || masks.iter().any(|m| m.holds(x, y))).map_err(|e| format!("{e:#}"))?
+                    } else {
+                        let mut c = declared::geographic_cells(&boxes);
+                        for m in &masks {
+                            c.extend(declared::geographic_cells(&m.boxes()));
+                        }
+                        c
+                    };
+                    if cells.is_empty() {
+                        return Err("has no valid data anywhere".into());
+                    }
                     Some(declared::cells_to_boxes(&cells))
                 };
                 Ok(Measured { crs: Some(crs), resolution, cover })
             }
         }
+    }
+
+    /// Whether a tile pyramid's tiles are of the size the sampler reads (`TILE_PX`): the tile at the
+    /// middle of the first of `boxes` (w, s, e, n) the server has (at most four asked for; none
+    /// found passes: the sampler refuses one of another size too).
+    fn tile_size(&self, url: &str, zoom: u32, encoding: &str, boxes: &[[f64; 4]]) -> std::result::Result<(), String> {
+        let fetch = self.fetch.as_ref().ok_or("nothing reads the data here")?;
+        for b in boxes.iter().take(4) {
+            let (fx, fy) = crate::dem::proj::mercator_tile((b[0] + b[2]) / 2.0, ((b[1] + b[3]) / 2.0).clamp(-85.0, 85.0), zoom);
+            let u = url.replace("{z}", &zoom.to_string()).replace("{x}", &(fx.floor() as i64).to_string()).replace("{y}", &(fy.floor() as i64).to_string());
+            let Some(png) = fetch.get(&u).map_err(|e| format!("{u}: {e:#}"))? else { continue };
+            let (w, h, _) = crate::dem::encoding::decode(encoding, &png).map_err(|e| format!("{u}: not a PNG the app reads ({e:#})"))?;
+            let px = crate::dem::generic::TILE_PX;
+            if (w, h) != (px, px) {
+                return Err(format!("{u} is a {w} × {h} tile: tile pyramids are read as {px} × {px}"));
+            }
+            return Ok(());
+        }
+        Ok(())
     }
 
     /// The declarations of version `v`: (path, id, description's keyed, territory, declaration).
@@ -223,12 +294,8 @@ impl Elevation {
         Ok(out)
     }
 
-    fn memo_key(v: &Version, dk: &str, d: &Declaration) -> String {
-        let ix = match &d.data {
-            Data::Geotiff { index: Some(i), .. } => (v.read)(i).map(|b| store::naming::hash16(&b)).unwrap_or_default(),
-            _ => String::new(),
-        };
-        format!("{} {ix}", keyed(dk, d))
+    fn memo_key(v: &Version, id: &str, dk: &str, d: &Declaration) -> String {
+        format!("{id} {} {}", keyed(dk, d), data_digest(v, id, d))
     }
 }
 
@@ -310,7 +377,7 @@ impl Checks for Elevation {
             if self.fetch.is_none() {
                 continue;
             }
-            match self.measure(id, d, territory, v, &Self::memo_key(v, dk, d)) {
+            match self.measure(id, d, territory, v, &Self::memo_key(v, id, dk, d)) {
                 Ok(m) => measured.push((id.clone(), d.clone(), m)),
                 Err(why) => {
                     let mut files = vec![path.clone()];
@@ -355,7 +422,7 @@ impl Checks for Elevation {
             if keep.contains(&path) {
                 continue;
             }
-            let Ok(m) = self.measure(&id, &decl, &territory, v, &Self::memo_key(v, &dk, &decl)) else { continue };
+            let Ok(m) = self.measure(&id, &decl, &territory, v, &Self::memo_key(v, &id, &dk, &decl)) else { continue };
             let mut facts = serde_json::Map::new();
             // (The credits' extent: where it has data.)
             let extent = match &m.cover {
@@ -364,7 +431,8 @@ impl Checks for Elevation {
             };
             facts.insert("extent".into(), extent);
             facts.insert("measured".into(), serde_json::to_value(&m)?);
-            d.facts.insert(path, (facts, None));
+            // (Its `keyed` with its data's: an index's tiles or a folder's files added rerun units.)
+            d.facts.insert(path, (facts, Some(keyed_with_data(&keyed(&dk, &decl), &data_digest(v, &id, &decl)))));
         }
         Ok(d)
     }
@@ -377,7 +445,11 @@ impl Checks for Elevation {
             Err(e) => return Err(anyhow::Error::from(e).context(format!("read {PROOF}"))),
         };
         let v: serde_json::Value = serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {PROOF}: {e}"))?;
-        Ok((v["index"].as_str() == Some(index) && v["ok"] == true && v["app"].as_str().is_some_and(|a| !a.is_empty())).then_some(b))
+        // (Of exactly this version, passed, on a named app, by this sampler: a proof of another
+        // sampler's proves nothing of this one's heights; and over every unit it recorded.)
+        let sampler = v["sampler"].as_u64() == Some(crate::dem::generic::SAMPLER_V as u64);
+        let whole = v["units"].as_u64().is_some_and(|n| v["units_recorded"].as_u64() == Some(n));
+        Ok((v["index"].as_str() == Some(index) && v["ok"] == true && v["app"].as_str().is_some_and(|a| !a.is_empty()) && sampler && whole).then_some(b))
     }
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
@@ -398,6 +470,66 @@ impl Checks for Elevation {
         };
         Ok(Some(Box::new(Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines))))
     }
+}
+
+/// Where a GeoTIFF has valid data: its coarsest overview's pixels that hold data (`valid` by row
+/// and column), in its CRS by its transform.
+struct Mask {
+    gt: [f64; 6],
+    w: usize,
+    h: usize,
+    valid: Vec<bool>,
+}
+
+impl Mask {
+    /// Whether point x, y (in the file's CRS) is in a pixel with data.
+    fn holds(&self, x: f64, y: f64) -> bool {
+        let (c, r) = ((x - self.gt[0]) / self.gt[1], (y - self.gt[3]) / self.gt[5]);
+        c >= 0.0 && r >= 0.0 && (c as usize) < self.w && (r as usize) < self.h && self.valid[r as usize * self.w + c as usize]
+    }
+
+    /// A box (w, s, e, n in its CRS) per run of pixels with data along a row.
+    fn boxes(&self) -> Vec<[f64; 4]> {
+        let gt = self.gt;
+        let bounds = |x0: f64, y0: f64, x1: f64, y1: f64| -> [f64; 4] {
+            let (ax, ay) = (gt[0] + x0 * gt[1], gt[3] + y0 * gt[5]);
+            let (bx, by) = (gt[0] + x1 * gt[1], gt[3] + y1 * gt[5]);
+            [ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)]
+        };
+        let mut out = Vec::new();
+        for r in 0..self.h {
+            let mut c = 0;
+            while c < self.w {
+                if !self.valid[r * self.w + c] {
+                    c += 1;
+                    continue;
+                }
+                let c0 = c;
+                while c < self.w && self.valid[r * self.w + c] {
+                    c += 1;
+                }
+                out.push(bounds(c0 as f64, r as f64, c as f64, r as f64 + 1.0));
+            }
+        }
+        out
+    }
+}
+
+/// Where a GeoTIFF has valid data, read at its coarsest overview; one with no overview small enough
+/// (`MASK_MAX_PX`) taken as all data within its bounds.
+fn valid_data(t: &crate::geotiff::Tiff) -> Result<Mask> {
+    let level = t.images().len() - 1;
+    let img = t.level(level)?.clone();
+    let gt = t.transform(level)?;
+    let (w, h) = (img.width as usize, img.height as usize);
+    if w * h > MASK_MAX_PX {
+        let g0 = t.transform(0)?;
+        let i0 = t.level(0)?;
+        return Ok(Mask { gt: [g0[0], g0[1] * i0.width as f64, 0.0, g0[3], 0.0, g0[5] * i0.height as f64], w: 1, h: 1, valid: vec![true] });
+    }
+    let a = t.read_window(level, 0, 0, img.width, img.height)?;
+    let nodata = t.nodata();
+    Ok(Mask { gt, w, h, valid: a.iter().map(|&v| crate::dem::generic::valid(v, nodata)).collect() })
 }
 
 /// The content name of the newest pass's outlines the records `manifest` name.

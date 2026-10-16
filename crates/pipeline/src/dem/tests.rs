@@ -212,7 +212,7 @@ impl Fixture {
     }
 
     fn config(&self) -> Config {
-        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false, store: Some(self.dir.path().join("fetched")) }
+        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false, store: Some(self.dir.path().join("fetched")), earlier_store: None }
     }
 
     fn outputs(&self) -> (Vec<f32>, Vec<u8>) {

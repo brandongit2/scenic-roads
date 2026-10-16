@@ -253,6 +253,10 @@ pub struct Shared {
     /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
     /// not fresh, no longer leading), workers told to ask again in a moment.
     pub moving: Option<String>,
+    /// The app the newer of the readers' switches was proved on (the regions', the elevation
+    /// datasets': crate::inputs::regions::read::switch_app), as the lead's agent last read it: no
+    /// work for an older app (a page's being this Mac's), whatever else it matches.
+    pub min_app: Option<String>,
     /// The pool's member this coordinator is (its agent's), while it leads: every answer says so,
     /// with its term (`POOL_MEMBER`, `POOL_TERM`), so a member tells its lead's coordinator from
     /// another's (crate::agent::lead's "late, not gone").
@@ -942,7 +946,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, min_app: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -1402,6 +1406,11 @@ impl Coordinator {
         self.shared.lock().unwrap().moving = why;
     }
 
+    /// The app the newer readers' switch was proved on (`Shared::min_app`; None: none recorded).
+    pub fn set_min_app(&self, app: Option<String>) {
+        self.shared.lock().unwrap().min_app = app;
+    }
+
     /// The build page's asks of the pool's lead since the last call (`/work/lead`).
     pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
         std::mem::take(&mut self.shared.lock().unwrap().lead_asks)
@@ -1845,6 +1854,16 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 };
                 s.seen(&a.worker, why.clone(), None, now);
                 return Ok((409, serde_json::json!({ "error": why })));
+            }
+            // Nor one older than the app a readers' switch was proved on (its keys and code are
+            // from before it: crate::inputs::regions::read::needed_app); a page runs this Mac's.
+            if let Some(min) = s.min_app.clone() {
+                let theirs = if a.kind == "native" { a.app.clone().unwrap_or_default() } else { s.app.clone() };
+                if !crate::pool::term::app_at_least(&theirs, &min) {
+                    let why = format!("on the app of {}, older than the one the readers' switch was proved on ({}): it builds once it runs that one or newer", if theirs.is_empty() { "an older one".to_string() } else { app_when(&theirs) }, app_when(&min));
+                    s.seen(&a.worker, why.clone(), None, now);
+                    return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": why })) } else { (204, serde_json::Value::Null) });
+                }
             }
             s.seen(&a.worker, format!("asked for {}", a.can.join(" or ")), Some(&a), now);
             if s.workers[&a.worker].bad {
@@ -3340,6 +3359,14 @@ mod tests {
         assert!(!app_ok(Some("20261005-1508-aaaaaaa"), "20261005-1613-d05125b") && !app_ok(None, "20261005-1508-84142d3"));
         assert!(app_ok(Some("development"), "development") && !app_ok(Some("development"), "20261005-1508-84142d3") && !app_ok(Some("20261005-1613-d05125b"), "development"));
         assert!(app_ok(None, ""));
+        // Once a readers' switch is recorded on a newer app than the lead's, nothing for any
+        // (the lead's own the same as the worker's), a page included; on the switch's own, again.
+        c.set_min_app(Some("20261005-1600-ffffffff".into()));
+        let e = w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).unwrap_err();
+        assert!(e.to_string().contains("readers' switch was proved on"), "{e:#}");
+        c.set_min_app(Some("20261005-1508-84142d3".into()));
+        assert!(w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).is_ok());
+        c.set_min_app(None);
         // Never a panic, whatever a worker says.
         assert!(!app_ok(Some("20261005-150é-x"), "20261005-1508-84142d3") && !app_ok(Some("é"), "20261005-1508-84142d3") && !app_ok(Some(""), "x"));
     }

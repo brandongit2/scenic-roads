@@ -4248,6 +4248,10 @@ impl Agent {
         // (Once the regions' switch is recorded, an app older than the one it was proved on reads
         // the wrong regions: it builds nothing, and says so.)
         let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| std::fs::read(root.join(n)).with_context(|| format!("read {n}"))).map_err(|e| format!("{e:#}"));
+        // (And the coordinator grants nothing to an app older than it, a page's included.)
+        if let (Some(c), Ok(min)) = (&self.coord, &regions_app) {
+            c.set_min_app(min.clone());
+        }
         if let Err(why) = crate::inputs::regions::read::may_lead(&self.app, &regions_app) {
             waiting.push(Waiting { step: None, what: "All building".into(), why: format!("this Mac can't build now: {why}") });
             return Vec::new();

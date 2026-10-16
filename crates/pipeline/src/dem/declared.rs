@@ -319,6 +319,11 @@ impl Cover {
 /// 5 × 5 grid, its corners included, and projected; a cell any sample of which falls in a box,
 /// with its neighbours (a box's corner may cut a cell between samples).
 pub fn projected_cells(crs: u16, boxes: &[[f64; 4]]) -> Result<BTreeSet<(i32, i32)>> {
+    projected_cells_where(crs, &|px, py| boxes.iter().any(|b| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3]))
+}
+
+/// `projected_cells`, a point (in CRS `crs`) held where `holds` says.
+pub fn projected_cells_where(crs: u16, holds: &dyn Fn(f64, f64) -> bool) -> Result<BTreeSet<(i32, i32)>> {
     let atlas = match crs {
         3979 => super::proj::Atlas::new(),
         c => bail!("EPSG:{c} isn't a projected CRS the app knows"),
@@ -330,7 +335,7 @@ pub fn projected_cells(crs: u16, boxes: &[[f64; 4]]) -> Result<BTreeSet<(i32, i3
             'cell: for j in 0..5 {
                 for i in 0..5 {
                     let (px, py) = atlas.project(x as f64 + i as f64 * 0.25, y as f64 + j as f64 * 0.25);
-                    if boxes.iter().any(|b| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3]) {
+                    if holds(px, py) {
                         any = true;
                         break 'cell;
                     }

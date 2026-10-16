@@ -72,7 +72,9 @@ fn unwritable(e: &std::io::Error) -> bool {
 /// (`again`) won't read, is taken again. A store this worker can't write, or only reads
 /// (`read_only`: a task's worker), gives what it has whole; for the rest, the tile read in place
 /// (and nothing written or removed there).
-pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: bool, read_only: bool) -> Result<Option<Tile>> {
+/// `earlier`: the store's earlier place (`sources/fabdem/`), read only: a tile not in the store but
+/// whole there is read from there (crate::dem::kept).
+pub fn stored(fetch: &dyn Fetch, store: &Path, earlier: Option<&Path>, zname: &str, tname: &str, again: bool, read_only: bool) -> Result<Option<Tile>> {
     let f = store.join(member(tname));
     let in_place = || -> Result<Option<Tile>> {
         println!("FABDEM {tname}: the store {}: read in place", if read_only { "is only read here" } else { "can't be written here" });
@@ -92,6 +94,14 @@ pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: 
         }
     } else if store.join(format!("{tname}.none")).exists() {
         return Ok(None);
+    } else if let Some(e) = earlier {
+        let f = e.join(member(tname));
+        if !again && crate::whole::tiff_file_whole(&f) {
+            return Ok(Some(Tile::Stored(f)));
+        }
+        if e.join(format!("{tname}.none")).exists() {
+            return Ok(None);
+        }
     }
     if read_only {
         return in_place();

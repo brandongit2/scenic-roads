@@ -34,6 +34,9 @@ pub struct Opts<'a> {
     pub store: Option<PathBuf>,
     /// The store only read (a task's worker).
     pub read_only: bool,
+    /// The stores' earlier folder (`sources/`): a file not in `<store>/<dataset>/` is read from
+    /// `<earlier>/<dataset>/` when it's whole there, never written (crate::dem::kept).
+    pub earlier: Option<PathBuf>,
     pub pool: Option<&'a rayon::ThreadPool>,
 }
 
@@ -80,13 +83,22 @@ pub fn level_for(t: &Tiff, crs: u16, read_resolution: Option<f64>) -> Result<usi
     Ok(best.1)
 }
 
+/// A tile pyramid's tiles' size (pixels): Web Mercator's 256. A pyramid of another is refused, by
+/// the input check (el-data) and by the sampler.
+pub const TILE_PX: usize = 256;
+
+/// The generic sampler's version: the proof of #143's first step names it (crate::dem::proof), and
+/// the switch is refused for a proof of an older one (crate::inputs::elevation's `switch`). Raised
+/// with any change to what it gives.
+pub const SAMPLER_V: u32 = 1;
+
 /// A tile pyramid's resolution in metres at latitude `lat`.
 pub fn tile_resolution(zoom: u32, lat: f64) -> f64 {
     40_075_016.686 * lat.to_radians().cos() / (256.0 * (1u64 << zoom) as f64)
 }
 
 /// Whether a value is data.
-fn valid(v: f32, nodata: Option<f64>) -> bool {
+pub(crate) fn valid(v: f32, nodata: Option<f64>) -> bool {
     v.is_finite() && v >= NODATA_BELOW && nodata.is_none_or(|nd| v as f64 != nd)
 }
 
@@ -139,7 +151,8 @@ impl GeoSet<'_> {
         let src: Option<Arc<dyn RangeRead>> = match &self.store {
             Some(dir) if !url.starts_with('/') => {
                 let remote = || open_url(self.o.fetch, url);
-                match super::kept::kept(dir, &stored_name(url), &remote, again, self.o.read_only)? {
+                let earlier = self.o.earlier.as_ref().map(|e| e.join(self.id));
+                match super::kept::kept(dir, earlier.as_deref(), &stored_name(url), &remote, again, self.o.read_only)? {
                     None => None,
                     Some(super::kept::Kept::Stored(p)) => Some(Arc::new(PlainFile::open(&p)?)),
                     Some(super::kept::Kept::InPlace(s)) => Some(s),
@@ -296,6 +309,11 @@ impl TileSet<'_> {
         let (w, h, a) = super::encoding::decode(self.encoding, &png).with_context(|| u.clone())?;
         if w * h == 0 {
             bail!("{u}: an empty tile");
+        }
+        // (The pyramid's pixels are found as 256 to a tile, Web Mercator's: a tile of another size
+        // would be read at the wrong places. The input check refuses such a pyramid, el-data.)
+        if w != TILE_PX || h != TILE_PX {
+            bail!("{u}: a {w} × {h} tile; tile pyramids are read as {TILE_PX} × {TILE_PX}");
         }
         Ok(Some((w, h, a)))
     }
@@ -580,7 +598,7 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
     let lon: Vec<f64> = miss.iter().map(|&i| verts[i as usize][0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = miss.iter().map(|&i| verts[i as usize][1] as f64 * 1e-7).collect();
     let pool = super::pool(cfg.workers);
-    let o = Opts { fetch, store: cfg.store.clone(), read_only: cfg.fabdem_read_only, pool: pool.as_ref() };
+    let o = Opts { fetch, store: cfg.store.clone(), read_only: cfg.fabdem_read_only, earlier: cfg.earlier_store.clone(), pool: pool.as_ref() };
     let s = sample(plan, &lon, &lat, &o, &|k| super::said(k, miss.len()))?;
     drop(o);
     drop(pool);

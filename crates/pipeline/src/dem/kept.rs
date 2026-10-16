@@ -3,6 +3,10 @@
 //! and compared before it takes its name), a file the source doesn't have remembered as
 //! `<file name>.none`. A store this worker can't write, or only reads (a task's worker), gives what
 //! it has whole, and the rest is read in place (nothing written or removed there).
+//!
+//! A store's earlier place (`earlier`: FABDEM's `sources/fabdem/` until it's renamed to
+//! `sources/fetched/fabdem/`, docs/inputs.md §6.8's rollout) is read, never written: a file not in
+//! the store but whole there is read from there, so nothing is downloaded or stored twice meanwhile.
 
 use crate::geotiff::{key, write_f32, Tiff};
 use anyhow::{ensure, Context, Result};
@@ -24,7 +28,7 @@ fn unwritable(e: &std::io::Error) -> bool {
 /// File `name` from the store `dir`, copied there from `remote` the first time; None for a file the
 /// source doesn't have, remembered as `<name>.none`. A stored copy that isn't whole, or (`again`)
 /// won't read, is taken again.
-pub fn kept(dir: &Path, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn RangeRead>>>, again: bool, read_only: bool) -> Result<Option<Kept>> {
+pub fn kept(dir: &Path, earlier: Option<&Path>, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn RangeRead>>>, again: bool, read_only: bool) -> Result<Option<Kept>> {
     let f = dir.join(name);
     let in_place = || -> Result<Option<Kept>> { Ok(remote()?.map(Kept::InPlace)) };
     if f.exists() {
@@ -40,6 +44,14 @@ pub fn kept(dir: &Path, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn R
         }
     } else if dir.join(format!("{name}.none")).exists() {
         return Ok(None);
+    } else if let Some(e) = earlier {
+        let f = e.join(name);
+        if !again && crate::whole::tiff_file_whole(&f) {
+            return Ok(Some(Kept::Stored(f)));
+        }
+        if e.join(format!("{name}.none")).exists() {
+            return Ok(None);
+        }
     }
     if read_only {
         return in_place();
@@ -98,4 +110,28 @@ pub fn kept(dir: &Path, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn R
     }
     r?;
     Ok(Some(Kept::Stored(f)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_whole_in_the_stores_earlier_place_is_read_there_and_nothing_stored_twice() {
+        let d = tempfile::tempdir().unwrap();
+        let (dir, earlier) = (d.path().join("fetched/x"), d.path().join("x"));
+        std::fs::create_dir_all(&earlier).unwrap();
+        let tif = write_f32(4, 4, &[1.0; 16], 16, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 4326, None).unwrap();
+        std::fs::write(earlier.join("a.tif"), &tif).unwrap();
+        std::fs::write(earlier.join("b.tif.none"), b"").unwrap();
+        let never = || -> Result<Option<Arc<dyn RangeRead>>> { anyhow::bail!("downloaded") };
+        match kept(&dir, Some(&earlier), "a.tif", &never, false, false).unwrap() {
+            Some(Kept::Stored(p)) => assert_eq!(p, earlier.join("a.tif")),
+            _ => panic!("not read from the earlier place"),
+        }
+        assert!(kept(&dir, Some(&earlier), "b.tif", &never, false, false).unwrap().is_none());
+        assert!(!dir.exists(), "nothing written to the store");
+        // Without it, downloaded (here: the remote asked).
+        assert!(kept(&dir, None, "a.tif", &never, false, false).is_err());
+    }
 }

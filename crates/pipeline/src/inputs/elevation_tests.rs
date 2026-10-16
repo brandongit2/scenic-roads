@@ -13,6 +13,16 @@ fn tile(lon: f64, lat: f64) -> Vec<u8> {
     crate::geotiff::write_f32(36, 36, &data, 16, [lon, 100.0 * PX, 0.0, lat + 1.0, 0.0, -100.0 * PX], 4326, Some(-9999.0)).unwrap()
 }
 
+/// A `w` × `h` terrarium PNG of 0 m.
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut e = png::Encoder::new(&mut out, w, h);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header().unwrap().write_image_data(&[128u8, 0, 0].repeat((w * h) as usize)).unwrap();
+    out
+}
+
 fn decl(extra: &str, data: &str) -> Vec<u8> {
     format!("name = \"x\"\nwhat = \"Road elevation, test\"\ncredit = \"Someone\"\nlicence = \"CC0-1.0\"\nsurface = \"ground\"\nheights = \"EGM2008\"\ncode = 4\n{extra}\n[data]\n{data}\n").into_bytes()
 }
@@ -37,6 +47,20 @@ impl Fixture {
         f.0.insert("https://e.org/t/N48E002.tif".into(), Some(tile(2.0, 48.0)));
         f.0.insert("https://e.org/t/N49E002.tif".into(), Some(tile(2.0, 49.0)));
         f.0.insert("https://e.org/gone.tif".into(), None);
+        // (A pyramid's tile at the middle of the world, read for its size; another's of 512.)
+        f.0.insert("https://e.org/12/2048/2048.png".into(), Some(png(256, 256)));
+        f.0.insert("https://e.org/big/12/2048/2048.png".into(), Some(png(512, 512)));
+        // Twelve 1° files without an index, along a row; one half without data (its west).
+        for k in 0..12 {
+            f.0.insert(format!("https://e.org/row/{k}.tif"), Some(tile(10.0 + k as f64, 20.0)));
+        }
+        let mut half = vec![12.5f32; 72 * 36];
+        for r in 0..36 {
+            for c in 0..36 {
+                half[r * 72 + c] = -9999.0;
+            }
+        }
+        f.0.insert("https://e.org/half.tif".into(), Some(crate::geotiff::write_f32(72, 36, &half, 16, [30.0, 100.0 * PX, 0.0, 41.0, 0.0, -100.0 * PX], 4326, Some(-9999.0)).unwrap()));
         Fixture { files: files.into_iter().map(|(p, b)| (p.to_string(), Arc::new(b))).collect(), checks: Elevation::new(Arc::new(f), None) }
     }
 
@@ -134,9 +158,71 @@ fn the_switch_is_the_proofs_of_exactly_the_version_named() {
     let e = Elevation::default();
     assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
     std::fs::create_dir_all(d.path().join("state/inputs")).unwrap();
-    std::fs::write(d.path().join(PROOF), br#"{"index": "v1", "ok": true, "app": "20261016-0000-aaaaaaa"}"#).unwrap();
+    let proof = |extra: &str| format!(r#"{{"index": "v1", "ok": true, "app": "20261016-0000-aaaaaaa", "units": 3{extra}}}"#);
+    let sampler = format!(r#", "sampler": {}"#, crate::dem::generic::SAMPLER_V);
+    std::fs::write(d.path().join(PROOF), proof(&format!(r#"{sampler}, "units_recorded": 3"#))).unwrap();
     assert!(e.switch(d.path(), "v1").unwrap().is_some());
+    // Not of every unit recorded, or of another sampler (or none named): no switch.
+    std::fs::write(d.path().join(PROOF), proof(&format!(r#"{sampler}, "units_recorded": 4"#))).unwrap();
+    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
+    std::fs::write(d.path().join(PROOF), proof(r#", "units_recorded": 3"#)).unwrap();
+    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
+    std::fs::write(d.path().join(PROOF), proof(&format!(r#", "sampler": {}, "units_recorded": 3"#, crate::dem::generic::SAMPLER_V + 1))).unwrap();
+    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
+    std::fs::write(d.path().join(PROOF), proof(&format!(r#"{sampler}, "units_recorded": 3"#))).unwrap();
     assert_eq!(e.switch(d.path(), "v2").unwrap(), None);
     std::fs::write(d.path().join(PROOF), br#"{"index": "v1", "ok": false, "app": "20261016-0000-aaaaaaa"}"#).unwrap();
     assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
+}
+
+#[test]
+fn a_datasets_keyed_digest_names_its_index_and_dropped_files() {
+    let ix = |files: &[(&str, [f64; 4])]| index(files);
+    let one = [("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0])];
+    let two = [("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0]), ("https://e.org/t/N49E002.tif", [2.0, 49.0, 3.0, 50.0])];
+    let keyed_of = |f: &Fixture, p: &str| f.derive().facts[p].1.clone().unwrap();
+    let a = Fixture::new(vec![("tiled.toml", decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"")), ("tiled.geojson", ix(&one))]);
+    let b = Fixture::new(vec![("tiled.toml", decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"")), ("tiled.geojson", ix(&two))]);
+    assert!(a.checks().is_empty() && b.checks().is_empty(), "{:?}", b.whole());
+    // The declaration the same, a tile added to its index: another digest (its units rerun).
+    assert_ne!(keyed_of(&a, "tiled.toml"), keyed_of(&b, "tiled.toml"));
+    assert_eq!(a.checks.file("tiled.toml", &a.files["tiled.toml"]).keyed, b.checks.file("tiled.toml", &b.files["tiled.toml"]).keyed);
+    // Dropped files: one added, or one changed, likewise.
+    let d = |files: Vec<(&str, Vec<u8>)>| {
+        let mut v = vec![("local.toml", decl("", "format = \"geotiff\"\nfiles = [\"*.tif\"]"))];
+        v.extend(files);
+        Fixture::new(v)
+    };
+    let d1 = d(vec![("local/a.tif", tile(2.0, 48.0))]);
+    let d2 = d(vec![("local/a.tif", tile(2.0, 48.0)), ("local/b.tif", tile(2.0, 49.0))]);
+    let d3 = d(vec![("local/a.tif", tile(3.0, 48.0))]);
+    assert!(d1.checks().is_empty() && d2.checks().is_empty(), "{:?}", d2.whole());
+    let (k1, k2, k3) = (keyed_of(&d1, "local.toml"), keyed_of(&d2, "local.toml"), keyed_of(&d3, "local.toml"));
+    assert!(k1 != k2 && k1 != k3 && k2 != k3);
+    // A pyramid has no data beyond its declaration: its file check's digest.
+    let p = Fixture::new(vec![("pyramid.toml", decl("territory = \"world\"", "format = \"tiles\"\nurl = \"https://e.org/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\""))]);
+    assert_eq!(Some(keyed_of(&p, "pyramid.toml")), p.checks.file("pyramid.toml", &p.files["pyramid.toml"]).keyed);
+}
+
+#[test]
+fn every_file_without_an_index_is_measured_and_only_its_valid_data_covers() {
+    // Twelve files by URL (more than an index's sample): each one's cell in the cover.
+    let urls: Vec<String> = (0..12).map(|k| format!("\"https://e.org/row/{k}.tif\"")).collect();
+    let f = Fixture::new(vec![("row.toml", decl("", &format!("format = \"geotiff\"\nurls = [{}]", urls.join(", "))))]);
+    assert!(f.checks().is_empty(), "{:?}", f.whole());
+    let m: Measured = serde_json::from_value(f.derive().facts["row.toml"].0["measured"].clone()).unwrap();
+    assert_eq!(m.cover, Some(vec![[10.0, 20.0, 23.0, 22.0]]));
+    // A file whose west half has no data: its east alone (31°–32°E, edges included), not its bounds.
+    let f = Fixture::new(vec![("half.toml", decl("", "format = \"geotiff\"\nurl = \"https://e.org/half.tif\""))]);
+    assert!(f.checks().is_empty(), "{:?}", f.whole());
+    let m: Measured = serde_json::from_value(f.derive().facts["half.toml"].0["measured"].clone()).unwrap();
+    assert_eq!(m.cover, Some(vec![[31.0, 40.0, 33.0, 42.0]]));
+}
+
+#[test]
+fn a_pyramid_of_tiles_not_256_pixels_is_refused() {
+    let f = Fixture::new(vec![("big.toml", decl("territory = \"world\"", "format = \"tiles\"\nurl = \"https://e.org/big/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\""))]);
+    let w = f.whole();
+    assert_eq!(w.iter().map(|x| x.check()).collect::<Vec<_>>(), vec![DATA]);
+    assert!(w[0].message.contains("512 × 512"), "{}", w[0].message);
 }

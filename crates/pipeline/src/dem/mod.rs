@@ -126,6 +126,9 @@ pub struct Config {
     pub fabdem_read_only: bool,
     /// The stores' folder (`sources/fetched/`) for datasets declared `store` (crate::dem::generic).
     pub store: Option<PathBuf>,
+    /// The stores' earlier folder (`sources/`, $SCENIC_STORE_EARLIER), read only: FABDEM's tiles in
+    /// `sources/fabdem/` until that's renamed to `sources/fetched/fabdem/` (crate::dem::kept).
+    pub earlier_store: Option<PathBuf>,
 }
 
 /// dem-stats.json: vertices by source.
@@ -496,13 +499,13 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         let in_place = |src| -> Result<Vec<f32>> { sample_raster(&Tiff::open(src).with_context(|| format!("FABDEM {tname}"))?, 0, &lo, &la, pool.as_ref()).with_context(|| format!("FABDEM {tname}")) };
         let v = match &cfg.fabdem_store {
             // From the store, where each tile is downloaded once.
-            Some(store) => match fabdem::stored(fetch, store, zname, tname, false, cfg.fabdem_read_only)? {
+            Some(store) => match fabdem::stored(fetch, store, cfg.earlier_store.as_ref().map(|e| e.join("fabdem")).as_deref(), zname, tname, false, cfg.fabdem_read_only)? {
                 None => None,
                 Some(fabdem::Tile::InPlace(src)) => Some(in_place(src)?),
                 Some(fabdem::Tile::Stored(p)) => match sample_file(&p, &lo, &la, pool.as_ref()) {
                     Ok(v) => Some(v),
                     // The stored copy is damaged: taken again (once).
-                    Err(_) => match fabdem::stored(fetch, store, zname, tname, true, cfg.fabdem_read_only)? {
+                    Err(_) => match fabdem::stored(fetch, store, cfg.earlier_store.as_ref().map(|e| e.join("fabdem")).as_deref(), zname, tname, true, cfg.fabdem_read_only)? {
                         Some(fabdem::Tile::Stored(p)) => Some(sample_file(&p, &lo, &la, pool.as_ref())?),
                         Some(fabdem::Tile::InPlace(src)) => Some(in_place(src)?),
                         None => None,

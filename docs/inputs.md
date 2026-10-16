@@ -1887,12 +1887,17 @@ beside the declaration that names it, and `<dataset>/` for local files.
 | `[data] valid` | GeoJSON file beside it | yes | planned (#144): where the dataset is trusted, when that isn't all of it (AWS's tiles south of 60°N: north of it they mix an ellipsoidal source, plan §6) |
 
 Read from the data at check time, never declared (`facts.measured` in the index, beside the
-declaration as parsed, `facts.declaration`): a GeoTIFF dataset's CRS and resolution (the headers of
-its first file, its last and seven between, by range requests: all in one CRS the app projects, its
-resolution the coarsest of theirs at the overview read), and its coverage (`cover`): the 1° cells
-its files' footprints meet (the index's, else the files' own bounds; a projected CRS's found by
-projecting each cell's 5 × 5 points, with the cells around), merged into boxes; a tile pyramid's
-resolution from its zoom at its coverage's mid-latitude. The coverage is also the description's
+declaration as parsed, `facts.declaration`): a GeoTIFF dataset's CRS and resolution (by range
+requests, the headers of an index's first file, its last and seven between, and of every file
+without an index, URLs and dropped files alike: all in one CRS the app projects, its resolution the
+coarsest of theirs at the overview read), and its coverage (`cover`): the 1° cells its data meets,
+merged into boxes. An index's files meet by their footprints; any other file by where it has valid
+data, read at its coarsest overview (one with none under 16 M pixels, by its bounds), so a file
+whose rectangle reaches past its data covers only its data (MRDEM's bounds hold Greenland and
+Iceland, its data neither). A projected CRS's cells are found by projecting each cell's 5 × 5
+points, with the cells around. A tile pyramid's resolution comes from its zoom at its coverage's
+mid-latitude, and one of its tiles is read for its size: the sampler reads 256-pixel tiles
+(`generic::TILE_PX`). The coverage is also the description's
 extent for the credits (§4.8: a list of boxes, `"world"` for none).
 
 ```toml
@@ -1916,7 +1921,8 @@ template without its placeholders, not exactly one way of naming files (`el-decl
 doesn't parse (`el-index`); an index or files named that aren't there (`el-missing`); data that
 can't be read or measured: a header that can't be read, a file the server hasn't, a CRS the app
 can't project (EPSG 4326, 4269 and 3979 today: `pipeline::dem::proj`) or that contradicts its
-index's, a tile pyramid without a territory or whose territory the pass's outlines lack (`el-data`).
+index's, a tile pyramid without a territory or whose territory the pass's outlines lack, or whose
+tiles aren't 256 × 256 (`el-data`; the sampler refuses such a tile too).
 Warnings: a dataset's folder or an index no declaration names (`el-orphan`); two datasets of one
 rank, resolution and surface meeting (`el-tie`: their order would fall to their ids). Planned: a
 dataset whose files don't meet its declared territory. A declaration is held with the index it
@@ -1934,7 +1940,9 @@ names.
   measured on A's own pixels, a neighbouring file's where the band crosses into one), the two blend
   by a smoothstep of the distance d: h = B + (A − B)·s(d / band), s(t) = t²(3 − 2t), as GLO-30
   blends into AWS's tiles by latitude today (plan §6), so a seam shows no step. Past the band the
-  height is A's to the bit, and the source byte is A's either way.
+  height is A's to the bit, and the source byte is A's either way. B is the first dataset after A
+  that has valid data at the point; when none does (the next ones are invalid there too), there's
+  no blend: A's height to the bit.
 - **Heights are converted** to one reference, EGM2008 (FABDEM's and GLO-30's), through each
   reference's geoid grid: a height H in a reference with geoid N_ref over its ellipsoid is the
   ellipsoidal height h = H + N_ref, moved to WGS 84's frame where the reference's frame differs, and
@@ -1961,8 +1969,10 @@ names.
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
 - **Keys** (built, once switched): a unit names the `keyed` digests of the datasets whose coverage
   meets its ways' extent (`agent::build::unit_key`, the datasets held by `agent::tiles`), in place
-  of the DEM rules' versions by area (`rules::versions_meeting_but_dem`). Adding or editing a dataset
-  reruns exactly the units it meets. Planned: the fetched files' pins for datasets downloaded whole.
+  of the DEM rules' versions by area (`rules::versions_meeting_but_dem`). A dataset's `keyed` is its
+  declaration's fields with its data's digest: its index's content and its dropped files' names and
+  contents (set when the version is derived), so adding a tile to an index or a file to a folder
+  reruns the units it meets, as adding or editing a dataset does. Planned: the fetched files' pins for datasets downloaded whole.
 - **The unit's plan:** the unit job writes `elevation.json` into the unit's folder (the accepted
   datasets in their order, each with its files whose footprints meet the unit's vertices, a few km
   around: `dem::declared::plan`), which `elev` reads (natively or as a task's WebAssembly: it's one
@@ -2013,35 +2023,48 @@ in #143's worktree: nine, `hrdem`, `usgs-3dep`, `mrdem`, `gsi-1a`, `gsi-5a`, `gs
 listings: HRDEM's 56 squares, the same as `dem/hrdem_2m_tiles.txt` names; 3DEP's 1,449 tiles;
 FABDEM's tiles in Bristol's 356 zips).
 
-*Publish 1* (the check, the sampler, both read paths). What the live output does at each step:
-1. *Installed, nothing dropped:* nothing changes (the unit isn't shown; every key is as it was;
-   `elev` without a plan runs today's code). The unit tail reads FABDEM's kept tiles from
-   `sources/fetched/fabdem/` (the generic store's place): **move `sources/fabdem/` there** once
-   every Mac runs publish 1 (one rename on the share; meanwhile a unit reads a tile in place and
-   keeps it there anew).
-2. *Declarations dropped* (the nine `.toml` and three indexes, together: a declaration is held with
-   the index it names): the check reads their headers (a few dozen range requests) and takes them in
-   when clean. Live: the catalog's credits are the declarations' (the three DEM entries of
-   `rules::CREDITS` replaced by their `what`, MRDEM's and 3DEP's lines beside HRDEM's, GSI's five
-   layers one line), so the catalog is remade once; no build step reruns (nothing reads the
-   datasets yet).
-3. *The proof:* `scenic-build elevation-proof --root <nas> --out <scratch> --store <nas>/sources
-   --write` over every unit with kept samples: each unit's vertices sampled by today's code and by
-   the generic sampler; every difference must lie in a blend band with the same source byte. Only
-   then does it write `state/inputs/elevation-proof.json` (the accepted index proved, and the app),
-   and the next check records the switch (`sources/inputs/elevation/@switched`); a declaration
-   edited between makes the proof stale (it names the index), so the proof runs again. Older apps
-   can't lead from the switch on (their keys and code are today's: `regions::read::switch_app`
-   reads both switches).
-4. *Switched:* the units' keys name the datasets meeting them. Those a single dataset meets
-   (FABDEM's alone: everywhere outside North America and Japan) are re-keyed, not built
-   (`agent::rekey`, their heights the same by the proof); those more than one meets are built again
-   with the blends, their kept samples reused where one dataset alone covers a vertex. **No rollback
-   past the switch** but by `scenic lead take --force --downgrade`.
-
-*Publish 2* (once switched): the per-source code (`dem::run`, `dem::gsi`, `dem::fabdem`, the HRDEM
-tile list and index), the DEM rules and their credits in rules.rs, `DemValidity::Rules` and the
-fallback to today's code go; `elev` and the unit job refuse to run without the datasets' plan.
+*Publish 1* (the check, the sampler, both read paths). It reads FABDEM's kept tiles from
+`sources/fetched/fabdem/` (the generic store's place), and a tile not there from `sources/fabdem/`,
+read only, when it's whole there (`SCENIC_STORE_EARLIER`, crate::dem::kept), so nothing is
+downloaded or stored twice before the rename. The rollout, in order:
+1. *Publish 1 on both Macs.* Nothing changes (the unit isn't shown; every key is as it was; `elev`
+   without a plan runs today's code).
+2. *FABDEM's store moved:* pause the units (`scenic pause`), rename `sources/fabdem/` to
+   `sources/fetched/fabdem/` (one rename on the share), resume. Paused, so no unit job writes a tile
+   into either place mid-rename.
+3. *Declarations dropped* (the nine `.toml` and three indexes, together: a declaration is held with
+   the index it names): staged in a folder beside the drop box, then one rename into
+   `inputs/elevation/` (the check takes in at once any file with no findings, so a half-copied set
+   would be taken in half). The check reads their headers (a few dozen range requests, and MRDEM's
+   coarsest overview) and takes them in when clean. Live: the catalog's credits are the
+   declarations' (the three DEM entries of `rules::CREDITS` replaced by their `what`, MRDEM's and
+   3DEP's lines beside HRDEM's, GSI's five layers one line), so the catalog is remade once; no build
+   step reruns (nothing reads the datasets yet).
+4. *The counts:* `scenic-build elevation-proof --root <nas> --out <scratch> --count`: of the units
+   recorded, those built again at the switch (more than one dataset meets them) and those re-keyed
+   (one alone). Measured on 16 Oct from the declarations in #143's worktree: 242 built again, 43
+   re-keyed.
+5. *The proof:* `scenic-build elevation-proof --root <nas> --out <scratch> --store <nas>/sources
+   --write` (`--write` needs `--store`): each unit's vertices sampled by today's code and by the
+   generic sampler; every difference must lie in a blend band with the same source byte. It refuses
+   up front when any unit the records list has no kept samples (it would be unproved). Only when
+   every recorded unit passed does it write `state/inputs/elevation-proof.json`: the accepted index
+   proved, the app, the sampler's version (`generic::SAMPLER_V`), the units proved and recorded.
+6. *The switch:* the next check records it (`sources/inputs/elevation/@switched`) when the proof
+   names the accepted index, the sampler this app has, and as many units proved as recorded; a
+   declaration edited between, or a newer sampler, makes the proof stale, so it runs again. From the
+   switch on, no app older than the one it was proved on leads, is handed the lead, or is granted
+   work by the coordinator, a page's work included (its code the lead's): their keys and code are
+   today's (`regions::read::switch_app` reads both switches, the coordinator's `min_app`). The
+   units' keys then name the datasets meeting them: those a single dataset meets (FABDEM's alone:
+   everywhere outside North America and Japan) are re-keyed, not built (`agent::rekey`, their
+   heights the same by the proof); those more than one meets are built again with the blends,
+   their kept samples reused where one dataset alone covers a vertex. **No rollback past the
+   switch** but by `scenic lead take --force --downgrade`.
+7. *Publish 2* (once switched): the per-source code (`dem::run`, `dem::gsi`, `dem::fabdem`, the
+   HRDEM tile list and index), the DEM rules and their credits in rules.rs, `DemValidity::Rules`,
+   the fallback to today's code, and the read of the store's earlier place go; `elev` and the unit
+   job refuse to run without the datasets' plan.
 
 **#144, the 3D terrain.** AWS's Terrarium tiles (`terrain_pack::URL`, terrain_pack.rs:15) and GLO-30
 north of 60°N (`terrain_north::BUCKET`, terrain_north.rs:102; `NORTH_PIN`, terrain_pack.rs:93)

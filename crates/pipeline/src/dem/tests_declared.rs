@@ -64,7 +64,7 @@ fn declared_datasets_give_todays_heights_but_in_their_blend_bands() {
     // The blends, from the sampler itself: every vertex whose height differs is one of them.
     let lon: Vec<f64> = f.verts.iter().map(|v| v[0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = f.verts.iter().map(|v| v[1] as f64 * 1e-7).collect();
-    let o = generic::Opts { fetch: &lenient, store: Some(f.dir.path().join("fetched")), read_only: false, pool: None };
+    let o = generic::Opts { fetch: &lenient, store: Some(f.dir.path().join("fetched")), read_only: false, earlier: None, pool: None };
     let s = generic::sample(&plan, &lon, &lat, &o, &|_| {}).unwrap();
     let same = |a: f32, b: f32| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
     let mut differ = 0;
