@@ -1,12 +1,10 @@
-"""English for the names our layers carry (`en`: layers.py, ferries.py): a name's own English, else
-the names table's for where it is (data/names/english.json beside the scripts, the heritage job's
-from its seeds; none without it). English counts only when it truly differs from the name, not just
-in accents, case, punctuation or spacing (Montréal, Montreal). A heritage site's own English is
-UNESCO's, else its English Wikipedia article's title when that's English.
-
-A name's table is by region, by location, which decides how a name is read (中山 is Nakayama in
-Japan, Zhongshan in Taiwan): jp Japan, tw Taiwan, hk Hong Kong, sg Singapore; elsewhere one table
-for Latin script.
+"""English for the names our layers carry (`en`: layers.py, ferries.py): a thing's own English,
+when it truly differs from the name, not just in accents, case, punctuation or spacing (Montréal,
+Montreal). A heritage site's own English is UNESCO's (its register's `name_en`), else its English
+Wikipedia article's title when that's English. Any other English is the map's server's, from the
+translations' live tables as it serves the layers (crates/names, docs/plan.md §7): the `en` written
+here is the thing's own, which the server shows first; a name with neither goes on the
+translations' to-do list (pipeline::namestodo).
 """
 from __future__ import annotations
 
@@ -16,7 +14,6 @@ import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-N = ROOT / "data" / "names"
 
 
 # A Wikipedia title is English (not the site's other name: "Hôtel du Tillet de la Bussière") when it
@@ -31,32 +28,6 @@ quarry dam reservoir falls waterfall valley gorge beach beaches bay cape forest 
 building buildings cemetery pavilion residence mansion cottage lodge inn pier wharf dock dockyard railway line road
 trail avenue centre center observatory stadium rock stone stones circle henge barrow hillfort camp keep gallery
 town city village old""".split()) + r")\b", re.I)
-
-# Where a name is read: by location.
-REGIONS = [("hk", 113.8, 22.1, 114.5, 22.6), ("sg", 103.55, 1.1, 104.2, 1.5), ("tw", 118.0, 21.8, 122.3, 26.5),
-           ("jp", 122.5, 20.0, 154.5, 46.0)]
-
-
-def region(lon: float, lat: float) -> str:
-    for r, w, s, e, n in REGIONS:
-        if w <= lon <= e and s <= lat <= n:
-            return r
-    if lon < -30:
-        return "pt" if lat < 45 and lon > -35 else "na"  # (the Azores are at 25–31 °W)
-    if lon < -12:
-        return "pt"  # Madeira
-    if lat >= 49.8 and lon < 2.0 or lat >= 51.5:
-        return "gb"
-    # Iberia south of the Pyrenees (the border, roughly: 42.7 °N, and 43.4 °N on the Basque coast).
-    return "ib" if lat < 42.7 or (lon < -1.7 and lat < 43.4) else "fr"
-
-
-TABLE = {"jp": "jp", "tw": "tw", "hk": "hk", "sg": "sg"}  # the Latin regions share one table
-
-
-def table_of(r: str) -> str:
-    return TABLE.get(r, "latin")
-
 
 def norm(s: str) -> str:
     s = unicodedata.normalize("NFKD", s.lower())
@@ -119,26 +90,9 @@ def first_point(g: dict | None) -> tuple[float, float] | None:
     return walk(g.get("coordinates") or [x.get("coordinates") for x in g.get("geometries", [])])
 
 
-_TABLES: dict | None = None
-
-
-def english_of(name: str, at) -> str | None:
-    """The table's English for a name where it is (at: lon, lat)."""
-    global _TABLES
-    if _TABLES is None:
-        p = N / "english.json"
-        _TABLES = json.loads(p.read_text()) if p.exists() else {}
-    en = _TABLES.get(table_of(region(at[0], at[1])), {}).get(name.strip())
-    return en if differs(name, en) else None
-
-
-def english_at(name: str | None, at, own: str | None = None) -> str | None:
-    """A name's English for our layers' `en` (as web/src/english.ts): its own, else the table's for
-    where it is (at: lon, lat); none when it doesn't truly differ."""
+def english_at(name: str | None, own: str | None) -> str | None:
+    """A name's English for our layers' `en`: its own, when it truly differs; else none (the map's
+    server gives it its translation where it is)."""
     if not name:
         return None
-    if differs(name, own):
-        return own.strip()
-    return english_of(name, at) if at else None
-
-
+    return own.strip() if differs(name, own) else None

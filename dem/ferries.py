@@ -20,8 +20,8 @@ Service groups: urban & commuter (city water buses and commuter boats), short cr
 distance & overnight (2 h 30 or more), cable & chain ferries.
 
 Outputs (--out): ferries.json (GeoJSON: one feature per way, plus terminals) and
-ferry-lines.json (every line's details, for the hover card). Names carry en, their English where it
-truly differs (names.py english_at).
+ferry-lines.json (every line's details, for the hover card). Their English is the map's server's,
+from the translations' live tables (crates/names), as it serves them.
 
 usage: ferries.py --src DIR --out DIR [--feeds FILE]
   --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq) and freq/ (the
@@ -42,7 +42,6 @@ from pathlib import Path
 
 import ferrygtfs
 import inputs
-import names
 from timings import phase
 
 F = Path()
@@ -426,9 +425,6 @@ def main() -> None:
                     mo = months_of_text(info["seasonText"]) or months_of_text(season_txt_osm)
             if mo is not None:
                 info["months"] = mo
-            en = names.english_at(info["name"], info["ends"][0] if info["ends"] else None)
-            if en:
-                info["en"] = en
             out_lines[lid] = info
 
     # ---- Features -----------------------------------------------------------------
@@ -474,9 +470,6 @@ def main() -> None:
                 "n": next((i["name"] for i in infos if i["name"]), ""),
                 "lines": ",".join(lids),
             }
-            en = names.english_at(props["n"], ways[wid]["coords"][0])
-            if en:
-                props["en"] = en
             coords = [[round(x, 6), round(y, 6)] for x, y in ways[wid]["coords"]]
             feats.append({"type": "Feature", "id": wid, "geometry": {"type": "LineString", "coordinates": coords}, "properties": props})
 
@@ -514,9 +507,8 @@ def main() -> None:
                 )
                 if near:
                     n_term += 1
-                    en = names.english_at(name, (x, y))
                     feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(x, 6), round(y, 6)]},
-                                  "properties": {"kind": "terminal", "n": name, **({"en": en} if en else {})}})
+                                  "properties": {"kind": "terminal", "n": name}})
 
     with phase("the ferry layers written", "disk"):
         OUT.mkdir(parents=True, exist_ok=True)

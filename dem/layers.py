@@ -19,8 +19,9 @@ order, with polygons simplified.
   heritage-areas   simplified to ~1 m (topology preserved); coordinates to 6 decimals.
   indigenous, special   coordinates to 6 decimals.
 
-Named features carry `en`, their English where it truly differs (names.py english_at: a heritage
-site's own, else the table's for where it is), for the labels and the app's text.
+Named features carry `en`, their own English where it truly differs (names.py english_at: a
+heritage site's UNESCO name or English Wikipedia title, an area's `name_en`); any other English is
+the map's server's, from the translations' live tables, as it serves them.
 
 A point's name shows from mz (interest.py: where the nearest more interesting place of its kind
 spans the label spacing). A name repeated nearby waits longer: until the nearest more interesting
@@ -150,7 +151,7 @@ def points(src: str, keep: set[str] | None, heritage: bool) -> None:
         for f in fc["features"]:
             p = f["properties"]
             own = names.site_english(p.get("name") or "", p.get("name_en"), wiki.get(p.get("i")))[0] if heritage else None
-            en = names.english_at(p.get("name"), names.first_point(f["geometry"]), own)
+            en = names.english_at(p.get("name"), own)
             if en:
                 p["en"] = en
                 n_en += 1
@@ -223,7 +224,7 @@ def polygons(src: str, simplify: float) -> dict:
         for f in fc["features"]:
             g = f["geometry"]
             p = f["properties"]
-            en = names.english_at(p.get("name"), names.first_point(g), p.get("name_en"))
+            en = names.english_at(p.get("name"), p.get("name_en"))
             if en:
                 p["en"] = en
             if simplify and g:
