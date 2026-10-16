@@ -157,7 +157,7 @@ now source changes:
     size asked for first, and the painter keeps one FBO and depth-stencil for each size
     (`Painter._rttFbos`).
 
-  No tile or byte budget, and no maxzoom. The textures held at rest (build Mac, windowed Chrome,
+  No tile or byte budget, and no maxzoom. The textures held at rest (the M4, windowed Chrome,
   2880 × 1626 device pixels, `tools/bldcheck/drape.mjs --sizing 0|1`; upstream's zoom → the zoom
   over the terrain without the two rules → with them):
 

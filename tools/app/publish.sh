@@ -6,12 +6,37 @@
 #
 #   tools/app/publish.sh              build, test, publish
 #   tools/app/publish.sh --rollback   point app/current.json back at the previous version
+#
+# Either Mac may publish: a lock on the NAS (app/publish.lock) keeps two publishes from writing
+# app/current.json at once, and a publish is only ever of a clean tree whose commit is on origin's
+# main (no -dirty versions; the task board's database, tools/taskboard/taskboard.db, aside).
 set -euo pipefail
 cd ${0:A:h}/../..
 NAS=/Volumes/personal/projects/scenic-roads
 # (Every copy leaves the extended attributes behind, cp -X: the NAS refuses macOS's provenance one
 # when it differs from the folder's, failing the copy.)
 [[ -d $NAS ]] || { echo "the NAS isn't mounted at /Volumes/personal"; exit 2; }
+# The lock: made with create-new (zsh's noclobber opens with O_EXCL, which the share does
+# atomically), naming its Mac, process and time; removed as this script exits. One older than six
+# hours (its Mac gone mid-publish) is moved aside and taken.
+lock=$NAS/app/publish.lock
+cleanup=()
+on_exit() { for c in $cleanup; do eval $c; done; }
+trap on_exit EXIT
+who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if ! ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null; then
+  age=$(( $(date +%s) - $(stat -f %m $lock 2>/dev/null || date +%s) ))
+  if (( age < 6 * 3600 )); then
+    echo "another publish holds $lock ($(cat $lock 2>/dev/null), $(( age / 60 )) min ago): try again once it's over"
+    exit 1
+  fi
+  mv $lock $lock.stale-$$ 2>/dev/null || true
+  ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null || { echo "another publish took $lock just now"; exit 1; }
+  echo "publish: took over a lock $(( age / 3600 )) h old ($(cat $lock.stale-$$ 2>/dev/null))"
+  rm -f $lock.stale-$$
+fi
+# (Removed only while it's still this publish's.)
+cleanup+=('[[ $(cat $lock 2>/dev/null) == $who ]] && rm -f $lock')
 if [[ ${1:-} == --rollback ]]; then
   [[ -f $NAS/app/previous.json ]] || { echo "no previous version to roll back to"; exit 1; }
   cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
@@ -19,6 +44,22 @@ if [[ ${1:-} == --rollback ]]; then
   mv $NAS/app/current.json.tmp.old $NAS/app/previous.json
   echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
+fi
+# Only a clean tree is published (everything published comes from the working tree: the crates
+# and their lock, the web app and the worker page, the Python steps, the status app, the NAS's
+# script), its commit on origin's main, so every version names a commit either Mac can check out.
+# (The task board's database changes all the time and isn't published.)
+unclean() { git status --porcelain -- . ':(exclude)tools/taskboard/taskboard.db*'; }
+[[ -z $(unclean) ]] || { echo "the tree isn't clean: commit or set aside what changed first"; unclean | head -20; exit 1; }
+git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
+git merge-base --is-ancestor HEAD origin/main || { echo "HEAD ($(git rev-parse --short HEAD)) isn't on origin's main: push it first"; exit 1; }
+# The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
+# rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
+# History (the task board) is exempt.
+if git grep -qniI -E 'build[ -]mac' -- . ':(exclude)tools/taskboard'; then
+  echo "the old name of the lead's role is back (the role is \"the lead\"; a measure names its Mac, the M4 or the M1):"
+  git grep -niI -E 'build[ -]mac' -- . ':(exclude)tools/taskboard' | head -20
+  exit 1
 fi
 # Rust (rust-toolchain.toml's) and the wasi-sdk (mise.toml's), installed by `mise install` once.
 eval "$(mise env -s zsh)"
@@ -37,7 +78,7 @@ else
 fi
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 # Room for the files the tests open at once: a session over SSH starts with 256, which the tests
-# run in parallel go past (8 Oct: 15 failed so on the build Mac, all passing at 8192). Their whole
+# run in parallel go past (8 Oct: 15 failed so on the M4, all passing at 8192). Their whole
 # output is kept (~/Library/Logs/scenic/publish-tests-<time>.log); shown: the summaries, and each
 # failed test's own output.
 ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
@@ -74,7 +115,7 @@ fonts=data/fonts
 home=$(mktemp -d); port=18080
 ./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
-trap "kill $pid 2>/dev/null; rm -rf $home" EXIT
+cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
 ok=1
 for i in {1..60}; do curl -sf -o /dev/null http://127.0.0.1:$port/api/ping && break; sleep 0.5; done
 for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380"; do
@@ -114,12 +155,10 @@ while todo:
 print("\n".join(sorted(seen)))' $steps)"})
 (cd $pyt/dem && uvx --quiet --from 'pyflakes==4.0.2' pyflakes ${read_too/%/.py}) || { echo "pyflakes finds a mistake in a Python step or what it imports"; rm -rf $pyt; exit 1; }
 rm -rf $pyt
-dirty=""
-# (Everything published comes from the working tree: the crates and their lock, the web app and the
-# worker page (built into the coordinator), the Python steps, the status app, the NAS's script.)
-[[ -z $(git status --porcelain -- crates Cargo.toml Cargo.lock web dem tools) ]] || dirty=-dirty
+# (The tree as it was built: a change or a commit made meanwhile would name a version it isn't.)
+[[ -z $(unclean) ]] || { echo "the tree changed while publishing: publish again"; unclean | head -20; exit 1; }
 [[ $(git rev-parse --short HEAD) == $head ]] || { echo "a commit was made while publishing ($head, now $(git rev-parse --short HEAD)): publish again"; exit 1; }
-version=$(date -u +%Y%m%d-%H%M)-$head$dirty
+version=$(date -u +%Y%m%d-%H%M)-$head
 dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The programs that listen (the map server; the agent, whose coordinator and broker members reach)
@@ -128,7 +167,7 @@ mkdir -p $dest.tmp/web $dest.tmp/fonts
 # with it). Signed here before the copy: codesign refuses files on the NAS.
 codesign -s "$sign_id" -i local.scenic.server --force target/release/server
 codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
-# The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
+# The server, and the agent with the programs its jobs run (each Mac runs them from here):
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 cp -X target/release/server target/release/scenic target/release/scenic-build target/release/extract \
    target/release/tile target/release/scenic-metrics target/release/elev target/release/areaflags \

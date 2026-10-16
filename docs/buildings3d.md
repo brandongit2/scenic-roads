@@ -329,7 +329,7 @@ change every unit's key (every unit rebuilt), so they're decided on their own. T
 | tiles, encoded in B0 | 178 tiles encoded as §3.4 has them (gzip level 6), the fullest and heaviest by the estimate and a sample: 17.7 B a building at z14 (the median; 10.4–27.9), 35.7 at z13, 20.0 at z12. The fullest z14 tile holds 26,462 buildings (Kyoto, 14/14369/6488: 278 KB); 15 of the 30 heaviest by the estimate are over 300 KB (the rest of the tiles under ~290 KB), at most 490 KB (Valencia, 14/8174/6234: 24,183 buildings), all in old towns drawn on Spain's cadastral parcels (Barcelona's six, Valencia's, Granada's, Málaga's, Córdoba's, Santander's, the Garraf's) or in Tokyo's wards (three, 303–310 KB). Simplified to a grid unit (0.6 m), as z12–13 are, they lose ~18 % (490 → 400 KB); keeping only `h` and `k`, ~2 %. The fullest z13 tile: 17,842 (Valencia: 279 KB; Barcelona's 284 KB); z12: 10,339 (Manhattan: 148 KB; Singapore's 10,204, 176 KB) |
 | tiles, estimated | each building's command bytes (§3.4's quantizing, in the scan), calibrated by the encoded tiles: 5.69 GB at z14 (2.23 M tiles: median 21 buildings, p99 2,436), 0.13 GB at z13 (194 k tiles, 3.5 M buildings), 4 MB at z12 (4,679 tiles, 208 k): 5.8 GB; the largest hi pack 6/56/25 0.47 GB |
 | tiles, built (B1's pilot, the packs served) | 6/56/25 (Kantō): 30.3 M buildings and parts, 25,029 tiles, a 0.41 GB pack (13 B a building at z14); 6/32/22 (Paris): 15.3 M, 71,485 tiles, 0.27 GB; 6/18/24 (New York): 14.6 M, 47,658 tiles, 0.27 GB; 6/32/23 (Barcelona): 12.6 M, 50,825 tiles, 0.22 GB; 6/19/23 (Vermont and Boston): 6.1 M, 35,634 tiles, 0.12 GB; 6/3/28 (Oahu): 0.2 M, 410 tiles, 3.7 MB. 13–20 B a building at z14, copies included, as B0 estimated |
-| tiles and files, built (B2, the M1, 2026-10-08: the agent's command lines, the whole coverage, a scratch root) | 6/18/23 (upstate New York, Vermont's west): 6.03 M rows read, 5.74 M buildings and 0.29 M parts, `bldprep` 79 s and 1.15 GB, a 274 MB work file, `bldtiles` 13 s and 0.88 GB, a 116 MB pack (57,689 tiles); 6/19/23 (Vermont, New Hampshire, Boston): 6.14 M, 72 s and 1.24 GB, 306 MB, 13 s and 0.94 GB, 124 MB; 6/32/22 (Paris): 15.29 M, 183 s and 2.39 GB, 671 MB (the same bytes as B1's on the build Mac), 65 s and 1.17 GB, 269 MB. 44–50 B a building in the work files, 18–20 B in the packs. This Mac (the M1, loaded 20–40) read ~80 k rows a second where the build Mac read 210–450 k in B1 |
+| tiles and files, built (B2, the M1, 2026-10-08: the agent's command lines, the whole coverage, a scratch root) | 6/18/23 (upstate New York, Vermont's west): 6.03 M rows read, 5.74 M buildings and 0.29 M parts, `bldprep` 79 s and 1.15 GB, a 274 MB work file, `bldtiles` 13 s and 0.88 GB, a 116 MB pack (57,689 tiles); 6/19/23 (Vermont, New Hampshire, Boston): 6.14 M, 72 s and 1.24 GB, 306 MB, 13 s and 0.94 GB, 124 MB; 6/32/22 (Paris): 15.29 M, 183 s and 2.39 GB, 671 MB (the same bytes as B1's on the lead), 65 s and 1.17 GB, 269 MB. 44–50 B a building in the work files, 18–20 B in the packs. This Mac (the M1, loaded 20–40) read ~80 k rows a second where the lead read 210–450 k in B1 |
 | the coverage's 380 tiles, from these (B2's estimate) | the row groups meeting them hold 489 M rows, of which a tile keeps 82–97 % (the pilot's and B2's tiles): ~440 M buildings and parts in the work files (those beyond the coverage in its tiles too), 17–22 GB at 38–50 B each; the packs ~342 M (the coverage's), 4.6–6.9 GB at 13.5–20 B each (B0's 5.8 GB between) |
 | a Mac with every region downloaded | +4.6–6.9 GB (the packs; the work files aren't served) |
 
@@ -369,7 +369,7 @@ next pinned release (§5.2).
 
 | Step | Target | Reads | Writes | Runs on |
 |---|---|---|---|---|
-| `bld-fetch` | the release | S3, JRC, the coverage | `sources/overture/<release>/`, `sources/ghsl/R2023A/` | the build Mac, a network job (its second slot's) |
+| `bld-fetch` | the release | S3, JRC, the coverage | `sources/overture/<release>/`, `sources/ghsl/R2023A/` | the lead, a network job (its second slot's) |
 | `bldprep` | a z6 tile T | Overture's row groups meeting T, the GHSL tiles meeting T | `work/bld/6-x-y` | any Mac with the NAS |
 | `bldtiles` | a z6 tile T | `work/bld/` of T and its 8 neighbours, the coverage over T | `layers/buildings/hi/6-x-y` | any Mac; its z8 areas as tasks for pages |
 
@@ -465,7 +465,7 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   every tile would seem to read nothing); every stale `bldprep T` beside the fetch (a file fetched
   later changes the keys of the tiles it meets: those run again); `bldtiles T` once T and its 8
   neighbours are prepared as they'll stay (none of them a stale `bldprep` target), and once the
-  sources are here. Its work is listed after the landmarks' in `plan` (the build Mac's first job
+  sources are here. Its work is listed after the landmarks' in `plan` (the lead's first job
   takes it when the regions' work is done or waits), each step's tiles in the regions' order (the
   first region in the order they're built whose coverage meets the tile, then `spatial_order`), so
   the buildings of the region being built come first. With no "bld-release" in the plan's inputs
@@ -490,7 +490,7 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   `bldprep` 8, `bldtiles` 16; 2 and 4 while the regions' own work (terrain, slope, tree cover,
   units) is left (`agent::job_size`), so a job of theirs beside it or a helper's ends within
   minutes. The design weighed them by building counts; B1–B2's runs make a dense
-  tile's `bldprep` about a minute on the build Mac (68 s for Kantō's 30.3 M rows) and its
+  tile's `bldprep` about a minute on the M4 (68 s for Kantō's 30.3 M rows) and its
   `bldtiles` about 10 s, so a fixed count keeps a job within minutes, as leases and pausing want.
 - **Status:** the checklist's line "Raising the 3D buildings" (`build::BUILDINGS`: the tiles'
   normalized files and tiles, done of all, known once the sources read; next, the fetch and each
@@ -612,8 +612,8 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   some of each tile's z8 areas as tasks of kind `bldtile`, as a unit job offers its tail: while
   workers that take them are around (`/task/workers`), up to one per worker and three at once, from
   the far end of the tile's list (the job works from the near end, so an area out has the longest
-  before its turn), topped up before each area it makes itself. A task's files, cut on the build
-  Mac (docs/formats.md): of T's and its neighbours' work files only the blocks the area reads (its
+  before its turn), topped up before each area it makes itself. A task's files, cut on the
+  lead (docs/formats.md): of T's and its neighbours' work files only the blocks the area reads (its
   own and those within 620 m around it), their bytes as stored, and the coverage's shapes that can
   answer for its points, whole, in the recipes' order (France's outline: 0.6 MB). The program
   `bldtile` (`/work/prog/bldtile.wasm` in a page, the app's `bldtile` on a helper Mac:
@@ -631,7 +631,7 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   2.6 M buildings, 119 MB of files) 1.3 GB, which took 0.86 GB natively and 0.79 GB of WebAssembly
   memory; a worker's measure replaces it (`bldtile 8/x/y` in the coordinator's costs). Tokyo's
   area (10.8 M buildings) would be guessed at 4–5 GB, more than a page spares (3 GB on the iPad,
-  4 GB at most): a helper Mac with the room takes it, else the build Mac makes it, until z9 or z10
+  4 GB at most): a helper Mac with the room takes it, else the lead makes it, until z9 or z10
   areas are cut for smaller workers (workers.md's planned cutting to the worker).
 - **The pool's steps table** (`docs/pool.md` §7.2, planned): `bldprep` {memory learned, disk 15 GB,
   the NAS, power}, `bldtiles` {memory learned, disk 15 GB, power}; neither needs home (`bldprep`'s
@@ -651,7 +651,7 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   (zlib-rs) at a fixed level, zstd at a fixed level;
 - checked as the others were: a dense tile built natively on 1 and 14 threads and as WebAssembly,
   same bytes; the planned "build twice, compare hashes" covers both steps.
-- **Checked in B1:** Paris (6/32/22) built twice on the build Mac, on 12 threads and on one, gave
+- **Checked in B1:** Paris (6/32/22) built twice on the M4, on 12 threads and on one, gave
   the same work file and the same pack byte for byte (content names `6-32-22.f07556cc02cd5298` and
   `6-32-22.4a4fb482a84227db`, the pack as rebuilt after the review: its copies' fills included);
   the unit tests build a tile on one thread and on several and compare. WebAssembly (B3,
@@ -1141,7 +1141,7 @@ without level 13. A view's field: 1–9 tiles, 0.1–2 MB to download (Tokyo's d
 the largest tiles (550 KB) are over the 300 KB the meshes keep to. Before building, the owner
 chooses among the three rows (and the 8-bit coding can be tuned: the prototype stores 16 bits).
 
-**Frame time and memory** (the first prototype's). On the build Mac (M4, headless Chrome on Metal, the 500 × 360 CSS view at
+**Frame time and memory** (the first prototype's). On the M4 (headless Chrome on Metal, the 500 × 360 CSS view at
 2×, the comparison mode's few layers): the field's draw took 0.15–0.3 ms of GPU a frame (its timer
 query, which on Metal also counts work queued before it, so an upper bound; a few rounds up to
 1.5 ms), drawing 1–9 tiles; whole frames, each waited for, 1–2.5 ms with it and 0.9–2.4 without,
@@ -1153,7 +1153,7 @@ owner's Mac in a window at 120 Hz, and the iPad (task #114's budget).
 
 **Checked against full detail, the first prototype** (in `?bldcmp`: nothing but the buildings, the 3D
 terrain, land, water and the hill-shading; buildings #b9c4d4 for contrast; 500 × 360 CSS px at 2×, on
-the globe, straight down, in a headless Chrome on the build Mac's GPU, `tools/bldcheck`). The
+the globe, straight down, in a headless Chrome on the M4's GPU, `tools/bldcheck`). The
 reference is the same page and camera drawing the z14 meshes (every building) at 4 × the pixel
 ratio, their tiles 2^k × smaller so z14's are taken at zoom 14 − k, in strips of whole z14 columns
 where a view holds more than ~120 tiles (each strip's buildings added to the ground), shrunk in
@@ -1346,7 +1346,7 @@ So 45–90 B a building (Kantō's small houses the least), level 14 57–60 % of
 The coding can still be tuned (each class's mean top left out at the finest levels, its class's
 middle instead, or fewer classes there), not tried.
 
-**The march, timed** (10 Oct, the build Mac: M4, a windowed Chrome at the display's 120 Hz, a 1440 ×
+**The march, timed** (10 Oct, the M4: a windowed Chrome at the display's 120 Hz, a 1440 ×
 900 window at 2× (2880 × 1626 device px), the comparison mode's layers; 300 frames turning slowly, the
 field on and off, twice; whole frames timed on the GPU by a timer query around MapLibre's frame; the
 field's cost is the difference of the medians). Budget: 2 ms.
@@ -1683,12 +1683,12 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 
 | Phase | What | Effort |
 |---|---|---|
-| **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the build Mac: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
-| **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the build Mac into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile on the first run (Kantō: 30.3 M rows read in 130 s; one thread: Paris in 71 s), 29–68 s on the run after the review that made the packs served (Oahu 3 s; 5.1 GB at most, Kantō's); `bldtiles`: 3–10 s a tile in that run (Kantō 10 s, 3.3 GB at most; Oahu 0.5 s), 10–43 s in an earlier run of the same code with the build Mac busier. The reviews' fixes: §2.3 (rule 3's bound), §3.2 (countries, keys), §3.4 (copies, walls, their points outside the ring), §4.1 (whole tiles, MapLibre pinned), §4.5 (the hover, on hills too), §4.6 (the cache, memory counted). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
+| **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the lead: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
+| **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the M4 into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile on the first run (Kantō: 30.3 M rows read in 130 s; one thread: Paris in 71 s), 29–68 s on the run after the review that made the packs served (Oahu 3 s; 5.1 GB at most, Kantō's); `bldtiles`: 3–10 s a tile in that run (Kantō 10 s, 3.3 GB at most; Oahu 0.5 s), 10–43 s in an earlier run of the same code with the lead busier. The reviews' fixes: §2.3 (rule 3's bound), §3.2 (countries, keys), §3.4 (copies, walls, their points outside the ring), §4.1 (whole tiles, MapLibre pinned), §4.5 (the hover, on hills too), §4.6 (the cache, memory counted). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, on by default since 2026-10-16) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). On by default where the catalog has the layer (16 Oct, the owner's decision; `?bldfield=off` leaves it out). Not done: colour by height, fog, measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, on by default since 2026-10-16) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the lead into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). On by default where the catalog has the layer (16 Oct, the owner's decision; `?bldfield=off` leaves it out). Not done: colour by height, fog, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker; on by default since 16 Oct):
@@ -1715,11 +1715,11 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
   everywhere, above it beyond the meshes of a tilted view); the fork's tile zoom by depth (FORK.md)
   so the tiles at the screen's sides are as sharp as the middle's.
 
-B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the build
-Mac's pace in B1 over the 380 tiles' ~440 M rows): `bldprep` 2.2–4.7 s a million rows (Kantō's
+B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the
+M4's pace in B1 over the 380 tiles' ~440 M rows): `bldprep` 2.2–4.7 s a million rows (Kantō's
 pace to Vermont's) and ~2.5 s a tile to start (its Python), 27–51 min in all; `bldtiles` 0.5–2.9 s
 a million buildings (~342 M) and a few seconds a job to read the coverage, 5–18 min: 30–70 min of
-one slot, less with the second job and the M1 beside it (the M1 at a quarter of the build Mac's
+one slot, less with the second job and the M1 beside it (the M1 at a quarter of the M4's
 pace when busy, B2). The first `bld-fetch` fetches nothing (a listing of S3 and of JRC's tiles,
 and the coverage's 65 MB of GeoJSON unioned by shapely: 10 min on the busy M1).
 
@@ -1743,7 +1743,7 @@ and the coverage's 65 MB of GeoJSON unioned by shapely: 10 min on the busy M1).
 - **The iPad:** dense views may exceed the budget (§4.6's fallbacks).
 - **The NAS:** `bldprep` reads 60 GB; with the units' writes, the NAS is the bottleneck (workers.md
   §1). Paced per tile and kept off the OSM pass.
-- **Disk on the build Mac** (17 GB free on 2026-10-05): neither step stages more than a tile's row
+- **Disk on the M4** (17 GB free on 2026-10-05): neither step stages more than a tile's row
   groups or a z8 area locally; the downloads went straight to the NAS.
 - **Overture's schema** changes between releases (columns renamed or retyped): `bldprep` checks the
   columns it reads, their names and types (a float read as integers would be truncated), and fails

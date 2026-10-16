@@ -1,5 +1,5 @@
 // The worker page's service worker (docs/workers.md, The page as an app). The page's files are kept
-// as this version installs, and come from the build Mac whenever it answers well within WAIT_MS (a
+// as this version installs, and come from the lead whenever it answers well within WAIT_MS (a
 // newly published app's page at once), else as kept: a Mac that doesn't (asleep, away, or its
 // agent restarting: tailscale serve answers 502) is taken for away for AWAY_MS, what was kept used
 // at once meanwhile. The programs' WebAssembly is kept by version (its address's ?v=), so the page
@@ -47,7 +47,7 @@ self.addEventListener("fetch", (e) => {
 
 let awayUntil = 0;
 
-// One of the page's files: the build Mac's when it answers well in time (kept), else as kept; with
+// One of the page's files: the lead's when it answers well in time (kept), else as kept; with
 // nothing kept, the Mac's answer, however late.
 async function page(e, key) {
   const cache = await caches.open(SHELL);

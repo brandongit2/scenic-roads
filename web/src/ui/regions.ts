@@ -293,7 +293,7 @@ export class RegionsPanel {
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
   }
 
-  /** Per region, how many of its areas are built (the build Mac's heartbeat). */
+  /** Per region, how many of its areas are built (the lead's heartbeat). */
   private progress: Record<string, { built: number; total: number }> = {};
 
   setProgress(p: Record<string, { built: number; total: number }> | undefined) {
@@ -303,7 +303,7 @@ export class RegionsPanel {
     this.renderList();
   }
 
-  /** A region's state in words: waiting or building (how many of its areas), from the build Mac's
+  /** A region's state in words: waiting or building (how many of its areas), from the lead's
    * heartbeat; else pending while the map's catalog doesn't have it, built when the heartbeat or
    * the catalog says so. */
   private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
@@ -315,7 +315,7 @@ export class RegionsPanel {
     }
     const p = this.progress[r.id];
     if (p?.total && p.built < p.total) return p.built === 0 ? { text: 'waiting to build', cls: 'wait' } : { text: `building · ${p.built} of ${p.total} areas`, cls: 'on' };
-    if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the build Mac next publishes the map data' };
+    if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
     if (p?.total || this.coverage?.regions) return { text: 'built', cls: 'ok' };
     return null;
   }

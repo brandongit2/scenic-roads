@@ -5,7 +5,7 @@
 # script that hands off one save within its step's outputs. Run on each Mac, from a build of the app:
 #
 #   pool-two-macs.sh root <folder> [slots]          the scratch folder, as the pool begins: today's
-#                                                   records, the build Mac (this Mac) their writer,
+#                                                   records, the lead (this Mac) their writer,
 #                                                   an older helper's hand-off to drain, switched on
 #                                                   (`slots`: state/pool/slots on too, a part
 #                                                   changing in its process)
@@ -102,14 +102,14 @@
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
 #
-# On the M1, run its launcher inside a persistent ssh session, kept open (from the build Mac:
+# On the M1, run its launcher inside a persistent ssh session, kept open (from the lead:
 # `ssh brandontsang@macbookpro '<this script> run …'` left running), not under `nohup` nor a
 # `screen -dm` started by an ssh command that then ends (both seen 2026-10-10): macOS's
 # local-network privacy then cuts the agent off the LAN (the NAS's LAN name doesn't answer), so it
 # reports itself away from home, can't lead (`able` false: a handover to it is offered and given up
 # after a minute), and never takes over by itself.
 #
-# What a run shows (2026-10-08, the M4 the build Mac, the M1 a member): the build Mac makes term 1
+# What a run shows (2026-10-08, the M4 the lead, the M1 a member): the lead makes term 1
 # and leads; both drain what they held from before the pool into the journal; the lead's jobs hand
 # off under its term's leases, its sweep after a re-assertion; the member's entry reaches the lead's
 # records through the journal and its mail, acknowledged; the lead restarted re-asserts; the lead

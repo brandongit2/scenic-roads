@@ -104,7 +104,7 @@ const viewer = new URLSearchParams(location.search).has("view");
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 // Whether this device helps: its owner's choice here, kept. (A device that helped when a page needed
-// the build Mac's yes, one that had learned its memory ceiling, keeps helping; any other starts out
+// the lead's yes, one that had learned its memory ceiling, keeps helping; any other starts out
 // watching. The key such a page kept is no more: no key is asked for now.)
 if (!viewer && store.get("helping", null) === null) store.set("helping", !!(store.get("secret", "") || store.get("token", "")) && store.get("ceiling", null) !== null);
 let helping = !viewer && store.get("helping", false);
@@ -330,7 +330,7 @@ function finish(s, ok, m = {}) {
     log(`${esc(s.task.unit || s.task.kind)} done in ${(ms / 1000).toFixed(0)} s (${m.peak_mb || "?"} MB at most)`);
   } else if (m.error === "taken back") {
     // (The job ran it itself and ended it, or gave it to another worker: not this device's failure.)
-    log(`${esc(s.task?.unit || "task")}: taken back (the build Mac finished it first)`);
+    log(`${esc(s.task?.unit || "task")}: taken back (the lead finished it first)`);
   } else if (m.error) {
     log(`<span class="bad">${esc(s.task?.unit || "task")} failed: ${esc(m.error)}</span>`);
   }
@@ -484,7 +484,7 @@ setInterval(async () => {
     try {
       const [, r] = await call("/work/beat", { worker, lease, progress: s.detail, frac: s.frac }, s.base || "");
       if (r && r.ok === false && s.lease === lease) {
-        log(`${esc(s.task.unit)}: taken back (another worker or the build Mac has it)`);
+        log(`${esc(s.task.unit)}: taken back (another worker or the lead has it)`);
         spawn(s);
         reserved -= s.mem;
         Object.assign(s, { lease: null, task: null, mem: 0, state: "idle", detail: "", frac: 0 });
@@ -545,7 +545,7 @@ function stopHelping() {
 $("help").onclick = () => (helping ? stopHelping() : startHelping());
 if (viewer) { $("device").hidden = true; $("help").remove(); }
 
-// The page as an app (sw.js, manifest.webmanifest): kept for when the build Mac doesn't answer, its
+// The page as an app (sw.js, manifest.webmanifest): kept for when the lead doesn't answer, its
 // programs kept by version. A new version taking over (a newly published app): reloaded into it
 // once no task is running. (A first install takes over too: that's no reason to reload.)
 if (!viewer && "serviceWorker" in navigator && window.isSecureContext) {

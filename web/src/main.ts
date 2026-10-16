@@ -2074,10 +2074,10 @@ async function main() {
     store.set({ view: { zoom: map.getZoom(), lat: c.lat, lng: c.lng, bearing: map.getBearing(), pitch: map.getPitch(), elev } });
   });
 
-  // ---- new data, the build Mac, regions -------------------------------------------------
+  // ---- new data, the lead, regions -------------------------------------------------
   // A new catalog (catalog.ts) switches the map to its data in place: the modules that fetch data
   // follow its versions by themselves (api.ts onVersions), the map's tile sources here, and what
-  // can't follow asks for a reload (the status bar offers it). The status bar shows the build Mac
+  // can't follow asks for a reload (the status bar offers it). The status bar shows the lead
   // and the NAS from the same answers.
   let watch: CatalogWatch | null = null;
   onVersions(['roads.tiles'], () => roads.setSource(version('roads.tiles'), roads.bounds));
@@ -2182,13 +2182,13 @@ async function main() {
     stations.apply(store.s);
     applyDrivesShown();
     regions.start();
-    // The catalog and the build Mac from now on (a new catalog finds the style's sources there).
+    // The catalog and the lead from now on (a new catalog finds the style's sources there).
     watch = new CatalogWatch(meta.catalog);
     watch.onSwitch = newCatalog;
     // Newer points on the server than the page has (a 409): the catalog now, not in a minute.
     overlays.onStale = () => void watch?.poll();
     new BuildStatus(strip.buildStatus, watch);
-    // How far each region is built, from the build Mac's heartbeat; the coverage drawn is the
+    // How far each region is built, from the lead's heartbeat; the coverage drawn is the
     // catalog's, so it follows a new one.
     const w = watch;
     w.on(() => regions.setProgress(w.status?.agent?.built));

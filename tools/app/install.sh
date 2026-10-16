@@ -1,19 +1,15 @@
 #!/bin/zsh
 # Install the published app on this Mac (once; after that the server updates itself): copy
 # app/<current version>/ from the NAS, point ~/Library/Application Support/scenic/app/current at it,
-# write the launcher's run file for the server, and restart the login item.
+# write the launcher's run files for the server and the agent, and restart their login items.
+# Every Mac's agent is a member of the pool, which leads or works as the terms say (docs/pool.md).
 #
-#   tools/app/install.sh                            the map's server
-#   tools/app/install.sh --agent                    also the build agent (the build Mac only)
-#   tools/app/install.sh --helper                   also a helper agent (the other Mac: it asks the
-#       build Mac's coordinator for the jobs that fit it of terrain, slope, tree cover, units and the
-#       landmarks' candidates and peaks, else units' last steps; docs/plan.md §8, Two Macs)
+#   tools/app/install.sh
 set -euo pipefail
-agent=0 helper=0
 while (( $# )); do
   case $1 in
-    --agent) agent=1 ;;
-    --helper) helper=1 ;;
+    # (Options of before the pool was always on: every Mac runs the agent now.)
+    --agent|--helper) echo "($1 is no longer needed: every Mac runs the agent)" >&2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -31,15 +27,11 @@ if [[ ! -d "$HOME_S/app/$version" ]]; then
 fi
 # -h: replace the link itself, not something inside the folder it points to.
 ln -sfh "$version" "$HOME_S/app/current"
-if (( agent && helper )); then
-  echo "--agent or --helper, not both" >&2
-  exit 2
-fi
 # The mirror's reserve (the free space downloads leave) is the Regions panel's setting, kept in the
 # app's folder (reserve.json; 30 GB unless set), not the run file's.
 printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" > "$HOME_S/run/server"
 launchctl kickstart -k gui/$(id -u)/local.scenic.server
-if (( agent || helper )); then
+{
   # The agent's jobs run osmium (Homebrew), Planetiler (Java 21) and the Python steps (uv, wherever
   # the login shell finds it: Homebrew, ~/.local/bin, a mise or asdf shim).
   uv=$(zsh -lc 'command -v uv' 2>/dev/null || true)
@@ -48,7 +40,6 @@ if (( agent || helper )); then
     exit 1
   fi
   run=("$HOME_S/app/current/scenic" agent)
-  if (( helper )); then run+=(--helper); fi
   printf '%s\n' /usr/bin/env "PATH=${uv:h}:/opt/homebrew/opt/openjdk@21/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     "${run[@]}" > "$HOME_S/run/agent"
   plist="$HOME/Library/LaunchAgents/local.scenic.agent.plist"
@@ -68,12 +59,8 @@ if (( agent || helper )); then
     plutil -insert StandardErrorPath -string "$HOME/Library/Logs/scenic/agent.log" "$plist"
     launchctl bootstrap gui/$(id -u) "$plist"
   fi
-  if (( helper )); then
-    echo "the helper agent runs; its status: /Volumes/personal/projects/scenic-roads/state/helpers/$(scutil --get LocalHostName 2>/dev/null || hostname -s).json"
-  else
-    echo "the build agent runs; see: $HOME_S/app/current/scenic status"
-  fi
-fi
+  echo "the agent runs; see: $HOME_S/app/current/scenic status (and scenic pool status)"
+}
 # The menu bar item (tools/status, both Macs): the launcher runs Scenic.app from `current`, under
 # its own login item.
 "${0:A:h}/../status/install.sh"

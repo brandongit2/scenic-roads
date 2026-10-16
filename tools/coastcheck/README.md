@@ -23,7 +23,7 @@ pixel by pixel:
     reads it) and every water area of the pass's `water` set as osmium assembles it (lakes,
     reservoirs, rivers' areas; tunnels and covered water left out as OpenMapTiles leaves them),
     27.2 million rings, 898 million points for 2026-09-28's planet: a 7.4 GB store
-    (`coastcheck build`, 9 min on the build Mac).
+    (`coastcheck build`, 9 min on the M4).
   - Exact coverage: each edge adds its area to the pixels it crosses (as font renderers do); a
     pond a hundredth of a pixel counts a hundredth.
   - Checked against MapLibre's own drawing of vectors (`--vector`: the basemap's z13.5–14 water
@@ -101,12 +101,12 @@ Saimaa, Labrador's lakes, Argyll's lochs, the Seto Inland Sea, the Azores and La
 
 ## Running it
 
-On this Mac (the reference's store is on the build Mac):
+On this Mac (the reference's store is on the lead):
 
 ```sh
 # the app: a server of this checkout on a test root, its web build
 target/release/server --root <test root> --home <scratch home> --port 18094 --listen 127.0.0.1 --no-mirror
-# the reference: the store and its server on the build Mac, reached through a tunnel
+# the reference: the store and its server on the lead, reached through a tunnel
 ssh m4 'coastcheck build --set <water set .osm.pbf> --water-polygons <zip> --out geom'   # once a pass
 ssh m4 'coastcheck serve --store geom --port 18095' & ssh -N -L 18095:127.0.0.1:18095 m4 &
 # a Chrome of its own (no throttling of background tabs; the window sized for 800 × 600 at 2×)

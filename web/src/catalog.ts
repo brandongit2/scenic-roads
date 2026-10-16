@@ -1,10 +1,10 @@
-// The catalog the map is drawn from and the build Mac's heartbeat (server /api/catalog), asked for
+// The catalog the map is drawn from and the lead's heartbeat (server /api/catalog), asked for
 // every minute while the page is shown and again when it comes back. A new catalog (its number
 // changes) is switched to in place: its versions (/api/meta) reach every URL built from them
 // (api.ts onVersions), and what can't follow asks for a reload instead (the status bar shows it).
 import { setVersions, type Meta } from './api';
 
-/** The build Mac's job under way. */
+/** The lead's job under way. */
 export interface AgentJob {
   id: string;
   what: string;
@@ -26,7 +26,7 @@ export interface BuildPause {
   at: number;
 }
 
-/** A job the build Mac finished. */
+/** A job the lead finished. */
 export interface AgentDone {
   id: string;
   what: string;
@@ -62,7 +62,7 @@ export interface InputUnit {
   together?: string;
 }
 
-/** The build Mac's heartbeat (pipeline::agent::Status). */
+/** The lead's heartbeat (pipeline::agent::Status). */
 export interface Agent {
   host: string;
   /** The app version it runs, or "development". */
@@ -187,7 +187,7 @@ export class CatalogWatch {
     this.emit();
   }
 
-  /** Asks now (after a change the build Mac will pick up), then every minute. */
+  /** Asks now (after a change the lead will pick up), then every minute. */
   poll(): Promise<void> {
     this.asking ??= this.ask().finally(() => {
       this.asking = null;

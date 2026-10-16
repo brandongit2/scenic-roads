@@ -248,7 +248,7 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 |---|---|---|
 | OSM pass sets | the filtered planet | `summits` (`-v2`): natural=peak and volcano nodes and ways, with or without `ele`, worldwide; `hikes`: hiking and foot route relations with their member ways; `named`: the heritage chain's filter (historic, heritage, museum/attraction/viewpoint, lighthouse, station, church and place of worship, protected area and park, military) plus `ref:whc` and `heritage:operator=whc`; `marks`: the point kinds' tags (read by no job yet) |
 | `trailends` (per pass) | the `hikes` set | `work/trailends/<d>`: every simple linear hiking route's two ends worldwide (way ends used once, exactly two), with the route's name and relation id |
-| `terrain-z8` (once; network) | AWS's raw z8 tiles (the build Mac's raw-tile cache) | `sources/terrain-z8-v3` (not served): every z8 tile repaired, and `-v3-max`: each tile's maximum after the repair |
+| `terrain-z8` (once; network) | AWS's raw z8 tiles (the lead's raw-tile cache) | `sources/terrain-z8-v3` (not served): every z8 tile repaired, and `-v3-max`: each tile's maximum after the repair |
 | `summits` (per pass) | the `summits` set, `terrain-z8` | `work/summits/<d>`: every summit (OSM id, E7 position, kind, `ele` as the candidates have them, its `z8` overlay value), nodes then ways, each by id |
 | `heritage-sites` (before the units) | the registers snapshot, the pass's `areas` set, the coverage | `work/heritage/<d>/base/…`, and per z6 tile the sites' positions and the designated areas' polygons ("Heritage and area flags") |
 | `unit`, base(U) | as plan §6, with the heritage slices within U + 30 km | the base pack |
@@ -360,8 +360,8 @@ lies near it.
     - at most twice that plus 300 m. Feet tagged as metres overshoot by 2.28 times the height, which a
       fixed margin lets through below ~1,100 m.
 - **`peaks`** (per unit, network): `pipeline::peaks`, on U's peak candidates.
-  - **z12:** a tile is the terrain pack's when the manifest has it, else AWS's raw tile from the build
-    Mac's cache, repaired by `terrain_pack::process` with no sources (the repair alone: not GLO-30
+  - **z12:** a tile is the terrain pack's when the manifest has it, else AWS's raw tile from the
+    lead's cache, repaired by `terrain_pack::process` with no sources (the repair alone: not GLO-30
     north of 59.5°, the water flattened nor the coarse data's repair, which the packs' tiles have:
     plan §10).
     - The tile is read back from the PNG `process` returns (quantised as stored), never from its
@@ -553,7 +553,7 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 - **Continental queries cold from the NAS:** the section caches and the mirror; zoomed out, the
   summaries in hidata (below).
 - **Fame and isolation drift once recomputed** with new facts and pageviews: each pass moves them.
-- **Peaks read z8 terrain worldwide:** cached on the build Mac.
+- **Peaks read z8 terrain worldwide:** cached on the lead.
 - **Registers:** one snapshot, imported by hand (plan §6, Hand-made inputs). Planned: fetched per jurisdiction, with stable
   record ids.
 - **Fetch volume for ~1 M QIDs worldwide:** limited to the coverage's candidates; everything again at

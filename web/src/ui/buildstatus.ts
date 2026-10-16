@@ -1,6 +1,6 @@
 // The status bar's build items (docs/plan.md §1, §8 Status): the NAS when it can't be reached (map
-// data not mirrored on this Mac may be missing), the build Mac's state from its heartbeat ("Build
-// Mac · building …", "· paused: the NAS isn't reachable", "· idle", "· last seen 3 h ago"), and new map data or
+// data not mirrored on this Mac may be missing), the lead's state from its heartbeat ("Lead ·
+// building …", "· paused: the NAS isn't reachable", "· idle", "· last seen 3 h ago"), and new map data or
 // a new app that wants a reload. A click opens the details: the job and its log, what waits and
 // why, the last jobs to finish, the conditions; and the pool (docs/pool.md §10, §11): who leads, each
 // Mac's state, "Make this Mac lead", and "Take over…" when the lead is out of touch. An input held
@@ -9,7 +9,7 @@
 import type { Agent, CatalogWatch, InputUnit } from '../catalog';
 import { h } from './dom';
 
-/** A heartbeat older than this: the build Mac is asleep, away or off (its agent writes one at least
+/** A heartbeat older than this: the lead is asleep, away or off (its agent writes one at least
  * every two minutes). */
 const STALE_S = 360;
 
@@ -77,7 +77,7 @@ function doing(what: string): string {
   return /^[a-z]+ing\b/.test(s) ? s : `building ${s}`;
 }
 
-/** The build Mac in a few words, and how its dot shows. */
+/** The lead in a few words, and how its dot shows. */
 function agentState(a: Agent): { text: string; dot: 'run' | 'paused' | 'idle' | 'away' } {
   if (now() - a.beat > STALE_S) return { text: `last seen ${ago(a.beat)}`, dot: 'away' };
   if (a.pause) return { text: [a.job, a.beside].some((j) => j && !j.paused) ? 'pausing' : 'paused', dot: 'paused' };
@@ -123,9 +123,9 @@ export class BuildStatus {
     if (a) {
       const st = agentState(a);
       const held = gateUnits(a).filter((v) => v.state === 'held');
-      this.agent.replaceChildren(h('i', { class: `dot ${st.dot}` }), h('span', {}, `Build Mac · ${st.text}`), ...(held.length ? [h('span', { class: 'bs-held', title: `Held at the gate: ${held.map((v) => v.unit).join(', ')}` }, '⚠')] : []));
+      this.agent.replaceChildren(h('i', { class: `dot ${st.dot}` }), h('span', {}, `Lead · ${st.text}`), ...(held.length ? [h('span', { class: 'bs-held', title: `Held at the gate: ${held.map((v) => v.unit).join(', ')}` }, '⚠')] : []));
       const said = (j: { what: string; paused?: string | null }) => `${j.what}${j.paused ? ` (paused: ${j.paused})` : ''}`;
-      this.agent.title = a.job || a.beside ? [a.job, a.beside].filter((j) => j).map((j) => said(j!)).join('\nBeside it: ') : 'The build Mac: what it does, what waits and why (click)';
+      this.agent.title = a.job || a.beside ? [a.job, a.beside].filter((j) => j).map((j) => said(j!)).join('\nBeside it: ') : 'The lead: what it does, what waits and why (click)';
     }
     if (this.pop) {
       this.fill(this.pop);
@@ -280,7 +280,7 @@ export class BuildStatus {
     });
   }
 
-  /** The details: the build Mac (job, waiting, recent, conditions), then the map data and NAS. */
+  /** The details: the lead (job, waiting, recent, conditions), then the map data and NAS. */
   private fill(pop: HTMLElement) {
     const c = this.watch.status, a = c?.agent ?? null;
     const hd = (t: string, right: Node | string = '') => h('div', { class: 'bs-hd' }, h('span', {}, t), typeof right === 'string' ? h('span', { class: 'faint' }, right) : right);
@@ -289,7 +289,7 @@ export class BuildStatus {
     if (a) {
       const stale = now() - a.beat > STALE_S;
       out.push(
-        hd('Build Mac', h('span', { class: stale ? 'warn' : 'faint' }, stale ? `last seen ${ago(a.beat)}` : `seen ${ago(a.beat)}`)),
+        hd('Lead', h('span', { class: stale ? 'warn' : 'faint' }, stale ? `last seen ${ago(a.beat)}` : `seen ${ago(a.beat)}`)),
         ...(stale ? [h('div', { class: 'bs-row warn' }, 'Asleep, away or off. As it was then:')] : []),
         h('div', { class: 'bs-row faint' }, [a.host, a.app, ...(stale ? [] : [`running ${span(now() - a.started)}`])].join(' · ')),
         h('div', { class: 'bs-row' }, [a.conditions.ac ? 'On mains power' : 'On battery', !a.conditions.nas ? 'NAS not reachable' : a.conditions.home === false ? 'NAS through Tailscale (away from home)' : 'NAS reachable', a.conditions.idle_s >= 120 ? `idle ${span(a.conditions.idle_s)}` : 'in use'].join(' · ')),
@@ -312,7 +312,7 @@ export class BuildStatus {
       // (The opposite of what was asked stays there: an ask is never stuck.)
       if (this.asking) {
         out.push(
-          h('div', { class: 'bs-row faint' }, this.asking === 'pause' ? 'Pausing… (the build Mac takes it up within seconds)' : 'Resuming…'),
+          h('div', { class: 'bs-row faint' }, this.asking === 'pause' ? 'Pausing… (the lead takes it up within seconds)' : 'Resuming…'),
           h('div', { class: 'bs-row' }, this.asking === 'pause' ? btn('Resume building', 'The build picks up where it stopped', null) : btn('Pause building', 'Every Mac’s running job stops at its next safe point, keeping what it did', 'drain')),
         );
       } else if (a.pause) {

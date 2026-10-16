@@ -1,5 +1,5 @@
 // The whole build at a glance (docs/workers.md, The page): the page at /work/, for anyone it answers.
-// From the coordinator: /work/swarm every 10 s (the build Mac's heartbeat with its checklist,
+// From the coordinator: /work/swarm every 10 s (the lead's heartbeat with its checklist,
 // forecast and resources, its helpers', every worker and lease, the hours' work), and
 // /work/history after the last event this page has (what happened). Five parts, each answering
 // many questions at once: the verdict (going or not, done when, next on the map, what needs a look,
@@ -59,7 +59,7 @@ const targets = (step, k) => plural(k, NOUN[step] || "job");
 // What was finished, in words: "3 areas", "1 terrain area", "5 map tiles".
 const DID = { unit: ["area", "areas"], terrain: ["terrain tile", "terrain tiles"], "terrain-lo": ["zoomed-out terrain area", "zoomed-out terrain areas"], slope: ["slope tile", "slope tiles"], "slope-lo": ["zoomed-out slope area", "zoomed-out slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], bldtile: ["3D buildings area", "3D buildings areas"], treeblock: ["row of tree-cover blocks", "rows of tree-cover blocks"], terrainsub: ["group of terrain subtrees", "groups of terrain subtrees"], catalog: ["map update", "map updates"] };
 const did = (step, k) => (DID[step] ? plural(k, ...DID[step]) : `${stepName(step)}${k > 1 ? ` ×${k}` : ""}`);
-// Machines' colours, the build Mac first.
+// Machines' colours, the lead first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
 
 // ---- Elements -----------------------------------------------------------------------------------
@@ -87,13 +87,13 @@ function model(sw) {
   const fresh = (beat) => beat && now - beat < STALE_S;
   const fc = a.forecast && { ...a.forecast, updates: a.forecast.updates ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
-  // (Not the build Mac's own helper file, from while it was a member: it leads now.)
+  // (Not the lead's own helper file, from while it was a member: it leads now.)
   const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600 && x.host !== a.host);
   const pages = (sw.workers || []).filter((w) => w.kind === "web" && w.seen_s < 900);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
-  // Every machine: the build Mac, its helpers, then the pages (one entry).
+  // Every machine: the lead, its helpers, then the pages (one entry).
   const macs = [];
-  if (a.host) macs.push({ name: a.host, role: "build Mac", status: a, fresh: fresh(a.beat), colour: MACHINE_COLOURS[0] });
+  if (a.host) macs.push({ name: a.host, role: "lead", status: a, fresh: fresh(a.beat), colour: MACHINE_COLOURS[0] });
   helpers.forEach((x, i) => macs.push({ name: x.host, role: "helper", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: MACHINE_COLOURS[(i + 1) % MACHINE_COLOURS.length] }));
   const colourOf = (name) => macs.find((m) => m.name === name)?.colour || (pages.some((p) => p.name === name) ? "#6cc28a" : "#7b8590");
   const tasks = typeof sw.tasks === "object" && sw.tasks ? sw.tasks : { all: sw.tasks || 0 };
@@ -106,13 +106,13 @@ function model(sw) {
 // A checklist line's state.
 const finished = (st) => (st.left != null ? st.left === 0 : st.total != null && st.done >= st.total && st.total > 0);
 const stepOf = (id) => String(id || "").split(" ")[0];
-// The build Mac's second job as a worker (crate::agent::second_worker): its lane, history and pace.
+// The lead's second job as a worker (crate::agent::second_worker): its lane, history and pace.
 const secondOf = (host) => `${host} (second job)`;
 
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
   if (!fresh) return ["out of touch", "bad"];
-  // (The build Mac's jobs, its second's beside its first: building while either is.)
+  // (The lead's jobs, its second's beside its first: building while either is.)
   const jobs = [st.job, st.beside].filter(Boolean);
   if (jobs.some((j) => !j.paused && !j.pausing)) return ["building", "run"];
   if (jobs.some((j) => j.pausing)) return ["stopping", "warn"];
@@ -124,14 +124,14 @@ function machineState(st, fresh, paused) {
 function alerts(m) {
   const out = [];
   const { a, now } = m;
-  if (!a.host) return [{ cls: "bad", text: "No word from the build Mac yet", to: "machines" }];
-  if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Build Mac out of touch for ${dur(now - a.beat)}`, to: "machines" });
+  if (!a.host) return [{ cls: "bad", text: "No word from the lead yet", to: "machines" }];
+  if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Lead out of touch for ${dur(now - a.beat)}`, to: "machines" });
   if (a.pool?.lead?.alert) out.push({ cls: "bad", text: a.pool.lead.alert, to: "pool" });
   for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < 360 ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
   for (const x of m.macs) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
-    const short = x.role === "build Mac" ? "Build Mac" : x.name;
-    if (x.role !== "build Mac" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
+    const short = x.role === "lead" ? "Lead" : x.name;
+    if (x.role !== "lead" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
     for (const [j, which] of [[st.job, "job"], [st.beside, "second job"]]) {
       const p = j?.progress;
       if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
@@ -140,9 +140,9 @@ function alerts(m) {
     if (c.nas === false) out.push({ cls: "bad", text: `${short} can't reach the NAS`, to: "machines" });
     else if (c.home === false) out.push({ cls: "info", text: `${short} reaches the NAS through Tailscale (slowly)`, to: "machines" });
     if (r.disk_free_gb != null && r.disk_free_gb < 20) out.push({ cls: r.disk_free_gb < 10 ? "bad" : "warn", text: `${short}: ${r.disk_free_gb} GB free on its disk`, to: "machines" });
-    if (x.role !== "build Mac" && st.app && a.app && st.app !== a.app) out.push({ cls: "warn", text: `${short} runs another app (${st.app})`, to: "machines" });
+    if (x.role !== "lead" && st.app && a.app && st.app !== a.app) out.push({ cls: "warn", text: `${short} runs another app (${st.app})`, to: "machines" });
   }
-  // Failures in the last six hours (the build Mac's own jobs; the workers' are in the activity).
+  // Failures in the last six hours (the lead's own jobs; the workers' are in the activity).
   const failed = (a.recent || []).filter((d) => !d.ok && now - d.ended < 6 * 3600);
   if (failed.length) out.push({ cls: "bad", text: `${plural(failed.length, "job")} failed in the last 6 h`, to: "activity" });
   for (const w of a.waiting || []) {
@@ -186,13 +186,13 @@ function gateBanners(m, accept) {
 function verdictText(m) {
   const { a, sw, now, fc } = m;
   const parts = [];
-  if (!a.host) return [h("b", null, "No word from the build Mac yet.")];
+  if (!a.host) return [h("b", null, "No word from the lead yet.")];
   if (sw.pause) {
     const stopping = m.macs.filter((x) => x.status.job?.pausing).length;
     parts.push(h("b", null, "Paused"), ` by ${sw.pause.by}${sw.pause.at ? `, ${ago(now, sw.pause.at)}` : ""}`);
     parts.push(sw.pause.mode === "freeze" ? " · every job frozen where it was" : stopping ? ` · ${plural(stopping, "job")} finishing what ${stopping === 1 ? "it's" : "they're"} on` : " · nothing running");
   } else if (!m.fresh(a.beat)) {
-    parts.push(h("b", null, "Out of touch"), ` · the build Mac last said something ${ago(now, a.beat)} (asleep, off, or its agent stopped)`);
+    parts.push(h("b", null, "Out of touch"), ` · the lead last said something ${ago(now, a.beat)} (asleep, off, or its agent stopped)`);
   } else {
     const working = m.macs.filter((x) => x.fresh && x.status.job).length + m.pages.filter((p) => (sw.leases || []).some((l) => l.worker === p.name)).length;
     parts.push(h("b", null, working ? "Building" : "Idle"), working ? ` on ${plural(working, "machine")}` : "");
@@ -218,7 +218,7 @@ function overview(m) {
   const workLeft = fc ? fc.steps.reduce((t, s) => t + s.work_s, 0) : 0;
   const left = h("div", null,
     h("div", "big", big, h("small", null, unitsLine?.total ? ` of the areas built (${n(unitsLine.done)} of ${n(unitsLine.total)})` : "")),
-    h("div", "small dim", !fc ? "No forecast yet (the build Mac makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the build Mac's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
+    h("div", "small dim", !fc ? "No forecast yet (the lead makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
     fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
   );
   // The steps as a strip, the one under way outlined.
@@ -297,14 +297,14 @@ function facts(st, x, m) {
   const c = st.conditions || {}, r = st.resources || {};
   const out = [];
   out.push(c.ac === false ? chip(`battery ${c.battery ?? "?"}%`, c.battery != null && c.battery < 40 ? "warn" : "") : chip(c.battery != null ? `mains · ${c.battery}%` : "mains"));
-  out.push(c.nas === false ? chip("NAS unreachable", "bad") : chip(`NAS${r.nas_ms != null ? ` ${r.nas_ms} ms` : ""}${c.home === false ? " via Tailscale" : ""}${r.nas_free_tb != null && x.role === "build Mac" ? ` · ${r.nas_free_tb} TB free` : ""}`, c.home === false ? "warn" : "", "How long the NAS took to answer, and its free space"));
+  out.push(c.nas === false ? chip("NAS unreachable", "bad") : chip(`NAS${r.nas_ms != null ? ` ${r.nas_ms} ms` : ""}${c.home === false ? " via Tailscale" : ""}${r.nas_free_tb != null && x.role === "lead" ? ` · ${r.nas_free_tb} TB free` : ""}`, c.home === false ? "warn" : "", "How long the NAS took to answer, and its free space"));
   if (r.disk_free_gb != null) out.push(chip(`${r.disk_free_gb} GB free${r.cache_gb != null ? ` (+${r.cache_gb} GB cache)` : ""}`, r.disk_free_gb < 10 ? "bad" : r.disk_free_gb < 20 ? "warn" : "", "Free on its disk; the caches the agent may drop to make room"));
   if (r.mem_gb) out.push(chip(`${r.mem_gb} GB memory${r.mem_free_pct != null ? `, ${r.mem_free_pct}% free` : ""}`, r.mem_free_pct != null && r.mem_free_pct < 10 ? "warn" : ""));
   if (r.load1 != null) out.push(chip(`load ${r.load1} on ${r.cores} cores`));
   out.push(chip(c.idle_s != null && c.idle_s < 300 ? "in use (half the cores)" : "not in use", "", "While someone uses the Mac, its jobs get half its cores"));
-  if (st.app) out.push(chip(`app ${st.app}`, x.role !== "build Mac" && m.a.app && st.app !== m.a.app ? "warn" : ""));
+  if (st.app) out.push(chip(`app ${st.app}`, x.role !== "lead" && m.a.app && st.app !== m.a.app ? "warn" : ""));
   const sp = m.fc?.speed?.[x.name];
-  if (sp != null && x.role !== "build Mac") out.push(chip(`${Math.round(sp * 100)}% of the build Mac's pace${(m.fc.guessed || []).includes(x.name) ? " (a guess until measured)" : ""}`));
+  if (sp != null && x.role !== "lead") out.push(chip(`${Math.round(sp * 100)}% of the lead's pace${(m.fc.guessed || []).includes(x.name) ? " (a guess until measured)" : ""}`));
   return h("div", "facts", out);
 }
 
@@ -346,19 +346,19 @@ function machineCard(m, x) {
   if (st.job) card.append(jobBlock(st.job, now));
   else {
     // Why it isn't building.
-    const why = (st.waiting || []).filter((w) => !w.step || x.role !== "build Mac").slice(0, 2);
+    const why = (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
     card.append(h("div", "job", h("div", "what dim", m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
-    for (const w of why) card.append(h("div", "sub", x.role === "build Mac" ? `${w.what}: ${w.why}` : w.why));
+    for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
   }
   card.append(...[nextBlock(m, x.name)].filter(Boolean));
-  // The build Mac's second job, beside the first: what it runs, else why it has nothing.
-  if (x.role === "build Mac" && (st.beside || st.beside_why)) {
+  // The lead's second job, beside the first: what it runs, else why it has nothing.
+  if (x.role === "lead" && (st.beside || st.beside_why)) {
     card.append(h("div", "beside-h", "Beside it"));
     if (st.beside) card.append(jobBlock(st.beside, now));
     else card.append(h("div", "sub", st.beside_why));
     card.append(...[nextBlock(m, secondOf(x.name))].filter(Boolean));
   }
-  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "build Mac" ? [x.name, secondOf(x.name)] : x.name) || [])];
+  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "lead" ? [x.name, secondOf(x.name)] : x.name) || [])];
   card.append(...more.filter(Boolean));
   return card;
 }
@@ -369,7 +369,7 @@ function goneCard(w) {
   return h("div", { class: "mc off", style: { borderLeft: "3px solid #7b8590" } },
     h("div", "top", h("span", "name", w.name), h("span", "role", "helper"), asking ? chip("no status lately", "warn") : chip("out of touch", "bad"), h("span", "right", `last heard ${dur(w.seen_s)} ago`)),
     h("div", "sub", `Its last word: ${w.what || "–"}`),
-    h("div", "sub", asking ? "It asks the build Mac for work, but its status on the NAS hasn't been written for ten minutes (can it reach the NAS?)." : "Asleep, off, or its agent stopped; its work goes back to the others once its lease lapses."));
+    h("div", "sub", asking ? "It asks the lead for work, but its status on the NAS hasn't been written for ten minutes (can it reach the NAS?)." : "Asleep, off, or its agent stopped; its work goes back to the others once its lease lapses."));
 }
 
 function pagesCard(m) {
@@ -381,11 +381,11 @@ function pagesCard(m) {
     const st = p.bad ? chip("stopped", "bad") : p.seen_s > 120 ? chip("away", "") : leases.length ? chip(`${leases.length} running`, "run") : chip("waiting", "");
     const left = h("div", null, h("div", null, p.label, " ", st, p.visible === false ? chip("in the background", "warn") : null),
       h("div", "sub", leases.length ? leases.map((l) => `${l.progress || "task"}${l.frac != null ? ` (${Math.round(l.frac * 100)}%)` : ""}`).join(" · ") : p.what));
-    const right = h("div", "sub", `${n(p.done)} done${p.checked ? ` (${n(p.checked)} checked against the build Mac's)` : ""}${p.failed ? ` · ${p.failed} failed` : ""}${p.mem_mb ? ` · ${n(p.mem_mb)} MB` : ""} · ${dur(p.seen_s)} ago`);
+    const right = h("div", "sub", `${n(p.done)} done${p.checked ? ` (${n(p.checked)} checked against the lead's)` : ""}${p.failed ? ` · ${p.failed} failed` : ""}${p.mem_mb ? ` · ${n(p.mem_mb)} MB` : ""} · ${dur(p.seen_s)} ago`);
     card.append(h("div", "pg", left, right));
   }
   const t = m.tasks;
-  if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — the build Mac offers them only while it builds areas, a few at a time" : ""}`));
+  if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — the lead offers them only while it builds areas, a few at a time" : ""}`));
   for (const e of spark(m, m.pages.map((p) => p.name)) || []) card.append(e);
   return card;
 }
@@ -404,12 +404,12 @@ const hideTip = () => tip && (tip.style.display = "none");
 
 function schedule(m) {
   const fc = m.fc;
-  if (!fc?.lanes || !Object.keys(fc.lanes).length) return h("div", "small dim", "No schedule yet (the forecast comes with the build Mac's next plan).");
+  if (!fc?.lanes || !Object.keys(fc.lanes).length) return h("div", "small dim", "No schedule yet (the forecast comes with the lead's next plan).");
   const t0 = m.now;
   const t1 = Math.max(fc.done_at || 0, ...Object.values(fc.lanes).flat().map((l) => l.until), t0 + 3600);
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
-  // Each machine's lane, the build Mac's second job's under its own; then any other the forecast has.
+  // Each machine's lane, the lead's second job's under its own; then any other the forecast has.
   const ordered = m.macs.flatMap((mm) => [mm.name, secondOf(mm.name)]);
   const names = ordered.filter((nm) => fc.lanes[nm]).concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
   const lanes = h("div", "lanes");
@@ -426,17 +426,17 @@ function schedule(m) {
     }
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
   }
-  // The pages: their work is an area's last steps, which the build Mac hands out as it builds its
+  // The pages: their work is an area's last steps, which the lead hands out as it builds its
   // areas (a few at a time, one to each worker around that spares what one takes; its second job's
   // too), and rows of a tree cover piece's blocks and groups of a terrain piece's z8 subtrees, as it
   // builds the piece; it waits for any of them only
   // from a worker measured faster than itself at that kind (its time a quarter more still under the
-  // build Mac's, crate::offload): while its own areas or pieces run, so then, if such a page spares
+  // lead's, crate::offload): while its own areas or pieces run, so then, if such a page spares
   // what one takes typically.
   const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
   const pace = (p, kind) => (p.paces ? p.paces[kind] : kind === "tail" ? p.tail_pace : null);
   const fast = (kind) => m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.[kind] || 0) && pace(p, kind) != null && pace(p, kind) * 1.25 < 1);
-  const helps = [["unit", "tail", "the last steps of the build Mac's areas as it builds them"], ["trees", "treeblock", "rows of the build Mac's tree cover blocks as it builds them"], ["terrain", "terrainsub", "z8 subtrees of the build Mac's terrain tiles as it builds them"]].filter(([step, kind]) => fast(kind) && own.some((l) => l.step === step && l.until > t0));
+  const helps = [["unit", "tail", "the last steps of the lead's areas as it builds them"], ["trees", "treeblock", "rows of the lead's tree cover blocks as it builds them"], ["terrain", "terrainsub", "z8 subtrees of the lead's terrain tiles as it builds them"]].filter(([step, kind]) => fast(kind) && own.some((l) => l.step === step && l.until > t0));
   if (helps.length) {
     const track = h("div", "track");
     const who = m.pages.map((p) => p.label).join(", ");
@@ -478,7 +478,7 @@ function schedule(m) {
 
 function stepsTable(m) {
   const { steps, fc, a } = m;
-  if (!steps.length) return h("div", "small dim", "No word from the build Mac yet.");
+  if (!steps.length) return h("div", "small dim", "No word from the lead yet.");
   const nowStep = stepOf(a.job?.id);
   const grid = h("div", "steps2");
   for (const st of steps) {
@@ -521,7 +521,7 @@ function regionRows(m, rerender) {
   const fc = m.fc, built = m.a.built || {};
   const regs = (fc?.regions || []).map((r) => ({ ...r, name: m.regionName[r.id] || r.id, built: built[r.id] }));
   if (!regs.length) {
-    // (An older build Mac: its areas built alone.)
+    // (An older lead: its areas built alone.)
     const ids = Object.keys(built);
     if (!ids.length) return [h("div", "small dim", "No regions yet.")];
     return [h("div", "regs", ids.map((id) => h("div", "rg", h("span", "nm", m.regionName[id] || id), h("span", "when", `${built[id].built} of ${built[id].total} areas built`))))];
@@ -571,7 +571,7 @@ function regionRows(m, rerender) {
   return [out, more].filter(Boolean);
 }
 
-// When the map last got new data: the last catalog the build Mac read (its number and time), else
+// When the map last got new data: the last catalog the lead read (its number and time), else
 // its last catalog job's end.
 function lastUpdate(m) {
   return m.a.catalog?.at || (m.a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok)?.ended || null;
@@ -727,12 +727,12 @@ function details(m) {
   const waits = a.waiting || [];
   box.append(h("h3", null, "Waiting", h("span", null, "what can't run yet, and why")), waits.length ? table(["What", "Why"], waits.map((w) => [w.what, w.why])) : h("div", "small dim", "Nothing."));
   const recent = a.recent || [];
-  box.append(h("h3", null, "The build Mac's last jobs"), recent.length ? table(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
+  box.append(h("h3", null, "The lead's last jobs"), recent.length ? table(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
   if ((a.bad_recipes || []).length) box.append(h("h3", null, "Region recipes that don't read"), table(["File", "Problem"], a.bad_recipes));
-  if (a.job?.tail) box.append(h("h3", null, "The build Mac's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, a.job.tail));
+  if (a.job?.tail) box.append(h("h3", null, "The lead's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, a.job.tail));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
   if (workers.length) box.append(h("h3", null, "Workers heard from"), table(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
-  box.append(h("div", "fresh", `Updated ${clock(now)} · the build Mac's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
+  box.append(h("div", "fresh", `Updated ${clock(now)} · the lead's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
   return h("details", { class: "more-box", open: ui.detailsOpen || null, ontoggle: (e) => (ui.detailsOpen = e.target.open) }, h("summary", null, "Details"), box);
 }
 
@@ -790,7 +790,7 @@ function render() {
   const feedEl = root.querySelector(".feed");
   if (feedEl) feedEl.scrollTop = feedTop;
   window.scrollTo(0, scrollY);
-  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the build Mac" : m.fresh(m.a.beat) ? (m.a.job ? "building" : "idle") : "build Mac out of touch");
+  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (m.a.job ? "building" : "idle") : "lead out of touch");
 }
 
 let polling = null;
@@ -821,7 +821,7 @@ async function pollOnce() {
     }
     render();
   } catch (e) {
-    ctx.onState?.(`can't reach the build Mac (${e.message})`);
+    ctx.onState?.(`can't reach the lead (${e.message})`);
   }
 }
 
