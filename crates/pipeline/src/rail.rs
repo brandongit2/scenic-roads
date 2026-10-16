@@ -565,15 +565,15 @@ mod tests {
         assert_eq!(read_fetched(&out).unwrap()[&cname], "2026-10-20");
     }
 
-    /// A declaration's pin goes in through the rail-feeds job's hand-off, as its downloads do: with
-    /// the pool on (the records the lead's alone), the job's save is a hand-off naming the zip and
+    /// A declaration's pin goes in through the rail-feeds job's hand-off, as its downloads do: once
+    /// a term is made (the records the lead's alone), the job's save is a hand-off naming the zip and
     /// its day; a feed with a zip already isn't pinned again.
     #[test]
     fn a_pin_is_handed_off_by_rail_feeds() {
         let d = tempfile::tempdir().unwrap();
         let (root, scratch) = (d.path().join("root"), d.path().join("scratch"));
-        std::fs::create_dir_all(root.join("state/pool")).unwrap();
-        std::fs::write(root.join(crate::agent::pool::ENABLED), "").unwrap();
+        // (A term made: the records are the lead's, and only a hand-off saves.)
+        std::fs::create_dir_all(root.join("state/build/terms")).unwrap();
         std::fs::create_dir_all(root.join("old/gtfs")).unwrap();
         std::fs::write(root.join("old/gtfs/mbta.zip"), b"m").unwrap();
         let decls = [
