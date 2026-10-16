@@ -933,6 +933,8 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     weak var anchor: NSView?
     /// When it last closed: the click on the icon that closed it doesn't open it again.
     var closedAt = Date.distantPast
+    /// While it's open: the monitor of clicks in other apps, which close it.
+    var outside: Any?
     /// Each opening's number: a late answer for an earlier one is dropped.
     var opening = 0
     var pages: [String] = []
@@ -990,10 +992,10 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         if Date().timeIntervalSince(closedAt) < 0.3 { return }
         anchor = button
         self.pages = pages
-        // (Active, so a click elsewhere closes the transient popover: the cooperative `activate()`
-        // can be declined for a menu bar app, and an inactive app's popover never sees the click
-        // outside.)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
+        // (A click in another app closes it too: the cooperative `activate()` can be declined for
+        // a menu bar app, and then the transient popover never sees that click.)
+        outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.close() }
         popover.contentSize = NSSize(width: Panel.pageWidth, height: 400)
         // (The system's light or dark, not the menu bar's, which follows the wallpaper.)
         popover.appearance = NSApp.effectiveAppearance
@@ -1063,11 +1065,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         conf.userContentController.add(self, name: "size")
         // The page's own background let go, so the popover's material shows through (its cards
         // keep theirs, so their text stays as legible as in a browser).
-        let clear = "document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent';"
-        conf.userContentController.addUserScript(WKUserScript(source: clear, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // (At the start, so no opaque flash on a load or Reload; `!important`, so no later rule of
+        // the page's undoes it.)
+        let clear = "const s = document.createElement('style'); s.textContent = 'html,body{background:transparent!important}'; document.documentElement.appendChild(s);"
+        conf.userContentController.addUserScript(WKUserScript(source: clear, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let w = WKWebView(frame: NSRect(x: 0, y: Panel.footerHeight, width: root.frame.width, height: root.frame.height - Panel.footerHeight), configuration: conf)
         w.autoresizingMask = [.width, .height]
-        w.setValue(false, forKey: "drawsBackground")
         w.underPageBackgroundColor = .clear
         w.navigationDelegate = self
         w.uiDelegate = self
@@ -1158,6 +1161,8 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     // MARK: the popover
 
     func popoverDidClose(_ n: Notification) {
+        if let m = outside { NSEvent.removeMonitor(m) }
+        outside = nil
         opening += 1
         dropWeb()
         fallback?.removeFromSuperview()
