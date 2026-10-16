@@ -657,12 +657,33 @@ thread_local! {
     static TEST_BROKER_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
     /// Whether this Mac can lead, whatever its conditions say (the pool's tests).
     static TEST_ABLE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// What `find_root` finds in a test: nothing unless a test sets it (never the real NAS).
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `p` is the real NAS's or the app's real home: a test never writes there.
+pub fn is_live_path(p: &Path) -> bool {
+    p.starts_with("/Volumes") || std::env::var_os("HOME").is_some_and(|h| p.starts_with(Path::new(&h).join("Library/Application Support/scenic")))
 }
 
 /// The NAS project folder: the share's mount, by whatever name it's mounted. When it's missing and
 /// `mount` is set, it's mounted: at home by the LAN name, away through Tailscale when the Keychain
 /// has the bare name's password (else nothing: a dialog would ask for it).
 pub fn find_root(mount: bool) -> Option<PathBuf> {
+    // (A test never finds the mounted NAS: only a root a test set, never one on the NAS.)
+    #[cfg(test)]
+    {
+        let _ = mount;
+        let r = TEST_ROOT.with(|t| t.borrow().clone());
+        assert!(r.as_deref().is_none_or(|r| !is_live_path(r)), "a test's root is the real NAS: {r:?}");
+        r
+    }
+    #[cfg(not(test))]
+    find_live_root(mount)
+}
+
+#[cfg(not(test))]
+fn find_live_root(mount: bool) -> Option<PathBuf> {
     use store::nas::{find_mount, HOST, PROJECT, SHARE};
     if let Some(m) = find_mount(HOST, SHARE) {
         return Some(m.point.join(PROJECT));
@@ -7099,6 +7120,10 @@ fn batch_size(step: &str) -> usize {
 /// An agent for a test: it reads the test's fixed Mac (cond::Mac::TEST), not the one running it.
 #[cfg(test)]
 fn test_agent(o: Options) -> Result<Agent> {
+    // (Never the real NAS or the app's home: a test with no root would find the mounted NAS.)
+    let root = o.root.as_deref().expect("a test agent needs a root of its own (a temp folder)");
+    assert!(!is_live_path(root), "a test agent's root is the real NAS: {}", root.display());
+    assert!(!is_live_path(&o.home), "a test agent's home is the app's real one: {}", o.home.display());
     // (The NAS's answer as the real probe decides it, by its folder, but at once: a loaded Mac's
     // threads can't make a test's NAS look away.)
     Agent::new_with(o, |r| r.join("catalog").is_dir()).map(|mut a| {
@@ -7521,7 +7546,8 @@ mod tests {
     #[test]
     fn an_end_the_lead_doesnt_take_is_owed() {
         let d = tempfile::tempdir().unwrap();
-        let mut a = test_agent(Options { root: None, home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        // (A root of its own, no catalog/: the NAS away, the pool off.)
+        let mut a = test_agent(Options { root: Some(d.path().join("nas")), home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
         let fail = |id| Tell::Fail { id, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 };
         a.tell_or_owe(fail(1));
         assert_eq!(a.owed.len(), 1, "no client: owed");
@@ -7540,11 +7566,34 @@ mod tests {
         assert_eq!(tried.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    /// The guards: no test finds the real NAS, nor builds an agent or a share on it.
+    #[test]
+    fn tests_never_reach_the_nas() {
+        assert_eq!(find_root(false), None);
+        assert_eq!(find_root(true), None);
+        assert!(is_live_path(Path::new("/Volumes/personal/projects/scenic-roads")));
+        let d = tempfile::tempdir().unwrap();
+        assert!(!is_live_path(d.path()));
+        let o = |root: Option<PathBuf>| Options { root, home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: true };
+        assert!(std::panic::catch_unwind(|| test_agent(o(None))).is_err(), "no root");
+        assert!(std::panic::catch_unwind(|| test_agent(o(Some("/Volumes/personal/projects/scenic-roads".into())))).is_err(), "the NAS");
+        if let Some(h) = std::env::var_os("HOME") {
+            let live = Options { home: Path::new(&h).join("Library/Application Support/scenic"), ..o(Some(d.path().join("nas"))) };
+            assert!(std::panic::catch_unwind(|| test_agent(live)).is_err(), "the app's home");
+        }
+        assert!(std::panic::catch_unwind(|| crate::pool::nas::Share::new(Path::new("/Volumes/x/scenic-roads"))).is_err(), "a share on the NAS");
+        TEST_ROOT.with(|t| *t.borrow_mut() = Some("/Volumes/personal/projects/scenic-roads".into()));
+        let tripped = std::panic::catch_unwind(|| find_root(false)).is_err();
+        TEST_ROOT.with(|t| *t.borrow_mut() = None);
+        assert!(tripped, "a test root on the NAS");
+    }
+
     /// Each loop begins a round of the lead's client: a round the lead failed is open again.
     #[test]
     fn a_loop_begins_a_round() {
         let d = tempfile::tempdir().unwrap();
-        let mut a = test_agent(Options { root: None, home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        // (A root of its own, no catalog/: the NAS away, the pool off.)
+        let mut a = test_agent(Options { root: Some(d.path().join("nas")), home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
         a.begin_round();
         a.client = Some(crate::coord::client::Client::at(vec![crate::coord::client::tests::dead()], "t".into(), "m1"));
         a.begin_round();

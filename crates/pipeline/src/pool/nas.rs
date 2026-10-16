@@ -62,6 +62,8 @@ pub struct Share {
 impl Share {
     /// The share at `root`, the NAS project folder.
     pub fn new(root: &Path) -> Share {
+        #[cfg(test)]
+        assert!(!crate::agent::is_live_path(root), "a test's share is the real NAS: {}", root.display());
         Share { root: root.to_path_buf(), made: Default::default() }
     }
 

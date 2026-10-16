@@ -370,18 +370,33 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    /// A test's listener (store::spawn's, not blocking) and its connections as they come, each
+    /// blocking again, to `each` on its own thread's loop.
+    fn serve(each: impl Fn(std::net::TcpStream) + Send + 'static) -> String {
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || loop {
+            match store::spawn::accept(&l) {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false).ok();
+                    each(s);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(2)),
+                Err(_) => {}
+            }
+        });
+        url
+    }
+
     /// A coordinator that never answers: each connection taken (counted, before it's closed) and
     /// closed without a word, so a request fails at once rather than waiting out a timeout.
     fn mute() -> (String, Arc<AtomicUsize>) {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", l.local_addr().unwrap());
         let n = Arc::new(AtomicUsize::new(0));
         let seen = n.clone();
-        std::thread::spawn(move || {
-            for s in l.incoming() {
-                seen.fetch_add(1, Ordering::SeqCst);
-                drop(s);
-            }
+        let url = serve(move |s| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            drop(s);
         });
         (url, n)
     }
@@ -389,13 +404,10 @@ pub(crate) mod tests {
     /// A coordinator answering every request with `status` and `{}`, counting them.
     pub(crate) fn answering(status: u16) -> (String, Arc<AtomicUsize>) {
         use std::io::{BufRead, BufReader, Read, Write};
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", l.local_addr().unwrap());
         let n = Arc::new(AtomicUsize::new(0));
         let seen = n.clone();
-        std::thread::spawn(move || {
-            for s in l.incoming() {
-                let Ok(mut s) = s else { continue };
+        let url = serve(move |mut s| {
+            {
                 let mut r = BufReader::new(s.try_clone().unwrap());
                 let mut len = 0usize;
                 loop {
@@ -418,7 +430,7 @@ pub(crate) mod tests {
 
     /// An address nothing listens at (a listener's, closed): a connection to it refused.
     pub(crate) fn dead() -> String {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
         format!("http://{}", l.local_addr().unwrap())
     }
 
