@@ -169,12 +169,13 @@ impl Leases {
         self.live(now).filter(|l| matches!(&l.work, Work::Job { step: s, .. } if s == step)).flat_map(|l| l.targets().iter().map(|t| t.0.clone())).collect()
     }
 
-    /// Which leases are held, as a number that changes whenever one is granted, finished, given
-    /// back, dropped or lapses (ids never repeat): what an idle agent's plan digest folds in.
-    pub fn generation(&self) -> u64 {
+    /// Which leases workers other than `me` hold, as a number that changes whenever one is
+    /// granted, finished, given back, dropped or lapses (ids never repeat): what an idle agent's
+    /// plan digest folds in. `me`'s own (a start taking its lease, then letting it go) left out.
+    pub fn generation(&self, me: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.next, self.by_id.keys().collect::<Vec<_>>()).hash(&mut h);
+        self.by_id.values().filter(|l| l.worker != me).map(|l| l.id).collect::<Vec<_>>().hash(&mut h);
         h.finish()
     }
 

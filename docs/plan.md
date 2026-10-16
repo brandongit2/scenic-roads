@@ -1964,11 +1964,16 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   the plan depends on changed — the manifest's or the jobs' records' size and time, the hand-offs'
   folders, the gate's view of the inputs, the pool's members, role and gates, its mode and switch,
   the pause, a newer app installed, faster publishing's switch files, `inputs/hold-catalog`, the
-  `catalog/` and `catalog-held/` folders, the coordinator's leases (`plan_seen`); when a start
-  was held by something on a short timer (the pool's step under way, the answers going to the NAS,
-  the budgets' proxy starting): next loop; at the earliest end of its timed waits (a job's failure
-  or memory guard wait, room-making's ten minutes, the regions' edit hold, the next map update's
-  gap: `replan_at`); and otherwise every five minutes (`plan_due`) (planning reads the manifest, the keys, a dozen NAS folders and the terrain packs'
+  `catalog/` and `catalog-held/` folders, the leases other workers hold in the coordinator (this
+  Mac's own left out), the pool's switches the agent holds (by measure, budgets, resume, every
+  step, placement, brokers, slots, the memory guard) (`plan_seen`); when a start was held by
+  something on a short timer (the pool's step under way, the answers going to the NAS): next loop;
+  at the earliest end of its timed waits, rounded up to the second (a job's failure or memory
+  guard wait, room-making's ten minutes, the regions' edit hold, the next map update's gap; each
+  minute while the budgets' proxy won't start: `replan_at`); and otherwise every five minutes
+  (`plan_due`). What only that fallback catches: a trim or clear of the caches, or a job an
+  earlier agent left, ending; disk freed; the job beside it holding less memory; a newer planet on
+  the NAS; the daily jobs falling due (planning reads the manifest, the keys, a dozen NAS folders and the terrain packs'
   indexes, which the units' keys read: each read once by its pack's content name, two range reads,
   and kept in the agent's `pack-idx/`, so after the first plan only a terrain job's new packs;
   13–64 s for the build's 529 on 2026-10-06, and a unit's terrain worked out again only when a pack

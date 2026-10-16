@@ -979,7 +979,7 @@ pub struct Agent {
     /// plan made them, what they read, and the units a full check was asked of.
     inputs: Gate,
     /// The last start held by something on a short timer (the pool's step under way, the answers
-    /// going to the NAS, the budgets' proxy starting): the idle agent plans again next loop.
+    /// going to the NAS): the idle agent plans again next loop.
     start_soon: std::cell::Cell<bool>,
 }
 
@@ -2412,9 +2412,6 @@ impl Agent {
             self.start_first(&plan, &c, root.as_deref(), &mut waiting);
             // (A start held by something on a short timer: planned again next loop; timed waits, at
             // the earliest's end: `plan_due`.)
-            if self.budgets && self.proxy.is_none() && !self.o.dry_run && !plan.is_empty() {
-                self.start_soon.set(true);
-            }
             let (soon, at) = (self.start_soon.get(), self.replan_at(&plan, now_s()));
             // (Why the jobs before it wait: kept with the plan, so the status says so while the job
             // started runs, not only between jobs.)
@@ -4358,6 +4355,8 @@ impl Agent {
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
         self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
         self.newer_app().hash(&mut h);
+        // (The pool's switches as this agent holds them.)
+        (self.by_measure, self.budgets, self.resume, self.every, self.placement, self.brokers, self.slots_on, self.guard_on).hash(&mut h);
         // (Never 0: that's "not read".)
         h.finish() | 1
     }
@@ -4372,13 +4371,18 @@ impl Agent {
             at.extend(self.mem.retry.get(&spec.id).map(|(_, u)| *u));
         }
         if let Some((_, _, t)) = self.floor_short {
-            at.push(now + Duration::from_secs(600).saturating_sub(t.elapsed()).as_secs());
+            at.push(ends_in(now, Duration::from_secs(600).saturating_sub(t.elapsed())));
         }
         if let Some((_, left)) = edit_held(self.edited_at.get(), std::time::SystemTime::now()) {
-            at.push(now + left.as_secs());
+            at.push(ends_in(now, left));
         }
         if let Some(u) = self.update_decision.borrow().as_ref().filter(|u| u.left_s > 0) {
             at.push(now + u.left_s);
+        }
+        // (The budgets' proxy not started: tried again each loop, `tend_proxy`; the plan again each
+        // minute, not each loop, should it keep failing.)
+        if self.budgets && self.proxy.is_none() && !self.o.dry_run && !plan.is_empty() {
+            at.push(now + PROXY_REPLAN.as_secs());
         }
         earliest_after(at, now)
     }
@@ -6704,10 +6708,19 @@ fn plan_due(idle: bool, ended: bool, last: Option<LastPlan>, seen: u64, now: u64
     l.age >= every
 }
 
-/// The earliest of `at` past `now`.
+/// The earliest of `at` from `now` on (one at `now` kept: due at once).
 fn earliest_after(at: impl IntoIterator<Item = u64>, now: u64) -> Option<u64> {
-    at.into_iter().filter(|t| *t > now).min()
+    at.into_iter().filter(|t| *t >= now).min()
 }
+
+/// When a wait with `left` to go ends, in whole epoch seconds from `now`, rounded up: never
+/// before it does, and a part of a second left not taken for none.
+fn ends_in(now: u64, left: Duration) -> u64 {
+    now + left.as_millis().div_ceil(1000) as u64
+}
+
+/// How often an idle agent plans again while the budgets' proxy won't start.
+const PROXY_REPLAN: Duration = Duration::from_secs(60);
 
 /// The regions as the readers read them now (the accepted version: crate::inputs::regions::read),
 /// sorted by id, and why none can be read when it can't (one line).
@@ -7142,9 +7155,21 @@ mod tests {
         a.guard_backoff.insert("pass-sets d".into(), (1300, "held".into()));
         a.mem.retry.insert("not planned".into(), (1, 1001));
         assert_eq!(a.replan_at(&plan, 1000), Some(1300));
-        assert_eq!(a.replan_at(&plan, 1300), Some(1600));
-        assert_eq!(a.replan_at(&plan, 1600), None);
-        assert_eq!(earliest_after([5, 3, 9], 3), Some(5));
+        assert_eq!(a.replan_at(&plan, 1300), Some(1300));
+        assert_eq!(a.replan_at(&plan, 1301), Some(1600));
+        assert_eq!(a.replan_at(&plan, 1601), None);
+        assert_eq!(earliest_after([5, 3, 9], 4), Some(5));
+        // A wait with under a second left: due the next second, never dropped; one due now kept.
+        assert_eq!(ends_in(1000, Duration::from_millis(400)), 1001);
+        assert_eq!(ends_in(1000, Duration::from_millis(1400)), 1002);
+        assert_eq!(ends_in(1000, Duration::ZERO), 1000);
+        assert_eq!(earliest_after([1000, 1200], 1000), Some(1000));
+        // The budgets' proxy not started: planned again each minute, not each loop.
+        a.mem.retry.clear();
+        a.guard_backoff.clear();
+        a.budgets = true;
+        a.o.dry_run = false;
+        assert_eq!(a.replan_at(&plan, 1000), Some(1000 + PROXY_REPLAN.as_secs()));
     }
 
     /// The digest of what an idle agent's plan depends on: the same while nothing changes; changed
@@ -7191,17 +7216,31 @@ mod tests {
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         last = now;
-        // The coordinator's leases: one taken, then given back.
+        // The coordinator's leases: this Mac's own taken and let go (a start that didn't go
+        // through) changes nothing; another worker's taken, then given back, does.
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         last = now;
         let id = co.hold("gc", &[("t".into(), "k".into())]).unwrap();
+        assert_eq!(a.plan_seen(&root), last);
+        co.finish(id, &[]);
+        assert_eq!(a.plan_seen(&root), last);
+        let id = {
+            let mut s = co.shared.lock().unwrap();
+            let t = s.now();
+            s.leases.grant("other-mac", crate::coord::lease::Work::Job { step: "gc".into(), targets: vec![("t".into(), "k".into())] }, t)
+        };
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         last = now;
         co.shared.lock().unwrap().leases.cancel(id).unwrap();
+        let now = a.plan_seen(&root);
+        assert_ne!(now, last);
+        last = now;
+        // The pool's switches the agent holds.
+        a.budgets = true;
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         assert_eq!(a.plan_seen(&root), now);

@@ -1180,9 +1180,9 @@ impl Coordinator {
         s.leases.all(now).iter().filter(|l| l.worker != self.me && matches!(&l.work, Work::Job { step: st, .. } if st == step)).flat_map(|l| l.targets().iter().map(|t| t.0.clone())).collect()
     }
 
-    /// The leases' generation (`Leases::generation`).
+    /// The leases' generation, this Mac's own jobs' left out (`Leases::generation`).
     pub fn lease_gen(&self) -> u64 {
-        self.shared.lock().unwrap().leases.generation()
+        self.shared.lock().unwrap().leases.generation(&self.me)
     }
 
     /// Leases past their deadline dropped (their workers went quiet): a task's offered again.
