@@ -4431,6 +4431,17 @@ impl Agent {
         if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) && !manifest.contains_key(crate::rail::FERRY_FEEDS) {
             waiting.push(Waiting { step: Some("ferries".into()), what: "Mapping the world's ferries".into(), why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)".into() });
         }
+        // (The trains and the ferries count the static files too: without their accepted version,
+        // they wait, rather than be counted without them.)
+        if !manifest.contains_key(&crate::inputs::logical(crate::inputs::gtfs::UNIT)) {
+            let why = "the static timetables' first accepted version (inputs/timetables/gtfs/: the input check takes them in)";
+            if manifest.contains_key(crate::rail::FEEDS) {
+                waiting.push(Waiting { step: Some("rail".into()), what: build::TRAINS.into(), why: why.into() });
+            }
+            if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) {
+                waiting.push(Waiting { step: Some("ferries".into()), what: "Mapping the world's ferries".into(), why: why.into() });
+            }
+        }
         if inputs.get("bld-release").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::BUILDINGS.into(), why: "the 3D buildings' sources' indexes on the NAS can't be read now".into() });
         }
@@ -4697,6 +4708,11 @@ impl Agent {
             // (The timetable feeds' declarations: the accepted version it was planned with.)
             if w.step == "rail-feeds" {
                 extra.extend(["--feeds-index".to_string(), manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)).cloned().unwrap_or_default()]);
+            }
+            // (The static timetables: the accepted version the trains and the ferries were planned
+            // with.)
+            if w.step == "rail" || w.step == "ferries" {
+                extra.extend(["--gtfs-index".to_string(), manifest.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT)).cloned().unwrap_or_default()]);
             }
             // (The heritage registers' and matches' accepted versions the plan read: the job reads
             // them, never the drop boxes.)
@@ -6299,20 +6315,11 @@ impl Agent {
     }
 }
 
-/// What jobs read from inputs/ beside the manifest, by digest: the ferries' looked-up timetables
-/// ("ferries-freq", by content), which keys inputs/keys.env holds ("keys", `key_names`), and the 3D
-/// buildings' downloaded sources ("bld-release", "bldprep 6/x/y", "bldprep-rows 6/x/y":
-/// crate::bld::sources::digests).
+/// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
+/// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bldprep 6/x/y",
+/// "bldprep-rows 6/x/y": crate::bld::sources::digests).
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
-    if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
-        // (Read as kept while unchanged: crate::smallfiles. The looked-up timetables alone: the
-        // feeds' counts are the ferries job's own, from the ferry feeds.)
-        let mut files: Vec<(String, std::sync::Arc<Vec<u8>>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json") && e.file_name().to_string_lossy().starts_with("timetables-")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), crate::smallfiles::read(&e.path()).ok()?))).collect();
-        files.sort();
-        let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
-        inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
-    }
     // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
     // "?" when they can't be read now (the heritage sites then wait), none without an accepted version.
     match crate::heritage::registers_now(root) {

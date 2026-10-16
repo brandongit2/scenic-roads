@@ -10,8 +10,10 @@ Frequencies are never estimated. Each line's sailings come from, in order:
   1. a timetable feed (GTFS) the operator publishes: the declared feeds the rail-feeds job fetched
      (--feeds), counted here by the ferry counter (ferrygtfs.py), each from the day it was fetched,
      in feed id order (the first feed's count for a line wins);
-  2. a published timetable looked up by hand (freq/timetables-*.json, with the page
-     it came from),
+  2. a published timetable looked up by hand: the static files compiled by hand (--static, the
+     accepted zips of inputs/timetables/gtfs/, docs/inputs.md §6.7.2), their count rows as given
+     (dem/staticgtfs.py) and their timed sailings counted by the ferry counter, each with the page
+     it came from, in the zips' order (the first's record for a line wins),
   3. the line's OSM interval and opening_hours tags, when they give both the headway and the day's
      span of service.
 Lines with none of these stay "unknown".
@@ -23,12 +25,12 @@ Outputs (--out): ferries.json (GeoJSON: one feature per way, plus terminals) and
 ferry-lines.json (every line's details, for the hover card). Their English is the map's server's,
 from the translations' live tables (crates/names), as it serves them.
 
-usage: ferries.py --src DIR --out DIR [--feeds FILE]
-  --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq) and freq/ (the
-         looked-up timetables)
+usage: ferries.py --src DIR --out DIR [--feeds FILE] [--static FILE]
+  --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq)
   --out: where ferries.json and ferry-lines.json go
   --feeds: the ferry feeds ({"feeds": [{id, name, url, source, ferry_routes, path, fetched}]}: the
          rail-feeds job's ferry list, each zip's path on the NAS and the day it was fetched)
+  --static: the static files ({"zips": [{name, path}]}: their checked copies on the NAS)
 """
 from __future__ import annotations
 
@@ -40,13 +42,17 @@ from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
+import zipfile
+
 import ferrygtfs
 import inputs
+import staticgtfs
 from timings import phase
 
 F = Path()
 OUT = Path()
 FEEDS: Path | None = None
+STATIC: Path | None = None
 
 URBAN, CROSSING, LONG, CABLE = 0, 1, 2, 3
 GROUP_NAMES = ["Urban & commuter", "Short crossing", "Long-distance & overnight", "Cable & chain ferry"]
@@ -342,10 +348,23 @@ def main() -> None:
                     continue
                 print(f"{f['id']}: {len(recs)} lines matched", file=sys.stderr)
                 counted.append(recs)
+    if STATIC:
+        with phase("the static files counted", "mixed"):
+            by_ends = {lid: {"ends": e} for lid, e in ends.items()}
+            for zf in json.loads(STATIC.read_text())["zips"]:
+                path = inputs.arg(zf["path"])
+                try:
+                    with zipfile.ZipFile(path) as z:
+                        recs = staticgtfs.ferry_counts(z, ferrygtfs.is_ferry)
+                    recs += ferrygtfs.process({"id": zf["name"], "url": ""}, path, by_ends, None, static=True)
+                except Exception as e:  # a malformed file shouldn't stop the others
+                    print(f"  {zf['name']}: {e.__class__.__name__}: {e}", file=sys.stderr)
+                    continue
+                print(f"{zf['name']}: {len(recs)} lines", file=sys.stderr)
+                counted.append(recs)
     with phase("the frequencies read", "disk"):
         freq: dict[str, dict] = {}
-        files = sorted((F / "freq").glob("timetables-*.json")) if (F / "freq").exists() else []
-        for recs in counted + [json.loads(src.read_text()) for src in files]:
+        for recs in counted:
             for rec in recs:
                 lid = rec.get("line")
                 if isinstance(rec.get("headway"), str):  # "20 minutes", "2 hours (peak)"
@@ -529,8 +548,9 @@ def rank(rec: dict) -> int:
 if __name__ == "__main__":
     args = sys.argv[1:]
     if "--src" not in args or "--out" not in args:
-        sys.exit("usage: ferries.py --src DIR --out DIR [--feeds FILE]")
+        sys.exit("usage: ferries.py --src DIR --out DIR [--feeds FILE] [--static FILE]")
     F = Path(args[args.index("--src") + 1])
     OUT = Path(args[args.index("--out") + 1])
     FEEDS = inputs.arg(args[args.index("--feeds") + 1]) if "--feeds" in args else None
+    STATIC = inputs.arg(args[args.index("--static") + 1]) if "--static" in args else None
     sys.exit(main())

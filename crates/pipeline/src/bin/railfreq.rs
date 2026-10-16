@@ -2,7 +2,7 @@
 //!
 //! usage: railfreq <build_dir> <pairs.bin>...
 //!
-//! Input pairs (dem/railgtfs.py, and the hand-researched MTR lines): little-endian records
+//! Input pairs (dem/railgtfs.py: the feeds' and static files' trains, and the static files' count rows): little-endian records
 //! f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; bit 0x80: the
 //! count is a lower bound; 0x20 / 0x40: stop A / B is beyond the map), f32 trains — the trains from stop A to stop B on a typical weekday. Each pair is matched onto the rail ways
 //! of ways.bin: each stop snaps to its nearest few tracks within 300 m, or 1 km when there are none

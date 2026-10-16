@@ -354,16 +354,16 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
 
 /// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as ferries.py
 /// reads it, ferries.py with the ferry feeds the rail-feeds job fetched (`rail::FERRY_FEEDS`, each
-/// zip's path on the NAS and its day: ferries.py counts them, dem/ferrygtfs.py) and the timetables
-/// looked up by hand (`inputs/ferries/freq`'s `timetables-*.json`), and the blocks from what it
-/// writes.
-pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<usize> {
+/// zip's path on the NAS and its day: ferries.py counts them, dem/ferrygtfs.py) and the static
+/// timetables' accepted zips (`statics`, crate::inputs::gtfs: the timetables looked up by hand,
+/// dem/staticgtfs.py), and the blocks from what it writes.
+pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &crate::inputs::Accepted) -> Result<usize> {
     use std::process::Command;
     let logical = crate::osmpass::set_name(date, "ferries");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let work = out.scratch.join("ferries-work");
     std::fs::remove_dir_all(&work).ok();
-    std::fs::create_dir_all(work.join("freq"))?;
+    std::fs::create_dir_all(&work)?;
     let run = |mut c: Command, what: &str| -> Result<()> {
         let o = store::spawn::output(&mut c).with_context(|| format!("run {what}"))?;
         anyhow::ensure!(o.status.success(), "{what}: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or(""));
@@ -382,27 +382,22 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
     run(osmium(&["tags-filter", &set_s, "nw/amenity=ferry_terminal", "-o", "terminals.osm.pbf", "--overwrite"]), "osmium (terminals)")?;
     run(osmium(&["export", "terminals.osm.pbf", "-f", "geojsonseq", "-a", "type,id", "-o", "terminals.geojsonseq", "--overwrite"]), "osmium export (terminals)")?;
     drop(p);
-    let p = crate::timings::phase("the timetables copied here", crate::timings::Class::NasRead);
-    let freq = out.root().join("inputs/ferries/freq");
-    let mut n_freq = 0;
-    for e in std::fs::read_dir(&freq).with_context(|| format!("{} (the timetables)", freq.display()))?.flatten() {
-        if e.path().extension().is_some_and(|x| x == "json") && e.file_name().to_string_lossy().starts_with("timetables-") {
-            store::sys::copy_data(e.path(), work.join("freq").join(e.file_name()))?;
-            n_freq += 1;
-        }
-    }
+    let p = crate::timings::phase("the feeds and static files listed", crate::timings::Class::NasRead);
     let feeds = work.join("ferry-feeds.json");
     std::fs::write(&feeds, serde_json::to_vec(&crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?)?)?;
+    let static_list = work.join("static.json");
+    let n_static = crate::inputs::gtfs::zips(statics).len();
+    std::fs::write(&static_list, serde_json::to_vec(&crate::inputs::gtfs::zips_json(statics))?)?;
     drop(p);
     let p = crate::timings::phase("ferries.py", crate::timings::Class::Mixed);
     let mut py = store::spawn::command("uv");
-    py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work).arg("--feeds").arg(&feeds);
+    py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work).arg("--feeds").arg(&feeds).arg("--static").arg(&static_list);
     crate::timings::child(&mut py);
     run(py, "ferries.py")?;
     drop(p);
     let fc: Value = serde_json::from_slice(&std::fs::read(work.join("ferries.json"))?)?;
     let lines: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(work.join("ferry-lines.json"))?)?;
-    eprintln!("ferries: {} features, {} lines ({n_freq} timetable files)", fc["features"].as_array().map_or(0, Vec::len), lines.len());
+    eprintln!("ferries: {} features, {} lines ({n_static} static files)", fc["features"].as_array().map_or(0, Vec::len), lines.len());
     let mut ntiles = 0;
     ferry_blocks(out, &fc, &lines, &mut ntiles)
 }

@@ -18,6 +18,13 @@ The reference day is the day the feed's zip was fetched, so a zip gives the same
 it's read. Only service dates from a year before it to 400 days after count (a feed with none is
 stale). Only ferry routes are counted (route_type 4, 1000–1099, 1200–1299, or the route ids the
 declaration lists in `ferry_routes` when the feed labels its ferries as something else).
+
+A static file compiled by hand (docs/inputs.md §6.7.2, `static=True`) is counted the same way over
+one reference year, its calendar read as months and days (dem/staticgtfs.py), its days from 1
+January of that year; its records are looked-up timetables' (`kind` "timetable"), each with the
+source its first matched route names (`route_long_name`, `route_url`, `checked`). A route pinned to
+an OSM line (`osm`) counts for that line alone, its ports the calls nearest the line's two ends,
+however far.
 """
 from __future__ import annotations
 
@@ -30,6 +37,8 @@ import zipfile
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
+
+import staticgtfs
 
 R_KM = 0.4
 DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
@@ -136,11 +145,13 @@ def has_service(zpath: Path, feed: dict, day: date) -> bool:
         return any(dates.get(t["service_id"]) for t in trips.values())
 
 
-def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
+def process(feed: dict, zpath: Path, lines: dict, day: date | None, static: bool = False) -> list[dict]:
     """The records of the lines of `lines` (id → {"ends": [a, b]}) a feed's ferries sail, counted
     from `day`, the day its zip was fetched. `feed`: its `id`, `name`, `url`, `source` (the page
-    about it) and `ferry_routes`."""
+    about it) and `ferry_routes`. A static file (`static`): see the module's docs."""
     z = zipfile.ZipFile(zpath)
+    if static:
+        day = date(staticgtfs.REF_YEAR, 1, 1)
     routes = ferry_routes(z, feed)
     if not routes:
         print(f"  {feed['id']}: no ferry routes", file=sys.stderr)
@@ -166,7 +177,8 @@ def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
     # timetables).
     today = day
     lo = today - timedelta(days=365)
-    dates = service_dates(z, today)
+    dates = staticgtfs.service_dates(z) if static else service_dates(z, today)
+    pins = {rid: r["osm"].strip() for rid, r in routes.items() if static and (r.get("osm") or "").strip()}
     # Headway-based trips: departures per trip run.
     runs: dict[str, list[int]] = defaultdict(list)  # trip → start offsets (s)
     for fr in rows(z, "frequencies.txt"):
@@ -175,7 +187,7 @@ def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
             runs[fr["trip_id"]] += list(range(a, b, max(hw, 60)))
     all_dates = sorted({d for tid in trips for d in dates.get(trips[tid]["service_id"], ())})
     if not all_dates:
-        print(f"  {feed['id']}: stale (no service since {lo})", file=sys.stderr)
+        print(f"  {feed['id']}: " + ("no timed sailings" if static else f"stale (no service since {lo})"), file=sys.stderr)
         return []
     feed_name = feed.get("name") or feed["id"]
 
@@ -188,24 +200,37 @@ def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
     inside = lambda p: box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3]
 
     out = []
+    pinned_lines = set(pins.values())
     for lid, L in lines.items():
         a, b = L["ends"]
-        if not (inside(a) and inside(b)):
-            continue
         sep = km(a, b)
         if sep < 0.05:
             continue  # round trips: no two ports to match
-        r = min(R_KM, sep * 0.3)
-        near_a = {s for s, p in fstops.items() if km(p, a) <= r}
-        near_b = {s for s, p in fstops.items() if km(p, b) <= r}
-        if not near_a or not near_b:
-            continue
+        if lid in pinned_lines:
+            near_a = near_b = set()
+        else:
+            if not (inside(a) and inside(b)):
+                continue
+            r = min(R_KM, sep * 0.3)
+            near_a = {s for s, p in fstops.items() if km(p, a) <= r}
+            near_b = {s for s, p in fstops.items() if km(p, b) <= r}
+            if not near_a or not near_b:
+                continue
         per_date = [defaultdict(int), defaultdict(int)]
         deps_a: dict[date, list[int]] = defaultdict(list)
         matched_routes = set()
         for tid, c in calls.items():
-            ia = next((i for i, (_, s, _) in enumerate(c) if s in near_a), None)
-            ib = next((i for i, (_, s, _) in enumerate(c) if s in near_b), None)
+            pin = pins.get(trips[tid]["route_id"])
+            if pin is not None:
+                # Pinned: this line's alone, its ports the calls nearest its ends.
+                at = [i for i, (_, s, _) in enumerate(c) if s in stops]
+                if pin != lid or len(at) < 2:
+                    continue
+                ia = min(at, key=lambda i: km(stops[c[i][1]], a))
+                ib = min(at, key=lambda i: km(stops[c[i][1]], b))
+            else:
+                ia = next((i for i, (_, s, _) in enumerate(c) if s in near_a), None)
+                ib = next((i for i, (_, s, _) in enumerate(c) if s in near_b), None)
             if ia is None or ib is None or ia == ib:
                 continue
             d = 0 if ia < ib else 1
@@ -243,6 +268,12 @@ def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
             "checked": f"{all_dates[0].isoformat()} to {all_dates[-1].isoformat()}",
             "gtfs_routes": sorted(routes[x].get("route_short_name") or routes[x].get("route_long_name") or x for x in matched_routes),
         }
+        if static:
+            first = routes[min(matched_routes)]
+            rec["kind"] = "timetable"
+            rec["source"] = first.get("route_long_name") or first.get("route_short_name") or feed_name
+            rec["url"] = first.get("route_url", "")
+            rec["checked"] = first.get("checked", "")
         # Weekdays with service in at least half the weeks the line runs.
         wd = {w for w in range(7) if sum(any(d.weekday() == w for d in v) for v in weeks.values()) >= 0.5 * len(weeks)}
         rec["days"] = days_text(wd)
@@ -252,13 +283,17 @@ def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
         fwd = sorted(d for d in days if today <= d < today + timedelta(days=365))
         if fwd:
             gap = any((b - a).days >= 30 for a, b in zip(fwd, fwd[1:]))
+            # (A static file's year comes round again: its break may span the new year, and it
+            # never just ends.)
+            if static:
+                gap = gap or (fwd[0] - fwd[-1]).days + 365 >= 30
             by_month = defaultdict(list)
             for d in fwd:
                 by_month[d.month - 1].append(per_day[d])
             if gap:
                 rec["months"] = months_text(set(by_month))
                 rec["season"] = "seasonal"
-            elif (fwd[-1] - today).days >= 330 and (fwd[0] - today).days <= 30:
+            elif static or ((fwd[-1] - today).days >= 330 and (fwd[0] - today).days <= 30):
                 rec["season"] = "year" if len(wd) == 7 else "some-days"
             if daily and len(by_month) >= 6:
                 low = min(statistics.median(v) for v in by_month.values())

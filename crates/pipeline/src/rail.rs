@@ -1,15 +1,17 @@
 //! Rail service (docs/plan.md §6, Rail service): trains a day on every rail way of the coverage,
-//! from the operators' timetables (GTFS) and the MTR's hand-researched lines, as `global/railfreq`;
+//! from the operators' timetables (GTFS) and the static timetables compiled by hand
+//! (crate::inputs::gtfs, docs/inputs.md §6.7.2: the MTR's lines among them), as `global/railfreq`;
 //! and the timetable feeds the ferries are counted from.
 //!
 //! Two jobs. `rail-feeds` finds the feeds (`dem/railfeeds.py`) from the accepted declarations of
 //! `inputs/timetables/feeds/` (crate::inputs::feeds, docs/inputs.md §6.7.1): the Mobility Database
 //! catalogue's feeds of the countries the coverage is in, by their boxes, the ones that run rail,
 //! and the declared feeds (operators' own, feeds behind an API key, the ferries'), and fetches
-//! each once into the rail sources. `rail` counts their trains (`dem/railgtfs.py`), marks the stops
-//! beyond the coverage, and matches the stop pairs onto the rail ways of the pass's rail set that
-//! touch the coverage (`extract`, then `railfreq`). The `ferries` job counts the ferry list's
-//! sailings (crate::ovconv).
+//! each once into the rail sources. `rail` counts their trains and the accepted static files'
+//! (`dem/railgtfs.py`: the static files' count rows as given, apart from the timed trains), marks
+//! the stops beyond the coverage, and matches the stop pairs onto the rail ways of the pass's rail
+//! set that touch the coverage (`extract`, then `railfreq`). The `ferries` job counts the ferry
+//! list's sailings and the static files' (crate::ovconv).
 //!
 //! The rail sources (`sources/rail/`, content-named, in the build manifest; docs/formats.md):
 //!
@@ -21,7 +23,6 @@
 //! | `fetched` | the day each zip's timetable counts from, by its content name |
 //! | `feeds` | the coverage's rail feeds, in reading order, each with its zip and day |
 //! | `ferry-feeds` | the ferry feeds, each with its zip and day |
-//! | `mtr-pairs`, `mtr` | the MTR's lines as stop pairs, and the research they were made from |
 //!
 //! A zip's typical weekday is looked for around the day it counts from (the day it was fetched),
 //! not the day it's read, so its counts don't change with the day they're made, and a zip with
@@ -29,8 +30,7 @@
 //! rail-feeds runs (when its key changes: a new pass's outlines, the coverage, the declarations,
 //! the catalogue or the keys) at least its declaration's `refresh` days after its day, and the same
 //! file then counts from that run's day (railfeeds.py). The catalogue is fetched from its
-//! declaration's URL when there's no copy; the MTR's files are put there by hand (docs/plan.md,
-//! Hand-made inputs).
+//! declaration's URL when there's no copy.
 
 use crate::coverage::{Coverage, Shape};
 use crate::out::Out;
@@ -45,8 +45,6 @@ pub const CHECKED: &str = "sources/rail/checked";
 pub const FETCHED: &str = "sources/rail/fetched";
 pub const FEEDS: &str = "sources/rail/feeds";
 pub const FERRY_FEEDS: &str = "sources/rail/ferry-feeds";
-pub const MTR_PAIRS: &str = "sources/rail/mtr-pairs";
-pub const MTR: &str = "sources/rail/mtr";
 /// Trains a day per rail way: sorted `(u32 OSM way id, f32 trains a day each way)`, negative for a
 /// lower bound (docs/formats.md, `/api/railfreq`).
 pub const RAILFREQ: &str = "global/railfreq";
@@ -56,7 +54,7 @@ pub fn zip_logical(id: &str) -> String {
     format!("sources/rail/gtfs/{id}")
 }
 
-/// A stop-pair record (railgtfs.py, mtrpairs.py): f32 lon_a, lat_a, lon_b, lat_b, u8 mode, f32 trains.
+/// A stop-pair record (railgtfs.py): f32 lon_a, lat_a, lon_b, lat_b, u8 mode, f32 trains.
 pub const PAIR: usize = 21;
 /// Mode bits: stop A, stop B beyond the coverage.
 pub const BEYOND_A: u8 = 0x20;

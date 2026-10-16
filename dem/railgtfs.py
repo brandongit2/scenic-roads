@@ -26,7 +26,17 @@ for B: a cross-border service, which railfreq runs as far as the track goes towa
 out pairs with both beyond (pipeline::rail). And --used: per feed its day, trips and duplicates, or
 why it was left out.
 
-usage: railgtfs.py --feeds feeds.json --out pairs.bin --used used.json [--today YYYY-MM-DD]
+Static files (--static: the accepted zips of inputs/timetables/gtfs/, docs/inputs.md §6.7.2,
+`{"zips": [{name, path}]}` in their drop-box paths' order), read after the feeds:
+  - their trips as a feed's, the days from `calendar.txt` read as months and days over one
+    reference year (dem/staticgtfs.py), the typical day the median-busy Tuesday to Thursday of that
+    year; their trains deduplicated with the feeds' by times;
+  - their count rows (`counts.txt`) of rail routes, as given, to --counts in their order: per row
+    the trains each way between its two stops (per_day, else per_week ÷ 7), A to B then B to A, at
+    the stops' positions as f32, the mode by the route's type, +0x80 for a lower bound (`at_least`).
+    Never merged with timed trains (they have no times).
+
+usage: railgtfs.py --feeds feeds.json --out pairs.bin --used used.json [--static static.json --counts counts.bin] [--today YYYY-MM-DD]
 """
 from __future__ import annotations
 
@@ -41,6 +51,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
+import staticgtfs
 from timings import phase
 
 
@@ -116,10 +127,13 @@ def service_days(z: zipfile.ZipFile, anchor: date) -> dict[str, set[date]]:
     return days
 
 
-def typical_day(trips: dict[str, tuple[str, str]], days: dict[str, set[date]], anchor: date) -> date | None:
-    """The median-busy Tuesday–Thursday from 30 days before `anchor` to 90 after, by rail trips; None
-    when there's no weekday service in that window (a stale feed)."""
-    cand = [anchor + timedelta(days=k) for k in range(-30, 91)]
+def typical_day(trips: dict[str, tuple[str, str]], days: dict[str, set[date]], anchor: date | None) -> date | None:
+    """The median-busy Tuesday–Thursday from 30 days before `anchor` to 90 after (None: of the static
+    files' reference year), by rail trips; None when there's no weekday service then (a stale feed)."""
+    if anchor is None:
+        cand = [date(staticgtfs.REF_YEAR, 1, 1) + timedelta(days=k) for k in range(365)]
+    else:
+        cand = [anchor + timedelta(days=k) for k in range(-30, 91)]
     cand = [d for d in cand if d.weekday() in (1, 2, 3)]
     per_service = defaultdict(int)
     for _, sid in trips.values():
@@ -137,17 +151,19 @@ def has_service(zpath: Path, anchor: date) -> bool:
         return bool(routes) and typical_day(trips, service_days(z, anchor), anchor) is not None
 
 
-def process(zpath: Path, anchor: date, seen: set, pairs: dict, weekly: dict, seen_week: set) -> dict:
+def process(zpath: Path, anchor: date | None, seen: set, pairs: dict, weekly: dict, seen_week: set) -> dict:
+    """A zip's trains into `pairs` (and `weekly`): a feed's from `anchor`, a static file's (None) by
+    its months and days."""
     with phase("the feeds' tables read", "mixed"):
         z = zipfile.ZipFile(zpath)
         routes = rail_routes(z)
         if not routes:
             return {"status": "no rail routes"}
         trips = {t["trip_id"]: (t["route_id"], t["service_id"]) for t in rows(z, "trips.txt") if t.get("route_id") in routes}
-        days = service_days(z, anchor)
+        days = service_days(z, anchor) if anchor is not None else staticgtfs.service_dates(z)
         day = typical_day(trips, days, anchor)
         if day is None:
-            return {"status": "stale (no weekday service in the window)"}
+            return {"status": "stale (no weekday service in the window)" if anchor is not None else "no timed trains"}
         active = {tid for tid, (_, sid) in trips.items() if day in days.get(sid, ())}
         # Its week, for trains that don't run that day: trip → days it runs that week.
         week = [day - timedelta(days=day.weekday()) + timedelta(days=k) for k in range(7)]
@@ -208,7 +224,38 @@ def process(zpath: Path, anchor: date, seen: set, pairs: dict, weekly: dict, see
                     if a != b:
                         k = (round(a[0], 5), round(a[1], 5), round(b[0], 5), round(b[1], 5), mode)
                         pairs[k] += 1
-    return {"status": "ok", "day": day.isoformat(), "trips": n_trips, "duplicates": n_dup, "rail_routes": len(routes)}
+    return {"status": "ok", "day": day.isoformat() if anchor is not None else day.strftime("%m-%d"), "trips": n_trips, "duplicates": n_dup, "rail_routes": len(routes)}
+
+
+def counted(zpath: Path) -> tuple[bytes, int]:
+    """A static file's count rows of rail routes as stop pairs (see the module's docs), and how many
+    rows."""
+    out = bytearray()
+    n = 0
+    with zipfile.ZipFile(zpath) as z:
+        routes = rail_routes(z)
+        stops = {}
+        for s in rows(z, "stops.txt"):
+            try:
+                stops[s["stop_id"]] = (float(s["stop_lon"]), float(s["stop_lat"]))
+            except (KeyError, ValueError):
+                continue
+        for c in staticgtfs.count_rows(z):
+            r = routes.get((c.get("route_id") or "").strip())
+            a, b = stops.get((c.get("from_stop_id") or "").strip()), stops.get((c.get("to_stop_id") or "").strip())
+            if r is None or a is None or b is None or a == b:
+                continue
+            v = staticgtfs.count_values(c)
+            per_day = v.get("per_day")
+            if not isinstance(per_day, (int, float)) and isinstance(v.get("per_week"), (int, float)):
+                per_day = v["per_week"] / 7
+            if not isinstance(per_day, (int, float)):
+                continue
+            mode = r[0] | (0x80 if (c.get("at_least") or "").strip() == "1" else 0)
+            for p, q in ((a, b), (b, a)):
+                out += struct.pack("<ffffBf", p[0], p[1], q[0], q[1], mode, float(per_day))
+            n += 1
+    return bytes(out), n
 
 
 def main():
@@ -217,9 +264,14 @@ def main():
     ap.add_argument("--out", required=True, help="the stop pairs")
     ap.add_argument("--used", required=True, help="per feed: its day, trips and duplicates")
     ap.add_argument("--today", help="every feed's window at this day (YYYY-MM-DD), not the day it was fetched")
+    ap.add_argument("--static", help="the static files' list, with each zip's path")
+    ap.add_argument("--counts", help="the static files' count rows as stop pairs")
     a = ap.parse_args()
+    if bool(a.static) != bool(a.counts):
+        ap.error("--static and --counts go together")
     with phase("the feed list read", "disk"):
         feeds = json.loads(Path(a.feeds).read_text())["feeds"]
+        static = json.loads(Path(a.static).read_text())["zips"] if a.static else []
     today = date.fromisoformat(a.today) if a.today else None
     replaced = {r: f["id"] for f in feeds if f.get("path") for r in f.get("replaces", ())}
     pairs: dict[tuple, int] = defaultdict(int)
@@ -244,6 +296,20 @@ def main():
         used.append({**facts, **res})
         print(f"{feed['id']:<28} {feed.get('provider', '')[:40]:<40} {res.get('status')}  {res.get('day', '')} trips {res.get('trips', 0)} dup {res.get('duplicates', 0)}", file=sys.stderr, flush=True)
     print(f"progress: {len(feeds)}/{len(feeds)} feeds", file=sys.stderr, flush=True)
+    counts = bytearray()
+    for zf in static:
+        facts = {"static": zf["name"]}
+        try:
+            b, n = counted(Path(zf["path"]))
+            res = process(Path(zf["path"]), None, seen, pairs, weekly, seen_week)
+            counts += b
+            res["count_rows"] = n
+        except (zipfile.BadZipFile, KeyError, csv.Error) as e:
+            res = {"status": f"unreadable: {e}"}
+        used.append({**facts, **res})
+        print(f"{zf['name']:<28} {res.get('status')} trips {res.get('trips', 0)} dup {res.get('duplicates', 0)} count rows {res.get('count_rows', 0)}", file=sys.stderr, flush=True)
+    if a.counts:
+        Path(a.counts).write_bytes(bytes(counts))
     # Pairs with no train on the typical day take their weekly average.
     with phase("the stop pairs written", "disk"):
         n_week = 0

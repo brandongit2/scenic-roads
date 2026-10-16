@@ -786,8 +786,9 @@ pub const ITEMS_V: u32 = 1;
 pub const ROADUNITS_V: u32 = 1;
 /// Rail stops near the built units (pipeline::ovconv::stations_job), and ferries worldwide
 /// (ferries_job).
+/// (Ferries 2: the looked-up timetables read from the accepted static files, docs/inputs.md §6.7.2.)
 pub const STATIONS_V: u32 = 1;
-pub const FERRIES_V: u32 = 1;
+pub const FERRIES_V: u32 = 2;
 /// The landmark points from the candidates (crate::marksjob).
 pub const MARKS_V: u32 = 1;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
@@ -798,9 +799,10 @@ pub const HERITAGE_V: u32 = 3;
 pub const OVERLAYS_V: u32 = 1;
 
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
-/// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq).
+/// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq). (Rail 2: the static
+/// files counted with the feeds, the MTR's among them, docs/inputs.md §6.7.2.)
 pub const RAIL_FEEDS_V: u32 = 1;
-pub const RAIL_V: u32 = 1;
+pub const RAIL_V: u32 = 2;
 
 /// The current units' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
@@ -1583,7 +1585,7 @@ pub struct RegionLeft {
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
 /// and what was done (`done`). `inputs`: digests of what jobs read from `inputs/` (not in the
-/// manifest), by name: "ferries-freq" (the ferry timetables), "regions" (the recipes). `tiles`: the
+/// manifest), by name: "keys" (the key names inputs/keys.env holds), "regions" (the regions' accepted version). `tiles`: the
 /// terrain packs' indexes, which the units' keys read (`unit_terrain`). The agent runs
 /// the first work not waiting out a failure; a helper takes a step's from the far end (the agent
 /// offers each step's targets together, in this order). The order (docs/plan.md §8, Order):
@@ -1930,14 +1932,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         // (Listed after them, not held back: while one waits out a failure, the others publish.)
         match prune_units(cov, date, m, &units) {
             Some(w) => work.push(w),
-            None => match roads_chain_drawing_low(date, &m_then, done, inputs, Some(reach), &keep, roots_held, low) {
+            None => match roads_chain_drawing_low(date, &m_then, done, Some(reach), &keep, roots_held, low) {
                 Some(w) => work.push(w),
                 None => work.extend(catalog_work(&m_then, done, inputs, &ready, updates.held)),
             },
         }
         // (Not while the regions can't be read: its catalog waits for them.)
         ends = work.len() == before && inputs.get("regions").map(String::as_str) != Some("?");
-        update_left = remaining(done, |d| roads_chain_drawing_low(date, &m_then, d, inputs, Some(reach), &keep, roots_held, low).or_else(|| catalog_work(&m_then, d, inputs, &ready, updates.held)));
+        update_left = remaining(done, |d| roads_chain_drawing_low(date, &m_then, d, Some(reach), &keep, roots_held, low).or_else(|| catalog_work(&m_then, d, inputs, &ready, updates.held)));
         // The regions done meanwhile: their slope and tree cover; then the regions' terrain and
         // units: a helper's, and this Mac's while the map update's work is another's or waits out a
         // failure.
@@ -1995,14 +1997,15 @@ fn rail_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &K
 /// The rail service's chain (crate::rail): Some(its first stale step, or None when it's done), or
 /// None while it can't go on: before the timetable feeds' declarations have an accepted version
 /// (crate::inputs::feeds), while inputs/keys.env can't be read (`inputs` "keys" "?"), and,
-/// rail-feeds done, without the feeds' list or the pass's rail set.
+/// rail-feeds done, without the feeds' list, the static files' accepted version
+/// (crate::inputs::gtfs: rail waits for it rather than count without them) or the pass's rail set.
 /// - rail-feeds reads what decides which feeds there are: the declarations (their accepted index),
 ///   the catalogue's copy (none: it's fetched), the coverage, the pass's outlines (the countries
 ///   it's in) and which keys inputs/keys.env holds (`inputs` "keys": their names, never their
 ///   values). Not what it writes (the feeds' lists, checks and zips), so it doesn't run again for
 ///   its own sake.
-/// - rail reads the feeds' list (each feed's zip by content name, and its day), the MTR's pairs, the
-///   pass's rail set and the coverage.
+/// - rail reads the feeds' list (each feed's zip by content name, and its day), the static files'
+///   accepted index (each zip by content), the pass's rail set and the coverage.
 fn rail_next(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Option<Work>> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let declared = m.get(&crate::inputs::logical(crate::inputs::feeds::UNIT))?;
@@ -2021,7 +2024,8 @@ fn rail_next(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Ke
     }
     let feeds = m.get(crate::rail::FEEDS)?;
     let set = m.get(&crate::osmpass::set_name(date, "rail"))?;
-    let k = h(&[&format!("rail {RAIL_V}"), feeds, get(crate::rail::MTR_PAIRS), set, &cover]);
+    let statics = m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?;
+    let k = h(&[&format!("rail {RAIL_V}"), feeds, statics, set, &cover]);
     Some((done.lo.get("rail").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] }))
 }
 
@@ -2107,8 +2111,8 @@ fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<
 
 /// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
 /// the terrain and slope roots; its first stale step.
-fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
-    roads_chain_drawing_low(date, m, done, inputs, reach, &|_, _| true, [false, false], true)
+fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> Option<Work> {
+    roads_chain_drawing_low(date, m, done, reach, &|_, _| true, [false, false], true)
 }
 
 /// Whether so much of the low zooms is stale that a map update makes them however long since the last
@@ -2125,7 +2129,7 @@ pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches
 #[allow(clippy::too_many_arguments)]
 /// `low` false: the low zooms later (`Publishing::low_later`): no lo packs (the roots are held by
 /// `roots_held`).
-fn roads_chain_drawing_low(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool, roots_held: [bool; 2], low: bool) -> Option<Work> {
+fn roads_chain_drawing_low(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool, roots_held: [bool; 2], low: bool) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
     if let Some(w) = prune_tiles(m, reach) {
@@ -2165,15 +2169,17 @@ fn roads_chain_drawing_low(date: &str, m: &BTreeMap<String, String>, done: &Keys
     if !built.is_empty() {
         for (step, v, set, extra, per_unit) in [
             ("stations", STATIONS_V, "rail", String::new(), true),
-            ("ferries", FERRIES_V, "ferries", inputs.get("ferries-freq").cloned().unwrap_or_default(), false),
+            ("ferries", FERRIES_V, "ferries", String::new(), false),
         ] {
             let Some(set_c) = m.get(&crate::osmpass::set_name(date, set)) else { continue };
             let mut ins = vec![format!("{step} {v}"), set_c.clone(), extra];
-            // (The ferries count the ferry feeds' zips: they wait for the list, the zips' content
-            // names and days, rather than be made without them.)
+            // (The ferries count the ferry feeds' zips and the static files: they wait for the
+            // list, the zips' content names and days, and for the static files' accepted index,
+            // rather than be made without them.)
             if step == "ferries" {
-                let Some(f) = m.get(crate::rail::FERRY_FEEDS) else { continue };
+                let (Some(f), Some(s)) = (m.get(crate::rail::FERRY_FEEDS), m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))) else { continue };
                 ins.push(f.clone());
+                ins.push(s.clone());
             }
             // The stops are clipped to the built units' tiles; the ferries aren't clipped at all.
             if per_unit {
@@ -2821,7 +2827,7 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 /// the landmarks' and the 3D buildings', for the forecast (crate::agent::forecast).
 pub fn chains_left(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> [Vec<Work>; 4] {
     [
-        remaining(done, |d| roads_chain(date, m, d, inputs, reach)),
+        remaining(done, |d| roads_chain(date, m, d, reach)),
         remaining(done, |d| rail_chain(cov, date, m, d, inputs)),
         remaining(done, |d| landmarks_chain(cov, date, m, d, inputs)),
         remaining(done, |d| bld_next(cov, m, d, inputs)),
@@ -2885,7 +2891,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     tiles.done = packs.iter().filter(|(t, k)| pack_fresh(done.pack.get(t).map(String::as_str), k)).count() + count(&lo, &done.lo);
     tiles.total = tiles.total.map(|t| t + lo.len());
     out.push(tiles);
-    let roads: Vec<Work> = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).into_iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).collect();
+    let roads: Vec<Work> = remaining(done, |d| roads_chain(date, m, d, reach)).into_iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).collect();
     let mut road_steps = group(ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads.len()));
     road_steps.next = next_of(&roads);
     out.push(road_steps);
@@ -4457,17 +4463,22 @@ pub(crate) mod tests {
         }
         m.insert("base/6-28-16".into(), "base/6-28-16.1111111111111111.sect".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
-        let find = |m: &BTreeMap<String, String>, step: &str| remaining(&Keys::default(), |d| roads_chain("d", m, d, &BTreeMap::new(), None)).into_iter().find(|w| w.step == step);
-        // (The ferries wait for the ferry feeds' list.)
+        let find = |m: &BTreeMap<String, String>, step: &str| remaining(&Keys::default(), |d| roads_chain("d", m, d, None)).into_iter().find(|w| w.step == step);
+        // (The ferries wait for the ferry feeds' list and the static files' accepted version.)
         assert!(find(&m, "ferries").is_none());
         m.insert(crate::rail::FERRY_FEEDS.into(), "sources/rail/ferry-feeds.3333333333333333.json".into());
+        assert!(find(&m, "ferries").is_none());
+        m.insert(crate::inputs::logical(crate::inputs::gtfs::UNIT), "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into());
         let key = |m: &BTreeMap<String, String>, step: &str| find(m, step).unwrap().targets[0].1.clone();
         let (stations, ferries) = (key(&m, "stations"), key(&m, "ferries"));
         m.insert("base/6-40-20".into(), "base/6-40-20.2222222222222222.sect".into());
         m.insert("global/roads/6-40-20".into(), "global/roads/6-40-20.2222222222222222.sect".into());
         assert_ne!(key(&m, "stations"), stations, "stops are clipped to the built units");
         assert_eq!(key(&m, "ferries"), ferries);
-        // Another list (a ferry feed fetched again): the ferries again.
+        // Another list (a ferry feed fetched again), other static files: the ferries again.
+        let mut m2 = m.clone();
+        m2.insert(crate::inputs::logical(crate::inputs::gtfs::UNIT), "sources/inputs/timetables/gtfs/@index.2222222222222222.json".into());
+        assert_ne!(key(&m2, "ferries"), ferries);
         m.insert(crate::rail::FERRY_FEEDS.into(), "sources/rail/ferry-feeds.4444444444444444.json".into());
         assert_ne!(key(&m, "ferries"), ferries);
     }
@@ -4487,8 +4498,11 @@ pub(crate) mod tests {
         let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
         assert_eq!(w.step, "rail-feeds");
         done.record(&w.step, &w.targets);
-        // Its list made: then the trains; then nothing, until what decides them changes.
+        // Its list made: then, once the static files have an accepted version, the trains; then
+        // nothing, until what decides them changes.
         m.insert(crate::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        assert!(rail_next(&c, "d", &m, &done, &lta).is_none(), "the trains wait for the static files");
+        m.insert(crate::inputs::logical(crate::inputs::gtfs::UNIT), "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into());
         let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
         assert_eq!(w.step, "rail");
         done.record(&w.step, &w.targets);
@@ -4511,8 +4525,8 @@ pub(crate) mod tests {
         }
         let bigger = Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,25".into()] }], None, d.path()).unwrap();
         assert_eq!(rail_chain(&bigger, "d", &m, &done, &lta).unwrap().step, "rail-feeds");
-        // A new list (a feed fetched), a new pass's rail set, other MTR pairs: the trains again.
-        for (l, f) in [(crate::rail::FEEDS.to_string(), "sources/rail/feeds.6666666666666666.json"), (crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.7777777777777777.osm.pbf"), (crate::rail::MTR_PAIRS.to_string(), "sources/rail/mtr-pairs.8888888888888888.bin")] {
+        // A new list (a feed fetched), a new pass's rail set, other static files: the trains again.
+        for (l, f) in [(crate::rail::FEEDS.to_string(), "sources/rail/feeds.6666666666666666.json"), (crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.7777777777777777.osm.pbf"), (crate::inputs::logical(crate::inputs::gtfs::UNIT), "sources/inputs/timetables/gtfs/@index.8888888888888888.json")] {
             let mut m2 = m.clone();
             m2.insert(l, f.into());
             assert_eq!(rail_chain(&c, "d", &m2, &done, &lta).unwrap().step, "rail");
@@ -4530,6 +4544,7 @@ pub(crate) mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         m.insert(crate::inputs::logical(crate::inputs::feeds::UNIT), "sources/inputs/timetables/feeds/@index.1111111111111111.json".into());
+        m.insert(crate::inputs::logical(crate::inputs::gtfs::UNIT), "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into());
         m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
         // From the start, listed after the regions' work (the units don't wait for it, nor it for them).
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
@@ -4584,6 +4599,8 @@ pub(crate) mod tests {
         assert_eq!(line(&m, &done, &lta).left, None, "no rail set");
         assert!(!line(&m, &done, &lta).finished());
         m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        assert_eq!(line(&m, &done, &lta).left, None, "no static files' accepted version");
+        m.insert(crate::inputs::logical(crate::inputs::gtfs::UNIT), "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into());
         assert_eq!(line(&m, &done, &lta).left, Some(1));
         let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
         done.record(&w.step, &w.targets);
