@@ -264,12 +264,19 @@ pub fn write_hint(nas: &dyn Nas, t: &Term) -> Result<()> {
 /// (`20261005-2202-61eb22c`: the UTC minute it was published, then its commit) compare by that
 /// minute; one that isn't published ("development") follows only another that isn't, and anything
 /// follows it (a test lead never keeps the published app from leading).
+/// A published app's version's moment (`YYYYMMDD-HHMM-…`), by bytes: a version is a member's to
+/// say, and slicing it mid-character would panic. None: not a published app's ("development").
+fn when(v: &str) -> Option<&[u8]> {
+    let v = v.as_bytes();
+    (v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit)).then(|| &v[..13])
+}
+
+/// Whether `v` is a published app's version (one `app_at_least` orders).
+pub fn is_version(v: &str) -> bool {
+    when(v).is_some()
+}
+
 pub fn app_at_least(a: &str, b: &str) -> bool {
-    // (By bytes: a version is a member's to say, and slicing it mid-character would panic.)
-    fn when(v: &str) -> Option<&[u8]> {
-        let v = v.as_bytes();
-        (v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit)).then(|| &v[..13])
-    }
     if a == b {
         return true;
     }

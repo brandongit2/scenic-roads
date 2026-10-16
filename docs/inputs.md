@@ -2063,13 +2063,15 @@ rollout, in order:
    coarsest overview) and takes them in when clean. The catalog's credits are the declarations'
    (MRDEM's and 3DEP's lines beside HRDEM's, GSI's five layers one line).
 2. *The switch:* the check records it (`sources/inputs/elevation/@switched`: the accepted index and
-   the app that recorded it) as soon as a version of the declarations is accepted, once; no proof is
-   run. Until it's recorded, `elev` and the unit job don't run and the units wait (the agent says
+   the published app that recorded it) as soon as a version of the declarations is accepted, once;
+   no proof is run. A development build records none (it would bar no app); the next published
+   app's check does. Until it's recorded, `elev` and the unit job don't run and the units wait (the agent says
    why). From the switch on, no app older than the one it was recorded on leads, is handed the lead,
    or is granted work by the coordinator, a page's work included (its code the lead's)
    (`regions::read::switch_app` reads both switches, the coordinator's `min_app`). The units' keys
    then name the datasets meeting them: those a single dataset meets (FABDEM's alone: everywhere
-   outside North America and Japan) are re-keyed, not built (`agent::rekey`); those more than one
+   outside North America and Japan) are re-keyed, not built (`agent::rekey`): their heights are
+   taken unchecked, the generic sampler not compared with the per-source code it replaced; those more than one
    meets are built again with the blends, their kept samples reused where one dataset alone covers
    a vertex. **No rollback past the switch** but by `scenic lead take --force --downgrade`.
 

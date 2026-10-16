@@ -25,7 +25,8 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
     manifest.contains_key(&crate::inputs::switched_logical(super::UNIT))
 }
 
-/// The app the regions' switch was proved on, from the records' `@switched` (its `app`): Ok(None)
+/// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, from
+/// the records' `@switched` (its `app`): Ok(None)
 /// when not switched. One that can't be read or parsed, or names no app, is an error: unknown,
 /// never taken for an app every Mac passes.
 pub fn switch_app(manifest: &BTreeMap<String, String>, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Option<String>> {
@@ -43,17 +44,17 @@ pub fn switch_app(manifest: &BTreeMap<String, String>, read: &dyn Fn(&str) -> Re
     Ok(newest)
 }
 
-/// Whether a Mac on app `app` may lead, or be handed the lead or work, given the regions' switch's
+/// Whether a Mac on app `app` may lead, or be handed the lead or work, given the readers' switches'
 /// app as read (`switch_app`): not on an older one; not while that can't be read (unknown).
 pub fn may_lead(app: &str, regions: &std::result::Result<Option<String>, String>) -> std::result::Result<(), String> {
     match regions {
-        Err(e) => Err(format!("the app the regions' switch was proved on can't be read now ({e})")),
-        Ok(Some(min)) if !crate::pool::term::app_at_least(app, min) => Err(format!("its app {app} is older than the one the regions' switch was proved on ({min})")),
+        Err(e) => Err(format!("the app the newer readers' switch (the regions', the elevation datasets') was recorded on can't be read now ({e})")),
+        Ok(Some(min)) if !crate::pool::term::app_at_least(app, min) => Err(format!("its app {app} is older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on ({min})")),
         Ok(_) => Ok(()),
     }
 }
 
-/// The app a member needs to lead: the term's and the regions' switch's, whichever is newer.
+/// The app a member needs to lead: the term's and the readers' switches', whichever is newer.
 pub fn needed_app(term: Option<&str>, regions: Option<&str>) -> Option<String> {
     match (term, regions) {
         (Some(t), Some(r)) => Some(if crate::pool::term::app_at_least(t, r) { t } else { r }.to_string()),

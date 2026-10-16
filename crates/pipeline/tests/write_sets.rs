@@ -50,7 +50,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "region_progress", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's progress"),
     ("crates/pipeline/src/agent/mod.rs", "as_read", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan's keys"),
     ("crates/pipeline/src/agent/mod.rs", "tend_gate", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the gate's plan"),
-    ("crates/pipeline/src/agent/pool.rs", "regions_app", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the app the regions' switch was proved on, for the pool's views and handovers"),
+    ("crates/pipeline/src/agent/pool.rs", "regions_app", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the app the newer readers' switch (the regions', the elevation datasets') was recorded on, for the pool's views and handovers"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
     ("crates/pipeline/src/heritage.rs", "registers_now", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the heritage registers' accepted version the agent's plan keys heritage-sites on"),
     ("crates/pipeline/src/inputs/regions/read.rs", "source_now", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the regions' accepted version the readers read"),
@@ -63,6 +63,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/osmpass.rs", "latest_pass_by", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a pass complete by the records (docs/pool.md §7.4)"),
     ("crates/pipeline/src/agent/resume.rs", "unmerged", "-> Handoff {", "its signature: the member's unacknowledged entries laid together for its job's Out to read (never handed off)"),
     ("crates/pipeline/src/agent/resume.rs", "unmerged", "Handoff::default()", "a resumable job's member's unacknowledged entries laid together, for its Out to read over the snapshot (never handed off: its own saves are)"),
+    ("crates/pipeline/src/inputs/elevation_tests.rs", "the_check_job_records_the_switch_once_with_the_first_accepted_index", "\"state/build/manifest.json\"), b\"{}\"", "a test's scratch NAS root: its empty records"),
+    ("crates/pipeline/src/inputs/elevation_tests.rs", "the_check_job_records_the_switch_once_with_the_first_accepted_index", "read_record(", "a test reading back the records its check job wrote"),
 ];
 
 /// The lines writing the records outside `Out`, and the exemptions that matched none.

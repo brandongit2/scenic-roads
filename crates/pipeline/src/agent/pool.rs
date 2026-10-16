@@ -423,7 +423,7 @@ impl Side {
         self.hand_to_with(to, &self.regions_app())
     }
 
-    /// `hand_to`, the regions' switch's app (`regions_app`) read already: a view reads it once.
+    /// `hand_to`, the readers' switches' app (`regions_app`) read already: a view reads it once.
     pub fn hand_to_with(&self, to: &str, regions: &std::result::Result<Option<String>, String>) -> std::result::Result<(), String> {
         self.driver().hand_to(&self.io(), to)?;
         let app = self.heartbeat(to).map(|h| h.pool.app).unwrap_or_default();
@@ -434,7 +434,7 @@ impl Side {
         }
     }
 
-    /// The app the regions' switch was proved on, when the records have it
+    /// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, when the records have it
     /// (crate::inputs::regions::read::switch_app): no member on an older one leads.
     pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
         let read = |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };

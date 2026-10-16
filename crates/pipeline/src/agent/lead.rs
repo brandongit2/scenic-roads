@@ -527,8 +527,8 @@ fn view(run: &Run, auto: bool) -> View {
     let pool_beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
     let mut beats: Vec<(String, Heartbeat)> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
-    // (The app a member needs: the term's, and once the regions' switch is recorded, the one it was
-    // proved on, whichever is newer: an older one is "app too old".)
+    // (The app a member needs: the term's, and once a readers' switch is recorded, the one it was
+    // recorded on, whichever is newer: an older one is "app too old".)
     // (Read once for the view: every member's handover and state is judged by it.)
     let regions = side.regions_app();
     let need = crate::inputs::regions::read::needed_app(cur.lead.as_ref().map(|t| t.app.as_str()), regions.as_ref().ok().and_then(|r| r.as_deref()));
@@ -557,7 +557,7 @@ fn view(run: &Run, auto: bool) -> View {
             me: id == me,
             leads: is_lead,
             state: match &regions {
-                Err(e) => format!("the regions' switch's app unknown ({e})"),
+                Err(e) => format!("the readers' switches' app unknown ({e})"),
                 Ok(_) => state_of(&h, now, need.as_deref()),
             },
             out_of_touch: h.pool.beat == 0 || h.pool.out_of_touch(now),
@@ -1504,7 +1504,7 @@ mod tests {
             // Proved on an app newer than theirs: B can't be handed the lead, and the view says why.
             std::fs::write(a.root.join("sw.json"), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();
             switch_to("sw.json");
-            assert!(a.run.side.hand_to(&ib).unwrap_err().contains("older than the one the regions' switch was proved on"));
+            assert!(a.run.side.hand_to(&ib).unwrap_err().contains("older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on"));
             a.run.controls.stale = true;
             a.go();
             let v = a.view();
@@ -1516,7 +1516,7 @@ mod tests {
             a.run.controls.stale = true;
             a.go();
             let v = a.view();
-            assert!(v.members.iter().all(|m| m.state.starts_with("the regions' switch's app unknown")), "{:?}", v.members);
+            assert!(v.members.iter().all(|m| m.state.starts_with("the readers' switches' app unknown")), "{:?}", v.members);
         }
     }
 }

@@ -40,9 +40,9 @@ struct Fixture {
     checks: Elevation,
 }
 
-impl Fixture {
-    fn new(files: Vec<(&str, Vec<u8>)>) -> Fixture {
-        let mut f = MapFetch::default();
+/// The data the fixtures' declarations name, served by URL.
+fn fetch() -> MapFetch {
+    let mut f = MapFetch::default();
         f.0.insert("https://e.org/a.tif".into(), Some(tile(2.0, 48.0)));
         f.0.insert("https://e.org/t/N48E002.tif".into(), Some(tile(2.0, 48.0)));
         f.0.insert("https://e.org/t/N49E002.tif".into(), Some(tile(2.0, 49.0)));
@@ -61,6 +61,12 @@ impl Fixture {
             }
         }
         f.0.insert("https://e.org/half.tif".into(), Some(crate::geotiff::write_f32(72, 36, &half, 16, [30.0, 100.0 * PX, 0.0, 41.0, 0.0, -100.0 * PX], 4326, Some(-9999.0)).unwrap()));
+        f
+}
+
+impl Fixture {
+    fn new(files: Vec<(&str, Vec<u8>)>) -> Fixture {
+        let f = fetch();
         Fixture { files: files.into_iter().map(|(p, b)| (p.to_string(), Arc::new(b))).collect(), checks: Elevation::new(Arc::new(f), None) }
     }
 
@@ -204,11 +210,52 @@ fn a_pyramid_of_tiles_not_256_pixels_is_refused() {
     assert!(w[0].message.contains("512 × 512"), "{}", w[0].message);
 }
 
+const APP: &str = "20261016-1200-abcdef0";
+
 #[test]
-fn the_switch_is_recorded_as_soon_as_a_version_is_accepted() {
-    let f = Fixture::new(vec![]);
+fn the_switch_names_the_accepted_index_and_a_published_app_only() {
+    let mut f = Fixture::new(vec![]);
+    f.checks.app = Some(APP.into());
     let b = f.checks.switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json").unwrap().expect("switched at once");
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["index"], "sources/inputs/elevation/@index.0123456789abcdef.json");
-    assert!(v["app"].as_str().is_some_and(|a| !a.is_empty()), "{v}");
+    assert_eq!(v, serde_json::json!({ "index": "sources/inputs/elevation/@index.0123456789abcdef.json", "app": APP }));
+    // A development build records none: it would bar no app, for good.
+    f.checks.app = Some("development".into());
+    assert!(f.checks.switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json").unwrap().is_none());
+}
+
+#[test]
+fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
+    TEST_PREPARED.with(|t| *t.borrow_mut() = Some((Arc::new(fetch()), APP.to_string())));
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    std::fs::create_dir_all(root.join("state/build")).unwrap();
+    std::fs::write(root.join("state/build/manifest.json"), b"{}").unwrap();
+    let dir = root.join("inputs/elevation");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let drop = |p: &str, b: &[u8]| {
+        std::fs::write(dir.join(p), b).unwrap();
+        std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
+    };
+    let manifest = || -> BTreeMap<String, String> { crate::out::read_record(&root.join("state/build/manifest.json")).unwrap() };
+    let run = || {
+        let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap()
+    };
+    drop("single.toml", &decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\""));
+    let said = run();
+    let m = manifest();
+    let first = m.get(&super::super::logical(UNIT)).cloned().unwrap_or_else(|| panic!("not taken in: {said}"));
+    assert!(switched(&m), "{said}");
+    let sw = m[&super::super::switched_logical(UNIT)].clone();
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(&sw)).unwrap()).unwrap();
+    assert_eq!(v, serde_json::json!({ "index": first, "app": APP }));
+    // A later version replaces the index; the switch stays as it was.
+    drop("second.toml", &decl("rank = 1", "format = \"geotiff\"\nurl = \"https://e.org/t/N48E002.tif\""));
+    let said = run();
+    let m = manifest();
+    assert_ne!(m[&super::super::logical(UNIT)], first, "{said}");
+    assert_eq!(m[&super::super::switched_logical(UNIT)], sw);
+    TEST_PREPARED.with(|t| *t.borrow_mut() = None);
 }

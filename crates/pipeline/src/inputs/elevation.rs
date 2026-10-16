@@ -16,7 +16,7 @@
 //! What's measured goes in the index with the declaration (`facts.measured`, `facts.extent`), so the
 //! unit jobs read the order and coverage from the index alone (crate::dem::declared::plan). The
 //! units are built only once the records say the readers switched (`@switched`, recorded by the
-//! check as soon as a version is accepted, naming the app that recorded it: docs/inputs.md §6.8).
+//! check as soon as a version is accepted, naming the published app that recorded it: docs/inputs.md §6.8).
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::dem::declared::{self, Data, Declaration, Measured};
@@ -48,12 +48,20 @@ pub struct Elevation {
     /// What was measured, by what it was measured from (a declaration's `keyed` and its index's
     /// hash): a version checked whole twice reads the data once.
     memo: Mutex<HashMap<String, std::result::Result<Measured, String>>>,
+    /// The app the switch records; None: this program's (`agent::app_version`).
+    pub app: Option<String>,
 }
 
 impl Elevation {
     pub fn new(fetch: Arc<dyn Fetch>, outlines: Option<Outlines>) -> Elevation {
-        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default() }
+        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default(), app: None }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The check job's reader and app in tests (`prepared`): no network, and a published app's version.
+    pub static TEST_PREPARED: std::cell::RefCell<Option<(Arc<dyn Fetch>, String)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// What kind of file a drop-box path is: a declaration (its dataset's id), an index, or a dataset's
@@ -410,8 +418,16 @@ impl Checks for Elevation {
 
     fn switch(&self, _root: &Path, index: &str) -> Result<Option<Vec<u8>>> {
         // (As soon as a version is accepted: the version and the app that recorded it, which bars
-        // older apps from leading: regions::read::switch_app.)
-        let app = crate::agent::app_version(std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?);
+        // older apps from leading: regions::read::switch_app. Not by an app that isn't published
+        // (a development build): it would bar none, for good; the next published app's check
+        // records it.)
+        let app = match &self.app {
+            Some(a) => a.clone(),
+            None => crate::agent::app_version(std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?),
+        };
+        if !crate::pool::term::is_version(&app) {
+            return Ok(None);
+        }
         Ok(Some(serde_json::to_vec_pretty(&serde_json::json!({ "index": index, "app": app }))?))
     }
 
@@ -455,6 +471,10 @@ impl Checks for Elevation {
             },
             None => None,
         };
+        #[cfg(test)]
+        if let Some((fetch, app)) = TEST_PREPARED.with(|t| t.borrow().clone()) {
+            return Ok(Some(Box::new(Elevation { app: Some(app), ..Elevation::new(fetch, outlines) })));
+        }
         Ok(Some(Box::new(Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines))))
     }
 }

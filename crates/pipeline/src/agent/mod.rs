@@ -4276,7 +4276,7 @@ impl Agent {
                 return Vec::new();
             }
         };
-        // (Once the regions' switch is recorded, an app older than the one it was proved on reads
+        // (Once a readers' switch is recorded, an app older than the one it was recorded on reads
         // the wrong regions: it builds nothing, and says so.)
         let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| std::fs::read(root.join(n)).with_context(|| format!("read {n}"))).map_err(|e| format!("{e:#}"));
         // (And the coordinator grants nothing to an app older than it, a page's included.)
@@ -8404,7 +8404,7 @@ mod tests {
         let a = agent(&root, &home);
         let (mut w, mut held) = (Vec::new(), false);
         assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
-        assert!(w.iter().any(|x| x.why.contains("older than the one the regions' switch was proved on")), "{w:?}");
+        assert!(w.iter().any(|x| x.why.contains("older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on")), "{w:?}");
         // Its file unreadable: unknown, so nothing either.
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&BTreeMap::from([(sw, "gone.json".to_string())])).unwrap());
         let mut w = Vec::new();
