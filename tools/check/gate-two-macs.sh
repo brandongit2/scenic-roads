@@ -1,14 +1,15 @@
 #!/bin/zsh
-# The gate's two-Mac trial (docs/inputs.md §4.10): the real agents, with the pool on, over a
+# The gate's two-Mac trial (docs/inputs.md §4.10): the real agents, in the pool, over a
 # scratch folder of the NAS (never the project folder), each Mac's in a folder of its own (never the
 # app's), its coordinator on a port of its own ($GATE_PORT, 18092 unless set: never 8090, the real
 # agent's, nor pool-two-macs.sh's 18091), checking the
 # test unit `_gate-test` with the real `scenic-build inputs`. Run on each Mac, from one build of the
 # app (the same on both: a member gets jobs only from a lead on its own app):
 #
-#   gate-two-macs.sh root <folder>              the scratch folder: the pool's records as it begins,
-#                                               this Mac their writer, the test unit on the gate, its
-#                                               drop box empty, the pool switched on (once, on one Mac)
+#   gate-two-macs.sh root <folder>              the scratch folder: the pool's records as it begins
+#                                               (no term yet: the first Mac in makes term 1), the
+#                                               test unit on the gate, its drop box empty (once, on
+#                                               one Mac)
 #   gate-two-macs.sh app <dir> <bin>            <dir>/v/app/20261010-0000-gatetest/: scenic and
 #                                               scenic-build copied from <bin> (target/release);
 #                                               <dir>/agent the agent's folder
@@ -103,9 +104,7 @@ case $cmd in
     print -n '{}' > $r/state/build/manifest.json
     print -n '{}' > $r/state/build/jobs.json
     print -n '{}' > $r/state/build/pending.json
-    scutil --get LocalHostName | tr -d '\n' > $r/state/build/writer
     print "turned on by gate-two-macs.sh" > $r/state/inputs/gate-test
-    : > $r/state/pool/enabled
     ;;
   app)
     d=${2:?its folder}; d=${d:a} bin=${3:?the folder of scenic and scenic-build}

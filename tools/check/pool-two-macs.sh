@@ -1,13 +1,12 @@
 #!/bin/zsh
-# The pool's two-Mac test (docs/pool.md §13): the real agents, with the pool on, over a scratch
+# The pool's two-Mac test (docs/pool.md §13): the real agents, in the pool, over a scratch
 # folder of the NAS (never the project folder), each Mac's in a folder of its own (never the
 # app's), its coordinator on a port of its own (never 8090, the real agent's), its jobs played by a
 # script that hands off one save within its step's outputs. Run on each Mac, from a build of the app:
 #
 #   pool-two-macs.sh root <folder> [slots]          the scratch folder, as the pool begins: today's
-#                                                   records, the lead (this Mac) their writer,
-#                                                   an older helper's hand-off to drain, switched on
-#                                                   (`slots`: state/pool/slots on too, a part
+#                                                   records, no term yet (the first Mac in makes
+#                                                   term 1) (`slots`: state/pool/slots on, a part
 #                                                   changing in its process)
 #   pool-two-macs.sh region <folder> [scenic-build]  a pass (its marker alone) and a region (a 20 km
 #                                                   circle) in the scratch folder: the lead plans
@@ -29,9 +28,6 @@
 #   pool-two-macs.sh outside <dir>                  the next fake job's hand-off also writes a name
 #                                                   outside every step's outputs: the merge refuses
 #                                                   its entry (docs/pool.md §7.3)
-#   pool-two-macs.sh measure <folder> [off]         state/pool/by-measure in the scratch folder:
-#                                                   the Mac shared by measure and its disk guard
-#                                                   (`off`: the switch removed)
 #   pool-two-macs.sh fill <dir> <MB>                each fake job writes a file of <MB> at the top
 #                                                   of its scratch folder (0: none), for the disk
 #                                                   it's measured to take; size it against the
@@ -43,16 +39,12 @@
 #                                                   on a small disk image (hdiutil, never the Mac's
 #                                                   own volume), the image stands for a disk past
 #                                                   the 30 GB reserve, and a fill lands in it
-#   pool-two-macs.sh budgets <folder> [off]         state/pool/budgets in the scratch folder: every
-#                                                   job's connections through its agent's proxy,
-#                                                   sandboxed, Wikimedia's metered by the pool's one
-#                                                   budget there (`off`: the switch removed)
 #   pool-two-macs.sh wiki <dir> <n> [hold-s]        each fake job asks Wikimedia <n> times through
 #                                                   its proxy (http://en.wikipedia.org/budget-test,
 #                                                   answered on the Mac: `upstream`), noting each
 #                                                   answer's time (<dir>/v/app/wiki-<step>-<pid>),
 #                                                   and tries to reach the NAS's SMB port around the
-#                                                   proxy (denied, with the switch on); `hold-s`: the
+#                                                   proxy (denied); `hold-s`: the
 #                                                   next job first tells its proxy a 429 of that many
 #                                                   seconds (once)
 #   pool-two-macs.sh upstream <dir> <port>          a server on 127.0.0.1:<port> answering the fake
@@ -73,9 +65,6 @@
 #                                                   that member's progress file holding the pass of
 #                                                   <date>, noted now (as its Mac's agent notes a
 #                                                   pass stopped there mid-stage)
-#   pool-two-macs.sh every <folder> [off]           state/pool/every-step in the scratch folder:
-#                                                   every step of the plan offered to every member
-#                                                   by the measures (`off`: the switch removed)
 #   pool-two-macs.sh brokers <folder> [off]         state/pool/brokers in the scratch folder: each
 #                                                   member brokers its own jobs' tasks, pages call
 #                                                   the members directly (`off`: the switch removed)
@@ -140,30 +129,17 @@
 # cold starts) went to the M1 one a job, both merged; no claim file made. (The fake jobs note what
 # each target took, SCENIC_COSTS, for the lead's offers by the measures.)
 #
-# For phase 4's fifth batch (planned: before `state/pool/by-measure` goes on for real): `measure`,
-# `region`, `jobs … 120`, `fill … 512`, both Macs. What to see: every job's disk floor in the lead's
-# `scenic pool floors` (its `disk` lines, the member's too, by its done), with the switch off and
-# on; the switch on, the lead's first job of a step alone (a cold start: the status's `beside_why`
-# says so), then a second job beside it once its step has run, whatever the steps table's lists
-# (a terrain piece beside a slope piece; GC beside a job); a fill past the free space less 30 GB
-# freezing the job growing fastest (the log's "disk guard froze"), room made, and the job going on
-# or given back (its lease ended at the lead, not failed, kept from that Mac an hour); a handover
-# mid-job with the switch on, the floors moving with the term; GC's report naming the entries it
-# kept (`unmerged`) while a member's entry waits unmerged.
 set -euo pipefail
-cmd=${1:?root, region, map-update, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
+cmd=${1:?root, region, map-update, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     [[ -e $r ]] && { print -u2 "$r exists"; exit 1; }
-    mkdir -p $r/catalog $r/state/build/handoff/old-helper $r/inputs/regions $r/state/pool
+    mkdir -p $r/catalog $r/inputs/regions $r/state/pool
     print -n '{"base/6-1-1": "base/6-1-1.1111111111111111.base"}' > $r/state/build/manifest.json
     print -n '{"unit": {"6/1/1": "k1"}}' > $r/state/build/jobs.json
     print -n '{}' > $r/state/build/pending.json
-    scutil --get LocalHostName | tr -d '\n' > $r/state/build/writer
-    print -n '{"done": ["unit", [["6/9/1", "k91"]]]}' > $r/state/build/handoff/old-helper/00000000000000000001-1.json
-    : > $r/state/pool/enabled
     [[ ${3:-} == slots ]] && : > $r/state/pool/slots
     ;;
   region)
@@ -305,11 +281,6 @@ EOF
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
   outside) : > ${2:?its folder}/v/app/job-outside ;;
   extra) print -n ${3:?MB} > ${2:?its folder}/disk-extra-mb ;;
-  budgets)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/budgets; else mkdir -p $r/state/pool; : > $r/state/pool/budgets; fi
-    ;;
   wiki)
     d=${2:?its folder}
     print -n ${3:?requests a job} > $d/v/app/job-wiki
@@ -324,16 +295,6 @@ EOF
     cd $d/upstream && exec /usr/bin/python3 -m http.server --bind 127.0.0.1 $port
     ;;
   fill) print -n ${3:?MB} > ${2:?its folder}/v/app/job-fill-mb ;;
-  measure)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/by-measure; else mkdir -p $r/state/pool; : > $r/state/pool/by-measure; fi
-    ;;
-  every)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    if [[ ${3:-} == off ]]; then rm -f $r/state/pool/every-step; else mkdir -p $r/state/pool; : > $r/state/pool/every-step; fi
-    ;;
   brokers)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
@@ -399,5 +360,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, measure, fill, extra, budgets, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop"; exit 2 ;;
 esac
