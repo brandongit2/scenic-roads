@@ -625,7 +625,9 @@ agent/pool/             the pool's part of the agent (crate::agent::pool):
                         while the NAS has none), mail.json ({read: {member: n}, the last message taken
                         from each; sent: {member: [[n, msg], …]}, the last sent each; n}),
                         members.json (the members it knows, by id: those its listings of
-                        the heartbeats found, a member missed by them for twenty minutes dropped), jobs/<term>-<n>/ (a job's
+                        the heartbeats found, a member missed by them for twenty minutes dropped),
+                        forgotten.json (the ids so dropped, until a listing finds their heartbeat
+                        again: not known again from a message or a term, no mail queued to them), jobs/<term>-<n>/ (a job's
                         folder under its lease: work.json {step, targets: [[target, key], …],
                         lease: "<term>-<n>"}, its saves as hand-offs, done.txt, costs.jsonl; removed
                         once a saved state holds its entry), lead.json (the owner's lead asks, crate::
@@ -1082,7 +1084,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   Freed with its `target` and, when it freed toward a held job's room past it, that room as
   `goal`), short (why the disk is short of it and stays so)}`); `pool`:
   `{member, role: lead | member, gates: {term, leads, duties, settle, caught_up, fresh, listed_at},
-  members, unacked, restart, lead}`, a member's status too; `lead`, the pool as the controls show
+  members, heard (the members heard from lately: the budgets' count while the run is busy), unacked,
+  restart, lead}`, a member's status too; `lead`, the pool as the controls show
   it, crate::agent::lead::View: `{at, term, lead: {term, member, host, app, since, how}, leading,
   members: [{member, host, app, beat, me, leads, state, out_of_touch, away, can_lead, why_not,
   conds}], takeover: {refused, force, downgrade}, no_lead, alert (no lead for an hour or more:

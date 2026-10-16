@@ -492,6 +492,10 @@ pub struct PoolView {
     pub role: pool::Role,
     pub gates: pool::Gates,
     pub members: Vec<String>,
+    /// The members heard from lately, itself among them (`Side::heard_lately`): what the budgets
+    /// divide by.
+    #[serde(default)]
+    pub heard: usize,
     #[serde(default)]
     pub unacked: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -499,6 +503,14 @@ pub struct PoolView {
     /// The pool as the controls show it (crate::agent::lead: docs/pool.md §10, §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<lead::View>,
+}
+
+impl PoolView {
+    /// The members heard from lately as view `p` last said (none, or an older app's without the
+    /// count: this one alone), for the budgets while the pool's run is busy.
+    pub fn heard_of(p: Option<&PoolView>) -> usize {
+        p.map_or(1, |p| p.heard.max(1))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -5146,7 +5158,7 @@ impl Agent {
         let n = match self.try_pooled() {
             None => 1,
             Some(Some(run)) => run.side.heard_lately(),
-            Some(None) => self.pool_seen.as_ref().map_or(1, |p| p.members.len().max(1)),
+            Some(None) => PoolView::heard_of(self.pool_seen.as_ref()),
         };
         if let Some(p) = &self.proxy {
             p.set_members(n);

@@ -83,6 +83,8 @@ const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TO
 /// this long (twice the time a heartbeat takes to go out of touch): never on a failed listing, nor
 /// on one that misses this member's own heartbeat (the folder not there, the NAS away).
 pub const FORGET_AFTER: Duration = Duration::from_secs(2 * crate::pool::beat::OUT_OF_TOUCH_S);
+/// The members forgotten (`Side::forgotten`), in the agent's pool folder: kept across restarts.
+const FORGOTTEN: &str = "forgotten.json";
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -336,10 +338,11 @@ impl Side {
         }
         let mail: Mail = std::fs::read(dir.join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let known: Vec<String> = std::fs::read(dir.join("members.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
+        let forgotten: BTreeSet<String> = std::fs::read(dir.join(FORGOTTEN)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m) && !forgotten.contains(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, missed: BTreeMap::new(), forgotten: BTreeSet::new(), asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), beats_at: None, ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, missed: BTreeMap::new(), forgotten, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), beats_at: None, ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -391,12 +394,21 @@ impl Side {
     fn take_members(&mut self, names: &[String], now: Instant) {
         let found: BTreeSet<String> = names.iter().filter_map(|n| n.strip_suffix(".json")).filter(|m| crate::pool::is_member_id(m)).map(str::to_string).collect();
         let gone = forget(&mut self.members, &mut self.missed, &found, &self.me.id, self.beat.is_some(), now, FORGET_AFTER);
-        for m in &found {
-            self.forgotten.remove(m);
-        }
+        let before = self.forgotten.clone();
+        self.forgotten.retain(|m| !found.contains(m));
         for m in gone {
             eprintln!("pool: member {m} forgotten: its heartbeat not on the NAS for {} min", FORGET_AFTER.as_secs() / 60);
+            // (Its mail not sent: nobody reads it.)
+            self.mail.sent.remove(&m);
+            self.mail_dirty.remove(&m);
+            self.told.remove(&m);
             self.forgotten.insert(m);
+        }
+        if self.forgotten != before {
+            if let Ok(b) = serde_json::to_vec(&self.forgotten) {
+                crate::whole::write(&self.dir.join(FORGOTTEN), &b).ok();
+            }
+            self.save_mail();
         }
         if let Ok(b) = serde_json::to_vec(&self.members) {
             crate::whole::write(&self.dir.join("members.json"), &b).ok();
@@ -599,6 +611,9 @@ impl Side {
 
     /// Queues message `m` to member `to` (a Tell the same as the last, sent lately, is passed over).
     fn post(&mut self, to: &str, m: Msg) {
+        if self.forgotten.contains(to) {
+            return;
+        }
         self.heard_of(to);
         if let Msg::Tell(keys) = &m {
             let now = self.clock.now();
@@ -1389,7 +1404,7 @@ impl Run {
 
     /// This member as the status shows it (crate::agent::PoolView).
     pub fn pool_view(&self) -> super::PoolView {
-        super::PoolView { member: self.side.member().id.clone(), role: self.role, gates: self.gates.clone(), members: self.side.members().iter().cloned().collect(), unacked: self.side.driver().mine().to_tell(self.gates.term).len(), restart: self.restart.clone(), lead: self.controls.view.clone() }
+        super::PoolView { member: self.side.member().id.clone(), role: self.role, gates: self.gates.clone(), members: self.side.members().iter().cloned().collect(), heard: self.side.heard_lately(), unacked: self.side.driver().mine().to_tell(self.gates.term).len(), restart: self.restart.clone(), lead: self.controls.view.clone() }
     }
 
     /// The view (`pool_view`) with when it was written (this Mac's clock), to the agent's pool
@@ -1869,6 +1884,8 @@ mod tests {
         let mut s = side(&r, &home);
         let me = s.member().id.clone();
         s.know(PH);
+        s.post(PH, Msg::Tell(vec!["k".into()]));
+        assert!(s.mail.sent.contains_key(PH));
         s.beat = Some((Heartbeat::default(), s.clock.now(), 0));
         let t0 = s.clock.now();
         let files = |ids: &[&str]| ids.iter().map(|i| format!("{i}.json")).collect::<Vec<_>>();
@@ -1880,9 +1897,21 @@ mod tests {
         assert!(!s.members().contains(PH));
         let saved: BTreeSet<String> = serde_json::from_slice(&std::fs::read(home.join("pool/members.json")).unwrap()).unwrap();
         assert!(!saved.contains(PH));
+        // (Its queued mail dropped, nothing posted to it, and so after a restart.)
+        assert!(!s.mail.sent.contains_key(PH));
+        s.post(PH, Msg::Tell(vec!["k".into()]));
+        assert!(!s.mail.sent.contains_key(PH));
+        drop(s);
+        let mut s = side(&r, &home);
+        assert!(!s.members().contains(PH));
+        s.heard_of(PH);
+        assert!(!s.members().contains(PH));
         // (Its heartbeat found again: known.)
+        s.beat = Some((Heartbeat::default(), s.clock.now(), 0));
         s.take_members(&files(&[&me, PH]), t0 + FORGET_AFTER * 2);
         assert!(s.members().contains(PH));
+        let gone: BTreeSet<String> = serde_json::from_slice(&std::fs::read(home.join("pool/forgotten.json")).unwrap()).unwrap();
+        assert!(gone.is_empty());
     }
 
     #[test]
@@ -1899,6 +1928,10 @@ mod tests {
         s.beats = vec![beat(B, now - 30), beat(PH, now - crate::pool::beat::OUT_OF_TOUCH_S - 1)];
         s.beats_at = Some(now);
         assert_eq!(s.heard_lately(), 2);
+        // (The run busy: the view's count, not its members.)
+        let v = super::super::PoolView { member: s.member().id.clone(), role: Role::Member, gates: Gates::default(), members: vec![s.member().id.clone(), B.into(), PH.into()], heard: s.heard_lately(), unacked: 0, restart: None, lead: None };
+        assert_eq!(super::super::PoolView::heard_of(Some(&v)), 2);
+        assert_eq!(super::super::PoolView::heard_of(None), 1);
     }
 
     fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {

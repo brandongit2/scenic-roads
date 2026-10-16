@@ -1192,7 +1192,8 @@ once every member's heartbeat shows the app that has it.
        reads) and a member alike. A member whose heartbeat file the listings miss for twice that
        time (twenty minutes) is forgotten: no mail read for it, out of the views and of the
        count the budgets divide by, and not known again from a message, a term or another Mac's
-       heartbeat naming it until a listing finds its file. A failed listing, or one without this
+       heartbeat naming it until a listing finds its file (the forgotten kept across restarts, the mail
+       queued to it dropped). A failed listing, or one without this
        Mac's own heartbeat (the folder not there, the NAS away), forgets nobody; a Mac asleep or
        restarting keeps its file, so it stays known.
      - **Messages** by mailbox on the NAS (§9: the pool's API is planned).
