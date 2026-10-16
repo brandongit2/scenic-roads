@@ -768,6 +768,8 @@ pub struct Agent {
     /// How long a job draining is given to reach a safe point (`DRAIN_GRACE`; a test's own, so no
     /// test dates an `Instant` back past the Mac's uptime).
     grace: Duration,
+    /// How long a job may be passed over before the slots wait for it (`PASS_MAX`; a test's own).
+    pass_max: Duration,
     /// The owner's disk room target (room::Target), read each loop from the agent's folder; the
     /// last freeing toward it started (the target, and when, unix seconds); and the last time a
     /// job's room-making fell short of it (the target and the room it was after, and when): the
@@ -1115,7 +1117,7 @@ impl Agent {
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, pass_max: PASS_MAX, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2756,14 +2758,14 @@ impl Agent {
         let (s, b) = (step_of(&spec.id).unwrap_or_default(), step_of(&r.spec.id).unwrap_or_default());
         let grouped = steps::grouped_in(&s, &b, |g| self.group_holds(g));
         let only_grouped = grouped && !self.runs_alone(spec) && !self.runs_alone(&r.spec) && self.guard_held(1).is_none();
-        only_grouped && self.passed_over.get(&spec.id).is_none_or(|t| t.elapsed() < PASS_MAX)
+        only_grouped && self.passed_over.get(&spec.id).is_none_or(|t| t.elapsed() < self.pass_max)
     }
 
     /// A job of the plan the first slot has passed over for `PASS_MAX` (the second slot then starts
     /// nothing new but it, so it starts as soon as the job in its way ends; one not in the plan any
     /// more, done or waiting for a reason of its own, counts for nothing).
     fn starving(&self, plan: &[JobSpec]) -> Option<&String> {
-        self.passed_over.iter().find(|(id, t)| t.elapsed() >= PASS_MAX && plan.iter().any(|p| p.id == **id)).map(|(id, _)| id)
+        self.passed_over.iter().find(|(id, t)| t.elapsed() >= self.pass_max && plan.iter().any(|p| p.id == **id)).map(|(id, _)| id)
     }
 
     /// Why `spec` can't start now for itself: a condition it needs gone, or a failure's wait.
@@ -7736,21 +7738,23 @@ mod tests {
         // passed over: it holds nothing up (no longer passed over once it started, and only a job of
         // the plan counts): the second slot starts other work.
         assert!(a.try_start(0, job("pack 6/1/8"), &in_use, Some(&root), &mut Vec::new()));
-        a.passed_over.insert("items items".into(), Instant::now() - PASS_MAX - Duration::from_secs(1));
+        // (Passed over for longer than the limit: the limit the test's, none, no Instant dated back.)
+        a.pass_max = Duration::ZERO;
+        a.passed_over.insert("items items".into(), Instant::now());
         assert!(a.try_start(1, job("items items"), &in_use, Some(&root), &mut Vec::new()));
         assert!(!a.passed_over.contains_key("items items"));
         if let Some(r) = a.slots[1].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
         a.slots[1] = Slot::default();
-        a.passed_over.insert("items items".into(), Instant::now() - PASS_MAX - Duration::from_secs(1));
+        a.passed_over.insert("items items".into(), Instant::now());
         a.start_second(&[job("unit 6/3/3")], &in_use, Some(&root));
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("unit 6/3/3"), "{:?}", a.beside_why);
         stop(&mut a);
         a.passed_over.clear();
         // Passed over too long: the first slot waits for it, and the second starts nothing new but it.
         assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
-        a.passed_over.insert("items items".into(), Instant::now() - PASS_MAX - Duration::from_secs(1));
+        a.passed_over.insert("items items".into(), Instant::now());
         let mut w = Vec::new();
         a.start_first(&plan, &in_use, Some(&root), &mut w);
         assert!(a.slots[0].running.is_none(), "it waits for the facts");
@@ -7763,6 +7767,7 @@ mod tests {
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("items items"), "{:?}", a.beside_why);
         stop(&mut a);
         a.passed_over.clear();
+        a.pass_max = PASS_MAX;
         // A job that runs alone next: waited for, not passed over for the map tiles after it.
         assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
         let mut w = Vec::new();
