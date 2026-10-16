@@ -2284,7 +2284,7 @@ fn peaks_terrain(u: Unit) -> BTreeSet<String> {
 /// The landmarks' chain, a step at a time: candidates, peaks, the items' facts and pageviews, the
 /// rest of the heritage chain, the landmark points, the area overlays; its first stale step (the
 /// forecast's and the checklist's view of what's left: `landmarks_work` is what runs).
-fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let units: Vec<(Unit, String)> = pois_keys(cov, date, m);
     // The candidates (once the pass's hiking-route ends exist).
@@ -2311,7 +2311,10 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
         return Some(Work { step: "items".into(), targets: vec![("items".into(), k)] });
     }
-    // (The heritage chain once the pass's heritage sites are made; the marks wait for it.)
+    // (The heritage chain once the pass's heritage sites are made; the marks wait for it. Nothing
+    // of it while the sites have no key (no registers accepted yet): an older pass's
+    // heritage-sources isn't what the chain reads now.)
+    heritage_sites_key(cov, date, m, inputs)?;
     let k = heritage_key(cov, date, m)?;
     if done.lo.get("heritage") != Some(&k) {
         return Some(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
@@ -2361,9 +2364,10 @@ fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done
             out.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
         }
     }
-    // (Not before the heritage sites are made as the coverage wants them; with none for the pass
-    // (no registers accepted yet), the marks wait.)
-    let sites_due = heritage_sites_work(cov, date, m, done, inputs).is_some();
+    // (Not before the heritage sites are made as the coverage wants them; with no key for them (no
+    // registers accepted yet) nothing heritage-related runs, an older heritage-sources there or
+    // not, and the marks and overlays wait.)
+    let sites_due = heritage_sites_key(cov, date, m, inputs).is_none() || heritage_sites_work(cov, date, m, done, inputs).is_some();
     let heritage_built = match heritage_key(cov, date, m) {
         _ if sites_due => false,
         None => false,
@@ -2805,7 +2809,7 @@ pub fn chains_left(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     [
         remaining(done, |d| roads_chain(date, m, d, inputs, reach)),
         remaining(done, |d| rail_chain(cov, date, m, d, inputs)),
-        remaining(done, |d| landmarks_chain(cov, date, m, d)),
+        remaining(done, |d| landmarks_chain(cov, date, m, d, inputs)),
         remaining(done, |d| bld_next(cov, m, d, inputs)),
     ]
 }
@@ -2880,7 +2884,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
         trains.next = if w.step == "rail-feeds" { vec![label("rail-feeds").into(), label("rail").into()] } else { vec![label("rail").into()] };
     }
     out.push(trains);
-    let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
+    let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d, inputs));
     // (Steps left, each named in `next` with its areas: not a peaks batch counted as 12 jobs.)
     let mut marks = group(LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(landmarks.len()));
     marks.next = next_of(&landmarks);
@@ -4684,6 +4688,21 @@ pub(crate) mod tests {
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         heritage_done(&mut m, &mut done, "d", &w[0]);
         assert!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())).contains(&"heritage".to_string()));
+        // No registers accepted (just after the publish), an older pass's heritage-sources there:
+        // nothing heritage-related runs, nor is it forecast; the chain done, not the marks either.
+        {
+            let mut m0 = m.clone();
+            m0.remove(&crate::inputs::logical(crate::inputs::heritage::UNIT));
+            let held = ["heritage-sites", "heritage", "marks", "overlays"];
+            let w = plan(&c, "d", &m0, &done, &BTreeMap::new());
+            assert!(!steps(&w).iter().any(|s| held.contains(&s.as_str())), "{:?}", steps(&w));
+            let left = chains_left(&c, "d", &m0, &done, &BTreeMap::new(), None);
+            assert!(!left[2].iter().any(|x| held.contains(&x.step.as_str())), "{:?}", left[2]);
+            let mut d0 = done.clone();
+            d0.record("heritage", &[("heritage".to_string(), heritage_key(&c, "d", &m0).unwrap())]);
+            let w = plan(&c, "d", &m0, &d0, &BTreeMap::new());
+            assert!(!steps(&w).iter().any(|s| held.contains(&s.as_str())), "{:?}", steps(&w));
+        }
         // The registers' accepted version changed: the heritage sites are made again first, the
         // rest of the chain (an hour and a half on them) only after.
         m.insert(crate::inputs::logical(crate::inputs::heritage::UNIT), "sources/inputs/heritage/@index.ffffffffffffffff.json".into());
