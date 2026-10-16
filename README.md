@@ -172,7 +172,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
    - topographic position within 1.5 km;
    - open land within 1 km;
    - built-up land within 500 m;
-   - **roadside buildings** (`scenic buildings`, `pipeline::buildings`): Overture building footprints' bounding boxes (OSM, Microsoft and Google footprints merged), near the road network. At points every 5 m within 50 m either side of each 100 m sample, each side counts the nearest building whose extent along the road covers the point: fully if its near edge is within 30 m of the centreline, fading to nothing at 80 m. The sample's value is the mean over points and sides. Sheds under 15 m² are ignored; rail and ferries get none. A negative weight in every built-in preset (−1 to −1.5); presets and links saved before the factor existed get −1;
+   - **roadside buildings** (`scenic-metrics buildings`, `pipeline::buildings`): Overture building footprints' bounding boxes (OSM, Microsoft and Google footprints merged), near the road network. At points every 5 m within 50 m either side of each 100 m sample, each side counts the nearest building whose extent along the road covers the point: fully if its near edge is within 30 m of the centreline, fading to nothing at 80 m. The sample's value is the mean over points and sides. Sheds under 15 m² are ignored; rail and ferries get none. A negative weight in every built-in preset (−1 to −1.5); presets and links saved before the factor existed get −1;
    - forest cover within 150 m;
    - p95 roadside tree height within 30 m.
 5. **Flags.** These add viewpoints within 1 km, heritage sites within 500 m (plus heritage-district polygons), parks, UNESCO and dark-sky areas, Indigenous lands, and waterfront within 100 m. Each area's build computes them, from the heritage-sites job's slices.
@@ -323,11 +323,11 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | `tile … elev` | Elevation clean-up and grade (`final.u16`: decimetres + 5,000, so −500 to 6,053.5 m), which the scenic samples need. |
    | `areaflags` | The designated areas rasterised onto the area's grid |
    | `landcover` | WorldCover classes for the grid tiles the packs lack |
-   | `scenic prep` | 100 m samples and drape heights. |
-   | `scenic canopy` | Near-field horizons from Meta's 10° canopy files. |
-   | `scenic view` | 32-ray far-field viewsheds (roads and rail). |
-   | `scenic buildings` | Roadside buildings per sample (the release's z8 tiles within 1 km of the area's tile + 20 km and of its own long roads). |
-   | `scenic flags` | Designation flags and per-vertex channels. |
+   | `scenic-metrics prep` | 100 m samples and drape heights. |
+   | `scenic-metrics canopy` | Near-field horizons from Meta's 10° canopy files. |
+   | `scenic-metrics view` | 32-ray far-field viewsheds (roads and rail). |
+   | `scenic-metrics buildings` | Roadside buildings per sample (the release's z8 tiles within 1 km of the area's tile + 20 km and of its own long roads). |
+   | `scenic-metrics flags` | Designation flags and per-vertex channels. |
 
    An area's canopy and view results are kept on the NAS between its runs (`cache/scenic-units/`, which either Mac's runs read), so a rerun redoes only the samples that are new or near terrain and grids that changed. An area's last steps, from its elevations on, can run as a task on another worker (Machines, below).
 6. **Roads:**

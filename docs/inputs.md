@@ -576,7 +576,7 @@ A declaration adds, under `[data]`:
 | `index` | string | a file beside the declaration listing tiles or files and their footprints (GeoJSON), when the set is large; made by a producer from the source's own listing (§8), checked to parse and to name URLs on the declared host |
 | `files` | list of globs | data dropped beside the declaration, in `<name>/` |
 | `version` | string | a pinned release where the source has releases (`2026-09-23.1`); the fetch is pinned by content in the records either way |
-| `refresh` | string | `never` (pinned), `days:<n>` (fetched again once the copy is that old, as rail feeds are today), or `manual` (by `scenic sources refresh <id>`) |
+| `refresh` | string | `never` (pinned), `days:<n>` (fetched again once the copy is that old, as rail feeds are today), or `manual` (by a command planned, not built: `scenic sources refresh <id>`) |
 | `[data.fetch]` | table | how: `method = "get"` (default), `"get-key-header"` (`header`, `key`: a name in `inputs/keys.env`), `"get-key-json-link"` (also `link`: the JSON path of the download link in the answer, as LTA's signed links), `"s3-list"` (a public bucket's prefix, listed), `"range"` (read in ranges where it lies, never downloaded whole: cloud GeoTIFFs) |
 
 The fetch methods are protocols, not sources: generic code, one implementation each, used by any
@@ -1032,7 +1032,7 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
    findings (any is a recipe today's path takes and the new check doesn't: fix the file or report).
    From here until step 2's switch, **no edits to `inputs/regions/`**: the switch is only for the
    version proved.
-2. Proof (`scenic-build regions-proof --root <root> --write`, publish 1's, gone with publish 2; it refuses while any pool
+2. Proof (publish 1's proof tool, removed with publish 2; it refused while any pool
    member's heartbeat names an app older than its own): build the coverage both ways (`recipes::load` +
    `from_recipes` on the pass's outlines; `Coverage::accepted`) and compare `fingerprint` and
    `shapes_key` on every z6 tile either meets and every job box in the records (`rekey_records`'
@@ -1053,7 +1053,7 @@ order, with the same tolerance, and so the same `Coverage::fingerprint` and `sha
    regions' index now) and lists the same regions with the same drawn shapes (look at the map's
    coverage once, by eye, beside the region layer). **From the switch on, the coverage follows
    `pins.toml`, not the newest pass:** a new pass changes nothing until the pin is moved (§6.1.5).
-4. Convert every `.poly` to GeoJSON (`scenic regions convert-poly`, publish 1's; gone with publish 2): ours
+4. Convert every `.poly` to GeoJSON (publish 1's converter, removed with publish 2): ours
    (`inputs/outlines/azores.poly`, `madeira.poly`, `portugal-mainland.poly`) to
    `inputs/regions/shapes/<name>.geojson`, Geofabrik's 31 (`inputs/outlines/geofabrik/`) to
    `inputs/regions/shapes/geofabrik/<id, / as ->.geojson`, each a Feature naming its `.poly` in its
@@ -1070,7 +1070,7 @@ reader reads the accepted version alone. Deleted, with their guard exemptions: t
 `file_rings`, `circle`, `regions_digest`, the server's `coverage_from_recipes` and its labels for the
 old kinds, and `dem/bldfetch.py`'s read of `inputs/outlines` (the agent's job gives it the coverage
 as a GeoJSON file, `--coverage`, made from the stored geometry). With them went the migration's own
-tools, `scenic-build regions-proof` and `scenic regions convert-poly`, and the proof's record
+tools (the proof and the `.poly` converter), and the proof's record
 (`state/inputs/regions-proof.json`, read no more; the records' `sources/inputs/regions/@switched` stays: the readers refuse to read the regions without it, an app installed before the runbook was done saying to do it first, and its proved app still bars older Macs from leading). Built (this app). Catalogs record their regions' shapes inline (formats.md, Catalog
 `coverage`), so an old catalog naming `geofabrik:` still draws. The tests move to GeoJSON fixtures
 (§6.1.7), and the operations are tested on small fixtures: two touching squares unioned; a minus and

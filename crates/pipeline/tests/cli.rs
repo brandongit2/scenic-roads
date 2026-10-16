@@ -6,6 +6,65 @@
 use pipeline::cli::{tables::ALL, Cmd, Table, ANY};
 use std::path::Path;
 
+/// Every command quoted in the docs (`` `scenic …` ``, `` `scenic-build …` `` and the others' in
+/// docs/*.md and README.md) is a command of its program's table, with only flags it takes; a line
+/// saying "planned" excepted (a command not built yet).
+#[test]
+fn the_docs_commands_pass_the_tables() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = vec![repo.join("README.md")];
+    for e in std::fs::read_dir(repo.join("docs")).unwrap().flatten() {
+        if e.path().extension().is_some_and(|x| x == "md") {
+            files.push(e.path());
+        }
+    }
+    let (mut checked, mut bad) = (0, Vec::new());
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        // (A quote may run over a line's end: the text joined, each quote kept with its line.)
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, l) in lines.iter().enumerate() {
+            let joined = match lines.get(n + 1) {
+                Some(next) => format!("{l} {}", next.trim_start()),
+                None => l.to_string(),
+            };
+            for (k, span) in joined.split('`').enumerate() {
+                // Quotes are the odd pieces; one starting on the next line is that line's.
+                if k % 2 == 0 || joined.split('`').take(k).map(|p| p.len() + 1).sum::<usize>() > l.len() {
+                    continue;
+                }
+                let Some(t) = ALL.iter().find(|t| span.starts_with(&format!("{} ", t.prog))) else { continue };
+                if l.contains("planned") {
+                    continue;
+                }
+                let words: Vec<&str> = span[t.prog.len()..].split(|c: char| c.is_whitespace() || "[]|".contains(c)).filter(|w| !w.is_empty()).collect();
+                let names: Vec<&str> = words.iter().take_while(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase())).copied().collect();
+                if names.is_empty() {
+                    continue;
+                }
+                let found = t.cmds.iter().filter(|c| {
+                    let n: Vec<&str> = c.name.split(' ').collect();
+                    n.len() <= names.len() && n[..] == names[..n.len()]
+                });
+                let Some(c) = found.max_by_key(|c| c.name.split(' ').count()) else {
+                    bad.push(format!("{}:{}: no command {} {}", f.display(), n + 1, t.prog, names[0]));
+                    continue;
+                };
+                for w in &words {
+                    let w = w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+                    let w = w.split('=').next().unwrap_or(w);
+                    if w.starts_with("--") && w.len() > 2 && w != "--help" && !(c.flags.contains(&w) || c.opts.contains(&w) || t.common.contains(&w)) {
+                        bad.push(format!("{}:{}: {} {} doesn't take {w}", f.display(), n + 1, t.prog, c.name));
+                    }
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert!(bad.is_empty(), "the docs name commands or flags the programs don't have (fix the docs, or say \"planned\" on the line):\n{}", bad.join("\n"));
+    assert!(checked >= 20, "{checked}");
+}
+
 /// Every call of these programs in tools/ (scripts and pages: `scenic-build <step> … --flag` on a
 /// line, or `"scenic-build"), ["<step>", …, "--flag"`) names a command of its table and only flags
 /// that command takes.
