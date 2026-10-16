@@ -293,16 +293,18 @@ export function applyTerrain(map: MLMap, t: Terrain) {
     map.setLayoutProperty('contour-label', 'visibility', t.contours && cl.labels ? 'visible' : 'none');
     map.setPaintProperty('contour-label', 'text-color', cl.colour);
   }
-  // Sky / horizon fog (only visible when pitched).
+  // Sky and distance fog. The fog (our MapLibre's, FORK.md "Distance fog") fades the terrain, the
+  // buildings and their far field (bldfield.ts) by distance, on the globe and the flat map alike;
+  // without the 3D terrain the ground isn't fogged, so neither is anything else.
+  const f = t.fog;
   map.setSky(
     t.sky
       ? {
           'sky-color': '#0d121a',
-          'horizon-color': '#1b2432',
-          'fog-color': '#0b0e13',
+          'horizon-color': f.horizonColour,
+          'fog-color': f.colour,
           'sky-horizon-blend': 0.6,
-          'horizon-fog-blend': 0.6,
-          'fog-ground-blend': 0.75,
+          'horizon-fog-blend': f.horizonBlend,
           // No atmosphere: with this light it drew nothing visible (not one pixel changed, even at
           // full strength), yet its scattering shader ran for every pixel below zoom 7 (1.6 ms of
           // GPU a frame).
@@ -318,6 +320,7 @@ export function applyTerrain(map: MLMap, t: Terrain) {
           'atmosphere-blend': 0,
         },
   );
+  map.setFogRange({ start: f.start, end: Math.max(f.end, f.start + 0.1), opacity: t.sky && t.on ? f.opacity : 0 });
 }
 
 interface CanonicalID {

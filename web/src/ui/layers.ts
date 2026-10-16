@@ -4,7 +4,7 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
@@ -94,6 +94,7 @@ export class LayersCard {
     tint: HTMLInputElement; contours: HTMLInputElement; sky: HTMLInputElement;
     tintBox: HTMLDivElement; tintVar: HTMLSelectElement; tintBands: HTMLSelectElement;
     contourBox: HTMLDivElement; contourLabels: HTMLInputElement; contourCol: HTMLInputElement;
+    fogBox: HTMLDivElement; fogCol: HTMLInputElement; fogHorCol: HTMLInputElement;
   };
   private globe: HTMLInputElement;
   private ov: Partial<Record<OverlayKey, HTMLInputElement>> = {};
@@ -335,8 +336,40 @@ export class LayersCard {
       contourBox: h('div', { class: 'tint-box' }),
       contourLabels: cb((labels) => setC({ labels })),
       contourCol: h('input', { type: 'color', title: 'Colour of the lines and their labels' }),
+      fogBox: h('div', { class: 'tint-box' }),
+      fogCol: h('input', { type: 'color', title: 'Colour of the fog nearer the camera' }),
+      fogHorCol: h('input', { type: 'color', title: 'Colour the fog turns to toward the horizon (the sky’s horizon too)' }),
     };
     this.t.contourCol.addEventListener('input', () => setC({ colour: this.t.contourCol.value }));
+    // Distance fog (terrain.ts; the fork's Map#setFogRange): where it starts and is full, on a scale
+    // from the map's centre (0) to the horizon (100 %), its strength and its two colours.
+    const F = () => TS().fog;
+    const setF = (patch: Partial<FogLook>) => T({ fog: { ...F(), ...patch } });
+    this.t.fogCol.addEventListener('input', () => setF({ colour: this.t.fogCol.value }));
+    this.t.fogHorCol.addEventListener('input', () => setF({ horizonColour: this.t.fogHorCol.value }));
+    const noFog = () => !TS().sky || !TS().on;
+    const fogRows = [
+      sl({
+        label: 'Starts at', min: FOG_RANGE[0], max: FOG_RANGE[1], step: 0.01, reset: defaults.terrain.fog.start, cls: 'sub',
+        title: 'No fog nearer than this: 0 the map’s centre, 100 % the horizon',
+        get: () => F().start, set: (start) => setF({ start, end: Math.max(F().end, start + 0.01) }), fmt: pct, disabled: noFog,
+      }),
+      sl({
+        label: 'Full at', min: FOG_RANGE[0], max: FOG_RANGE[1], step: 0.01, reset: defaults.terrain.fog.end, cls: 'sub',
+        title: 'The fog at its full strength from this far: 0 the map’s centre, 100 % the horizon (it thickens between, faster toward the end)',
+        get: () => F().end, set: (end) => setF({ end, start: Math.min(F().start, end - 0.01) }), fmt: pct, disabled: noFog,
+      }),
+      sl({
+        label: 'Strength', min: 0, max: 1, step: 0.05, reset: defaults.terrain.fog.opacity, cls: 'sub',
+        title: 'How much the fog hides at its fullest: 0 none, 100 % only the fog’s colour',
+        get: () => F().opacity, set: (opacity) => setF({ opacity }), fmt: pct, disabled: noFog,
+      }),
+      sl({
+        label: 'Horizon blend', min: 0, max: 1, step: 0.05, reset: defaults.terrain.fog.horizonBlend, cls: 'sub',
+        title: 'How far into the fog it starts to turn to the horizon’s colour: 0 at once, 100 % never',
+        get: () => F().horizonBlend, set: (horizonBlend) => setF({ horizonBlend }), fmt: pct, disabled: noFog,
+      }),
+    ];
     const noShade = () => !TS().hillshade;
     const exRow = sl({
       label: 'Height ×', min: 1, max: 6, step: 0.25, reset: defaults.terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
@@ -511,6 +544,11 @@ export class LayersCard {
       contourRows[6],
       contourRows[5],
     );
+    this.t.fogBox.append(
+      ...fogRows,
+      row('Colour', this.t.fogCol, 'row sub'),
+      row('Horizon colour', this.t.fogHorCol, 'row sub'),
+    );
     this.t.tintBox.append(
       row('Colour by', this.t.tintVar),
       h('div', { class: 'tint-scale' }, this.tintScale.legend, this.tintScale.palRow, this.tintScale.fadeRow, this.tintScale.thrRow),
@@ -679,7 +717,8 @@ export class LayersCard {
         this.t.tintBox,
         tog(this.t.contours, 'Contour lines', '', 'tog', 'Computed on the fly from the terrain tiles'),
         this.t.contourBox,
-        tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
+        tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Fades the far terrain and buildings toward the horizon, on the globe and the flat map (with the 3D terrain); visible when the map is tilted'),
+        this.t.fogBox,
       ),
       this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
       (this.buildingsSection = this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes)),
@@ -900,6 +939,9 @@ export class LayersCard {
     this.t.contourLabels.checked = t.contour.labels;
     this.t.contourCol.value = t.contour.colour;
     this.t.sky.checked = t.sky;
+    this.t.fogBox.hidden = !t.sky;
+    this.t.fogCol.value = t.fog.colour;
+    this.t.fogHorCol.value = t.fog.horizonColour;
     this.other.water.checked = s.layers.water;
     this.water.box.hidden = !s.layers.water;
     this.water.col.value = s.water.colour;

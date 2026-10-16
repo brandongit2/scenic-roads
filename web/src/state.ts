@@ -111,6 +111,27 @@ export interface Terrain {
   /** How the contour lines look (contours.ts draws them). */
   contour: ContourLook;
   sky: boolean;
+  /** The distance fog's look, while `sky` is on (terrain.ts). */
+  fog: FogLook;
+}
+
+/** The fog's start and end sliders' range (0 the map's centre, 1 the horizon). */
+export const FOG_RANGE: [number, number] = [0, 1.5];
+
+/** Distance fog (Layers → Terrain → Sky & distance fog): the fork's Map#setFogRange and the sky's
+ * colours. On the globe and the flat map alike, the terrain, the buildings and their far field. */
+export interface FogLook {
+  /** No fog nearer than `start`, the full strength from `end`: distances from the camera on a
+   * scale from the map's centre (0) to the horizon (1), the ramp between them squared. */
+  start: number;
+  end: number;
+  /** Strength at `end`: 0 none … 1 the fog's colour alone. */
+  opacity: number;
+  /** The fog's colour, and the colour it turns to toward the horizon. */
+  colour: string;
+  horizonColour: string;
+  /** How far up the ramp the turn to the horizon's colour starts (0 … 1). */
+  horizonBlend: number;
 }
 
 /** Contour lines' look (Layers → Terrain). */
@@ -657,6 +678,7 @@ export const defaults: AppState = {
     contours: false,
     contour: { weight: 1, minor: 0.16, major: 0.34, colour: '#a9b6c8', density: 0, perspective: 1, labels: true, ring: 6, labelSize: 1 },
     sky: true,
+    fog: { start: 0.02, end: 0.45, opacity: 0.9, colour: '#0b0e13', horizonColour: '#1b2432', horizonBlend: 0.6 },
   },
   threshold: { on: false, dir: 'above', value: 60 },
   selected: null,
@@ -896,6 +918,8 @@ export function toHash(s: AppState, buildings: boolean): string {
   if (tv(t) !== tv(dt)) p.set('tv', tv(t));
   const cl = (c: ContourLook) => [+c.weight.toFixed(2), +c.minor.toFixed(2), +c.major.toFixed(2), c.colour.slice(1), c.density, +c.perspective.toFixed(2), c.labels ? 1 : 0, c.ring, +c.labelSize.toFixed(2)].join(',');
   if (cl(t.contour) !== cl(dt.contour)) p.set('cl', cl(t.contour));
+  const fg = (f: FogLook) => [+f.start.toFixed(2), +f.end.toFixed(2), +f.opacity.toFixed(2), f.colour.slice(1), f.horizonColour.slice(1), +f.horizonBlend.toFixed(2)].join(',');
+  if (fg(t.fog) !== fg(dt.fog)) p.set('fg', fg(t.fog));
   for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
     if (scaleStr(t.tintScales[k]) !== scaleStr(dt.tintScales[k])) p.set(key, scaleStr(t.tintScales[k]));
   }
@@ -1164,6 +1188,19 @@ export function fromHash(hash: string, buildings = true): AppState {
         colour: /^[0-9a-f]{6}$/i.test(cl[3]) ? `#${cl[3].toLowerCase()}` : d.colour, density: Math.round(n(cl[4], d.density, -2, 2)),
         perspective: n(cl[5], d.perspective, 0, 1), labels: cl[6] !== '0', ring: Math.round(n(cl[7], d.ring, 0, 24)),
         labelSize: n(cl[8] ?? '', d.labelSize, 0.5, 2.5),
+      },
+    };
+  }
+  const fg = p.get('fg')?.split(',');
+  if (fg && fg.length >= 6) {
+    const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+    const hex = (v: string, d: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v.toLowerCase()}` : d);
+    const d = defaults.terrain.fog;
+    s.terrain = {
+      ...s.terrain,
+      fog: {
+        start: n(fg[0], d.start, FOG_RANGE[0], FOG_RANGE[1]), end: n(fg[1], d.end, FOG_RANGE[0], FOG_RANGE[1]), opacity: n(fg[2], d.opacity, 0, 1),
+        colour: hex(fg[3], d.colour), horizonColour: hex(fg[4], d.horizonColour), horizonBlend: n(fg[5], d.horizonBlend, 0, 1),
       },
     };
   }

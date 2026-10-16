@@ -42,10 +42,14 @@
 // removed, and made again after a lost context. With the fork's `sceneDepth` (web/maplibre/FORK.md), the march stops at the frame's
 // depth so far (a mesh or the terrain inside a column stops the ray) on the flat map; on the globe
 // the faces are tested against it and the march stops at its own ground.
+// Fog: the terrain's and the meshes' distance fog (the fork's Sky#fogRange, FORK.md), on the
+// globe and the flat map alike, by the depth of the face the ray came in by (a column of the
+// tile's hull, within a cell of what it hits), on the colour before its coverage blends it in.
 
 import { meshKey } from './bldfield.offsets';
 import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MLMap } from 'maplibre-gl';
 import { link } from './roads/layer';
+import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from './fog';
 import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
 import type { DrawnTalls } from './camera3d';
@@ -91,6 +95,7 @@ layout(location=1) in float a_alt;    // m (absolute)
 layout(location=2) in float a_face;   // 0 a column's top, 1–4 its sides facing −y, +y, −x, +x
 out vec3 v_p;              // tile units, tile units, altitude (m)
 out float v_clip;
+out float v_fogw;          // clip w: the depth from the camera (px)
 flat out int v_face;
 
 vec4 projAt(vec2 p, float h) {
@@ -110,6 +115,7 @@ void main() {
   if (u_projection_transition > 0.999) v_clip = globeComputeClippingZ(projectToSphere(a_pos, a_pos));
 #endif
   gl_Position = projAt(a_pos, a_alt);
+  v_fogw = gl_Position.w;
 }`;
 
 const FS = `#version 300 es
@@ -146,6 +152,12 @@ uniform int u_byHeight;
 uniform highp sampler2D u_lut;   // colour by height: the scale's colour at 0 … LUT_MAX_M m
 uniform int u_dbg;   // debug views (?fdbg=)
 in float v_clip;
+in float v_fogw;
+uniform vec2 u_fogDepth;    // v_fogw × x − y: 0 at the map's centre, 1 at the horizon
+uniform vec3 u_fog;         // the fog's start and end (on that scale), its opacity
+uniform vec3 u_fogC;        // its colour, and the horizon's it turns to (stored values)
+uniform vec3 u_horC;
+uniform float u_hfb;
 flat in int v_face;
 out vec4 fragColor;
 uniform highp usampler2D u_cmask;   // the classes each texel and its neighbours hold (bits), as a pyramid
@@ -527,6 +539,13 @@ void main() {
     float gl = dot(g0, vec3(0.2126, 0.7152, 0.0722)), bl = dot(b, vec3(0.2126, 0.7152, 0.0722));
     al = abs(bl - gl) > 0.02 ? clamp((tl - gl) / (bl - gl), 0.0, 1.0) : a * u_opacity;
   }
+  // The fog as the meshes take it (the ground under is fogged alike, and the blend is linear, so
+  // fogging the colour here fogs the mix).
+  float ff = clamp((v_fogw * u_fogDepth.x - u_fogDepth.y - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0);
+  if (u_fog.z > 0.0 && ff > 0.0) {
+    float hb = smoothstep(0.0, 1.0, max((ff - u_hfb) / max(1.0 - u_hfb, 1e-3), 0.0));
+    b = toSrgb(mix(toLin(b), mix(toLin(u_fogC), toLin(u_horC), hb), ff * ff * u_fog.z));
+  }
   fragColor = vec4(b * al, al);
 }`;
 
@@ -854,7 +873,7 @@ export class FieldLayer implements CustomLayerInterface {
     const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
     for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(p, n);
+      'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(key, pr);
     return pr;
@@ -1413,6 +1432,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform1f(u.u_pixAngle, opts.fov / vp[3]);
     gl.uniform1f(u.u_opacity, this.opacity);
+    setFogUniforms(gl, u, fogUniforms(map));
     gl.uniform1f(u.u_stepTexel, this.stepTexel);
     gl.uniform1i(u.u_sub, this.subWalk ? 1 : 0);
     gl.uniform1i(u.u_linear, this.linear ? 1 : 0);

@@ -56,9 +56,12 @@ without the layer), none below zoom 14.
 - Heights are true, not exaggerated: at the default 3× terrain a house looks low beside the hills,
   as in Google Earth. A setting scales them (1–3×) or makes them follow the terrain's exaggeration.
 - The hill-shading, slope tint, tree cover and contours lie on the ground under the buildings.
-- Fog: the extrusions take the terrain's fog (B3: our MapLibre's fill-extrusion shaders, `web/maplibre/`;
-  upstream's drew the colour alone), so far buildings fade with the ground behind them. MapLibre
-  fogs only the flat map (from zoom 16.5 here) from 60° of pitch: on the globe neither is fogged.
+- Fog: the extrusions take the terrain's distance fog (B3: our MapLibre's fill-extrusion shaders,
+  `web/maplibre/`; upstream's drew the colour alone), and so does the field (§4.8, `bldfield.ts`),
+  so far buildings fade with the ground behind them. The fog is our MapLibre's own (task #213,
+  FORK.md "Distance fog"): by distance from the camera, from the map's centre to the horizon, on
+  the globe and the flat map at any pitch, with the 3D terrain on; Layers → Terrain → Sky &
+  distance fog sets it.
 
 **Beside the roads and rail.** Buildings are drawn after the road and rail layers (§4.2):
 - a road behind a building is hidden by it (faint through it with an opacity under 1);
@@ -1069,8 +1072,10 @@ per texel, every building at every level.
   that in Tokyo at z11.
 - on the terrain: a 32 × 32 grid a tile, its heights sampled from MapLibre's drawn surface, tested
   against the terrain's depth with the roads' tolerance (1.5 % of the distance), before the meshes.
-- later, with the field built: colour by height (from `v ÷ f`), the fog the meshes take (flat map,
-  from 60°), the source colouring (a fourth channel, or plain far away: the owner's choice). No hover
+- the fog the meshes take (§1; task #213): the colour each pixel of the field shows, fogged by
+  the depth of the hull face its ray came in by (within a cell of what it hits), before its
+  coverage blends it in.
+- later, with the field built: colour by height (from `v ÷ f`), the source colouring (a fourth channel, or plain far away: the owner's choice). No hover
   on the field.
 
 **The field's tiles** (B5; docs/formats.md, The field). 512 × 512 texels, levels 4–14 (level 14's
@@ -1688,7 +1693,7 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, on by default since 2026-10-16) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the lead into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). On by default where the catalog has the layer (16 Oct, the owner's decision; `?bldfield=off` leaves it out). Not done: colour by height, fog, measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, on by default since 2026-10-16) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the lead into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). On by default where the catalog has the layer (16 Oct, the owner's decision; `?bldfield=off` leaves it out). The fog the meshes take (§1, task #213). Not done: colour by height, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
 11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker; on by default since 16 Oct):

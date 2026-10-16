@@ -21,6 +21,7 @@
 //   fringe, and behind the terrain) read instead of projecting every corner again.
 
 import { hostFor } from '../hosts';
+import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
 import {
   BG, LF_UNNAMED, LF_RAIL_SHIFT, LF_TOLL, CASING_W, CASING_Z, DIM_GREY, FADES, FADE_Z, GLOW_W, GLOW_Z, LOD_CELL_PX, MINOR_MAX_CLASS, NCLASS, SPRITE_MAX_CSS, TILE_MAXZOOM, TILE_MINZOOM, WIDTHS, WIDTH_Z, interp,
@@ -277,7 +278,27 @@ flat out float v_hover;
 flat out float v_route;
 flat out vec4 v_rgb;        // direct colour (a > 0.5: use it instead of the palette)
 flat out vec3 v_cas;        // casing colour
+flat out vec4 v_fog;        // the distance fog's colour and amount (fogAt)
+uniform float u_camDist;
 #endif
+// The distance fog, as the terrain takes it (our MapLibre's Sky#fogRange, FORK.md; RoadLayer.setFog):
+// its colour and amount at a view depth w (the projection's px, as clip w).
+uniform vec2 u_fogDepth;    // w × x − y: 0 at the map's centre, 1 at the horizon
+uniform vec3 u_fog;         // start, end (on that scale), opacity
+uniform vec3 u_fogC;
+uniform vec3 u_horC;
+uniform float u_hfb;
+vec4 fogAt(float w) {
+  float f = clamp((w * u_fogDepth.x - u_fogDepth.y - u_fog.x) / (u_fog.y - u_fog.x), 0.0, 1.0);
+  if (u_fog.z <= 0.0 || f <= 0.0) return vec4(0.0);
+  float hb = smoothstep(0.0, 1.0, max((f - u_hfb) / max(1.0 - u_hfb, 1e-3), 0.0));
+  return vec4(mix(u_fogC, u_horC, hb), f * f * u_fog.z);
+}
+// (the blend in linear light, as the terrain's)
+vec3 fogMix(vec3 c, vec4 fg) {
+  return fg.a > 0.0 ? pow(mix(pow(c, vec3(2.2)), pow(fg.rgb, vec3(2.2)), fg.a), vec3(1.0 / 2.2)) : c;
+}
+vec4 g_fog = vec4(0.0);     // this piece's (main)
 
 #ifdef SPRITE
 ${PROJECT_GLSL}
@@ -389,6 +410,7 @@ uint endColour(float val, vec4 rgb, vec3 cas, float fade, bool casing, bool rout
       alpha *= u_occluded;
     }
   }
+  col = fogMix(col, g_fog);
   uvec4 q = uvec4(clamp(vec4(col, alpha), 0.0, 1.0) * 255.0 + 0.5);
   return (q.r << 24u) | (q.g << 16u) | (q.b << 8u) | q.a;
 }
@@ -443,6 +465,7 @@ void main() {
   // (zoom + log2 of view-centre distance ÷ segment distance). Tilting about a point changes the
   // zoom number (measured at the view centre) but not the point's distance, so it keeps its size.
   float kr = a_z.z;
+  g_fog = fogAt(u_camDist / kr);   // (kr: the centre's distance ÷ the piece's, PROJECT_GLSL)
   float ze = u_zoom + log2(kr);
   float k = clamp(kr, 0.2, 4.0);
   float w = widthAt(cls, ze) + (hov ? 2.0 * u_dpr : 0.0);
@@ -551,6 +574,7 @@ void main() {
   v_m = m;
   v_rgb = rgb;
   v_cas = cas;
+  v_fog = g_fog;
   v_geom = vec4(halfw, len, phase, fade);
 #ifdef ACCUM
   // Summed: the area itself, as the sprites count it (FS_SPRITE).
@@ -692,6 +716,10 @@ flat in float v_hover;
 flat in float v_route;
 flat in vec4 v_rgb;
 flat in vec3 v_cas;
+flat in vec4 v_fog;          // the distance fog's colour and amount (VS_BODY fogAt)
+vec3 fogMix(vec3 c) {
+  return v_fog.a > 0.0 ? pow(mix(pow(c, vec3(2.2)), pow(v_fog.rgb, vec3(2.2)), v_fog.a), vec3(1.0 / 2.2)) : c;
+}
 
 uniform sampler2D u_lut;
 uniform sampler2D u_cdf;
@@ -758,10 +786,10 @@ void main() {
   if (u_casingPass == 1) {
     if (v_route > 0.5) {
       float ga = a * 0.85 * mix(1.0, lowA, 0.5) * u_opacity;
-      fragColor = vec4(vec3(0.96, 0.74, 0.30) * ga, ga);
+      fragColor = vec4(fogMix(vec3(0.96, 0.74, 0.30)) * ga, ga);
     } else {
       float ca = a * 0.9 * lowA * u_opacity;
-      fragColor = vec4((v_cas.x >= 0.0 ? v_cas : u_bg) * ca, ca);
+      fragColor = vec4(fogMix(v_cas.x >= 0.0 ? v_cas : u_bg) * ca, ca);
     }
     return;
   }
@@ -786,6 +814,7 @@ void main() {
 #endif
   }
   if (v_hover > 0.5) { col = mix(col, vec3(1.0), 0.35); lowA = max(lowA, 0.85); }
+  col = fogMix(col);
 #ifdef ACCUM
   // (summed: the layer's opacity is the resolve's)
   a *= v_cov * lowA;
@@ -1089,7 +1118,7 @@ export class RoadLayer implements CustomLayerInterface {
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
         'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern', 'u_ties',
-          'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over', 'u_clipN', 'u_clip',
+          'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over', 'u_clipN', 'u_clip', ...FOG_UNIFORMS,
         ]) u[n] = gl.getUniformLocation(prog, n);
         return { prog, u };
       };
@@ -1950,6 +1979,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.program(opts.shaderData);
     const s = this.style;
     const three = s.terrain3d;
+    const fog = fogUniforms(this.map);
     if (!sums) {
       if (three) {
         gl.enable(gl.DEPTH_TEST);
@@ -2088,6 +2118,9 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform3fv(u.u_cv, CASING_W.map((v) => v * dpr));
       gl.uniform4fv(u.u_gz, GLOW_Z);
       gl.uniform4fv(u.u_gv, GLOW_W.map((v) => v * glowK));
+      // The distance fog (fogAt), as the terrain takes it.
+      gl.uniform1f(u.u_camDist, frame.camDist);
+      setFogUniforms(gl, u, fog);
     });
     each((u) => {
       gl.uniform1i(u.u_hlOn, road ? 1 : 0);
