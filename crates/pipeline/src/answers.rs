@@ -637,10 +637,9 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
 
 /// The answers this Mac's agent cache (`cache`) has for the newest complete pass on the NAS
 /// (`root`), sent there where it hasn't their archive: the items job's (`items/`), and the heritage
-/// chain's (the pass's working copy, `heritage-<date>/`). The lead's agent, as it starts, so a
-/// cache from before the NAS kept
-/// answers, or one a stopped job left, needn't wait for the step's next run (for the next pass,
-/// perhaps months away). What it sent, in words.
+/// chain's (the pass's working copy, `heritage-<date>/`). The lead's agent, as it starts, so a cache
+/// from before the NAS kept answers, or one a stopped job left, needn't wait for the step's next
+/// run (for the next pass, perhaps months away). What it sent, in words.
 ///
 /// With the budgets on (`leased`), alone among this Mac's steps that keep answers (`Local::writer`:
 /// it waits for those under way, and none starts meanwhile), and each archive's keep under the
