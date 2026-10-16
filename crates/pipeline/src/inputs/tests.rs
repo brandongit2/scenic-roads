@@ -611,8 +611,8 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let a = credits::digest(&[mk("A", Some(qc.clone()))]);
     assert!(a.is_some() && a != credits::digest(&[mk("B", Some(qc.clone()))]));
     assert_eq!(credits::digest(&[]), None, "none: the catalog's key as it was");
-    // Listed by the same rule as the table's: near Montreal its description in place of the
-    // table's entry; around Tokyo neither.
+    // Listed by the same rule as the table's: near Montreal, after the table's; around Tokyo, not.
+    // A heritage register's names it.
     let region = |w: f64, s: f64, e: f64, n: f64| {
         let ring = vec![[w, s], [e, s], [e, n], [w, n], [w, s]];
         crate::coverage::DrawnRegion { id: "r".into(), name: "r".into(), outline: vec!["osm:1".into()], shapes: [("osm:1".to_string(), vec![vec![ring]])].into() }
@@ -620,9 +620,14 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[mk("Ministere", Some(qc.clone()))]);
     let whats: Vec<&str> = mtl.iter().filter_map(|c| c["what"].as_str()).collect();
     assert_eq!(whats.iter().filter(|w| **w == "Québec heritage").count(), 1);
-    assert!(mtl.iter().any(|c| c["source"] == "Ministere"));
+    assert!(mtl.iter().any(|c| c["source"] == "Ministere" && c["register"] == "qc"));
     let table = crate::rules::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[]).len();
-    assert_eq!(mtl.len(), table, "the table's Quebec entry replaced, not added to");
+    assert_eq!(mtl.len(), table + 1);
+    // A description of a table entry's `what`: in its place, not added to it.
+    let lc = credits::Described { unit: "languages".into(), path: "about.toml".into(), description: credits::Description { what: "Land cover".into(), ..d.clone() }, extent: Some(credits::Extent::World("world".into())) };
+    let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[lc]);
+    assert_eq!(mtl.len(), table);
+    assert!(mtl.iter().any(|c| c["what"] == "Land cover" && c["source"] == d.credit.as_str() && c.get("register").is_none()));
     let tokyo = credits::catalog_credits(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(qc))]);
     assert!(!tokyo.iter().any(|c| c["source"] == "Ministere"));
     // A source for the whole world: anywhere; one whose extent isn't known yet: nowhere.
