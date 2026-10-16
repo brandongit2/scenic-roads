@@ -1131,7 +1131,11 @@ impl Agent {
     fn client(&mut self, root: &Path, waiting: &mut Vec<Waiting>) -> Option<&crate::coord::client::Client> {
         if self.client.is_none() {
             match crate::coord::client::Client::from_nas(root, &self.host) {
-                Ok(Some(c)) => self.client = Some(c),
+                Ok(Some(c)) => {
+                    // (In rounds, one a loop: `step`.)
+                    c.new_round();
+                    self.client = Some(c);
+                }
                 Ok(None) => {
                     // (In the pool, the lead is known: its contact not written yet, not "isn't running".)
                     let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
@@ -2167,6 +2171,12 @@ impl Agent {
         self.pool_switch(root.as_deref());
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut ended = false;
+        // (A loop is a round of the lead's client: once the lead doesn't answer, the loop's later
+        // calls to it fail at once rather than each waiting out its timeout; the next loop tries
+        // it again, so a lead back is heard within a loop. crate::coord::client::Client::new_round.)
+        if let Some(c) = &self.client {
+            c.new_round();
+        }
         // The build's pause: this Mac's ask passed on; the build Mac's coordinator's.
         self.sync_pause(root.as_deref(), &mut waiting);
         // (A crashed agent's jobs' finished targets, recorded now the NAS answers.)

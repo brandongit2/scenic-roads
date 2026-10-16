@@ -22,6 +22,11 @@ pub struct Client {
     /// When a request last reached none of the coordinator's addresses (this Mac's clock, unix s),
     /// and why (crate::pool::reachable: its cause read from it).
     failed: Mutex<Option<(u64, String)>>,
+    /// Rounds (an agent's loop, `new_round`): None, not in rounds (every request tries); Some(None),
+    /// in a round the coordinator hasn't failed to answer; Some(Some(why)), it didn't answer a
+    /// request this round, so the round's later requests fail at once with why, rather than each
+    /// waiting out its timeout. The next round tries again.
+    round: Mutex<Option<Option<String>>>,
 }
 
 /// What the coordinator answered: its status and its JSON (Null for none).
@@ -104,12 +109,19 @@ impl Client {
     /// the file can't be read now (an SMB hiccup: not the same as none).
     pub fn from_nas(root: &Path, worker: &str) -> Result<Option<Client>> {
         let Some(c) = read_contact(root)? else { return Ok(None) };
-        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None) }))
+        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None), round: Mutex::new(None) }))
     }
 
     /// A coordinator at fixed addresses.
     pub fn at(urls: Vec<String>, token: String, worker: &str) -> Client {
-        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None) }
+        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None), round: Mutex::new(None) }
+    }
+
+    /// Begins a round (an agent's loop): from now on, once a request gets no answer from the
+    /// coordinator (none of its addresses answered), the round's later requests fail at once,
+    /// without trying, until the next round begins.
+    pub fn new_round(&self) {
+        *self.round.lock().unwrap() = Some(None);
     }
 
     /// When the coordinator last answered a request, and as what (`Answered`); None: not yet.
@@ -141,6 +153,24 @@ impl Client {
     /// One request, at each address in turn until one answers; once more after reading the contact
     /// again when none did or the token was refused.
     fn request(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<(u16, Vec<u8>)> {
+        if let Some(Some(why)) = &*self.round.lock().unwrap() {
+            bail!("not tried: the coordinator didn't answer earlier in this round ({why})");
+        }
+        let r = self.request_now(method, path, body);
+        // (No answer at all, rather than an answer this caller can't use: the round's later
+        // requests not tried.)
+        if let Err(e) = &r {
+            if e.chain().any(|c| c.downcast_ref::<ureq::Error>().is_some()) {
+                let mut g = self.round.lock().unwrap();
+                if let Some(down) = g.as_mut() {
+                    *down = Some(format!("{e:#}"));
+                }
+            }
+        }
+        r
+    }
+
+    fn request_now(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<(u16, Vec<u8>)> {
         let mut last = None;
         // (Whether every address failed while connecting: only that says it can't be reached, not
         // a long request that ran past its time.)
@@ -312,5 +342,54 @@ fn read_contact(root: &Path) -> Result<Option<Contact>> {
         Ok(b) => Ok(Some(serde_json::from_slice(&b).context("the coordinator's contact")?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).context("read the coordinator's contact"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A coordinator that never answers: each connection taken (counted, before it's closed) and
+    /// closed without a word, so a request fails at once rather than waiting out a timeout.
+    fn mute() -> (String, Arc<AtomicUsize>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let n = Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                seen.fetch_add(1, Ordering::SeqCst);
+                drop(s);
+            }
+        });
+        (url, n)
+    }
+
+    #[test]
+    fn a_round_tries_an_unanswering_coordinator_once() {
+        let (url, tried) = mute();
+        let c = Client::at(vec![url], "t".into(), "m");
+        c.new_round();
+        assert!(c.beat(1, None).is_err());
+        assert_eq!(tried.load(Ordering::SeqCst), 1);
+        let e = c.post_json("/work/ask", &serde_json::json!({})).unwrap_err();
+        assert!(format!("{e:#}").contains("not tried"), "{e:#}");
+        assert!(c.done(&Done { lease: 1, ..Default::default() }).is_err());
+        assert_eq!(tried.load(Ordering::SeqCst), 1, "the round's later requests not tried");
+        // The next round tries again.
+        c.new_round();
+        assert!(c.beat(1, None).is_err());
+        assert_eq!(tried.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn outside_rounds_every_request_tries() {
+        let (url, tried) = mute();
+        let c = Client::at(vec![url], "t".into(), "m");
+        assert!(c.beat(1, None).is_err());
+        assert!(c.beat(1, None).is_err());
+        assert_eq!(tried.load(Ordering::SeqCst), 2);
     }
 }

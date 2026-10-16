@@ -511,6 +511,12 @@ hand-backs time out and their leases lapse. So the members say so, and the lead 
   is reached; a request that failed to connect to any of its addresses (resolving, or the
   connection timed out or refused; not one that ran past its time once connected), since this Mac
   first saw the term by its own clock, is not.
+- **One wait a loop.** A member's calls to the lead (its pause, beats, jobs' ends, hand-backs,
+  asks, inputs) go through one client, in rounds of its agent's loop: once a request gets no answer
+  (none of the lead's addresses answered, or the answer broke off), the loop's later requests to it
+  fail at once, saying so, rather than each waiting out its timeout (15 s); the next loop tries
+  again, so a lead back is heard within a loop (`Client::new_round`). A refused token, or any HTTP
+  answer, is an answer.
 - **Reported in the heartbeat** (`Beat::reach`): whom it reached within `REACHED_S` (5 min), and
   whom it failed to reach across `REPORT_S` (2 min, three tries) with no success between, with the
   cause (connection timed out, refused, no such name) and the error. The first success clears it.
