@@ -1004,9 +1004,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // The popover's own glass (one NSGlassEffectView under the arrow and the body alike) in its
         // clear style (the regular one is near opaque over a window), tinted with the window's
         // colour so the dim text stays readable over a bright window behind.
-        for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
-            g.style = .clear
-            g.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
+        // (macOS 26 on: before it the popover has no glass, and the app runs from 14.)
+        if #available(macOS 26, *) {
+            for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
+                g.style = .clear
+                g.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
+            }
         }
         popover.contentViewController?.view.window?.makeKey()
         find()
