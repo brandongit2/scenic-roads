@@ -576,7 +576,6 @@ A declaration adds, under `[data]`:
 | `index` | string | a file beside the declaration listing tiles or files and their footprints (GeoJSON), when the set is large; made by a producer from the source's own listing (§8), checked to parse and to name URLs on the declared host |
 | `files` | list of globs | data dropped beside the declaration, in `<name>/` |
 | `version` | string | a pinned release where the source has releases (`2026-09-23.1`); the fetch is pinned by content in the records either way |
-| `refresh` | string | `never` (pinned), `days:<n>` (fetched again once the copy is that old, as rail feeds are today), or `manual` (by a command planned, not built: `scenic sources refresh <id>`) |
 | `[data.fetch]` | table | how: `method = "get"` (default), `"get-key-header"` (`header`, `key`: a name in `inputs/keys.env`), `"get-key-json-link"` (also `link`: the JSON path of the download link in the answer, as LTA's signed links), `"s3-list"` (a public bucket's prefix, listed), `"range"` (read in ranges where it lies, never downloaded whole: cloud GeoTIFFs) |
 
 The fetch methods are protocols, not sources: generic code, one implementation each, used by any
@@ -1540,9 +1539,8 @@ url = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_N
 ```
 
 **A catalogue:** `<id>.toml` with `format = "mdb-catalogue"` (the Mobility Database's
-`feeds_v2.csv` columns, a published format read generically), its `url`, `refresh = "manual"` (today
-it was downloaded once by hand; the planned six-monthly refresh, plan §8, is `days:180`), and the
-corrections that today are hand lists in code:
+`feeds_v2.csv` columns, a published format read generically), its `url` (today it was downloaded
+once by hand), and the corrections that today are hand lists in code:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -1804,7 +1802,7 @@ shape of §5.2. Each is made a declaration or kept in code with a written reason
 | Source | Today | Declaration |
 |---|---|---|
 | OSM planet | `tools/nas/fetch-planet.sh:11–12` (list and mirrors) | `osm-planet.toml`: `format = "planet-pbf"`, the mirrors as `urls`; the NAS's script reads them (`key = value` lines, readable in sh) |
-| Planetiler and its data | `sources/basemap/` (jar, Natural Earth, water polygons, lake centrelines), pinned by `water::PLANETILER_VERSION` (crates/pipeline/src/water.rs:54) | `planetiler.toml` (`format = "jar"`, `version`), `natural-earth.toml`, `water-polygons.toml`, `lake-centerlines.toml`: pinned (`refresh = "never"`), files as kept today |
+| Planetiler and its data | `sources/basemap/` (jar, Natural Earth, water polygons, lake centrelines), pinned by `water::PLANETILER_VERSION` (crates/pipeline/src/water.rs:54) | `planetiler.toml` (`format = "jar"`, `version`), `natural-earth.toml`, `water-polygons.toml`, `lake-centerlines.toml`: pinned (`version`), files as kept today |
 | ESA WorldCover | `landcover.rs:22` | `format = "geotiff"`, `url` template, `version = "v200 2021"`; its class table (landcover.rs:26) is the format's legend, generic |
 | Meta & WRI canopy height | `trees/mod.rs:54` (`CHM10_URL`), the `lat=-0.0` naming quirk (:122) | `format = "geotiff"`, an `index` made by a producer from the bucket's listing, so no naming rule lives in code |
 | Leaf type, Europe (EEA HRL) and North America (NALCMS) | `dem/leaftype.py:48–63` | two declarations; their reading (an ArcGIS export, a zip read in ranges at a fixed offset, leaftype.py:51–52) moves to a producer that makes the squares (`sources/trees/leaf/`), declared as files |
@@ -1816,7 +1814,7 @@ shape of §5.2. Each is made a declaration or kept in code with a written reason
 | Geoid grids | none today (heights aren't converted) | `egm2008.toml`, `egm96.toml`, `cgg2013a.toml`, `geoid18.toml`, `gsigeo2011.toml`: `format = "geoid-grid"`, pinned (§6.8) |
 | Wikipedia pageviews | `dem/pageviews.py:56` (`DUMP`) | `pageviews.toml`: the URL template; the months chosen stay the items job's rule (pageviews.py:55, :61) |
 | Fonts | `scripts/fonts.sh:6` (Protomaps' assets) | kept: the app's own assets, built into it, not map data |
-| Canada's lake fill (#124, CanVec) | `lakefill::run::SOURCE_DIR` (`sources/canvec/50k/` on the NAS, the provinces' zips downloaded by hand) and `FillOpts::canvec` (its layer, fields and values) | planned: `canvec-hydro.toml`, `format = "zip"` of shapefiles, the zips as its `files`, pinned (`refresh = "never"`); its layer and values move to the declaration |
+| Canada's lake fill (#124, CanVec) | `lakefill::run::SOURCE_DIR` (`sources/canvec/50k/` on the NAS, the provinces' zips downloaded by hand) and `FillOpts::canvec` (its layer, fields and values) | planned: `canvec-hydro.toml`, `format = "zip"` of shapefiles, the zips as its `files`; its layer and values move to the declaration |
 | GEBCO, NCEI's coastal relief and Great Lakes bathymetry | on the NAS (`sources/gebco`, `ncei-crm`, `ncei-greatlakes`), nothing on `main` reads them | none until a step reads them |
 
 Each with its proof (the step's outputs the same) and the code's constant deleted.

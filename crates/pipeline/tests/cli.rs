@@ -7,8 +7,7 @@ use pipeline::cli::{tables::ALL, Cmd, Table, ANY};
 use std::path::Path;
 
 /// Every command quoted in the docs (`` `scenic …` ``, `` `scenic-build …` `` and the others' in
-/// docs/*.md and README.md) is a command of its program's table, with only flags it takes; a line
-/// saying "planned" excepted (a command not built yet).
+/// docs/*.md and README.md) is a command of its program's table, with only flags it takes.
 #[test]
 fn the_docs_commands_pass_the_tables() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -34,9 +33,6 @@ fn the_docs_commands_pass_the_tables() {
                     continue;
                 }
                 let Some(t) = ALL.iter().find(|t| span.starts_with(&format!("{} ", t.prog))) else { continue };
-                if l.contains("planned") {
-                    continue;
-                }
                 let words: Vec<&str> = span[t.prog.len()..].split(|c: char| c.is_whitespace() || "[]|".contains(c)).filter(|w| !w.is_empty()).collect();
                 let names: Vec<&str> = words.iter().take_while(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase())).copied().collect();
                 if names.is_empty() {
@@ -61,7 +57,7 @@ fn the_docs_commands_pass_the_tables() {
             }
         }
     }
-    assert!(bad.is_empty(), "the docs name commands or flags the programs don't have (fix the docs, or say \"planned\" on the line):\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "the docs name commands or flags the programs don't have (fix the docs):\n{}", bad.join("\n"));
     assert!(checked >= 20, "{checked}");
 }
 
