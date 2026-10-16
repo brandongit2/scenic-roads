@@ -15,10 +15,10 @@
 //!
 //! On the gate (docs/inputs.md §4.10): the languages (#136, crate::inputs::languages), the
 //! translations and the descriptions (#137), the regions (#135), the timetable feeds (#140,
-//! crate::inputs::feeds), the heritage registers and the owner's matches (#138,
-//! crate::inputs::heritage, crate::inputs::heritage_matches), and the test unit `_gate-test` while
-//! `state/inputs/gate-test` exists (`TEST_FLAG`). Each other input joins `UNITS` in its own task
-//! (#139, #141–#145).
+//! crate::inputs::feeds) and the static timetables (#141, crate::inputs::gtfs), the heritage
+//! registers and the owner's matches (#138, crate::inputs::heritage,
+//! crate::inputs::heritage_matches), and the test unit `_gate-test` while `state/inputs/gate-test`
+//! exists (`TEST_FLAG`). Each other input joins `UNITS` in its own task (#142–#145).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ pub mod descriptions;
 pub mod feeds;
 pub mod gate;
 pub mod gatetest;
+pub mod gtfs;
 pub mod heritage;
 pub mod heritage_matches;
 pub mod languages;
@@ -44,7 +45,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 7] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT, heritage::UNIT, heritage_matches::UNIT];
+pub const UNITS: [&str; 8] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT, gtfs::UNIT, heritage::UNIT, heritage_matches::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -100,6 +101,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
         descriptions::UNIT => Some(&descriptions::Descriptions),
         regions::UNIT => Some(&*REGIONS),
         feeds::UNIT => Some(&feeds::Feeds { catalogue_ids: None, territories: None }),
+        gtfs::UNIT => Some(&gtfs::Gtfs),
         heritage::UNIT => Some(&*HERITAGE),
         heritage_matches::UNIT => Some(&*MATCHES),
         _ => None,
