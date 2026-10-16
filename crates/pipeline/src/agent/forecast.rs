@@ -14,8 +14,8 @@
 //! region not on the map is done, an hour after the last map update began (its slope and tree cover,
 //! made by the build Mac while it waits, then the map update's chain); after the last unit and terrain
 //! area, the slope and tree cover left, the last map update, then the overlays and a catalog with what
-//! the chains made since; while the 3D buildings are being raised after it, a map update each hour
-//! after the last began. Whether one is due is the lead's own test (build::map_update_due). Each target takes its last run's time (else its step's mean, else a first
+//! the chains made since; while the 3D buildings are being raised after it, a map update each gap
+//! after the last began (task #209: not hourly). Whether one is due is the lead's own test (build::map_update_due). Each target takes its last run's time (else its step's mean, else a first
 //! guess), at the speed measured for the machine doing it. It's run three times: as estimated, and
 //! for a range, the times measured a little off and those guessed much more.
 
@@ -431,9 +431,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         let since_last = last_map_update.is_finite().then(|| (t - last_map_update).max(0.0).round() as u64);
         crate::agent::build::map_update_due(&crate::agent::build::UpdateCase { under_way: false, last_now, raising, new_regions: new, since_last, gap }).0
     };
-    // (When the 3D buildings' hour after the last map update passes: a machine waiting for work
+    // (When the 3D buildings' gap after the last map update passes: a machine waiting for work
     // waits no later.)
-    let hour_after = |last_map_update: f64| last_map_update + crate::agent::build::PUBLISH_EVERY_S as f64;
+    let gap_after = |last_map_update: f64| last_map_update + gap.unwrap_or(crate::agent::build::PUBLISH_EVERY_S) as f64;
     let mut guard = 0usize;
     loop {
         guard += 1;
@@ -576,7 +576,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             if !update_due(&items, last_map_update, t, true, new) {
                 free[m] = match (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Chain) && runnable(&items, i, t)) {
                     Some(i) => take(&mut items, i, t),
-                    None => next_end(&items, &free, m, t).min(hour_after(last_map_update)),
+                    None => next_end(&items, &free, m, t).min(gap_after(last_map_update)),
                 };
                 continue;
             }
@@ -604,7 +604,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         let pick = (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Chain | Phase::After) && runnable(&items, i, t));
         free[m] = match pick {
             Some(i) => take(&mut items, i, t),
-            None if raising_now => next_end(&items, &free, m, t).min(hour_after(last_map_update)),
+            None if raising_now => next_end(&items, &free, m, t).min(gap_after(last_map_update)),
             None => next_end(&items, &free, m, t),
         };
     }
@@ -933,21 +933,22 @@ mod tests {
     }
 
     #[test]
-    fn while_the_3d_buildings_are_raised_after_the_last_unit_a_map_update_goes_out_hourly_as_the_leads() {
+    fn while_the_3d_buildings_are_raised_after_the_last_unit_a_map_update_goes_out_each_gap_as_the_leads() {
         // Every region on the map, 30 bldtiles jobs of 600 s left, the last map update began 1700 s
-        // ago, a region's gap 300 s: no region has new work, so a map update each hour after the
-        // last began (at the first free moment), as the lead's own test says, not one at the end.
+        // ago, the measured gap 1500 s: no region has new work, so a map update each gap after the
+        // last began (at the first free moment; task #209: not hourly), as the lead's own test says,
+        // not one at the end.
         let regions = [RegionLeft { id: "a".into(), on_map: Some(true), ..Default::default() }];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         inp.chains = (0..30).map(|i| ("bldtiles".to_string(), format!("6/{i}/1"), Cost { secs: 600.0, known: true, peak_mb: 0 })).collect();
         inp.after = vec![("catalog".into(), "after the chains".into(), Cost { secs: 120.0, known: true, peak_mb: 0 })];
-        (inp.since_last, inp.gap_s, inp.update_s, inp.last_update_s) = (Some(1700), 300.0, 120.0, 0.0);
+        (inp.since_last, inp.gap_s, inp.update_s, inp.last_update_s) = (Some(1700), 1500.0, 120.0, 0.0);
         let f = forecast(&inp);
         let starts: Vec<u64> = f.lanes["m4"].iter().filter(|l| l.step == "map-update").map(|l| l.from - 1_000_000).collect();
-        assert_eq!(starts, [2400, 6120, 9840, 13560, 17280], "{:?}", f.lanes["m4"]);
+        assert_eq!(starts, [0, 1920, 3840, 5760, 7680, 9600, 11520, 13440, 15360, 17280], "{:?}", f.lanes["m4"]);
         assert!(f.updates.iter().all(|r| r.regions.is_empty() && !r.last));
         // Each begins at the first job's end the lead's test says one is due, never before.
-        let due = |since: u64| crate::agent::build::map_update_due(&crate::agent::build::UpdateCase { last_now: true, raising: true, since_last: Some(since), gap: Some(300), ..Default::default() }).0;
+        let due = |since: u64| crate::agent::build::map_update_due(&crate::agent::build::UpdateCase { last_now: true, raising: true, since_last: Some(since), gap: Some(1500), ..Default::default() }).0;
         let mut last: i64 = -1700;
         for &t in &starts {
             assert!(due((t as i64 - last) as u64) && !due((t as i64 - 600 - last) as u64), "{t}");

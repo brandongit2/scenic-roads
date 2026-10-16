@@ -1389,8 +1389,9 @@ pub struct UpdateCase {
 
 /// Whether a map update is due (`UpdateCase`), and why (or why not) in plain words. Due: a region
 /// done that the map hasn't, the gap after the last began; after the last unit and terrain, at
-/// once, but while the 3D buildings are being raised only PUBLISH_EVERY_S after the last began
-/// (their packs never make a region due: they go out with the next map update, whichever it is).
+/// once, but while the 3D buildings are being raised only the gap after the last began (the
+/// measured gap with a map update per region on, else PUBLISH_EVERY_S; task #209). Their packs
+/// never make a region due: they go out with the next map update, whichever it is.
 pub fn map_update_due(c: &UpdateCase) -> (bool, String) {
     let gap = c.gap.unwrap_or(PUBLISH_EVERY_S);
     let left = |every: u64| c.since_last.map_or(0, |s| every.saturating_sub(s));
@@ -1406,13 +1407,13 @@ pub fn map_update_due(c: &UpdateCase) -> (bool, String) {
         if !c.raising {
             return (true, "everything is built: the last map update".into());
         }
-        if left(PUBLISH_EVERY_S) == 0 {
-            return (true, "the 3D buildings are being raised and an hour has passed since the last map update began: their packs so far go out".into());
+        if left(gap) == 0 {
+            return (true, "the 3D buildings are being raised and the gap has passed since the last map update began: their packs so far go out".into());
         }
         if c.new_regions > 0 {
             return (true, format!("{} done with new work to publish", regions(c.new_regions)));
         }
-        return (false, format!("everything else is built and the 3D buildings are being raised: no region has new work, and their packs go out at most hourly (next map update in {} min)", mins(left(PUBLISH_EVERY_S))));
+        return (false, format!("everything else is built and the 3D buildings are being raised: no region has new work, and their packs go out at most once a gap (next map update in {} min)", mins(left(gap))));
     }
     if c.new_regions > 0 {
         return (false, format!("{} done with new work to publish, the gap not passed (next map update in {} min)", regions(c.new_regions), mins(left(gap))));
@@ -1591,7 +1592,7 @@ pub struct RegionLeft {
 /// - the 3D buildings' chain from the start too (`bld_work`: the sources' fetch, each z6 tile's
 ///   normalized file, then its tiles once it and its neighbours are prepared), listed after the
 ///   other chains, its tiles in the regions' order; it holds no map update and no region, and while it
-///   has work left after the last unit, a map update (and its catalog) at most an hour after the last;
+///   has work left after the last unit, a map update (and its catalog) at most the gap after the last;
 /// - last, in idle time, the mids of current tree cover pieces without one (`TreeWork::backfill`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, tiles: &TerrainTiles, updates: MapUpdates) -> Plan {
@@ -1808,10 +1809,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let bld_regions: Vec<&Coverage> = order.iter().map(|r| r.id).chain(regions.iter().map(|r| r.id)).filter_map(|id| updates.each.iter().find(|(x, _)| x == id).map(|(_, c)| c)).collect();
     let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
     // (After the last unit, a map update as soon as anything changed; but while the 3D buildings are
-    // being raised, at most an hour after the last began, not a catalog for each of their jobs,
+    // being raised, at most the gap after the last began, not a catalog for each of their jobs,
     // unless a region waits to be published: the buildings never hold one up. Their sources'
     // fetch doesn't count: it changes nothing served, and one failing and tried again (the release
-    // gone from S3) would keep the catalogs hourly for good.)
+    // gone from S3) would keep the catalogs at the gap for good.)
     // (A region's map update: an hour after the last began, or, a map update per region, the gap its measured
     // map updates make: crate::agent::publish::update_gap. The test is `map_update_due`, the forecast's
     // too.)
@@ -3762,15 +3763,17 @@ pub(crate) mod tests {
         assert_eq!(c(false, false, false, 1, Some(100)), (false, "1 region done with new work to publish, the gap not passed (next map update in 4 min)".to_string()));
         assert!(c(false, false, true, 0, Some(5000)).1.starts_with("no region has new work"));
         assert!(c(false, true, false, 0, Some(1)).0);
-        // (The 3D buildings raised after the last unit: hourly, a region's gap aside.)
-        let (due, why) = c(false, true, true, 0, Some(1700));
-        assert!(!due && why.contains("next map update in 32 min"), "{why}");
-        assert!(c(false, true, true, 0, Some(3600)).0);
+        // (The 3D buildings raised after the last unit: each gap, as a region's, not hourly: task #209.)
+        let (due, why) = c(false, true, true, 0, Some(100));
+        assert!(!due && why.contains("next map update in 4 min"), "{why}");
+        assert!(c(false, true, true, 0, Some(300)).0);
+        let hourly = map_update_due(&UpdateCase { last_now: true, raising: true, since_last: Some(1700), gap: None, ..Default::default() });
+        assert!(!hourly.0 && hourly.1.contains("next map update in 32 min"), "{hourly:?}");
         assert!(c(false, true, true, 1, Some(10)).0);
         assert!(c(false, false, false, 0, None).1.starts_with("no region"));
         // The log line changes with the reasons, not with the minutes counting down.
         let u = |s: u64| UpdateDecision { why: c(false, true, true, 0, Some(s)).1, gap_s: 300, ..Default::default() };
-        assert_eq!(u(100).key(), u(700).key());
+        assert_eq!(u(100).key(), u(200).key());
         assert_ne!(u(100).key(), UpdateDecision { why: c(false, true, true, 0, Some(3700)).1, gap_s: 300, ..Default::default() }.key());
         // Nor with an error's text in what it waits for (the agent's "but", task #209), only with
         // what it waits for.

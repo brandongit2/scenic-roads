@@ -2276,7 +2276,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   (they make no map update of their own); after the last unit and terrain area, the
   slope and tree cover left, the last map update (the roads' chain as it stands, less what the map update
   under way still does, if longer; none when nothing's stale and no region waits to go out), while
-  the 3D buildings are being raised a map update an hour after the last began (the map update's chain
+  the 3D buildings are being raised a map update the gap after the last began (the map update's chain
   long), then the overlays and a catalog, then the tree cover mids made in idle time. A z3 tile's tree cover
   assembly waits for its pieces, the build Mac's alone. The trains' and
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
@@ -2575,7 +2575,7 @@ between jobs into the other way. On:
        done and not on the map as they are now; nothing left of the units and terrain; the 3D
        buildings being raised; the time since the last began; the gap), so the forecast's map
        updates are those the lead will run. Each time it plans, the lead records its decision
-       (`build::MapUpdate`): due or not, why in words (no region with new work, the gap not passed
+       (`build::UpdateDecision`): due or not, why in words (no region with new work, the gap not passed
        and the minutes left, under way, waiting for a helper's work to be merged or an edit to
        settle, the build paused, nothing new to publish), the gap and its basis (the hour, or twice
        the measured map updates), the regions with new work and their kinds (a new region or one
@@ -2585,8 +2585,9 @@ between jobs into the other way. On:
        (not as the minutes count down). The 3D buildings' packs never make a region due (a z6
        bldtiles tile can span several regions, and the regions are done by their units and
        terrain): a rebuild of them all (a new `BUILDINGS_V`) after the last unit goes out in a
-       map update each hour after the last began, and at once when they're all raised, by design;
-       before the last unit, with any region's.
+       map update each gap after the last began (the owner's decision, task #209: the measured
+       gap a region's map update waits with `update-per-region` on, else the hour, as before), and
+       at once when they're all raised; before the last unit, with any region's.
      - `low-zoom-later`: what may lag is the low zooms alone: the roads' and rails' lo packs (z3–8)
        and the terrain's and slope's roots (z0–2), and with `near-slope` the slope and tree cover
        assemblies (their lo packs, z3–8). A map update makes them only when it's the low zooms' map update
@@ -2688,7 +2689,8 @@ between jobs into the other way. On:
    manifest). What the trains', the landmarks' and the 3D buildings' chains made goes out with the
    next map update's catalog; after the last unit, a catalog follows any chain's change, but while the
    3D buildings' chain has work left (their sources' fetch aside: it changes nothing served, and
-   one failing for good would hold every catalog to the hour), at most an hour after the last
+   one failing for good would hold every catalog to the gap), at most the gap (§8, Faster
+   publishing: the measured one with `update-per-region` on, else the hour) after the last
    map update began (not a catalog for each of their jobs), unless a region waits to go out: the
    buildings never hold a region back. A map update fixes the 3D buildings' packs as it begins, with
    the units (`out::AS_OF_OUTPUTS`): those made meanwhile go out with the next, so its catalog isn't

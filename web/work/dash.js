@@ -597,7 +597,7 @@ function publishing(m) {
     const left = u.left_s > 0 ? `, ${Math.ceil(u.left_s / 60)} min left` : ", passed";
     lines.push(h("div", "small dim", `Gap ${Math.ceil(u.gap_s / 60)} min (${u.gap_basis})${u.since_last_s != null ? left : ""}`));
     if (u.regions?.length) lines.push(h("div", "small", `New work: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
-    if (u.buildings) lines.push(h("div", "small dim", "3D building packs being raised: they go out with the next map update (at most hourly once all else is built)."));
+    if (u.buildings) lines.push(h("div", "small dim", "3D building packs being raised: they go out with the next map update (at most once a gap once all else is built)."));
   } else {
     lines.push(h("div", "small dim", "A map update goes out when a region is done, at most hourly while areas are left; after the last, at once."));
   }

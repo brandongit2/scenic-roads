@@ -477,10 +477,11 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
 - **Map updates:** buildings don't hold a map update, and a region's readiness (`ready`) doesn't wait for
   them: their packs go out with the next map update's catalog, as the trains' and landmarks' outputs do.
   After the last unit a catalog follows any chain's change, but while the 3D buildings' chain has
-  work left, a map update (and its catalog) at most an hour after the last began: the worldwide build's
+  work left, a map update (and its catalog) at most the gap after the last began (plan.md §8: the
+  measured one a region's waits with `update-per-region` on, else the hour): the worldwide build's
   ~25 `bldtiles` jobs don't each make a catalog. Never for a region done that the map lacks: its
   map update begins at once. Nor for the fetch alone (it changes nothing served, and one failing once
-  the release has left S3 would hold every catalog to the hour). A map update fixes the buildings'
+  the release has left S3 would hold every catalog to the gap). A map update fixes the buildings'
   packs as it begins, with the units (`out::AS_OF_OUTPUTS`), so a `bldtiles` job ending meanwhile
   doesn't change its catalog; they go out with the next. A region can reach the map before its
   buildings, which follow with a later map update.
@@ -1789,4 +1790,4 @@ None blocks the work; each has a default below.
     release names its files); `bldprep`'s targets are the tiles within 1 km of the coverage, so the
     fill's neighbours are read at a tile's edge, where the coverage meets a tile but not its
     neighbour; batches are a fixed count of tiles (8 and 16), not weighed by buildings; after the
-    last unit, a catalog at most each hour while the chain has work left.
+    last unit, a catalog at most each gap (above) while the chain has work left.
