@@ -75,7 +75,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   task fails rather than take another source for one it couldn't read). A native worker reads
   the NAS at its own mount and the servers as a job does, and, like a browser, only reads
   the NAS's stores (`Tools::stores_read_only`, `SCENIC_STORES_READ_ONLY`): a FABDEM tile the store
-  hasn't whole is read in place inside Bristol's zip (`dem::fabdem::stored`, the same values the
+  hasn't whole is read in place inside Bristol's zip (`dem::kept::kept`, the same values the
   store's copy has), a canopy square is read as it is (one not whole fails the task; nothing there
   is downloaded, touched or removed: the jobs keep the store).
 - **What comes back:** the files the steps changed; one written back as it was sent isn't sent (a

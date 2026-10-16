@@ -57,7 +57,7 @@ use super::build::{self, Keys};
 use super::tiles::{TerrainTiles, Tile};
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
-use crate::reach::Reaches;
+use crate::reach::{Reach, Reaches};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -142,8 +142,8 @@ pub mod v1 {
     /// tile within 30 km the terrain hi pack and the heritage slices.
     pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, digests: &BTreeMap<String, String>) -> String {
         let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-        let mut inputs = vec![format!("unit {UNIT_V}"), piece.to_string(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), r.coverage_key(cov, u), crate::rules::versions_meeting(r.extent(u))];
-        if crate::rules::meets_taiwan(r.extent(u)) {
+        let mut inputs = vec![format!("unit {UNIT_V}"), piece.to_string(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), r.coverage_key(cov, u), super::dem_rules_meeting(r.extent(u))];
+        if super::meets_taiwan(r.extent(u)) {
             inputs.push(format!("moi-dtm {}", digests.get("moi-dtm").map(String::as_str).unwrap_or("-")));
         }
         inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical())));
@@ -333,12 +333,12 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
                 continue;
             }
         };
-        let Ok(elevation) = tiles.elevation(m) else {
-            out.unknown.push((t, "the declared elevation datasets can't be read now".into()));
+        let Ok(Some(elevation)) = tiles.elevation(m) else {
+            out.unknown.push((t, "the declared elevation datasets aren't switched to, or can't be read now".into()));
             continue;
         };
         if why.is_empty() {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), elevation.as_deref().map(Vec::as_slice)));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), &elevation));
             if !outputs {
                 out.empty.push(t.clone());
             }
@@ -349,6 +349,37 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
         }
     }
     out
+}
+
+/// The location rules' versions as the units' keys named them while the DEM rules were among them
+/// (before the declared elevation datasets, #143): those four rules', each at version 1, as they were
+/// (`rules::RULES`' first), then today's rules'.
+pub fn dem_rules_meeting(b: [i32; 4]) -> String {
+    const NORTH_AMERICA: [f64; 4] = [-180.0, -90.0, -40.0, 90.0];
+    const JAPAN: [f64; 4] = [122.5, 20.0, 154.0, 46.5];
+    const TAIWAN: [f64; 4] = [118.0, 21.5, 122.5, 26.6];
+    const WORLD: [f64; 4] = [-180.0, -90.0, 180.0, 90.0];
+    let (w, s, e, n) = (b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7);
+    let mut parts: Vec<String> = [("dem-north-america", NORTH_AMERICA), ("dem-japan", JAPAN), ("dem-taiwan", TAIWAN), ("dem-fabdem", WORLD)].iter().filter(|(_, a)| a[0] <= e && a[2] >= w && a[1] <= n && a[3] >= s).map(|(r, _)| format!("{r}=1")).collect();
+    let now = crate::rules::versions_meeting(b);
+    if !now.is_empty() {
+        parts.push(now);
+    }
+    parts.join(",")
+}
+
+/// Whether the box w, s, e, n (E7) meets Taiwan (the units' keys of the scheme before P8 had its DEM
+/// files' digest there: `v1`).
+fn meets_taiwan(b: [i32; 4]) -> bool {
+    let (w, s, e, n) = (b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7);
+    118.0 <= e && 122.5 >= w && 21.5 <= n && 26.6 >= s
+}
+
+/// Unit `u`'s key as it was before the declared elevation datasets (#143's switch): the DEM rules'
+/// versions where the datasets' digests are now.
+#[allow(clippy::too_many_arguments)]
+pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str) -> String {
+    build::unit_key_with(cov, date, m, u, piece, r, terrain, dem_rules_meeting(r.extent(u)), None)
 }
 
 /// Re-keys the units' records once the build reads the declared elevation datasets
@@ -365,13 +396,13 @@ fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<Str
         let Some(u) = Unit::parse(&t) else { continue };
         let (Some(r), Some(piece)) = (reach.get(u).filter(|r| r.builds(cov)), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash()))) else { continue };
         let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
-        if build::unit_key(cov, date, m, u, piece, r, &terrain, None) != k {
+        if pre_elevation_unit_key(cov, date, m, u, piece, r, &terrain) != k {
             continue;
         }
         let e = r.extent(u);
         let deg = |v: i32| v as f64 * 1e-7;
         if crate::dem::declared::meeting(&ds, [deg(e[0]), deg(e[1]), deg(e[2]), deg(e[3])]).len() == 1 {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, Some(&ds)));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds));
             out.elevation_moved.push(t);
         }
     }
@@ -908,22 +939,19 @@ mod tests {
 
     #[test]
     fn at_the_elevation_switch_the_units_one_dataset_meets_are_re_keyed_and_the_others_built() {
-        let (c, reach, mut m, mut done) = iceland(&|_| {});
-        let tiles = tiles_for(&m);
-        rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert!(units(&plan(&c, &reach, &m, &done, &tiles)).is_empty());
+        let (c, reach, m, mut done) = iceland(&|_| {});
         // The switch: FABDEM-like everywhere, and a finer dataset over Reykjavik alone.
-        let index = "sources/inputs/elevation/@index.1111111111111111.json";
-        m.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), index.into());
-        m.insert(crate::inputs::switched_logical(crate::inputs::elevation::UNIT), "sources/inputs/elevation/@switched.2222222222222222.json".into());
         let mut tiles = tiles_for(&m);
-        let ds = |id: &str, cover: Option<Vec<[f64; 4]>>| {
-            let declaration = crate::dem::declared::Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 1, data: crate::dem::declared::Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
-            let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
-            (crate::dem::declared::Accepted { id: id.into(), path: format!("{id}.toml"), declaration, measured, keyed: format!("{id}-k") }, crate::dem::declared::Cover::of(cover.as_deref()))
-        };
-        tiles.hold_elevation(index, vec![ds("lidar", Some(vec![[-23.0, 63.0, -21.0, 65.0]])), ds("world", None)]);
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3, "every key names the datasets now");
+        let index = &m[&crate::inputs::logical(crate::inputs::elevation::UNIT)];
+        tiles.hold_elevation(index, vec![build::tests::dataset("lidar", "l1", Some(vec![[-23.0, 63.0, -21.0, 65.0]])), build::tests::dataset("world", "w1", None)]);
+        // Each unit built before it (its key the DEM rules' versions'): every key names the datasets now.
+        for u in ["6/28/16", "6/28/17", "6/29/16"] {
+            let unit = Unit::parse(u).unwrap();
+            let (r, piece) = (reach.get(unit).unwrap(), &m[&format!("sources/osm/d/pieces/{}", unit.dash())]);
+            let terrain = build::unit_terrain(unit, r, &m, &tiles).unwrap();
+            done.record("unit", &[(u.to_string(), pre_elevation_unit_key(&c, "d", &m, unit, piece, r, &terrain))]);
+        }
+        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
         let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         // (A unit's extent is its tile's and its ways': Reykjavik's and Akureyri's tile, 6/28, meets
         // the finer dataset's cells.)

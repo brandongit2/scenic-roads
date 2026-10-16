@@ -475,32 +475,35 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
     for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
         let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
         let Some(r) = reach.get(u).filter(|r| r.builds(cov)) else { continue };
-        let elevation = tiles.elevation(m);
-        units.push((u, unit_terrain(u, r, m, tiles).ok().zip(elevation.ok()).map(|(t, e)| unit_key(cov, date, m, u, c, r, &t, e.as_deref().map(Vec::as_slice)))));
+        // (Without the declared elevation datasets, before the switch or while they can't be read,
+        // no key: the unit waits.)
+        let elevation = tiles.elevation(m).ok().flatten();
+        units.push((u, unit_terrain(u, r, m, tiles).ok().zip(elevation).map(|(t, e)| unit_key(cov, date, m, u, c, r, &t, &e))));
     }
     units
 }
 
 /// Unit `u`'s key (its piece `piece`, its reach `r`): what it reads. Its piece and road values, the
-/// coverage as its ways meet it (`Reach::coverage_key`) and the location rules where they go
-/// (`crate::rules`), the roadside buildings' index, the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
+/// coverage as its ways meet it (`Reach::coverage_key`), the location rules where they go
+/// (`crate::rules`) and the `keyed` digests of the declared elevation datasets meeting its ways
+/// (`elevation`: crate::inputs::elevation), the roadside buildings' index, the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
 /// digest), and the heritage sites' and areas' slices near it, as the manifest has them, which is
 /// what the unit step stages from.
 #[allow(clippy::too_many_arguments)]
-pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, elevation: Option<&[(crate::dem::declared::Accepted, crate::dem::declared::Cover)]>) -> String {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)]) -> String {
     let ext = r.extent(u);
-    // (The DEM rules' versions, or once the build reads the declared elevation datasets, the
-    // `keyed` digests of those meeting its ways: crate::inputs::elevation.)
-    let rules = match elevation {
-        None => crate::rules::versions_meeting(ext),
-        Some(_) => crate::rules::versions_meeting_but_dem(ext),
-    };
+    let deg = |v: i32| v as f64 * 1e-7;
+    let e = format!("elevation {}", crate::dem::declared::meeting(elevation, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(","));
+    unit_key_with(cov, date, m, u, piece, r, terrain, crate::rules::versions_meeting(ext), Some(e))
+}
+
+/// `unit_key` of the location rules' versions `rules` and the elevations' line `elevation` (None:
+/// before the declared datasets, when the DEM rules were among the rules: agent::rekey).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unit_key_with(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, rules: String, elevation: Option<String>) -> String {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut inputs = vec![format!("unit {UNIT_V}"), piece.to_string(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), r.coverage_key(cov, u), rules];
-    if let Some(ds) = elevation {
-        let deg = |v: i32| v as f64 * 1e-7;
-        inputs.push(format!("elevation {}", crate::dem::declared::meeting(ds, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(",")));
-    }
+    inputs.extend(elevation);
     // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
     inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical())));
     // The terrain it reads. Not the analysis grids' packs (grid-class, -canopy, -cover): the units
@@ -3043,12 +3046,27 @@ pub(crate) mod tests {
             }
             t.hold(c, tiles);
         }
+        // (The declared elevation datasets `elevation_inputs` names: one, the world's.)
+        if let Some(i) = m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT)) {
+            t.hold_elevation(i, vec![dataset("world", "w1", None)]);
+        }
         t
     }
 
-    /// `unit_keys` with `tiles_for(m)` (every unit's key known).
+    /// The declared elevation datasets switched to, as the units need them (crate::inputs::elevation).
+    pub(crate) fn elevation_inputs(m: &mut BTreeMap<String, String>) {
+        m.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), "sources/inputs/elevation/@index.5656565656565656.json".into());
+        m.insert(crate::inputs::switched_logical(crate::inputs::elevation::UNIT), "sources/inputs/elevation/@switched.5757575757575757.json".into());
+    }
+
+    /// `unit_keys` with `tiles_for(m)` (every unit's key known; the declared elevation datasets
+    /// switched to when `m` doesn't say).
     pub(crate) fn ukeys(c: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Vec<(Unit, String)> {
-        super::unit_keys(c, date, m, reach, &tiles_for(m)).into_iter().map(|(u, k)| (u, k.expect("its key"))).collect()
+        let mut m = m.clone();
+        if !m.contains_key(&crate::inputs::switched_logical(crate::inputs::elevation::UNIT)) {
+            elevation_inputs(&mut m);
+        }
+        super::unit_keys(c, date, &m, reach, &tiles_for(&m)).into_iter().map(|(u, k)| (u, k.expect("its key"))).collect()
     }
 
     fn cov() -> Coverage {
@@ -3063,6 +3081,7 @@ pub(crate) mod tests {
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
         m.insert(crate::inputs::logical(crate::inputs::heritage::UNIT), "sources/inputs/heritage/@index.3434343434343434.json".into());
         m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
+        elevation_inputs(m);
     }
 
     /// The heritage-sites job done: its key recorded, its outputs in the manifest.
@@ -4085,28 +4104,31 @@ pub(crate) mod tests {
     }
 
     /// A declared elevation dataset for the keys: its id, `keyed` digest and cover.
-    fn dataset(id: &str, keyed: &str, cover: Option<Vec<[f64; 4]>>) -> (crate::dem::declared::Accepted, crate::dem::declared::Cover) {
+    pub(crate) fn dataset(id: &str, keyed: &str, cover: Option<Vec<[f64; 4]>>) -> (crate::dem::declared::Accepted, crate::dem::declared::Cover) {
         let declaration = crate::dem::declared::Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 1, data: crate::dem::declared::Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
         let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
         (crate::dem::declared::Accepted { id: id.into(), path: format!("{id}.toml"), declaration, measured, keyed: keyed.into() }, crate::dem::declared::Cover::of(cover.as_deref()))
     }
 
     #[test]
-    fn once_switched_a_units_key_names_the_declared_datasets_meeting_it() {
+    fn a_units_key_names_the_declared_elevation_datasets_meeting_it() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         let key = |m: &BTreeMap<String, String>, e: Option<Vec<(crate::dem::declared::Accepted, crate::dem::declared::Cover)>>| {
-            let mut t = tiles_for(m);
+            // (The terrain's tiles alone, and the datasets `e` when given.)
+            let mut bare = m.clone();
+            bare.remove(&crate::inputs::logical(crate::inputs::elevation::UNIT));
+            let mut t = tiles_for(&bare);
             if let Some(e) = e {
                 t.hold_elevation(&m[&crate::inputs::logical(crate::inputs::elevation::UNIT)], e);
             }
             super::unit_keys(&c, "d", m, Some(&reach()), &t)[0].1.clone()
         };
-        let before = key(&m, None).unwrap();
-        // The accepted version named but not switched to: as before.
+        // No key before the switch (the units wait for it), nor with the accepted version named alone.
+        assert_eq!(key(&m, None), None);
         m.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), "sources/inputs/elevation/@index.1111111111111111.json".into());
-        assert_eq!(key(&m, None).unwrap(), before);
+        assert_eq!(key(&m, None), None);
         m.insert(crate::inputs::switched_logical(crate::inputs::elevation::UNIT), "sources/inputs/elevation/@switched.2222222222222222.json".into());
         // Switched, the datasets unread: the key waits.
         assert_eq!(key(&m, None), None);
@@ -4114,7 +4136,6 @@ pub(crate) mod tests {
         let far = |k: &str| dataset("far", k, Some(vec![[100.0, 10.0, 101.0, 11.0]]));
         let near = |k: &str| dataset("near", k, Some(vec![[-23.0, 63.0, -20.0, 66.0]]));
         let k1 = key(&m, Some(vec![far("f1"), world()])).unwrap();
-        assert_ne!(k1, before, "the DEM rules' versions give way to the datasets'");
         assert_eq!(key(&m, Some(vec![far("f2"), world()])).unwrap(), k1, "a dataset far away");
         let k2 = key(&m, Some(vec![near("n1"), world()])).unwrap();
         assert_ne!(k2, k1, "a dataset meeting it");

@@ -249,37 +249,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     if step == "p5-check" {
         return p5_check(&root, &args);
     }
-    if step == "elevation-proof" {
-        // elevation-proof --root <nas> --out <scratch> [--declarations <folder>] [--units u,u…]
-        // [--store <sources>] [--count] [--write]: #143's first step's proof (pipeline::dem::proof):
-        // the units' kept samples against the declared datasets', every difference in a blend band.
-        // Reads the NAS only, but for --write (every unit, the accepted version): the proof the
-        // input check switches the build on.
-        let o = pipeline::dem::proof::Opts {
-            root: root.clone(),
-            declarations: opt(&args, "--declarations").map(PathBuf::from),
-            scratch: PathBuf::from(opt(&args, "--out").context("--out <scratch folder>")?),
-            units: opt(&args, "--units").map(|s| s.split(',').map(str::to_string).collect()),
-            store: opt(&args, "--store").map(PathBuf::from),
-            write: args.iter().any(|a| a == "--write"),
-            workers: opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or(16),
-        };
-        if args.iter().any(|a| a == "--count") {
-            let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-            let a = match &o.declarations {
-                Some(d) => pipeline::dem::proof::accept_folder(d, &o.scratch, &root, &m)?,
-                None => pipeline::inputs::open(&root, &m, pipeline::inputs::elevation::UNIT)?.context("no accepted version")?,
-            };
-            let (rebuilt, rekeyed, other) = pipeline::dem::proof::units_affected(&root, &a)?;
-            println!("elevation-proof: of the units recorded, {rebuilt} meet more than one dataset (built again at the switch), {rekeyed} one alone (re-keyed), {other} not in the pass's reaches");
-            return Ok(());
-        }
-        let r = pipeline::dem::proof::run(&o)?;
-        let failed: usize = r.iter().map(|u| u.failed).sum();
-        println!("elevation-proof: {} units, {} vertices, {} in blend bands, {failed} failed; the report in {}", r.len(), r.iter().map(|u| u.vertices).sum::<usize>(), r.iter().map(|u| u.blended).sum::<usize>(), o.scratch.join("elevation-proof-report.json").display());
-        anyhow::ensure!(failed == 0, "{failed} vertices differ outside the blend bands");
-        return Ok(());
-    }
     if step == "water-key-check" {
         return water_key_check(&root, &args);
     }
@@ -2949,13 +2918,11 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The declared elevation datasets' accepted version, once the records say the build reads them
-/// (pipeline::inputs::elevation::switched); None before.
+/// The declared elevation datasets' accepted version the units read (pipeline::inputs::elevation):
+/// an error before the records say the build reads them (their switch, docs/inputs.md §6.8).
 fn elevation_of(out: &Out) -> Result<Option<pipeline::inputs::Accepted>> {
     use pipeline::inputs::elevation;
-    if !elevation::switched(&out.manifest) {
-        return Ok(None);
-    }
+    anyhow::ensure!(elevation::switched(&out.manifest), "the records don't say the build reads the declared elevation datasets yet (their switch, docs/inputs.md §6.8): an app from before it builds the units until then");
     Ok(Some(pipeline::inputs::open(out.root(), &out.manifest, elevation::UNIT)?.context("the build reads the declared elevation datasets, but the records name no accepted version of them")?))
 }
 

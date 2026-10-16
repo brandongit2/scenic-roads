@@ -4523,9 +4523,18 @@ impl Agent {
             waiting.push(Waiting { step: Some("heritage-sites".into()), what: build::SITES.into(), why: format!("the regions' units wait: {why}") });
         }
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
+        // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
+        // their accepted version can't be read.
         if !planned.unknown.is_empty() {
-            let why = self.tiles.borrow().unread().next().map(|(c, e)| format!(": {c}, {e}")).unwrap_or_default();
-            waiting.push(Waiting { step: Some("unit".into()), what: "Building the areas".into(), why: format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len()) });
+            let why = match self.tiles.borrow().elevation(&manifest) {
+                Ok(None) => "the records don't say the build reads the declared elevation datasets yet (their switch, docs/inputs.md §6.8)".to_string(),
+                Err(e) => e.0,
+                Ok(Some(_)) => {
+                    let why = self.tiles.borrow().unread().next().map(|(c, e)| format!(": {c}, {e}")).unwrap_or_default();
+                    format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len())
+                }
+            };
+            waiting.push(Waiting { step: Some("unit".into()), what: "Building the areas".into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
@@ -8263,6 +8272,7 @@ mod tests {
         // (What the units wait for: the heritage sites' inputs and outputs, the buildings' index.)
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
         crate::inputs::heritage::accept_fixture(root, &mut m);
+        crate::inputs::elevation::accept_fixture(root, &mut m);
         m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
         m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
         let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";

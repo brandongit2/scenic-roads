@@ -1,10 +1,11 @@
-//! Elevations at every road vertex from national DEMs (`pipeline::dem`): its
-//! outputs (elev.f32, src.u8, dem-stats.json, the cache's dem-cache.*).
+//! Elevations at every road vertex from the declared elevation datasets (`pipeline::dem`), by the
+//! plan the unit job wrote in the build folder (`elevation.json`): its outputs (elev.f32, src.u8,
+//! dem-stats.json, the cache's dem-cache.*).
 //!
 //! usage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]
 //!
-//!   SCENIC_MOI_DTM       Taiwan's MOI DTM GeoTIFFs (else data/sources/moi-dtm)
-//!   SCENIC_FABDEM_STORE  FABDEM's store, each tile downloaded once (else read in place at Bristol)
+//!   SCENIC_STORE         the stores' folder (sources/fetched/): a dataset declared `store` keeps
+//!                        each file there, downloaded once (else read in place)
 //!   SCENIC_STORES_READ_ONLY  the store only read (a task's worker): what it lacks read in place
 //!   SCENIC_FETCH_*       mirror folders, recording, no network (`pipeline::fetch`)
 
@@ -36,12 +37,9 @@ fn main() -> Result<()> {
     let cache = cache.unwrap_or_else(|| build.parent().unwrap_or(&build).join("cache"));
     let env_dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let read_only = std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
-    let cfg = Config { build, workers, cache, no_cache, fabdem_store: env_dir("SCENIC_FABDEM_STORE"), fabdem_read_only: read_only, store: env_dir("SCENIC_STORE"), earlier_store: env_dir("SCENIC_STORE_EARLIER") };
-    // (Its phases, for the unit job's phase that runs it: pipeline::timings.) From the declared
-    // datasets when the unit job gave it their plan (elevation.json), else as before them.
-    match dem::declared::read_plan(&cfg.build)? {
-        Some(plan) => pipeline::timings::job("elev", || dem::generic::run(&cfg, &plan, &Fetcher::from_env()).map(|_| ()))?,
-        None => pipeline::timings::job("elev", || dem::run(&cfg, &Fetcher::from_env()).map(|_| ()))?,
-    }
+    let cfg = Config { build, workers, cache, no_cache, store: env_dir("SCENIC_STORE"), read_only };
+    let plan = dem::declared::read_plan(&cfg.build)?.with_context(|| format!("{}: no {} (the unit job writes the declared elevation datasets' plan there)", cfg.build.display(), dem::declared::PLAN_FILE))?;
+    // (Its phases, for the unit job's phase that runs it: pipeline::timings.)
+    pipeline::timings::job("elev", || dem::generic::run(&cfg, &plan, &Fetcher::from_env()).map(|_| ()))?;
     Ok(())
 }

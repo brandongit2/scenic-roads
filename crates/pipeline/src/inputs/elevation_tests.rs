@@ -153,29 +153,6 @@ fn what_the_checks_refuse_and_warn_of() {
 }
 
 #[test]
-fn the_switch_is_the_proofs_of_exactly_the_version_named() {
-    let d = tempfile::tempdir().unwrap();
-    let e = Elevation::default();
-    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
-    std::fs::create_dir_all(d.path().join("state/inputs")).unwrap();
-    let proof = |extra: &str| format!(r#"{{"index": "v1", "ok": true, "app": "20261016-0000-aaaaaaa", "units": 3{extra}}}"#);
-    let sampler = format!(r#", "sampler": {}"#, crate::dem::generic::SAMPLER_V);
-    std::fs::write(d.path().join(PROOF), proof(&format!(r#"{sampler}, "units_recorded": 3"#))).unwrap();
-    assert!(e.switch(d.path(), "v1").unwrap().is_some());
-    // Not of every unit recorded, or of another sampler (or none named): no switch.
-    std::fs::write(d.path().join(PROOF), proof(&format!(r#"{sampler}, "units_recorded": 4"#))).unwrap();
-    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
-    std::fs::write(d.path().join(PROOF), proof(r#", "units_recorded": 3"#)).unwrap();
-    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
-    std::fs::write(d.path().join(PROOF), proof(&format!(r#", "sampler": {}, "units_recorded": 3"#, crate::dem::generic::SAMPLER_V + 1))).unwrap();
-    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
-    std::fs::write(d.path().join(PROOF), proof(&format!(r#"{sampler}, "units_recorded": 3"#))).unwrap();
-    assert_eq!(e.switch(d.path(), "v2").unwrap(), None);
-    std::fs::write(d.path().join(PROOF), br#"{"index": "v1", "ok": false, "app": "20261016-0000-aaaaaaa"}"#).unwrap();
-    assert_eq!(e.switch(d.path(), "v1").unwrap(), None);
-}
-
-#[test]
 fn a_datasets_keyed_digest_names_its_index_and_dropped_files() {
     let ix = |files: &[(&str, [f64; 4])]| index(files);
     let one = [("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0])];

@@ -177,7 +177,7 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                buildings/<release>/
                (Overture's building boxes for the world, in z8 tiles, and their index), trees/
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
-               aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
+               aws-terrarium/ (AWS's raw terrain tiles), fetched/fabdem/ (FABDEM's 1° tiles), rail/ (the
                rail feeds: the catalogue, their zips; §6), terrain-z8-v3,
                copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), inputs/<unit>/ (the input
                check's checked copies of a drop box's files, its accepted indexes and held reports:
@@ -401,10 +401,9 @@ work from the lead's coordinator. Below, the M4 (48 GB) unless said.
     - the per-vertex DEM cache's seed: today's cache, copied once from `sources/dem-cache/` (9 GB),
       cleared only while the NAS has it whole, and copied again by the next unit job. Each unit's
       samples from its last run are on the NAS (`cache/dem-units/`, which both Macs' units read,
-      named by their box so a unit finds those near it from one listing, with the DEM rules'
-      versions they were sampled under, or once the build reads the declared elevation datasets,
-      their digest: docs/inputs.md §6.8), so a vertex is sampled from the DEM servers once, and
-      again only when the rule for its source changes (`pipeline::rules`), or the datasets do. A tile a server doesn't
+      named by their box so a unit finds those near it from one listing, with the digest of the
+      declared elevation datasets they were sampled from: docs/inputs.md §6.8), so a vertex is
+      sampled from the DEM servers once, and again only when the datasets change. A tile a server doesn't
       answer for (a timeout, a 5xx) fails the job, to be tried again, rather than falling back to a
       coarser source for good;
     - local copies of the NAS's files the summits and peaks jobs read (the z8 terrain, the
@@ -748,8 +747,8 @@ units' ones (DEM order, densification, road network codes) are versioned by area
 `pipeline::rules`: a unit's key names the versions of the rules where its ways go, so a changed
 rule (its version bumped) reruns only the units it applies to. The plan is modules declared per ISO
 3166-1 country or 3166-2 subdivision, with defaults:
-- DEM order (`pipeline::dem`, the `elev` program; Taiwan from FABDEM; the declared datasets'
-  order and blend once the build reads them, docs/inputs.md §6.8) and densification spacing (8 m in North America and Japan, 15 m
+- DEM order (the declared elevation datasets' order and blend: `pipeline::dem`, the `elev`
+  program, docs/inputs.md §6.8; not a rule here) and densification spacing (8 m in North America and Japan, 15 m
   elsewhere: `extract`);
 - heritage registers (the input check's `inputs/heritage/`, each register's territory and box its
   own: docs/inputs.md §6.5);
@@ -1308,11 +1307,11 @@ they treat any raster.
 The unit job runs the unit's programs on a unit folder, wiped at each run:
 1. **extract:** on U's piece, U's ways that touch the coverage. Rail tracks without
    a route relation are kept by type.
-2. **Elevations:** `elev` (`pipeline::dem`), DEMs by location, on U's slice of the per-vertex DEM
-   cache (the seed, and the units' kept samples, which win); FABDEM's tiles from the NAS (`sources/fetched/fabdem/`, each
-   copied there from Bristol's zips once). Once the build reads the declared elevation datasets
-   (docs/inputs.md §6.8), from their plan for U (`elevation.json`, the unit job's) through one
-   generic sampler, blended at their edges. U's samples are kept afterwards for its later runs and
+2. **Elevations:** `elev` (`pipeline::dem`), the declared elevation datasets (docs/inputs.md §6.8)
+   by their plan for U (`elevation.json`, the unit job's) through one generic sampler, blended at
+   their edges, on U's slice of the per-vertex DEM cache (the seed, and the units' kept samples,
+   which win); FABDEM's tiles from the NAS (`sources/fetched/fabdem/`, each copied there from
+   Bristol's zips once). U's samples are kept afterwards for its later runs and
    its neighbours'.
 3. **Heritage:** the sites and designated areas of the heritage-sites job's slices within U + 30 km.
    `areaflags` rasterises the areas onto U's grid.

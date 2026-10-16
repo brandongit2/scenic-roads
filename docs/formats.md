@@ -868,9 +868,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   map's languages: a `#langs\t<lang>,<lang>,…` line saying which (an index without it has those of
   2026-10-05, `LANGS_UNSAID`), then `<lang>|<Title_with_underscores>\t<views>` lines, zstd; a title may have more than
   one line, its views summed; dem/pageviews.py),
-  `sources/fabdem/<tile>_FABDEM_V1-2.tif`
-  (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
-  have);
+  `sources/fetched/<dataset>/<file>` (an elevation dataset declared `store`'s files, each
+  downloaded once as a deflate GeoTIFF, `<file>.none` for one the source doesn't have: FABDEM's 1°
+  tiles out of Bristol's zips, `sources/fetched/fabdem/<tile>_FABDEM_V1-2.tif`; docs/inputs.md §6.8);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (the per-vertex DEM cache's seed, which
   each Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).
@@ -907,9 +907,10 @@ class, id) within a tile. The client sends the id with the clicked point.
   the typical weekday.
 - **Kept for units' later runs, both Macs'** (`cache/`, not swept): `cache/dem-units/<u>.<box>.dem`
   (`<box>`: the points' box as 32 hex digits, w, s, e, n as u32; a unit's DEM samples from its last
-  run: "RDDEM002", u64 count, the points' box (4 × i32), the
-  versions of the DEM rules dem-north-america, -japan, -taiwan, -fabdem it was sampled under (4 ×
-  u32), then the sorted keys, elevations and sources) and `cache/scenic-units/<u>/` (its canopy and
+  run: "RDDEM002", u64 count, the points' box (4 × i32), what it was sampled under (4 × u32:
+  `u32::MAX`, 0 and the two halves of the declared elevation datasets' digest; before them, the
+  versions of the DEM rules dem-north-america, -japan, -taiwan, -fabdem), then the sorted keys,
+  elevations and sources) and `cache/scenic-units/<u>/` (its canopy and
   view results: canopy.keys, canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
   samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json: {v (scache::SCENIC_V),
   basis: [[[x, y], hash16 of the z11 tile's terrain and land cover], …]}).

@@ -15,9 +15,9 @@
 //!
 //! What's measured goes in the index with the declaration (`facts.measured`, `facts.extent`), so the
 //! unit jobs read the order and coverage from the index alone (crate::dem::declared::plan). The
-//! build reads the datasets once the records say the readers switched (`@switched`: the migration's
-//! proof, `scenic-build elevation-proof`, says every vertex that differs from today's lies in a
-//! blend band, of exactly the version the records name: `switch`).
+//! units are built only once the records say the readers switched (`@switched`, recorded by #143's
+//! migration when its proof passed: docs/inputs.md §6.8); an app from before the datasets builds
+//! them until then.
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::dem::declared::{self, Data, Declaration, Measured};
@@ -30,10 +30,6 @@ use std::sync::{Arc, Mutex};
 
 /// The unit's name.
 pub const UNIT: &str = "elevation";
-
-/// The migration's proof (`scenic-build elevation-proof`): the version it proved, and whether every
-/// vertex that differed lay in a blend band.
-pub const PROOF: &str = "state/inputs/elevation-proof.json";
 
 const SHAPE: &str = "el-shape";
 const DESC: &str = "el-desc";
@@ -437,21 +433,6 @@ impl Checks for Elevation {
         Ok(d)
     }
 
-    fn switch(&self, root: &Path, index: &str) -> Result<Option<Vec<u8>>> {
-        let p = root.join(PROOF);
-        let b = match std::fs::read(&p) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(anyhow::Error::from(e).context(format!("read {PROOF}"))),
-        };
-        let v: serde_json::Value = serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {PROOF}: {e}"))?;
-        // (Of exactly this version, passed, on a named app, by this sampler: a proof of another
-        // sampler's proves nothing of this one's heights; and over every unit it recorded.)
-        let sampler = v["sampler"].as_u64() == Some(crate::dem::generic::SAMPLER_V as u64);
-        let whole = v["units"].as_u64().is_some_and(|n| v["units_recorded"].as_u64() == Some(n));
-        Ok((v["index"].as_str() == Some(index) && v["ok"] == true && v["app"].as_str().is_some_and(|a| !a.is_empty()) && sampler && whole).then_some(b))
-    }
-
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The newest pass's outlines: a tile pyramid's coverage is its territory's.)
         outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
@@ -541,6 +522,29 @@ pub fn outlines_of(manifest: &BTreeMap<String, String>) -> Option<&String> {
 /// Whether the records say the build reads the declared datasets (`@switched`).
 pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
     manifest.contains_key(&super::switched_logical(UNIT))
+}
+
+/// An accepted version of one dataset covering the world, its index named in records `m` and the
+/// switch recorded (the units' tests: they're built only from the declared datasets).
+#[cfg(test)]
+pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
+    let d = Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 4, data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
+    let measured = Measured { crs: None, resolution: 150.0, cover: None };
+    let mut facts = serde_json::Map::new();
+    facts.insert("declaration".into(), serde_json::to_value(&d).unwrap());
+    facts.insert("measured".into(), serde_json::to_value(&measured).unwrap());
+    let file = format!("{}/world.0000000000000000.toml", super::store_dir(UNIT));
+    let files = BTreeMap::from([("world.toml".to_string(), super::FileEntry { file, size: 0, keyed: "w".into(), facts })]);
+    let index = super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
+    let body = serde_json::to_vec(&index).unwrap();
+    let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
+    std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
+    std::fs::write(root.join(&name), body).unwrap();
+    m.insert(super::logical(UNIT), name);
+    // (Its switch, recorded on an app every app passes.)
+    let sw = format!("{}/@switched.1111111111111111.json", super::store_dir(UNIT));
+    std::fs::write(root.join(&sw), br#"{"ok": true, "app": "development"}"#).unwrap();
+    m.insert(super::switched_logical(UNIT), sw);
 }
 
 #[cfg(test)]

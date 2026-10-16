@@ -1891,12 +1891,11 @@ reads the report again when its content name changes, for its status (`Status::t
 once. Nothing is deleted.
 ### 6.8 Elevation (#143, #144)
 
-**Status:** #143's first step is built as its publish 1 (the migration below): the declarations on
-the input check (crate::inputs::elevation), the one generic sampler with its blend
-(crate::dem::generic, crate::dem::declared), the switch, the units' keys and DEM cache by the
-datasets once switched, and the proof (`scenic-build elevation-proof`). Its publish 2 deletes the
-per-source code and the DEM rules and credits. Steps 2 (densification from the data) and 3 (heights
-converted) are planned. What isn't built yet is marked planned.
+**Status:** #143's first step is built, both its publishes (the migration below): the declarations
+on the input check (crate::inputs::elevation), the one generic sampler with its blend
+(crate::dem::generic, crate::dem::declared), the units' keys and DEM cache by the datasets, and
+(publish 2) the per-source code and the DEM rules and credits deleted. Steps 2 (densification from
+the data) and 3 (heights converted) are planned. What isn't built yet is marked planned.
 
 **Kind:** source declarations, a dataset each; a small dataset's files may be dropped beside its
 declaration. **Drop box:** `inputs/elevation/`: `<dataset>.toml`, a tile index `<name>.geojson`
@@ -2000,19 +1999,21 @@ names.
 - **Ground over surface** at equal rank and resolution; a surface model ranks over a ground one only
   by `rank` (GLO-30 over AWS's tiles north of 60°N, where those are wrong).
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
-- **Keys** (built, once switched): a unit names the `keyed` digests of the datasets whose coverage
-  meets its ways' extent (`agent::build::unit_key`, the datasets held by `agent::tiles`), in place
-  of the DEM rules' versions by area (`rules::versions_meeting_but_dem`). A dataset's `keyed` is its
-  declaration's fields with its data's digest: its index's content and its dropped files' names and
-  contents (set when the version is derived), so adding a tile to an index or a file to a folder
-  reruns the units it meets, as adding or editing a dataset does. Planned: the fetched files' pins for datasets downloaded whole.
+- **Keys** (built): a unit names the `keyed` digests of the datasets whose coverage meets its ways'
+  extent (`agent::build::unit_key`, the datasets held by `agent::tiles`), where the DEM rules'
+  versions by area were (`agent::rekey::dem_rules_meeting` keeps them for the keys made before). A
+  dataset's `keyed` is its declaration's fields with its data's digest: its index's content and its
+  dropped files' names and contents (set when the version is derived), so adding a tile to an index
+  or a file to a folder reruns the units it meets, as adding or editing a dataset does. Before the
+  switch is recorded a unit has no key and waits (the agent says why). Planned: the fetched files'
+  pins for datasets downloaded whole.
 - **The unit's plan:** the unit job writes `elevation.json` into the unit's folder (the accepted
   datasets in their order, each with its files whose footprints meet the unit's vertices, a few km
   around: `dem::declared::plan`), which `elev` reads (natively or as a task's WebAssembly: it's one
-  of the tail's files); without one `elev` runs today's code (publish 1 only).
+  of the tail's files); without one `elev` refuses to run.
 - **The units' DEM cache** (`sources/dem-cache/`, `cache/dem-units/`): before the switch a vertex's
-  cached height stays valid while the versions of the DEM rules it depends on hold (`dem_valid_in_box`,
-  through `rules::dem_rules_of`). Built for the switch, coarser than below (`unit::DemValidity`): a
+  cached height stayed valid while the versions of the DEM rules it depended on held. Built,
+  coarser than below (`unit::DemValidity`): a
   units' samples file made from the declarations records their digest (`made`: `u32::MAX`, 0, the
   digest's halves, in the rules' versions' place); its samples are valid while the declarations'
   digest is the same, and otherwise none are. Any other sample (the seed's, those made under the
@@ -2056,7 +2057,8 @@ in #143's worktree: nine, `hrdem`, `usgs-3dep`, `mrdem`, `gsi-1a`, `gsi-5a`, `gs
 listings: HRDEM's 56 squares, the same as `dem/hrdem_2m_tiles.txt` names; 3DEP's 1,449 tiles;
 FABDEM's tiles in Bristol's 356 zips).
 
-*Publish 1* (the check, the sampler, both read paths). It reads FABDEM's kept tiles from
+*Publish 1* (the check, the sampler, both read paths, the proof tool and the switch it records;
+all but the first two removed with publish 2). It reads FABDEM's kept tiles from
 `sources/fetched/fabdem/` (the generic store's place), and a tile not there from `sources/fabdem/`,
 read only, when it's whole there (`SCENIC_STORE_EARLIER`, crate::dem::kept), so nothing is
 downloaded or stored twice before the rename. The rollout, in order:
@@ -2080,12 +2082,9 @@ downloaded or stored twice before the rename. The rollout, in order:
 5. *The proof:* `scenic-build elevation-proof --root <nas> --out <scratch> --store <nas>/sources
    --write` (`--write` needs `--store`): each unit's vertices sampled by today's code and by the
    generic sampler; every difference must lie in a blend band with the same source byte. It refuses
-   up front when any unit the records list has no kept samples but has roads (`base/<u>` or
-   `global/roads/<u>` in the manifest): it would be unproved. A unit with neither has no road
-   vertices (the unit run samples and keeps none for it) and counts as proved, listed as such. Only
-   when every recorded unit passed does it write `state/inputs/elevation-proof.json`: the accepted
-   index proved, the app, the sampler's version (`generic::SAMPLER_V`), the units proved (the
-   roadless among them, also listed as `roadless`) and recorded.
+   up front when any unit the records list has no kept samples (it would be unproved). Only when
+   every recorded unit passed does it write `state/inputs/elevation-proof.json`: the accepted index
+   proved, the app, the sampler's version (publish 1's `generic::SAMPLER_V`), the units proved and recorded.
 6. *The switch:* the next check records it (`sources/inputs/elevation/@switched`) when the proof
    names the accepted index, the sampler this app has, and as many units proved as recorded; a
    declaration edited between, or a newer sampler, makes the proof stale, so it runs again. From the
@@ -2097,10 +2096,16 @@ downloaded or stored twice before the rename. The rollout, in order:
    heights the same by the proof); those more than one meets are built again with the blends,
    their kept samples reused where one dataset alone covers a vertex. **No rollback past the
    switch** but by `scenic lead take --force --downgrade`.
-7. *Publish 2* (once switched): the per-source code (`dem::run`, `dem::gsi`, `dem::fabdem`, the
-   HRDEM tile list and index), the DEM rules and their credits in rules.rs, `DemValidity::Rules`,
-   the fallback to today's code, and the read of the store's earlier place go; `elev` and the unit
-   job refuse to run without the datasets' plan.
+7. *Publish 2:* below.
+
+*Publish 2* (once switched; built): the per-source code (`dem::run`, `dem::gsi`, `dem::fabdem`,
+`dem/hrdem_2m_tiles.txt`; NRCan's tile squares moved to `producers/elevation/hrdem-squares.geojson`,
+the HRDEM producer's input, which lists the bucket itself), the DEM rules and their credits in
+rules.rs (`dem-*`, `DEM_RULES`, `dem_rules_of`, `meets_taiwan`: what the older keys need kept in
+agent::rekey), the cache's judging by the rules, the fallback to today's code, the read of FABDEM's
+store's earlier place, and the proof tool with the switch it records go; `elev` and the unit job refuse to run without the datasets' plan,
+and the units wait while no switch is recorded. Installed before the switch, it builds no unit: so
+it's published only once the switch is recorded.
 
 **#144, the 3D terrain.** AWS's Terrarium tiles (`terrain_pack::URL`, terrain_pack.rs:15) and GLO-30
 north of 60°N (`terrain_north::BUCKET`, terrain_north.rs:102; `NORTH_PIN`, terrain_pack.rs:93)
@@ -2267,22 +2272,17 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 
 ### 9.2 Elevation and terrain [#143, #144]
 
-- `crates/pipeline/src/dem/mod.rs:1–19` the priority order (doc), `:40` `NRCAN`, `:43`
-  `NA_WEST_OF`, `:46–47` the embedded HRDEM index and tile list (`dem/hrdem_tile_index.geojson`, 66
-  tiles; `dem/hrdem_2m_tiles.txt`, 56), `:50` HRDEM's path, `:54` MRDEM's, `:58` 3DEP's, `:61`
-  `in_japan`, `:94` 3DEP's tile naming, `:126–136` per-source stats, `:364–471` the per-source order:
-  D (declarations; the index by a producer: P).
-- `dem/gsi.rs:11` `HOST`, `:15` `LAYERS` (five layers, zooms, codes): D; `:21–38` the PNG decoding:
-  G (the `gsi-png` encoding).
-- `dem/fabdem.rs:16` `BASE`, `:43`, `:47` the zip and member naming: D (an `index`); the store
-  logic: G.
-- `dem/proj.rs`: G (projections, chosen by a GeoTIFF's CRS).
-- `rules.rs:25–41` the areas and DEM rules, `:60` `DEM_RULES`, `:65` `dem_rules_of`, `:92`
-  `meets_taiwan`: go (keys name declarations).
-- `crates/roadcore/src/lib.rs:145` `DemSource` codes 0–7, `:161` `NDEM`: D (see §12, the DEM cache).
+- Built (#143, step 1): `dem/mod.rs`'s priority order, `NRCAN`, `NA_WEST_OF`, the embedded HRDEM
+  index and tile list, HRDEM's, MRDEM's and 3DEP's paths, `in_japan`, 3DEP's tile naming and the
+  per-source order and stats; `dem/gsi.rs`'s `HOST` and `LAYERS` (its PNG decoding is the `gsi-png`
+  encoding, `dem/encoding.rs`); `dem/fabdem.rs` (its store is `dem/kept.rs`, generic); the DEM rules
+  and `meets_taiwan` in rules.rs; `elev.rs`'s stale `SCENIC_MOI_DTM` doc: all gone, the nine
+  declarations and three indexes (made by `producers/elevation/indexes.py`) in their place.
+- `dem/proj.rs`: G (projections, chosen by a dataset's CRS).
+- `crates/roadcore/src/lib.rs:145` `DemSource` codes 0–7, `:161` `NDEM`: kept for now as the
+  server's labels of the declarations' `code`s (§12, the DEM cache, plans the byte as a position).
 - `crates/pipeline/src/bin/extract.rs:1083–1087` and `reach.rs:57–58` densification by boxes: G,
-  derived from the datasets' resolutions.
-- `crates/pipeline/src/bin/elev.rs:6` the stale `SCENIC_MOI_DTM` doc: delete.
+  derived from the datasets' resolutions (#143 step 2, planned).
 - `crates/pipeline/src/terrain_pack.rs:15` `URL` (AWS Terrarium), `:34`, `:909` its template, `:93`
   `NORTH_PIN`, `:107` and `:1709` (and terrain_task.rs:966, handoff.rs:213, rawpack.rs:6) the stores'
   paths: D. `terrain_north.rs:102` `BUCKET` (GLO-30), `:99` its naming, `:114–128` its tile list:

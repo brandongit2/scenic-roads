@@ -36,7 +36,7 @@ const LUT: [u8; 256] = {
 
 /// A WorldCover tile's name (3° squares, by their south-west corner).
 pub fn tile_name(lat0: i64, lon0: i64) -> String {
-    crate::dem::fabdem::name(lat0, lon0)
+    format!("{}{:02}{}{:03}", if lat0 >= 0 { 'N' } else { 'S' }, lat0.abs(), if lon0 >= 0 { 'E' } else { 'W' }, lon0.abs())
 }
 
 /// WorldCover's tiles, opened as they're needed (None: the open sea, where there's none).
