@@ -15,8 +15,10 @@
 //!
 //! On the gate (docs/inputs.md §4.10): the languages (#136, crate::inputs::languages), the
 //! translations and the descriptions (#137), the regions (#135), the timetable feeds (#140,
-//! crate::inputs::feeds), and the test unit `_gate-test` while `state/inputs/gate-test` exists
-//! (`TEST_FLAG`). Each other input joins `UNITS` in its own task (#138, #139, #141–#145).
+//! crate::inputs::feeds), the heritage registers and the owner's matches (#138,
+//! crate::inputs::heritage, crate::inputs::heritage_matches), and the test unit `_gate-test` while
+//! `state/inputs/gate-test` exists (`TEST_FLAG`). Each other input joins `UNITS` in its own task
+//! (#139, #141–#145).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,8 @@ pub mod descriptions;
 pub mod feeds;
 pub mod gate;
 pub mod gatetest;
+pub mod heritage;
+pub mod heritage_matches;
 pub mod languages;
 pub mod lint;
 pub mod regions;
@@ -40,7 +44,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 5] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT];
+pub const UNITS: [&str; 7] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT, heritage::UNIT, heritage_matches::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -81,6 +85,11 @@ pub fn units(root: &Path) -> Vec<&'static str> {
 /// `Checks::prepared`'s, with the pass's outlines).
 static REGIONS: std::sync::LazyLock<regions::Regions> = std::sync::LazyLock::new(regions::Regions::default);
 
+/// The registers' checks as a file's own checks read them (the check job's are
+/// `Checks::prepared`'s, with the accepted version's counts and the pass's outlines).
+static HERITAGE: std::sync::LazyLock<heritage::Heritage> = std::sync::LazyLock::new(heritage::Heritage::default);
+static MATCHES: std::sync::LazyLock<heritage_matches::Matches> = std::sync::LazyLock::new(heritage_matches::Matches::default);
+
 /// The checks of unit `unit`; None for a unit this app doesn't know.
 pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
     match unit {
@@ -91,6 +100,8 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
         descriptions::UNIT => Some(&descriptions::Descriptions),
         regions::UNIT => Some(&*REGIONS),
         feeds::UNIT => Some(&feeds::Feeds { catalogue_ids: None, territories: None }),
+        heritage::UNIT => Some(&*HERITAGE),
+        heritage_matches::UNIT => Some(&*MATCHES),
         _ => None,
     }
 }

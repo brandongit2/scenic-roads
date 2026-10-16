@@ -131,11 +131,15 @@ impl Described {
         }
     }
 
-    /// As the catalog carries a credit (docs/formats.md, Catalog `credits`).
+    /// As the catalog carries a credit (docs/formats.md, Catalog `credits`): a heritage register's
+    /// with its id (`register`), which the map's popups name their source by.
     pub fn credit(&self) -> serde_json::Value {
         let d = &self.description;
         let what = if d.what.is_empty() { &d.name } else { &d.what };
         let mut v = serde_json::json!({ "what": what, "source": d.credit, "terms": d.licence });
+        if let Some((rid, "toml")) = (self.unit == super::heritage::UNIT).then(|| super::heritage::split(&self.path)).flatten() {
+            v["register"] = rid.into();
+        }
         if let Some(Extent::Box(b)) = &self.extent {
             v["areas"] = serde_json::json!([b]);
         }

@@ -79,11 +79,13 @@ const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/heritage_eu.py", "wd_search_labels", "\"languages\": \"|\".join(langs)", "Wikidata's API parameter `languages`, not the languages drop box"),
 ];
 
-/// Each gate unit's name as code would write it in a path. (The regions' aside: "regions" is a
-/// word every reader of the coverage and the catalog says, and their drop box is only ever named
-/// `inputs/regions`, which `MARKERS` catches.)
+/// Each gate unit's name as code would write it in a path. (The regions' and the heritage
+/// registers' and matches' aside: "regions" and "heritage" are words every reader of the coverage,
+/// the catalog and the heritage chain says, and their drop boxes are only ever named
+/// `inputs/regions`, `inputs/heritage`, `inputs/heritage-matches`, which `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| **u != pipeline::inputs::regions::UNIT).map(|u| format!("\"{u}")).collect()
+    use pipeline::inputs::{heritage, heritage_matches, regions};
+    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT].contains(*u)).map(|u| format!("\"{u}")).collect()
 }
 
 /// The lines naming a drop box outside the accessor, and the exemptions that matched none.

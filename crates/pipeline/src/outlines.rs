@@ -1024,6 +1024,12 @@ impl Outlines {
         Ok(names::Spoken::build(table, spoken_areas(table, &self.recs, |i| self.string(i).to_owned(), |o| self.simple_polygons(o))?))
     }
 
+    /// The ISO 3166 code outline `o` is drawn under ([`spoken_codes`]: a territory's own ISO
+    /// 3166-1 code, a subdivision's ISO 3166-2 code); None for one with neither.
+    pub fn code_of(&self, o: &OutlineRec) -> Option<String> {
+        spoken_code(o, &|i| self.string(i).to_owned())
+    }
+
     /// The codes of these outlines ([`spoken_codes`]).
     pub fn spoken_codes(&self) -> std::collections::BTreeSet<String> {
         spoken_codes(&self.recs, |i| self.string(i).to_owned())
