@@ -2668,7 +2668,9 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     }
     drop(p);
     let _p = phase("the pass's answers made one with the NAS's", Class::NasRead);
-    if let Some(a) = pipeline::answers::heritage_start(out.root(), &epoch, date)? {
+    // (The registers' snapshot's caches, for the first pass since the registers became an input.)
+    let legacy = out.get("sources/registers/legacy").map(|c| out.path(c));
+    if let Some(a) = pipeline::answers::heritage_start(out.root(), &epoch, date, legacy.as_deref())? {
         eprintln!("heritage: the pass's answers start from {}", a.display());
     }
     std::fs::write(epoch.join(".done"), b"")?;

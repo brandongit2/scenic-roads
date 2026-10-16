@@ -1460,10 +1460,16 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
    heritage-sites lists (`heritage-sources.json`'s `registers`), and the chain's own caches (its
    Wikidata, Wikipedia and World Heritage answers, which lived in the snapshot) are the pass's
    answers alone (`sources/items/<date>/heritage.tar.zst`, `pipeline::answers::heritage`), a new
-   pass starting from the last pass's.
+   pass starting from the last pass's. With no pass's archive yet (the first run since the
+   registers became an input), the job starts its working copy from the snapshot's caches (wd/,
+   desc/ and whs/ of `sources/registers/legacy`, read only) with the pass's answers kept beside it
+   (`sources/items/<date>/heritage-<id>.tar.zst`) laid over them, less what the chain makes again
+   each run (`pipeline::answers::heritage_start`); its keep then writes the pass's archive under
+   the answers' lease, as every run's does.
 3. **Proof** (run for #138, the old app and this one on the same pass, cover and answers, seven
    regions: Moncton, Halifax, Mont-Mégantic, Paris, Barcelona, Edinburgh, Kyoto; the new side's
-   answers made by `tools/check/heritage-answers-seed.sh`, so the chain asked nothing): the sites'
+   answers made as the job's first start makes them, from the snapshot's caches and the pass's
+   answers, so the chain asked nothing): the sites'
    position slices and World Heritage parts the same bytes; the 11,769 sites the same with every
    property but `source` (now `register`, `ref`, `t`, and `site` for World Heritage); the area
    slices of the cover's tiles the same, the heritage areas those of the registers meeting the cover
@@ -1480,7 +1486,8 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
    credits and territory boxes in rules.rs, `registers-import`, the snapshot's readers
    (`sources/registers/legacy`), and the old build's heritage fallbacks (`markconv::LEGACY`,
    `agent::build::heritage_src`, `overlays_key`'s branch). The snapshot's archive on the NAS is the
-   PM's to retire once a published app reads the registers (§11).
+   PM's to retire once a pass's heritage archive (`sources/items/<date>/heritage.tar.zst`) exists:
+   until then the job's first start reads its caches (§11).
 
 #### 6.5.1 What stays generic in the heritage chain
 
@@ -2207,8 +2214,9 @@ the dozen direct reads of drop boxes of §9.10.
   removed in #138 (the marks and overlays wait for the pass's heritage job instead); the files and
   `layers/basemap/legacy-*.pmtiles` are to be deleted from the NAS once a published app has no
   readers. (`sources/legacy/` is already gone: the owner deleted it on 9 October.)
-- **The registers' legacy names:** `sources/registers/legacy` has no reader since #138 (its archive
-  is the PM's to retire); `legacy-seeds` goes with #139.
+- **The registers' legacy names:** `sources/registers/legacy`'s only reader since #138 is the heritage
+  job's first start, for its caches (`pipeline::answers::heritage_start`, while no pass has a
+  heritage archive); its archive is the PM's to retire once one has; `legacy-seeds` goes with #139.
 - **The `terrain` and `slope` programs' build-folder modes** (crates/pipeline/src/bin/terrain.rs:66,
   bin/slope.rs:185, defaulting to `data/build`): `terrain --scan` is live; the folder modes go in
   #144.

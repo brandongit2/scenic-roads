@@ -2875,7 +2875,8 @@ At each phase's end an Opus agent reviews the work against this plan.
      - the NAS's files from that build, which nothing reads now (their fallbacks went in #138):
        `global/legacy/`, `layers/basemap/legacy-*`, `sources/legacy/` (deleted once an app without
        their readers is published), and `sources/registers/legacy` (the registers' snapshot: the
-       registers are an input since #138);
+       registers are an input since #138; its caches start the heritage job's answers until a
+       pass has its heritage archive, then it can go);
      - names that still say legacy for live code and data: `pipeline::legacy` (the units' tile and
        their base packs) and `sources/registers/legacy-seeds` (#139);
      - the `terrain` and `slope` programs' build-folder modes (`terrain --scan` is live);
