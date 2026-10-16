@@ -32,6 +32,7 @@ usage: heritagewd.py
 """
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import math
@@ -183,9 +184,24 @@ def same_name(a: set[str], b: set[str]) -> float:
     return len(common) / len(a | b)
 
 
-def osm_index() -> tuple[dict, list]:
+def site_cell(site: dict) -> tuple[int, int]:
+    """The ~1 km grid cell (0.01°) a site's point is in: the one osm_link looks in."""
+    lon, lat = site["geometry"]["coordinates"]
+    return int(lon * 100), int(lat * 100)
+
+
+def osm_index(cells: set[tuple[int, int]]) -> tuple[dict, list]:
     """OSM features with a Wikidata item: grid of ~1 km cells → feature indices; features as
-    (qid, bbox, name tokens, register refs)."""
+    (qid, bbox, name tokens, register refs). Only the cells of the sites to link (`cells`, as
+    site_cell gives them) are entered, and only the features in one of them kept: a large
+    protected area's box covers millions of cells, which entered whole took the script to 19 GB
+    (2 GB now, 2026-10-16). A site's cell lists the same features, in the same order, as it would in a grid of every cell."""
+    by_x: dict[int, list[int]] = {}
+    for cx, cy in cells:
+        by_x.setdefault(cx, []).append(cy)
+    for ys in by_x.values():
+        ys.sort()
+    xs_sorted = sorted(by_x)
     feats, grid = [], {}
     with open(ROOT / "data" / "heritage" / "osm" / "named.geojsonseq", encoding="utf-8") as f:
         for line in f:
@@ -205,6 +221,17 @@ def osm_index() -> tuple[dict, list]:
                     for x in c:
                         walk(x)
             walk(g["geometry"]["coordinates"])
+            x0, x1 = int(min(xs) * 100) - 1, int(max(xs) * 100) + 1
+            y0, y1 = int(min(ys) * 100) - 1, int(max(ys) * 100) + 1
+            # The sites' cells within its box (inclusive): those of each column of sites in range.
+            hit = []
+            for k in range(bisect.bisect_left(xs_sorted, x0), bisect.bisect_right(xs_sorted, x1)):
+                cx = xs_sorted[k]
+                col = by_x[cx]
+                for j in range(bisect.bisect_left(col, y0), bisect.bisect_right(col, y1)):
+                    hit.append((cx, col[j]))
+            if not hit:
+                continue
             names = set()
             for k in NAME_KEYS:
                 if p.get(k):
@@ -212,9 +239,8 @@ def osm_index() -> tuple[dict, list]:
             refs = {p[k].strip().upper() for keys in OSM_REF.values() for k in keys if p.get(k)}
             n = len(feats)
             feats.append((qid, (min(xs), min(ys), max(xs), max(ys)), [x for x in names if x], refs))
-            for cx in range(int(min(xs) * 100) - 1, int(max(xs) * 100) + 2):
-                for cy in range(int(min(ys) * 100) - 1, int(max(ys) * 100) + 2):
-                    grid.setdefault((cx, cy), []).append(n)
+            for c in hit:
+                grid.setdefault(c, []).append(n)
     return grid, feats
 
 
@@ -225,7 +251,7 @@ def osm_link(site: dict, rid: str | None, grid: dict, feats: list) -> str | None
     p = site["properties"]
     names = [t for t in (tokens(p.get("name") or ""), tokens(p.get("name_en") or "")) if t]
     best, key = None, None
-    for n in grid.get((int(lon * 100), int(lat * 100)), []):
+    for n in grid.get(site_cell(site), []):
         qid, (x0, y0, x1, y1), onames, refs = feats[n]
         if not (x0 - pad_x <= lon <= x1 + pad_x and y0 - pad_y <= lat <= y1 + pad_y):
             continue
@@ -375,7 +401,7 @@ def main():
     todo = [i for i in range(len(feats)) if i not in linked]
     print(f"OSM links: indexing features with a Wikidata item; {len(todo)} sites to link", file=sys.stderr, flush=True)
     with phase("the OSM features with an item indexed", "compute"):
-        grid, ofeats = osm_index()
+        grid, ofeats = osm_index({site_cell(feats[i]) for i in todo})
     with phase("sites linked through OSM", "compute"):
         have_q = {(r["i"], r["qid"]) for r in items}
         osm_sites: dict[str, list[int]] = {}

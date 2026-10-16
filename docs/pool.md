@@ -769,8 +769,14 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   back or failed: `floors`); its asks say its Mac's limit (`limit_mb`).
 - **Held where it can't fit:** a target whose floor, learned alone the way its step runs now, passes
   this Mac's limit isn't started here: a shared step's is left to the members whose Macs have room
-  ("left to a Mac with room"); one past every Mac's limit the lead knows from the members' asks, or a
-  step only the lead runs, waits, the status saying so ("more than any Mac in the pool has"). A
+  ("left to a Mac with room"); one past every Mac's limit the lead knows from the members' asks
+  waits, the status saying so ("more than any Mac in the pool has"). A step only the lead runs
+  (not shared: the heritage chain, the items job…) is judged against the lead's limit alone: past
+  it, the target waits, the status saying "past the lead's limit of X GB; this step runs only on
+  the lead" and naming the member (an agent heard from in the last ten minutes) with the largest
+  limit when that fits it, with the remedy, `scenic lead give <member>`. The lead isn't handed over
+  by itself: moving the lead moves every lead-only job and the pass's caches, a floor learned wrong
+  would move it for nothing, and which Mac leads is the owner's call. A
   target whose floor past the lead's limit was a batch's is tried again in a job of its own on the
   lead first; a member's offers keep a floor past what it spares from it, and batch the rest as
   any. A floor

@@ -3196,7 +3196,9 @@ The batches after the memory guard were reordered around it.
   holds, swapped out or compressed, so the Mac stays short; stopped, it frees it, losing its current
   target's work, and what it held is kept as its target's floor so the next offer goes where it
   fits. A step whose memory grows past every Mac is a fault in the step: the target waits, saying
-  so, rather than being placed anywhere.
+  so, rather than being placed anywhere. A step only the lead runs, past the lead's limit, waits
+  too, the status naming the member whose limit fits it (`scenic lead give <member>`); the lead
+  isn't moved by itself (pool.md §7.2).
 - **The raw tiles' packing stays in the terrain piece's job** (it was to be a job of its own, when an
   area's whole run held its slot packing for about 2.1 of 4.75 hours on 5 Oct): measured again, the
   53 piece jobs of 9 Oct spent 15 s on it in all (0.1 to 6.2 s each, their tiles already in the

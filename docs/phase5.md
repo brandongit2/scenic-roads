@@ -482,6 +482,9 @@ part, layers.py) runs in Python.
   - **Its OSM inputs** are the pass's areas and named objects within the cover (named with the
     chain's filter; the set also keeps the World Heritage tags). For whsshapes, it uses the filtered
     planet within the cover: one clip per pass and cover, in the cache.
+  - **Links through OSM:** heritagewd.py indexes the named objects with a Wikidata item on a 0.01°
+    grid, entering an object only in the cells of the sites it links (a large protected area's box
+    entered in every cell it covers took the script to 19 GB; now 2 GB, 16 Oct 2026).
   - **Park facts:** the pass's answers (`areas-wikidata.json`); areadetails.py asks Wikidata for the
     parks they lack.
   - **Pageviews:** the months are the items job's cache, and pageviews.py takes the pass's months

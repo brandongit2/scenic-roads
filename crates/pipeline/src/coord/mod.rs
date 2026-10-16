@@ -1325,6 +1325,19 @@ impl Coordinator {
         s.workers.values().filter(|w| now.duration_since(w.seen) < Duration::from_secs(600)).filter_map(|w| w.ask.as_ref().and_then(|a| a.limit_mb)).max()
     }
 
+    /// The agent among the workers heard from in the last ten minutes with the largest memory
+    /// limit: its label (its host name, what `scenic lead give` takes) and that limit (MB). A page
+    /// can't lead: agents only.
+    pub fn roomiest_agent(&self) -> Option<(String, u64)> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        s.workers
+            .values()
+            .filter(|w| w.kind == "native" && now.duration_since(w.seen) < Duration::from_secs(600))
+            .filter_map(|w| w.ask.as_ref().and_then(|a| a.limit_mb).map(|l| (w.label.clone(), l)))
+            .max_by_key(|(_, l)| *l)
+    }
+
     /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: as its
     /// last run measured (the way the step runs now), else by what the plan offered it with (a
     /// unit's piece, another step's guess); None when it's neither (a step not offered).

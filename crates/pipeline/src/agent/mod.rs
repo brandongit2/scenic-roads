@@ -3377,7 +3377,17 @@ impl Agent {
                     _ => {}
                 }
             }
-            if n_all > 0 {
+            if n_all > 0 && !steps::SHARED.contains(&w.step.as_str()) {
+                // A step only the lead runs: judged against the lead's limit alone. A member whose
+                // limit fits it is named, with how to hand it the lead (not done here: moving the
+                // lead is the owner's call, `scenic lead give`).
+                let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
+                let remedy = match c.roomiest_agent().filter(|(_, l)| *l >= need) {
+                    Some((m, l)) => format!("{m}'s limit is {:.1} GB: hand it the lead (`scenic lead give {m}`), or fix the step's memory", gb(l)),
+                    None => "no member's limit fits it: a step whose memory grows with its target, for the owner to see to".to_string(),
+                };
+                h.why.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
+            } else if n_all > 0 {
                 h.why.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
             } else if n_here > 0 {
                 h.why.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
@@ -7786,6 +7796,21 @@ mod tests {
         let _ = w.ask(&crate::coord::Ask { kind: "native".into(), can: vec!["terrain".into()], mem_mb: 30 << 10, limit_mb: Some(42 << 10), ..Default::default() });
         let h = a.guard_holds(&works);
         assert!(h.here.len() == 1 && h.all.is_empty() && h.why[0].why.contains("left to a Mac with room"), "{:?}", h.why);
+        // A step only the lead runs (heritage), its floor past the lead's limit: judged against the
+        // lead's limit, held, the status naming the member whose limit fits it and how to hand it
+        // the lead; past every member's, no member named.
+        let c = a.coord.as_ref().unwrap();
+        let lead_only = vec![build::Work { step: "heritage".into(), targets: vec![("heritage".into(), "k".into())] }];
+        let floor = |mb| vec![(crate::coord::cost_key("heritage", "heritage"), memguard::Floor { mb, alone: true, v: crate::coord::cost_version("heritage") })];
+        c.add_floors(&floor(14 << 10));
+        let h = a.guard_holds(&lead_only);
+        assert!(h.all.len() == 1, "{:?}", h.why);
+        let why = &h.why[0].why;
+        assert!(why.contains("past the lead's limit of 12.0 GB; this step runs only on the lead") && why.contains("big's limit is 42.0 GB") && why.contains("`scenic lead give big`") && !why.contains("more than any Mac"), "{why}");
+        c.add_floors(&floor(50 << 10));
+        let why = &a.guard_holds(&lead_only).why[0].why;
+        assert!(why.contains("past the lead's limit of 12.0 GB") && why.contains("no member's limit fits it") && !why.contains("lead give"), "{why}");
+        c.floors(true, Some("heritage"), None);
         // The job beside the larger drained when the larger is the second slot's: the first slot
         // starts nothing until the larger ends.
         assert!(a.try_start(1, job("bldtiles 6/5/5", &["6/5/5"]), &cond, Some(&root), &mut Vec::new()));
