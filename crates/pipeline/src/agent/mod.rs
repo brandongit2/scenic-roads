@@ -112,12 +112,12 @@ const SLOTS: usize = 2;
 /// `Agent::seed_answers`).
 use steps::{ANSWERED, SECOND};
 
-/// The last map update, in the agent's folder (build::MapUpdate): its jobs read the units of
-/// the one under way there (crate::out::UNITS_AS_OF_ENV).
-const MAP_UPDATE_FILE: &str = "map-update.json";
-/// Its name before task #209 (a "round"): read when it's the newer of the two (an older app ran
-/// here since), and written beside the new one so an older app started here still finds it.
-const OLD_MAP_UPDATE_FILE: &str = "round.json";
+// The last map update, in the agent's folder (build::MapUpdate): its jobs read the units of
+// the one under way there (crate::out::UNITS_AS_OF_ENV).
+use crate::out::MAP_UPDATE_FILE;
+// Its name before task #209 (a "round"): read when it's the newer of the two (an older app ran
+// here since), and written beside the new one so an older app started here still finds it.
+use crate::out::OLD_MAP_UPDATE_FILE;
 
 /// The last map update kept in `home` (`MAP_UPDATE_FILE`, else `OLD_MAP_UPDATE_FILE`; the one
 /// that began later when both read). None: neither reads.
@@ -1445,7 +1445,7 @@ impl Agent {
                 // (A map update's step: the map update's units, as the lead granted them, read from its folder
                 // as the lead's own job reads its map update's file.)
                 if let Some(a) = as_of {
-                    let f = dir.join("map-update.json");
+                    let f = dir.join(MAP_UPDATE_FILE);
                     let wrote = serde_json::to_vec(&serde_json::json!({ "began": a.began, "units": a.units })).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&f, &b));
                     if let Err(e) = wrote {
                         waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the map update's units: {e:#}") });
