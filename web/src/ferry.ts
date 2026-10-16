@@ -223,9 +223,9 @@ export function freqText(l: FerryLine): string | null {
   const f = l.freq;
   if (!f) return null;
   const parts: string[] = [];
-  if (f.per_day !== undefined) {
+  if (f.per_day != null) {
     let s = `${fmtPerDay(f.per_day)} each way`;
-    if (f.per_day_low !== undefined && f.per_day_low !== f.per_day) s += ` (${fmtPerDay(f.per_day_low)} off-season)`;
+    if (f.per_day_low != null && f.per_day_low !== f.per_day) s += ` (${fmtPerDay(f.per_day_low)} off-season)`;
     parts.push(s);
   }
   if (f.headway) parts.push(`every ${fmtDuration(f.headway)}`);

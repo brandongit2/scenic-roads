@@ -366,8 +366,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
 - **Every read of a drop box today** moves to it in its input's task. Besides the regions' readers
   (§6.1), the ones that would bypass the input check if missed: `scenic-build`'s `coverage_of`
   (crates/pipeline/src/bin/scenic-build.rs:3352, defaulting `--regions` to `inputs/regions`); the outline files read by the agent's
-  regions digest and coverage key (agent/mod.rs:652, :4213); `input_digests`' read of
-  `inputs/ferries/freq` (agent/mod.rs:4640); the ferries job's (ovconv.rs:384); the backups'
+  regions digest and coverage key (agent/mod.rs:652, :4213); the backups'
   folders (agent/backup.rs: `inputs` and `state/inputs/accepted`); GC's `NEVER` (agent/gc.rs, §4.9); `dem/bldfetch.py:248–250`
   (`inputs/outlines`). Each is in the guard's exemptions (§7.1), naming its task.
 - **Keys:** a step names the content of the input files it reads: the index's content name when it
