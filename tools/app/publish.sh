@@ -193,7 +193,7 @@ git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
 # attributes (none to keep as AppleDouble files).
 sb=$(mktemp -d)/Scenic.app
 mkdir -p "$sb/Contents/MacOS"
-swiftc -O -swift-version 5 -o "$sb/Contents/MacOS/scenic-status" tools/status/main.swift
+swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o "$sb/Contents/MacOS/scenic-status" tools/status/main.swift
 cp -X tools/status/Info.plist "$sb/Contents/Info.plist"
 xattr -cr "$sb"
 codesign -s "$sign_id" -i local.scenic.status --force "$sb"

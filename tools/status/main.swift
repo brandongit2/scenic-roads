@@ -19,7 +19,7 @@
 // The launcher runs it (`scenic-launcher status`, from ~/Library/LaunchAgents/local.scenic.status.plist)
 // from the installed app; it quits when a newer app is installed, and the launcher starts that one.
 //
-//   swiftc -O -swift-version 5 -o Scenic.app/Contents/MacOS/scenic-status tools/status/main.swift
+//   swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o Scenic.app/Contents/MacOS/scenic-status tools/status/main.swift
 //   scenic-status --print                   the icon, the status's lines and the menu's items now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
 //                                           file /api/build's answer, with this Mac's agent's
@@ -1004,12 +1004,9 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // The popover's own glass (one NSGlassEffectView under the arrow and the body alike) in its
         // clear style (the regular one is near opaque over a window), tinted with the window's
         // colour so the dim text stays readable over a bright window behind.
-        // (macOS 26 on: before it the popover has no glass, and the app runs from 14.)
-        if #available(macOS 26, *) {
-            for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
-                g.style = .clear
-                g.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
-            }
+        for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
+            g.style = .clear
+            g.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
         }
         popover.contentViewController?.view.window?.makeKey()
         find()
