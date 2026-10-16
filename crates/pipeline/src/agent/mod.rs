@@ -4310,12 +4310,23 @@ impl Agent {
         if let Some(Some(c)) = self.inputs.credits.borrow().clone() {
             inputs.insert("credits".into(), c);
         }
+        // (The key names the timetable feeds' declarations fetch with, for rail-feeds' key: "?" while
+        // their index can't be read, and rail-feeds waits.)
+        if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
+            inputs.insert("feed-keys".into(), crate::inputs::feeds::index_key_names(root, ix).map(|k| k.join(",")).unwrap_or_else(|_| "?".into()));
+        }
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
+        } else if inputs.get("feed-keys").map(String::as_str) == Some("?") {
+            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the timetable feeds' accepted declarations can't be read now".into() });
+        }
+        // (The ferries count the ferry feeds: without their list, rail-feeds' to make, they wait.)
+        if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) && !manifest.contains_key(crate::rail::FERRY_FEEDS) {
+            waiting.push(Waiting { step: Some("ferries".into()), what: "Mapping the world's ferries".into(), why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)".into() });
         }
         if inputs.get("bld-release").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::BUILDINGS.into(), why: "the 3D buildings' sources' indexes on the NAS can't be read now".into() });

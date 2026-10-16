@@ -108,7 +108,6 @@ pub const SCENIC_BUILD: Table = Table {
         c("stations", "--pass d [--geojson f]", "the rail stops of the pass's rail set within the coverage, as the stations' tiles", &[], &["--pass", "--geojson"], 0),
         c("ferries", "--pass d [--dem dir]", "the pass's ferries set through ferries.py (with the ferry feeds), as the ferries' blocks", &[], PASS_DEM, 0),
         c("rail-feeds", "[--pass d] [--regions dir] [--dem dir] [--feeds-index i]", "the timetable feeds (the declarations of index i, else the accepted one): the coverage's rail feeds and the ferry feeds, each fetched once into the rail sources", &[], &["--pass", "--regions", "--dem", "--feeds-index"], 0),
-        c("feeds-seed", "--day d <zip>…", "feeds' zips fetched before the app fetched them (<feed id>.zip), as their first pins in the rail sources, counting from day d", &[], &["--day"], 1000),
         c("rail", "[--pass d] [--regions dir] [--dem dir] [--cache dir]", "trains a day on the coverage's rail ways, as global/railfreq", &[], &["--pass", "--regions", "--dem", "--cache"], 0),
         c("regions-extract", "--pass d --ids r<id>,w<id>,…", "regions' outlines cut from the pass", &[], &["--pass", "--ids"], 0),
         c("regions-fixture", "<id> <lon,lat,km>", "an accepted version of one region, a circle, in a scratch folder (never the project folder)", &[], &[], 2),

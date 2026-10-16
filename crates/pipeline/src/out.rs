@@ -208,6 +208,15 @@ impl Out {
     /// before it, stands). A step the steps table doesn't know (a tool run by
     /// hand) is held to nothing while it writes the manifest, and changes nothing when it hands off
     /// (the merge refuses such an entry).
+    /// A job's that hands off to `handoff`, as `SCENIC_HANDOFF` makes it (tests: the environment is
+    /// the whole process's).
+    #[cfg(test)]
+    pub fn handing_off(mut self, handoff: &Path) -> Self {
+        self.handoff = Some(handoff.to_path_buf());
+        self.pending = BTreeMap::new();
+        self
+    }
+
     fn for_step(&mut self, step: &str) {
         self.step = Some(step.to_string());
     }

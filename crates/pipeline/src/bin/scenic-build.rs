@@ -98,8 +98,6 @@
 //!   rail-feeds [--pass d] [--dem dir] [--feeds-index i]  the timetable feeds (the declarations of
 //!                                index i, else the records' accepted one; dem/railfeeds.py), each
 //!                                fetched once into the rail sources
-//!   feeds-seed --day d <zip>...  puts each zip as sources/rail/gtfs/<its name> counting from day d
-//!                                (a feed's first pin, fetched before the app fetched it)
 //!   rail [--pass d] [--dem dir] [--cache dir]  trains a day on the coverage's rail ways
 //!                                (dem/railgtfs.py, then railfreq on the pass's rail set), as
 //!                                global/railfreq
@@ -679,22 +677,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "slope-root" => {
             let n = pipeline::slope_pack::build_root(&mut out)?;
             eprintln!("slope root: {n} tiles");
-        }
-        "feeds-seed" => {
-            // feeds-seed --day <YYYY-MM-DD> <zip>...: feeds' zips fetched before the app fetched
-            // them (each <feed id>.zip), as those feeds' first pins in the rail sources, counting
-            // from that day (pipeline::rail::seed).
-            let day = opt(&args, "--day").context("--day <the day they were fetched>")?;
-            let dir = scratch.join("feeds-seed");
-            std::fs::remove_dir_all(&dir).ok();
-            std::fs::create_dir_all(&dir)?;
-            for f in positional(&args) {
-                let f = std::path::PathBuf::from(f);
-                anyhow::ensure!(f.extension().is_some_and(|x| x == "zip"), "{}: not a <feed id>.zip", f.display());
-                store::sys::copy_data(&f, dir.join(f.file_name().context("zip")?))?;
-            }
-            let n = pipeline::rail::seed(&mut out, &dir, &day)?;
-            eprintln!("feeds-seed: {n} zips, counting from {day}");
         }
         "put" => {
             // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
@@ -4106,6 +4088,11 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     match out.get(rail::CHECKED) {
         Some(c) => store::sys::copy_data(out.path(c), &checked).map(|_| ())?,
         None => std::fs::write(&checked, b"[]")?,
+    }
+    // (The declared feeds' first pins, before the NAS's zips are listed: a feed pinned isn't fetched.)
+    let pinned = rail::pin_seeds(out, &decls, &scratch.join("pins"))?;
+    if pinned > 0 {
+        eprintln!("rail-feeds: {pinned} zips pinned from their declarations");
     }
     std::fs::write(&cache, serde_json::to_vec(&rail::cache_index(out, &rail::read_fetched(out)?))?)?;
     // (Its downloads stay in `found` until they're on the NAS: a run cut short keeps them. So does

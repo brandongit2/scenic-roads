@@ -331,13 +331,30 @@ pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
     put_zips(out, gtfs, None)
 }
 
-/// Feeds' zips fetched before the app fetched them (`dir`'s `<feed id>.zip`), put in the sources as
-/// those feeds' first pins, each counting from `day` (the day it was fetched); saved as put_feeds
-/// does.
-pub fn seed(out: &mut Out, dir: &Path, day: &str) -> Result<usize> {
-    let b = day.as_bytes();
-    anyhow::ensure!(b.len() == 10 && b[4] == b'-' && b[7] == b'-' && day.replace('-', "").bytes().all(|c| c.is_ascii_digit()), "{day}: not a day (YYYY-MM-DD)");
-    put_zips(out, dir, Some(day))
+/// The declared feeds' first pins (a declaration's `pin`: a zip fetched before the app fetched it,
+/// its path from the project folder, and the day it was fetched), put in the sources by the
+/// rail-feeds job as it would a download, for each declared feed that has no zip there yet; `dir`:
+/// local space. A pin whose zip can't be read fails the job (it's tried again), rather than fetch
+/// the feed anew. Returns how many were pinned.
+pub fn pin_seeds(out: &mut Out, decls: &[Value], dir: &Path) -> Result<usize> {
+    let mut by_day: BTreeMap<String, Vec<(String, PathBuf)>> = BTreeMap::new();
+    for d in decls {
+        let (Some(id), Some(zip), Some(day)) = (d["id"].as_str(), d["pin"]["zip"].as_str(), d["pin"]["day"].as_str()) else { continue };
+        if out.get(&zip_logical(id)).is_none() {
+            by_day.entry(day.to_string()).or_default().push((id.to_string(), out.root().join(zip)));
+        }
+    }
+    let mut n = 0;
+    for (day, zips) in by_day {
+        let at = dir.join(&day);
+        std::fs::remove_dir_all(&at).ok();
+        std::fs::create_dir_all(&at)?;
+        for (id, src) in zips {
+            store::sys::copy_data(&src, at.join(format!("{id}.zip"))).with_context(|| format!("{id}: its pin, {}", src.display()))?;
+        }
+        n += put_zips(out, &at, Some(&day))?;
+    }
+    Ok(n)
 }
 
 /// `gtfs`'s zips in the sources, each counting from `day`, else from its file's day.
@@ -548,6 +565,38 @@ mod tests {
         assert_eq!(read_fetched(&out).unwrap()[&cname], "2026-10-20");
     }
 
+    /// A declaration's pin goes in through the rail-feeds job's hand-off, as its downloads do: with
+    /// the pool on (the records the lead's alone), the job's save is a hand-off naming the zip and
+    /// its day; a feed with a zip already isn't pinned again.
+    #[test]
+    fn a_pin_is_handed_off_by_rail_feeds() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, scratch) = (d.path().join("root"), d.path().join("scratch"));
+        std::fs::create_dir_all(root.join("state/pool")).unwrap();
+        std::fs::write(root.join(crate::agent::pool::ENABLED), "").unwrap();
+        std::fs::create_dir_all(root.join("old/gtfs")).unwrap();
+        std::fs::write(root.join("old/gtfs/mbta.zip"), b"m").unwrap();
+        let decls = [
+            serde_json::json!({"id": "mbta", "format": "gtfs", "pin": {"zip": "old/gtfs/mbta.zip", "day": "2026-09-28"}}),
+            serde_json::json!({"id": "sncf", "format": "gtfs"}),
+        ];
+        let handoff = d.path().join("handoff.json");
+        let mut out = Out::open(&root, &scratch, "rail-feeds").unwrap().handing_off(&handoff);
+        assert_eq!(pin_seeds(&mut out, &decls, &scratch.join("pins")).unwrap(), 1);
+        out.save().unwrap();
+        assert!(root.join("old/gtfs/mbta.zip").exists(), "the pin's zip is copied, not moved");
+        // (Its hand-offs: the folder's files.)
+        fn files(d: &Path) -> Vec<PathBuf> {
+            std::fs::read_dir(d).unwrap().flatten().flat_map(|e| if e.path().is_dir() { files(&e.path()) } else { vec![e.path()] }).collect()
+        }
+        let named: String = files(&handoff).iter().map(|f| String::from_utf8_lossy(&std::fs::read(f).unwrap()).into_owned()).collect();
+        let zip = out.get(&zip_logical("mbta")).unwrap().to_string();
+        assert!(named.contains(&zip) && named.contains(FETCHED), "{named}");
+        assert_eq!(read_fetched(&out).unwrap()[&zip], "2026-09-28");
+        assert!(!root.join("state/build/manifest.json").exists(), "the records untouched: handed off");
+        assert_eq!(pin_seeds(&mut out, &decls, &scratch.join("pins")).unwrap(), 0, "pinned once");
+    }
+
     #[test]
     fn an_upload_failing_loses_no_download() {
         let d = tempfile::tempdir().unwrap();
@@ -575,15 +624,5 @@ mod tests {
         let a = out.get(&zip_logical("a")).unwrap().to_string();
         assert!(read_fetched(&out).unwrap().get(&a).is_some_and(|d| d.len() == 10));
         assert!(read_fetched(&out).unwrap().contains_key(&sncf), "the other days kept");
-        // First pins, from the day they were fetched.
-        let seeds = d.path().join("seeds");
-        std::fs::create_dir_all(&seeds).unwrap();
-        std::fs::write(seeds.join("mbta.zip"), b"m").unwrap();
-        let mut out = Out::open(&root, &scratch, "feeds-seed").unwrap();
-        assert!(seed(&mut out, &seeds, "28 Sep 2026").is_err());
-        assert_eq!(seed(&mut out, &seeds, "2026-09-28").unwrap(), 1);
-        let m = out.get(&zip_logical("mbta")).unwrap().to_string();
-        assert_eq!(read_fetched(&out).unwrap()[&m], "2026-09-28");
-        assert_eq!(cache_index(&out, &read_fetched(&out).unwrap())["mbta"]["fetched"], "2026-09-28");
     }
 }

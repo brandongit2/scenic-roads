@@ -63,6 +63,12 @@ pub fn valid_key_name(s: &str) -> bool {
     s.bytes().next().is_some_and(|b| b.is_ascii_uppercase() || b == b'_') && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// A day, `YYYY-MM-DD`.
+pub fn valid_day(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10 && b[4] == b'-' && b[7] == b'-' && s.bytes().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
 /// The id a declaration's path gives (`sncf.toml` → `sncf`), or None when it isn't one.
 pub fn id_of(path: &str) -> Option<&str> {
     path.strip_suffix(".toml").filter(|id| valid_feed_id(id))
@@ -211,6 +217,21 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
         feed["ferry_routes"] = routes.into();
         feed["modes"] = modes.into();
         feed["order"] = order.into();
+        match t.get("pin") {
+            None => {}
+            Some(toml::Value::Table(p)) => {
+                let zip = p.get("zip").and_then(|x| x.as_str()).unwrap_or("");
+                let day = p.get("day").and_then(|x| x.as_str()).unwrap_or("");
+                if !zip.ends_with(".zip") || zip.starts_with('/') || zip.split('/').any(|c| c == ".." || c.is_empty()) {
+                    bad("pin", "`pin`'s zip isn't a .zip's path from the project folder".into());
+                }
+                if !valid_day(day) {
+                    bad("pin", "`pin`'s day isn't YYYY-MM-DD".into());
+                }
+                feed["pin"] = json!({"zip": zip, "day": day});
+            }
+            Some(_) => bad("pin", "`pin` isn't a table { zip, day }".into()),
+        }
     }
     if !fs.is_empty() {
         return (None, fs);
@@ -353,6 +374,22 @@ pub fn of_accepted(a: &super::Accepted) -> Result<Vec<Value>> {
         out.push(f.ok_or_else(|| anyhow::anyhow!("{p}: accepted, but doesn't parse: {:?}", findings.first().map(|f| &f.message)))?);
     }
     Ok(out)
+}
+
+/// Indexes' key names as read, by the index's content name.
+static KEYS_READ: std::sync::Mutex<Option<BTreeMap<String, Vec<String>>>> = std::sync::Mutex::new(None);
+
+/// The key names the declarations of accepted index `index` (its content name) fetch with, sorted:
+/// read once per index.
+pub fn index_key_names(root: &Path, index: &str) -> Result<Vec<String>> {
+    if let Some(k) = KEYS_READ.lock().unwrap().get_or_insert_with(BTreeMap::new).get(index) {
+        return Ok(k.clone());
+    }
+    let i = super::read_index(root, index)?;
+    let feeds: Vec<Value> = i.files.values().filter_map(|f| f.facts.get("feed").cloned()).collect();
+    let k = key_names(&feeds);
+    KEYS_READ.lock().unwrap().get_or_insert_with(BTreeMap::new).insert(index.to_string(), k.clone());
+    Ok(k)
 }
 
 /// The key names the accepted declarations fetch with (their `[data.fetch] key`), sorted.
@@ -507,6 +544,10 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
         bad("mobility-database.toml", CATALOGUE_TOML.replace("\"SG\", \"mdb-3409\"", "\"Singapore\", \"mdb-3409\""), "`country`");
         bad("mobility-database.toml", CATALOGUE_TOML.replace("\"RS-KM\" = \"XK\"", "\"RS-KM\" = \"Kosovo\""), "`own_code`");
         bad("mobility-database.toml", CATALOGUE_TOML.replace("\"FI-01\" = \"AX\"", "\"FI\" = \"AX\""), "`own_code`");
+        bad("sncf.toml", SNCF.replace("[data]", "pin = { zip = \"../x.zip\", day = \"2026-09-28\" }\n[data]"), "`pin`'s zip");
+        bad("sncf.toml", SNCF.replace("[data]", "pin = { zip = \"old/x.zip\", day = \"28 Sep\" }\n[data]"), "`pin`'s day");
+        let pinned = checks(&Feeds::default(), "sncf.toml", &SNCF.replace("[data]", "pin = { zip = \"old/sncf.zip\", day = \"2026-09-28\" }\n[data]"));
+        assert_eq!(pinned.facts["feed"]["pin"], json!({"zip": "old/sncf.zip", "day": "2026-09-28"}));
     }
 
     #[test]

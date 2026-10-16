@@ -1983,9 +1983,13 @@ fn rail_next(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Ke
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let declared = m.get(&crate::inputs::logical(crate::inputs::feeds::UNIT))?;
     let keys = inputs.get("keys").map(String::as_str).unwrap_or("");
-    if keys == "?" {
+    let used = inputs.get("feed-keys").map(String::as_str).unwrap_or("");
+    if keys == "?" || used == "?" {
         return None;
     }
+    // (Of the keys inputs/keys.env holds, those the declarations fetch with.)
+    let used: Vec<&str> = used.split(',').filter(|k| !k.is_empty()).collect();
+    let keys = keys.split(',').filter(|k| used.contains(k)).collect::<Vec<_>>().join(",");
     let cover = coverage_all(cov);
     let k = h(&[&format!("rail-feeds {RAIL_FEEDS_V}"), declared, get(crate::rail::CATALOGUE), get(&format!("sources/osm/{date}/outlines")), &cover, &format!("keys {keys}")]);
     if done.lo.get("rail-feeds").map(String::as_str) != Some(k.as_str()) {
@@ -4443,7 +4447,7 @@ pub(crate) mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
         let none = BTreeMap::new();
-        let lta: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
+        let lta: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY".to_string()), ("feed-keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
         // No accepted declarations: nothing.
         assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
         m.insert(crate::inputs::logical(crate::inputs::feeds::UNIT), "sources/inputs/timetables/feeds/@index.1111111111111111.json".into());
@@ -4462,11 +4466,12 @@ pub(crate) mod tests {
         m.insert(crate::rail::CHECKED.into(), "sources/rail/checked.4444444444444444.json".into());
         m.insert(crate::rail::zip_logical("sncf"), "sources/rail/gtfs/sncf.5555555555555555.zip".into());
         assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
-        // A key added or gone, other declarations, a catalogue's copy, or the coverage grown: the
-        // feeds again.
-        let more: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY,ODPT_KEY,TDX_CLIENT_ID".to_string())].into();
-        assert_eq!(rail_chain(&c, "d", &m, &done, &more).unwrap().step, "rail-feeds");
+        // Keys no declaration uses: no rerun. A key it uses gone, other declarations, a catalogue's
+        // copy, or the coverage grown: the feeds again. The declarations' keys unread now: nothing.
+        let more: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY,ODPT_KEY,TDX_CLIENT_ID".to_string()), ("feed-keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
+        assert!(rail_chain(&c, "d", &m, &done, &more).is_none());
         assert_eq!(rail_chain(&c, "d", &m, &done, &none).unwrap().step, "rail-feeds");
+        assert!(rail_chain(&c, "d", &m, &done, &[("keys".to_string(), "LTA_ACCOUNT_KEY".to_string()), ("feed-keys".to_string(), "?".to_string())].into()).is_none());
         for (l, f) in [(crate::inputs::logical(crate::inputs::feeds::UNIT), "sources/inputs/timetables/feeds/@index.9999999999999999.json"), (crate::rail::CATALOGUE.to_string(), "sources/rail/catalogue.9999999999999999.csv")] {
             let mut m2 = m.clone();
             m2.insert(l, f.into());
