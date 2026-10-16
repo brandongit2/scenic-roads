@@ -765,6 +765,9 @@ pub struct Agent {
     beside_why: Option<String>,
     /// The disk's free bytes as a test sets them (`disk_free`).
     free_set: Option<u64>,
+    /// How long the first job drains for an update before the loop stops it (`DRAIN_GRACE`; a
+    /// test's own, so it needn't date an `Instant` back past the Mac's uptime).
+    update_grace: Duration,
     /// The owner's disk room target (room::Target), read each loop from the agent's folder; the
     /// last freeing toward it started (the target, and when, unix seconds); and the last time a
     /// job's room-making fell short of it (the target and the room it was after, and when): the
@@ -1112,7 +1115,7 @@ impl Agent {
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, update_grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2641,6 +2644,12 @@ impl Agent {
                 r.pause(&why);
             }
             Some((crate::control::Mode::Drain, why)) => {
+                // (The update's drain timed from itself: one begun for another reason, a pause
+                // lifted, say, starts its grace again.)
+                let for_update = update.as_deref() == Some(why.as_str());
+                if for_update && r.pausing.as_deref() != Some(why.as_str()) {
+                    slot.drain_since = None;
+                }
                 let since = *slot.drain_since.get_or_insert_with(|| {
                     eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
                     if let Err(e) = std::fs::write(&control, b"drain") {
@@ -2650,7 +2659,6 @@ impl Agent {
                 });
                 // (For the update, not frozen past the grace: the loop stops it then, its finished
                 // targets kept, and restarts, `Agent::update_due`.)
-                let for_update = update.as_deref() == Some(why.as_str());
                 if r.paused.is_none() && since.elapsed() >= DRAIN_GRACE && !for_update {
                     eprintln!("agent: {} reached no safe point in {} min; frozen where it is", r.spec.id, DRAIN_GRACE.as_secs() / 60);
                     r.pause(&format!("{why}; frozen where it is (it reached no safe point in {} min): it goes on from there", DRAIN_GRACE.as_secs() / 60));
@@ -6475,7 +6483,7 @@ impl Agent {
         let why = update_why(&app);
         match &self.slots[0].running {
             None => true,
-            Some(r) => r.pausing.as_deref() == Some(why.as_str()) && self.slots[0].drain_since.is_some_and(|t| t.elapsed() >= DRAIN_GRACE),
+            Some(r) => r.pausing.as_deref() == Some(why.as_str()) && self.slots[0].drain_since.is_some_and(|t| t.elapsed() >= self.update_grace),
         }
     }
 
@@ -6625,14 +6633,14 @@ fn annotate(list: &mut [build::Step], now: &[String], helpers: &[Status], waitin
     }
 }
 
-/// Why a running job stops, and how, if it does: at once (frozen where it is) without what it can't
-/// save without, the NAS, or away from home with a job that needs it; as the build's pause says;
-/// at its next safe point when the battery runs low (CPU work), before the charge runs out.
 /// Why a running job stops at its next safe point for a newer app installed.
 fn update_why(app: &str) -> String {
     format!("restarting into the newly installed app ({app})")
 }
 
+/// Why a running job stops, and how, if it does: at once (frozen where it is) without what it can't
+/// save without, the NAS, or away from home with a job that needs it; as the build's pause says;
+/// at its next safe point when the battery runs low (CPU work), before the charge runs out.
 fn stop_for(n: &Needs, c: &Conditions, pause: Option<&crate::control::Pause>) -> Option<(crate::control::Mode, String)> {
     use crate::control::Mode;
     match lapsed(n, c) {
@@ -8722,8 +8730,18 @@ mod tests {
         a.free_set = Some(40 << 30);
         let job = |id: &str, t: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "bldtiles".into(), targets: vec![(t.into(), "k".into())] }) };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        // (The two `sleep`s killed whatever the test's end, an assertion failing too.)
+        struct Kill(Vec<i32>);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                for pid in &self.0 {
+                    unsafe { libc::kill(-*pid, libc::SIGKILL) };
+                }
+            }
+        }
         assert!(a.try_start(0, job("bldtiles 6/1/1", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
         assert!(a.try_start(1, job("bldtiles 6/2/2", "6/2/2"), &cond, Some(&root), &mut Vec::new()));
+        let _kill = Kill(a.slots.iter().map(|s| s.running.as_ref().unwrap().pgid).collect());
         let tend = |a: &mut Agent| {
             for k in 0..SLOTS {
                 a.tend(k, &cond, Some(&root), 0).unwrap();
@@ -8743,7 +8761,7 @@ mod tests {
         assert!(!a.update_due());
         // Past the grace with no safe point: not frozen (it would never end), the restart due; the
         // loop stops it, its finished targets kept.
-        a.slots[0].drain_since = Some(Instant::now() - DRAIN_GRACE - Duration::from_secs(1));
+        a.update_grace = Duration::ZERO;
         tend(&mut a);
         assert!(a.slots[0].running.as_ref().is_some_and(|r| r.paused.is_none()));
         assert!(a.update_due());

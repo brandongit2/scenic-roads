@@ -2025,7 +2025,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   update too), or a helper. Once the first job's slot is free the agent exits so the launcher starts
   the new one; a second job still running stops then (what it finished kept) and goes on under the
   new one. A first job that reaches no safe point in the time a pause gives (15 min) isn't frozen:
-  the agent stops it then and restarts, its finished targets kept. (Before task #210 the running jobs
+  the agent stops it then and restarts, its finished targets kept. (Timed from the update's drain itself: while
+  the owner's pause holds, its drain is the pause's, and the update waits for the pause to lift,
+  then gives the job its own 15 min.) (Before task #210 the running jobs
   ran to their ends, which for a 3D buildings' batch or an OSM pass is hours.) The lead's
   coordinator grants nothing to an agent on another app (the same-app rule below), and an agent with
   a newer app installed asks for nothing: both sides refuse, so neither waits on the other.
