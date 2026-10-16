@@ -4093,11 +4093,6 @@ impl Agent {
         eprintln!("agent: the map update that began {} min ago is over", now_s().saturating_sub(r.began) / 60);
     }
 
-    /// The work there is, in order (docs/plan.md §8, Order).
-    /// A digest of what an idle agent's plan depends on, read cheaply: the build's records (the
-    /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
-    /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
-    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
     /// The timetables' report, read again when the records name another (a small file).
     fn note_timetables(&self, root: &Path, manifest: &BTreeMap<String, String>) {
         let Some(c) = manifest.get(crate::timetables::REPORT) else { return };
@@ -4109,6 +4104,11 @@ impl Agent {
         }
     }
 
+    /// The work there is, in order (docs/plan.md §8, Order).
+    /// A digest of what an idle agent's plan depends on, read cheaply: the build's records (the
+    /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
+    /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
+    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
     fn plan_seen(&self, root: &Path) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();

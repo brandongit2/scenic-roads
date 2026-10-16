@@ -366,7 +366,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 }).collect()
             });
             let has = |f: &str| args.iter().any(|a| a == f);
-            catalog(&mut out, has("--held"), ready.as_ref(), CatalogWay { delta: has("--delta"), whole: has("--whole") })?
+            catalog(&mut out, has("--held"), ready.as_ref(), CatalogWay { delta: has("--delta"), whole: has("--whole") }, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())?
         }
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "unit-snap" => unit_snap(&out, &args)?,
@@ -1051,7 +1051,8 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
 /// The map's meta, added up from the units' summaries: each base pack's own, else worked out from
 /// its sections once (packs without it) and kept in `state/build/summaries.json` by content
 /// name (a content name never changes).
-fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::Value> {
+/// `now`: the catalog's moment (seconds since the epoch), its `built`.
+fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<serde_json::Value> {
     use pipeline::summary::Summary;
     let path = out.root().join("state/build/summaries.json");
     let mut known: BTreeMap<String, Summary> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
@@ -1087,7 +1088,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::
         eprintln!("catalog: {made} unit summaries made from their packs");
     }
     let mut m = total.meta();
-    m["built"] = serde_json::json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs());
+    m["built"] = serde_json::json!(now);
     Ok(m)
 }
 
@@ -1154,7 +1155,8 @@ struct CatalogWay {
     whole: bool,
 }
 
-fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>, way: CatalogWay) -> Result<()> {
+/// `now`: the catalog's moment (seconds since the epoch), its `created` and its meta's `built`.
+fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>, way: CatalogWay, now: u64) -> Result<()> {
     let delta = way.delta && !held;
     let p = phase("the manifest's files sorted into the catalog's", Class::Compute);
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
@@ -1224,7 +1226,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     global.extend(worldwide_globals(&out.manifest));
     drop(p);
     let p = phase("the units' summaries read", Class::NasRead);
-    let meta = units_meta(out, &base)?;
+    let meta = units_meta(out, &base, now)?;
     drop(p);
     let p = phase("the coverage drawn and the credits found", Class::NasRead);
     let units: Vec<String> = base.keys().cloned().collect();
@@ -1295,7 +1297,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     let cat = serde_json::json!({
         "fmt": 1,
         "n": n,
-        "created": chrono_now(),
+        "created": utc(now as i64),
         // The published app that made it (its folder's name), or "development".
         "app": std::env::current_exe().ok().and_then(|e| e.parent().map(pipeline::agent::app_version)).unwrap_or_else(|| "development".into()),
         "files": files,
@@ -1456,10 +1458,6 @@ fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
     pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"))
 }
 
-/// UTC now as RFC 3339 (no chrono dependency).
-fn chrono_now() -> String {
-    utc(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64)
-}
 
 /// Seconds since the epoch as RFC 3339 UTC (`2026-10-05T03:55:11Z`).
 fn utc(s: i64) -> String {
@@ -4519,6 +4517,9 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The tests' catalogs' moment: fixed, so two runs make the same catalog whenever they run.
+    const NOW: u64 = 1_790_000_000;
+
     /// The catalog names the pass's lake fill in `global` and lists it among its files (so the
     /// server draws it and the mirror copies it); a fill of an older pass's basemap neither.
     #[test]
@@ -4603,7 +4604,7 @@ mod tests {
         };
         let run = |root: &std::path::Path, way: super::CatalogWay| {
             let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
-            super::catalog(&mut out, false, None, way).unwrap();
+            super::catalog(&mut out, false, None, way, NOW).unwrap();
         };
         let delta = super::CatalogWay { delta: true, whole: false };
         let mut gone = String::new();
@@ -4648,7 +4649,7 @@ mod tests {
         put(&roots[0], "layers/roads/hi/6-1-5", b"five");
         for way in [super::CatalogWay { delta: true, whole: true }, super::CatalogWay::default()] {
             let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
-            let e = super::catalog(&mut out, false, None, way).unwrap_err();
+            let e = super::catalog(&mut out, false, None, way, NOW).unwrap_err();
             assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
         }
         // Due whole after all (so much new that the delta is as big as the whole one): the files
@@ -4657,7 +4658,7 @@ mod tests {
             put(&roots[0], &format!("layers/roads/hi/6-9-{i}"), format!("new {i}").as_bytes());
         }
         let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
-        let e = super::catalog(&mut out, false, None, delta).unwrap_err();
+        let e = super::catalog(&mut out, false, None, delta, NOW).unwrap_err();
         assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
     }
 

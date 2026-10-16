@@ -306,7 +306,8 @@ impl View {
             self.to_do, self.rail, self.ferry, self.to_do_km, self.file, self.unmatched_total
         )];
         for u in &self.unmatched {
-            out.push(format!("  {} {}/{} {}: {}", u.mode, u.source, u.route, if u.name.is_empty() { "" } else { &u.name }, u.why));
+            let name = if u.name.is_empty() { String::new() } else { format!(" {}", u.name) };
+            out.push(format!("  {} {}/{}{name}: {}", u.mode, u.source, u.route, u.why));
         }
         if self.unmatched_total as usize > self.unmatched.len() {
             out.push(format!("  … and {} more ({REPORT})", self.unmatched_total as usize - self.unmatched.len()));
