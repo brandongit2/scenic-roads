@@ -23,7 +23,6 @@
 pub mod backup;
 pub mod brokers;
 pub mod build;
-pub mod claims;
 pub mod cond;
 pub mod every;
 pub mod forecast;
@@ -37,7 +36,6 @@ pub mod publish;
 pub mod recipes;
 pub mod rekey;
 pub mod room;
-pub mod shadow;
 pub mod resume;
 pub mod steps;
 pub mod tiles;
@@ -110,7 +108,7 @@ const SLOTS: usize = 2;
 /// steps; by measure, any: `Agent::start_second`); those that keep the pass's Wikidata and Wikipedia answers here
 /// and on the NAS (crate::answers: none starts while the agent sends them as it starts,
 /// `Agent::seed_answers`).
-use steps::{ANSWERED, SECOND};
+use steps::SECOND;
 
 // The last map update, in the agent's folder (build::MapUpdate): its jobs read the units of
 // the one under way there (crate::out::UNITS_AS_OF_ENV).
@@ -125,11 +123,6 @@ fn write_map_update(home: &Path, r: &build::MapUpdate) -> Result<()> {
     crate::whole::write(&home.join(MAP_UPDATE_FILE), &serde_json::to_vec(r)?)
 }
 
-/// The build's records as they were before the first re-keying that changed them (agent::rekey;
-/// the units' keys, 2026-10-06), on the NAS beside them: written once, never over one there, for
-/// going back to an app from before the units' keys (README, How it's built; one from before tree
-/// cover's pieces needs no copy: it drops the assemblies' records and makes the tree cover again).
-pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
 /// The pass's worldwide jobs, as the checklist says them.
 const WORLDWIDE: &str = "Preparing the worldwide data: sets, outlines, route ends, roads' reach, buildings, summits, labels, Canada's missing lakes, water";
@@ -148,19 +141,13 @@ fn is_duty(id: &str) -> bool {
     step_of(id).is_some_and(|st| pool::PUBLISHES.contains(&st.as_str()) || pool::SWEEPS.contains(&st.as_str()))
 }
 
-/// Whether jobs of steps `a` and `b` can't run at once: either runs alone; both are in one of the
-/// steps table's groups of which two never run at once on one Mac (they read the raw tiles here,
-/// which a terrain run packs onto the NAS and deletes; they ask Wikidata, each pacing itself as if
-/// it were alone; they read gigabytes of the NAS's sources a target); or they're the same step and
-/// it isn't a shared one (one job's work: its targets held by nothing else). A shared step's targets
-/// are held apart (crate::coord), and each slot has a scratch folder of its own.
+/// Whether jobs of steps `a` and `b` can't run at once on one Mac by the steps alone: they're the
+/// same step and it isn't a shared one (one job's work: its targets held by nothing else). A shared
+/// step's targets are held apart (crate::coord), and each slot has a scratch folder of its own;
+/// what else two jobs share is guarded where it's used (docs/pool.md §7.7: the caches' accessor,
+/// the budgets' proxy, the answers' lease), and their memory and disk measured (`fits_beside`).
 fn clash(a: &str, b: &str) -> bool {
-    steps::alone(a) || steps::alone(b) || steps::grouped(a, b) || (a == b && !steps::SHARED.contains(&a))
-}
-
-/// The free space the second job starts with (it makes no room: `reads_caches`): the reserve.
-fn second_need(_step: &str) -> u64 {
-    room::RESERVE
+    a == b && !steps::SHARED.contains(&a)
 }
 
 /// The cost key a job of no targets of its own is measured by (the OSM pass's `osm-pass <date>`, GC's
@@ -177,14 +164,13 @@ pub fn second_worker(host: &str) -> String {
 }
 
 /// A job slot's running job and what goes with it: its lease (the coordinator's, or a helper's
-/// granted one), when it last beat and its claims were kept fresh, when it was asked to stop at its
+/// granted one), when it last beat, when it was asked to stop at its
 /// next safe point, and its time left as the status last worked it out.
 #[derive(Default)]
 struct Slot {
     running: Option<Running>,
     lease: Option<Held>,
     beaten: Option<Instant>,
-    claims_fresh: Option<Instant>,
     drain_since: Option<Instant>,
     job_eta: Option<u64>,
     /// Why its job stops at its next safe point for the memory guard (crate::agent::memguard):
@@ -196,10 +182,6 @@ struct Slot {
     mem_drain_alone: bool,
     /// Its job is being stopped by the memory guard (its lease ends so: kept from this Mac).
     guard_stopped: bool,
-    /// Its job took claim files as it started (crate::agent::claims: a job of this Mac's own, planned
-    /// while it wasn't a helper, the lead's with the pool on or the build Mac's with it off): kept
-    /// fresh and released by that, whatever part the process plays since.
-    claimed: bool,
     /// Its own job's timings, taken as it ended, for the lead when this Mac no longer leads (the
     /// job's hand-off carries them: `end_lease`).
     timings_out: Option<crate::timings::RunRec>,
@@ -207,7 +189,6 @@ struct Slot {
 
 /// How long the first slot may pass over a job that can't share the Mac with the second's (it then
 /// waits for it, and the second starts nothing new until it has).
-const PASS_MAX: Duration = Duration::from_secs(30 * 60);
 
 /// How long a job the memory guard stopped is kept from this Mac (a member's lead keeps it from it
 /// as long, its lease ended as failed).
@@ -295,12 +276,6 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
     steps::SHARED.iter().copied().chain(["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND]).filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s)))).map(str::to_string).collect()
 }
 
-/// What a terrain run needs past the others' room: its area's raw tiles held twice while they're
-/// packed onto the NAS (loose, then in their archives), and on a run again the area's archives
-/// copied here and merged (12 to 15 GB for a z3 area of land). The US's first runs took the build
-/// Mac from 34 GB free to 14 GB (2026-10-05). The area's own archive copies, which the run reads at
-/// once, are spared (`terrain_reads`).
-const TERRAIN_SPACE: u64 = 25 << 30;
 
 /// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", an area's whole
 /// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: an area's run its
@@ -778,8 +753,6 @@ pub struct Agent {
     /// How long a job draining is given to reach a safe point (`DRAIN_GRACE`; a test's own, so no
     /// test dates an `Instant` back past the Mac's uptime).
     grace: Duration,
-    /// How long a job may be passed over before the slots wait for it (`PASS_MAX`; a test's own).
-    pass_max: Duration,
     /// The owner's disk room target (room::Target), read each loop from the agent's folder; the
     /// last freeing toward it started (the target, and when, unix seconds); and the last time a
     /// job's room-making fell short of it (the target and the room it was after, and when): the
@@ -809,29 +782,20 @@ pub struct Agent {
     sampler: memguard::Sampler,
     total: u64,
     guard_backoff: BTreeMap<String, (u64, String)>,
-    /// The jobs the first slot passed over, each since it was first (`passable`).
-    passed_over: BTreeMap<String, Instant>,
     /// The pool's switch for a part changing in this process (`pool::SLOTS`), as last read; the
     /// idle-sleep assertion it holds while it leads with leases out; the app it last handed the lead
     /// on for (a newer one installed, its update waiting on its own job: `hand_for_update`).
     slots_on: bool,
-    /// The Mac shared by measure (docs/pool.md §7.7, `pool::BY_MEASURE`): a job starts beside another
-    /// only if both jobs' measured memory and disk fit what the Mac has left, a cold start alone, in
-    /// place of the steps table's run-alone, second-job and raw-tile lists; the disk guard on.
-    by_measure: bool,
-    /// The budgets (docs/pool.md §7.7, `pool::BUDGETS`): every job's connections out through this
-    /// agent's proxy (`proxy`), each Wikimedia request taken from the pool's one budget on the NAS,
-    /// the job sandboxed so it has no other way out; the answers' lease; the Wikidata and heavy NAS
-    /// reads' groups gone.
-    budgets: bool,
+    /// The budgets (docs/pool.md §7.7): every job's connections out through this agent's proxy,
+    /// each Wikimedia request taken from the pool's one budget on the NAS, the job sandboxed so it
+    /// has no other way out; the answers' lease. (And the Mac shared by measure: a job starts beside
+    /// another only if both jobs' measured memory and disk fit what the Mac has left, a cold start
+    /// alone; the disk guard on.)
     proxy: Option<crate::budget::Proxy>,
     /// Resuming, and planning from the records alone (docs/pool.md §7.2, §7.4; crate::agent::resume,
     /// `state/pool/resume`), in the pool: a resumable job's progress named on the NAS and offered to
     /// its Mac alone, its job given this member's unmerged hand-offs, a pass complete by the records.
     resume: bool,
-    /// Every step to every member (crate::agent::every, `state/pool/every-step`), as the switch was
-    /// last read: it acts only in the pool (`every_on`).
-    every: bool,
     /// Placement by how crucial a job is, and work offered ahead (crate::agent::placement,
     /// `state/pool/placement`), as the switch was last read: it acts only in the pool
     /// (`placement_on`).
@@ -878,15 +842,11 @@ pub struct Agent {
     /// (an edit: `EDIT_HOLD`): first in a run of edits, and last.
     edits: std::cell::RefCell<Option<String>>,
     edited_at: std::cell::Cell<Option<(std::time::SystemTime, std::time::SystemTime)>>,
-    /// Who this agent is in claims ("<host> <pid>"; its second job's, `me_of`).
+    /// Who this agent is ("<host> <pid>").
     me: String,
     /// The OSM pieces' sizes by content name (the coordinator sizes units by them; content-named
     /// files never change).
     piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
-    /// Whether this Mac's earlier agent's claims were dropped (once the NAS answers), and when this
-    /// Mac was last named the records' writer.
-    claims_dropped: bool,
-    writer_named: Option<Instant>,
     /// What the last plan found waiting and the regions it read, and when: while
     /// a job runs nothing new can start, so the plan (the manifest, the keys, a dozen NAS listings)
     /// is made again only every five minutes, for the status, and when the job ends.
@@ -894,9 +854,6 @@ pub struct Agent {
     /// The work the last plan had left (its steps and targets): what room-making lets go last
     /// (`hints`).
     queued: std::cell::RefCell<Vec<build::Work>>,
-    /// When the workers' hand-offs were last merged (each loop when idle; every two minutes while a
-    /// job runs).
-    merged: Option<Instant>,
     /// The build Mac's coordinator (crate::coord), and when its contact on the NAS was last checked.
     coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     published: Option<Instant>,
@@ -923,9 +880,6 @@ pub struct Agent {
     /// before its coordinator was up) has been given to the coordinator.
     mirrored: Option<Option<crate::control::Pause>>,
     pause_pushed: bool,
-    /// Jobs an earlier agent left (a crash): each one's step and the targets it noted done, to record
-    /// once the NAS answers.
-    orphan_done: Vec<(String, Vec<(String, String)>)>,
     /// The bytes the caches hold, for the status: what room-making can free and what a clear would
     /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
     /// again after a trim or a clear; and when.
@@ -962,11 +916,10 @@ pub struct Agent {
     /// time (forecast::update_secs, as the last forecast read the history): a map update per region's gap.
     publishing: std::cell::Cell<publish::Switches>,
     update_measured: std::cell::Cell<Option<f64>>,
-    /// The pool (docs/pool.md §12, crate::agent::pool): its switch on the NAS as this process
-    /// started (None: the NAS wasn't reached then; the agent is as it was until it is, then restarts
-    /// if the pool is on or shadowed), its part while it's on, a shadow run beside it, and why this
-    /// process restarts once its first job's slot is free (the switch changed).
-    pool_mode: Option<pool::Mode>,
+    /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
+    /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
+    /// process; it starts nothing then, and restarts into the pool once it can), and why this
+    /// process restarts once its first job's slot is free.
     /// Shared with the pool's own thread (`ticker`, started with the loop: `pool::Ticker`), which
     /// steps it while the loop is busy; each takes it under its lock.
     pool: Option<pool::Shared>,
@@ -990,12 +943,7 @@ pub struct Agent {
     unpublishing: Option<std::thread::JoinHandle<()>>,
     pool_skips: u32,
     pool_hung: Option<u64>,
-    shadow: Option<shadow::Shadow>,
-    shadow_failed: bool,
     restart_for: Option<String>,
-    /// The switch as the last loop read it, when it differed from this process's: acted on once two
-    /// loops in a row read it so (a stat answering wrongly once restarts nothing).
-    switch_seen: Option<pool::Mode>,
     /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
     /// plan made them, what they read, and the units a full check was asked of.
     inputs: Gate,
@@ -1089,19 +1037,17 @@ impl Agent {
             mem.app = app.clone();
         }
         let me = format!("{} {}", cond::host_name(), std::process::id());
-        // The pool's switch, as this process starts (the NAS answering; else the agent is as it was
-        // until it does). On, this Mac's member takes its first step, which says its part: it leads
-        // (as the build Mac did) or works as a member (as a helper did), whatever `--helper` says.
-        let mut pool_mode = None;
+        // The pool, as this process starts (the NAS answering; else it starts nothing until it does,
+        // then restarts into it): this Mac's member takes its first step, which says its part: it
+        // leads or works as a member.
         let mut run: Option<pool::Run> = None;
         let mut first: Option<(crate::pool::driver::Out, PathBuf)> = None;
         if lock.is_some() && !o.dry_run {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
-                pool_mode = pool::mode(&r);
-                if pool_mode == Some(pool::Mode::On) {
+                {
                     let nas: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
-                    match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas, false)? {
+                    match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas)? {
                         Some(side) => {
                             let (r1, out) = pool::Run::start(side, &o.home);
                             o.helper = r1.role == pool::Role::Member;
@@ -1116,11 +1062,10 @@ impl Agent {
                 }
             }
         }
-        // The build Mac's agent coordinates (not a helper's, nor a dry run's); in the pool, its lead
-        // (with a root of its own too: a test's, on a port of its own, SCENIC_COORD_PORT).
+        // The lead's agent coordinates (not a member's, nor a dry run's, nor a process not in the
+        // pool), with a root of its own too (a test's, on a port of its own, SCENIC_COORD_PORT).
         let pooled = run.is_some();
-        let lockless = pool_mode == Some(pool::Mode::On) && run.is_none();
-        let coord = if !o.helper && lock.is_some() && !o.dry_run && !lockless && (o.root.is_none() || pooled) { make_coordinator(&o, run.as_ref(), &app, &cond::host_name()).map(std::sync::Arc::new) } else { None };
+        let coord = if !o.helper && lock.is_some() && !o.dry_run && pooled { make_coordinator(&o, run.as_ref(), &app, &cond::host_name()).map(std::sync::Arc::new) } else { None };
         if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
             pool::took_up(r, coord.as_deref(), &out.events, out.leads, &cond::host_name(), &[]);
             // (The terms' events a member's process before this one kept, for this coordinator's
@@ -1136,7 +1081,7 @@ impl Agent {
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, pass_max: PASS_MAX, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default(), start_soon: Default::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), slots_on: false, proxy: None, resume: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), planned: None, queued: Default::default(), coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, restart_for: None, inputs: Gate::default(), start_soon: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1145,10 +1090,9 @@ impl Agent {
         build::Keys::load_with(root, &self.handoff_bases(root))
     }
 
-    /// Where hand-offs wait to be merged: the coordinator's journal on this Mac, and the NAS's folder
-    /// (a helper on an app from before the coordinator).
-    fn handoff_bases(&self, root: &Path) -> Vec<PathBuf> {
-        vec![crate::handoff::nas_base(root), self.o.home.join("coord/journal")]
+    /// Where hand-offs wait to be drained into the journal: the coordinator's journal on this Mac.
+    fn handoff_bases(&self, _root: &Path) -> Vec<PathBuf> {
+        vec![self.o.home.join("coord/journal")]
     }
 
     /// Where a helper's leased jobs save (`<outbox>/<lease>/`), and its agent puts their result, until
@@ -1195,20 +1139,19 @@ impl Agent {
         }
     }
 
-    /// Hands a helper's finished jobs back: each leased job's saves (merged into one hand-off, in the
-    /// order written) with its done record and what its units cost, or its failure. A folder stays
-    /// until the coordinator has it (or says its lease is gone: then its work was offered again,
-    /// and it's dropped), across restarts; one left by a job that died with an earlier agent counts
-    /// as failed.
+    /// Hands this member's finished tasks back (a task leased from the lead's coordinator, run in
+    /// its outbox folder: crate::offload): its outputs and what it took, or its failure. A folder
+    /// stays until the coordinator has it (or says its lease is gone: then its work was offered
+    /// again, and it's dropped), across restarts; one left by a task that died with an earlier agent
+    /// is given back. (A job's work goes through the journal: crate::agent::pool.)
     fn send_outbox(&mut self, root: &Path, waiting: &mut Vec<Waiting>) {
         let Ok(rd) = std::fs::read_dir(self.outbox()) else { return };
         let running = match &self.slots[0].lease {
             Some(Held::Leased { dir, .. }) => Some(dir.clone()),
             _ => None,
         };
-        // (In the pool a job's folder from before it is drained into the journal: tasks' alone here.)
-        let pooled = self.pool.is_some();
-        let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && Some(p) != running.as_ref() && !(pooled && p.join("work.json").exists())).collect();
+        // (A job's folder from before the pool, drained into the journal: tasks' alone here.)
+        let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && Some(p) != running.as_ref() && !p.join("work.json").exists()).collect();
         if dirs.is_empty() {
             return;
         }
@@ -1216,61 +1159,24 @@ impl Agent {
         for d in dirs {
             let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
             let result: Option<serde_json::Value> = std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-            // (No result: the agent stopped while it ran. What it finished, from its step and
-            // targets kept beside its saves and the targets it noted done, handed off as an
-            // interrupted job's.)
-            let result = result.or_else(|| {
-                let w: build::Work = serde_json::from_slice(&std::fs::read(d.join("work.json")).ok()?).ok()?;
-                let names = crate::control::read_done(&d.join("done.txt"), &w.step);
-                let done: Vec<(String, String)> = w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect();
-                Some(serde_json::json!({ "ok": !done.is_empty(), "done": if done.is_empty() { serde_json::Value::Null } else { serde_json::json!([w.step, done]) }, "interrupted": true, "error": "the helper's agent stopped while it ran" }))
-            });
             let sent = (|| -> Result<crate::coord::client::Handed> {
                 // A task's: its outputs and what it took.
                 if let Some(t) = result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)).map(|r| &r["task"]).filter(|t| t.is_object()) {
                     let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), timings: read_timings(&d), ..Default::default() };
                     return client.done(&d);
                 }
-                // (A unit job's has its done record; one without, a task's cut short, went wrong.)
-                let saves = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true) && !r["done"].is_null()) {
-                    Some(_) => crate::handoff::written_in(&d)?,
-                    None => None,
+                let why = match &result {
+                    Some(r) if r["ok"].as_bool() == Some(true) => "it ended without a result".to_string(),
+                    Some(r) => r["error"].as_str().unwrap_or("it failed").to_string(),
+                    None => "this Mac's agent stopped while it ran".to_string(),
                 };
-                match (result.as_ref(), saves) {
-                    (Some(r), Some(saves)) => {
-                        let mut h = crate::handoff::Handoff::default();
-                        for x in saves {
-                            h.absorb(x);
-                        }
-                        h.done = serde_json::from_value(r["done"].clone())?;
-                        // (Only the files of the targets it finished: a target it was on when it
-                        // stopped may have saved part of its own.)
-                        if let Some((step, done)) = h.done.clone() {
-                            h.changes.retain(|l, _| done.iter().any(|(t, _)| crate::coord::saves(&step, t, l)));
-                            let kept: std::collections::BTreeSet<String> = h.changes.values().flatten().cloned().collect();
-                            h.pending.retain(|c, _| kept.contains(c));
-                            let pending = h.pending.clone();
-                            h.checked.retain(|c| pending.contains_key(c));
-                        }
-                        let costs = read_costs(&d.join("costs.jsonl"));
-                        client.done(&crate::coord::Done { lease, handoff: Some(h), costs, failed: r["failed"].as_bool() == Some(true), timings: read_timings(&d), ..Default::default() })
-                    }
-                    _ => {
-                        let why = match &result {
-                            Some(r) if r["ok"].as_bool() == Some(true) && r["done"].is_null() => "it ended without a result".to_string(),
-                            Some(r) if r["ok"].as_bool() == Some(true) => "one of its saves is damaged".to_string(),
-                            Some(r) => r["error"].as_str().unwrap_or("it failed").to_string(),
-                            None => "the helper's agent stopped while it ran".to_string(),
-                        };
-                        // (Stopped, not failed: the build paused before it finished a target, the Mac
-                        // slept, its agent stopped: given back, not held against its targets.)
-                        let interrupted = result.as_ref().is_none_or(|r| r["interrupted"].as_bool() == Some(true));
-                        if interrupted {
-                            client.give_back(lease, &why).map(|()| crate::coord::client::Handed::Taken)
-                        } else {
-                            client.fail(lease, &why, None).map(|()| crate::coord::client::Handed::Taken)
-                        }
-                    }
+                // (Stopped, not failed: the build paused, the Mac slept, its agent stopped: given
+                // back, not held against its targets.)
+                let interrupted = result.as_ref().is_none_or(|r| r["interrupted"].as_bool() == Some(true));
+                if interrupted {
+                    client.give_back(lease, &why).map(|()| crate::coord::client::Handed::Taken)
+                } else {
+                    client.fail(lease, &why, None).map(|()| crate::coord::client::Handed::Taken)
                 }
             })();
             match sent {
@@ -1483,7 +1389,7 @@ impl Agent {
                 // (Pieces made again as they are, by the build's records as read: expected the
                 // same. Records that can't be read now expect nothing.)
                 if matches!(step.as_str(), "trees" | "terrain" | "slope") {
-                    let same = build::Keys::load_with_handoffs(root).map(|k| expect_same(&build::Work { step: step.clone(), targets: targets.clone() }, &self.as_read(root, k))).unwrap_or_default();
+                    let same = build::Keys::load_with(root, &[]).map(|k| expect_same(&build::Work { step: step.clone(), targets: targets.clone() }, &self.as_read(root, k))).unwrap_or_default();
                     if !same.is_empty() {
                         cmd.extend(["--expect-same".to_string(), same.join(",")]);
                     }
@@ -1836,42 +1742,6 @@ impl Agent {
         }
     }
 
-    /// Drops slot `k`'s job's claims (crate::agent::claims), as it ends.
-    fn release_claims(&mut self, k: usize, root: Option<&Path>) {
-        // (A job that took none, a leased one's, holds no claim files.)
-        if !std::mem::take(&mut self.slots[k].claimed) {
-            self.slots[k].claims_fresh = None;
-            return;
-        }
-        if let (Some((step, ts)), Some(r)) = (self.slots[k].running.as_ref().and_then(|j| shared_targets(&j.spec)), root) {
-            claims::release(r, &step, &ts, &self.me_of(k));
-        }
-        self.slots[k].claims_fresh = None;
-    }
-
-    /// Keeps slot `k`'s job's claims fresh (every two minutes: a claim lasts `claims::STALE`), not
-    /// while it's paused: a paused job's claims go stale, so the other Mac may take them. False when
-    /// another agent holds one of them now (the job is then stopped, unrecorded: that one builds it).
-    fn keep_claims(&mut self, k: usize, root: Option<&Path>) -> bool {
-        // (A job that took none, a leased one's, holds no claim files: its lease is kept by beats.)
-        if !self.slots[k].claimed {
-            return true;
-        }
-        let me = self.me_of(k);
-        let paused = self.pause.is_some();
-        let slot = &mut self.slots[k];
-        let (Some(j), Some(r)) = (slot.running.as_ref(), root) else { return true };
-        let Some((step, ts)) = shared_targets(&j.spec) else { return true };
-        if claims::lost(r, &step, &ts, &me) {
-            return false;
-        }
-        if (j.paused.is_none() || paused) && slot.claims_fresh.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) {
-            claims::refresh(r, &step, &ts, &me);
-            slot.claims_fresh = Some(Instant::now());
-        }
-        true
-    }
-
     fn record_path(&self, k: usize) -> PathBuf {
         self.o.home.join(if k == 0 { "job.json" } else { "job-2.json" })
     }
@@ -1930,16 +1800,6 @@ impl Agent {
     /// (store::cachefile::WRITTEN_ENV), for the disk guard's sampler.
     fn written_path(&self, k: usize) -> PathBuf {
         self.o.home.join(if k == 0 { "written" } else { "written-2" })
-    }
-
-    /// Who slot `k`'s job is in claims: the second's apart from the first's, so neither takes the
-    /// other's as its own.
-    fn me_of(&self, k: usize) -> String {
-        if k == 0 {
-            self.me.clone()
-        } else {
-            format!("{} {}", self.me, k + 1)
-        }
     }
 
     /// Slot `k`'s worker in the build's history and the forecast: this Mac, or its second job.
@@ -2083,18 +1943,10 @@ impl Agent {
         // The pool's own thread: its driver stepped while this loop is busy (`pool::Ticker`).
         self.ticker = self.pool.clone().map(pool::Ticker::start);
         if self._lock.is_some() {
-            // (What they finished, recorded once the NAS answers: a helper's goes back with its
-            // lease's outbox, send_outbox.)
+            // (What they finished went to the journal with their hand-offs, as they saved.)
             for k in 0..SLOTS {
                 let orphan = jobs::stop_orphan(&self.record_path(k));
                 self.orphans.extend(orphan.left);
-                if let Some((w, file)) = orphan.done {
-                    let names = crate::control::read_done(&file, &w.step);
-                    let done: Vec<(String, String)> = w.targets.into_iter().filter(|(t, _)| names.contains(t)).collect();
-                    if !done.is_empty() && !self.o.helper && self.pool.is_none() {
-                        self.orphan_done.push((w.step, done));
-                    }
-                }
             }
         }
         loop {
@@ -2151,14 +2003,9 @@ impl Agent {
             if let Some(r) = self.slots[k].running.as_mut() {
                 eprintln!("agent: stopping {}", r.spec.id);
                 r.stop(Duration::from_secs(30));
-                self.stopped(k, root.as_deref(), "the agent stopped");
-                let r = self.slots[k].running.take().unwrap();
+                self.stopped(k, "the agent stopped");
+                self.slots[k].running = None;
                 std::fs::remove_file(self.record_path(k)).ok();
-                // Its claims, free for the other Mac now rather than once stale.
-                // (By what the job took, whatever part the process plays since.)
-                if let (Some((step, ts)), Some(root), true) = (shared_targets(&r.spec), &root, std::mem::take(&mut self.slots[k].claimed)) {
-                    claims::release(root, &step, &ts, &self.me_of(k));
-                }
             }
         }
         // The coordinator's contact off the NAS: workers wait for the next agent.
@@ -2223,17 +2070,6 @@ impl Agent {
         self.begin_round();
         // The build's pause: this Mac's ask passed on; the build Mac's coordinator's.
         self.sync_pause(root.as_deref(), &mut waiting);
-        // (A crashed agent's jobs' finished targets, recorded now the NAS answers.)
-        if let Some(r) = root.as_deref() {
-            let orphans = std::mem::take(&mut self.orphan_done);
-            for (step, done) in orphans {
-                if self.record_done(Some(r), &step, &done) {
-                    eprintln!("agent: recorded {} target{} of {step} an earlier agent's job finished", done.len(), if done.len() == 1 { "" } else { "s" });
-                } else {
-                    self.orphan_done.push((step, done));
-                }
-            }
-        }
 
         // The running jobs; then what they hold together, against this Mac's limit (the memory
         // guard: crate::agent::memguard), its switch as the NAS says.
@@ -2247,7 +2083,7 @@ impl Agent {
         for k in 0..SLOTS {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
-        ended |= self.guard(root.as_deref());
+        ended |= self.guard();
         ended |= self.disk_guard(root.as_deref());
         // (A job ended: room for the target may be made again.)
         if ended {
@@ -2265,32 +2101,12 @@ impl Agent {
         // view not fresh. Restarting into a new part, nothing either.)
         let pool_holds: Option<String> = match (&gates, self.pool_restart()) {
             (_, Some(why)) => Some(format!("restarting: {why}")),
-            (None, None) if self.pool_mode == Some(pool::Mode::On) => Some("another process is this Mac's member in the pool: waiting for its lock".into()),
+            (None, None) if self._lock.is_some() && !self.o.dry_run => Some("not in the pool yet: waiting for the NAS, or for this Mac's member's lock (another process holds it)".into()),
             (Some(g), None) if !self.o.helper && !g.duties => Some(if g.settle { "the lead is handing the build over".into() } else if g.leads.is_some() { "the lead re-asserts its term first".into() } else { "this Mac no longer leads the build".into() }),
             _ => None,
         };
         // The pass's answers on the NAS, once this agent starts (the build Mac's).
         self.seed_answers(root.as_deref());
-
-        // Once the NAS answers: this Mac's earlier agent's claims dropped (it stopped or crashed: free
-        // for the other Mac), and every five minutes the build Mac named the records' one writer,
-        // by its name now (crate::out::Out::save).
-        if let (Some(r), true) = (root.as_ref(), self._lock.is_some() && !self.o.dry_run) {
-            if !self.claims_dropped {
-                claims::release_host(r, &self.host, &self.me);
-                self.claims_dropped = true;
-            }
-            if !self.o.helper && self.pool_off() && self.writer_named.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
-                let name = cond::host_name();
-                let writer = r.join("state/build/writer");
-                if std::fs::read_to_string(&writer).ok().as_deref().map(str::trim) != Some(name.as_str()) {
-                    if let Err(e) = crate::whole::write(&writer, name.as_bytes()) {
-                        eprintln!("agent: naming this Mac the build's writer: {e:#}");
-                    }
-                }
-                self.writer_named = Some(Instant::now());
-            }
-        }
 
         // The coordinator: where the NAS is (tasks read it where it lies), how to reach it on the NAS
         // (looked at every five minutes: it may have been deleted, or this Mac's addresses changed),
@@ -2300,7 +2116,7 @@ impl Agent {
         }
         // (In the pool, only while this Mac leads: a lead that stepped down takes its contact off,
         // so members find the new lead's.)
-        let leading = self.pool.is_none() || self.pool_seen.as_ref().is_some_and(|p| p.gates.leads.is_some());
+        let leading = self.pool_seen.as_ref().is_some_and(|p| p.gates.leads.is_some());
         if let (Some(c), Some(r), false) = (&self.coord, &root, leading) {
             if self.published.is_some() {
                 c.unpublish(r);
@@ -2326,35 +2142,7 @@ impl Agent {
             self.send_outbox(&r, &mut waiting);
         }
 
-        // A helper's hand-offs, merged into the build's records before planning (the build Mac
-        // alone writes them): each loop when the first job's slot is free, every two minutes while
-        // a job runs there.
         let idle = self.slots[0].running.is_none();
-        let merge_due = idle || ended || self.merged.is_none_or(|t| t.elapsed() >= Duration::from_secs(120));
-        if let (Some(r), false, true, true, true) = (root.as_ref(), self.o.helper, self._lock.is_some() && !self.o.dry_run, merge_due, self.pool_off()) {
-            match crate::handoff::merge_from(r, &self.o.home.join("scratch/handoff"), &self.handoff_bases(r)) {
-                Ok(0) => {}
-                Ok(n) => eprintln!("agent: merged {n} hand-off{} from other workers", if n == 1 { "" } else { "s" }),
-                Err(e) => eprintln!("agent: merging other workers' hand-offs: {e:#}"),
-            }
-            self.merged = Some(Instant::now());
-            // Then the records re-keyed where a key scheme changed (agent::rekey; once done, and a
-            // merged record of an older app's job translated, it finds nothing).
-            match self.rekey_records(r) {
-                Ok(Some(k)) if k.changed() => eprintln!(
-                    "agent: re-keyed the records: units {} moved to their new keys ({} without outputs), {} to build again; tree cover's z3 tiles {} recorded as their pieces and assemblies, {} dropped ({})",
-                    k.moved.len(),
-                    k.empty.len(),
-                    k.left.len(),
-                    k.trees_moved.len(),
-                    k.trees_dropped.len(),
-                    k.trees_dropped.iter().map(|(q, why)| format!("{q}: {why}")).collect::<Vec<_>>().join("; ")
-                ),
-                Ok(_) => {}
-                Err(e) => eprintln!("agent: re-keying the records: {e:#}"),
-            }
-        }
-
         // The gate: the drop boxes listed off the loop (the lead's), and the asks of it from this
         // Mac's menu bar, map, `scenic inputs` and (leading) the build page.
         if let Some(r) = root.as_deref() {
@@ -2538,13 +2326,10 @@ impl Agent {
                 _ => self.pool_seen.clone(),
             },
             memory: Some(self.guard_view()),
-            budgets: self.proxy.as_ref().filter(|_| self.budgets).map(|p| p.view()),
+            budgets: self.proxy.as_ref().map(|p| p.view()),
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
         };
         let body = serde_json::to_vec_pretty(&status)?;
-        if let Some(sh) = self.shadow.as_mut() {
-            sh.tick();
-        }
         if self._lock.is_none() {
             // Another agent writes the heartbeat; this one only reports.
             eprintln!("{}", String::from_utf8_lossy(&body));
@@ -2593,9 +2378,8 @@ impl Agent {
             let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
             // The targets it finished: every one when it succeeded, else those it noted done as
             // each was saved (crate::control::done), whatever stopped it, so they aren't built
-            // again. The build Mac's agent records them; a helper's go back to the coordinator.
+            // again: handed off with the job's lease (the journal has their saves).
             let done = self.finished_targets(k, ok);
-            let recorded = self.record_done(root, &step, &done);
             let r = self.slots[k].running.as_mut().unwrap();
             let note = if ok {
                 // (GC's warnings, its job's note in the status: agent::gc::Report::warnings.)
@@ -2622,11 +2406,10 @@ impl Agent {
                 self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, ..crate::coord::history::Event::new("catalog") });
             }
             let outcome = if ok { Outcome::Done } else if paused { Outcome::Paused } else { Outcome::Failed };
-            // (The coordinator's record of what's done: a helper's whatever it did, this Mac's
-            // once it's in the keys.)
-            let handed = if self.o.helper || recorded || self.pool.is_some() { done.clone() } else { Vec::new() };
-            // (In the pool a catalog's done record is handed off, not recorded: its map update is over.)
-            if self.pool.is_some() && ok && matches!(step.as_str(), "catalog" | "catalog-held") {
+            // (The coordinator's record of what's done.)
+            let handed = done.clone();
+            // (A catalog's done record handed off: its map update is over.)
+            if ok && matches!(step.as_str(), "catalog" | "catalog-held") {
                 self.end_update();
             }
             self.take_timings(k);
@@ -2635,7 +2418,6 @@ impl Agent {
             self.slots[k].drain_since = None;
             self.slots[k].mem_drain = None;
             self.slots[k].mem_drain_alone = false;
-            self.release_claims(k, root);
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(true);
@@ -2645,8 +2427,7 @@ impl Agent {
             // from its completion markers once its conditions hold.
             eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
             r.stop(Duration::from_secs(30));
-            self.stopped(k, root, "stopped: the Mac slept");
-            self.release_claims(k, root);
+            self.stopped(k, "stopped: the Mac slept");
             self.slots[k].running = None;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(false);
@@ -2659,22 +2440,8 @@ impl Agent {
             let r = self.slots[k].running.as_mut().unwrap();
             eprintln!("agent: {}'s lease lapsed and its work went to another worker; stopping it", r.spec.id);
             r.stop(Duration::from_secs(30));
-            self.stopped(k, root, "its lease lapsed");
-            self.release_claims(k, root);
+            self.stopped(k, "its lease lapsed");
             self.slots[k].running = None;
-            std::fs::remove_file(self.record_path(k)).ok();
-            return Ok(true);
-        }
-        if !self.keep_claims(k, root) {
-            // Another agent took its claims (they went stale while it was paused, or this Mac
-            // was away): it builds them; this one stops, unrecorded, and drops the rest.
-            let r = self.slots[k].running.as_mut().unwrap();
-            eprintln!("agent: another Mac took {}'s areas; stopping it", r.spec.id);
-            r.stop(Duration::from_secs(30));
-            self.stopped(k, root, "another Mac took its areas");
-            self.release_claims(k, root);
-            self.slots[k].running = None;
-            self.slots[k].claims_fresh = None;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(true);
         }
@@ -2764,16 +2531,14 @@ impl Agent {
     }
 
     /// The first job, when its slot is free: the plan's first that can start, not the second job's
-    /// own; one that waits for a reason of its own
-    /// passed over, one that waits for the job beside it (`waits_for_second`) waited for, not passed
-    /// over. Why the jobs before it wait, in `waiting`.
+    /// own; one that waits for a reason of its own passed over, one that waits for the job beside it
+    /// (`waits_for_second`) waited for. Why the jobs before it wait, in `waiting`.
     fn start_first(&mut self, plan: &[JobSpec], c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) {
         let beside = self.slots[1].running.as_ref().map(|r| r.spec.id.clone());
         // (The least room a job held by the disk room target needed: one after it needing as much
         // waits too, unsaid; one needing less is tried.)
         let mut held = u64::MAX;
         self.floor_held = None;
-        let mut passed: Vec<String> = Vec::new();
         for spec in plan {
             if beside.as_deref() == Some(spec.id.as_str()) {
                 continue;
@@ -2787,12 +2552,6 @@ impl Agent {
             }
             if let Some(why) = self.waits_for_second(spec) {
                 waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
-                // (One that only can't share the Mac with the job beside it, not passed over for long:
-                // the next that can start starts meanwhile; it starts once the clash ends.)
-                if self.passable(spec) {
-                    passed.push(spec.id.clone());
-                    continue;
-                }
                 break;
             }
             if self.try_start(0, spec.clone(), c, root, waiting) {
@@ -2802,33 +2561,6 @@ impl Agent {
                 held = held.min(h);
             }
         }
-        // (When each was first passed over, kept while it still is.)
-        let now = Instant::now();
-        self.passed_over.retain(|id, _| passed.contains(id));
-        for id in passed {
-            self.passed_over.entry(id).or_insert(now);
-        }
-    }
-
-    /// Whether the first slot may pass over `spec` for the next job in plan order that can start:
-    /// it can't start beside the second slot's job only because the two can't share the Mac (one of
-    /// the steps table's groups: two Wikidata steps, two raw-tile readers, two heavy NAS readers;
-    /// not a job that runs alone, which drains the Mac, nor one short of room or memory), and it
-    /// hasn't been passed over for `PASS_MAX` (then the slot waits for it, and the second starts
-    /// nothing new until it has: `starving`).
-    fn passable(&self, spec: &JobSpec) -> bool {
-        let Some(r) = self.slots[1].running.as_ref() else { return false };
-        let (s, b) = (step_of(&spec.id).unwrap_or_default(), step_of(&r.spec.id).unwrap_or_default());
-        let grouped = steps::grouped_in(&s, &b, |g| self.group_holds(g));
-        let only_grouped = grouped && !self.runs_alone(spec) && !self.runs_alone(&r.spec) && self.guard_held(1).is_none();
-        only_grouped && self.passed_over.get(&spec.id).is_none_or(|t| t.elapsed() < self.pass_max)
-    }
-
-    /// A job of the plan the first slot has passed over for `PASS_MAX` (the second slot then starts
-    /// nothing new but it, so it starts as soon as the job in its way ends; one not in the plan any
-    /// more, done or waiting for a reason of its own, counts for nothing).
-    fn starving(&self, plan: &[JobSpec]) -> Option<&String> {
-        self.passed_over.iter().find(|(id, t)| t.elapsed() >= self.pass_max && plan.iter().any(|p| p.id == **id)).map(|(id, _)| id)
     }
 
     /// Why `spec` can't start now for itself: a condition it needs gone, or a failure's wait.
@@ -2836,8 +2568,8 @@ impl Agent {
         if let Some(why) = lapsed(&spec.needs, c) {
             return Some(why);
         }
-        // (With the budgets on, a job's only way out is the proxy: none starts without it.)
-        if self.budgets && self.proxy.is_none() && !self.o.dry_run {
+        // (A job's only way out is the proxy: none starts without it.)
+        if self.proxy.is_none() && !self.o.dry_run {
             return Some("waits for the budgets' proxy to start (every job's connections go through it)".into());
         }
         // (A job of no targets of its own, the OSM pass's: held by the memory guard when what it
@@ -2896,57 +2628,28 @@ impl Agent {
         if self.clashes(&s, &b) {
             return Some(format!("waits for the job beside it ({beside}) to end: they don't run together"));
         }
-        if self.by_measure {
-            return self.fits_beside(spec, 1).map(|why| format!("waits for the job beside it ({beside}) to end: {why}"));
-        }
-        let (need, free) = (self.need_of(0, spec).saturating_add(self.floor_for(&s)), self.disk_free());
-        if free < need {
-            return Some(format!("needs {} GB free on the disk ({} GB free{}): room is made once the job beside it ({beside}) ends", need >> 30, free >> 30, self.floor_words()));
-        }
-        let res = self.mac.resources(&self.o.home, None, None, None);
-        let total = (res.mem_gb * 1024.0) as u64;
-        let theirs = crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20).max(self.spec_peak(&r.spec));
-        let mine = self.spec_peak(spec);
-        (mine + theirs > total * 3 / 4).then(|| format!("needs about {:.1} GB of memory: waits for the job beside it ({beside}, {:.1} GB) to end, in this Mac's {:.0} GB", mine as f64 / 1024.0, theirs as f64 / 1024.0, res.mem_gb))
+        self.fits_beside(spec, 1).map(|why| format!("waits for the job beside it ({beside}) to end: {why}"))
     }
 
-    /// The free space a job of `spec` starts with in slot `k`: a helper's its step's; the second
-    /// job's its own (`second_need`); the first's the reserve, a terrain run's more, the OSM pass's
-    /// its own less the pack cache it clears.
+    /// The free space a job of `spec` starts with in slot `k`: a member's its step's; else the
+    /// reserve, and beside another job its measured disk too.
     fn need_of(&self, k: usize, spec: &JobSpec) -> u64 {
-        let step = step_of(&spec.id).unwrap_or_default();
         if self.o.helper {
             helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
-        } else if self.by_measure {
-            // (By measure, beside another job: the reserve and what it was measured to take on the
+        } else {
+            // (Beside another job: the reserve and what it was measured to take on the
             // disk. Alone in the first slot: the reserve alone, the disk guard its backstop, so a
             // stale or high disk floor, which only rises, never holds the build, the owner's room
             // target past it or not; a cold start likewise. Room is still made for its measured
             // disk as the caches allow: `try_start_said`.)
             let alone = k == 0 && self.slots.iter().skip(1).all(|s| s.running.is_none());
             room::RESERVE + if alone { 0 } else { self.measured_job(spec).map_or(0, |m| m.disk_mb << 20) }
-        } else if k > 0 {
-            second_need(&step)
-        } else if spec.id.starts_with("osm-pass") {
-            PASS_SPACE.saturating_sub(dir_bytes(&self.o.home.join("cache").join("base"))).max(room::RESERVE)
-        } else if spec.id.starts_with("terrain 3/") {
-            room::RESERVE + TERRAIN_SPACE
-        } else {
-            steps::row(&step).map_or(room::RESERVE, |s| s.disk)
         }
     }
 
     fn try_start_said(&mut self, k: usize, spec: JobSpec, c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
         if let Some(why) = self.wait_reason(&spec, c) {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
-            return false;
-        }
-        // (Nor an items or heritage job while the answers they keep go to the NAS: `seed_answers`.)
-        // (With the budgets on, the steps' own hold on the answers here waits for it instead:
-        // crate::answers::Local.)
-        if !self.budgets && self.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) && step_of(&spec.id).is_some_and(|s| ANSWERED.contains(&s.as_str())) {
-            waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: "the pass's Wikidata and Wikipedia answers here are going to the NAS (seconds)".into() });
-            self.start_soon.set(true);
             return false;
         }
         // The pool's lead publishes only once its records reflect the journal, and sweeps only on a
@@ -3005,7 +2708,7 @@ impl Agent {
         // (By measure, the first slot alone waits for the reserve too, the target none: started
         // short of it, the disk guard would freeze it at once and give it back, and the next job
         // likewise, each kept from this Mac an hour.)
-        let held = floor > 0 || self.by_measure;
+        let held = true;
         if !(k > 0 || other) && held && !self.o.helper && short && self.disk_free() < room {
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
             self.floor_held = Some(room);
@@ -3035,7 +2738,7 @@ impl Agent {
             }
             // (By measure, alone: room is made, as it can, for its measured disk too, though it
             // waits only on the reserve and the target, `need_of`: the disk guard its backstop.)
-            let measured = if self.by_measure && !self.o.helper { self.measured_job(&spec).map_or(0, |m| m.disk_mb << 20) } else { 0 };
+            let measured = if !self.o.helper { self.measured_job(&spec).map_or(0, |m| m.disk_mb << 20) } else { 0 };
             let sized = room.saturating_add(measured);
             match room::make_room(&cache, &r.join("sources"), sized, margin, &hints) {
                 Ok(0) => {}
@@ -3084,9 +2787,9 @@ impl Agent {
             }
         }
         // A job other workers may also do: its targets held first, by a lease in this Mac's
-        // coordinator (and claim files, for a helper on an app from before it); when another holds
+        // coordinator; when another holds
         // one, none starts (the next loop plans without it). A helper's job came with its lease.
-        if let (Some((step, ts)), Some(r), false) = (shared_targets(&spec), root, self.o.helper) {
+        if let (Some((step, _)), Some(r), false) = (shared_targets(&spec), root, self.o.helper) {
             let targets = spec.record.as_ref().map(|w| w.targets.clone()).unwrap_or_default();
             let lease = match &self.coord {
                 Some(c) => match c.hold(&step, &targets) {
@@ -3103,28 +2806,15 @@ impl Agent {
                     c.finish(id, &[]);
                 }
             };
-            let me = self.me_of(k);
-            // (Every step to every member: no claims, made or read; the lease alone holds it.)
-            let claiming = !self.every_on();
-            if claiming && !claims::claim(r, &step, &ts, &me) {
-                let_go(self);
-                waiting.push(Waiting { step: None, what: what.clone(), why: "another Mac took part of it; planning again".into() });
-                return false;
-            }
             // Recorded since this loop read the keys (another worker built it meanwhile): not built
             // again.
             let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
             if done.unwrap_or(true) {
                 let_go(self);
-                if claiming {
-                    claims::release(r, &step, &ts, &me);
-                }
                 waiting.push(Waiting { step: None, what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
                 return false;
             }
             self.slots[k].lease = lease.map(Held::Own);
-            self.slots[k].claims_fresh = Some(Instant::now());
-            self.slots[k].claimed = claiming;
         }
         // In the pool, every job of the lead's holds a lease of its coordinator, and saves into a
         // folder of its own (`<term>-<id>`), handed to the journal as it ends (docs/pool.md §7.3).
@@ -3136,9 +2826,6 @@ impl Agent {
             };
             let (Some(n), Some(c)) = (held, &self.coord) else {
                 waiting.push(Waiting { step: Some(w.step.clone()), what: what.clone(), why: if self.coord.is_none() { "this Mac's coordinator isn't running: no lease to hand its work off under".into() } else { "another worker holds part of it; planning again".into() } });
-                if let (Some((step, ts)), Some(r), true) = (shared_targets(&spec), root, std::mem::take(&mut self.slots[k].claimed)) {
-                    claims::release(r, &step, &ts, &self.me_of(k));
-                }
                 return false;
             };
             let lease = crate::pool::journal::LeaseId { term: c.lease_term(n), n };
@@ -3156,14 +2843,10 @@ impl Agent {
             self.mem.catalog_at = now_s();
             self.save();
         }
-        let shared = shared_targets(&spec);
         if let Err(e) = self.start(k, spec, c) {
             // It couldn't even start (a missing program, a full disk): retried later.
             eprintln!("agent: can't start {id}: {e:#}");
             self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
-            if let (Some((step, ts)), Some(r), true) = (shared, root, std::mem::take(&mut self.slots[k].claimed)) {
-                claims::release(r, &step, &ts, &self.me_of(k));
-            }
             self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
             return false;
         }
@@ -3182,23 +2865,13 @@ impl Agent {
             self.beside_why = Some(format!("the jobs here held more memory together than this Mac's limit lately: nothing starts beside {id} until it ends"));
             return;
         }
-        // (A job the first slot passed over too long: nothing new here but it, so it starts as soon
-        // as the job in its way ends.)
-        let starving = self.starving(plan).cloned();
-        // (By measure, any job of the plan, in its order: the second job's list gone.)
-        let by_measure = self.by_measure;
-        let rank = |s: &JobSpec| if by_measure { plan.iter().position(|p| p.id == s.id) } else { step_of(&s.id).and_then(|st| SECOND.iter().position(|x| *x == st)) };
-        let mut picks: Vec<&JobSpec> = plan.iter().filter(|s| rank(s).is_some() && starving.as_ref().is_none_or(|id| *id == s.id)).collect();
-        if let (Some(id), true) = (&starving, picks.is_empty()) {
-            self.beside_why = Some(format!("nothing starts here until {id}, passed over for {} min, has", PASS_MAX.as_secs() / 60));
-            return;
-        }
-        picks.sort_by_key(|s| rank(s));
+        // (Any job of the plan, in its order.)
+        let picks: Vec<&JobSpec> = plan.iter().collect();
         let first = self.slots[0].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone(), crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20), self.spec_peak(&r.spec)));
         if self.slots[0].running.as_ref().is_some_and(|r| self.runs_alone(&r.spec)) {
             let f = first.unwrap().0;
             let what = self.slots[0].running.as_ref().map_or_else(|| build::label(&f).to_string(), |r| r.spec.what.clone());
-            self.beside_why = Some(if self.by_measure { format!("{what} is a cold start (no run of its step measured yet): it runs alone") } else { format!("{what} runs alone") });
+            self.beside_why = Some(format!("{what} is a cold start (no run of its step measured yet): it runs alone"));
             return;
         }
         // What the first slot starts next: one that runs alone, or needs room made on the disk
@@ -3206,7 +2879,7 @@ impl Agent {
         if let Some(h) = self.head(plan, c) {
             let hs = step_of(&h.id).unwrap_or_default();
             if self.runs_alone(h) {
-                self.beside_why = Some(format!("{} runs alone, next{}: nothing starts beside the first job until it has", h.what, if self.by_measure { " (a cold start)" } else { "" }));
+                self.beside_why = Some(format!("{} runs alone, next (a cold start): nothing starts beside the first job until it has", h.what));
                 return;
             }
             if self.disk_free() < self.need_of(0, h).saturating_add(self.floor_for(&hs)) {
@@ -3214,34 +2887,15 @@ impl Agent {
                 return;
             }
         }
-        let res = self.mac.resources(&self.o.home, None, None, None);
-        let (total_mb, free_mb) = self.mem_set.unwrap_or_else(|| {
-            let total_mb = (res.mem_gb * 1024.0) as u64;
-            (total_mb, res.mem_free_pct.map_or(0, |p| total_mb * p as u64 / 100))
-        });
-        let first_mb = first.as_ref().map_or(0, |f| f.2.max(f.3));
         let mut why: Option<String> = None;
         for spec in picks {
             let step = step_of(&spec.id).unwrap_or_default();
             if first.as_ref().is_some_and(|f| f.1 == spec.id || self.clashes(&f.0, &step)) {
                 continue;
             }
-            // (By measure: both jobs' measured memory and disk within what the Mac has left.)
-            if self.by_measure {
-                if let Some(w) = self.fits_beside(spec, 0) {
-                    why.get_or_insert_with(|| format!("{}: {w}", build::label(&step)));
-                    continue;
-                }
-                self.beside_why = None;
-                if self.try_start(1, spec.clone(), c, root, &mut Vec::new()) {
-                    return;
-                }
-                why = why.or_else(|| self.beside_why.clone());
-                continue;
-            }
-            let mb = self.spec_peak(spec);
-            if first_mb + mb > total_mb * 3 / 4 || free_mb < mb + 2048 {
-                why.get_or_insert_with(|| format!("{} needs about {:.1} GB, too much beside the first job ({:.1} GB) in this Mac's {:.0} GB ({:.1} GB free)", build::label(&step), mb as f64 / 1024.0, first_mb as f64 / 1024.0, res.mem_gb, free_mb as f64 / 1024.0));
+            // (Both jobs' measured memory and disk within what the Mac has left.)
+            if let Some(w) = self.fits_beside(spec, 0) {
+                why.get_or_insert_with(|| format!("{}: {w}", build::label(&step)));
                 continue;
             }
             self.beside_why = None;
@@ -3329,7 +2983,7 @@ impl Agent {
     /// lease ended as failed, so its lead keeps it from this Mac as long), what it held its target's
     /// floor. With the switch off, or this Mac's memory unknown, nothing, and a job the sampler froze
     /// goes on. True when it stopped a job.
-    fn guard(&mut self, root: Option<&Path>) -> bool {
+    fn guard(&mut self) -> bool {
         let limit = memguard::limit_mb(self.total_mb());
         let on = self.guard_stops() && limit > 0;
         self.sampler.set(on, limit);
@@ -3386,13 +3040,13 @@ impl Agent {
             }
         };
         let Some((k, why)) = stop else { return false };
-        self.guard_stop(k, root, "memory guard", &why)
+        self.guard_stop(k, "memory guard", &why)
     }
 
     /// Stops slot `k`'s job for a guard (`what`: the memory guard, the disk guard), `why`: given back,
     /// not failed, kept from this Mac an hour (a member's lease ends as failed, so its lead keeps it
     /// from this Mac as long), what it took learned as its target's floors. True when it stopped one.
-    fn guard_stop(&mut self, k: usize, root: Option<&Path>, what: &str, why: &str) -> bool {
+    fn guard_stop(&mut self, k: usize, what: &str, why: &str) -> bool {
         let why = why.to_string();
         // (Frozen by the sampler: let go on first, so it can take its termination.)
         self.sampler.thaw(k);
@@ -3405,13 +3059,12 @@ impl Agent {
         self.guard_last = Some((now_s(), format!("{id} {why}")));
         self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
         self.slots[k].guard_stopped = true;
-        self.stopped(k, root, &why);
+        self.stopped(k, &why);
         // (Its lease ended, given back: its scratch kept, its work with it, until room-making is
         // short of the reserve, `room::free_given_back`.)
         if let Some(d) = &scratch {
             room::given_back_add(&self.o.home, d, now_s());
         }
-        self.release_claims(k, root);
         self.slots[k].running = None;
         self.slots[k].drain_since = None;
         self.slots[k].mem_drain = None;
@@ -3426,18 +3079,18 @@ impl Agent {
     /// has the reserve free again; else room is made from the caches no job holds (store::cachefile's
     /// exclusive locks: room::toward, on a thread of its own), and once that's done, the disk still
     /// short, the job is given back (`guard_stop`: not failed, its work kept by its hand-off, its
-    /// disk floor learned). The switch off, a job it froze goes on. True when it stopped a job.
+    /// disk floor learned). True when it stopped a job.
     fn disk_guard(&mut self, root: Option<&Path>) -> bool {
-        self.sampler.set_disk(self.by_measure, room::RESERVE, &self.o.home);
+        self.sampler.set_disk(true, room::RESERVE, &self.o.home);
         let frozen: Vec<usize> = (0..SLOTS).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
         if frozen.is_empty() {
             self.disk_room = None;
             return false;
         }
-        if !self.by_measure || self.disk_free() >= room::RESERVE {
+        if self.disk_free() >= room::RESERVE {
             for &k in &frozen {
                 if self.sampler.thaw_disk(k) {
-                    let why = if self.by_measure { format!("goes on: the disk has {} free again", room::size(self.disk_free())) } else { "goes on (the Mac shared by measure, and its disk guard, off)".to_string() };
+                    let why = format!("goes on: the disk has {} free again", room::size(self.disk_free()));
                     eprintln!("agent: disk guard: slot {k}'s job {why}");
                     self.guard_last = Some((now_s(), format!("slot {k}'s job {why}")));
                 }
@@ -3458,7 +3111,7 @@ impl Agent {
                 }
                 self.disk_room = None;
                 let why = format!("given back by the disk guard: the disk had {} free, short of the {} kept free, with no more room to be made from the caches no job holds (what it took on the disk is kept as the least its target takes)", room::size(self.disk_free()), room::size(room::RESERVE));
-                self.guard_stop(k, root, "disk guard", &why)
+                self.guard_stop(k, "disk guard", &why)
             }
             // (A freeing of the caches under way frees already: its end waited for.)
             _ if self.caches_task.is_some() => false,
@@ -3531,14 +3184,9 @@ impl Agent {
         targets.max((c.job_disk(&step) << 20).saturating_sub(now))
     }
 
-    /// Whether `spec` runs alone on this Mac: by measure, a cold start (`measured_job` none); else as
-    /// the steps table's run-alone list says.
+    /// Whether `spec` runs alone on this Mac: a cold start (`measured_job` none).
     fn runs_alone(&self, spec: &JobSpec) -> bool {
-        if self.by_measure {
-            self.measured_job(spec).is_none()
-        } else {
-            steps::alone(&step_of(&spec.id).unwrap_or_default())
-        }
+        self.measured_job(spec).is_none()
     }
 
     /// Whether jobs of steps `a` and `b` can't run at once on this Mac by the groups and the steps
@@ -3546,26 +3194,7 @@ impl Agent {
     /// read under its accessor's lock, packing deletes only tiles no job holds: store::cachefile);
     /// with the budgets on, the Wikidata and heavy NAS reads' groups gone (`group_holds`).
     fn clashes(&self, a: &str, b: &str) -> bool {
-        let grouped = steps::grouped_in(a, b, |g| self.group_holds(g));
-        let same = a == b && !steps::SHARED.contains(&a);
-        if self.by_measure {
-            grouped || same
-        } else if self.budgets {
-            steps::alone(a) || steps::alone(b) || grouped || same
-        } else {
-            clash(a, b)
-        }
-    }
-
-    /// Whether the steps table's group `g` still keeps its steps apart on this Mac: the raw tiles'
-    /// not by measure (docs/pool.md §7.7); the Wikidata steps' not with the budgets on (every
-    /// Wikimedia request through the proxy, taken from the pool's one budget: crate::budget), nor
-    /// the heavy NAS readers' (two at once measured only to slow each other, 2026-10-14: §7.7).
-    fn group_holds(&self, g: steps::Group) -> bool {
-        match g {
-            steps::Group::Raw => !self.by_measure,
-            steps::Group::Wiki | steps::Group::NasReads => !self.budgets,
-        }
+        clash(a, b)
     }
 
     /// By measure, why `spec` can't start beside the job in slot `other` (None: both jobs' measured
@@ -3793,7 +3422,7 @@ impl Agent {
         let (root, cache, scratch) = (root.to_path_buf(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
         // (With the budgets on, alone among the steps keeping answers here by their lock, and each
         // archive sent under the answers' lease on the NAS: crate::answers::Local, Lease.)
-        let leased = self.budgets;
+        let leased = true;
         match std::thread::Builder::new().name("answers".into()).spawn(move || crate::answers::seed(&root, &cache, &scratch, leased)) {
             Ok(t) => self.answers_seed = Some(t),
             Err(e) => eprintln!("agent: the pass's answers not sent to the NAS now (its thread didn't start: {e})"),
@@ -4096,15 +3725,14 @@ impl Agent {
         self.slots[k].timings_out = None;
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
         eprintln!("agent: starting {}{} ({threads} threads)", spec.id, if k > 0 { " beside the first job" } else { "" });
-        // The build Mac's jobs save the records (crate::out::Out::save trusts them by this, whatever
-        // this Mac is named now), note what their units cost, and may offer tasks to other workers
-        // through the coordinator; a helper's hand their saves off (SCENIC_HANDOFF, in their command).
+        // The lead's jobs hand their saves off as every job does (no job writes the records,
+        // docs/pool.md §7.3), note what their units cost, and may offer tasks to other workers
+        // through the coordinator; a member's hand theirs off likewise (SCENIC_HANDOFF, in their
+        // command).
         let mut env: Vec<(String, String)> = Vec::new();
         if !self.o.helper {
-            // (In the pool no job writes the records: the lead's too hand off, docs/pool.md §7.3.)
-            match &self.slots[k].lease {
-                Some(Held::Pooled { dir, .. }) => env.push(("SCENIC_HANDOFF".into(), dir.to_string_lossy().into_owned())),
-                _ => env.push(("SCENIC_BUILD_MAC".into(), "1".into())),
+            if let Some(Held::Pooled { dir, .. }) = &self.slots[k].lease {
+                env.push(("SCENIC_HANDOFF".into(), dir.to_string_lossy().into_owned()));
             }
             env.push(("SCENIC_COSTS".into(), self.costs_path(k).to_string_lossy().into_owned()));
             if let Some(c) = &self.coord {
@@ -4162,21 +3790,19 @@ impl Agent {
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
-        // With the budgets on: its connections out through the proxy (Wikimedia's metered by the
-        // pool's budget), this Mac's own direct, and no other way out (the sandbox).
-        let sandbox = match (&self.proxy, self.budgets) {
-            (Some(p), true) => {
+        // Its connections out through the proxy (Wikimedia's metered by the pool's budget), this
+        // Mac's own direct, and no other way out (the sandbox).
+        let sandbox = match &self.proxy {
+            Some(p) => {
                 env.extend(p.env());
                 Some(crate::budget::SANDBOX)
             }
-            _ => None,
+            None => None,
         };
         let scratch =spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
-        // (Started: no longer passed over, in either slot.)
-        self.passed_over.remove(&spec.id);
         // (Its costs file afresh: a line an earlier job left, a target begun and never ended, would
         // name a target under way that isn't, crate::agent::memguard.)
         let costs = self.slot_costs(k);
@@ -4367,7 +3993,6 @@ impl Agent {
             (&p.member, p.role, &p.members).hash(&mut h);
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
         }
-        (self.pool_mode, self.switch_seen).hash(&mut h);
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
         // (Faster publishing's switches, the hold on catalogs, the catalogs' folders.)
         for f in [publish::UPDATE_PER_REGION, publish::LOW_ZOOM_LATER, publish::UPDATE_SHARE, publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
@@ -4377,7 +4002,7 @@ impl Agent {
         self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
         self.newer_app().hash(&mut h);
         // (The pool's switches as this agent holds them.)
-        (self.by_measure, self.budgets, self.resume, self.every, self.placement, self.brokers, self.slots_on, self.guard_on).hash(&mut h);
+        (self.resume, self.placement, self.brokers, self.slots_on, self.guard_on).hash(&mut h);
         // (Never 0: that's "not read".)
         h.finish() | 1
     }
@@ -4402,7 +4027,7 @@ impl Agent {
         }
         // (The budgets' proxy not started: tried again each loop, `tend_proxy`; the plan again each
         // minute, not each loop, should it keep failing.)
-        if self.budgets && self.proxy.is_none() && !self.o.dry_run && !plan.is_empty() {
+        if self.proxy.is_none() && !self.o.dry_run && !plan.is_empty() {
             at.push(now + PROXY_REPLAN.as_secs());
         }
         earliest_after(at, now)
@@ -4774,9 +4399,9 @@ impl Agent {
         // A map update's catalog waits while another worker builds its regions' slope or tree cover (it
         // would go out without them, and they'd wait an hour), and while a helper's hand-offs wait
         // to be merged (its areas counted as built, their files not yet in the manifest).
-        // (Every step to every member: claims no longer read, the coordinator's leases alone.)
+        // (The coordinator's leases alone say what another worker builds.)
         let every_on = self.every_on();
-        let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t)) || (!every_on && claims::others(root, step, &self.me).contains(t));
+        let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t));
         let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
@@ -4839,9 +4464,8 @@ impl Agent {
         // crate::agent::every.)
         for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str()) || (every_on && every::offered(&w.step))) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
-            // coordinator, or claimed (a helper on an app from before it; not read with every step
-            // to every member).
-            let mut others = if every_on { BTreeSet::new() } else { claims::others(root, &w.step, &self.me) };
+            // coordinator.
+            let mut others = BTreeSet::new();
             if let Some(c) = &self.coord {
                 others.extend(c.held(&w.step));
             }
@@ -5250,57 +4874,6 @@ impl Agent {
         build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &tiles)
     }
 
-    /// The records re-keyed (agent::rekey), and written whole when that changed anything: the build
-    /// Mac's agent's, after its merge (the caller's: not a helper's, nor a dry run's). What it reads
-    /// is made ready first (the indexes: up to a minute over SMB, the first time; the coverage, the
-    /// reaches and the files' times), and the re-keying worked out: only when that changes the
-    /// records is the build lock taken, as a merge takes it (a job saving holds it), and the
-    /// records, read again under it, re-keyed and written. Before the first such write, a copy of
-    /// them as they were (`REKEY_COPY`, never written over: what an older app goes back to). None
-    /// when there's nothing to re-key by now (no pass or regions; a recipe that can't be read now,
-    /// which would leave the coverage short), or the lock is held. (Without the pass's reaches, the
-    /// units wait for them.)
-    fn rekey_records(&self, root: &Path) -> Result<Option<rekey::Rekeyed>> {
-        let Some(date) = self.latest_pass(root) else { return Ok(None) };
-        let (recipes, unread) = load_regions(root);
-        if recipes.is_empty() || !unread.is_empty() {
-            return Ok(None);
-        }
-        let inputs = input_digests(root);
-        let times = rekey::FileTimes::new(root);
-        let rekeyed = |manifest: &BTreeMap<String, String>, keys: &mut build::Keys| -> Result<Option<rekey::Rekeyed>> {
-            let covs = self.coverage(root, manifest, &date, &recipes, false).map_err(anyhow::Error::msg)?;
-            let reach = self.current_reach(root, manifest, keys, &date).ok().flatten();
-            let tiles = self.terrain_tiles(root, manifest);
-            Ok(Some(rekey::rekey(keys, &covs.all, &date, manifest, reach.as_deref(), &inputs, &tiles, &times)))
-        };
-        let ahead: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
-        let r = rekeyed(&ahead, &mut build::Keys::load_strict(root)?)?;
-        if !r.as_ref().is_some_and(rekey::Rekeyed::changed) {
-            return Ok(r);
-        }
-        let Some(_lock) = crate::out::BuildLock::try_take(root)? else { return Ok(None) };
-        let manifest: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
-        let jobs = root.join("state/build/jobs.json");
-        let before = match std::fs::read(&jobs) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).with_context(|| format!("read {}", jobs.display())),
-        };
-        let mut keys: build::Keys = serde_json::from_slice(&before).with_context(|| format!("parse {}", jobs.display()))?;
-        let r = rekeyed(&manifest, &mut keys)?;
-        if r.as_ref().is_some_and(rekey::Rekeyed::changed) {
-            let copy = root.join(REKEY_COPY);
-            match std::fs::metadata(&copy) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::whole::write(&copy, &before)?,
-                Err(e) => return Err(e).with_context(|| format!("look for {}", copy.display())),
-            }
-            keys.save(root)?;
-        }
-        Ok(r)
-    }
-
     /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's
     /// derived), for a job's `--expect-same`; as they are when what that reads can't be told now.
     fn as_read(&self, root: &Path, mut keys: build::Keys) -> build::Keys {
@@ -5532,33 +5105,10 @@ impl Agent {
         w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
     }
 
-    /// Records `done` of `step` in the build's keys (the build Mac's agent; a helper's go back with
-    /// its lease): whether they're recorded.
-    fn record_done(&self, root: Option<&Path>, step: &str, done: &[(String, String)]) -> bool {
-        // (In the pool no one records: the job's hand-off goes to the journal.)
-        let (false, false, Some(root), true) = (self.o.helper, done.is_empty(), root, self.pool.is_none()) else { return false };
-        match build::Keys::load_strict(root).and_then(|mut k| {
-            k.record(step, done);
-            k.save(root)
-        }) {
-            Ok(()) => {
-                // (Its catalog made, a map update is over: what changed meanwhile goes out with the next.)
-                if matches!(step, "catalog" | "catalog-held") {
-                    self.end_update();
-                }
-                true
-            }
-            Err(e) => {
-                eprintln!("agent: recording {} of {step}: {e:#}", done.len());
-                false
-            }
-        }
-    }
-
     /// Slot `k`'s job stopped other than by its own end (the Mac slept, its lease lapsed, the agent
-    /// stops, another Mac took its claims): what it finished is recorded (or, a helper's, handed
-    /// off), and its lease given back, not held against its targets.
-    fn stopped(&mut self, k: usize, root: Option<&Path>, why: &str) {
+    /// stops): what it finished is handed off, and its lease given back, not held against its
+    /// targets.
+    fn stopped(&mut self, k: usize, why: &str) {
         let done = self.finished_targets(k, false);
         let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone())).unwrap_or_default();
         let secs = self.slots[k].running.as_ref().map_or(0, |r| r.elapsed().as_secs());
@@ -5567,16 +5117,7 @@ impl Agent {
             self.save();
         }
         self.note_end(k, &step, &done, secs, false, why);
-        let recorded = self.record_done(root, &step, &done);
-        let handed = if self.o.helper || recorded || self.pool.is_some() { done } else { Vec::new() };
-        self.end_lease(k, Outcome::Interrupted, &handed, why);
-    }
-
-    /// Whether the pool's switch is known to be off (or shadowed): today's coordination goes on (the
-    /// writer named, hand-offs merged, the records re-keyed). Not while it's unknown (the NAS not
-    /// read yet) nor on.
-    fn pool_off(&self) -> bool {
-        matches!(self.pool_mode, Some(pool::Mode::Off | pool::Mode::Shadow))
+        self.end_lease(k, Outcome::Interrupted, &done, why);
     }
 
     /// Why this process restarts once its first job's slot is free (the pool's switch changed, or
@@ -5588,16 +5129,10 @@ impl Agent {
         })
     }
 
-    /// The budgets' proxy, as the switch says: started once they're on (taking from the pool's
-    /// budget on the NAS's project folder `root`, as this agent), stopped once they're off; told the
-    /// members this Mac knows (its share of the rate with the NAS away).
+    /// The budgets' proxy: started once (taking from the pool's budget on the NAS's project folder
+    /// `root`, as this agent); told the members this Mac knows (its share of the rate with the NAS
+    /// away).
     fn tend_proxy(&mut self, root: &Path) {
-        if !self.budgets {
-            if let Some(p) = self.proxy.take() {
-                eprintln!("agent: the budgets' proxy stopped ({})", p.url());
-            }
-            return;
-        }
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
             match crate::budget::start_proxy(root, &me) {
@@ -5624,11 +5159,9 @@ impl Agent {
         self.resume && self.pool.is_some()
     }
 
-    /// Every step to every member (crate::agent::every, `state/pool/every-step`) acts: switched on,
-    /// in the pool. Off, or out of the pool, the agent is as it was (the shared steps alone offered,
-    /// claims read).
+    /// Every step to every member (crate::agent::every) acts: in the pool.
     fn every_on(&self) -> bool {
-        self.every && self.pool.is_some()
+        self.pool.is_some()
     }
 
     /// Placement by how crucial a job is (crate::agent::placement, `state/pool/placement`) acts:
@@ -5951,24 +5484,10 @@ impl Agent {
         Ok(resume::unmerged(step, &es))
     }
 
-    /// The pool's switch on the NAS, looked at each loop: a change from the one this process
-    /// started with restarts it (into the new one: on, the agent's part is the terms'); off as it
-    /// started, the agent is as it was. Shadowed, the shadow run beside it (crate::agent::shadow,
-    /// in a folder of its own: `<home>/shadow`).
+    /// The pool's switches on the NAS, looked at each loop; and, not in the pool, whether this
+    /// process can be now (it restarts into it).
     fn pool_switch(&mut self, root: Option<&Path>) {
         let Some(r) = root.filter(|_| self._lock.is_some() && !self.o.dry_run) else { return };
-        if let Some(on) = pool::by_measure_on(r) {
-            if on != self.by_measure {
-                eprintln!("agent: the Mac shared by measure is {}", if on { "on (and the disk guard)" } else { "off" });
-            }
-            self.by_measure = on;
-        }
-        if let Some(on) = pool::budgets_on(r) {
-            if on != self.budgets {
-                eprintln!("agent: the budgets are {}", if on { "on (every job's connections through this agent's proxy, sandboxed; the answers' lease)" } else { "off" });
-            }
-            self.budgets = on;
-        }
         self.tend_proxy(r);
         if let Some(on) = resume::on(r) {
             if on != self.resume {
@@ -5977,12 +5496,6 @@ impl Agent {
             self.resume = on;
         }
         self.tend_progress(r);
-        if let Some(on) = every::on(r) {
-            if on != self.every {
-                eprintln!("agent: every step to every member is {}", if on { "on (claims no longer read)" } else { "off" });
-            }
-            self.every = on;
-        }
         if let Some(on) = placement::on(r) {
             if on != self.placement {
                 eprintln!("agent: placement by how crucial a job is, and work offered ahead, is {}", if on { "on" } else { "off" });
@@ -6031,39 +5544,16 @@ impl Agent {
                 self.in_process_owed = Some(on);
             }
         }
-        let Some(m) = pool::mode(r) else { return };
-        match self.pool_mode {
-            None if m == pool::Mode::Off => self.pool_mode = Some(m),
-            Some(was) if was == m => self.switch_seen = None,
-            // (A change, read once: acted on if the next loop reads it too.)
-            _ if self.switch_seen != Some(m) => self.switch_seen = Some(m),
-            was => {
-                if self.restart_for.is_none() {
-                    let why = format!("the pool's switch says {} (this process started with it {})", serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), was.map_or("unknown".to_string(), |w| serde_json::to_value(w).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()));
-                    eprintln!("agent: {why}");
-                    self.restart_for = Some(why);
-                }
-            }
-        }
-        // On, its member's lock held by another process as this one started: tried again, and once
-        // taken, this process restarts into the pool (its part, its coordinator).
-        if self.pool_mode == Some(pool::Mode::On) && self.pool.is_none() && self.restart_for.is_none() {
+        // Not in the pool (the NAS not reached as this process started, or its member's lock held
+        // by another process): once the lock can be taken with the NAS answering, this process
+        // restarts into the pool (its part, its coordinator).
+        if self.pool.is_none() && self.restart_for.is_none() {
             let locks = self.o.home.parent().unwrap_or(&self.o.home).to_path_buf();
             if let Ok(id) = crate::pool::member_id(&self.o.home) {
                 if let Ok(Some(_lock)) = crate::pool::MemberLock::take(&locks, &id) {
-                    let why = "this Mac's member's lock is free again".to_string();
+                    let why = "the NAS answers and this Mac's member's lock is free: into the pool".to_string();
                     eprintln!("agent: {why}");
                     self.restart_for = Some(why);
-                }
-            }
-        }
-        if self.pool_mode == Some(pool::Mode::Shadow) && self.shadow.is_none() && !self.shadow_failed && self.restart_for.is_none() {
-            match shadow::Shadow::open(r, &self.o.home.join("shadow"), &self.o.home, &self.app) {
-                Ok(Some(sh)) => self.shadow = Some(sh.on(self.mac)),
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("agent: the pool's shadow run: {e:#}; not tried again in this process");
-                    self.shadow_failed = true;
                 }
             }
         }
@@ -6183,7 +5673,7 @@ impl Agent {
                     let why = if settling { "the lead hands the build over" } else { "this Mac no longer leads" };
                     eprintln!("agent: {} stopped: {why}", j.spec.id);
                     j.stop(Duration::from_secs(30));
-                    self.stopped(k, root, &format!("stopped: {why}"));
+                    self.stopped(k, &format!("stopped: {why}"));
                     self.slots[k].running = None;
                     std::fs::remove_file(self.record_path(k)).ok();
                 }
@@ -6212,7 +5702,7 @@ impl Agent {
         run.cx = pool::Cx { root: Some(r.to_path_buf()), home: home.clone(), coord: self.coord.clone(), able, duty, starting: false, lead_answered, broker: self.brokering(), broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()), lead_urls, lead_failed };
         // (The jobs an earlier process left, once `run` stopped any still running.)
         run.take_left(&home);
-        run.drain(lead.then(|| home.join("coord/journal")).as_deref(), lead.then(|| crate::handoff::nas_base(r)).as_deref(), &home.join("outbox"));
+        run.drain(lead.then(|| home.join("coord/journal")).as_deref(), &home.join("outbox"));
         // The owner's lead asks (crate::agent::lead): this Mac's, and the build page's.
         run.conds = Some(pool::Conds { home: c.home, ac: c.ac, battery: c.battery, able });
         if let Some(co) = &self.coord {
@@ -6328,7 +5818,7 @@ impl Agent {
                         let j = self.slots[k].running.as_mut().unwrap();
                         eprintln!("agent: {} stopped: this Mac no longer leads", j.spec.id);
                         j.stop(Duration::from_secs(30));
-                        self.stopped(k, Some(root), "stopped: this Mac no longer leads");
+                        self.stopped(k, "stopped: this Mac no longer leads");
                         self.slots[k].running = None;
                         std::fs::remove_file(self.record_path(k)).ok();
                     }
@@ -7126,8 +6616,13 @@ fn test_agent(o: Options) -> Result<Agent> {
     assert!(!is_live_path(&o.home), "a test agent's home is the app's real one: {}", o.home.display());
     // (The NAS's answer as the real probe decides it, by its folder, but at once: a loaded Mac's
     // threads can't make a test's NAS look away.)
+    // (Its jobs go out through the budgets' proxy, as every agent's: started as its first loop
+    // would.)
     Agent::new_with(o, |r| r.join("catalog").is_dir()).map(|mut a| {
         a.mac = cond::Mac::TEST;
+        if let (Some(r), true, false) = (a.o.root.clone(), a._lock.is_some(), a.o.dry_run) {
+            a.tend_proxy(&r);
+        }
         a
     })
 }
@@ -7192,13 +6687,12 @@ mod tests {
         // The budgets' proxy not started: planned again each minute, not each loop.
         a.mem.retry.clear();
         a.guard_backoff.clear();
-        a.budgets = true;
         a.o.dry_run = false;
         assert_eq!(a.replan_at(&plan, 1000), Some(1000 + PROXY_REPLAN.as_secs()));
     }
 
     /// The digest of what an idle agent's plan depends on: the same while nothing changes; changed
-    /// by the records, a hand-off waiting, the pool's switch.
+    /// by the records, a hand-off waiting, the pool's switches.
     #[test]
     fn the_plans_digest_follows_what_it_depends_on() {
         let d = tempfile::tempdir().unwrap();
@@ -7219,14 +6713,9 @@ mod tests {
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         last = now;
-        std::fs::create_dir_all(crate::handoff::nas_base(&root).join("other-mac")).unwrap();
+        std::fs::create_dir_all(a.handoff_bases(&root)[0].join("other-mac")).unwrap();
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
-        last = now;
-        a.switch_seen = Some(pool::Mode::On);
-        let now = a.plan_seen(&root);
-        assert_ne!(now, last);
-        assert_eq!(a.plan_seen(&root), now);
         last = now;
         // Faster publishing's switches and the hold on catalogs.
         for f in [publish::UPDATE_PER_REGION, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
@@ -7265,7 +6754,7 @@ mod tests {
         assert_ne!(now, last);
         last = now;
         // The pool's switches the agent holds.
-        a.budgets = true;
+        a.placement = true;
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         assert_eq!(a.plan_seen(&root), now);
@@ -7338,7 +6827,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_with_the_hand_offs_waiting_on_the_nas_and_in_the_journal() {
+    fn plans_with_the_hand_offs_waiting_in_the_journal() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("root"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -7346,10 +6835,9 @@ mod tests {
         let mut keys = build::Keys::default();
         keys.record("unit", &[("6/1/1".to_string(), "k1".to_string())]);
         keys.save(&root).unwrap();
-        // An older helper's hand-off on the NAS, and one the coordinator journaled here: both count
-        // as built until merged; then the merge writes them into the keys and deletes them.
+        // Hand-offs the coordinator journaled here: they count as built until drained.
         let done = |u: &str, k: &str| crate::handoff::Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
-        crate::handoff::write(&crate::handoff::dir(&root, "old-m1"), &done("6/1/2", "k2")).unwrap();
+        crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/2", "k2")).unwrap();
         crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
         // The files they save count too (a tree cover piece's mid: build::tree_work), but one a
         // later hand-off removes.
@@ -7360,11 +6848,7 @@ mod tests {
         let k = a.planning_keys(&root).unwrap();
         assert_eq!((k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k1"), Some("k2"), Some("k3")));
         assert_eq!(k.handed.iter().collect::<Vec<_>>(), ["work/trees-mid/6-28-16"]);
-        assert_eq!(crate::handoff::merge_from(&root, &home.join("scratch/handoff"), &a.handoff_bases(&root)).unwrap(), 5);
-        let k = build::Keys::load(&root);
-        assert_eq!((k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k2"), Some("k3")));
-        assert!(crate::handoff::waiting_in(&home.join("coord/journal")).unwrap().is_empty());
-        assert!(k.handed.is_empty() && a.planning_keys(&root).unwrap().handed.is_empty(), "merged: in the manifest, never in the keys saved");
+        assert!(build::Keys::load(&root).handed.is_empty(), "never in the keys saved");
     }
 
     fn agent(root: &Path, home: &Path) -> Agent {
@@ -7398,15 +6882,15 @@ mod tests {
         a.free_set = Some(40 << 30);
         let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        // A 20 GB target, which the disk has (40 GB free): a terrain run's 55 GB and a unit's 30
-        // past it don't fit, nor can the (empty) caches make them. Each waits, saying why; a job
-        // after them needing as much isn't tried (the second unit), one needing less is: the
-        // daily backup, which keeps no target, starts.
+        // A 20 GB target, which the disk has (40 GB free): a job's reserve, 30 GB, past it doesn't
+        // fit, nor can the (empty) caches make it. The first waits, saying why; a job after it
+        // needing as much isn't tried (the units), one keeping no target is: the daily backup
+        // starts.
         room::set_target(&home, Some(20 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
         a.start_first(&[job("terrain 3/1/1"), job("unit 6/1/1"), job("unit 6/1/2"), job("backup daily")], &cond, Some(&root), &mut w);
-        assert_eq!(w.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(), ["terrain 3/1/1", "unit 6/1/1"], "{w:?}");
+        assert_eq!(w.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(), ["terrain 3/1/1"], "{w:?}");
         assert!(w.iter().all(|w| w.why.contains("disk room target")), "{w:?}");
         assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("backup daily"));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
@@ -7632,20 +7116,12 @@ mod tests {
 
     #[test]
     fn which_jobs_run_beside_each_other() {
-        // Network work beside anything but what runs alone; two of one step only when it's shared
-        // (its targets held apart); the raw tiles' readers one at a time.
-        assert!(!clash("unit", "heritage") && !clash("trees", "items"));
-        assert!(!clash("unit", "unit") && !clash("pois", "pois"));
-        assert!(clash("items", "items") && clash("catalog", "catalog"));
-        assert!(clash("terrain", "peaks") && clash("peaks", "peaks"));
-        assert!(clash("osm-pass", "items") && clash("items", "gc") && clash("heritage-sites", "unit"));
-        // Two asking Wikidata, each paced as if alone: not at once.
-        assert!(clash("items", "heritage") && !clash("items", "rail-feeds"));
-        // The 3D buildings: their tiles two at once, their parquet read one tile at a time; the
-        // fetch beside them; nothing beside the water or the pass.
-        assert!(!clash("bldtiles", "bldtiles") && clash("bldprep", "bldprep") && !clash("bldprep", "bldtiles"));
-        assert!(!clash("bld-fetch", "bldprep") && clash("water", "bldtiles") && clash("bldprep", "osm-pass"));
-        assert!(SECOND.contains(&"bld-fetch") && SECOND.ends_with(&["bldprep", "bldtiles"]));
+        // Two of one step only when it's shared (its targets held apart); any two steps else (what
+        // they share guarded where it's used, their memory and disk by their measures).
+        assert!(!clash("unit", "heritage") && !clash("trees", "items") && !clash("items", "heritage"));
+        assert!(!clash("unit", "unit") && !clash("pois", "pois") && !clash("bldtiles", "bldtiles"));
+        assert!(clash("items", "items") && clash("catalog", "catalog") && clash("bldprep", "bldprep") == !steps::SHARED.contains(&"bldprep"));
+        assert!(!clash("terrain", "peaks") && !clash("osm-pass", "items") && !clash("water", "bldtiles"));
     }
 
     #[test]
@@ -7682,7 +7158,10 @@ mod tests {
             let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
             JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { nas: false }, restart_after_sleep: false, record }
         };
-        // Someone at the Mac: beside the map tiles, the heritage chain (network), not a unit.
+        // Beside the map tiles, the heritage chain, not a unit (too large beside them, by their
+        // measures).
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        a.coord.as_ref().unwrap().add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), cost("pack", 1024)), (crate::coord::cost_key("heritage", "heritage"), cost("heritage", 2048)), (crate::coord::cost_key("unit", "6/1/1"), cost("unit", 15 << 10))]);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
         let plan = vec![job("unit 6/1/1"), job("pack 6/1/1"), job("heritage heritage")];
@@ -7699,7 +7178,7 @@ mod tests {
                 r.stop(Duration::from_secs(5));
             }
         }
-        // Beside a job that runs alone (the OSM pass), none.
+        // Beside a cold start (the OSM pass, never measured), none.
         a.slots = Default::default();
         assert!(a.try_start(0, JobSpec { record: None, ..job("osm-pass 2026-09-28") }, &cond, Some(&root), &mut Vec::new()));
         a.start_second(&plan, &cond, Some(&root));
@@ -7710,9 +7189,8 @@ mod tests {
         }
     }
 
-    /// The Mac shared by measure (docs/pool.md §7.7, `state/pool/by-measure`): a job starts beside
-    /// another only if both jobs' measured memory and disk fit what the Mac has left, whatever the
-    /// steps table's run-alone, second-job and raw-tile lists say; a cold start runs alone.
+    /// The Mac shared by measure (docs/pool.md §7.7): a job starts beside another only if both jobs'
+    /// measured memory and disk fit what the Mac has left; a cold start runs alone.
     #[test]
     fn by_measure_a_second_job_starts_or_is_held_by_the_measures_alone() {
         let d = tempfile::tempdir().unwrap();
@@ -7723,7 +7201,6 @@ mod tests {
         a.free_set = Some(100 << 30);
         // (A Mac of 16 GB: its limit 12 GB.)
         a.mem_set = Some((16 << 10, 12 << 10));
-        a.by_measure = true;
         let job = |step: &str, t: &str| JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let stop = |a: &mut Agent| {
@@ -7731,7 +7208,6 @@ mod tests {
                 if let Some(r) = a.slots[k].running.as_mut() {
                     r.stop(Duration::from_secs(5));
                     a.end_lease(k, Outcome::Interrupted, &[], "stopped");
-                    a.release_claims(k, Some(&root));
                 }
                 a.slots[k].running = None;
             }
@@ -7767,19 +7243,14 @@ mod tests {
         stop(&mut a);
         // A target of a measured step, itself never run: by its step's largest (a prior), not cold.
         assert!(a.measured_job(&job("peaks", "6/9/9")).is_some_and(|m| m.mem_mb == 5120 && !m.own));
-        // Off: the lists again (the raw tiles' readers never two at once).
-        a.by_measure = false;
-        assert!(a.try_start(0, job("terrain", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
-        a.start_second(&[job("peaks", "6/2/2")], &cond, Some(&root));
-        assert!(a.slots[1].running.is_none());
-        stop(&mut a);
     }
 
-    /// The budgets (docs/pool.md §7.7, `state/pool/budgets`): on, the agent's proxy runs and every
-    /// job goes out through it, sandboxed (a connection around it denied); the Wikidata steps share
-    /// the Mac, as do two heavy NAS readers; no job starts without the proxy. Off: as before.
+    /// The budgets (docs/pool.md §7.7): the agent's proxy runs and every job goes out through it,
+    /// sandboxed (a connection around it denied); the Wikidata steps share the Mac, as do two heavy
+    /// NAS readers, two raw-tile readers and a step the table once ran alone; no job starts without
+    /// the proxy.
     #[test]
-    fn with_the_budgets_jobs_go_out_through_the_proxy_and_the_groups_go() {
+    fn jobs_go_out_through_the_proxy_and_no_group_keeps_steps_apart() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/pool")).unwrap();
@@ -7798,25 +7269,17 @@ mod tests {
                 if let Some(r) = a.slots[k].running.as_mut() {
                     r.stop(Duration::from_secs(5));
                     a.end_lease(k, Outcome::Interrupted, &[], "stopped");
-                    a.release_claims(k, Some(&root));
                 }
                 a.slots[k].running = None;
             }
         };
-        // Off (the switch missing): the Wikidata steps one at a time, no proxy.
         a.pool_switch(Some(&root));
-        assert!(!a.budgets && a.proxy.is_none());
-        assert!(a.clashes("items", "heritage") && a.clashes("inputs", "bldprep"));
-        // On: the proxy up; the groups gone, the rest as they were.
-        std::fs::write(root.join(pool::BUDGETS), "").unwrap();
-        a.pool_switch(Some(&root));
-        assert!(a.budgets);
         let url = a.proxy.as_ref().map(|p| p.url()).expect("the proxy started");
         assert!(!a.clashes("items", "heritage") && !a.clashes("inputs", "bldprep") && !a.clashes("bldprep", "bldprep"));
-        assert!(a.clashes("terrain", "peaks") && a.clashes("items", "items") && a.clashes("labels", "unit"), "the raw tiles', the same unshared step, a step alone: as before");
+        assert!(!a.clashes("terrain", "peaks") && !a.clashes("labels", "unit"));
+        assert!(a.clashes("items", "items"), "the same unshared step: one job's work");
         assert!(a.try_start(0, job("items", "items"), &cond, Some(&root), &mut Vec::new()));
-        a.start_second(&[job("heritage", "heritage")], &cond, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("heritage heritage"), "{:?}", a.beside_why);
+        assert!(a.try_start(1, job("heritage", "heritage"), &cond, Some(&root), &mut Vec::new()));
         // (Each job ends by itself once it has looked: its exit waited for, bounded by nc's own
         // five seconds at most; no clock in the test.)
         for k in 0..SLOTS {
@@ -7834,10 +7297,6 @@ mod tests {
         let p = a.proxy.take();
         assert!(a.wait_reason(&job("items", "items"), &cond).is_some_and(|w| w.contains("proxy")));
         a.proxy = p;
-        // Off again: the proxy stopped, the groups back.
-        std::fs::write(root.join(pool::BUDGETS), "off").unwrap();
-        a.pool_switch(Some(&root));
-        assert!(!a.budgets && a.proxy.is_none() && a.clashes("items", "heritage"));
         assert!(a.wait_reason(&job("items", "items"), &cond).is_none());
     }
 
@@ -7852,7 +7311,6 @@ mod tests {
         let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.mem_set = Some((16 << 10, 12 << 10));
-        a.by_measure = true;
         let g: u64 = 1 << 30;
         let job = |t: &str| JobSpec { id: format!("terrain {t}"), what: "terrain".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "terrain".into(), targets: vec![(t.into(), "k".into())] }) };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -7913,7 +7371,6 @@ mod tests {
         let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.mem_set = Some((64 << 10, 56 << 10));
-        a.by_measure = true;
         let g: u64 = 1 << 30;
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         // 40 map tiles of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
@@ -7955,7 +7412,6 @@ mod tests {
             r.stop(Duration::from_secs(5));
         }
         a.end_lease(0, Outcome::Interrupted, &[], "stopped");
-        a.release_claims(0, Some(&root));
         a.slots[0].running = None;
         // Short of the reserve itself, no target: it waits, said why (started, the disk guard would
         // freeze it at once and give it back, and the next job likewise: the two-Mac run's loop).
@@ -8022,11 +7478,11 @@ mod tests {
         };
         // Together within the limit: nothing.
         tick(&mut a, vec![Some(7 << 10), Some(4 << 10)], false);
-        assert!(!a.guard(Some(&root)) && a.slots[1].mem_drain.is_none());
+        assert!(!a.guard() && a.slots[1].mem_drain.is_none());
         // Together past it, the larger fitting alone: the one beside it stops at its next safe point
         // (asked through its channel), and nothing starts beside the larger meanwhile.
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
-        assert!(!a.guard(Some(&root)));
+        assert!(!a.guard());
         assert!(a.slots[1].mem_drain.as_deref().is_some_and(|w| w.contains("past this Mac's limit of 12.0 GB")), "{:?}", a.slots[1].mem_drain);
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
         assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
@@ -8035,21 +7491,21 @@ mod tests {
         // The drained one reaching no safe point in the time a pause gives: stopped at once.
         a.grace = Duration::ZERO;
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
-        assert!(a.guard(Some(&root)) && a.slots[1].running.is_none());
+        assert!(a.guard() && a.slots[1].running.is_none());
         a.grace = DRAIN_GRACE;
         // The larger past the limit by itself, the Mac not short of memory: it stops at its next safe
         // point; short of it, at once (the sampler froze it), given back, not failed, kept from this
         // Mac for an hour; what it held its target's floor, a batch's (two targets).
         tick(&mut a, vec![Some(13 << 10), None], false);
-        assert!(!a.guard(Some(&root)) && a.slots[0].mem_drain.is_some() && a.slots[0].running.is_some());
+        assert!(!a.guard() && a.slots[0].mem_drain.is_some() && a.slots[0].running.is_some());
         // (Past the time a pause gives a safe point, not short of memory: still only drained; a long
         // job alone may have none for hours.)
         a.grace = Duration::ZERO;
         tick(&mut a, vec![Some(13 << 10), None], false);
-        assert!(!a.guard(Some(&root)) && a.slots[0].running.is_some());
+        assert!(!a.guard() && a.slots[0].running.is_some());
         tick(&mut a, vec![Some(13 << 10), None], true);
         assert!(a.sampler.frozen(0));
-        assert!(a.guard(Some(&root)) && a.slots[0].running.is_none());
+        assert!(a.guard() && a.slots[0].running.is_none());
         let c = a.coord.as_ref().unwrap();
         assert_eq!((c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), c.floor("terrain", "6/1/2")), (Some((13 << 10, false)), None));
         assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
@@ -8065,7 +7521,7 @@ mod tests {
         a.guard_backoff.clear();
         assert!(a.try_start(0, job("terrain 6/1/1", &["6/1/1"]), &cond, Some(&root), &mut Vec::new()));
         tick(&mut a, vec![Some(14 << 10), None], true);
-        assert!(a.guard(Some(&root)));
+        assert!(a.guard());
         let c = a.coord.as_ref().unwrap();
         assert_eq!(c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), Some((14 << 10, true)));
         let h = a.guard_holds(&works);
@@ -8080,12 +7536,12 @@ mod tests {
         assert!(a.try_start(1, job("bldtiles 6/5/5", &["6/5/5"]), &cond, Some(&root), &mut Vec::new()));
         assert!(a.try_start(0, job("pack 6/4/4", &["6/4/4"]), &cond, Some(&root), &mut Vec::new()));
         tick(&mut a, vec![Some(4 << 10), Some(9 << 10)], false);
-        assert!(!a.guard(Some(&root)) && a.slots[0].mem_drain.is_some());
+        assert!(!a.guard() && a.slots[0].mem_drain.is_some());
         assert!(a.waits_for_second(&job("unit 6/3/3", &["6/3/3"])).is_some_and(|w| w.contains("held more memory together")));
         // This Mac's memory unknown: nothing stopped, the status saying why.
         a.mem_set = Some((0, 0));
         tick(&mut a, vec![Some(20 << 10), Some(20 << 10)], true);
-        assert!(!a.guard(Some(&root)) && a.slots[0].running.is_some() && a.slots[1].running.is_some());
+        assert!(!a.guard() && a.slots[0].running.is_some() && a.slots[1].running.is_some());
         assert!(a.guard_view().why_off.is_some_and(|w| w.contains("can't be read")));
         // The switch off: nothing stopped, nothing held, a job the sampler froze let go on; what's
         // learned is kept all the same.
@@ -8094,113 +7550,13 @@ mod tests {
         std::fs::write(root.join(memguard::SWITCH), "off").unwrap();
         a.guard_on = memguard::on(&root);
         tick(&mut a, vec![None, Some(20 << 10)], true);
-        assert!(!a.guard(Some(&root)) && a.slots[1].running.is_some());
+        assert!(!a.guard() && a.slots[1].running.is_some());
         assert!(a.guard_holds(&works).here.is_empty());
         for k in 0..SLOTS {
             if let Some(r) = a.slots[k].running.as_mut() {
                 r.stop(Duration::from_secs(5));
             }
         }
-    }
-
-    #[test]
-    fn the_first_job_isnt_starved_by_the_second() {
-        let d = tempfile::tempdir().unwrap();
-        let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
-        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
-        a.free_set = Some(40 << 30);
-        let job = |id: &str| {
-            let step = id.split(' ').next().unwrap();
-            let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
-            let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { nas: false }, restart_after_sleep: false, record }
-        };
-        let stop = |a: &mut Agent| {
-            for s in a.slots.iter_mut() {
-                if let Some(r) = s.running.as_mut() {
-                    r.stop(Duration::from_secs(5));
-                }
-            }
-            a.slots = Default::default();
-        };
-        let in_use = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        // The heritage chain beside: the items' facts, listed first, can't share the Mac with it (two
-        // Wikidata steps): the first slot takes the map tiles meanwhile, the facts said waiting.
-        assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
-        let plan = [job("items items"), job("pack 6/1/1")];
-        let mut w = Vec::new();
-        a.start_first(&plan, &in_use, Some(&root), &mut w);
-        assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("pack 6/1/1"));
-        assert!(w.iter().any(|x| x.what == "items items" && x.why.contains("don't run together")), "{w:?}");
-        assert!(a.passed_over.contains_key("items items"));
-        // The heritage chain over: the facts start in the free slot.
-        if let Some(r) = a.slots[1].running.as_mut() {
-            r.stop(Duration::from_secs(5));
-        }
-        a.slots[1] = Slot::default();
-        a.start_second(&plan, &in_use, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("items items"), "{:?}", a.beside_why);
-        stop(&mut a);
-        // Passed over, started in the second slot, ended more than half an hour after it was first
-        // passed over: it holds nothing up (no longer passed over once it started, and only a job of
-        // the plan counts): the second slot starts other work.
-        assert!(a.try_start(0, job("pack 6/1/8"), &in_use, Some(&root), &mut Vec::new()));
-        // (Passed over for longer than the limit: the limit the test's, none, no Instant dated back.)
-        a.pass_max = Duration::ZERO;
-        a.passed_over.insert("items items".into(), Instant::now());
-        assert!(a.try_start(1, job("items items"), &in_use, Some(&root), &mut Vec::new()));
-        assert!(!a.passed_over.contains_key("items items"));
-        if let Some(r) = a.slots[1].running.as_mut() {
-            r.stop(Duration::from_secs(5));
-        }
-        a.slots[1] = Slot::default();
-        a.passed_over.insert("items items".into(), Instant::now());
-        a.start_second(&[job("unit 6/3/3")], &in_use, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("unit 6/3/3"), "{:?}", a.beside_why);
-        stop(&mut a);
-        a.passed_over.clear();
-        // Passed over too long: the first slot waits for it, and the second starts nothing new but it.
-        assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
-        a.passed_over.insert("items items".into(), Instant::now());
-        let mut w = Vec::new();
-        a.start_first(&plan, &in_use, Some(&root), &mut w);
-        assert!(a.slots[0].running.is_none(), "it waits for the facts");
-        if let Some(r) = a.slots[1].running.as_mut() {
-            r.stop(Duration::from_secs(5));
-        }
-        a.slots[1] = Slot::default();
-        assert!(a.try_start(0, job("pack 6/1/9"), &in_use, Some(&root), &mut Vec::new()));
-        a.start_second(&[job("unit 6/3/3"), job("items items")], &in_use, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.as_str()), Some("items items"), "{:?}", a.beside_why);
-        stop(&mut a);
-        a.passed_over.clear();
-        a.pass_max = PASS_MAX;
-        // A job that runs alone next: waited for, not passed over for the map tiles after it.
-        assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
-        let mut w = Vec::new();
-        a.start_first(&[job("gc gc"), job("pack 6/1/2")], &in_use, Some(&root), &mut w);
-        assert!(a.slots[0].running.is_none());
-        assert!(w.iter().any(|x| x.what == "gc gc" && x.why.contains("don't run together")), "{w:?}");
-        stop(&mut a);
-        // One that needs room made on the disk: not beside another job (it may read what's deleted):
-        // it waits for that one.
-        let idle = Conditions { idle_s: 3600, ..in_use };
-        a.free_set = Some(40 << 30);
-        assert!(a.try_start(1, job("pois 6/9/9"), &idle, Some(&root), &mut Vec::new()));
-        a.free_set = Some(20 << 30);
-        let mut w = Vec::new();
-        a.start_first(&[job("pack 6/1/3")], &idle, Some(&root), &mut w);
-        assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("room is made once")), "{w:?}");
-        a.free_set = Some(40 << 30);
-        stop(&mut a);
-        // And the second starts nothing beside the first while one that runs alone comes next.
-        assert!(a.try_start(0, job("pack 6/1/1"), &in_use, Some(&root), &mut Vec::new()));
-        a.start_second(&[job("gc gc"), job("heritage heritage")], &in_use, Some(&root));
-        assert!(a.slots[1].running.is_none());
-        assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("runs alone, next")), "{:?}", a.beside_why);
-        stop(&mut a);
     }
 
     #[test]
@@ -8214,11 +7570,10 @@ mod tests {
         let file = || -> build::MapUpdate { serde_json::from_slice(&std::fs::read(home.join(MAP_UPDATE_FILE)).unwrap()).unwrap() };
         // (It makes the low zooms: noted as when they were last made.)
         assert_eq!(file(), build::MapUpdate { low_at: Some(100), ..r.clone() });
-        // Another step's keys recorded: still under way. Its catalog's: over, kept without its
-        // units (whatever changed meanwhile goes out with the next).
-        assert!(a.record_done(Some(&root), "pack", &[("6/1/1".into(), "k".into())]));
+        // Its catalog made: over, kept without its units (whatever changed meanwhile goes out with
+        // the next).
         assert!(!file().over);
-        assert!(a.record_done(Some(&root), "catalog", &[("catalog".into(), "k".into())]));
+        a.end_update();
         let f = file();
         assert!(f.over && f.units.is_empty() && f.began == 100);
         // A dry run beside it (a second agent on this Mac, planning only): its map updates its own, never
@@ -8334,7 +7689,7 @@ mod tests {
     }
 
     #[test]
-    fn the_build_mac_sends_the_passs_answers_to_the_nas_once_as_it_starts() {
+    fn the_lead_sends_the_passs_answers_to_the_nas_once_as_it_starts() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
@@ -8344,11 +7699,11 @@ mod tests {
         for m in ["m1", "m4"] {
             put(&d.path().join(m).join("cache/items/facts-2026-09-28.jsonl"), b"{\"qid\":\"Q1\"}\n");
         }
-        // A helper's: never (the steps that keep them are the build Mac's).
+        // A member's: never (the steps that keep them are the lead's).
         let mut helper = running_agent(&root, &d.path().join("m1"), true);
         helper.seed_answers(Some(&root));
         assert!(!archive.exists());
-        // The build Mac's: not while a job runs here, nor without the NAS; then once.
+        // The lead's: not while a job runs here, nor without the NAS; then once.
         let mut a = running_agent(&root, &d.path().join("m4"), false);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
@@ -8363,21 +7718,8 @@ mod tests {
         std::fs::remove_file(&archive).unwrap();
         a.seed_answers(Some(&root));
         assert!(!archive.exists(), "once an agent");
-        // While it runs, no items or heritage job starts here; others do.
-        let (go, wait) = std::sync::mpsc::channel::<()>();
-        a.answers_seed = Some(std::thread::spawn(move || wait.recv().map(|()| Vec::new()).map_err(anyhow::Error::from)));
-        let mut w = Vec::new();
-        assert!(!a.try_start(0, waiting_job("items items"), &cond, Some(&root), &mut w));
-        assert!(w.iter().any(|x| x.why.contains("answers here are going to the NAS")), "{w:?}");
-        assert!(a.try_start(0, waiting_job("pack 6/1/2"), &cond, Some(&root), &mut Vec::new()));
-        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
-        a.slots[0].running = None;
-        go.send(()).unwrap();
-        while a.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(a.try_start(0, waiting_job("items items"), &cond, Some(&root), &mut Vec::new()));
-        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        // (While it runs, the steps that keep the answers wait on its hold of them here, their
+        // own: crate::answers::Local.)
     }
 
     #[test]
@@ -8718,69 +8060,6 @@ mod tests {
         assert!(!ids(&plan).iter().any(|i| i.starts_with("outlines")) && ids(&plan).iter().any(|i| i.starts_with("terrain-z8")), "{:?}", ids(&plan));
     }
 
-    #[test]
-    fn the_build_macs_loop_re_keys_the_records_once_a_dry_run_or_a_helper_never() {
-        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("nas");
-        let old = rekey_root(&root);
-        let jobs = root.join("state/build/jobs.json");
-        let before = std::fs::read(&jobs).unwrap();
-        // A dry run plans as the records will be (the unit built), and writes nothing.
-        let mut dry = agent(&root, &d.path().join("dry"));
-        dry.step().unwrap();
-        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(!dry.plan(&root, &cond, &mut Vec::new()).iter().any(|j| j.id.starts_with("unit ")));
-        assert_eq!(std::fs::read(&jobs).unwrap(), before);
-        // Nor a helper.
-        running_agent(&root, &d.path().join("helper"), true).step().unwrap();
-        assert_eq!(std::fs::read(&jobs).unwrap(), before);
-        // The build Mac's (paused: nothing starts), while a job saving holds the build lock: what it
-        // reads is made ready (its indexes kept in its folder), and nothing's written.
-        let home = d.path().join("m4");
-        let mut a = running_agent(&root, &home, false);
-        a.pause = Some(crate::control::Pause::new(crate::control::Mode::Drain, "the test"));
-        let held = crate::out::BuildLock::take(&root).unwrap();
-        assert!(a.rekey_records(&root).unwrap().is_none());
-        assert!(home.join("pack-idx/1111111111111111.idx").exists());
-        assert_eq!(std::fs::read(&jobs).unwrap(), before);
-        drop(held);
-        // (A sibling test's child may hold the lock a moment, between its fork and its exec: stepped
-        // again until the records are re-keyed, five minutes a watchdog.)
-        let rekeyed = |a: &mut Agent| {
-            let t0 = Instant::now();
-            loop {
-                a.step().unwrap();
-                if build::Keys::load(&root).unit["6/28/17"] != old {
-                    break;
-                }
-                assert!(t0.elapsed() < Duration::from_secs(300), "not re-keyed");
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        };
-        // Then once, the records as they were kept beside them first: the unit's, and tree cover's
-        // z3 tile as its pieces and assembly.
-        rekeyed(&mut a);
-        let k = build::Keys::load(&root).unit["6/28/17"].clone();
-        let keys = build::Keys::load(&root);
-        assert!(!keys.trees.contains_key("3/3/2") && keys.trees.contains_key("6/28/17") && keys.trees_lo.contains_key("3/3/2"), "{:?} {:?}", keys.trees, keys.trees_lo);
-        // Terrain's z3 record read as its pieces and assembly, in memory only: never written.
-        assert_eq!((keys.terrain.keys().map(String::as_str).collect::<Vec<_>>(), keys.terrain_lo.len(), keys.slope_lo.len()), (vec!["3/3/2"], 0, 0));
-        assert_eq!(std::fs::read(root.join(REKEY_COPY)).unwrap(), before);
-        let (after, at) = (std::fs::read(&jobs).unwrap(), std::fs::metadata(&jobs).unwrap().modified().unwrap());
-        a.step().unwrap();
-        assert_eq!((std::fs::read(&jobs).unwrap(), std::fs::metadata(&jobs).unwrap().modified().unwrap()), (after, at), "not written again");
-        // A late record under the old key (an older app's job, merged): re-keyed; the copy stays
-        // the first's.
-        let mut late = build::Keys::load(&root);
-        late.record("unit", &[("6/28/17".into(), old.clone())]);
-        late.save(&root).unwrap();
-        rekeyed(&mut a);
-        assert_eq!(build::Keys::load(&root).unit["6/28/17"], k);
-        assert_eq!(std::fs::read(root.join(REKEY_COPY)).unwrap(), before);
-        // Its new key is the plan's: nothing to build.
-        assert!(!a.plan(&root, &cond, &mut Vec::new()).iter().any(|j| j.id.starts_with("unit ")));
-    }
 
     #[test]
     fn the_checklist_says_which_steps_helpers_take() {
@@ -9246,7 +8525,6 @@ mod pool_tests {
         std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#).unwrap();
         std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
         std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
-        std::fs::write(r.join("state/build/writer"), format!("{}\n", cond::host_name())).unwrap();
         r
     }
 
@@ -9310,37 +8588,16 @@ mod pool_tests {
     }
 
     #[test]
-    fn the_pool_off_leaves_the_agent_as_it_was() {
+    fn the_pool_is_always_on_with_no_switch_read() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
-        assert!(a.pool.is_none() && a.pool_mode == Some(pool::Mode::Off));
+        assert!(!r.join("state/pool").exists());
+        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("app-folder/agent"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        assert!(a.pool.is_some(), "this Mac's member in the pool, with no switch on the NAS");
         a.step().unwrap();
-        // The build Mac named the writer, as before; nothing of the pool's written.
-        std::fs::write(r.join("state/build/writer"), "another-mac").unwrap();
-        a.writer_named = None;
-        a.step().unwrap();
-        assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), cond::host_name());
-        assert!(!r.join("state/pool").exists() && !r.join("state/build/terms").exists());
-        assert!(read_status(Some(&r), &a.o.home).unwrap().pool.is_none());
+        assert!(r.join(crate::pool::term::DIR).join("1.json").exists(), "term 1 made");
+        assert!(read_status(Some(&r), &a.o.home).unwrap().pool.is_some());
         assert!(a.pool_restart().is_none());
-    }
-
-    #[test]
-    fn the_switch_changing_restarts_the_agent_into_it() {
-        let d = tempfile::tempdir().unwrap();
-        let r = nas(d.path());
-        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
-        a.step().unwrap();
-        assert!(a.pool_restart().is_none());
-        switch_on(&r, pool::ENABLED);
-        // (Read once: nothing yet; twice in a row: it restarts.)
-        a.step().unwrap();
-        assert!(a.pool_restart().is_none());
-        a.step().unwrap();
-        assert!(a.pool_restart().is_some_and(|w| w.contains("on")), "{:?}", a.pool_restart());
-        let st = read_status(Some(&r), &a.o.home).unwrap();
-        assert!(st.waiting.iter().any(|w| w.why.starts_with("restarting")), "{:?}", st.waiting);
     }
 
     #[test]
@@ -9348,7 +8605,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
         let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("app-folder/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
         a.mem.last_ok.insert("backup".into(), now_s());
@@ -9427,7 +8683,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
         let home = d.path().join("app-folder/agent");
         // (`--helper` passed, as the M1's launch file does: the pool says what it is.)
@@ -9443,7 +8698,7 @@ mod pool_tests {
         // records it merges are today's files' too (term 1's saves write them).
         until(&mut a, |a| crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty() && a.pooled().is_some_and(|p| p.side.driver().records().is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json"))));
         let env = std::fs::read_to_string(bin.join("env-backup")).unwrap();
-        assert!(env.contains("SCENIC_HANDOFF=") && !env.contains("SCENIC_BUILD_MAC"), "{env}");
+        assert!(env.contains("SCENIC_HANDOFF="), "{env}");
         assert!(env.contains(&format!("{}", home.join("pool/jobs/1-").display())), "{env}");
         let rec = a.pooled().unwrap().side.driver().records().unwrap().clone();
         assert!(rec.reflected.iter().any(|k| k.ends_with(&format!("/1-{}", rec.reflected.iter().next().unwrap().rsplit('-').next().unwrap()))));
@@ -9473,7 +8728,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
         // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
         // folder (and member) of its own; its `--helper` or not, the pool says.
@@ -9513,18 +8767,15 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
-    /// Every step to every member (`state/pool/every-step`, crate::agent::every): off, a member
-    /// asks for the shared steps alone, and the map tiles' `pack` offered isn't its; on, it asks for
-    /// every step the lead may offer with its disk's room, takes `pack` by its measures, runs it in
-    /// its lease's folder with no claim made, and its entry reaches the lead's records through the
-    /// journal. Off again, as before.
+    /// Every step to every member (crate::agent::every): a member asks for every step the lead may
+    /// offer with its disk's room, takes `pack` by its measures, runs it in its lease's folder, and
+    /// its entry reaches the lead's records through the journal.
     #[test]
     fn every_step_a_member_takes_pack_and_its_entry_is_merged() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -9537,21 +8788,10 @@ mod pool_tests {
         let c = lead.coord.as_ref().unwrap();
         c.add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("pack") })]);
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "kp".into(), 100)], batch: 16 }]);
-        // Off: not the member's to take.
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
-        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_none());
-        for _ in 0..3 {
-            m.step().unwrap();
-        }
-        assert!(m.slots[0].running.is_none() && !bin.join("env-pack").exists());
         let asked = |l: &Agent| l.coord.as_ref().unwrap().workers().into_iter().find(|(_, w)| w.kind == "native").map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)));
-        let (can, disk) = asked(&lead).unwrap();
-        assert!(!can.iter().any(|s| s == "pack") && disk.is_none(), "{can:?}");
-        // On: the lead's coordinator told (with its own room, and its map update under way: `pack` is a
+        // The lead's coordinator told (with its own room, and its map update under way: `pack` is a
         // map update's step, its job reading the units as the map update began), the member asking for every
         // step.
-        switch_on(&r, every::SWITCH);
         *lead.map_update.borrow_mut() = Some(build::MapUpdate { began: 1_791_000_000, regions: Vec::new(), last: true, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false, low: true, low_at: None });
         lead.pool_switch(Some(&r));
         // (Told with the plan's offers, as the lead's planning does.)
@@ -9571,15 +8811,10 @@ mod pool_tests {
         // The map update over: its units no longer granted.
         lead.end_update();
         assert!(lead.coord.as_ref().unwrap().map_update_began().is_none());
-        assert!(!r.join("state/build/claims").exists() || std::fs::read_dir(r.join("state/build/claims")).unwrap().next().is_none(), "no claim made");
         // Its entry merged by the lead, within pack's write-set.
         until(&mut lead, |l| l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/1/1") == Some("kp")));
         let rec = lead.pooled().unwrap().side.driver().records().unwrap().clone();
         assert_eq!(rec.manifest.get("layers/roads/hi/6-1-1").map(String::as_str), Some("layers/roads/hi/6-1-1.0123456789abcdef.pack"));
-        // Off again: the lead's coordinator told, as before.
-        std::fs::write(r.join(every::SWITCH), "off").unwrap();
-        lead.pool_switch(Some(&r));
-        assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_none());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -9595,8 +8830,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
-        switch_on(&r, every::SWITCH);
         let bin = app(d.path());
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -9645,7 +8878,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let date = "2026-10-01";
         let pass = format!("osm-pass {date}");
         let bin = app(d.path());
@@ -9739,7 +8971,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
@@ -9771,7 +9002,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let bin = app(d.path());
         // (Its slope job runs until the test opens its gate: the ask comes while it runs, however
         // slowly a busy Mac takes the handover.)
@@ -9837,7 +9067,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
@@ -9907,7 +9136,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         switch_on(&r, brokers::SWITCH);
         let bin = app(d.path());
@@ -10044,7 +9272,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
@@ -10110,7 +9337,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
@@ -10166,7 +9392,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
@@ -10217,7 +9442,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
@@ -10258,7 +9482,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
@@ -10297,7 +9520,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         switch_on(&r, pool::SLOTS);
         // Two published apps; the member runs the newer, which this Mac has installed (`current`)
         // while its job holds it on the older.
@@ -10345,7 +9567,7 @@ mod pool_tests {
         let home = d.path().join("home");
         let mut a = agent_dry(&r, &home);
         let nas_: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
-        let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_, false).unwrap().unwrap();
+        let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
         a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(side, pool::Role::Lead, pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() }))));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
         let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/usr/bin/true".into()], needs: Needs { nas: true }, restart_after_sleep: false, record: None };
@@ -10370,7 +9592,6 @@ mod pool_tests {
     fn a_member_whose_lock_is_held_waits_for_it_then_restarts_into_the_pool() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::ENABLED);
         let home = d.path().join("app-folder/agent");
         let id = crate::pool::member_id(&home).unwrap();
         let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
@@ -10378,12 +9599,8 @@ mod pool_tests {
         assert!(a.pool.is_none() && a.coord.is_none() && !a.o.dry_run, "waiting, not a dry run for good");
         a.step().unwrap();
         let st = read_status(Some(&r), &home).unwrap();
-        assert!(st.waiting.iter().any(|w| w.why.contains("waiting for its lock")), "{:?}", st.waiting);
+        assert!(st.waiting.iter().any(|w| w.why.contains("not in the pool yet") && w.why.contains("member's lock")), "{:?}", st.waiting);
         assert!(a.pool_restart().is_none() && a.slots.iter().all(|s| s.running.is_none()));
-        // (Today's coordination not taken up meanwhile: no writer named.)
-        std::fs::write(r.join("state/build/writer"), "another-mac").unwrap();
-        a.step().unwrap();
-        assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
         drop(held);
         a.step().unwrap();
         assert!(a.pool_restart().is_some_and(|w| w.contains("lock")), "{:?}", a.pool_restart());
@@ -10403,63 +9620,8 @@ mod pool_tests {
         assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1);
     }
 
-    #[test]
-    fn scenic_pool_on_off_and_status() {
-        let d = tempfile::tempdir().unwrap();
-        let r = nas(d.path());
-        let st = |pool: Option<PoolView>, job: bool| Status { host: "Brandons-MacBook-Pro".into(), app: "20261009-0000-bbbbbbb".into(), beat: now_s(), pool, job: job.then(|| JobView { id: "unit 6/1/1".into(), what: String::new(), started: 0, paused: None, pausing: None, tail: String::new(), parts: Vec::new(), part: None, progress: None, mem_mb: None, threads: None }), ..Default::default() };
-        let write = |s: &Status| std::fs::write(r.join("state/status.json"), serde_json::to_vec(s).unwrap()).unwrap();
-        // An agent on another app: not yet; its earlier files there: not yet either.
-        write(&st(None, false));
-        assert!(pool::switch_on(&r, "20261010-0000-ccccccc", false).unwrap_err().to_string().contains("update it first"));
-        std::fs::create_dir_all(r.join("state/build/terms")).unwrap();
-        assert!(pool::switch_on(&r, "20261009-0000-bbbbbbb", false).unwrap_err().to_string().contains("moves them aside"));
-        std::fs::remove_dir(r.join("state/build/terms")).unwrap();
-        let said = pool::switch_on(&r, "20261009-0000-bbbbbbb", false).unwrap();
-        assert!(said.contains("term 1 will be made by") && r.join(pool::ENABLED).exists(), "{said}");
-        assert!(pool::switch_on(&r, "20261009-0000-bbbbbbb", false).is_err(), "on already");
-        // On, in the pool: off waits for the lead to be caught up and the job to end.
-        std::fs::create_dir_all(r.join("state/build/terms")).unwrap();
-        std::fs::write(r.join("state/build/terms/1.json"), "{}").unwrap();
-        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None, lead: None };
-        write(&st(Some(lead.clone()), true));
-        assert!(pool::status(&r).contains("the pool: on"));
-        let e = pool::switch_off(&r, false).unwrap_err().to_string();
-        assert!(e.contains("runs unit 6/1/1") && e.contains("don't reflect the journal"), "{e}");
-        write(&st(Some(PoolView { gates: pool::Gates { caught_up: true, ..lead.gates.clone() }, ..lead.clone() }), false));
-        let said = pool::switch_off(&r, false).unwrap();
-        assert!(!r.join(pool::ENABLED).exists() && said.contains("run `scenic pool off` again"), "{said}");
-        assert!(r.join("state/build/terms/1.json").exists(), "not moved while an agent is in the pool");
-        // Restarted as before: its files moved aside.
-        write(&st(None, false));
-        let said = pool::switch_off(&r, false).unwrap();
-        assert!(said.contains("moved aside") && !r.join("state/build/terms").exists(), "{said}");
-        assert!(std::fs::read_dir(r.join("state/pool-off")).unwrap().next().is_some());
-        assert!(pool::switch_on(&r, "20261009-0000-bbbbbbb", false).is_ok(), "on again, afresh");
-    }
-
     fn agent_dry(root: &Path, home: &Path) -> Agent {
         test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
     }
 
-    #[test]
-    fn shadowed_the_agent_runs_the_pool_beside_and_writes_only_its_shadow() {
-        let d = tempfile::tempdir().unwrap();
-        let r = nas(d.path());
-        switch_on(&r, pool::SHADOW);
-        let home = d.path().join("home");
-        let mut a = test_agent(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
-        assert_eq!(a.pool_mode, Some(pool::Mode::Shadow));
-        assert!(a.pool.is_none());
-        a.step().unwrap();
-        assert!(a.shadow.is_some());
-        // Its terms and records under the shadow's folder; the build's own as they were, the writer
-        // named as before.
-        assert!(r.join(pool::SHADOW_ROOT).join("state/build/terms/1.json").exists());
-        assert!(!r.join("state/build/terms").exists() && !r.join("state/pool/members").exists());
-        assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap().trim(), cond::host_name());
-        let log = std::fs::read_to_string(home.join("shadow/pool-shadow/shadow.jsonl")).unwrap();
-        assert!(log.contains("took up term 1"), "{log}");
-        assert!(a.pool_restart().is_none());
-    }
 }

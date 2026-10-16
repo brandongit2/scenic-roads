@@ -1051,11 +1051,10 @@ mod tests {
             std::fs::write(r.join("state/build/manifest.json"), "{}").unwrap();
             std::fs::write(r.join("state/build/jobs.json"), "{}").unwrap();
             std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
-            std::fs::write(r.join("state/build/writer"), crate::agent::cond::host_name()).unwrap();
             let mac = |n: &str| {
                 let home = d.join(n).join("agent");
                 let nas: SharedNas = Arc::new(Share::new(&r));
-                let mut side = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().unwrap();
+                let mut side = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().unwrap();
                 // (Its clocks virtual: time passes as the test says, `pass`, however slowly a busy
                 // Mac steps it.)
                 side.set_clock(store::clock::Virtual::new());

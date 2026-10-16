@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 pub const DIR: &str = "state/build/terms";
 /// The lead's hint: the term it made or took up, for old apps and to save a listing.
 pub const HINT: &str = "state/build/lead.json";
-/// Today's naming of the build Mac (by host name): term 1's lead (§12, phase 1).
-pub const WRITER: &str = "state/build/writer";
 /// What a forced term's `how` says when the term before it couldn't be read whole (`force`).
 pub const UNREAD: &str = "forced past";
 /// What a forced term's `how` says when its lead's app is older than the term it follows (`force`).
@@ -238,22 +236,15 @@ pub fn force(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64, dow
     }
 }
 
-/// Term 1 (§12, phase 1), once the pool is switched on: made by the Mac `state/build/writer` names
-/// (today's build Mac, by host name), naming itself, or by any Mac when none is named or the owner
-/// has this one take the lead (`force`); its first snapshot first, from today's files
-/// (crate::pool::records::first). The term once it's made (by this Mac or another); None while
-/// it's still the writer's to make, or being made.
+/// Term 1 (§12, phase 1), where no term was made yet: made by the first Mac in the pool, naming
+/// itself, or by the Mac the owner has take the lead (`force`); its first snapshot first, from
+/// today's files (crate::pool::records::first), both with create-new, so of Macs making it at once
+/// one makes each. The term once it's made (by this Mac or another); None while it's being made.
 pub fn bootstrap(nas: &dyn Nas, me: &Member, now: u64, force: bool) -> Result<Option<Term>> {
     if nas.exists(&path(1))? {
         return read(nas, 1);
     }
-    let writer = nas.read(WRITER)?.map(|b| String::from_utf8_lossy(&b).trim().to_string()).filter(|w| !w.is_empty());
-    let how = match &writer {
-        _ if force => format!("taken over by {}", me.host),
-        Some(w) if *w != me.host => return Ok(None),
-        Some(_) => "the build Mac when the pool began".to_string(),
-        None => "the first Mac in the pool".to_string(),
-    };
+    let how = if force { format!("taken over by {}", me.host) } else { "the first Mac in the pool".to_string() };
     super::records::first(nas)?;
     let t = Term { term: 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how, from: 0, seq: None };
     match make(nas, &t)? {
@@ -379,25 +370,21 @@ mod tests {
     }
 
     #[test]
-    fn term_one_is_the_writers_to_make() {
+    fn term_one_is_the_first_macs_to_make() {
         let nas = Mem::default();
         let (m4, m1) = (Member { id: "m-0000000000000004".into(), host: "Mac-mini".into(), app: "development".into() }, Member { id: "m-0000000000000001".into(), host: "MacBook-Air".into(), app: "development".into() });
-        nas.write_whole(WRITER, b"Mac-mini\n").unwrap();
         nas.write_whole("state/build/manifest.json", br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        assert_eq!(bootstrap(&nas, &m1, 10, false).unwrap(), None, "the M4's to make");
-        assert!(!nas.exists(super::super::records::FIRST).unwrap());
         let t = bootstrap(&nas, &m4, 11, false).unwrap().unwrap();
         assert_eq!((t.term, t.member.as_str(), t.from), (1, "m-0000000000000004", 0));
         assert_eq!(bootstrap(&nas, &m1, 12, false).unwrap(), Some(t), "then every Mac sees it");
         // Its first snapshot made first, from today's files.
         let r = super::super::Records::newest(&nas, 1, false).unwrap().unwrap();
         assert_eq!((r.term, r.seq, r.manifest.len()), (1, 1, 1));
-        // No writer named, the first Mac to start makes it; the owner's say-so, any Mac.
+        // The first Mac to start makes it; the owner's say-so, any Mac.
         let fresh = Mem::default();
-        assert_eq!(bootstrap(&fresh, &m1, 13, false).unwrap().map(|t| t.member), Some(m1.id.clone()));
-        let named = Mem::default();
-        named.write_whole(WRITER, b"Mac-mini\n").unwrap();
-        assert_eq!(bootstrap(&named, &m1, 14, true).unwrap().map(|t| (t.member, t.how)), Some((m1.id.clone(), "taken over by MacBook-Air".to_string())));
+        assert_eq!(bootstrap(&fresh, &m1, 13, false).unwrap().map(|t| (t.member, t.how)), Some((m1.id.clone(), "the first Mac in the pool".to_string())));
+        let forced = Mem::default();
+        assert_eq!(bootstrap(&forced, &m1, 14, true).unwrap().map(|t| (t.member, t.how)), Some((m1.id.clone(), "taken over by MacBook-Air".to_string())));
     }
 
     /// A NAS whose next create makes the file and then fails before its bytes (the share went away

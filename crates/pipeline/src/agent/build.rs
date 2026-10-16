@@ -136,15 +136,8 @@ impl Keys {
         crate::out::read_record(&root.join("state/build/jobs.json"))
     }
 
-    /// The keys with every waiting hand-off's done records on top (crate::handoff): what both agents
-    /// plan with, so neither builds again what the helper built and the build Mac hasn't merged yet.
-    /// The hand-offs are listed first: a merge meanwhile has then put them in the keys read after.
-    pub fn load_with_handoffs(root: &Path) -> anyhow::Result<Keys> {
-        Keys::load_with(root, &[crate::handoff::nas_base(root)])
-    }
-
-    /// `load_with_handoffs` for the hand-offs under each of `bases` (the NAS's, the coordinator's
-    /// journal on this Mac), and the files they save (`handed`).
+    /// The keys with the done records of the hand-offs waiting under each of `bases` on top (the
+    /// coordinator's journal on this Mac: crate::handoff), and the files they save (`handed`).
     pub fn load_with(root: &Path, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
         let mut hs = Vec::new();
         for b in bases {

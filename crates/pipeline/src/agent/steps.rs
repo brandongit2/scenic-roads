@@ -1,22 +1,27 @@
 //! The steps table (docs/pool.md §7.2): a row per step the agent runs as a job, saying what a job of
-//! it needs (memory, disk), how it may share a Mac (alone, beside another,
-//! the steps that never run two at once on one Mac), whether other members take it, how many
-//! targets go in a job, and what it may write (its write-set: the logical names its jobs may add,
-//! change or remove in the build's manifest).
+//! it is first guessed to take in memory until a target's own run says, whether other members take
+//! it (the shared steps, and their ranks), whether it's the lead's alone (a run alone of the whole
+//! build, or one that keeps the pass's answers: not offered to members, crate::agent::every), the
+//! second slot's ranks the forecast reckons with, how many targets go in a job of the lead's own,
+//! and what it may write (its write-set: the logical names its jobs may add, change or remove in the
+//! build's manifest).
 //!
-//! The step sets the agent and the coordinator test (`SHARED`, `SECOND`, `ALONE`, `RAW`,
-//! `WIKI`, `NAS_READS`, `ANSWERED`) are made from the table at compile time (a set whose size isn't
-//! what the table gives fails the build), and a step's first guess of memory, disk, needs and batch
-//! are read from its row (`row`). (What depends on a target, not its step, stays with the agent: a
-//! terrain area's whole run's disk, the memory a terrain area, a unit's piece or a 3D buildings tile
-//! is offered with, the 3D buildings' smaller batches while the regions' own work is left.)
+//! What it held besides went (docs/pool.md §7.7, §12 phase 4's thirteenth batch): the disk a job
+//! starts with (the reserve and the job's measured disk instead, the disk guard behind it), the
+//! groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets' proxy and
+//! the answers' lease where the resources are used), the run-alone and second-job lists as rules
+//! of a Mac's slots (a job starts beside another by both jobs' measures; a cold start alone).
+//!
+//! The step sets (`SHARED`, `SECOND`, `ANSWERED`) are made from the table at compile time (a set
+//! whose size isn't what the table gives fails the build), and a step's first guess of memory and
+//! batch are read from its row (`row`).
 //!
 //! The write-sets: one outputs function per step (`writes`, its row's), which both ends use, so
 //! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
 //! step (crate::out::Out::for_step), puts and removes only names it gives, a name outside failing
 //! the job; and the pool's lead refuses every journal entry with a change outside it (`outside`,
 //! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
-//! crate::coord's check of a helper's hand-off and the merge's check use) are checked beside it.
+//! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
 use crate::legacy::Unit;
 
@@ -29,20 +34,13 @@ pub struct Step {
     /// another job. (Units and candidates are offered by their piece's size, terrain by its area's,
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
-    /// The free space a job of it starts with on the Mac it runs on, as its first job (bytes; the
-    /// OSM pass less the pack cache it clears; a terrain area's whole run more: crate::agent's
-    /// `need_of`). Beside another job, one that mostly waits on the network starts with 10 GB.
-    pub disk: u64,
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps
     /// wait on first).
     pub shared: Option<u8>,
-    /// A Mac's second job may be one of it, at this rank of preference (docs/plan.md §8, Two jobs
-    /// at once).
+    /// The rank of preference a Mac's second job of it has in the forecast (crate::agent::forecast).
     pub beside: Option<u8>,
-    /// It runs alone on its Mac, never beside another job.
+    /// A run of the whole build's, the lead's alone (not offered to members: crate::agent::every).
     pub alone: bool,
-    /// The groups of steps of which two never run at once on one Mac.
-    pub groups: &'static [Group],
     /// It keeps the pass's Wikidata and Wikipedia answers (crate::answers): none starts while the
     /// agent sends them as it starts.
     pub answered: bool,
@@ -53,49 +51,34 @@ pub struct Step {
     pub writes: fn(&str, bool) -> bool,
 }
 
-/// Steps of which two never run at once on one Mac.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Group {
-    /// They read AWS's raw terrain tiles here, which a terrain job packs onto the NAS and deletes.
-    Raw,
-    /// They ask Wikidata and Wikipedia a great deal from this Mac's address, each paced as if alone.
-    Wiki,
-    /// They read gigabytes of the NAS's sources a target (the 3D buildings' parquet).
-    NasReads,
-}
-
-const GB: u64 = 1 << 30;
-/// The free space a job starts with, at least (crate::agent::room::RESERVE).
-const RESERVE: u64 = super::room::RESERVE;
-
-/// A row with what most steps have: CPU work, the reserve on the disk, 1.5 GB until measured, none
-/// of the sets, every target in one job.
+/// A row with what most steps have: 1.5 GB until measured, none of the sets, every target in one
+/// job.
 const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
-    Step { name, mem_mb: 1500, disk: RESERVE, shared: None, beside: None, alone: false, groups: &[], answered: false, batch: usize::MAX, writes }
+    Step { name, mem_mb: 1500, shared: None, beside: None, alone: false, answered: false, batch: usize::MAX, writes }
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
 pub const TABLE: [Step; 48] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values (80 GB free: the filtered
     // planet with room to spare, less the pack cache it clears).
-    Step { disk: super::PASS_SPACE, alone: true, ..base("osm-pass", w_osm_pass) },
+    Step { alone: true, ..base("osm-pass", w_osm_pass) },
     Step { alone: true, ..base("pass-sets", w_pass_sets) },
     // (osmium's export of the outline set and the assembly: 8.3 GB at most measured, the
     // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15; its export's files and the outlines,
     // 2.7 GB, here.)
-    Step { mem_mb: 9216, disk: RESERVE + 10 * GB, alone: true, ..base("outlines", w_outlines) },
+    Step { mem_mb: 9216, alone: true, ..base("outlines", w_outlines) },
     Step { alone: true, ..base("trailends", w_trailends) },
     Step { alone: true, ..base("reach", w_reach) },
-    Step { alone: true, groups: &[Group::Raw], ..base("terrain-z8", w_terrain_z8) },
+    Step { alone: true, ..base("terrain-z8", w_terrain_z8) },
     Step { alone: true, ..base("buildings", w_buildings) },
     Step { alone: true, ..base("summits", w_summits) },
     Step { alone: true, ..base("labels", w_labels) },
     // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
     // merged fill's, 10.4 GB at most measured, 2026-10-15; its runs' files, under a GB each, here.)
-    Step { mem_mb: 12288, disk: RESERVE + 5 * GB, alone: true, ..base("lakefill", w_lakefill) },
+    Step { mem_mb: 12288, alone: true, ..base("lakefill", w_lakefill) },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
     // 2026-10-08; its tiles' archive, 1.8 GB worldwide, and their packs written here first.)
-    Step { mem_mb: 8192, disk: RESERVE + 5 * GB, alone: true, ..base("water", w_water) },
+    Step { mem_mb: 8192, alone: true, ..base("water", w_water) },
     Step { alone: true, answered: true, ..base("heritage-sites", w_heritage_sites) },
     Step { alone: true, ..base("gc", w_none) },
     Step { ..base("backup", w_none) },
@@ -104,20 +87,20 @@ pub const TABLE: [Step; 48] = [
     // second job's first choice (so one doesn't wait behind a long first job, a step running alone
     // aside); reading the drop boxes and the accepted copies on the NAS, never beside another of
     // the heavy NAS readers.
-    Step { beside: Some(0), groups: &[Group::NasReads], ..base("inputs", w_inputs) },
+    Step { beside: Some(0), ..base("inputs", w_inputs) },
     // The regions' extract (crate::inputs::regions::extract): the pass's planet read three times,
     // a heavy NAS reader.
-    Step { alone: true, groups: &[Group::NasReads], ..base("regions-extract", w_regions_extract) },
+    Step { alone: true, ..base("regions-extract", w_regions_extract) },
     Step { ..base("names-todo", w_none) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
     // before pieces): each z6 tile's raw tiles' archive copied here and the new raw tiles held
     // twice while they're packed onto the NAS, 5 GB past the reserve.
-    Step { disk: RESERVE + 5 * GB, shared: Some(0), groups: &[Group::Raw], batch: 8, ..base("terrain", w_terrain) },
+    Step { shared: Some(0), batch: 8, ..base("terrain", w_terrain) },
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its pieces' z9 means, up to 4 MB a
     // piece, and half a GB besides.)
-    Step { mem_mb: 1200, disk: RESERVE + 5 * GB, groups: &[Group::Raw], batch: 4, ..base("terrain-lo", w_terrain_lo) },
+    Step { mem_mb: 1200, batch: 4, ..base("terrain-lo", w_terrain_lo) },
     Step { ..base("terrain-water", w_terrain_water) },
-    Step { groups: &[Group::Raw], ..base("terrain-root", w_terrain_root) },
+    Step { ..base("terrain-root", w_terrain_root) },
     // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the area's lo tiles.)
     Step { mem_mb: 1500, shared: Some(1), beside: Some(11), batch: 8, ..base("slope", w_slope) },
     Step { mem_mb: 1000, batch: 4, ..base("slope-lo", w_slope_lo) },
@@ -130,11 +113,11 @@ pub const TABLE: [Step; 48] = [
     // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
     Step { mem_mb: 8600, shared: Some(3), beside: Some(10), batch: 6, ..base("unit", w_unit) },
     Step { mem_mb: 2048, shared: Some(4), beside: Some(8), batch: 24, ..base("pois", w_pois) },
-    Step { mem_mb: 2500, shared: Some(5), beside: Some(9), groups: &[Group::Raw], batch: 12, ..base("peaks", w_peaks) },
+    Step { mem_mb: 2500, shared: Some(5), beside: Some(9), batch: 12, ..base("peaks", w_peaks) },
     Step { batch: 16, ..base("pack", w_pack) },
     Step { batch: 2, ..base("lo", w_lo) },
-    Step { mem_mb: 3072, beside: Some(2), groups: &[Group::Wiki], answered: true, ..base("items", w_items) },
-    Step { mem_mb: 6144, beside: Some(1), groups: &[Group::Wiki], answered: true, ..base("heritage", w_heritage) },
+    Step { mem_mb: 3072, beside: Some(2), answered: true, ..base("items", w_items) },
+    Step { mem_mb: 6144, beside: Some(1), answered: true, ..base("heritage", w_heritage) },
     Step { mem_mb: 4096, beside: Some(6), ..base("marks", w_marks) },
     Step { mem_mb: 4096, beside: Some(7), ..base("overlays", w_overlays) },
     Step { ..base("roadunits", w_roadunits) },
@@ -146,7 +129,7 @@ pub const TABLE: [Step; 48] = [
     // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
     // 5.1 GB to read its 30.3 M rows; to raise its tiles and field, the model of B5's pilot for those
     // rows. Offered by the rows they read.)
-    Step { mem_mb: 5200, shared: Some(6), beside: Some(12), groups: &[Group::NasReads], batch: 8, ..base("bldprep", w_bldprep) },
+    Step { mem_mb: 5200, shared: Some(6), beside: Some(12), batch: 8, ..base("bldprep", w_bldprep) },
     Step { mem_mb: super::bldtiles_peak(30_300_000), shared: Some(7), beside: Some(13), batch: 16, ..base("bldtiles", w_bldtiles) },
     // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
     Step { mem_mb: crate::bld::field::LO_PEAK_MB, batch: 4, ..base("bldfield-lo", w_bldfield_lo) },
@@ -172,36 +155,9 @@ pub fn batch(step: &str) -> usize {
     row(step).map_or(usize::MAX, |s| s.batch)
 }
 
-/// Whether `step` runs alone on its Mac.
+/// Whether `step` is a run of the whole build's, the lead's alone.
 pub fn alone(step: &str) -> bool {
     row(step).is_some_and(|s| s.alone)
-}
-
-/// Whether `a` and `b` are in one of the groups of which two never run at once on one Mac.
-pub fn grouped(a: &str, b: &str) -> bool {
-    match (row(a), row(b)) {
-        (Some(x), Some(y)) => x.groups.iter().any(|g| y.groups.contains(g)),
-        _ => false,
-    }
-}
-
-/// Whether `a` and `b` are in one of the groups of which two never run at once on one Mac but the
-/// raw tiles' (the Mac shared by measure, docs/pool.md §7.7: two raw-tile readers are safe at
-/// once, a raw tile read under store::cachefile's lock and packing deleting only tiles no job
-/// holds; the Wikidata and heavy NAS reads' groups stay until batch 7's locks at the resource).
-pub fn grouped_but_raw(a: &str, b: &str) -> bool {
-    grouped_in(a, b, |g| g != Group::Raw)
-}
-
-/// Whether `a` and `b` are in one of the groups of which two never run at once on one Mac, of those
-/// that still hold (`holds`): the raw tiles' goes with the Mac shared by measure, the Wikidata and
-/// heavy NAS reads' with the budgets (docs/pool.md §7.7: the pool's one Wikimedia budget at the
-/// proxy; two heavy NAS readers measured only to slow each other, 2026-10-14).
-pub fn grouped_in(a: &str, b: &str, holds: impl Fn(Group) -> bool) -> bool {
-    match (row(a), row(b)) {
-        (Some(x), Some(y)) => x.groups.iter().any(|g| holds(*g) && y.groups.contains(g)),
-        _ => false,
-    }
 }
 
 /// Which of a row's sets a step set is made of.
@@ -209,26 +165,12 @@ pub fn grouped_in(a: &str, b: &str, holds: impl Fn(Group) -> bool) -> bool {
 enum Set {
     Shared,
     Beside,
-    Alone,
-    Raw,
-    Wiki,
-    NasReads,
     Answered,
 }
 
 /// Whether row `s` is in `set`, and its rank there (the shared and second job's steps by their
 /// ranks, the others in the table's order).
 const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
-    const fn has(g: &[Group], want: Group) -> bool {
-        let mut k = 0;
-        while k < g.len() {
-            if g[k] as u8 == want as u8 {
-                return true;
-            }
-            k += 1;
-        }
-        false
-    }
     match set {
         Set::Shared => match s.shared {
             Some(r) => Some(r as usize),
@@ -238,10 +180,6 @@ const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
             Some(r) => Some(r as usize),
             None => None,
         },
-        Set::Alone if s.alone => Some(i),
-        Set::Raw if has(s.groups, Group::Raw) => Some(i),
-        Set::Wiki if has(s.groups, Group::Wiki) => Some(i),
-        Set::NasReads if has(s.groups, Group::NasReads) => Some(i),
         Set::Answered if s.answered => Some(i),
         _ => None,
     }
@@ -307,16 +245,8 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 /// The shared steps: other members take their jobs (crate::coord leases them), in this order of
 /// preference: what later steps wait on first.
 pub const SHARED: [&str; 8] = set_of(Set::Shared);
-/// The steps a Mac's second job takes, in its order of preference.
+/// The steps a Mac's second job takes in the forecast, in its order of preference.
 pub const SECOND: [&str; 14] = set_of(Set::Beside);
-/// The steps that run alone, never beside another job.
-pub const ALONE: [&str; 14] = set_of(Set::Alone);
-/// The steps that read AWS's raw terrain tiles here: never two at once.
-pub const RAW: [&str; 5] = set_of(Set::Raw);
-/// The steps that ask Wikidata and Wikipedia a great deal from this Mac's address: never two at once.
-pub const WIKI: [&str; 2] = set_of(Set::Wiki);
-/// The steps that read gigabytes of the NAS's sources a target: never two at once on one Mac.
-pub const NAS_READS: [&str; 3] = set_of(Set::NasReads);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -657,36 +587,15 @@ mod tests {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
         assert_eq!(SECOND, ["inputs", "heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
-        assert_eq!(ALONE, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "heritage-sites", "gc", "regions-extract"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
-        assert_eq!(set(&RAW), set(&["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"]));
-        assert_eq!(set(&WIKI), set(&["items", "heritage"]));
-        assert_eq!(set(&NAS_READS), set(&["bldprep", "inputs", "regions-extract"]));
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
-    }
-
-    #[test]
-    fn by_measure_the_raw_tiles_group_goes_and_the_others_stay() {
-        assert!(grouped("terrain", "peaks") && !grouped_but_raw("terrain", "peaks") && !grouped_but_raw("terrain-z8", "terrain"));
-        assert!(grouped_but_raw("items", "heritage") && grouped_but_raw("bldprep", "bldprep"));
-        assert!(!grouped_but_raw("unit", "pack") && !grouped_but_raw("not a step", "items"));
-    }
-
-    #[test]
-    fn with_the_budgets_the_wikidata_and_nas_reads_groups_go() {
-        let budgets = |g: Group| !matches!(g, Group::Wiki | Group::NasReads);
-        assert!(!grouped_in("items", "heritage", budgets) && !grouped_in("bldprep", "bldprep", budgets) && !grouped_in("inputs", "bldprep", budgets));
-        assert!(grouped_in("terrain", "peaks", budgets), "the raw tiles' stays with the budgets alone");
-        // (Both switches on: no group holds.)
-        let both = |_: Group| false;
-        assert!(!grouped_in("terrain", "peaks", both) && !grouped_in("items", "heritage", both));
     }
 
     #[test]
     fn the_rows_are_todays() {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
-        // by the former), the batches, the disk.
+        // by the former), the batches.
         let mem: [(&str, u64); 21] = [("lakefill", 12288), ("outlines", 9216), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
@@ -698,10 +607,6 @@ mod tests {
             assert_eq!(batch(s), n, "{s}");
         }
         assert_eq!(batch("catalog"), usize::MAX);
-        assert_eq!(row("terrain").unwrap().disk, RESERVE + 5 * GB);
-        assert_eq!(row("water").unwrap().disk, RESERVE + 5 * GB);
-        assert_eq!(row("osm-pass").unwrap().disk, super::super::PASS_SPACE);
-        assert_eq!(row("unit").unwrap().disk, RESERVE);
         // No row twice.
         for s in TABLE.iter().map(|s| s.name) {
             assert_eq!(TABLE.iter().filter(|r| r.name == s).count(), 1, "{s}");

@@ -30,11 +30,9 @@
 //!   and at least every two minutes, stamped as it's written, to `state/pool/members/<id>.json`.
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
 //!
-//! The switch (`mode`): `state/pool/enabled` on the NAS turns the pool on (phase 1's integration in
-//! crate::agent: the agent leads or works as a member as the terms say), `state/pool/shadow` runs
-//! it beside today's coordination (`Overlay`: reading the build's records, writing only under
-//! `state/pool-shadow/`, acting on nothing: crate::agent::shadow), and neither leaves the agent as
-//! it was.
+//! The pool is always on (§12 phase 4's thirteenth batch): every agent with the NAS leads or works
+//! as a member as the terms say. (`state/pool/enabled`, the switch of before, is no longer read; an
+//! older app reads it, so it stays on the NAS until none runs.)
 
 use crate::handoff::Handoff;
 use crate::pool::driver::{self, Driver, Event, Heard, Io, Listed, Listing, Msg, Out, Saved};
@@ -49,8 +47,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The switch that turns the pool on, on the NAS (§12): while it's missing, the agent is as it was.
-pub const ENABLED: &str = "state/pool/enabled";
 /// The switch that has a member's part change in its process (docs/pool.md §12, phase 4's fourth
 /// batch): its coordinator started as it takes the lead, stopped as it loses it, its jobs going on
 /// through the lead wherever it is (`on` in it; missing, as `SLOTS_DEFAULT` says). Off, a process
@@ -58,39 +54,6 @@ pub const ENABLED: &str = "state/pool/enabled";
 pub const SLOTS: &str = "state/pool/slots";
 /// Whether a part changes in its process while the switch is missing.
 pub const SLOTS_DEFAULT: bool = false;
-
-/// The switch that shares a Mac by measure (docs/pool.md §7.7, §12 phase 4's fifth batch): a job
-/// starts beside another only if both jobs' measured memory and disk fit what the Mac has left, a
-/// cold start alone, in place of the steps table's run-alone, second-job and raw-tile lists; and the
-/// disk guard acts (`on` in it, or present; `off` in it, or missing: off). What's learned needs none.
-pub const BY_MEASURE: &str = "state/pool/by-measure";
-
-/// Whether the Mac is shared by measure, as the switch at `root` says (`BY_MEASURE`); None when it
-/// can't be read now.
-pub fn by_measure_on(root: &Path) -> Option<bool> {
-    match std::fs::read_to_string(root.join(BY_MEASURE)) {
-        Ok(s) => Some(s.trim() != "off"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
-}
-
-/// The switch that puts every job's connections out through its agent's proxy, which takes each
-/// Wikimedia request from the pool's one budget on the NAS (crate::budget; docs/pool.md §7.7, §12
-/// phase 4's seventh batch), the job run under a sandbox that denies any other way out; the
-/// answers' lease taken; the Wikidata and heavy NAS reads' groups gone (`on` in it, or present;
-/// `off` in it, or missing: off, the agent as it was).
-pub const BUDGETS: &str = "state/pool/budgets";
-
-/// Whether the budgets are on, as the switch at `root` says (`BUDGETS`); None when it can't be read
-/// now.
-pub fn budgets_on(root: &Path) -> Option<bool> {
-    match std::fs::read_to_string(root.join(BUDGETS)) {
-        Ok(s) => Some(s.trim() != "off"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
-}
 
 /// Whether a member's part changes in its process, as the switch at `root` says (`SLOTS`); None
 /// when it can't be read now.
@@ -105,10 +68,6 @@ pub fn slots_on(root: &Path) -> Option<bool> {
     }
 }
 
-/// The switch that runs the pool beside today's coordination, acting on nothing (`Overlay`).
-pub const SHADOW: &str = "state/pool/shadow";
-/// Where a shadow run writes, under the NAS's project folder: the pool's files as they'd be.
-pub const SHADOW_ROOT: &str = "state/pool-shadow";
 /// The members' mailboxes: `<to>/<from>.json`.
 pub const MAIL: &str = "state/pool/mail";
 /// The members' heartbeats (crate::pool::beat::path).
@@ -138,18 +97,6 @@ pub const QUIET_S: u64 = 25;
 /// folder, written by the run alone (under its lock), at every step.
 pub const VIEW: &str = "view.json";
 
-/// How the pool runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// Off: the agent as it was.
-    Off,
-    /// Beside today's coordination, acting on nothing.
-    Shadow,
-    /// On: the terms say who leads.
-    On,
-}
-
 /// The pool as a member's process last stepped it (`VIEW`): when (its clock, unix s), and the view.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolFile {
@@ -162,69 +109,8 @@ pub fn read_view(home: &Path) -> Option<PoolFile> {
     std::fs::read(home.join("pool").join(VIEW)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// The pool's switch at `root` (the NAS's project folder): on when `ENABLED` is there, else shadow
-/// when `SHADOW` is; None when it can't be told now (the share not answering: the caller keeps
-/// what it had).
-pub fn mode(root: &Path) -> Option<Mode> {
-    let on = root.join(ENABLED).try_exists().ok()?;
-    if on {
-        return Some(Mode::On);
-    }
-    Some(if root.join(SHADOW).try_exists().ok()? { Mode::Shadow } else { Mode::Off })
-}
-
 /// A NAS the driver's steps and the listings' thread share.
 pub type SharedNas = Arc<dyn Nas + Send + Sync>;
-
-/// The NAS as a shadow run sees it: everything it writes, lists and reads is under `SHADOW_ROOT`,
-/// but for the build's records as today's files hold them, and the Mac `state/build/writer` names,
-/// read from the real folder while the shadow has none of its own (term 1's first snapshot is made
-/// from them, and its lead's saves write its own copies). Nothing it does writes the real folder.
-#[derive(Clone, Debug)]
-pub struct Overlay {
-    real: Share,
-    own: Share,
-}
-
-/// What a shadow run reads from the real folder.
-const READ_THROUGH: [&str; 4] = ["state/build/manifest.json", "state/build/jobs.json", "state/build/pending.json", crate::pool::term::WRITER];
-
-impl Overlay {
-    /// The shadow of the project folder `root`.
-    pub fn new(root: &Path) -> Overlay {
-        Overlay { real: Share::new(root), own: Share::new(&root.join(SHADOW_ROOT)) }
-    }
-}
-
-impl Nas for Overlay {
-    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-        self.own.create_new(path, bytes)
-    }
-
-    fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        self.own.write_whole(path, bytes)
-    }
-
-    fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        match self.own.read(path)? {
-            Some(b) => Ok(Some(b)),
-            None if READ_THROUGH.contains(&path) => self.real.read(path),
-            None => Ok(None),
-        }
-    }
-
-    fn exists(&self, path: &str) -> Result<bool> {
-        Ok(self.own.exists(path)? || (READ_THROUGH.contains(&path) && self.real.exists(path)?))
-    }
-
-    fn list(&self, dir: &str) -> Result<Vec<String>> {
-        self.own.list(dir)
-    }
-
-    fn remove(&self, path: &str) -> Result<()> {
-        self.own.remove(path)
-    }
-}
 
 /// The driver's world: a NAS and this process's clocks (the awake one, `Instant`, stops while the
 /// Mac sleeps).
@@ -299,7 +185,7 @@ pub struct Heartbeat {
     pub pool: Beat,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
-    /// Whether this is a shadow run's (§12: acting on nothing).
+    /// Whether this was a shadow run's (an older app's, §12: acting on nothing; left out since).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shadow: bool,
     /// Its Mac's conditions, for the controls (§11: whether it's home on power, on battery, away;
@@ -380,7 +266,6 @@ pub struct Side {
     start: Instant,
     /// The agent's pool folder (its saved state, mail marks, log).
     dir: PathBuf,
-    shadow: bool,
     /// The saved state as last written, and the folders of hand-offs it doesn't hold yet.
     written: Vec<u8>,
     folders: Vec<PathBuf>,
@@ -423,9 +308,8 @@ pub struct Side {
 impl Side {
     /// This Mac's member in the pool, in folder `dir` (the agent's pool folder: its saved state)
     /// with its member id in `home` (the agent's folder), its lock in `locks` (the app's folder),
-    /// over `nas`; `shadow`: a shadow run. None when another process holds the member's lock (this
-    /// one runs no driver).
-    pub fn open(home: &Path, dir: &Path, locks: &Path, app: &str, nas: SharedNas, shadow: bool) -> Result<Option<Side>> {
+    /// over `nas`. None when another process holds the member's lock (this one runs no driver).
+    pub fn open(home: &Path, dir: &Path, locks: &Path, app: &str, nas: SharedNas) -> Result<Option<Side>> {
         let id = crate::pool::member_id(home)?;
         let Some(lock) = MemberLock::take(locks, &id)? else { return Ok(None) };
         std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
@@ -444,7 +328,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), ahead: 0, clock: store::clock::real() }))
     }
 
     /// Its member.
@@ -532,8 +416,8 @@ impl Side {
         self.asked.len() + self.making.is_some() as usize + self.made.len()
     }
 
-    /// A new driver for this member from its saved state, as a new process would make one (the
-    /// shadow's, when the agent it shadows restarted): the lock let go and taken again.
+    /// A new driver for this member from its saved state, as a new process would make one: the
+    /// lock let go and taken again.
     pub fn restart(&mut self) -> Result<()> {
         let (saved, written) = load_saved(&self.dir.join("saved.json"));
         // (The old driver, its lock with it, goes first.)
@@ -710,7 +594,7 @@ impl Side {
 
     /// Its heartbeat, when it changed or every two minutes: stamped as it's written.
     fn write_beat(&mut self, out: &Out) {
-        let mut hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow, conds: self.conds, broker: self.broker.clone() };
+        let mut hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: false, conds: self.conds, broker: self.broker.clone() };
         if hb.pool.member.is_empty() {
             return;
         }
@@ -970,7 +854,6 @@ pub struct Run {
     drained: BTreeSet<PathBuf>,
     drain_n: u64,
     /// When the NAS's folder of hand-offs was last drained, and whether it was found empty.
-    nas_drained: Option<Instant>,
     left_taken: bool,
     /// The records (term, seq) last written to today's files; the raw tiles' archives named.
     pub today: Option<(u64, u64)>,
@@ -1235,7 +1118,7 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None, prober: Prober::default(), term_seen: None }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None, prober: Prober::default(), term_seen: None }
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for
@@ -1525,24 +1408,15 @@ impl Run {
 
     /// The hand-offs from before the pool this member holds, drained into its journal entries
     /// (§12, seeding and draining): a lead's coordinator's journal on its disk (`journal`: the
-    /// helpers' hand-offs it took and didn't merge), and every two minutes the NAS's hand-off
-    /// folders (`nas`: an older helper's); any member's outbox
-    /// (`outbox`: a helper's jobs not handed back). Each is removed once a saved state holding its
-    /// entry is on disk.
-    pub fn drain(&mut self, journal: Option<&Path>, nas: Option<&Path>, outbox: &Path) {
+    /// helpers' hand-offs it took and didn't merge), and any member's outbox (`outbox`: a helper's
+    /// jobs not handed back). Each is removed once a saved state holding its entry is on disk.
+    pub fn drain(&mut self, journal: Option<&Path>, outbox: &Path) {
         let me = self.side.member().id.clone();
         let mut found: Vec<(PathBuf, Handoff)> = Vec::new();
         if let Some(j) = journal {
             match crate::handoff::waiting_in(j) {
                 Ok(hs) => found.extend(hs),
                 Err(e) => eprintln!("pool: draining {}: {e:#}", j.display()),
-            }
-        }
-        if let Some(n) = nas.filter(|_| self.nas_drained.is_none_or(|t| t.elapsed() >= Duration::from_secs(120))) {
-            self.nas_drained = Some(Instant::now());
-            match crate::handoff::waiting_in(n) {
-                Ok(hs) => found.extend(hs),
-                Err(e) => eprintln!("pool: draining {}: {e:#}", n.display()),
             }
         }
         for (p, h) in found {
@@ -1769,10 +1643,6 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
     Ok(())
 }
 
-/// The pool's files on the NAS, made while it's on (docs/formats.md, The pool): moved aside together
-/// once it's switched off (`switch_off`), so switching it on again begins afresh from today's files.
-pub const POOL_FILES: [&str; 7] = ["state/build/terms", "state/build/term", "state/build/lead.json", "state/journal", "state/pool/members", "state/pool/mail", "state/coord"];
-
 /// The agents' statuses on the NAS: the build Mac's (`state/status.json`) and the helpers'
 /// (`state/helpers/<host>.json`), by file name.
 fn statuses(root: &Path) -> Vec<(String, super::Status)> {
@@ -1793,96 +1663,9 @@ fn statuses(root: &Path) -> Vec<(String, super::Status)> {
     out
 }
 
-/// The pool's files there now.
-fn pool_files(root: &Path) -> Vec<&'static str> {
-    POOL_FILES.iter().copied().filter(|f| root.join(f).exists()).collect()
-}
-
-/// `scenic pool on` (docs/pool.md §12, Switching it on): the switch made on the NAS at `root`, once
-/// the checks pass: it isn't on; none of the pool's files are there (an earlier time's: `scenic pool
-/// off` moves them aside); `state/build/writer` names the Mac that makes term 1; every agent heard
-/// from in ten minutes runs `app` (this program's: the one with the pool), unless `force`. What it
-/// did, or why not.
-pub fn switch_on(root: &Path, app: &str, force: bool) -> Result<String> {
-    anyhow::ensure!(!root.join(ENABLED).exists(), "the pool is on already ({})", root.join(ENABLED).display());
-    let left = pool_files(root);
-    anyhow::ensure!(left.is_empty(), "the pool's files from an earlier time are there ({}): `scenic pool off` moves them aside first", left.join(", "));
-    let writer = std::fs::read_to_string(root.join(crate::pool::term::WRITER)).unwrap_or_default().trim().to_string();
-    anyhow::ensure!(!writer.is_empty(), "state/build/writer names no Mac: it names the one that makes term 1 and leads it");
-    let now = crate::agent::jobs::now_s();
-    let mut said = vec![format!("term 1 will be made by {writer} (state/build/writer), from today's records")];
-    for (f, st) in statuses(root) {
-        if now.saturating_sub(st.beat) > 600 {
-            said.push(format!("{f}: {} not heard from for {} min (it joins the pool once it runs an app that has it)", st.host, now.saturating_sub(st.beat) / 60));
-            continue;
-        }
-        anyhow::ensure!(force || st.app == app, "{f}: {} runs app {}, not this one ({app}), which has the pool: update it first (or --force)", st.host, st.app);
-        // (A job started before the switch saves as before when it ends, which the pool refuses:
-        // its work would be lost and done again.)
-        if let Some(j) = st.job.as_ref().or(st.beside.as_ref()) {
-            anyhow::ensure!(force, "{} runs {}: its save would be refused once the pool is on (`scenic pause`, wait for it to end, then switch on; or --force, its work done again)", st.host, j.id);
-            said.push(format!("{} runs {}: forced, its save is refused and it's done again under the pool", st.host, j.id));
-        }
-    }
-    std::fs::create_dir_all(root.join("state/pool")).context("make state/pool")?;
-    std::fs::OpenOptions::new().write(true).create_new(true).open(root.join(ENABLED)).with_context(|| format!("make {}", root.join(ENABLED).display()))?;
-    said.push(format!("switched on: {} made; each agent restarts into the pool between jobs (`scenic pool status`)", root.join(ENABLED).display()));
-    Ok(said.join("\n"))
-}
-
-/// `scenic pool off` (docs/pool.md §12, Switching it off): the switch removed once the lead is caught
-/// up, its members' entries all acknowledged and no job runs (unless `force`); then, once no agent
-/// says it's in the pool any more (they restart between jobs: run it again until they have), the
-/// pool's files moved aside, to `state/pool-off/<UTC time>/`. What it did, or why not.
-pub fn switch_off(root: &Path, force: bool) -> Result<String> {
-    let sts = statuses(root);
-    let mut said = Vec::new();
-    if root.join(ENABLED).exists() {
-        if !force {
-            let mut why = Vec::new();
-            for (f, st) in &sts {
-                let Some(p) = &st.pool else { continue };
-                if let Some(j) = st.job.as_ref().or(st.beside.as_ref()) {
-                    why.push(format!("{} runs {} (`scenic pause`, and wait)", st.host, j.id));
-                }
-                if p.role == Role::Lead && !p.gates.caught_up {
-                    why.push(format!("{f}: the lead's records don't reflect the journal yet"));
-                }
-                if p.unacked > 0 {
-                    why.push(format!("{f}: {} of {}'s entries not in the lead's records yet", p.unacked, st.host));
-                }
-            }
-            anyhow::ensure!(why.is_empty(), "not now (or --force, its unmerged work done again):\n{}", why.join("\n"));
-        }
-        std::fs::remove_file(root.join(ENABLED)).with_context(|| format!("remove {}", root.join(ENABLED).display()))?;
-        said.push("switched off: each agent restarts as before between jobs".to_string());
-    }
-    let still: Vec<String> = sts.iter().filter(|(_, st)| st.pool.is_some() && crate::agent::jobs::now_s().saturating_sub(st.beat) <= 600).map(|(f, st)| format!("{} ({f})", st.host)).collect();
-    if !still.is_empty() {
-        said.push(format!("still in the pool: {}; run `scenic pool off` again once they've restarted, to move the pool's files aside", still.join(", ")));
-        return Ok(said.join("\n"));
-    }
-    let left = pool_files(root);
-    if left.is_empty() {
-        said.push("none of the pool's files are there".to_string());
-        return Ok(said.join("\n"));
-    }
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let aside = root.join("state/pool-off").join(format!("{}-{t}", journal::day(t).unwrap_or_default()));
-    for f in &left {
-        let to = aside.join(f);
-        std::fs::create_dir_all(to.parent().unwrap())?;
-        std::fs::rename(root.join(f), &to).with_context(|| format!("move {f} aside"))?;
-    }
-    said.push(format!("the pool's files moved aside to {} ({}): switched on again, it begins from today's files", aside.display(), left.join(", ")));
-    Ok(said.join("\n"))
-}
-
-/// `scenic pool status`: the switch, the terms, the agents as their statuses say.
+/// `scenic pool status`: the terms, the agents as their statuses say.
 pub fn status(root: &Path) -> String {
     let mut out = Vec::new();
-    let m = mode(root).map_or("unknown (the NAS doesn't answer)".to_string(), |m| serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default());
-    out.push(format!("the pool: {m}"));
     let nas = Share::new(root);
     match crate::pool::term::current(&nas) {
         Ok(c) if c.term > 0 => out.push(match &c.lead {
@@ -1896,10 +1679,6 @@ pub fn status(root: &Path) -> String {
     for (f, st) in statuses(root) {
         let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.gates.held.first().map(|(k, why)| format!(", {} entr{} held until it runs a newer app (the first: {k}: {why})", p.gates.held.len(), if p.gates.held.len() == 1 { "y" } else { "ies" })).unwrap_or_default(), p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
         out.push(format!("{} ({f}, app {}, beat {} s ago, job {}): {p}", st.host, st.app, now.saturating_sub(st.beat), st.job.as_ref().map_or("none", |j| j.id.as_str())));
-    }
-    let left = pool_files(root);
-    if !left.is_empty() {
-        out.push(format!("its files: {}", left.join(", ")));
     }
     out.join("\n")
 }
@@ -1918,7 +1697,6 @@ mod tests {
         std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#).unwrap();
         std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
         std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
-        std::fs::write(r.join("state/build/writer"), crate::agent::cond::host_name()).unwrap();
         r
     }
 
@@ -1926,7 +1704,7 @@ mod tests {
         let nas: SharedNas = Arc::new(Share::new(root));
         // (Its clocks virtual: time passes as the test says, `ahead`, however slowly a busy Mac
         // steps it.)
-        let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().expect("its lock");
+        let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().expect("its lock");
         s.set_clock(store::clock::Virtual::new());
         s
     }
@@ -1992,18 +1770,6 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_a_file_on_the_nas() {
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        assert_eq!(mode(&r), Some(Mode::Off));
-        std::fs::create_dir_all(r.join("state/pool")).unwrap();
-        std::fs::write(r.join(SHADOW), "").unwrap();
-        assert_eq!(mode(&r), Some(Mode::Shadow));
-        std::fs::write(r.join(ENABLED), "").unwrap();
-        assert_eq!(mode(&r), Some(Mode::On), "on wins over shadow");
-    }
-
-    #[test]
     fn a_member_steps_saves_its_state_beats_and_lists_off_its_loop() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
@@ -2033,7 +1799,7 @@ mod tests {
         let home = d.path().join("a/agent");
         let mut a = side(&r, &home);
         let nas: SharedNas = Arc::new(Share::new(&r));
-        assert!(Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().is_none(), "a second process of the member runs none");
+        assert!(Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().is_none(), "a second process of the member runs none");
         a.step(Give { able: true, ..Default::default() }, &any);
         // Its lock file removed and taken by another process: it stops, its state saved, its
         // hand-offs kept in it, no heartbeat written.
@@ -2062,7 +1828,7 @@ mod tests {
         // Switched off, its terms moved aside: the state of term 1 would hold this member above them.
         std::fs::rename(r.join("state/build"), d.path().join("aside")).unwrap();
         std::fs::create_dir_all(r.join("state/build")).unwrap();
-        for f in ["manifest.json", "jobs.json", "pending.json", "writer"] {
+        for f in ["manifest.json", "jobs.json", "pending.json"] {
             std::fs::copy(d.path().join("aside").join(f), r.join("state/build").join(f)).unwrap();
         }
         let mut a = side(&r, &home);
@@ -2103,7 +1869,7 @@ mod tests {
         let r = root(d.path());
         let home = d.path().join("a/agent");
         let nas = Arc::new(Flaky(Share::new(&r), Default::default()));
-        let mut a = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone(), false).unwrap().unwrap();
+        let mut a = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
         a.set_clock(store::clock::Virtual::new());
         a.step(Give { able: true, ..Default::default() }, &any);
         // (Stepped until the failed listing, made off the loop, is back.)
@@ -2199,10 +1965,10 @@ mod tests {
         let home = d.path().join("a/agent");
         let mut run = Run::new(side(&r, &home), Role::Lead, Gates::default());
         let done = |u: &str, k: &str| Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
-        // The coordinator's journal here, the NAS's hand-off folders, a helper's outbox.
+        // The coordinator's journal here, a helper's outbox.
         let journal = home.join("coord/journal");
         crate::handoff::write(&journal.join("m1"), &done("6/2/1", "k21")).unwrap();
-        crate::handoff::write(&crate::handoff::dir(&r, "old-m1"), &done("6/2/2", "k22")).unwrap();
+        crate::handoff::write(&journal.join("m1"), &done("6/2/2", "k22")).unwrap();
         let ob = home.join("outbox/1791328399374");
         std::fs::create_dir_all(&ob).unwrap();
         std::fs::write(ob.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/3".into(), "k23".into())] }).unwrap()).unwrap();
@@ -2215,14 +1981,14 @@ mod tests {
         std::fs::create_dir_all(&failed).unwrap();
         std::fs::write(failed.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/4".into(), "k24".into())] }).unwrap()).unwrap();
         std::fs::write(failed.join("result.json"), r#"{"ok": false, "done": null, "error": "it failed"}"#).unwrap();
-        run.drain(Some(&journal), Some(&crate::handoff::nas_base(&r)), &home.join("outbox"));
+        run.drain(Some(&journal), &home.join("outbox"));
         let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
         assert_eq!(leases.len(), 3, "{leases:?}");
         assert!(leases.iter().all(|l| l.term == 0));
         assert!(leases.contains(&LeaseId { term: 0, n: 1791328399374 }), "a helper's keeps its lease");
         assert_eq!(leases.iter().filter(|l| l.n >= DRAINED).count(), 2);
         // Drained once in this process, whatever the next look finds.
-        run.drain(Some(&journal), Some(&crate::handoff::nas_base(&r)), &home.join("outbox"));
+        run.drain(Some(&journal), &home.join("outbox"));
         assert_eq!(run.entries.len(), 3);
         // Merged by the lead's step; their sources removed once its saved state holds them.
         let out = run.step(true);
@@ -2230,9 +1996,9 @@ mod tests {
         let rec = run.side.driver().records().unwrap();
         assert_eq!((rec.keys.recorded("unit", "6/2/1"), rec.keys.recorded("unit", "6/2/2"), rec.keys.recorded("unit", "6/2/3")), (Some("k21"), Some("k22"), Some("k23")));
         assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
-        assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && crate::handoff::waiting(&r).unwrap().is_empty() && !ob.exists());
+        assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && !ob.exists());
         // (Marked merged: a file whose removal had failed isn't drained again.)
-        assert!(crate::handoff::dir(&r, "old-m1").with_extension("merged").exists());
+        assert!(journal.join("m1").with_extension("merged").exists());
         assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
         assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));
@@ -2313,45 +2079,6 @@ mod tests {
         // The first's stay.
         seed(&nas, &m1).unwrap();
         assert_eq!(nas.read(TOKEN).unwrap().as_deref(), Some(&b"t0k3n"[..]));
-    }
-
-    #[test]
-    fn a_shadow_run_writes_nothing_of_the_real_folder() {
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let before: Vec<(PathBuf, Vec<u8>)> = walk(&r);
-        let home = d.path().join("s/agent");
-        let nas: SharedNas = Arc::new(Overlay::new(&r));
-        let mut s = Side::open(&home, &home.join("pool-shadow"), home.parent().unwrap(), "development", nas, true).unwrap().unwrap();
-        s.set_clock(store::clock::Virtual::new());
-        let id = s.member().id.clone();
-        let e = unit_entry(&id, LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
-        until(&mut s, || Give { able: true, ..Default::default() }, |o| o.caught_up);
-        let out = until(&mut s, || Give { entries: vec![(e.clone(), None)], able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Merged { .. })));
-        assert_eq!(out.leads, Some(1));
-        // Its records from the real today's files, its merge on top; written under the shadow.
-        let rec = s.driver().records().unwrap();
-        assert_eq!((rec.keys.recorded("unit", "6/1/1"), rec.keys.recorded("unit", "6/1/2")), (Some("k1"), Some("k2")));
-        let sh = r.join(SHADOW_ROOT);
-        assert!(sh.join("state/build/terms/1.json").exists() && sh.join("state/build/term/1/records.json").exists() && sh.join(crate::pool::beat::path(&id)).exists());
-        let after: Vec<(PathBuf, Vec<u8>)> = walk(&r).into_iter().filter(|(p, _)| !p.starts_with(&sh)).collect();
-        assert_eq!(after, before, "the real folder as it was");
-        let hb: Heartbeat = serde_json::from_slice(&std::fs::read(sh.join(crate::pool::beat::path(&id))).unwrap()).unwrap();
-        assert!(hb.shadow);
-    }
-
-    fn walk(d: &Path) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(d).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                out.extend(walk(&p));
-            } else {
-                out.push((p.clone(), std::fs::read(&p).unwrap()));
-            }
-        }
-        out.sort();
-        out
     }
 
     #[test]

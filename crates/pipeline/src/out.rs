@@ -384,7 +384,7 @@ impl Out {
 
     /// Writes this run's changes into the manifest on disk (re-read under a lock, so another step's
     /// changes saved meanwhile are kept), and the unverified uploads likewise. A helper's job hands
-    /// them off instead (crate::handoff).
+    /// them off instead (crate::handoff): in the pool, every job's (`check_writer`).
     pub fn save(&mut self) -> Result<()> {
         let _p = crate::timings::phase("records saved", crate::timings::Class::NasWrite);
         // (Nothing saved of a job that named something outside its step's outputs.)
@@ -513,27 +513,17 @@ impl Out {
     }
 }
 
-/// An error unless this Mac writes the build's records (docs/plan.md §8, Two Macs): the build Mac
-/// alone does, so a write from another Mac (a step run by hand there, not as a helper's job) is
-/// refused rather than let race it. Its agent's jobs are the build Mac's (SCENIC_BUILD_MAC); a step
-/// run by hand is, on the Mac `state/build/writer` names (on any, before one is named). While the
-/// pool is on (`state/pool/enabled`), none: every job hands off, and the lead's merge alone writes
-/// them (docs/pool.md §7.3).
+/// An error once the pool has begun (its first term made): the records are its lead's to write,
+/// through its merge of the journal alone, and every job hands its saves off (SCENIC_HANDOFF,
+/// docs/pool.md §7.3), whatever Mac it runs on. A folder no term was made in yet (a test's, a
+/// scratch build's) has its records written as today's files (term 1's first snapshot is made from
+/// them).
 pub fn check_writer(root: &Path) -> Result<()> {
-    // (The pool on, no one writes them but its lead's merge: a job hands off, docs/pool.md §7.3.)
-    if root.join(crate::agent::pool::ENABLED).exists() {
-        bail!("the pool is on ({}): the records are its lead's to write; a step saves only as a job's, handing off (SCENIC_HANDOFF)", root.join(crate::agent::pool::ENABLED).display());
+    let terms = root.join(crate::pool::term::DIR);
+    if terms.exists() {
+        bail!("the pool leads this build ({} exists): the records are its lead's to write; a step saves only as a job's, handing off (SCENIC_HANDOFF)", terms.display());
     }
-    if std::env::var_os("SCENIC_BUILD_MAC").is_some() {
-        return Ok(());
-    }
-    let host = crate::agent::cond::host();
-    match std::fs::read_to_string(root.join("state/build/writer")) {
-        Ok(w) if w.trim() != host => bail!("{} is the build Mac, which alone writes the build's records; this Mac ({host}) saves only as a helper's job (SCENIC_HANDOFF)", w.trim()),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).context("read state/build/writer"),
-    }
+    Ok(())
 }
 
 /// An exclusive lock for saving a root's manifest among this Mac's processes, in a local file named
@@ -775,25 +765,19 @@ mod tests {
     }
 
     #[test]
-    fn only_the_build_mac_saves_the_records() {
+    fn once_the_pool_has_begun_no_step_saves_the_records() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        // Another Mac named the writer: refused.
-        std::fs::write(root.join("state/build/writer"), "not-this-mac").unwrap();
+        // No term made: saved, as today's files.
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
-        assert!(out.save().is_err());
-        assert!(!root.join("state/build/manifest.json").exists());
-        // This Mac: saved.
-        std::fs::write(root.join("state/build/writer"), crate::agent::cond::host()).unwrap();
         out.save().unwrap();
         assert!(root.join("state/build/manifest.json").exists());
-        // The pool on: no one's step writes them, the build Mac's job's neither (it hands off).
-        std::fs::create_dir_all(root.join("state/pool")).unwrap();
-        std::fs::write(root.join(crate::agent::pool::ENABLED), "").unwrap();
+        // The pool begun (a term made): no one's step writes them (a job hands off).
+        std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
         out.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
-        assert!(format!("{:#}", out.save().unwrap_err()).contains("the pool is on"));
+        assert!(format!("{:#}", out.save().unwrap_err()).contains("the pool leads this build"));
         assert!(check_writer(&root).is_err());
     }
 

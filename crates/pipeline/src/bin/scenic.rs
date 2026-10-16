@@ -1,17 +1,10 @@
 //! `scenic`: the user's command (docs/plan.md §1, §8).
 //!
-//!   scenic status                       what the build Mac is doing, what waits and why, regions
-//!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
-//!                                       login item; --helper: the M1's, the shared steps' jobs)
-//!   scenic pool on|off|status [--force]  the pool's switch (docs/pool.md §12): on, after its checks
-//!                                       (no earlier pool's files, the writer named, every agent
-//!                                       on this app); off, once its lead is caught up and no job
-//!                                       runs, then (run again once the agents restarted) its files
-//!                                       moved aside; how it stands
-//!   scenic pool-shadow --home <dir> [--live <dir>] [--hours <h>] [--once]  the pool's shadow run
-//!                                       (docs/pool.md §12): its driver beside this Mac's agent (its
-//!                                       folder, `--live`, read only), writing only under the NAS's
-//!                                       state/pool-shadow/, its log in <dir>/pool-shadow/
+//!   scenic status                       what the lead is doing, what waits and why, regions
+//!   scenic agent [--once] [--dry-run] [--home <dir>]  the agent (every Mac's login item: its
+//!                                       member of the pool, leading or not as the terms say;
+//!                                       --helper, of before, accepted and ignored)
+//!   scenic pool [status]                the pool as it stands (docs/pool.md): the terms, the agents
 //!   scenic lead                         who leads the build, its term, since when, a handover
 //!                                       under way, each member and whether it can lead (docs/pool.md
 //!                                       §11)
@@ -474,7 +467,7 @@ fn status(args: &[String]) -> Result<()> {
     for w in &st.workers {
         println!("Worker: {} — {}{}{}", w.label, w.what, if w.done > 0 { format!(", {} done", w.done) } else { String::new() }, if w.bad { ", stopped: a result differed" } else { "" });
     }
-    // (The build Mac's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)
+    // (The lead's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)
     let page = own_home.as_ref().and_then(|h| std::fs::read_to_string(h.join("coord/page")).ok()).map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
     let page = match (page, contact) {
@@ -596,8 +589,8 @@ fn disk_size(p: &Path) -> Option<u64> {
     (unsafe { libc::statvfs(c.as_ptr(), &mut s) } == 0).then(|| s.f_blocks as u64 * s.f_frsize as u64)
 }
 
-/// This Mac's own agent's status, as it writes it in its folder `home`: the build Mac's
-/// `status.json` or a helper's `helper.json`, whichever is fresher.
+/// This Mac's own agent's status, as it writes it in its folder `home`: the lead's `status.json`
+/// or a member's `helper.json`, whichever is fresher.
 fn own_status(home: &Path) -> Option<agent::Status> {
     ["status.json", "helper.json"].iter().filter_map(|f| serde_json::from_slice::<agent::Status>(&std::fs::read(home.join(f)).ok()?).ok()).max_by_key(|s| s.beat)
 }
@@ -613,7 +606,7 @@ fn clean(args: &[String]) -> Result<()> {
     if let Some(why) = &caches.why_not {
         bail!("not now: {why}");
     }
-    // What goes and how it comes back, and a y/N: a clear is a hundred GB on the build Mac.
+    // What goes and how it comes back, and a y/N: a clear is a hundred GB on the M4.
     let n = caches.clearable.unwrap_or(0);
     println!("This Mac's build caches, {} in all:", agent::room::size(n));
     for g in &caches.each {
@@ -661,7 +654,7 @@ fn main() -> Result<()> {
         "agent" => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-            let o = Options { root: opt(&args, "--root").map(PathBuf::from), home, bin, dry_run: flag(&args, "--dry-run"), once: flag(&args, "--once"), helper: flag(&args, "--helper") };
+            let o = Options { root: opt(&args, "--root").map(PathBuf::from), home, bin, dry_run: flag(&args, "--dry-run"), once: flag(&args, "--once"), helper: false };
             eprintln!("agent: started (app {}, root {})", o.bin.display(), o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into()));
             let extra = agent::cond::test_disk_extra_mb();
             if extra > 0 {
@@ -671,13 +664,9 @@ fn main() -> Result<()> {
             agent::Agent::new(o)?.run()
         }
         "pool" => {
-            // The pool's switch (docs/pool.md §12): on, off, or how it stands.
+            // The pool (docs/pool.md): how it stands, and the owner's asks of its lead.
             let r = root(&args, false)?;
-            let force = flag(&args, "--force");
-            let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             match args.get(2).map(String::as_str) {
-                Some("on") => println!("{}", agent::pool::switch_on(&r, &agent::app_version(&bin), force)?),
-                Some("off") => println!("{}", agent::pool::switch_off(&r, force)?),
                 Some("status") | None => println!("{}", agent::pool::status(&r)),
                 Some("release") => {
                     // A job's progress on a member's Mac given up (crate::agent::resume): the lead
@@ -707,22 +696,12 @@ fn main() -> Result<()> {
                         println!("{k}: disk {:.1} GB", mb as f64 / 1024.0);
                     }
                 }
-                Some(x) => bail!("scenic pool on|off|status [--force] | floors [--clear [<step> [<target>]]], not {x}"),
+                Some(x) => bail!("scenic pool status | release <member> \"<job>\" | floors [--clear [<step> [<target>]]], not {x}"),
             }
             Ok(())
         }
-        "pool-shadow" => {
-            let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
-            let home = PathBuf::from(opt(&args, "--home").context("--home <its own folder>")?);
-            let live = opt(&args, "--live").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-            anyhow::ensure!(home.canonicalize().ok() != live.canonicalize().ok() && home != app_home().join("agent"), "the shadow's folder can't be an agent's");
-            let stop_after = opt(&args, "--hours").map(|h| h.parse::<f64>()).transpose()?.map(|h| std::time::Duration::from_secs_f64(h * 3600.0));
-            let o = agent::shadow::Options { root: opt(&args, "--root").map(PathBuf::from), home, live, app: agent::app_version(&bin), once: flag(&args, "--once"), stop_after };
-            pipeline::sys::raise_open_files();
-            agent::shadow::run(o)
-        }
         "run-task" => {
-            // A task the helper's agent leased (pipeline::offload::run_task), run here; its result
+            // A task a member's agent leased (pipeline::offload::run_task), run here; its result
             // written for the agent to hand back.
             let spec: serde_json::Value = serde_json::from_slice(&std::fs::read(opt(&args, "--spec").context("--spec <file>")?)?)?;
             let lease: u64 = opt(&args, "--lease").context("--lease <id>")?.parse()?;
@@ -743,7 +722,7 @@ fn main() -> Result<()> {
             r.map(|_| ())
         }
         "pause" | "resume" => {
-            // An ask to this Mac's agent, which passes it on to the build Mac's (crate::control).
+            // An ask to this Mac's agent, which passes it on to the lead's (crate::control).
             use pipeline::control::{Mode, Pause};
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
             let host = pipeline::agent::cond::host_name();

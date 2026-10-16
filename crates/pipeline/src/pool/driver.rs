@@ -1676,7 +1676,6 @@ mod tests {
     }
 
     fn setup(mem: &Mem) {
-        mem.write_whole("state/build/writer", b"Mac-mini\n").unwrap();
         mem.write_whole("state/build/manifest.json", b"{}").unwrap();
     }
 

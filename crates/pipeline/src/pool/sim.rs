@@ -450,8 +450,7 @@ impl World {
             })
             .collect();
         let mut files = BTreeMap::new();
-        // Today's build Mac (mac0) and records: one unit built.
-        files.insert(term::WRITER.to_string(), b"mac0\n".to_vec());
+        // Today's records: one unit built.
         files.insert("state/build/manifest.json".to_string(), serde_json::to_vec(&BTreeMap::from([(logical(TARGETS[0]), content(TARGETS[0], "k0"))])).unwrap());
         files.insert("state/build/jobs.json".to_string(), format!("{{\"unit\": {{\"{}\": \"k0\"}}}}", TARGETS[0]).into_bytes());
         let mut written = BTreeMap::new();

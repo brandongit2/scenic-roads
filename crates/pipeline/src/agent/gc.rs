@@ -108,8 +108,8 @@ pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
     let nas = crate::pool::nas::Share::new(root);
     let cur = term::current(&nas).context("the current term")?;
     let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
-    // (Led: a term readable whole, the switch on or not told now; only then does anyone refuse.)
-    let led = cur.lead.is_some() && !matches!(crate::agent::pool::mode(root), Some(crate::agent::pool::Mode::Off | crate::agent::pool::Mode::Shadow));
+    // (Led: a term readable whole; only then does anyone refuse.)
+    let led = cur.lead.is_some();
     let cutoff = journal::day(now.saturating_sub(PASS_OVER_S)).unwrap_or_default();
     u.files.extend(r.manifest.values().cloned());
     u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
@@ -844,12 +844,9 @@ mod tests {
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
-        // With the pool on (its switch and a term led): an entry that doesn't read whole (short,
-        // of whatever day: a read cut short says nothing of it), or reads damaged: GC fails,
-        // nothing removed, every run, until the lead refuses it.
-        let enabled = root.join(crate::agent::pool::ENABLED);
-        fs::create_dir_all(enabled.parent().unwrap()).unwrap();
-        fs::write(&enabled, b"").unwrap();
+        // A term led: an entry that doesn't read whole (short, of whatever day: a read cut short
+        // says nothing of it), or reads damaged: GC fails, nothing removed, every run, until the
+        // lead refuses it.
         put(c, 60);
         let now = crate::agent::jobs::now_s();
         let entry_at = |key: &str, bytes: &[u8]| {
@@ -876,10 +873,10 @@ mod tests {
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
         assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
-        // The pool switched off since: no one refuses. An entry unreadable from today still fails
-        // GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far from the
-        // bound) is passed over, said as a warning, the sweep going on.
-        fs::remove_file(&enabled).unwrap();
+        // No term led (its term not readable whole): no one refuses. An entry unreadable from today
+        // still fails GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far
+        // from the bound) is passed over, said as a warning, the sweep going on.
+        fs::write(root.join(crate::pool::term::DIR).join("1.json"), b"{\"term\": ").unwrap();
         put(c, 60);
         let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
         let e = format!("{:#}", run(root, 14, false).unwrap_err());

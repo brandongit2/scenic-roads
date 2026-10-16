@@ -282,7 +282,7 @@ impl Packer {
         Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
     }
 
-    /// `new`, a helper's job's (its outbox `handoff`) or the build Mac's (None).
+    /// `new`, a job's (its hand-off folder `handoff`), or one before the pool began (None).
     fn open(dir: &Path, store: &Path, root: &Path, handoff: Option<PathBuf>) -> Result<Packer> {
         if handoff.is_none() {
             crate::out::check_writer(root)?;
@@ -1558,15 +1558,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_build_mac_packs() {
+    fn once_the_pool_has_begun_only_a_jobs_hand_off_packs() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        std::fs::write(root.join("state/build/writer"), "another-mac\n").unwrap();
+        std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
-        if std::env::var_os("SCENIC_BUILD_MAC").is_none() {
-            assert!(pack_local(&dir, &store, &root, true).is_err());
-            assert!(dir.join("12/2048/1365.png").exists() && !store.exists());
-        }
+        assert!(pack_local(&dir, &store, &root, true).is_err());
+        assert!(dir.join("12/2048/1365.png").exists() && !store.exists());
     }
 
     #[test]

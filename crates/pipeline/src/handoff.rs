@@ -1,14 +1,13 @@
-//! A helper's hand-offs (docs/plan.md §8, Two Macs). The build Mac alone writes the build's records
-//! (its agent and its jobs): the manifest, its unverified uploads (`pending.json`) and the job keys
-//! (`jobs.json`). A
-//! helper's job saves its changes to `state/build/handoff/<host>/` instead (crate::out::Out, with
-//! `SCENIC_HANDOFF`), and its agent adds a done record there when the job succeeds. The build Mac's
-//! agent merges them, a Mac's in the order they were written (by name: each named after the last),
-//! records the last it merged (`<host>.merged`, so one it couldn't delete isn't merged again), then
-//! deletes them; until then both agents plan with the done records on top of the keys
-//! (`build::Keys::load_with_handoffs`). One that can't be parsed (it was written whole, so it's
-//! damaged) is set aside as `.bad`. What a helper uploads is content-named, so a unit both Macs
-//! built hands off the same names.
+//! A job's hand-offs (docs/pool.md §7.3): no job writes the build's records (the manifest, its
+//! unverified uploads and the job keys); each saves its changes to a folder of its own instead
+//! (crate::out::Out, with `SCENIC_HANDOFF`: its lease's folder), named in the order written (each
+//! after the last), and its agent hands them to the pool's journal as the job ends
+//! (crate::agent::pool), whose lead merges them into its records. The folders of hand-offs from
+//! before the pool (a lead's coordinator's journal on its disk) are drained into the journal the
+//! same way, a folder's in order, its last drained marked (`<folder>.merged`, so one that couldn't
+//! be removed isn't drained again); one that can't be parsed (it was written whole, so it's damaged)
+//! is set aside as `.bad`. What a job uploads is content-named, so two Macs building one target hand
+//! off the same names.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -56,19 +55,9 @@ impl Handoff {
     }
 }
 
-/// Where hand-offs are written through the NAS, a folder per host.
-pub fn nas_base(root: &Path) -> PathBuf {
-    root.join("state/build/handoff")
-}
-
 /// The folder, under a base, of raw tiles' archives to name (`Handoff::raw` alone): a merge's that
 /// couldn't be named then, and those of a hand-off the coordinator didn't take (crate::coord).
 pub const RAW_AGAIN: &str = "raw-tiles";
-
-/// Where host `host`'s hand-offs go on the NAS.
-pub fn dir(root: &Path, host: &str) -> PathBuf {
-    nas_base(root).join(host)
-}
 
 /// The last hand-off of host folder `dir` merged (its name), if any; an error when it can't be read
 /// now.
@@ -128,16 +117,11 @@ pub fn write(dir: &Path, h: &Handoff) -> Result<()> {
     crate::whole::write(&dir.join(format!("{t:020}-{}.json", std::process::id())), &serde_json::to_vec(h)?)
 }
 
-/// Every hand-off waiting (not merged yet), a Mac's in order, with its path; an error when a listing,
-/// a marker or a hand-off can't be read now (the NAS is away: nothing merged or planned on a part).
-/// One that can't be parsed is set aside; its Mac's done records after it in this look are dropped
-/// (their units are built again), as its job's saves may be lost with it.
-pub fn waiting(root: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
-    waiting_in(&nas_base(root))
-}
-
-/// `waiting` for the host folders under `base`: the NAS's, or the coordinator's journal of
-/// hand-offs received over HTTP (crate::coord), kept on this Mac's disk.
+/// Every hand-off waiting under `base` (the coordinator's journal of hand-offs received over HTTP,
+/// crate::coord, kept on this Mac's disk), a folder's in order, with its path; an error when a
+/// listing, a marker or a hand-off can't be read now. One that can't be parsed is set aside; its
+/// folder's done records after it in this look are dropped (their units are built again), as its
+/// job's saves may be lost with it.
 pub fn waiting_in(base: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
     let mut out = Vec::new();
     let mut hosts: Vec<PathBuf> = listing(base)?.into_iter().filter(|p| p.is_dir()).collect();
@@ -168,83 +152,15 @@ pub fn waiting_in(base: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
     Ok(out)
 }
 
-/// Merges every waiting hand-off into the build's records, then deletes them; how many. The build
-/// Mac's agent, under this Mac's build lock: when another holds it (a job saving, or paused while
-/// it held it), none now.
-pub fn merge(root: &Path, scratch: &Path) -> Result<usize> {
-    merge_from(root, scratch, &[nas_base(root)])
-}
-
-/// `merge` of the hand-offs under each of `bases` (the NAS's, the coordinator's journal), all in one
-/// save of the records.
-pub fn merge_from(root: &Path, scratch: &Path, bases: &[PathBuf]) -> Result<usize> {
-    let mut hs = Vec::new();
-    for b in bases {
-        hs.extend(waiting_in(b)?);
-    }
-    if hs.is_empty() {
-        return Ok(0);
-    }
-    let Some(lock) = crate::out::BuildLock::try_take(root)? else { return Ok(0) };
-    // (Records that can't be read now: an error, and nothing written.)
-    let mut out = crate::out::Out::unbound(root, scratch)?;
-    let mut keys = crate::agent::build::Keys::load_strict(root)?;
-    let mut last: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut raw: Vec<(String, crate::rawpack::Pack)> = Vec::new();
-    for (p, h) in &hs {
-        out.absorb(h);
-        if let Some((step, targets)) = &h.done {
-            keys.record(step, targets);
-        }
-        raw.extend(h.raw.iter().cloned());
-        if let (Some(d), Some(n)) = (p.parent(), p.file_name()) {
-            last.insert(d.to_path_buf(), n.to_string_lossy().into_owned());
-        }
-    }
-    // (Only raw tiles' archives to name, a merge's again: the records aren't written for nothing.)
-    let records = hs.iter().any(|(_, h)| !h.changes.is_empty() || !h.pending.is_empty() || !h.checked.is_empty() || h.done.is_some());
-    if records {
-        out.save_held(&lock).context("merge the hand-offs into the manifest")?;
-        keys.save(root).context("merge the hand-offs into the job keys")?;
-    }
-    // The raw tiles' archives a helper put on the NAS, named in the raw store's index. (The manifest
-    // and keys are saved, so a failure here mustn't have every hand-off merged again: they're handed
-    // off again on their own, to the last base, for the next merge to name.)
-    let again = match crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &raw, &lock) {
-        Ok(named) => named.again,
-        Err(e) => {
-            eprintln!("handoff: a helper's raw tiles' archives not named now ({e:#}); tried again with the next merge");
-            raw.clone()
-        }
-    };
-    // (Not this merge's error either: its markers must still be written.)
-    if !again.is_empty() {
-        if let Some(Err(e)) = bases.last().map(|b| write(&b.join(RAW_AGAIN), &Handoff { raw: again, ..Default::default() })) {
-            eprintln!("handoff: and not handed off again ({e:#}): they go as unnamed ones do");
-        }
-    }
-    for (d, n) in &last {
-        crate::whole::write(&d.with_extension("merged"), n.as_bytes())?;
-    }
-    for (p, _) in &hs {
-        if let Err(e) = std::fs::remove_file(p) {
-            eprintln!("handoff: {} merged, but not deleted ({e}); passed over from now on", p.display());
-        }
-    }
-    Ok(hs.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_helpers_saves_and_records_merge_in_order() {
+    fn a_folders_hand_offs_wait_in_order_and_a_damaged_one_is_set_aside() {
         let d = tempfile::tempdir().unwrap();
-        let (root, scratch) = (d.path().join("root"), d.path().join("scratch"));
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(root.join("state/build/manifest.json"), br#"{"base/6-1-1": "base/6-1-1.1111111111111111.base", "base/6-1-2": "base/6-1-2.2222222222222222.base"}"#).unwrap();
-        let m1 = dir(&root, "m1");
+        let base = d.path().join("journal");
+        let m1 = base.join("m1");
         // A job's two saves, then its done record.
         let save = |changes: &[(&str, Option<&str>)]| Handoff { changes: changes.iter().map(|(k, v)| (k.to_string(), v.map(str::to_string))).collect(), ..Default::default() };
         write(&m1, &save(&[("base/6-1-1", Some("base/6-1-1.3333333333333333.base"))])).unwrap();
@@ -252,44 +168,20 @@ mod tests {
         write(&m1, &Handoff { done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), ..Default::default() }).unwrap();
         // A file being written (a temporary name) waits.
         std::fs::write(m1.join("99999999999999999999-1.json.m1.7.tmp"), b"{").unwrap();
-        assert_eq!(waiting(&root).unwrap().len(), 3);
-        // The agents plan with its record on top of the keys.
-        assert_eq!(crate::agent::build::Keys::load_with_handoffs(&root).unwrap().unit.get("6/1/1").map(String::as_str), Some("k1"));
-        // A job holding the build lock: nothing merged now.
-        let held = crate::out::BuildLock::take(&root).unwrap();
-        assert_eq!(merge(&root, &scratch).unwrap(), 0);
-        drop(held);
-        // (A sibling test's child may hold the lock a moment, between its fork and its exec: longer
-        // on a loaded Mac. Five minutes is a watchdog.)
-        let t0 = std::time::Instant::now();
-        let mut merged = merge(&root, &scratch).unwrap();
-        while merged == 0 && t0.elapsed() < std::time::Duration::from_secs(300) {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            merged = merge(&root, &scratch).unwrap();
-        }
-        assert_eq!(merged, 3);
-        let m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        assert_eq!(m.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.4444444444444444.base"), "the later save wins");
-        assert!(!m.contains_key("base/6-1-2"));
-        assert_eq!(crate::agent::build::Keys::load(&root).unit.get("6/1/1").map(String::as_str), Some("k1"));
-        assert!(waiting(&root).unwrap().is_empty());
-        // A hand-off merged but not deleted (left behind) isn't merged again; a new one is named
-        // after it, whatever the clock; a damaged one is set aside.
-        let last = std::fs::read_to_string(m1.with_extension("merged")).unwrap();
-        std::fs::write(m1.join(&last), serde_json::to_vec(&save(&[("base/6-1-1", Some("base/6-1-1.5555555555555555.base"))])).unwrap()).unwrap();
-        assert!(waiting(&root).unwrap().is_empty());
+        let w = waiting_in(&base).unwrap();
+        assert_eq!(w.len(), 3);
+        assert!(w.windows(2).all(|p| p[0].0 < p[1].0) && w[2].1.done.is_some(), "in the order written");
+        // Marked drained up to the last: none waits; a hand-off left behind isn't drained again; a
+        // new one is named after it, whatever the clock; a damaged one is set aside.
+        let last = w[2].0.file_name().unwrap().to_string_lossy().into_owned();
+        crate::whole::write(&m1.with_extension("merged"), last.as_bytes()).unwrap();
+        assert!(waiting_in(&base).unwrap().is_empty());
         let damaged = format!("{:020}-9.json", stamp(&last).unwrap() + 5);
         std::fs::write(m1.join(&damaged), b"{damaged").unwrap();
         write(&m1, &save(&[("base/6-1-3", Some("base/6-1-3.6666666666666666.base"))])).unwrap();
-        let w = waiting(&root).unwrap();
+        let w = waiting_in(&base).unwrap();
         assert_eq!(w.len(), 1);
         assert!(w[0].0.file_name().unwrap().to_string_lossy().as_ref() > damaged.as_str());
         assert!(!m1.join(&damaged).exists() && m1.join(&damaged).with_extension("bad").exists());
-        assert!(m1.join(&last).exists(), "the one left behind stays, passed over");
-        // The records unreadable now: nothing merged, nothing written.
-        std::fs::remove_file(root.join("state/build/jobs.json")).unwrap();
-        std::fs::create_dir(root.join("state/build/jobs.json")).unwrap();
-        assert!(merge(&root, &scratch).is_err());
-        assert_eq!(waiting(&root).unwrap().len(), 1);
     }
 }
