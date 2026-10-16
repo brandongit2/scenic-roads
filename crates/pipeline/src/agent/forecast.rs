@@ -775,12 +775,19 @@ pub fn update_secs(events: &[crate::coord::history::Event]) -> Option<f64> {
             sum += e.secs.unwrap_or(0.0);
             chain |= step != "catalog";
         }
-        // (A catalog after the trains' or the landmarks' chain alone is no map update.)
+        // (A catalog after the trains' or the landmarks' chain alone is no map update's: with one
+        // begun, it's passed over, the map update measured to its own catalog, the first after its
+        // chain's jobs (its map tiles, road index, …), not cut short by another's.)
         if e.kind == "catalog" || (job && step == "catalog-held" && e.ok == Some(true)) {
+            if !chain {
+                if began.is_none() {
+                    sum = 0.0;
+                }
+                continue;
+            }
             match began.take() {
                 Some(b) => updates.push(e.t.saturating_sub(b) as f64),
-                None if chain => updates.push(sum),
-                None => {}
+                None => updates.push(sum),
             }
             (sum, chain) = (0.0, false);
         }
@@ -1020,6 +1027,10 @@ mod tests {
         // Before the beginnings were noted: the chain's jobs summed, the members' with the lead's.
         let old = [ev("end", 10, "prune", 10.0), ev("done", 50, "pack", 100.0), ev("end", 120, "catalog", 50.0), ev("catalog", 120, "catalog", 0.0)];
         assert_eq!(update_secs(&old), Some(160.0));
+        // A catalog of another chain alone while a map update is under way: passed over, the map
+        // update measured to its own catalog, after its chain.
+        let mid = [ev("map-update", 100, "", 0.0), ev("end", 150, "rail", 40.0), ev("catalog", 160, "catalog", 0.0), ev("done", 400, "pack", 200.0), ev("catalog", 500, "catalog", 0.0)];
+        assert_eq!(update_secs(&mid), Some(400.0));
         // A map update under way, its catalog not out: not counted yet.
         assert_eq!(update_secs(&[ev("map-update", 5, "", 0.0), ev("done", 50, "pack", 40.0)]), None);
     }
