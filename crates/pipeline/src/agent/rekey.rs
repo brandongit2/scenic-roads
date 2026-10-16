@@ -669,7 +669,7 @@ pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, til
 mod tests {
     use super::*;
     use crate::agent::build::tests::{did, e7box, heritage_chain_done, heritage_done, tiles_for, unit_inputs};
-    use crate::agent::build::{Rounds, Work};
+    use crate::agent::build::{MapUpdates, Work};
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
 
@@ -735,7 +735,7 @@ mod tests {
     fn plan(c: &Coverage, reach: &Reaches, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> build::Plan {
         let mut done = done.clone();
         derive(&mut done, c, m, tiles);
-        build::plan(c, "d", m, &done, &BTreeMap::new(), Some(reach), tiles, Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() })
+        build::plan(c, "d", m, &done, &BTreeMap::new(), Some(reach), tiles, MapUpdates { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() })
     }
 
     /// The units the plan builds.

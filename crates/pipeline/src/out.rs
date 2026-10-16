@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 pub struct Out {
     root: PathBuf,
-    /// Logical name → content name of every file this build wrote or reused (a round's job: with
-    /// the units as they were when the round began, `as_of`).
+    /// Logical name → content name of every file this build wrote or reused (a map update's job: with
+    /// the units as they were when the map update began, `as_of`).
     pub manifest: BTreeMap<String, String>,
     /// This run's changes to the manifest (None: removed), merged into the file when saving.
     changes: BTreeMap<String, Option<String>>,
@@ -34,7 +34,7 @@ pub struct Out {
     pub scratch: PathBuf,
     /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
     handoff: Option<PathBuf>,
-    /// A round's job ($SCENIC_UNITS_AS_OF): the units' outputs as they were when the round began,
+    /// A map update's job ($SCENIC_UNITS_AS_OF): the units' outputs as they were when the map update began,
     /// read in place of the manifest's own (`units_as_of`).
     as_of: Option<BTreeMap<String, String>>,
     /// The step whose job this is (`for_step`): it puts and removes only the names its outputs
@@ -47,18 +47,18 @@ pub struct Out {
 
 /// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
 /// and roads' English (a prune of a unit drops them; its job also writes analysis grids, which
-/// nothing a round makes reads).
+/// nothing a map update makes reads).
 pub const UNIT_OUTPUTS: [&str; 3] = ["base/", "global/roads/", "global/roaden/"];
 
-/// What a round fixes as it begins (`units_as_of`): the units' outputs, and the 3D buildings' hi
-/// packs, so a bldtiles job ending meanwhile doesn't change the round's catalog (made again and
+/// What a map update fixes as it begins (`units_as_of`): the units' outputs, and the 3D buildings' hi
+/// packs, so a bldtiles job ending meanwhile doesn't change the map update's catalog (made again and
 /// again as their jobs end); they go out with the next.
 pub const AS_OF_OUTPUTS: [&str; 4] = ["base/", "global/roads/", "global/roaden/", "layers/buildings/hi/"];
 
-/// Names the file of a round under way and when it began, `<path>#<began>` (agent::build::Round, in
-/// the agent's folder): a round's jobs (its map tiles, road index, rail stops and catalog) read the
+/// Names the file of a map update under way and when it began, `<path>#<began>` (agent::build::MapUpdate, in
+/// the agent's folder): a map update's jobs (its map tiles, road index, rail stops and catalog) read the
 /// units as they were when it began (`units_as_of`), so what's built meanwhile changes nothing the
-/// round makes; it waits for the next.
+/// map update makes; it waits for the next.
 pub const UNITS_AS_OF_ENV: &str = "SCENIC_UNITS_AS_OF";
 
 /// `m` with its units' outputs and 3D buildings' packs (`AS_OF_OUTPUTS`) as `then` had them: those
@@ -73,21 +73,21 @@ pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>
         .collect()
 }
 
-/// The units of a round's file (`UNITS_AS_OF_ENV`: `<path>#<began>`): an error when it can't be
-/// read, or it's another round's, or the round's over, so a round's job fails rather than make its
-/// part from other units than the round's.
+/// The units of a map update's file (`UNITS_AS_OF_ENV`: `<path>#<began>`): an error when it can't be
+/// read, or it's another map update's, or the map update's over, so a map update's job fails rather than make its
+/// part from other units than the map update's.
 fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
     #[derive(serde::Deserialize)]
-    struct Round {
+    struct MapUpdate {
         began: u64,
         units: BTreeMap<String, String>,
         #[serde(default)]
         over: bool,
     }
     let (p, began) = spec.rsplit_once('#').and_then(|(p, b)| Some((p, b.parse::<u64>().ok()?))).with_context(|| format!("{UNITS_AS_OF_ENV}={spec:?}: not <path>#<began>"))?;
-    let b = std::fs::read(p).with_context(|| format!("read the round's units, {p}"))?;
-    let r: Round = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
-    anyhow::ensure!(r.began == began && !r.over, "{p} is no longer the round this job is for (it began at {began}; the file's began at {}{})", r.began, if r.over { ", and is over" } else { "" });
+    let b = std::fs::read(p).with_context(|| format!("read the map update's units, {p}"))?;
+    let r: MapUpdate = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
+    anyhow::ensure!(r.began == began && !r.over, "{p} is no longer the map update this job is for (it began at {began}; the file's began at {}{})", r.began, if r.over { ", and is over" } else { "" });
     Ok(r.units)
 }
 
@@ -160,7 +160,7 @@ impl Out {
         Self::open_as_of(root, scratch, std::env::var(UNITS_AS_OF_ENV).ok().as_deref())
     }
 
-    /// `open`, a round's job's (`as_of`: its round's file and when it began, `UNITS_AS_OF_ENV`).
+    /// `open`, a map update's job's (`as_of`: its map update's file and when it began, `UNITS_AS_OF_ENV`).
     pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&str>) -> Result<Self> {
         let unmerged = std::env::var_os(crate::agent::resume::UNMERGED_ENV).map(PathBuf::from);
         Self::open_with(root, scratch, as_of, unmerged.as_deref())
@@ -439,7 +439,7 @@ impl Out {
                 crate::whole::write(p, &serde_json::to_vec_pretty(v)?)?;
             }
         }
-        // (What it reads next, a round's job's units still as they were.)
+        // (What it reads next, a map update's job's units still as they were.)
         self.manifest = match &self.as_of {
             Some(then) => units_as_of(&on_disk, then),
             None => on_disk,
@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rounds_job_reads_the_units_as_they_were_and_saves_only_its_own_changes() {
+    fn a_map_updates_job_reads_the_units_as_they_were_and_saves_only_its_own_changes() {
         let then: BTreeMap<String, String> = [("base/6-1-1", "base/6-1-1.1111111111111111.base"), ("global/roads/6-1-1", "global/roads/6-1-1.1111111111111111.roads"), ("base/6-3-3", "base/6-3-3.3333333333333333.base")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         // Since: 6/1/1 rebuilt, 6/2/2 built, 6/3/3 pruned; a tile drawn.
         let now: BTreeMap<String, String> = [
@@ -741,15 +741,15 @@ mod tests {
         assert!(!seen.contains_key("base/6-2-2") && !seen.contains_key("base/6-3-3"));
         assert_eq!(seen.get("global/roadunits"), now.get("global/roadunits"));
         assert_eq!(seen.get("hidata/6-1-1"), now.get("hidata/6-1-1"));
-        // A job opened with the round's file reads them so, and its save leaves the units in the
+        // A job opened with the map update's file reads them so, and its save leaves the units in the
         // manifest as they are now.
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&now).unwrap()).unwrap();
-        let round = d.path().join("round.json");
-        std::fs::write(&round, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then })).unwrap()).unwrap();
-        let spec = format!("{}#1", round.display());
+        let map_update = d.path().join("map-update.json");
+        std::fs::write(&map_update, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then })).unwrap()).unwrap();
+        let spec = format!("{}#1", map_update.display());
         let mut out = Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).unwrap();
         assert_eq!(out.manifest, seen);
         out.changes.insert("hidata/6-1-1".into(), Some("hidata/6-1-1.6666666666666666.hidata".into()));
@@ -759,11 +759,11 @@ mod tests {
         let mut want = now.clone();
         want.insert("hidata/6-1-1".into(), "hidata/6-1-1.6666666666666666.hidata".into());
         assert_eq!(on_disk, want);
-        // Its file unreadable, another round's, or the round over: the job fails rather than read
-        // other units than its round's.
+        // Its file unreadable, another map update's, or the map update over: the job fails rather than read
+        // other units than its map update's.
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#1", d.path().join("none.json").display()))).is_err());
-        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#2", round.display()))).is_err());
-        std::fs::write(&round, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true })).unwrap()).unwrap();
+        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#2", map_update.display()))).is_err());
+        std::fs::write(&map_update, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true })).unwrap()).unwrap();
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).is_err());
     }
 

@@ -352,7 +352,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     proactive offer; the last ask and the last change of lead. From the serving Mac's agent's
     status (`/work/swarm`'s `agent.pool.lead`).
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
-    a colour, each round of publishing marked: pointed at, the regions it adds; the build Mac's
+    a colour, each map update marked: pointed at, the regions it adds; the build Mac's
     second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
     whose last steps it hands them as it builds them, drawn while a page around is measured faster
     than the build Mac at tails (`/work/swarm`'s workers' `paces`, by kind) and spares what a tail
@@ -360,8 +360,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     rows of blocks it hands them, while one is likewise faster at `treeblock`; with a worker faster
     at tails around, the forecast gives each of the build Mac's units the 30 s it gives one to take
     its tail; a piece gets nothing more: its run makes its other blocks while it waits); the map updates
-    (the last, the next with its regions, the rounds to come); the steps (done of all, the work
-    left, done when, why one waits); the regions, in the order they reach the map with the rounds
+    (the last, the next with its regions, the map updates to come); the steps (done of all, the work
+    left, done when, why one waits); the regions, in the order they reach the map with the map updates
     between (or by name, or by what's left), each with its state, its work left, when it's done and
     when it's on the map, found by name.
   - **The activity:** the last day by the hour (areas an hour, or busy minutes, each machine a

@@ -454,7 +454,7 @@ In `agent::build` (B2), beside the others (`bld_targets`, `bld_work`):
 - The pinned release is `buildtiles::RELEASE` for both the roadside and the 3D buildings: a new one
   re-keys every unit (the roadside index) and every buildings tile together, never a mix.
 
-### 3.3 Order, rounds, the chain
+### 3.3 Order, map updates, the chain
 
 Built in B2 (`agent::build::bld_work`, listed by `plan`):
 - **A fourth chain**, beside the roads', the trains' and the landmarks': it reads no unit and no
@@ -474,16 +474,16 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   each reads up to ~3 GB of the NAS's parquet), nor anything beside a job that runs alone (the OSM
   pass, the pass's worldwide jobs, the water, GC: `agent::steps::ALONE`), so never beside the planet's
   reads.
-- **Rounds:** buildings don't hold a round, and a region's readiness (`ready`) doesn't wait for
-  them: their packs go out with the next round's catalog, as the trains' and landmarks' outputs do.
+- **Map updates:** buildings don't hold a map update, and a region's readiness (`ready`) doesn't wait for
+  them: their packs go out with the next map update's catalog, as the trains' and landmarks' outputs do.
   After the last unit a catalog follows any chain's change, but while the 3D buildings' chain has
-  work left, a round (and its catalog) at most an hour after the last began: the worldwide build's
+  work left, a map update (and its catalog) at most an hour after the last began: the worldwide build's
   ~25 `bldtiles` jobs don't each make a catalog. Never for a region done that the map lacks: its
-  round begins at once. Nor for the fetch alone (it changes nothing served, and one failing once
-  the release has left S3 would hold every catalog to the hour). A round fixes the buildings'
+  map update begins at once. Nor for the fetch alone (it changes nothing served, and one failing once
+  the release has left S3 would hold every catalog to the hour). A map update fixes the buildings'
   packs as it begins, with the units (`out::AS_OF_OUTPUTS`), so a `bldtiles` job ending meanwhile
   doesn't change its catalog; they go out with the next. A region can reach the map before its
-  buildings, which follow with a later round.
+  buildings, which follow with a later map update.
 - **Batches:** a fixed number of z6 tiles a job, as the other steps have (`agent::batch_size`):
   `bldprep` 8, `bldtiles` 16; 2 and 4 while the regions' own work (terrain, slope, tree cover,
   units) is left (`agent::job_size`), so a job of theirs beside it or a helper's ends within
@@ -1781,7 +1781,7 @@ None blocks the work; each has a default below.
    and large.
 7. **Two steps per z6 tile:** `bldprep` (impure: the NAS's parquet) and `bldtiles` (pure: tasks for
    pages), so the fill and the tiles can change without reading the parquet again.
-8. **A chain of its own** that holds no region and no round; tiles in the regions' order.
+8. **A chain of its own** that holds no region and no map update; tiles in the regions' order.
 9. **MapLibre's fill-extrusion** first, after the road and rail layers; a custom layer only if the
    measurements call for it.
 10. **True heights** by default, with a scale setting; buildings on by default.

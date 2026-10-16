@@ -1,6 +1,6 @@
 //! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
 //! each job the build Mac started and ended, each lease a worker took, handed back, failed or let
-//! lapse, each task done or failed, the rounds of publishing begun and their catalogs, the pauses,
+//! lapse, each task done or failed, the map updates begun and their catalogs, the pauses,
 //! the workers first heard from, the devices let help or not, the agents started, the build
 //! Mac's conditions changing, and each Mac's build caches trimmed or cleared. Kept on the build
 //! Mac's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
@@ -25,7 +25,7 @@ pub struct Event {
     #[serde(default)]
     pub t: u64,
     /// What: "start" and "end" (a build Mac's job), "lease", "done", "fail" and "lapse" (a worker's
-    /// job), "task" and "task-fail", "round" (a round of publishing began: its regions) and
+    /// job), "task" and "task-fail", "map-update" (a map update began: its regions; "round" before task #209) and
     /// "catalog", "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
     /// "conditions" (the build Mac's changed), "caches" (a Mac's build caches trimmed after the

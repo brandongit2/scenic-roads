@@ -34,7 +34,7 @@ pub fn on(root: &Path) -> Option<bool> {
     }
 }
 
-/// The steps kept to the lead whatever the switch: the round's catalogs and prune (its gates:
+/// The steps kept to the lead whatever the switch: the map update's catalogs and prune (its gates:
 /// crate::agent's catalog and sweep), the 3D buildings' sources' fetch (written outside the records,
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, the backup, the input checks, the names to do).

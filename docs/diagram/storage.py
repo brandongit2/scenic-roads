@@ -42,7 +42,7 @@ def build(check=False):
             ('global/', 'worldwide results: whole roads, road → areas, trains a day, languages'),
             ('layers/', 'what the map draws, in packs (detail near the coverage); basemap, water'),
             ('work/ · cache/', 'build intermediates; what each area keeps for its next run, on either Mac'),
-            ('app/ · catalog/', 'the app your Macs run; a catalog a round: every file the map reads'),
+            ('app/ · catalog/', 'the app your Macs run; a catalog a map update: every file the map reads'),
             ('state/', 'who leads (terms); the journal; the records: what each file is made from')]
     top = 16
     sx, sw = 16, 196
@@ -92,7 +92,7 @@ def build(check=False):
     aria = ('Where the data lives. The NAS is the source of truth: the translation and description folders with their to-do '
             'lists, inputs with your 88 region recipes, sources (the planet the NAS fetches itself, and every download, kept '
             'once), base data and query data per area, landmark points, worldwide results, the layers with the worldwide basemap '
-            'and water, build intermediates and what each area keeps for its next run, the published app, a catalog per round, '
+            'and water, build intermediates and what each area keeps for its next run, the published app, a catalog per map update, '
             'and the build’s terms, journal and records. The lead, the M4 today, and every member run two jobs at once, staging '
             'on their SSDs. What was made by hand, by you, by Claude agents or by downloads a script can’t make, goes into the '
             'NAS directly. Your Macs run the map under a launcher, copy only what you download in the Regions panel, read the '

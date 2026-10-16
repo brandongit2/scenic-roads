@@ -402,17 +402,19 @@ struct Recipe: Decodable {
     let name: String
 }
 
-/// The forecast's part the menu shows: when it'll all be done (and the range), and the rounds of
-/// publishing to come, each with the regions it adds.
+/// The forecast's part the menu shows: when it'll all be done (and the range), and the map updates
+/// to come, each with the regions it adds (`rounds` from an older app: before task #209 a map
+/// update was a "round").
 struct Forecast: Decodable {
     let done_at: Int?
     let range: [Int]?
-    let rounds: [Round]?
+    let updates: [MapUpdate]?
+    let rounds: [MapUpdate]?
     /// Why there's no finish to forecast (nothing left; a new pass first; the units waiting).
     let why: String?
 }
 
-struct Round: Decodable {
+struct MapUpdate: Decodable {
     let at: Int
     let regions: [String]
     let last: Bool
@@ -662,7 +664,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish to forecast: \(f.why ?? "unknown")"
         if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
         out.append(Line(text: t, style: .small))
-        if let next = (f.rounds ?? []).first(where: { !$0.regions.isEmpty }) {
+        if let next = (f.updates ?? f.rounds ?? []).first(where: { !$0.regions.isEmpty }) {
             let names = Dictionary((s.regions ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
             let which = next.regions.prefix(3).map { names[$0] ?? $0 }.joined(separator: ", ") + (next.regions.count > 3 ? " and \(next.regions.count - 3) more" : "")
             out.append(Line(text: "Next map update ≈ \(soon(next.at)): \(which)", style: .small))

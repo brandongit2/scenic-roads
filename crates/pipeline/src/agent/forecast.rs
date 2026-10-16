@@ -9,11 +9,11 @@
 //! peaks, then units and slope) that fits beside it, each helper the far end of the first shared
 //! step with work it can do that fits its memory (terrain's near end: the next region's; slope once
 //! its area's terrain is built, a unit once its region's terrain is). The trains' and the
-//! landmarks' chains run from the start, each step once what it reads is built. The round under way
-//! goes first, with its own regions. A round of publishing goes out as the plan makes one: once a
-//! region not on the map is done, an hour after the last round began (its slope and tree cover,
-//! made by the build Mac while it waits, then the round's chain); after the last unit and terrain
-//! area, the slope and tree cover left, the last round, then the overlays and a catalog with what
+//! landmarks' chains run from the start, each step once what it reads is built. The map update under way
+//! goes first, with its own regions. A map update goes out as the plan makes one: once a
+//! region not on the map is done, an hour after the last map update began (its slope and tree cover,
+//! made by the build Mac while it waits, then the map update's chain); after the last unit and terrain
+//! area, the slope and tree cover left, the last map update, then the overlays and a catalog with what
 //! the chains made since; while the 3D buildings are being raised after it, a map update each hour
 //! after the last began. Whether one is due is the lead's own test (build::map_update_due). Each target takes its last run's time (else its step's mean, else a first
 //! guess), at the speed measured for the machine doing it. It's run three times: as estimated, and
@@ -73,29 +73,29 @@ pub struct Input<'a> {
     pub regions: &'a [RegionLeft],
     /// What a shared step's target takes.
     pub cost: &'a dyn Fn(&str, &str) -> Cost,
-    /// A round's chain (the map tiles, the road index, rail stops, ferries, a catalog): seconds; and
-    /// the last round's, the roads' chain as it stands (0: none stale, and no round unless a region
+    /// A map update's chain (the map tiles, the road index, rail stops, ferries, a catalog): seconds; and
+    /// the last map update's, the roads' chain as it stands (0: none stale, and no map update unless a region
     /// waits to be published).
-    pub round_s: f64,
-    pub last_round_s: f64,
+    pub update_s: f64,
+    pub last_update_s: f64,
     /// Why the work left can't all be listed now, when it can't (the units waiting for the pass's
     /// heritage sites, reaches or buildings; a new pass under way): no finish is forecast.
     pub blind: Option<String>,
     /// The trains' and the landmarks' chains (but the overlays): from the start, each step once what
     /// it reads is built (`chain_deps`).
     pub chains: Vec<Job>,
-    /// After the last round: the overlays (they read the built units) and a catalog with what the
+    /// After the last map update: the overlays (they read the built units) and a catalog with what the
     /// chains made since.
     pub after: Vec<Job>,
     /// Last of all, in idle time: the tree cover pieces' mids (build::TreeWork::backfill), each
     /// once everything else is done, side by side.
     pub idle: Vec<Job>,
-    /// Seconds since the last round began (None: none has).
+    /// Seconds since the last map update began (None: none has).
     pub since_last: Option<u64>,
-    /// How long after the last round began a region's round begins (build::PUBLISH_EVERY_S; a round
-    /// per region's gap: crate::agent::publish::round_gap).
+    /// How long after the last map update began a region's map update begins (build::PUBLISH_EVERY_S; a map update
+    /// per region's gap: crate::agent::publish::update_gap).
     pub gap_s: f64,
-    /// The round under way (crate::agent::build::Round): its regions, whether it's the last, and its
+    /// The map update under way (crate::agent::build::MapUpdate): its regions, whether it's the last, and its
     /// chain's time left (the map tiles, road index, rail stops and catalog it has still to make).
     pub under_way: Option<(Vec<String>, bool, f64)>,
     /// The build Mac first, then the helpers.
@@ -104,7 +104,7 @@ pub struct Input<'a> {
     pub running: BTreeMap<(String, String), usize>,
 }
 
-/// The forecast's `why` when the build is done: no work left, no round under way and no machine
+/// The forecast's `why` when the build is done: no work left, no map update under way and no machine
 /// busy (each Mac's agent then trims its caches: crate::agent::room::trim).
 pub const NOTHING_LEFT: &str = "nothing left to build";
 
@@ -128,8 +128,10 @@ pub struct Forecast {
     pub guessed: Vec<String>,
     pub steps: Vec<StepFc>,
     pub regions: Vec<RegionFc>,
-    /// The rounds of publishing to come, in order.
-    pub rounds: Vec<RoundFc>,
+    /// The map updates to come, in order.
+    /// (`rounds` before task #209: read from an older app's status too.)
+    #[serde(alias = "rounds")]
+    pub updates: Vec<UpdateFc>,
     /// What each machine does next: its first few jobs.
     pub next: BTreeMap<String, Vec<NextFc>>,
     /// Each machine's work to the end, a step's run together (`Lane`): the schedule.
@@ -138,13 +140,13 @@ pub struct Forecast {
 }
 
 impl Forecast {
-    /// Whether the build is done: nothing left to build, no round under way, no machine busy.
+    /// Whether the build is done: nothing left to build, no map update under way, no machine busy.
     pub fn nothing_left(&self) -> bool {
         self.why.as_deref() == Some(NOTHING_LEFT)
     }
 }
 
-/// A run of a machine's work of one step (or a round of publishing, "round"): from and until when
+/// A run of a machine's work of one step (or a map update, "map-update"): from and until when
 /// (unix seconds), and how many targets.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Lane {
@@ -176,14 +178,14 @@ pub struct RegionFc {
     pub on_map: Option<bool>,
     /// Its targets left by step ("unit", "terrain", "slope", "trees", "trees-lo").
     pub left: BTreeMap<String, usize>,
-    /// When it'll be done, and when it'll be on the map (its round out).
+    /// When it'll be done, and when it'll be on the map (its map update out).
     pub ready_at: Option<u64>,
     pub map_at: Option<u64>,
 }
 
-/// A round of publishing: when it goes out, the regions it adds, whether it's the last.
+/// A map update: when it goes out, the regions it adds, whether it's the last.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RoundFc {
+pub struct UpdateFc {
     pub at: u64,
     pub regions: Vec<String>,
     pub last: bool,
@@ -199,8 +201,8 @@ pub struct NextFc {
 }
 
 /// When a job runs: before the regions, a region's (terrain, units), late (slope and tree cover:
-/// the build Mac's in rounds and after the last unit), a chain's (the trains' and the landmarks':
-/// from the start, once what it reads is built), or after the last round.
+/// the build Mac's in map updates and after the last unit), a chain's (the trains' and the landmarks':
+/// from the start, once what it reads is built), or after the last map update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Before,
@@ -248,11 +250,11 @@ struct Item {
     end: f64,
 }
 
-/// One run through the work (`run`): each item's machine and times, and the rounds.
+/// One run through the work (`run`): each item's machine and times, and the map updates.
 struct Sim {
     items: Vec<Item>,
     /// (start, end, regions, last)
-    rounds: Vec<(f64, f64, Vec<usize>, bool)>,
+    updates: Vec<(f64, f64, Vec<usize>, bool)>,
     /// Region → its items.
     region_items: Vec<Vec<usize>>,
     done: bool,
@@ -408,12 +410,12 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     let regionals: Vec<usize> = (0..items.len()).filter(|&i| matches!(items[i].phase, Phase::Region)).collect();
     // (A region on the map as it is, with work left (a new pass), goes out again once it's done.)
     let mut published: BTreeSet<usize> = (0..inp.regions.len()).filter(|&k| inp.regions[k].on_map == Some(true) && region_items[k].is_empty()).collect();
-    let mut last_round: f64 = inp.since_last.map_or(f64::NEG_INFINITY, |s| -(s as f64));
-    let mut rounds: Vec<(f64, f64, Vec<usize>, bool)> = Vec::new();
-    let mut final_round_done = false;
+    let mut last_map_update: f64 = inp.since_last.map_or(f64::NEG_INFINITY, |s| -(s as f64));
+    let mut updates: Vec<(f64, f64, Vec<usize>, bool)> = Vec::new();
+    let mut final_map_update_done = false;
     let mut under_way = inp.under_way.as_ref().map(|(ids, last, left)| (ids.iter().filter_map(|id| inp.regions.iter().position(|r| &r.id == id)).collect::<Vec<usize>>(), *last, *left));
     // (A machine with nothing it can do waits for the next item to end, or another machine to be
-    // free: a round or a job that's no item may free work.)
+    // free: a map update or a job that's no item may free work.)
     let next_end = |items: &[Item], free: &[f64], m: usize, t: f64| {
         let others = free.iter().enumerate().filter(|&(k, &f)| k != m && f > t + 1e-9).map(|(_, &f)| f);
         items.iter().filter(|i| i.by.is_some() && i.end > t + 1e-9).map(|i| i.end).chain(others).fold(f64::INFINITY, f64::min)
@@ -424,14 +426,14 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     // regions done not on the map as they are (`new`), the 3D buildings being raised (their
     // chain's items but the sources' fetch, not done by `t`).
     let gap = Some(inp.gap_s.max(0.0).round() as u64);
-    let update_due = |items: &[Item], last_round: f64, t: f64, last_now: bool, new: usize| {
+    let update_due = |items: &[Item], last_map_update: f64, t: f64, last_now: bool, new: usize| {
         let raising = (0..items.len()).any(|i| items[i].phase == Phase::Chain && is_bld(&items[i].step) && !done_by(items, i, t));
-        let since_last = last_round.is_finite().then(|| (t - last_round).max(0.0).round() as u64);
+        let since_last = last_map_update.is_finite().then(|| (t - last_map_update).max(0.0).round() as u64);
         crate::agent::build::map_update_due(&crate::agent::build::UpdateCase { under_way: false, last_now, raising, new_regions: new, since_last, gap }).0
     };
     // (When the 3D buildings' hour after the last map update passes: a machine waiting for work
     // waits no later.)
-    let hour_after = |last_round: f64| last_round + crate::agent::build::PUBLISH_EVERY_S as f64;
+    let hour_after = |last_map_update: f64| last_map_update + crate::agent::build::PUBLISH_EVERY_S as f64;
     let mut guard = 0usize;
     loop {
         guard += 1;
@@ -439,7 +441,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             break;
         }
         let all_assigned = items.iter().all(|i| i.by.is_some());
-        if all_assigned && final_round_done {
+        if all_assigned && final_map_update_done {
             break;
         }
         // The machine free first (the build Mac on a tie).
@@ -476,7 +478,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             };
             continue;
         }
-        // The build Mac. The round under way first: its regions' slope and tree cover left (after
+        // The build Mac. The map update under way first: its regions' slope and tree cover left (after
         // the last, all that's left), then its chain.
         if let Some((ks, last, left)) = under_way.take() {
             let mut at = t;
@@ -493,12 +495,12 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             let end = at.max(wait) + left;
             let out: Vec<usize> = if last { (0..inp.regions.len()).filter(|k| !published.contains(k)).collect() } else { ks };
             published.extend(out.iter().copied());
-            rounds.push((t, end, out, last));
-            final_round_done |= last;
+            updates.push((t, end, out, last));
+            final_map_update_done |= last;
             free[m] = end;
             continue;
         }
-        // A round when one's due: a region done that the map hasn't as it is, an hour after the last
+        // A map update when one's due: a region done that the map hasn't as it is, an hour after the last
         // began (its slope and tree cover first, if they're not made by then; the catalog waits for
         // those a helper builds).
         let regional_left = regionals.iter().any(|&i| !done_by(&items, i, t));
@@ -506,10 +508,10 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             .filter(|k| !published.contains(k))
             .filter(|&k| region_items[k].iter().filter(|&&i| matches!(items[i].phase, Phase::Region)).all(|&i| done_by(&items, i, t)))
             .collect();
-        // (Only a region the map hasn't as it is now makes a round due, as the plan's: one on it
-        // that's rebuilt (a new pass) goes out with another's round, or the last.)
+        // (Only a region the map hasn't as it is now makes a map update due, as the plan's: one on it
+        // that's rebuilt (a new pass) goes out with another's map update, or the last.)
         let due: Vec<usize> = ready.iter().copied().filter(|&k| inp.regions[k].on_map != Some(true)).collect();
-        if regional_left && update_due(&items, last_round, t, false, due.len()) {
+        if regional_left && update_due(&items, last_map_update, t, false, due.len()) {
             let mut at = t;
             let mut wait = t;
             for &k in &due {
@@ -523,20 +525,20 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                     }
                 }
             }
-            let end = at.max(wait) + inp.round_s;
+            let end = at.max(wait) + inp.update_s;
             // Its catalog carries those, and the rebuilt ones ready by then whose slope and tree
             // cover are done too (the catalog records a region built only then).
             let mut out = due;
             out.extend(ready.iter().copied().filter(|&k| inp.regions[k].on_map == Some(true) && region_items[k].iter().all(|&i| done_by(&items, i, end))));
             published.extend(out.iter().copied());
-            rounds.push((t, end, out, false));
-            last_round = t;
+            updates.push((t, end, out, false));
+            last_map_update = t;
             free[m] = end;
             continue;
         }
         if regional_left || items.iter().any(|i| i.phase == Phase::Before && i.by.is_none()) {
             // The first it can do of the pass's; then the slope and tree cover of a region done and
-            // waiting for its round (so the round only draws); then the regions' (in order); with
+            // waiting for its map update (so the map update only draws); then the regions' (in order); with
             // none it can do now, the chains' (listed after them).
             let prep = || ready.iter().filter(|&&k| inp.regions[k].on_map != Some(true)).flat_map(|&k| region_items[k].iter().copied()).find(|&i| items[i].phase == Phase::Late && runnable(&items, i, t));
             let pick = (0..items.len())
@@ -550,14 +552,14 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             };
             continue;
         }
-        // After the last unit and terrain: the slope and tree cover left, then the last round (once
+        // After the last unit and terrain: the slope and tree cover left, then the last map update (once
         // every region's work is done: the chains' work while others build what it waits for); then
         // the chains' work left, the overlays and a catalog.
         if let Some(i) = (0..items.len()).find(|&i| items[i].phase == Phase::Late && runnable(&items, i, t)) {
             free[m] = take(&mut items, i, t);
             continue;
         }
-        if !final_round_done {
+        if !final_map_update_done {
             let late_open = items.iter().any(|i| i.phase == Phase::Late && !(i.by.is_some() && i.end <= t + 1e-9));
             if late_open {
                 free[m] = match (0..items.len()).find(|&i| items[i].phase == Phase::Chain && runnable(&items, i, t)) {
@@ -571,30 +573,30 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             // (While the 3D buildings are being raised, it waits for their hour, as the lead's,
             // unless a region waits to go out: the chains' work meanwhile.)
             let new = rest.iter().filter(|&&k| inp.regions[k].on_map != Some(true)).count();
-            if !update_due(&items, last_round, t, true, new) {
+            if !update_due(&items, last_map_update, t, true, new) {
                 free[m] = match (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Chain) && runnable(&items, i, t)) {
                     Some(i) => take(&mut items, i, t),
-                    None => next_end(&items, &free, m, t).min(hour_after(last_round)),
+                    None => next_end(&items, &free, m, t).min(hour_after(last_map_update)),
                 };
                 continue;
             }
-            final_round_done = true;
-            if rest.is_empty() && inp.last_round_s <= 0.0 {
+            final_map_update_done = true;
+            if rest.is_empty() && inp.last_update_s <= 0.0 {
                 continue;
             }
-            let end = t + if inp.last_round_s > 0.0 { inp.last_round_s } else { inp.round_s };
+            let end = t + if inp.last_update_s > 0.0 { inp.last_update_s } else { inp.update_s };
             published.extend(rest.iter().copied());
-            rounds.push((t, end, rest, true));
-            last_round = t;
+            updates.push((t, end, rest, true));
+            last_map_update = t;
             free[m] = end;
             continue;
         }
         // While the 3D buildings are being raised after the last unit: a map update with their
         // packs so far each hour after the last began (the lead's test), its chain the catalog's.
-        if update_due(&items, last_round, t, true, 0) && (0..items.len()).any(|i| items[i].phase == Phase::Chain && is_bld(&items[i].step) && !done_by(&items, i, t)) {
-            let end = t + inp.round_s;
-            rounds.push((t, end, Vec::new(), false));
-            last_round = t;
+        if update_due(&items, last_map_update, t, true, 0) && (0..items.len()).any(|i| items[i].phase == Phase::Chain && is_bld(&items[i].step) && !done_by(&items, i, t)) {
+            let end = t + inp.update_s;
+            updates.push((t, end, Vec::new(), false));
+            last_map_update = t;
             free[m] = end;
             continue;
         }
@@ -602,12 +604,12 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         let pick = (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Chain | Phase::After) && runnable(&items, i, t));
         free[m] = match pick {
             Some(i) => take(&mut items, i, t),
-            None if raising_now => next_end(&items, &free, m, t).min(hour_after(last_round)),
+            None if raising_now => next_end(&items, &free, m, t).min(hour_after(last_map_update)),
             None => next_end(&items, &free, m, t),
         };
     }
-    let done = items.iter().all(|i| i.by.is_some()) && final_round_done;
-    Sim { items, rounds, region_items, done }
+    let done = items.iter().all(|i| i.by.is_some()) && final_map_update_done;
+    Sim { items, updates, region_items, done }
 }
 
 /// The forecast for `inp`.
@@ -618,13 +620,13 @@ pub fn forecast(inp: &Input) -> Forecast {
     let late = run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 });
     // (Done once every machine is free too: a job under way that's no item, a daily one's, ends then.)
     let end_of = |s: &Sim| -> Option<f64> {
-        s.done.then(|| s.items.iter().map(|i| i.end).chain(s.rounds.iter().map(|r| r.1)).chain(inp.machines.iter().map(|m| m.busy_s)).fold(0.0, f64::max))
+        s.done.then(|| s.items.iter().map(|i| i.end).chain(s.updates.iter().map(|r| r.1)).chain(inp.machines.iter().map(|m| m.busy_s)).fold(0.0, f64::max))
     };
     let at = |secs: f64| (now + secs).round() as u64;
     let mut f = Forecast { at: inp.now, ..Default::default() };
     // (Never while a machine is busy: a job under way is work left, items or not.)
     let busy = inp.machines.iter().any(|m| m.busy_s > 0.0) || !inp.running.is_empty();
-    let nothing = expected.items.is_empty() && expected.rounds.is_empty() && !busy;
+    let nothing = expected.items.is_empty() && expected.updates.is_empty() && !busy;
     f.why = match (&inp.blind, nothing, expected.done) {
         (Some(b), _, _) => Some(b.clone()),
         (None, true, _) => Some(NOTHING_LEFT.into()),
@@ -664,7 +666,7 @@ pub fn forecast(inp: &Input) -> Forecast {
         });
     }
     // Each region: its work left, when it's done and when it's on the map.
-    let round_of = |k: usize| expected.rounds.iter().find(|r| r.2.contains(&k)).map(|r| r.1);
+    let map_update_of = |k: usize| expected.updates.iter().find(|r| r.2.contains(&k)).map(|r| r.1);
     for (k, r) in inp.regions.iter().enumerate() {
         let mine = &expected.region_items[k];
         let mut left: BTreeMap<String, usize> = BTreeMap::new();
@@ -678,10 +680,10 @@ pub fn forecast(inp: &Input) -> Forecast {
             on_map: r.on_map,
             left,
             ready_at: ready.map(at),
-            map_at: if r.on_map == Some(true) && mine.is_empty() { None } else { round_of(k).map(at) },
+            map_at: if r.on_map == Some(true) && mine.is_empty() { None } else { map_update_of(k).map(at) },
         });
     }
-    f.rounds = expected.rounds.iter().map(|(_, t, ks, last)| RoundFc { at: at(*t), regions: ks.iter().map(|&k| inp.regions[k].id.clone()).collect(), last: *last }).collect();
+    f.updates = expected.updates.iter().map(|(_, t, ks, last)| UpdateFc { at: at(*t), regions: ks.iter().map(|&k| inp.regions[k].id.clone()).collect(), last: *last }).collect();
     // Each machine's next jobs: its items in time order (not those it's building now), a step's run
     // together (at most three).
     for (m, mac) in inp.machines.iter().enumerate() {
@@ -700,16 +702,16 @@ pub fn forecast(inp: &Input) -> Forecast {
             }
         }
         f.next.insert(mac.name.clone(), next);
-        // Its schedule: its runs of a step, and the build Mac's rounds.
+        // Its schedule: its runs of a step, and the build Mac's map updates.
         let mut runs: Vec<(String, f64, f64, usize)> = expected.items.iter().filter(|i| i.by == Some(m)).map(|i| (i.step.clone(), i.from, i.end, 1)).collect();
         if m == 0 {
-            runs.extend(expected.rounds.iter().map(|r| ("round".to_string(), r.0, r.1, r.2.len())));
+            runs.extend(expected.updates.iter().map(|r| ("map-update".to_string(), r.0, r.1, r.2.len())));
         }
         runs.sort_by(|a, b| a.1.total_cmp(&b.1));
         let mut lane: Vec<Lane> = Vec::new();
         for (step, from, until, n) in runs {
             match lane.last_mut() {
-                Some(l) if l.step == step && step != "round" && from <= l.until as f64 - now + 120.0 => {
+                Some(l) if l.step == step && step != "map-update" && from <= l.until as f64 - now + 120.0 => {
                     l.until = at(until);
                     l.n += n;
                 }
@@ -721,26 +723,26 @@ pub fn forecast(inp: &Input) -> Forecast {
     f
 }
 
-/// About how long a round took lately (seconds): the last five catalogs', each the jobs of the
-/// round's chain since the catalog before (the history's ends) and itself. None before one's gone.
-pub fn round_secs(events: &[crate::coord::history::Event]) -> Option<f64> {
+/// About how long a map update took lately (seconds): the last five catalogs', each the jobs of the
+/// map update's chain since the catalog before (the history's ends) and itself. None before one's gone.
+pub fn update_secs(events: &[crate::coord::history::Event]) -> Option<f64> {
     const CHAIN: [&str; 9] = ["prune", "pack", "lo", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"];
-    let mut rounds: Vec<f64> = Vec::new();
+    let mut updates: Vec<f64> = Vec::new();
     let (mut sum, mut chain) = (0.0, false);
     for e in events {
         if e.kind == "end" && e.step.as_deref().is_some_and(|s| CHAIN.contains(&s)) {
             sum += e.secs.unwrap_or(0.0);
             chain |= e.step.as_deref() != Some("catalog");
         }
-        // (A catalog after the trains' or the landmarks' chain alone is no round.)
+        // (A catalog after the trains' or the landmarks' chain alone is no map update.)
         if e.kind == "catalog" {
             if chain {
-                rounds.push(sum);
+                updates.push(sum);
             }
             (sum, chain) = (0.0, false);
         }
     }
-    let last = &rounds[rounds.len().saturating_sub(5)..];
+    let last = &updates[updates.len().saturating_sub(5)..];
     (!last.is_empty()).then(|| last.iter().sum::<f64>() / last.len() as f64)
 }
 
@@ -800,7 +802,7 @@ mod tests {
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
-        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], idle: Vec::new(), since_last: None, gap_s: 3600.0, under_way: None, machines, running: BTreeMap::new() }
+        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, update_s: 600.0, last_update_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], idle: Vec::new(), since_last: None, gap_s: 3600.0, under_way: None, machines, running: BTreeMap::new() }
     }
 
     #[test]
@@ -834,7 +836,7 @@ mod tests {
         let regions = [RegionLeft { id: "a".into(), on_map: Some(true), ..Default::default() }];
         let busy = |inp: &mut Input| {
             inp.machines[0].busy_s = 3600.0;
-            (inp.after, inp.last_round_s) = (Vec::new(), 0.0);
+            (inp.after, inp.last_update_s) = (Vec::new(), 0.0);
         };
         // Out of the jobs before the regions' (as the agent used to leave a running step): not
         // done, but when the Mac is free.
@@ -875,12 +877,12 @@ mod tests {
     fn one_mac_runs_a_region_then_publishes_it() {
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        // Terrain 600, two units 600: the last of the regions' work, so the last round follows: its
+        // Terrain 600, two units 600: the last of the regions' work, so the last map update follows: its
         // slope 200 (it's done then) and the chain 600; then the landmarks (300).
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1400));
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 2000));
-        assert_eq!(f.rounds.len(), 1);
-        assert!(f.rounds[0].last && f.rounds[0].regions == ["a"]);
+        assert_eq!(f.updates.len(), 1);
+        assert!(f.updates[0].last && f.updates[0].regions == ["a"]);
         assert_eq!(f.done_at, Some(1_000_000 + 2000 + 300));
         let steps: Vec<(&str, usize, u64)> = f.steps.iter().map(|s| (s.step.as_str(), s.left, s.work_s)).collect();
         assert_eq!(steps, [("terrain", 1, 600), ("unit", 2, 600), ("slope", 1, 200), ("marks", 1, 300)]);
@@ -890,7 +892,7 @@ mod tests {
         assert!(r[0] < f.done_at.unwrap() && f.done_at.unwrap() < r[1]);
         assert_eq!(f.next["m4"].iter().map(|n| (n.step.as_str(), n.targets.len())).collect::<Vec<_>>(), [("terrain", 1), ("unit", 2), ("slope", 1)]);
         let lane: Vec<(&str, u64, u64, usize)> = f.lanes["m4"].iter().map(|l| (l.step.as_str(), l.from - 1_000_000, l.until - 1_000_000, l.n)).collect();
-        assert_eq!(lane, [("terrain", 0, 600, 1), ("unit", 600, 1200, 2), ("slope", 1200, 1400, 1), ("round", 1400, 2000, 1), ("marks", 2000, 2300, 1)]);
+        assert_eq!(lane, [("terrain", 0, 600, 1), ("unit", 600, 1200, 2), ("slope", 1200, 1400, 1), ("map-update", 1400, 2000, 1), ("marks", 2000, 2300, 1)]);
     }
 
     #[test]
@@ -914,12 +916,12 @@ mod tests {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
         // The M1 takes b's terrain (the far end) at half the pace (1,200 s), then b's unit, its terrain
-        // built (600 s); the build Mac a's terrain and unit (900 s), then a's round (600), then waits.
+        // built (600 s); the build Mac a's terrain and unit (900 s), then a's map update (600), then waits.
         assert_eq!(f.next["m1"].iter().map(|n| (n.step.as_str(), n.targets[0].as_str())).collect::<Vec<_>>(), [("terrain", "3/2/2"), ("unit", "6/16/16")]);
         assert_eq!((f.regions[0].ready_at, f.regions[0].map_at), (Some(1_000_000 + 900), Some(1_000_000 + 1500)));
-        // b done at 1,800: the last of the regions', so the last round goes out at once after.
+        // b done at 1,800: the last of the regions', so the last map update goes out at once after.
         assert_eq!((f.regions[1].ready_at, f.regions[1].map_at), (Some(1_000_000 + 1800), Some(1_000_000 + 2400)));
-        assert!(!f.rounds[0].last && f.rounds[1].last && f.rounds[1].regions == ["b"]);
+        assert!(!f.updates[0].last && f.updates[1].last && f.updates[1].regions == ["b"]);
     }
 
     #[test]
@@ -939,11 +941,11 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         inp.chains = (0..30).map(|i| ("bldtiles".to_string(), format!("6/{i}/1"), Cost { secs: 600.0, known: true, peak_mb: 0 })).collect();
         inp.after = vec![("catalog".into(), "after the chains".into(), Cost { secs: 120.0, known: true, peak_mb: 0 })];
-        (inp.since_last, inp.gap_s, inp.round_s, inp.last_round_s) = (Some(1700), 300.0, 120.0, 0.0);
+        (inp.since_last, inp.gap_s, inp.update_s, inp.last_update_s) = (Some(1700), 300.0, 120.0, 0.0);
         let f = forecast(&inp);
-        let starts: Vec<u64> = f.lanes["m4"].iter().filter(|l| l.step == "round").map(|l| l.from - 1_000_000).collect();
+        let starts: Vec<u64> = f.lanes["m4"].iter().filter(|l| l.step == "map-update").map(|l| l.from - 1_000_000).collect();
         assert_eq!(starts, [2400, 6120, 9840, 13560, 17280], "{:?}", f.lanes["m4"]);
-        assert!(f.rounds.iter().all(|r| r.regions.is_empty() && !r.last));
+        assert!(f.updates.iter().all(|r| r.regions.is_empty() && !r.last));
         // Each begins at the first job's end the lead's test says one is due, never before.
         let due = |since: u64| crate::agent::build::map_update_due(&crate::agent::build::UpdateCase { last_now: true, raising: true, since_last: Some(since), gap: Some(300), ..Default::default() }).0;
         let mut last: i64 = -1700;
@@ -957,9 +959,21 @@ mod tests {
     }
 
     #[test]
-    fn a_round_goes_out_at_most_hourly() {
-        // a (300 s), its round from 300, out at 900; b and c done within the hour after: they wait
-        // for the first pick an hour after a's round began (d's units, 300 s each, go on meanwhile).
+    fn an_older_apps_forecast_reads_its_rounds_as_map_updates() {
+        // (Task #209: `rounds` before; another Mac's status may still say so.)
+        let f = Forecast { updates: vec![UpdateFc { at: 5, regions: vec!["a".into()], last: true }], ..Default::default() };
+        let mut v = serde_json::to_value(&f).unwrap();
+        assert!(v.get("rounds").is_none());
+        let o = v.as_object_mut().unwrap();
+        let u = o.remove("updates").unwrap();
+        o.insert("rounds".into(), u);
+        assert_eq!(serde_json::from_value::<Forecast>(v).unwrap(), f);
+    }
+
+    #[test]
+    fn a_map_update_goes_out_at_most_hourly() {
+        // a (300 s), its map update from 300, out at 900; b and c done within the hour after: they wait
+        // for the first pick an hour after a's map update began (d's units, 300 s each, go on meanwhile).
         let d: Vec<String> = (0..20).map(|i| format!("6/9/{i}")).collect();
         let d: Vec<&str> = d.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &["6/1/1"], &[]), region("b", &[], &["6/2/2"], &[]), region("c", &[], &["6/3/3"], &[]), region("d", &[], &d, &[])];
@@ -967,29 +981,29 @@ mod tests {
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 900));
         assert_eq!(f.regions[1].ready_at, Some(1_000_000 + 1200));
         assert_eq!(f.regions[1].map_at, Some(1_000_000 + 3900 + 600));
-        assert_eq!(f.rounds[1].regions, ["b", "c"]);
+        assert_eq!(f.updates[1].regions, ["b", "c"]);
     }
 
     #[test]
-    fn the_round_under_way_goes_first_with_its_own_regions() {
-        // a and b done, a round under way with a alone (b was done after it began), its chain 400 s
-        // from done; c's units after it. b's slope is made while it waits (200 s); its round, an
+    fn the_map_update_under_way_goes_first_with_its_own_regions() {
+        // a and b done, a map update under way with a alone (b was done after it began), its chain 400 s
+        // from done; c's units after it. b's slope is made while it waits (200 s); its map update, an
         // hour after a's began (2,000 s ago), at the first pick from 1,600: 1,800, after c's units.
         let regions = [region("a", &[], &[], &[]), region("b", &[], &[], &["3/2/2"]), region("c", &[], &["6/3/3", "6/3/4", "6/3/5", "6/3/6", "6/3/7", "6/3/8"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         (inp.since_last, inp.under_way) = (Some(2000), Some((vec!["a".to_string()], false, 400.0)));
         let f = forecast(&inp);
-        assert_eq!((f.rounds[0].regions.as_slice(), f.rounds[0].at), (["a".to_string()].as_slice(), 1_000_000 + 400));
+        assert_eq!((f.updates[0].regions.as_slice(), f.updates[0].at), (["a".to_string()].as_slice(), 1_000_000 + 400));
         let lane: Vec<(&str, u64)> = f.lanes["m4"].iter().map(|l| (l.step.as_str(), l.from - 1_000_000)).collect();
-        assert_eq!(&lane[..4], [("round", 0), ("slope", 400), ("unit", 600), ("round", 1800)]);
-        assert_eq!((f.rounds[1].regions.as_slice(), f.rounds[1].at), (["b".to_string()].as_slice(), 1_000_000 + 1800 + 600));
+        assert_eq!(&lane[..4], [("map-update", 0), ("slope", 400), ("unit", 600), ("map-update", 1800)]);
+        assert_eq!((f.updates[1].regions.as_slice(), f.updates[1].at), (["b".to_string()].as_slice(), 1_000_000 + 1800 + 600));
     }
 
     #[test]
     fn regions_are_built_one_at_a_time() {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        // a's terrain and unit, a's round, then b's terrain and unit: a done first.
+        // a's terrain and unit, a's map update, then b's terrain and unit: a done first.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900));
         assert_eq!(f.regions[1].ready_at, Some(1_000_000 + 900 + 600 + 900));
         assert_eq!(f.measured, 1.0);
@@ -1006,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_isnt_stranded_by_a_round_or_a_worldwide_job() {
+    fn a_helper_isnt_stranded_by_a_map_update_or_a_worldwide_job() {
         // The build Mac runs a worldwide job (no item) for an hour; the helper takes the terrain at
         // once (terrain waits for nothing), then the units once their region's terrain is built
         // and the job the units need is done: it wakes when the build Mac is free.
@@ -1026,10 +1040,10 @@ mod tests {
     fn nothing_left_is_no_finish_and_regions_on_the_map_go_out_again() {
         let none: [RegionLeft; 0] = [];
         let mut inp = input(&none, vec![mac("m4", 1.0, false)], &cost);
-        (inp.after, inp.last_round_s) = (Vec::new(), 0.0);
+        (inp.after, inp.last_update_s) = (Vec::new(), 0.0);
         let f = forecast(&inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("nothing left to build")));
-        assert!(f.rounds.is_empty());
+        assert!(f.updates.is_empty());
         // A region on the map as it is, rebuilt (a new pass): out again once it's done.
         let regions = [RegionLeft { on_map: Some(true), ..region("a", &[], &["6/8/8"], &[]) }];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
@@ -1042,19 +1056,19 @@ mod tests {
     }
 
     #[test]
-    fn a_rebuilt_region_goes_out_with_another_round_or_the_last() {
+    fn a_rebuilt_region_goes_out_with_another_map_update_or_the_last() {
         // Two regions on the map as they are, rebuilt (a new pass), and one the map hasn't: only the
-        // new one makes a round due; the rebuilt ones ready by then go out with it, the other with the
-        // last round.
+        // new one makes a map update due; the rebuilt ones ready by then go out with it, the other with the
+        // last map update.
         let d: Vec<String> = (0..20).map(|i| format!("6/9/{i}")).collect();
         let d: Vec<&str> = d.iter().map(String::as_str).collect();
         let on = |r: RegionLeft| RegionLeft { on_map: Some(true), ..r };
         let regions = [on(region("a", &[], &["6/1/1"], &[])), region("b", &[], &["6/2/2"], &[]), on(region("c", &[], &d, &[]))];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        // a (300 s), b (300 s): b's round at 600 carries a too; c after it (6,000 s), in the last.
-        assert_eq!(f.rounds.len(), 2);
-        assert_eq!(f.rounds[0].regions, ["b", "a"]);
-        assert!(f.rounds[1].last && f.rounds[1].regions == ["c"]);
+        // a (300 s), b (300 s): b's map update at 600 carries a too; c after it (6,000 s), in the last.
+        assert_eq!(f.updates.len(), 2);
+        assert_eq!(f.updates[0].regions, ["b", "a"]);
+        assert!(f.updates[1].last && f.updates[1].regions == ["c"]);
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 1200));
     }
 
@@ -1075,14 +1089,14 @@ mod tests {
     #[test]
     fn the_chains_go_on_beside_the_regions_on_the_second_job() {
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
-        // The build Mac alone: terrain 600, the units 600, the slope 200 and the last round 600;
+        // The build Mac alone: terrain 600, the units 600, the slope 200 and the last map update 600;
         // then the chains, one after another (3,200 s).
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         (inp.chains, inp.after) = (chains(), Vec::new());
         let alone = forecast(&inp);
         assert_eq!(alone.done_at, Some(1_000_000 + 2000 + 5200));
         // With its second job: the heritage chain from the start, beside the regions' work; the
-        // rest after the last round, the landmark points once the heritage chain is done too.
+        // rest after the last map update, the landmark points once the heritage chain is done too.
         let second = Machine { second: true, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), second], &cost);
         (inp.chains, inp.after) = (chains(), Vec::new());
@@ -1090,8 +1104,8 @@ mod tests {
         let lane = &f.lanes["m4 (second job)"];
         assert_eq!((lane[0].step.as_str(), lane[0].from, lane[0].until), ("heritage", 1_000_000, 1_003_000));
         assert_eq!(f.done_at, Some(1_000_000 + 4200));
-        assert_eq!(f.rounds.len(), 1);
-        assert_eq!(f.rounds[0].at, 1_000_000 + 2000, "the chains don't hold up the last round");
+        assert_eq!(f.updates.len(), 1);
+        assert_eq!(f.updates[0].at, 1_000_000 + 2000, "the chains don't hold up the last map update");
     }
 
     #[test]

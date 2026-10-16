@@ -43,7 +43,7 @@
 //!   last.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the build Mac's forecast:
-//! no work, no round under way), jobs running here or not, the agent empties those caches by the same
+//! no work, no map update under way), jobs running here or not, the agent empties those caches by the same
 //! rules, once (again only after a job has run here since): a helper all of them, the build Mac all
 //! but the canopy squares, which every pass's areas read again and which never change. (Not down
 //! to the reserve: room-making makes that much room before each job, so the build ends with about
@@ -345,7 +345,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "terrain" => format!("copied back from the NAS's archives as terrain and peaks read them ({} in all)", time(b)),
                 "blobs" => format!("copied back from the NAS as the areas are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
-                "base" => format!("copied back by the next round's map tiles, from the mirror where it has them, else the NAS ({})", time(b)),
+                "base" => format!("copied back by the next map update's map tiles, from the mirror where it has them, else the NAS ({})", time(b)),
                 "dem" => format!("copied back from the NAS by the next unit job ({})", time(b)),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
                 "heritage" => "made again from the NAS's filtered planet when the heritage chain next runs (about an hour of osmium)".to_string(),
@@ -580,7 +580,7 @@ fn toward_with(cache: &Path, sources: &Path, goal: &dyn Fn() -> u64, free_space:
         let mut entries: Vec<PathBuf> = std::fs::read_dir(cache).into_iter().flatten().flatten().filter(|e| kind(&e.file_name().to_string_lossy()) == Some(k)).map(|e| e.path()).filter(|p| ours(p, root)).collect();
         entries.sort();
         // The base packs a file at a time, the least recently used first (each file of the pack
-        // cache is one a round reads, or copies again); the free space measured again once what
+        // cache is one a map update reads, or copies again); the free space measured again once what
         // was short is deleted, every 2 GB (as room-making's `Room`), or when the goal changes.
         if k == "base" {
             let mut files = Vec::new();

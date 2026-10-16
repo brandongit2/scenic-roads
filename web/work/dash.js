@@ -48,9 +48,14 @@ const STEP = {
   items: ["Wikidata facts", "#c47fb5"], heritage: ["Heritage details", "#c47fb5"], marks: ["Landmarks", "#c47fb5"], overlays: ["Area overlays", "#c47fb5"],
   "bld-fetch": ["3D buildings' sources", "#8fa2b5"], bldprep: ["Buildings read", "#a39a8c"], bldtiles: ["3D buildings", "#a39a8c"], bldtile: ["3D buildings' areas", "#b8ad9c"], treeblock: ["Tree cover's blocks", "#7fa37a"], terrainsub: ["Terrain's subtrees", "#9c8f7a"],
   inputs: ["Checking the inputs", "#8fa2b5"],
-  catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], round: ["Publishing round", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
+  catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], "map-update": ["Map update", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
 };
 const stepName = (s) => (STEP[s] || [s])[0];
+// A map update was a "round" before task #209: an older app's forecast (`rounds`, its lanes' step
+// "round") and history (kind "round") read as the new names.
+const UPDATE = "map-update";
+const asUpdate = (s) => (s === "round" ? UPDATE : s);
+const mapUpdates = (fc) => fc && { ...fc, updates: fc.updates ?? fc.rounds ?? [], lanes: fc.lanes && Object.fromEntries(Object.entries(fc.lanes).map(([nm, ls]) => [nm, ls.map((l) => ({ ...l, step: asUpdate(l.step) }))])) };
 const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
 // The noun a step's targets are counted in.
 const NOUN = { unit: "area", terrain: "tile", "terrain-lo": "area", slope: "tile", "slope-lo": "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task", treeblock: "task", terrainsub: "task" };
@@ -84,7 +89,7 @@ function model(sw) {
   const a = sw.agent || {};
   const now = sw.now;
   const fresh = (beat) => beat && now - beat < STALE_S;
-  const fc = a.forecast || null;
+  const fc = mapUpdates(a.forecast);
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
   // (Not the build Mac's own helper file, from while it was a member: it leads now.)
   const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600 && x.host !== a.host);
@@ -200,7 +205,7 @@ function verdictText(m) {
     const r = fc.range;
     parts.push(" · done ≈ ", h("b", null, clock(fc.done_at)), r ? ` (${clock(r[0])}–${clock(r[1])})` : "");
   } else if (fc?.why) parts.push(` · ${fc.why}`);
-  const next = fc?.rounds?.find((r) => r.regions.length);
+  const next = fc?.updates?.find((r) => r.regions.length);
   if (next) {
     const names = next.regions.slice(0, 2).map((id) => m.regionName[id] || id).join(", ");
     parts.push(" · next on the map ≈ ", h("b", null, clock(next.at)), `: ${names}${next.regions.length > 2 ? ` +${next.regions.length - 2}` : ""}`);
@@ -239,15 +244,15 @@ function overview(m) {
   const asWas = regs.filter((r) => r.on_map === false || (r.on_map === true && Object.keys(r.left).length)).length;
   const readyNow = regs.filter((r) => !Object.keys(r.left).length && r.on_map !== true).length;
   const lastAt = lastUpdate(m);
-  const nextRound = fc?.rounds?.[0];
+  const nextUpdate = fc?.updates?.[0];
   const busy = m.macs.filter((x) => x.fresh && x.status.job).length;
   const kpis = h("div", "kpis",
     kpi("Areas built", frac(line("unit")), fc ? `${n(fc.steps.find((s) => s.step === "unit")?.left || 0)} to build` : null),
-    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, out with the next round` : ""].filter(Boolean).join(" · ") || null),
+    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, out with the next map update` : ""].filter(Boolean).join(" · ") || null),
     kpi("Terrain · slope", `${frac(line("terrain"))} · ${frac(line("slope"))}`),
     kpi("Tree cover", frac(line("trees"))),
     kpi("Map tiles", frac(line("pack"))),
-    kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextRound ? `next ≈ ${clock(nextRound.at)}` : null),
+    kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
   return h("div", "overview", h("div", "box", left, strip, stepsLine), kpis);
@@ -418,8 +423,8 @@ function schedule(m) {
     for (const l of fc.lanes[nm]) {
       if (l.until < t0) continue;
       steps.add(l.step);
-      const say = l.step === "round" ? `Publishing round (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${stepName(l.step)}: ${targets(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
-      const seg = h("i", { class: l.step === "round" ? "round" : "", onmousemove: (e) => showTip(e, `${nm}: ${say}`), onmouseleave: hideTip, onclick: (e) => showTip(e, `${nm}: ${say}`) });
+      const say = l.step === UPDATE ? `Map update (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${stepName(l.step)}: ${targets(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
+      const seg = h("i", { class: l.step === UPDATE ? "update" : "", onmousemove: (e) => showTip(e, `${nm}: ${say}`), onmouseleave: hideTip, onclick: (e) => showTip(e, `${nm}: ${say}`) });
       Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: stepColour(l.step) });
       track.append(seg);
     }
@@ -461,17 +466,17 @@ function schedule(m) {
     axis.append(h("span", { style: { left: x(d.getTime() / 1000) } }, label));
   }
   lanes.append(h("div"), axis);
-  // Each round of publishing, a mark across the lanes, the regions it adds when pointed at.
-  const marks = h("div", "rounds");
-  for (const r of fc.rounds || []) {
+  // Each map update, a mark across the lanes, the regions it adds when pointed at.
+  const marks = h("div", "updates");
+  for (const r of fc.updates || []) {
     if (r.at < t0 || r.at > t1) continue;
-    const say = `${r.last ? "Last round" : "Round"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
+    const say = `${r.last ? "Last map update" : "Map update"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
     marks.append(h("i", { style: { left: x(r.at) }, onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) }));
   }
-  // (A round of publishing being made, hatched: the map drawn for its regions, its catalog last;
-  // its mark, when it's out on the map. Two rounds one after the other: two hatched runs, a mark
+  // (A map update being made, hatched: the map drawn for its regions, its catalog last;
+  // its mark, when it's out on the map. Two map updates one after the other: two hatched runs, a mark
   // between.)
-  const legend = h("div", "legend", [...steps].filter((s) => s !== "round").map((s) => h("span", null, h("i", { style: { background: stepColour(s) } }), stepName(s))), steps.has("round") && h("span", null, h("i", { class: "rhatch" }), "a round of publishing being made"), h("span", null, h("i", { class: "rmark" }), "a round out on the map"));
+  const legend = h("div", "legend", [...steps].filter((s) => s !== UPDATE).map((s) => h("span", null, h("i", { style: { background: stepColour(s) } }), stepName(s))), steps.has(UPDATE) && h("span", null, h("i", { class: "rhatch" }), "a map update being made"), h("span", null, h("i", { class: "rmark" }), "a map update out on the map"));
   return h("div", "sched", h("div", "lanewrap", lanes, marks), legend);
 }
 
@@ -502,7 +507,7 @@ function stepsTable(m) {
   return grid;
 }
 
-// The regions: their order to the map with the rounds between, or by name, or by what's left; each
+// The regions: their order to the map with the map updates between, or by name, or by what's left; each
 // its state, what it has left, when it's done and when it's on the map.
 const ui = { order: "map", filter: "", all: false, feed: "all" };
 function regionsList(m, rerender) {
@@ -535,20 +540,20 @@ function regionRows(m, rerender) {
   const total = list.length;
   if (!ui.all && !q) list = list.slice(0, 30);
   const out = h("div", "regs");
-  let lastRound = null;
+  let lastUpdate = null;
   for (const r of list) {
     const lft = leftOf(r);
-    if (ui.order === "map" && r.map_at && r.map_at !== lastRound) {
-      const round = fc.rounds.find((x) => x.at === r.map_at);
-      out.append(h("div", "round", `${round?.last ? "Last round" : "Round"} ≈ ${clock(r.map_at)}${round ? ` · ${plural(round.regions.length, "region")}` : ""}`));
-      lastRound = r.map_at;
-    } else if (ui.order === "map" && !r.map_at && lastRound !== "on") {
-      out.append(h("div", "round", "On the map"));
-      lastRound = "on";
+    if (ui.order === "map" && r.map_at && r.map_at !== lastUpdate) {
+      const update = fc.updates.find((x) => x.at === r.map_at);
+      out.append(h("div", "update", `${update?.last ? "Last map update" : "Map update"} ≈ ${clock(r.map_at)}${update ? ` · ${plural(update.regions.length, "region")}` : ""}`));
+      lastUpdate = r.map_at;
+    } else if (ui.order === "map" && !r.map_at && lastUpdate !== "on") {
+      out.append(h("div", "update", "On the map"));
+      lastUpdate = "on";
     }
     let state, cls = "";
     if (!lft && r.on_map === true) [state, cls] = ["on the map", "ok"];
-    else if (!lft) [state, cls] = ["done; out with the next round", "ok"];
+    else if (!lft) [state, cls] = ["done; out with the next map update", "ok"];
     else if (r.rank === 0) [state, cls] = ["building now", "run"];
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
@@ -581,11 +586,11 @@ function publishing(m) {
   const at = lastUpdate(m);
   const lines = [];
   lines.push(h("div", null, "Last update: ", at ? h("b", null, `${clock(at)} (${ago(now, at)})`) : "none yet", a.catalog ? h("span", "dim", ` · catalog ${a.catalog.n}`) : null));
-  const next = fc?.rounds?.[0];
+  const next = fc?.updates?.[0];
   if (next) lines.push(h("div", null, "Next: ", h("b", null, `≈ ${clock(next.at)}`), next.regions.length ? ` with ${next.regions.slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}${next.regions.length > 4 ? ` and ${next.regions.length - 4} more` : ""}` : ""));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) lines.push(h("div", "small warn", w.why));
-  // The lead's decision on the next map update, and why (agent::build::MapUpdate).
+  // The lead's decision on the next map update, and why (agent::build::UpdateDecision).
   const u = a.map_update;
   if (u) {
     lines.push(h("div", null, h("b", null, u.due ? "A map update is due" : "No map update due"), `: ${u.why}`));
@@ -596,7 +601,7 @@ function publishing(m) {
   } else {
     lines.push(h("div", "small dim", "A map update goes out when a region is done, at most hourly while areas are left; after the last, at once."));
   }
-  if (fc?.rounds?.length > 1) lines.push(h("div", "small dim", `${plural(fc.rounds.length, "round")} to come; the last ≈ ${clock(fc.rounds[fc.rounds.length - 1].at)}`));
+  if (fc?.updates?.length > 1) lines.push(h("div", "small dim", `${plural(fc.updates.length, "map update")} to come; the last ≈ ${clock(fc.updates[fc.updates.length - 1].at)}`));
   return h("div", null, lines);
 }
 
@@ -650,7 +655,8 @@ function eventText(m, e, k = 1) {
     case "task": return [k > 1 ? `${who} did ${k} areas' last steps` : `${who} did an area's last steps (${t[0] || ""}) in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-fail": return /^stopped:/.test(e.note || "") ? [`${who}: a task given back (${e.note.replace(/^stopped:\s*/, "")})`, "warn"] : [`${who}: a task failed: ${e.note}`, "bad"];
-    case "round": return [`A round of publishing began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
+    case "map-update":
+    case "round": return [`A map update began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
     case "catalog": return [t.length ? `The map got ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : "The map was updated", "ok"];
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
     case "resume": return ["The build went on", "ok"];
@@ -664,7 +670,7 @@ function eventText(m, e, k = 1) {
   }
 }
 
-const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || e.kind === "round" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
+const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || e.kind === "map-update" || e.kind === "round" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
 
 function feed(m, events, seen) {
   // (A job's start is shown only while it runs: once it's ended, its end says it all.)
@@ -698,17 +704,17 @@ function sinceLine(m, events, seen) {
   const fresh = events.filter((e) => e.seq > seen);
   if (!fresh.length) return h("div", "since dim", "Nothing new since you last looked.");
   const areas = {};
-  let failures = 0, rounds = [];
+  let failures = 0, updates = [];
   for (const e of fresh) {
     if ((e.kind === "end" || e.kind === "done") && e.step === "unit" && e.ok !== false) areas[e.worker] = (areas[e.worker] || 0) + (e.targets || []).length;
     // (Stops aren't failures: the build pausing, the Mac sleeping, a lease lapsing, an agent stopping.)
     if (e.ok === false && !/^(stopped|paused|its lease lapsed|the agent stopped|another Mac took)/.test(e.note || "")) failures++;
-    if (e.kind === "catalog") rounds.push(e);
+    if (e.kind === "catalog") updates.push(e);
   }
   const total = Object.values(areas).reduce((t, k) => t + k, 0);
   const bits = [];
   if (total) bits.push(`${plural(total, "area")} built (${Object.entries(areas).map(([w, k]) => `${k} by ${w}`).join(", ")})`);
-  if (rounds.length) bits.push(`${plural(rounds.length, "map update")}${rounds.some((r) => r.targets?.length) ? `: ${rounds.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
+  if (updates.length) bits.push(`${plural(updates.length, "map update")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
   if (failures) bits.push(h("span", "bad", plural(failures, "failure")));
   const first = fresh[0];
   return h("div", "since", `Since ${clock(first.t)}: `, ...bits.flatMap((b, i) => (i ? [" · ", b] : [b])), bits.length ? "" : `${plural(fresh.length, "event")}`);

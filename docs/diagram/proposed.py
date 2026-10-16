@@ -1,7 +1,7 @@
 """How the map is built (docs/plan.md v7): OpenStreetMap comes from one worldwide download, cut by area; a region is
 only an outline of what to build. Every step runs per area (a z6 tile), per z3 pack near the coverage, or once,
 worldwide; ⇄ marks the steps whose jobs any member of the pool may take, TASK the steps with parts any worker may run
-(docs/workers.md). Rounds publish what's built as regions are done. The curated inputs (sheets with a folded corner)
+(docs/workers.md). Map updates publish what's built as regions are done. The curated inputs (sheets with a folded corner)
 are what a person or an agent made by hand, with how reproducible each is today (page.py lists them). Dashed: planned,
 or built but not yet in the map."""
 from diag import COLS, Diagram
@@ -291,10 +291,10 @@ def build(check=False):
     y1 = max(n_st.b, s_osm6.b, b_st.b) + PAD
     d.lane('RAIL & FERRY SERVICE', y0, y1)
 
-    # ---- 8. publishing: rounds, as the regions are done ---------------------------------------------
+    # ---- 8. publishing: map updates, as the regions are done ---------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    n_rd = d.card('mix', 'd1', cy, 'a round', 'Rust', ['when a region is done, an hour', 'after the last round began, and', 'after the last region: its slope', 'and tree cover, the map tiles', 'near what changed, road index', 'and rail stops, then:'],
+    n_rd = d.card('mix', 'd1', cy, 'a map update', 'Rust', ['when a region is done, an hour', 'after the last map update began, and', 'after the last region: its slope', 'and tree cover, the map tiles', 'near what changed, road index', 'and rail stops, then:'],
                   [(['catalog/<n>.json.zst'], 'every file the map reads')], scope='global')
     s_rd = d.src('mix', cy, 'Regions as they’re done', ['a region at a time: those', 'the map lacks first, then', 'the fewest areas left'], minh=n_rd.h)
     p_cat = d.pill('mix', n_rd.y + 46, ['/api/catalog · meta'], note=['the newest that decodes;', 'every 30 s while in use'])
@@ -337,5 +337,5 @@ def build(check=False):
             'recipes, Planetiler’s pins, the languages by territory, translations and descriptions, the registers snapshot, the '
             'terrain repair’s thresholds, which DEM where, the storey-height fits, the MTR’s lines and feed fixes and the ferry '
             'timetables, each with how reproducible it is today. Any member of the pool may take the jobs marked ⇄; tasks any '
-            'worker may run, a device’s page too. Rounds publish a catalog as regions are done, about hourly, and after the last.')
+            'worker may run, a device’s page too. Map updates publish a catalog as regions are done, about hourly, and after the last.')
     return d.svg(h, aria, heads)

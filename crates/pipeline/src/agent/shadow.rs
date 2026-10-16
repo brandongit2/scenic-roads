@@ -8,7 +8,7 @@
 //! reads and never writes:
 //!
 //! - on the build Mac, its coordinator's history (`coord/history.jsonl`): its own jobs as they start
-//!   and end, the helpers' leases, the rounds' catalogs, its restarts. A job of its own that ended
+//!   and end, the helpers' leases, the map updates' catalogs, its restarts. A job of its own that ended
 //!   is a hand-off of this member's: its done record (its targets' keys as the agent recorded them)
 //!   and the files of those targets it changed (crate::coord::saves; a step whose files that
 //!   doesn't name hands off its done record alone);
@@ -316,8 +316,8 @@ impl Shadow {
                         saw.notes.push(serde_json::json!({ "what": "the agent started", "event": e }));
                     }
                 }
-                "catalog" => saw.catalogs.push(format!("round's catalog: {}", e.note)),
-                "lease" | "done" | "fail" | "lapse" | "round" | "pause" | "resume" => saw.notes.push(serde_json::json!({ "what": e.kind, "event": e })),
+                "catalog" => saw.catalogs.push(format!("map update's catalog: {}", e.note)),
+                "lease" | "done" | "fail" | "lapse" | "map-update" | "round" | "pause" | "resume" => saw.notes.push(serde_json::json!({ "what": e.kind, "event": e })),
                 _ => {}
             }
             if e.kind == "start" && e.step.as_deref() == Some("gc") {

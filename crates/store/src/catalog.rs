@@ -773,8 +773,8 @@ mod tests {
         assert!(matches!(IoError::find(&e), Some(IoError::Offline)), "{e:#}");
     }
 
-    /// Catalog `n` of a run: each round some tiles drawn again, a unit added, a region's shapes
-    /// redrawn or a region added, now and then one taken away (as rounds change a catalog).
+    /// Catalog `n` of a run: each map update some tiles drawn again, a unit added, a region's shapes
+    /// redrawn or a region added, now and then one taken away (as map updates change a catalog).
     fn evolve(prev: &Catalog, n: u64) -> Catalog {
         let mut c = prev.clone();
         c.n = n;

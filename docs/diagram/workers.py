@@ -36,7 +36,7 @@ def build(check=False):
     nx, nw = 16, 236
     nas = box(nx, top, nw, 'NAS', ['the terms: who leads, made', 'once each (state/build/terms/);',
                                    'the journal: every job’s', 'results (state/journal/);', 'the term’s records, which',
-                                   'only the lead writes; every', 'built file, by content name;', 'a catalog a round; cache/'],
+                                   'only the lead writes; every', 'built file, by content name;', 'a catalog a map update; cache/'],
               cls='nas')
 
     # The lead: its agent and, inside it, the coordinator.
@@ -45,7 +45,7 @@ def build(check=False):
     cx = ix + iw + gap
     agent_lines = ['plans every step from the job keys, a region at a', 'time: those the map lacks first, the fewest areas',
                    'left first; runs two jobs at once, which hand off', 'like anyone’s; merges the journal into the',
-                   'term’s records; publishes a round as regions', 'are done, about hourly, once caught up']
+                   'term’s records; publishes a map update as regions', 'are done, about hourly, once caught up']
     coord_lines = ['port 8090, for this Mac, its LAN and the tailnet;', 'lends work out on leases of ten minutes,',
                    'renewed by a beat each minute: a lapsed', 'lease’s work is offered again; its state is the',
                    'term’s, on the NAS; checks a worker’s first', 'three tasks, then one in eight; waits on a',
@@ -99,9 +99,9 @@ def build(check=False):
     h = py0 + ctl[3] + 14
 
     aria = ('Who builds the map. The NAS holds the terms, which say who leads, the journal every job writes its results to, the '
-            'term’s records, which only the lead writes, every built file by content name, a catalog per round, and what areas keep '
+            'term’s records, which only the lead writes, every built file by content name, a catalog per map update, and what areas keep '
             'for their next run. The lead, the M4 today, plans every step a region at a time, runs two jobs at once, merges the '
-            'journal into the records and publishes a round about hourly once caught up. Its coordinator, on port 8090, lends work '
+            'journal into the records and publishes a map update about hourly once caught up. Its coordinator, on port 8090, lends work '
             'out on ten-minute leases renewed each minute: jobs to the M1, a member that takes terrain, slope, tree cover’s pieces, '
             'areas, candidates, peaks and the 3D buildings’ steps, and tasks (an area’s last steps, tree cover’s rows of blocks, the '
             '3D buildings’ z8 areas) to any worker, a device’s build page too, with no key; a worker’s first three tasks, then one '

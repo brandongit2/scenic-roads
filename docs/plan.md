@@ -74,9 +74,9 @@ nothing built depends on how the coverage is divided into regions.
       and when the build runs, that downloads keep to 20 MB/s.
 - Coverage is drawn on the map. The status bar shows the build Mac's state and offers to reload when
   new data or a new app is in.
-- New areas appear when the build publishes its catalog: a round of publishing goes out as regions
+- New areas appear when the build publishes its catalog: a map update goes out as regions
   are done, about every hour while the build goes on, or (switched on: §8, Faster publishing) a few
-  minutes after a region is done (§8, A round).
+  minutes after a region is done (§8, A map update).
 
 **Translations and descriptions** (§7). Two drop boxes of the input check (docs/inputs.md §6.3,
 §6.4):
@@ -395,7 +395,7 @@ record changes back through the build Mac's coordinator, which journals them for
       heritage job reads them.
   - **Cleared too** (by the owner's ask alone):
     - the pack cache (`base/`): base packs for pack(T) and lo not in its mirror, pruned every run
-      and cleared when an OSM pass starts; the next round copies them again (66 GB on the build Mac,
+      and cleared when an OSM pass starts; the next map update copies them again (66 GB on the build Mac,
       2026-10-06), from the mirror where it has them, else the NAS. A unit job on a Mac that has
       this cache puts its own base pack and road values there as it uploads them, so that Mac's
       pack jobs don't copy back what it just wrote;
@@ -1575,7 +1575,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   name;
 - **pack(T):** the base packs and road values it reads (above), those within its 100 km halo; and,
   after a dot, those of its owners alone (the units whose owned extent meets the tile itself: its
-  ways-here index points into their base packs), so a round tells a tile whose owners changed from
+  ways-here index points into their base packs), so a map update tells a tile whose owners changed from
   one whose halo did (a key from before has no owners' part: a tile current by its halo stays, one
   stale is taken as its owners changed);
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
@@ -2129,7 +2129,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     (through Tailscale it would take hours), empties those copies by the same rules, once, and
     again only after a job (not a daily one) has run there since: a helper all of them, the build
     Mac all but the canopy squares, which every pass's areas read again and which never change.
-    "Nothing left to build" is the build Mac's forecast's (no work, no round under way, no machine
+    "Nothing left to build" is the build Mac's forecast's (no work, no map update under way, no machine
     busy), made within ten minutes and after the last job on the Mac ended; a helper reads it in
     the build Mac's heartbeat, which must have beaten within ten minutes and show no job of the
     build Mac's running, nor one beside it. Not down to the reserve: room-making makes that much
@@ -2268,15 +2268,15 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   `forecast::EXPECTED_STALE` (0.6), is counted as work to come, after their terrain. (Without it
   the 8 Oct terrain rebuild's forecast counted 32 units at 17:00 and 149 by 19:00.) A
   machine with nothing it can do waits for the next work to end or another machine to be free. The
-  round under way goes first, with its own regions (their slope and tree cover left, then its chain
-  as its steps take). A round goes out as the plan makes one: a region done that the map hasn't as
-  it is now, an hour (or a round per region's gap) after the last round began, by the lead's own test (`build::map_update_due`) (its slope and tree cover, which the build Mac makes
-  while it waits, then the round's chain, as long as the last rounds took); its catalog carries the
+  map update under way goes first, with its own regions (their slope and tree cover left, then its chain
+  as its steps take). A map update goes out as the plan makes one: a region done that the map hasn't as
+  it is now, an hour (or a map update per region's gap) after the last map update began, by the lead's own test (`build::map_update_due`) (its slope and tree cover, which the build Mac makes
+  while it waits, then the map update's chain, as long as the last map updates took); its catalog carries the
   regions on the map that are rebuilt (a new pass) and done by then, their slope and tree cover too
-  (they make no round of their own); after the last unit and terrain area, the
-  slope and tree cover left, the last round (the roads' chain as it stands, less what the round
+  (they make no map update of their own); after the last unit and terrain area, the
+  slope and tree cover left, the last map update (the roads' chain as it stands, less what the map update
   under way still does, if longer; none when nothing's stale and no region waits to go out), while
-  the 3D buildings are being raised a map update an hour after the last began (the round's chain
+  the 3D buildings are being raised a map update an hour after the last began (the map update's chain
   long), then the overlays and a catalog, then the tree cover mids made in idle time. A z3 tile's tree cover
   assembly waits for its pieces, the build Mac's alone. The trains' and
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
@@ -2297,23 +2297,23 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   rows of blocks: its run makes its other blocks meanwhile). Run three times: as
   estimated, and for a range, the measured times a little off and the guessed much more. It says
   when each step, each region and everything will be done, when each region reaches the map, the
-  rounds to come, what each machine does next (not what it's on) and its schedule to the end, and
+  map updates to come, what each machine does next (not what it's on) and its schedule to the end, and
   how much of the time was measured. A job under way is work left: its machine is busy until it's
   done, and one of the pass's worldwide jobs is on its schedule as it runs. No finish when nothing's
-  left (no work, no round under way, no machine busy), when a new pass comes first, or while the
+  left (no work, no map update under way, no machine busy), when a new pass comes first, or while the
   units wait for the pass's heritage sites, reaches or buildings (the regions' work can't be
   listed): why instead.
 - **The history** (`coord::history`): the coordinator keeps what happened, the last week's (50,000
   events at most), on the build Mac's disk (`coord/history.jsonl`, a line an event, numbered): each job the build Mac
   started and ended (what it does, what it finished, how long, how it ended), each lease a worker took, handed
-  back, failed or let lapse, each task done or failed, the rounds begun (their regions), the
+  back, failed or let lapse, each task done or failed, the map updates begun (their regions), the
   catalogs (the regions they added), the
   pauses, the workers first heard from, the agents started, the build Mac's conditions changing
   (mains or battery, the NAS, home or away, a sleep), and each Mac's build caches trimmed or
   cleared, or an ask to clear them declined (what was freed, or why not; a helper's as the build
   Mac reads it in its status). Summed by the hour for the worker page (a job whose end went
   unsaid, its agent stopped, counted to the next agent's start), and the forecast's measure of the
-  helpers' pace and of a round's time. Each cost the coordinator keeps says which worker measured
+  helpers' pace and of a map update's time. Each cost the coordinator keeps says which worker measured
   it.
 - **Timings** (`pipeline::timings`; its Python twin `dem/timings.py`; a page's task in
   `web/work/worker.js`): every job's run is broken into named phases, each with its wall time, its
@@ -2522,13 +2522,13 @@ between jobs into the other way. On:
      what later steps wait on first), from the far end of all of that step's (the agent offers a
      step's targets together): the last regions', while the build Mac does the first's. Terrain it
      takes from the near end: the next region's, whose units the build Mac builds next.
-   - **A round** when a region is done that the map hasn't as it is now, an hour after the last
-     round began (`PUBLISH_EVERY_S`; before the agent kept rounds, after the last catalog went out
+   - **A map update** when a region is done that the map hasn't as it is now, an hour after the last
+     map update began (`PUBLISH_EVERY_S`; before the agent kept map updates, after the last catalog went out
      or last started) while units or terrain are left, and at once after the last unit and terrain
-     area. What it publishes is fixed as it begins (`agent::build::Round`, kept in the agent's
-     folder, `round.json`): its regions, those done then, and the units as they were then, which
+     area. What it publishes is fixed as it begins (`agent::build::MapUpdate`, kept in the agent's
+     folder, `map-update.json`): its regions, those done then, and the units as they were then, which
      its map tiles, road index, rail stops and catalog are made from (its jobs read them through
-     `SCENIC_UNITS_AS_OF`, with when it began: a job of another round's fails). A region done or a
+     `SCENIC_UNITS_AS_OF`, with when it began: a job of another map update's fails). A region done or a
      unit built meanwhile waits for the next, and so does a region of it built again meanwhile (its
      outline redrawn). It's over once its catalog (or held catalog) is made, whatever changed in
      the meantime (that goes out with the next): it can't grow as the units go on being built, nor
@@ -2538,25 +2538,37 @@ between jobs into the other way. On:
      plans with its own). Its work: the slope and tree cover of its regions' areas (slope's the z3 tiles
      within 20 km of it, tree cover's those it meets: their pieces and assemblies; after the last
      unit, all that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the
-     roads' chain, and a catalog. A region done waits for its round with its slope and tree cover made: the
-     build Mac makes them as it's done, before more of the regions' work, so the round only draws.
-     The units follow the round in the list (a helper's, and the build Mac's while the round's work
-     waits out a failure). A round before the last draws only the map tiles that go out with it:
+     roads' chain, and a catalog. A region done waits for its map update with its slope and tree cover made: the
+     build Mac makes them as it's done, before more of the regions' work, so the map update only draws.
+     The units follow the map update in the list (a helper's, and the build Mac's while the map update's work
+     waits out a failure). A map update before the last draws only the map tiles that go out with it:
      those meeting a region it publishes, those no unit to build when it began is near (their 100 km
      halo), and those whose owners changed (Job keys, pack(T): their base packs go out as they are,
      which the tile must index); the others, a region's border tiles, would be drawn again in every
-     round as their neighbours' units are built, and wait for a later one, or the last. A round
+     map update as their neighbours' units are built, and wait for a later one, or the last. A map update
      with nothing to publish that isn't out already (after the last; with catalogs held, weighed
      against the last held one) is none.
    - **Faster publishing** (crate::agent::publish, task #203): five switches under `state/pool/`,
-     each off while missing or `off` in it (the rounds exactly as above), on when present. Built,
+     each off while missing or `off` in it (the map updates exactly as above), on when present. Built,
      all off on the live state. Regions stay the publishing unit.
-     - `round-per-region`: a region's round begins `publish::round_gap` after the last began instead
-       of the hour: twice the rounds' measured time (`forecast::round_secs`, the last five rounds'
+     - **Renamed** (task #209: a map update was a "round" before, and two Macs may run apps either
+       side of the change for a while). The switches `round-per-region` and `round-share` are
+       `update-per-region` and `update-share`: a switch is read by its new name; while that's
+       missing, by its old, which is copied to the new name as it's read (`publish::on_renamed`),
+       once: from then on the new name is the switch, and the old stays for an older app until it's
+       cleared by hand. The agent's `round.json` is `map-update.json`: it's written under both names
+       and read from the one that began later (`agent::read_map_update`). The history's event
+       "round" is "map-update", the forecast's `rounds` `updates` and its lanes' step "round"
+       "map-update"; the readers (the worker page, the map, the menu bar, `Forecast`'s serde alias,
+       the shadow's log) take the old names too. The cleanup, once every Mac runs an app from
+       #209 on: `state/pool/round-per-region`, `state/pool/round-share` and the agent's
+       `round.json` deleted, then the old names' reads and writes dropped (planned).
+     - `update-per-region`: a region's map update begins `publish::update_gap` after the last began instead
+       of the hour: twice the map updates' measured time (`forecast::update_secs`, the last five map updates'
        chains and catalogs, from the history), at most the hour, the hour while none is measured.
-       So the next round begins at least one round's length after the last ended: the regions done
-       meanwhile go out together, and at most about half the time goes to rounds. (Measured on the
-       live history, 15 Oct: the catalog alone 66–158 s, a round's map tiles 201 s a job on
+       So the next map update begins at least one map update's length after the last ended: the regions done
+       meanwhile go out together, and at most about half the time goes to map updates. (Measured on the
+       live history, 15 Oct: the catalog alone 66–158 s, a map update's map tiles 201 s a job on
        average, so a gap of minutes rather than an hour.) The forecast takes the same gap.
      - **Why a map update begins, or doesn't** (task #208, whatever the switches): the plan and
        the forecast decide by one test, `build::map_update_due` (a map update under way; the regions
@@ -2577,35 +2589,35 @@ between jobs into the other way. On:
        before the last unit, with any region's.
      - `low-zoom-later`: what may lag is the low zooms alone: the roads' and rails' lo packs (z3–8)
        and the terrain's and slope's roots (z0–2), and with `near-slope` the slope and tree cover
-       assemblies (their lo packs, z3–8). A round makes them only when it's the low zooms' round
-       (`Round::low`, fixed as it begins): `build::LOW_EVERY_S` (three hours, the owner's "every few
-       hours") after the last that made them (`Round::low_at`, carried round to round in
-       `round.json`), when half the roads' lo packs or more are stale (`build::low_due`: their keys,
-       so it follows what changed), and in the last round. Every other round draws the map tiles
+       assemblies (their lo packs, z3–8). A map update makes them only when it's the low zooms' map update
+       (`MapUpdate::low`, fixed as it begins): `build::LOW_EVERY_S` (three hours, the owner's "every few
+       hours") after the last that made them (`MapUpdate::low_at`, carried map update to map update in
+       `map-update.json`), when half the roads' lo packs or more are stale (`build::low_due`: their keys,
+       so it follows what changed), and in the last map update. Every other map update draws the map tiles
        (z9–14) and the hi packs as before. How the map stays coherent: zoom ranges don't overlap
        (root z0–2, lo z3–8, hi z9–14), so at any one zoom a layer's tiles are all of one kind; the
-       lo packs a catalog lists are those the last low zooms' round made, each a whole drawing of
+       lo packs a catalog lists are those the last low zooms' map update made, each a whole drawing of
        the units as they were then (they're in the manifest under the keys they were made with, so
        the catalog lists them, and GC keeps them, until they're made again), all of them made in
-       the same round (the low zooms' round makes every stale one); so the roads and rails below z9,
+       the same map update (the low zooms' map update makes every stale one); so the roads and rails below z9,
        the z0–2 terrain and slope (and with `near-slope` the slope and tree cover below z9) are as of
-       the last low zooms' round, the rest as of this round. A region new since shows its roads from
-       z9 until the next low zooms' round, then below too. The catalog says nothing of it: each pack
+       the last low zooms' map update, the rest as of this map update. A region new since shows its roads from
+       z9 until the next low zooms' map update, then below too. The catalog says nothing of it: each pack
        it lists is whole and named by its content, so the app draws what it lists as it always has.
        What else points there (traced, nothing fixed): the place search reads the labels' packs (the
-       pass's, made apart from the rounds, not lagging), so a hit in a region new since flies to its
+       pass's, made apart from the map updates, not lagging), so a hit in a region new since flies to its
        zoom, below 9 for a city, a big lake or a park, where that region's roads aren't drawn yet;
-       they come at z9. The road → units index (`roadunits`, every round) only joins a road found by
+       they come at z9. The road → units index (`roadunits`, every map update) only joins a road found by
        a click or hover on a drawn line with its ways in other units: below z9 that line is in a lo
        pack, so it's a road drawn there, and ways of it in a unit new since are listed in its profile
        but not highlighted (the highlight marks lines of the tiles drawn). Nothing shows a road the
        overview lacks as if it were drawn.
-     - `round-share`: with every step to every member on (docs/pool.md §7.2), the lead's own job of
-       a round's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the
+     - `update-share`: with every step to every member on (docs/pool.md §7.2), the lead's own job of
+       a map update's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the
        targets over the members asking for that step in the last half minute plus one, at most the
-       step's batch), so the rest stay offered to the members (the round's units with them,
+       step's batch), so the rest stay offered to the members (the map update's units with them,
        `Grant::as_of`) rather than the lead taking a whole batch before a member asks. The offers
-       are made in the same loop the round begins in (`offer_round`, then `offer`), before the lead
+       are made in the same loop the map update begins in (`offer_update`, then `offer`), before the lead
        starts its own job.
      - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes the served catalog
        as what changed over the last (docs/formats.md, Delta catalogs), whole again once the deltas
@@ -2623,15 +2635,15 @@ between jobs into the other way. On:
        through 500 or more says so.
        A whole catalog (asked for, due, or the first) looks at every file on the NAS; only one that
        goes out as a delta takes sizes from the last.
-     - `near-slope`: a round's slope and tree cover are the pieces near its regions (`Publishing::near`:
+     - `near-slope`: a map update's slope and tree cover are the pieces near its regions (`Publishing::near`:
        the slope pieces whose z6 tile is within 20 km of one, what its slope reads; the tree cover
-       pieces meeting one), not every stale piece of the z3 tiles around it, so a round whose regions
+       pieces meeting one), not every stale piece of the z3 tiles around it, so a map update whose regions
        changed no terrain or tree cover near them remakes none (the pieces' keys are their inputs').
-       Their assemblies go with the low zooms (every round without `low-zoom-later`, only those that
+       Their assemblies go with the low zooms (every map update without `low-zoom-later`, only those that
        can run), and a region counts as done with its pieces; the regions' work makes the rest in
        its order, as before.
 4. **Four chains:**
-   - **Roads**, in every round and after the last unit, its first stale step: a prune of map tiles
+   - **Roads**, in every map update and after the last unit, its first stale step: a prune of map tiles
      no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.
      Stations and ferries drop the packs they no longer make.
    - **Rail service**, from the start (it reads no unit): `rail-feeds`, then `rail` (§6, Rail
@@ -2662,28 +2674,28 @@ between jobs into the other way. On:
    it is and expected the same (`scenic-build trees|terrain|slope --expect-same`: a pack coming out other than the manifest
    has it fails the job, nothing uploaded; so a change to a piece's bytes alone bumps `TREES_V`:
    §6, Job keys); a helper takes them from the far end too.
-5. **A catalog** once the roads chain is done, in a round: a new one whenever the served files
+5. **A catalog** once the roads chain is done, in a map update: a new one whenever the served files
    change, or the regions it records (their recipes and the outline files they name), or which of
-   them are done. It lists the units as they were when the round began. It records as built the
+   them are done. It lists the units as they were when the map update began. It records as built the
    regions done (`--ready <id>=<outline digest>,…`: every unit of theirs built as the coverage wants
    it, and their areas' slope and tree cover: its pieces and their z3 tiles' assemblies; one redrawn
    since the plan said so isn't; of those,
-   the round's own and those on the map as they are), and the others as the last catalog had them,
+   the map update's own and those on the map as they are), and the others as the last catalog had them,
    if it had them (on the map as they were); the Regions panel shows the rest as pending, or building with their areas
    counted. It waits while another worker builds a slope or tree cover piece of a region it
    would publish (it would go out without the region, which would then wait an hour), and while a
    helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
    manifest). What the trains', the landmarks' and the 3D buildings' chains made goes out with the
-   next round's catalog; after the last unit, a catalog follows any chain's change, but while the
+   next map update's catalog; after the last unit, a catalog follows any chain's change, but while the
    3D buildings' chain has work left (their sources' fetch aside: it changes nothing served, and
    one failing for good would hold every catalog to the hour), at most an hour after the last
-   round began (not a catalog for each of their jobs), unless a region waits to go out: the
-   buildings never hold a region back. A round fixes the 3D buildings' packs as it begins, with
+   map update began (not a catalog for each of their jobs), unless a region waits to go out: the
+   buildings never hold a region back. A map update fixes the 3D buildings' packs as it begins, with
    the units (`out::AS_OF_OUTPUTS`): those made meanwhile go out with the next, so its catalog isn't
    made again as their jobs end. While
-   `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the held
+   `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the map updates go by the held
    ones; the first, by the served one).
-6. **Daily:** backup and GC (not while a round is under way: the units it reads as they were may
+6. **Daily:** backup and GC (not while a map update is under way: the units it reads as they were may
    be in no catalog yet).
 
 **Planned:**

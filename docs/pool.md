@@ -84,7 +84,7 @@ it on the NAS. The rest a new lead has from the NAS, or makes again.
 | The Python steps' environment | the app's lock file (`dem/uv.lock`) | `app/<version>/dem/.venv`, which uv makes from it (from uv's cache, else PyPI) | its first Python step makes it |
 | A job's progress: the OSM pass's stages, the buildings scan's parts (Overture's, ~40 GB), a rail-feeds run's zips not yet put, raw tiles not yet packed | the Mac running it, until the job puts its results on the NAS | its scratch folders and cache | the OSM pass's, offered to that Mac alone for a day, behind `state/pool/resume` (§7.2, Resuming); the rest done again |
 | The coordinator's: the workers' token, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the build Mac's disk alone (a helper's hand-off, the helper's until it's sent); with the pool on (§12), the NAS: `state/coord/` (the token, the state per term, the history per writer), the journal | `agent/coord/` (`journal/`: the hand-offs taken); a helper's `agent/outbox/` | with the pool on, loads the state a handover hands it, else the newest a term before has (§6.2, §7.5); off, none: pages ask again, costs are first guesses, unmerged hand-offs are built again |
-| The lead's own: the round under way, its retries, the daily jobs' last runs | the build Mac's disk alone | `agent/round.json`, `agent/state.json` | not in the phases yet: the next round begins afresh, failed jobs may run again at once |
+| The lead's own: the map update under way, its retries, the daily jobs' last runs | the build Mac's disk alone | `agent/map-update.json` (and `round.json`, its name before task #209, for an older app), `agent/state.json` | not in the phases yet: the next map update begins afresh, failed jobs may run again at once |
 
 ## 3. What the NAS gives us
 
@@ -627,9 +627,9 @@ What's planned of placement (phase 4, §12):
   the same reserve and target; none while its slots are full or a job runs alone there), alone.
   The memory compared isn't alike: the lead's is its guard's limit, a member's what it spares (three
   eighths of its Mac's, the owner's choice), so a lead with room takes cold starts before a member
-  of the same Mac's size would. `pack` and `lo` are a round's steps: granted only with the round's
-  units (`as_of`, told to the coordinator with the plan's offers, cleared as the round ends), which
-  their job reads as the lead's own does; with no round under way, none is granted. Whatever the
+  of the same Mac's size would. `pack` and `lo` are a map update's steps: granted only with the map update's
+  units (`as_of`, told to the coordinator with the plan's offers, cleared as the map update ends), which
+  their job reads as the lead's own does; with no map update under way, none is granted. Whatever the
   switch, the lead's plan leaves out what other workers' leases hold. Off, a member takes the
   shared steps alone, and the lead the rest.
 - **Order and locality** (built with it): a member gets work as a contiguous run of the plan's
@@ -637,21 +637,21 @@ What's planned of placement (phase 4, §12):
   or just after its last target of the step when that one's open; as many targets as fit a quarter
   of an hour by their measured times (`coord::JOB_S`: their cost lines, a target's own or its
   step's 90th percentile; none measured, one a job).
-- **A round shared** (crate::agent::publish, built behind `state/pool/round-share`, task #203;
+- **A map update shared** (crate::agent::publish, built behind `state/pool/update-share`, task #203;
   plan.md §8, Faster publishing): with every step to every member on, the lead's own job of a
-  round's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the targets
+  map update's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the targets
   over the other agents that asked for that step in the last half minute, `Coordinator::members_asking`,
   plus one; at most the step's batch), from the front of the plan, so the rest stay offered to the
-  members with the round's units rather than going into the lead's batch before a member asks.
+  members with the map update's units rather than going into the lead's batch before a member asks.
   Off: the step's batch, as before. (Of the five switches, `delta-catalog` goes on only once every
   Mac's server runs an app that reads delta catalogs: plan.md §8.) **Scratch state (§13): both Macs, run in part** (15 Oct 2026,
-  `root`, `round`, `every` and the five switches of plan.md §8's faster publishing, the M4 leading,
-  the M1 a member): the switches read (`agent: faster publishing: …`), the round begun at once (its
+  `root`, `map-update`, `every` and the five switches of plan.md §8's faster publishing, the M4 leading,
+  the M1 a member): the switches read (`agent: faster publishing: …`), the map update begun at once (its
   region the last), its slope and tree cover pieces, then `pack` (a cold start, one tile, then the
-  other three in one job) and `lo` granted to the M1 with the round's units. The lead's own share
+  other three in one job) and `lo` granted to the M1 with the map update's units. The lead's own share
   wasn't seen: its fake pass-sets job, run alone and never satisfied, held it throughout, so the
   roots and the catalog (the lead's) never ran there; the share, the delta catalog and the low
-  zooms' rounds are shown by the tests.
+  zooms' map updates are shown by the tests.
 - **How crucial a job is** (crate::agent::placement, built: phase 4's eleventh batch, behind
   `state/pool/placement`, §12) decides who takes it first, not plan order alone: a member's ask
   is tried on the steps by their slack in the forecast (the long poles first), within a step from
@@ -1481,26 +1481,26 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       only in the pool). The lead's coordinator offers the plan's every step but its own
       (`every::LEAD_ONLY`, the steps keeping the pass's answers, the worldwide steps) to every member
       whose measured room fits the target's measures, the map tiles' `pack` and `lo` among them
-      (each Mac's saves reach the records only through the journal; a round's step granted only
-      with the round's units, `as_of`); a cold start only with no job of its step under way, to the
+      (each Mac's saves reach the records only through the journal; a map update's step granted only
+      with the map update's units, `as_of`); a cold start only with no job of its step under way, to the
       member with the most room, the lead counted, alone; a
       job's targets as many as fit a quarter of an hour by their measured times (`pack` and `lo`
       now note their targets' costs); contiguous runs from the front of the plan, or just after the
       member's last; claims neither made nor read. The pass's worldwide jobs stay the lead's (they
-      aren't the plan's work; plan.md §10). Tests: a member offered `pack`, with the round's units,
+      aren't the plan's work; plan.md §10). Tests: a member offered `pack`, with the map update's units,
       no claim made, and its entry merged, two agents in one process, and off as before; a member
       short of a target's measured memory or disk offered none of it; a cold start alone on the
-      largest asking, none while a job of its step is under way or the lead has more; a round's step
-      only with the round's units, none with no round; others' leases left out of the lead's plan
+      largest asking, none while a job of its step is under way or the lead has more; a map update's step
+      only with the map update's units, none with no map update; others' leases left out of the lead's plan
       (the coordinator's `held_by_others`); runs contiguous; batches by time, and one a job with
       none measured. **Scratch state (§13): both Macs, run in part** (15 Oct 2026, the M4
       leading, the M1 a member, `root`, `region`, `every`): the switch read on both, no claim file
       made; the lead running its pass's sets (a step alone, so no room free now), the region's
       terrain and tree cover pieces, never run, went to the M1 as cold starts, one target a job, and
-      both entries were merged. The scratch region's plan reached no round, so `pack` and `lo`
+      both entries were merged. The scratch region's plan reached no map update, so `pack` and `lo`
       between the Macs, runs of several targets and the lead taking a cold start itself were shown
       only by the tests (the scratch state's fake jobs build no units: planned, a scratch state
-      whose records hold a round's work).
+      whose records hold a map update's work).
    10. **Tasks brokered by every member, pages talking to members directly: built** (§8, §9;
       crate::agent::brokers, crate::coord::brokers), behind `state/pool/brokers` (off while missing:
       the agent as it was; it acts only in the pool). A member's agent runs a coordinator of its own
@@ -1580,7 +1580,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       `SCENIC_OFFER_AHEAD=1`; switched off, both agents said so. Draws between two members asking,
       the long poles' order across steps with measured times and a slower page given a task ahead
       were shown only by the tests (the scratch state's fake jobs offer no subtrees and the region
-      reached no round).
+      reached no map update).
    12. **The forecast for equal machines** (§7.2): each member's slots as lanes, the pages as one,
       from the measures and the placement. Reports only: no switch.
    13. **What goes:** the steps table (its last columns replaced: §7.7), the claims

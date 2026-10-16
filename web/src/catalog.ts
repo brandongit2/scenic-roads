@@ -99,8 +99,17 @@ export interface BuildForecast {
   range: [number, number] | null;
   /** Why there's no finish to forecast (nothing left; a new pass first; the units waiting). */
   why?: string | null;
-  /** The rounds of publishing to come: when each goes out and the regions it adds. */
-  rounds: { at: number; regions: string[]; last: boolean }[];
+  /** The map updates to come: when each goes out and the regions it adds. */
+  updates?: MapUpdateFc[];
+  /** The same, from an older app (before task #209, a map update was a "round"). */
+  rounds?: MapUpdateFc[];
+}
+
+/** A map update to come (pipeline::agent::forecast::UpdateFc). */
+export interface MapUpdateFc {
+  at: number;
+  regions: string[];
+  last: boolean;
 }
 
 /** A data source's credit (pipeline::rules::Credit): what came from it, the source as its terms

@@ -565,10 +565,12 @@ map-page                the address to open the map on another device (docs/plan
                         server)
 agent/                  timings.jsonl, timings-run.json, timings-run-2.json (the jobs' timings: Timings,
                         below); status.json (the build Mac's; a helper writes helper.json, which that Mac's
-                        server shows), state.json, round.json (the last round of publishing:
+                        server shows), state.json, map-update.json (the last map update:
                         {began, regions, last, units: {logical: content name}, over},
-                        agent::build::Round; the jobs of the one under way read its units,
-                        SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/,
+                        agent::build::MapUpdate; the jobs of the one under way read its units,
+                        SCENIC_UNITS_AS_OF=<path>#<began>; round.json before task #209,
+                        still written beside it for an older app and read when it began later:
+                        plan.md §8, Renamed), job.json, agent.lock, logs/, cache/,
                         pack-idx/; clear-request.json (the owner's ask to clear this Mac's build
                         caches, from its menu or `scenic clean`: {by, at}, agent::room::ClearRequest;
                         renamed clear-request.json.taken as the agent takes it up, removed once it's
@@ -1021,8 +1023,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     off. Read by every agent; it acts only in the pool. On, no agent makes or reads the claims
     (`state/build/claims/`), and a member's ask carries `disk_mb` (its free disk less the agent's job reserve, `pipeline::agent::room::RESERVE`, 30 GiB, and the owner's
     room target, MB); a
-    grant of a round's step carries `as_of: {began, units}`, which the member's job reads from its
-    lease's folder (`round.json`, through `SCENIC_UNITS_AS_OF`).
+    grant of a map update's step carries `as_of: {began, units}`, which the member's job reads from its
+    lease's folder (`map-update.json`, through `SCENIC_UNITS_AS_OF`).
   - `state/pool/brokers`: the switch for tasks brokered by every member (docs/pool.md §8, §12
     phase 4's tenth batch; crate::agent::brokers). Present (or `on` in it) on, `off` in it or
     missing off. Read by every agent; it acts only in the pool. On, a member's heartbeat carries

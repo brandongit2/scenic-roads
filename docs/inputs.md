@@ -236,7 +236,7 @@ timetables/gtfs`, …), so it fits the pool unchanged (pool.md §2, principle 4:
   those to end), nor beside another step of its group of heavy NAS readers (the 3D buildings'
   `bldprep`), nor beside another check. Other members taking it is planned: the coordinator's
   offers are made with the pass's region work today (crate::agent::region_work), which a check
-  can't wait for. It holds no region and no round.
+  can't wait for. It holds no region and no map update.
 - **What it does:**
   1. Hashes the files the listing says may have changed (§4.2; BLAKE3's hash16, as content names
      are made: formats.md, Names and hashes). A file whose bytes are those of the accepted version
