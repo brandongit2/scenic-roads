@@ -3132,13 +3132,18 @@ At each phase's end an Opus agent reviews the work against this plan.
      two overlap the smaller wins, so a thing within about a kilometre of a border may take its
      neighbour's languages (the ruins of Wasigenstein, in Alsace 300 m from the border, read German).
      Fix, if it matters: the outlines' full rings near borders.
-9. **A worker's tail in a one-unit job only frees its Mac's cores** (docs/workers.md §3):
-   the job waits on a worker holding its tail only while its measured pace says it'll be back
-   before the job's own run would end, so a worker slower than the job's Mac is raced at once
-   (and kept to finish only to measure it), and the job's Mac runs the tail anyway. The paces live
-   in the coordinator alone: a restart measures each worker again. Fix: the job ends while a worker holds its tail,
-   its slot free for new work, and the agent commits the unit when the tail is back (or runs it
-   then, past its time): planned with the pool's phase 4.
+9. **A worker's tail in a one-unit job holds its slot** (docs/workers.md §3): the job waits on a
+   worker holding its tail only while its measured pace says it'll be back before the job's own
+   run would end, so a worker slower than the job's Mac is raced at once (and kept to finish only
+   to measure it), and the job's Mac runs the tail anyway. The paces live in the coordinator
+   alone: a restart measures each worker again. Built: while it waits so, the job says it does
+   (`SCENIC_WAITING`), and the agent counts its memory as it holds now and its cores as idle, so
+   a second job may start beside it in the room it frees, and yields to the memory guard when the
+   first goes on (docs/pool.md §7.7, A job waiting on a worker). Not built: the job ending while
+   the tail is out, its slot free and the agent committing the unit later; it would need a record
+   of each unit held that the lead can see, task ids that outlive the coordinator's restarts, and
+   the unit's folder kept past the slot's scratch being wiped. So the waiting job still holds its
+   slot, and only one job starts beside it.
 10. **The timetable feeds** (docs/inputs.md §6.7.1): the catalogue is fetched only when there's no
     copy (never refreshed: a new copy is put by hand, `scenic-build put sources/rail/catalogue csv
     feeds_v2.csv`); a declaration's `key` that `inputs/keys.env` doesn't hold isn't a warning (the

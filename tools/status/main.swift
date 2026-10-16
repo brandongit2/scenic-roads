@@ -491,6 +491,8 @@ struct Job: Decodable {
     let paused: String?
     /// Why it's stopping at its next safe point (the build pausing), while it is.
     let pausing: String?
+    /// What it waits on, while it waits on a worker holding its unit's tail (its room free beside it).
+    let waiting: String?
     let tail: String?
     let progress: JobProgress?
     /// Its parts, in order (a job of more than one says them), and the one it's on.
@@ -692,6 +694,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             out.append(b)
         }
         if let p = j.paused { out.append(Line(text: p, style: .small)) } else if j.pausing != nil { out.append(Line(text: "Stopping at its next safe point (what it's on is kept)", style: .small)) }
+        if let w = j.waiting { out.append(Line(text: w.prefix(1).uppercased() + w.dropFirst(), style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
         // The log's last lines, without the terminal's colour codes.
         let plain = (j.tail ?? "").replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
@@ -706,6 +709,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
         }
         if let p = j.paused { out.append(Line(text: p, style: .small)) } else if j.pausing != nil { out.append(Line(text: "Stopping at its next safe point (what it's on is kept)", style: .small)) }
+        if let w = j.waiting { out.append(Line(text: w.prefix(1).uppercased() + w.dropFirst(), style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
     }
     // The other Macs helping (units only), each with its job.

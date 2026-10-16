@@ -395,6 +395,9 @@ fn status(args: &[String]) -> Result<()> {
     match &st.job {
         Some(j) => {
             println!("Running: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());
+            if let Some(w) = &j.waiting {
+                println!("  {w}");
+            }
             // Its parts, done, under way and to come.
             for (i, p) in j.parts.iter().enumerate() {
                 let mark = match j.part {
@@ -412,6 +415,9 @@ fn status(args: &[String]) -> Result<()> {
     }
     if let Some(j) = &st.beside {
         println!("Beside it: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());
+        if let Some(w) = &j.waiting {
+            println!("  {w}");
+        }
     }
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);

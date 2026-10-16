@@ -185,6 +185,9 @@ struct Slot {
     /// Its own job's timings, taken as it ended, for the lead when this Mac no longer leads (the
     /// job's hand-off carries them: `end_lease`).
     timings_out: Option<crate::timings::RunRec>,
+    /// Its job started beside one that waited on a worker (`waiting_on`): it's the one that yields
+    /// to the memory guard when the two then hold too much together (memguard::decide).
+    yields: bool,
 }
 
 /// How long the first slot may pass over a job that can't share the Mac with the second's (it then
@@ -545,6 +548,10 @@ pub struct JobView {
     pub mem_mb: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<usize>,
+    /// What it waits on, while it waits on a worker holding its unit's tail and nothing else (its
+    /// slot's room then counted as free beside it: docs/pool.md §7.7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1814,6 +1821,29 @@ impl Agent {
         self.o.home.join(if k == 0 { "written" } else { "written-2" })
     }
 
+    /// Where slot `k`'s job keeps the file that says it waits on a worker (crate::offload's
+    /// WAITING_ENV), while it does.
+    fn waiting_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(if k == 0 { "waiting" } else { "waiting-2" })
+    }
+
+    /// What slot `k`'s job waits on, when it waits on a worker holding its unit's tail and nothing
+    /// else (its file, `waiting_path`): None with no job, no file, or a stale one (its process gone,
+    /// or not of this job's group).
+    fn waiting_on(&self, k: usize) -> Option<crate::offload::WaitNote> {
+        let r = self.slots[k].running.as_ref()?;
+        let n = crate::offload::WaitNote::read(&self.waiting_path(k))?;
+        let pid = i32::try_from(n.pid).ok()?;
+        (pid == r.pgid || crate::sys::group_members(r.pgid).contains(&pid)).then_some(n)
+    }
+
+    /// What slot `k`'s job waits on, in words, while it waits on a worker (`waiting_on`).
+    fn waiting_words(&self, k: usize) -> Option<String> {
+        let n = self.waiting_on(k)?;
+        let who = if n.worker.is_empty() { "a worker" } else { n.worker.as_str() };
+        Some(format!("waiting on {who} for its unit's tail ({} min so far): its room free for a job beside it", now_s().saturating_sub(n.since) / 60))
+    }
+
     /// Slot `k`'s worker in the build's history and the forecast: this Mac, or its second job.
     fn worker_of(&self, k: usize) -> String {
         if k == 0 {
@@ -2431,6 +2461,7 @@ impl Agent {
             self.slots[k].mem_drain = None;
             self.slots[k].mem_drain_alone = false;
             self.slots[k].running = None;
+            self.slots[k].yields = false;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(true);
         }
@@ -2911,7 +2942,9 @@ impl Agent {
                 continue;
             }
             self.beside_why = None;
+            let beside_waiting = self.waiting_on(0).is_some();
             if self.try_start(1, spec.clone(), c, root, &mut Vec::new()) {
+                self.slots[1].yields = beside_waiting;
                 return;
             }
             // (Why it didn't: try_start says, in beside_why; the next may.)
@@ -3019,7 +3052,8 @@ impl Agent {
         let late = (0..SLOTS).find(|&k| draining[k] && !self.slots[k].mem_drain_alone && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= self.grace));
         let gb = |mb: u64| mb as f64 / 1024.0;
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
-        let stop = match (late, memguard::decide(&held, limit, &draining)) {
+        let yields: Vec<bool> = self.slots.iter().map(|s| s.running.is_some() && s.yields).collect();
+        let stop = match (late, memguard::decide(&held, limit, &draining, &yields)) {
             (Some(k), _) => Some((k, format!("stopped by the memory guard: it reached no safe point in {} min while the jobs here held {:.1} GB together, past this Mac's limit of {:.1} GB", DRAIN_GRACE.as_secs() / 60, gb(total), gb(limit)))),
             (None, memguard::Act::Nothing) => None,
             (None, memguard::Act::Drain(k)) => {
@@ -3082,6 +3116,7 @@ impl Agent {
         self.slots[k].mem_drain = None;
         self.slots[k].mem_drain_alone = false;
         self.slots[k].guard_stopped = false;
+        self.slots[k].yields = false;
         std::fs::remove_file(self.record_path(k)).ok();
         true
     }
@@ -3223,7 +3258,13 @@ impl Agent {
         if limit == 0 {
             return Some("this Mac's memory can't be read: nothing starts beside another job".into());
         }
-        let theirs_mb = theirs.mem_mb.max(self.held_mb(other).unwrap_or(0));
+        // (One waiting on a worker holding its unit's tail: as it holds now, its own work done
+        // until the tail is back; the memory guard has the job beside it yield if the two then
+        // hold too much, `yields`.)
+        let theirs_mb = match (self.waiting_on(other), self.held_mb(other)) {
+            (Some(_), Some(now)) => now,
+            _ => theirs.mem_mb.max(self.held_mb(other).unwrap_or(0)),
+        };
         let gb = |mb: u64| mb as f64 / 1024.0;
         if mine.mem_mb + theirs_mb > limit {
             return Some(format!("measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB", gb(mine.mem_mb), gb(theirs_mb), gb(limit)));
@@ -3298,6 +3339,7 @@ impl Agent {
     /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
     /// the time it has left (kept for the forecast).
     fn job_view(&mut self, k: usize) -> Option<JobView> {
+        let waiting = self.waiting_words(k);
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut()?;
         if let Some(p) = jobs::parts(&r.log) {
@@ -3339,6 +3381,7 @@ impl Agent {
             part: r.parts.as_ref().map(|p| p.0),
             mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
             threads: Some(r.threads),
+            waiting,
         })
     }
 
@@ -3712,7 +3755,9 @@ impl Agent {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         // All the cores, whoever is at the Mac (the owner's choice; a helper, two fewer: its Mac has
         // less memory). The second job: half (the two jobs' threads share the cores).
+        // (Beside a job that waits on a worker, its cores idle: all of them.)
         let threads = match (k, self.o.helper) {
+            (1.., _) if self.waiting_on(0).is_some() => cores,
             (1.., _) => (cores / 2).max(1),
             (_, true) => cores.saturating_sub(2).max(1),
             (_, false) => cores,
@@ -3802,6 +3847,11 @@ impl Agent {
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
+        // Where it says it waits on a worker holding its unit's tail, while it does (`waiting_on`),
+        // afresh.
+        let waiting = self.waiting_path(k);
+        std::fs::remove_file(&waiting).ok();
+        env.push((crate::offload::WAITING_ENV.into(), waiting.to_string_lossy().into_owned()));
         // Its connections out through the proxy (Wikimedia's metered by the pool's budget), this
         // Mac's own direct, and no other way out (the sandbox).
         let sandbox = match &self.proxy {
@@ -4782,6 +4832,8 @@ impl Agent {
         let gap_s = if self.publishing.get().per_region { publish::update_gap(self.update_measured.get()) } else { build::PUBLISH_EVERY_S } as f64;
         let inp = forecast::Input { now: now_s(), before, regions, cost: &cost, update_s, last_update_s, blind, chains: chain_jobs, after, idle, since_last, gap_s, under_way, machines, running };
         let mut f = forecast::forecast(&inp);
+        // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
+        f.waiting = (0..SLOTS).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
         // alone: each member's slots as lanes (this Mac's first: its map updates; its second job's
         // memory a quarter of the Mac's, as above), the pages as one (forecast::pool_lanes), each at
@@ -7273,6 +7325,70 @@ mod tests {
         assert!(a.measured_job(&job("peaks", "6/9/9")).is_some_and(|m| m.mem_mb == 5120 && !m.own));
     }
 
+    /// A unit job waiting on a worker holding its unit's tail (its `WAITING_ENV` file) counts, beside
+    /// it, as the memory it holds now, its cores idle: a second job starts in the room it frees; a
+    /// stale file (its process not the job's) counts for nothing; when the first goes on and the two
+    /// hold too much, the second yields to the memory guard, the larger or not.
+    #[test]
+    fn a_job_waiting_on_a_worker_frees_its_room_and_the_job_beside_it_yields() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
+        a.free_set = Some(100 << 30);
+        // (A Mac of 16 GB: its limit 12 GB.)
+        a.mem_set = Some((16 << 10, 12 << 10));
+        let job = |step: &str, t: &str| JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let c = a.coord.as_ref().unwrap();
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        c.add_costs(&[(crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216)), (crate::coord::cost_key("labels", "labels"), cost("labels", 6144))]);
+        assert!(a.try_start(0, job("unit", "6/3/3"), &cond, Some(&root), &mut Vec::new()));
+        let tick = |a: &mut Agent, held: Vec<Option<u64>>| {
+            a.sampler.set_test(Some(held), Some(false));
+            a.sampler.tick();
+            for k in 0..SLOTS {
+                a.tend(k, &cond, Some(&root), 0).unwrap();
+            }
+        };
+        // Its tail out, holding 1 GB now, but not saying it waits: by its measure (9 GB), labels
+        // (6 GB) doesn't fit beside it.
+        tick(&mut a, vec![Some(1 << 10), None]);
+        let labels = [job("labels", "labels")];
+        a.start_second(&labels, &cond, Some(&root));
+        assert!(a.slots[1].running.is_none() && a.beside_why.as_deref().is_some_and(|w| w.contains("past this Mac's limit")), "{:?}", a.beside_why);
+        // A stale file (a process not of the job's): the same.
+        let note = |pid: u32| crate::offload::WaitNote { pid, worker: "ipad".into(), task: 7, since: now_s() };
+        assert!(note(1).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
+        assert!(a.waiting_on(0).is_none());
+        a.start_second(&labels, &cond, Some(&root));
+        assert!(a.slots[1].running.is_none());
+        // Its own (the job's process): labels starts beside it, with all the cores, yielding.
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid as u32;
+        assert!(note(pgid).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
+        assert_eq!(a.waiting_on(0).map(|n| n.worker), Some("ipad".to_string()));
+        assert!(a.job_view(0).and_then(|j| j.waiting).is_some_and(|w| w.contains("waiting on ipad")));
+        a.start_second(&labels, &cond, Some(&root));
+        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("labels labels"), "{:?}", a.beside_why);
+        assert!(a.slots[1].yields);
+        assert_eq!(a.slots[1].running.as_ref().map(|r| r.threads), Some(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)));
+        // The tail back, the unit going on (its file gone): the two past the limit together, the
+        // second the larger, and it's the one that stops at its next safe point; the unit goes on.
+        std::fs::remove_file(a.waiting_path(0)).unwrap();
+        tick(&mut a, vec![Some(5 << 10), Some(8 << 10)]);
+        assert!(!a.guard());
+        assert!(a.slots[1].mem_drain.is_some() && a.slots[0].mem_drain.is_none(), "{:?}", a.slots[0].mem_drain);
+        assert_eq!(a.guard_held(0), Some("unit 6/3/3".to_string()));
+        for k in 0..SLOTS {
+            if let Some(r) = a.slots[k].running.as_mut() {
+                r.stop(Duration::from_secs(5));
+                a.end_lease(k, Outcome::Interrupted, &[], "stopped");
+            }
+            a.slots[k].running = None;
+        }
+    }
+
     /// The budgets (docs/pool.md §7.7): the agent's proxy runs and every job goes out through it,
     /// sandboxed (a connection around it denied); the Wikidata steps share the Mac, as do two heavy
     /// NAS readers, two raw-tile readers and a step the table once ran alone; no job starts without
@@ -7850,7 +7966,7 @@ mod tests {
         put(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), &[1; 1000]);
         let mut a = running_agent(&root, &home, true);
         let beat = |at: u64, done: bool, job: Option<&str>| {
-            let job = job.map(|id| JobView { id: id.into(), what: format!("Ranking the world's place labels ({id})"), started: at, paused: None, pausing: None, tail: String::new(), parts: Vec::new(), part: None, progress: None, mem_mb: None, threads: None });
+            let job = job.map(|id| JobView { id: id.into(), what: format!("Ranking the world's place labels ({id})"), started: at, paused: None, pausing: None, tail: String::new(), parts: Vec::new(), part: None, progress: None, mem_mb: None, threads: None, waiting: None });
             let st = Status { host: "the-lead".into(), beat: at, job, forecast: Some(forecast::Forecast { at, ..forecast_now(done) }), ..Default::default() };
             std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
         };
@@ -8479,7 +8595,7 @@ mod tests {
     fn the_checklist_says_why_a_step_waits() {
         let step = |what: &str, steps: &[&str], left: usize| build::Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
         let list = || vec![step("Worldwide sets", &["pass-sets", "reach"], 1), step("Roads, elevations and scenery", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing the new map data", &["catalog", "catalog-held"], 0)];
-        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None, mem_mb: None, threads: None }), ..Default::default() };
+        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None, mem_mb: None, threads: None, waiting: None }), ..Default::default() };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
         let mut l = list();
         annotate(&mut l, &["heritage".to_string()], &[helper], &waiting);

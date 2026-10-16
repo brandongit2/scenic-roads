@@ -37,6 +37,48 @@ pub struct Offload {
     waiting: Waiting,
     /// The time its waits are measured and slept in (a test's virtual one: `clock`).
     clock: std::sync::Arc<dyn store::clock::Clock>,
+    /// The file it tells its agent it waits on a worker in (`WAITING_ENV`), while it does.
+    note: Option<PathBuf>,
+}
+
+/// The environment variable naming the file a job keeps while it waits on a worker holding one of
+/// its tasks, and nothing else (`Patience::wait_on`'s wait): the agent (docs/pool.md §7.7) then
+/// counts the job's memory as it holds it now, its cores idle, and may start a second job beside it.
+pub const WAITING_ENV: &str = "SCENIC_WAITING";
+
+/// What a job's waiting file says (`WAITING_ENV`): its process (the agent takes the file as stale
+/// once that process is gone or isn't its job's), the worker and the task, and since when.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WaitNote {
+    pub pid: u32,
+    pub worker: String,
+    pub task: u64,
+    pub since: u64,
+}
+
+/// A job's waiting file while it's kept: written as the job begins waiting on a worker, removed as
+/// it stops (whatever way it stops: dropped).
+pub struct WaitFile {
+    path: PathBuf,
+}
+
+impl WaitNote {
+    /// Writes `self` to `path` (whole: crate::whole), kept until the returned value drops.
+    pub fn keep(&self, path: &Path) -> Option<WaitFile> {
+        crate::whole::write(path, &serde_json::to_vec(self).ok()?).ok()?;
+        Some(WaitFile { path: path.to_path_buf() })
+    }
+
+    /// The note in `path`, when there's one that reads.
+    pub fn read(path: &Path) -> Option<WaitNote> {
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    }
+}
+
+impl Drop for WaitFile {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).ok();
+    }
 }
 
 /// How long a job waits on a worker holding one of its tasks.
@@ -113,7 +155,7 @@ impl Offload {
         let version = std::env::current_exe().and_then(std::fs::metadata).map(|m| format!("{:x}-{:x}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
         let dir = scratch.join("tasks");
         std::fs::remove_dir_all(&dir).ok();
-        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real() }
+        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real(), note: std::env::var_os(WAITING_ENV).map(PathBuf::from) }
     }
 
     /// The same, waiting on a worker holding a task as `w` says.
@@ -125,6 +167,12 @@ impl Offload {
     /// The same, its waits measured and slept in `clock` (a test's virtual clock).
     pub fn clock(mut self, clock: std::sync::Arc<dyn store::clock::Clock>) -> Offload {
         self.clock = clock;
+        self
+    }
+
+    /// The same, telling its agent it waits on a worker in `path` (`WAITING_ENV`; a test's).
+    pub fn noting(mut self, path: &Path) -> Offload {
+        self.note = Some(path.to_path_buf());
         self
     }
 
@@ -252,6 +300,9 @@ impl Offload {
         let since = |t: std::time::Instant| clock.now().saturating_duration_since(t);
         let began = clock.now();
         let mut held: Option<(std::time::Instant, String)> = None;
+        // (Its agent told while it waits on a worker holding the task, nothing else to do: the
+        // file goes as the wait ends, whichever way.)
+        let mut _told: Option<WaitFile> = None;
         // (Whether to give a worker a moment to take it: decided on the first status.)
         let mut lease_wait = None;
         loop {
@@ -276,6 +327,12 @@ impl Offload {
                         let pace = st["pace"].as_f64().map_or("not measured".to_string(), |p| format!("{p:.2}× this Mac's time"));
                         eprintln!("offload: task {}: {} has it (its pace {pace}), not back before this Mac's run would be: run here too", t.id, st["worker"].as_str().unwrap_or(""));
                         return Ok(st);
+                    }
+                    if _told.is_none() {
+                        if let Some(path) = &self.note {
+                            let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                            _told = WaitNote { pid: std::process::id(), worker: held.as_ref().map(|h| h.1.clone()).unwrap_or_default(), task: t.id, since }.keep(path);
+                        }
                     }
                 }
                 _ => {
@@ -640,7 +697,7 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into(), "{dir}/kept.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real() };
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real(), note: None };
         let u = Unit::parse("6/1/1").unwrap();
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.
@@ -760,7 +817,7 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3), waiting: Waiting::ByPace, clock: clock.clone() };
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3), waiting: Waiting::ByPace, clock: clock.clone(), note: None };
         (clock, c, url, o, dir, bin, runs)
     }
 
@@ -789,7 +846,10 @@ mod tests {
         // workers act at its moments, and this Mac's own run takes a tenth of a second of it.)
         use std::time::Duration;
         let d = tempfile::tempdir().unwrap();
-        let (clock, c, url, o, dir, bin, runs) = setup(d.path());
+        let (clock, c, url, mut o, dir, bin, runs) = setup(d.path());
+        // (Its agent told while it waits on a worker: `WAITING_ENV`.)
+        let note = d.path().join("waiting");
+        o.note = Some(note.clone());
         let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
         let here = |dir: &Path| {
             clock.advance(Duration::from_millis(100));
@@ -864,9 +924,18 @@ mod tests {
             t = o.offer(unit, &dir, None, &runs).unwrap();
         }
         let w = worker(&clock, &url, &c.contact.token, "m1", &bin, d.path().join("fast"), 1.0, 1.0);
+        // (Its waiting file, as the agent would read it halfway through the wait.)
+        let told = Arc::new(Mutex::new(None));
+        let (n, tl) = (note.clone(), told.clone());
+        clock.after(Duration::from_millis(1500), move || *tl.lock().unwrap() = Some(WaitNote::read(&n)));
         let began = clock.slept();
         let mut ran = false;
         let s = o.settle(&t, &dir, true, p, &mut || Ok(ran = true)).unwrap().unwrap();
+        // While it waited on m1, the file said so (this process, m1, the task); gone once it stopped
+        // waiting. (Never written in the waits above: none was on a worker it went on waiting for.)
+        let seen = told.lock().unwrap().clone().expect("read during the wait").expect("the file kept");
+        assert_eq!((seen.pid, seen.worker.as_str(), seen.task), (std::process::id(), "m1", t.id));
+        assert!(!note.exists());
         assert_eq!(*w.lock().unwrap(), Some(crate::coord::client::Handed::Taken));
         assert!(matches!(s, Settled::Remote(ref w) if w == "m1") && !ran);
         assert_eq!(waited(began), Duration::from_secs(2), "a second for it to take it, one for it to finish");

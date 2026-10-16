@@ -663,7 +663,8 @@ What's planned of placement (phase 4, §12):
   its order (planned: the lead's slots placed the same way).
 - **A Mac shared by measure** (built: phase 4's fifth batch, always on since its thirteenth, §12):
   a job starts beside another only if both jobs' measured memory and disk fit what the Mac has
-  left; a cold start runs alone (§7.7). No list or group of steps keeps two jobs apart: the raw
+  left; a cold start runs alone (§7.7); a job waiting on a worker holding its unit's tail counts
+  as the memory it holds now, its cores idle (§7.7, A job waiting on a worker). No list or group of steps keeps two jobs apart: the raw
   tiles' accessor, the budgets' proxy and the answers' lease guard the resources where they're
   used (§7.7).
 - **Resuming** (crate::agent::resume, built behind `state/pool/resume`: phase 4's eighth batch,
@@ -701,6 +702,23 @@ What's planned of placement (phase 4, §12):
   a quarter of the Mac's memory, as in the forecast; and an equal lane may build a region's slope
   and tree cover before its map update is due (every step to every member), where the lead's
   forecast waits for it.
+
+**A job waiting on a worker** (built: crate::offload's `WAITING_ENV`, the agent's `waiting_on`).
+A unit job whose last unit's tail a worker holds (a page, or another Mac), the job waiting on it
+because that worker's measured pace beats this Mac's (`offload::Patience`; a slower one is raced
+at once), keeps a small file saying so while it waits (`SCENIC_WAITING`, named by the agent per
+slot as `SCENIC_WRITTEN` is: its process, the worker, the task, since when), written as the wait
+begins and removed as it ends, whichever way. The agent takes the file as stale when its process
+is gone or isn't of the slot's job's group. While it's there, placing a second job beside it (the
+beside rule above) counts the waiting job's memory as it holds now (the sampler's), not its
+target's measure, and its cores as idle: the job beside starts with all the cores, not half. It's
+the existing second slot (`start_second`), no new kind of job; the waiting job stays its slot's
+until its tail is back and it commits the unit (or races it, past its patience). The job started
+beside it **yields**: when the first goes on and the two hold more than the limit together, the
+memory guard drains the one beside, the larger or not, and nothing else while it drains (it's
+stopped at once if it reaches no safe point in the time a pause gives, as any drained job); a job
+past the limit by itself is stopped as any. The status says the job waits on the worker (`waiting`,
+beside its progress), and the forecast lists it per machine (`waiting`).
 
 **A job far over its memory** (crate::agent::memguard, built: phase 4's second batch, §12). macOS
 swaps rather than kills, so a job holding more than its Mac has (terrain's whole-area run on the

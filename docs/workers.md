@@ -107,7 +107,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     `unit-stages.json`, else 120 s). A worker not measured is raced at once. Past that it's raced
     there (the job's result counts; a worker's that comes in too is compared: each file it
     sent with this Mac's, and each this Mac's run changed that it didn't send with the copy it was
-    sent).
+    sent). While it waits so, and has nothing else to do, the job keeps a small file saying so
+    (`offload::WAITING_ENV`, `SCENIC_WAITING`: its process, the worker, the task; written as the
+    wait begins, removed as it ends), and its agent counts its slot's room as free beside it
+    (docs/pool.md §7.7, A job waiting on a worker).
   - **Measured by finishing:** a task the job ran itself while a worker not measured holds it is
     kept for that worker to finish (`Tasks::measure`: its files moved into the coordinator's folder,
     no longer the job's, so the job may end), its result not used, its time its pace.

@@ -142,6 +142,10 @@ pub struct Forecast {
     /// pool: reported beside this one, nothing placed or decided by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equal: Option<Box<Forecast>>,
+    /// The machines (this Mac's slots) whose job waits on a worker holding its unit's tail, and on
+    /// what (the agent's `waiting_on`): their room free for a job beside it meanwhile.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waiting: BTreeMap<String, String>,
 }
 
 impl Forecast {

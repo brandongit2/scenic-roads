@@ -77,8 +77,10 @@ pub enum Act {
 
 /// The guard's decision (`Act`), by measure alone: nothing while the jobs together fit `limit`;
 /// else the largest when it alone passes it, or the others drained (each in turn: the first not
-/// draining yet, `draining`) when it fits alone.
-pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool]) -> Act {
+/// draining yet, `draining`) when it fits alone. A job that `yields` (started beside one that waited
+/// on a worker, which then went on) is the one drained, larger or not, and while it drains no other
+/// is: the job it was started beside isn't stopped for it.
+pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[bool]) -> Act {
     let total: u64 = held.iter().flatten().sum();
     if limit == 0 || total <= limit {
         return Act::Nothing;
@@ -86,6 +88,10 @@ pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool]) -> Act {
     let Some((big, mb)) = held.iter().enumerate().filter_map(|(k, m)| m.map(|m| (k, m))).max_by_key(|&(k, m)| (m, std::cmp::Reverse(k))) else { return Act::Nothing };
     if mb > limit {
         return Act::Over(big);
+    }
+    let yielding = |k: usize| yields.get(k).copied().unwrap_or(false) && held[k].is_some();
+    if let Some(k) = (0..held.len()).find(|&k| yielding(k)) {
+        return if draining.get(k).copied().unwrap_or(false) { Act::Nothing } else { Act::Drain(k) };
     }
     match held.iter().enumerate().find(|&(k, m)| k != big && m.is_some() && !draining.get(k).copied().unwrap_or(false)) {
         Some((k, _)) => Act::Drain(k),
@@ -710,16 +716,25 @@ mod tests {
     #[test]
     fn decisions_by_measure_alone() {
         let l = 42 << 10;
-        assert_eq!(decide(&[Some(30 << 10), Some(12 << 10)], l, &[false, false]), Act::Nothing);
-        assert_eq!(decide(&[None, None], l, &[false, false]), Act::Nothing);
-        assert_eq!(decide(&[Some(35 << 10), Some(10 << 10)], l, &[false, false]), Act::Drain(1));
-        assert_eq!(decide(&[Some(10 << 10), Some(35 << 10)], l, &[false, false]), Act::Drain(0));
-        assert_eq!(decide(&[Some(35 << 10), Some(10 << 10)], l, &[false, true]), Act::Nothing);
-        assert_eq!(decide(&[Some(43 << 10), Some(1 << 10)], l, &[false, true]), Act::Over(0));
-        assert_eq!(decide(&[None, Some(50 << 10)], l, &[false, false]), Act::Over(1));
-        assert_eq!(decide(&[Some(25 << 10), Some(25 << 10)], l, &[false, false]), Act::Drain(1));
+        assert_eq!(decide(&[Some(30 << 10), Some(12 << 10)], l, &[false, false], &[false, false]), Act::Nothing);
+        assert_eq!(decide(&[None, None], l, &[false, false], &[false, false]), Act::Nothing);
+        assert_eq!(decide(&[Some(35 << 10), Some(10 << 10)], l, &[false, false], &[false, false]), Act::Drain(1));
+        assert_eq!(decide(&[Some(10 << 10), Some(35 << 10)], l, &[false, false], &[false, false]), Act::Drain(0));
+        assert_eq!(decide(&[Some(35 << 10), Some(10 << 10)], l, &[false, true], &[false, false]), Act::Nothing);
+        assert_eq!(decide(&[Some(43 << 10), Some(1 << 10)], l, &[false, true], &[false, false]), Act::Over(0));
+        assert_eq!(decide(&[None, Some(50 << 10)], l, &[false, false], &[false, false]), Act::Over(1));
+        assert_eq!(decide(&[Some(25 << 10), Some(25 << 10)], l, &[false, false], &[false, false]), Act::Drain(1));
         // A limit unknown: nothing, however much.
-        assert_eq!(decide(&[Some(50 << 10)], 0, &[false]), Act::Nothing);
+        assert_eq!(decide(&[Some(50 << 10)], 0, &[false], &[false]), Act::Nothing);
+        // A job started beside one that waited on a worker yields when that one goes on, the
+        // larger or not; while it drains, the other isn't drained for it; past the limit alone,
+        // either is stopped as any.
+        let y = &[false, true];
+        assert_eq!(decide(&[Some(10 << 10), Some(35 << 10)], l, &[false, false], y), Act::Drain(1));
+        assert_eq!(decide(&[Some(35 << 10), Some(10 << 10)], l, &[false, false], y), Act::Drain(1));
+        assert_eq!(decide(&[Some(10 << 10), Some(35 << 10)], l, &[false, true], y), Act::Nothing);
+        assert_eq!(decide(&[Some(30 << 10), Some(10 << 10)], l, &[false, false], y), Act::Nothing);
+        assert_eq!(decide(&[Some(43 << 10), Some(1 << 10)], l, &[false, false], y), Act::Over(0));
     }
 
     #[test]
