@@ -128,10 +128,6 @@ impl Progress {
         Ok(())
     }
 
-    fn done(&self, name: &str) -> bool {
-        self.done.contains(name)
-    }
-
     /// A checkpoint: the outputs so far, and `name` done.
     fn mark(&mut self, name: &str) -> Result<()> {
         self.flush()?;

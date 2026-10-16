@@ -135,8 +135,8 @@ pub fn held_logical(unit: &str) -> String {
 }
 
 /// The records' entry recording that the build's readers read unit `unit`'s accepted version, for a
-/// unit moved from a drop box read directly (the regions, §6.1.10): written once, by the unit's
-/// check job, naming the migration's proof it was switched on.
+/// unit moved to declared inputs (the regions, §6.1.10; the elevation datasets, §6.8): written once,
+/// by the unit's check job, naming the app it was switched on.
 pub fn switched_logical(unit: &str) -> String {
     format!("{}/@switched", store_dir(unit))
 }
@@ -334,7 +334,7 @@ pub trait Checks: Sync {
     }
     /// The bytes to record as the unit's `@switched` (`switched_logical`), when its readers are to
     /// switch to accepted version `index` now (the regions': the migration's proof says the same of
-    /// exactly that index); None otherwise. Asked only while the records have none.
+    /// exactly that index; the elevation datasets': at once); None otherwise. Asked only while the records have none.
     fn switch(&self, _root: &Path, _index: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }

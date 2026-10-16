@@ -394,8 +394,9 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     if let Some(r) = &d.report {
         said += &format!("; held: {} ({} finding{})", r.held.join(", "), r.findings.len(), if r.findings.len() == 1 { "" } else { "s" });
     }
-    // (The readers' switch to the accepted version, recorded once, when the migration's proof is of
-    // the version the records name now.)
+    // (The readers' switch to the accepted version, recorded once, when the unit's checks say so:
+    // the regions' when the migration's proof is of the version the records name now, the
+    // elevation datasets' as soon as a version is accepted.)
     if out.get(&super::switched_logical(unit)).is_none() {
         if let Some(index) = out.get(&super::logical(unit)).map(str::to_string) {
             if let Some(b) = checks.switch(&root, &index)? {

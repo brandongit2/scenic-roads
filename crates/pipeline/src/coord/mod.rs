@@ -253,7 +253,7 @@ pub struct Shared {
     /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
     /// not fresh, no longer leading), workers told to ask again in a moment.
     pub moving: Option<String>,
-    /// The app the newer of the readers' switches was proved on (the regions', the elevation
+    /// The app the newer of the readers' switches was recorded on (the regions', the elevation
     /// datasets': crate::inputs::regions::read::switch_app), as the lead's agent last read it: no
     /// work for an older app (a page's being this Mac's), whatever else it matches.
     pub min_app: Option<String>,
@@ -1419,7 +1419,7 @@ impl Coordinator {
         self.shared.lock().unwrap().moving = why;
     }
 
-    /// The app the newer readers' switch was proved on (`Shared::min_app`; None: none recorded).
+    /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
     pub fn set_min_app(&self, app: Option<String>) {
         self.shared.lock().unwrap().min_app = app;
     }
@@ -1868,12 +1868,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 s.seen(&a.worker, why.clone(), None, now);
                 return Ok((409, serde_json::json!({ "error": why })));
             }
-            // Nor one older than the app a readers' switch was proved on (its keys and code are
+            // Nor one older than the app a readers' switch was recorded on (its keys and code are
             // from before it: crate::inputs::regions::read::needed_app); a page runs this Mac's.
             if let Some(min) = s.min_app.clone() {
                 let theirs = if a.kind == "native" { a.app.clone().unwrap_or_default() } else { s.app.clone() };
                 if !crate::pool::term::app_at_least(&theirs, &min) {
-                    let why = format!("on the app of {}, older than the one the readers' switch was proved on ({}): it builds once it runs that one or newer", if theirs.is_empty() { "an older one".to_string() } else { app_when(&theirs) }, app_when(&min));
+                    let why = format!("on the app of {}, older than the one the readers' switch was recorded on ({}): it builds once it runs that one or newer", if theirs.is_empty() { "an older one".to_string() } else { app_when(&theirs) }, app_when(&min));
                     s.seen(&a.worker, why.clone(), None, now);
                     return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": why })) } else { (204, serde_json::Value::Null) });
                 }
@@ -3376,7 +3376,7 @@ mod tests {
         // (the lead's own the same as the worker's), a page included; on the switch's own, again.
         c.set_min_app(Some("20261005-1600-ffffffff".into()));
         let e = w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).unwrap_err();
-        assert!(e.to_string().contains("readers' switch was proved on"), "{e:#}");
+        assert!(e.to_string().contains("readers' switch was recorded on"), "{e:#}");
         c.set_min_app(Some("20261005-1508-84142d3".into()));
         assert!(w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).is_ok());
         c.set_min_app(None);

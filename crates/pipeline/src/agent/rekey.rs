@@ -386,8 +386,7 @@ pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, S
 /// (crate::inputs::elevation's switch): a unit current under its key from before (the DEM rules'
 /// versions) whose ways a single dataset meets is recorded under its key now. Its heights are what
 /// they were: where one dataset alone has data there's nothing to blend, and that dataset is the
-/// one the DEM rules fell through to (the declared coverages hold every file's footprint, and the
-/// migration's proof showed the same heights outside the blend bands). The others are built again.
+/// one the DEM rules fell through to (the declared coverages hold every file's footprint). The others are built again.
 #[allow(clippy::too_many_arguments)]
 fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: &Reaches, tiles: &TerrainTiles, out: &mut Rekeyed) {
     let Ok(Some(ds)) = tiles.elevation(m) else { return };

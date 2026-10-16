@@ -362,19 +362,6 @@ fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
     Ok(Some(DemRange { bx, made, keys, elev, srcs, read, n }))
 }
 
-/// A unit's kept DEM samples file (`dem_samples_keep`) read whole: its vertices (E7), heights and
-/// sources, and what it was made under; None when it isn't whole. (The elevation migration's
-/// proof reads them: scenic-build elevation-proof.)
-pub fn dem_samples_read(p: &Path) -> Result<Option<(Vec<[i32; 2]>, Vec<f32>, Vec<u8>, [u32; 4])>> {
-    Ok(dem_range(p, [i32::MIN, i32::MIN, i32::MAX, i32::MAX])?.map(|r| {
-        let pts = r.keys.iter().map(|&k| {
-            let (lon, lat) = dem_lon_lat(k);
-            [lon, lat]
-        });
-        (pts.collect(), r.elev, r.srcs, r.made)
-    }))
-}
-
 /// The units' kept DEM samples files in `dir`, the newest of each unit's: (unit, its box, the file).
 pub fn dem_samples_files(dir: &Path) -> Vec<(String, Option<[i32; 4]>, PathBuf)> {
     let mut files: BTreeMap<String, (PathBuf, Option<[i32; 4]>)> = BTreeMap::new();

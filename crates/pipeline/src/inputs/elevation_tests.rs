@@ -203,3 +203,12 @@ fn a_pyramid_of_tiles_not_256_pixels_is_refused() {
     assert_eq!(w.iter().map(|x| x.check()).collect::<Vec<_>>(), vec![DATA]);
     assert!(w[0].message.contains("512 × 512"), "{}", w[0].message);
 }
+
+#[test]
+fn the_switch_is_recorded_as_soon_as_a_version_is_accepted() {
+    let f = Fixture::new(vec![]);
+    let b = f.checks.switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json").unwrap().expect("switched at once");
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["index"], "sources/inputs/elevation/@index.0123456789abcdef.json");
+    assert!(v["app"].as_str().is_some_and(|a| !a.is_empty()), "{v}");
+}

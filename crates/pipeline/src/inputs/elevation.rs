@@ -15,9 +15,8 @@
 //!
 //! What's measured goes in the index with the declaration (`facts.measured`, `facts.extent`), so the
 //! unit jobs read the order and coverage from the index alone (crate::dem::declared::plan). The
-//! units are built only once the records say the readers switched (`@switched`, recorded by #143's
-//! migration when its proof passed: docs/inputs.md §6.8); an app from before the datasets builds
-//! them until then.
+//! units are built only once the records say the readers switched (`@switched`, recorded by the
+//! check as soon as a version is accepted, naming the app that recorded it: docs/inputs.md §6.8).
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::dem::declared::{self, Data, Declaration, Measured};
@@ -407,6 +406,13 @@ impl Checks for Elevation {
             }
         }
         Ok(out)
+    }
+
+    fn switch(&self, _root: &Path, index: &str) -> Result<Option<Vec<u8>>> {
+        // (As soon as a version is accepted: the version and the app that recorded it, which bars
+        // older apps from leading: regions::read::switch_app.)
+        let app = crate::agent::app_version(std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?);
+        Ok(Some(serde_json::to_vec_pretty(&serde_json::json!({ "index": index, "app": app }))?))
     }
 
     fn derive(&self, v: &Version, keep: &BTreeSet<String>) -> Result<Derived> {
