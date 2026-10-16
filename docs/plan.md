@@ -1593,7 +1593,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   index), the catalogue's copy, the coverage, the pass's outlines (the countries it's in), and which
   of the keys the declarations fetch with `inputs/keys.env` holds, by name (never their values). Not what it writes (the feeds' lists,
   its checks and zips), so it doesn't run again for its own sake; it waits while `inputs/keys.env`
-  can't be read;
+  or the declarations' accepted index can't be read;
 - **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
   pairs, the pass's rail set and the coverage;
 - **water:** its version and the pass's basemap, by content name;
