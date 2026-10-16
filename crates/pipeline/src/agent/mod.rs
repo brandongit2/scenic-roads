@@ -471,6 +471,10 @@ pub struct Status {
     /// (the build Mac's: crate::agent::forecast).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
+    /// The decision on the next map update (a round) as the lead last planned it, and why
+    /// (build::MapUpdate; docs/plan.md §8, Faster publishing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_update: Option<build::MapUpdate>,
     /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSeen>,
@@ -910,6 +914,10 @@ pub struct Agent {
     /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    /// The lead's decision on the next map update as last planned (build::MapUpdate), and the key
+    /// of the last one logged (logged again only when it changes).
+    map_update: std::cell::RefCell<Option<build::MapUpdate>>,
+    update_logged: std::cell::RefCell<String>,
     catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
     /// The last round of publishing (build::Round, its folder's `round.json`): the one under way,
     /// which its jobs read the units of, or the last one over, for when it began.
@@ -1084,7 +1092,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), publishing: Default::default(), round_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), passed_over: BTreeMap::new(), slots_on: false, by_measure: false, budgets: false, proxy: None, resume: false, every: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, queued: Default::default(), merged: None, coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), map_update: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), publishing: Default::default(), round_measured: Default::default(), pool_mode, member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, shadow: None, shadow_failed: false, restart_for: None, switch_seen: None, inputs: Gate::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2433,6 +2441,7 @@ impl Agent {
             pause: self.pause.clone(),
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
+            map_update: if self.o.helper { None } else { self.map_update.borrow().clone() },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: match self.try_pooled() {
@@ -4177,6 +4186,26 @@ impl Agent {
         Ok(())
     }
 
+    /// The decision on the next map update (build::MapUpdate) kept for the status, its gap's basis
+    /// and the pause said, and logged when it or its reasons change.
+    fn record_update(&self, mut u: build::MapUpdate, per_region: bool) {
+        u.gap_basis = match (per_region, self.round_measured.get()) {
+            (false, _) => "the hour: a map update per region is off".into(),
+            (true, None) => "the hour: no map update measured yet".into(),
+            (true, Some(s)) if u.gap_s >= build::PUBLISH_EVERY_S => format!("the hour: twice the measured {s:.0} s is more"),
+            (true, Some(s)) => format!("twice the last map updates' measured {s:.0} s"),
+        };
+        if let Some(p) = &self.pause {
+            u.why = format!("{} (but {})", u.why, p.why());
+        }
+        let key = u.key() + &self.pause.is_some().to_string();
+        if *self.update_logged.borrow() != key {
+            eprintln!("agent: {}", u.line());
+            *self.update_logged.borrow_mut() = key;
+        }
+        *self.map_update.borrow_mut() = Some(u);
+    }
+
     /// The round under way told to this Mac's coordinator, with the plan's offers made from the
     /// same round (every step to every member: a round's step is granted only with it).
     fn offer_round(&self, c: &crate::coord::Coordinator) {
@@ -4537,11 +4566,15 @@ impl Agent {
                 r.began = now_s();
                 self.keep_round(r).err().map(|e| format!("can't keep the round now ({e:#})"))
             };
+            if let Some(why) = &not_now {
+                planned.update.why = format!("{} (but it {why})", planned.update.why);
+            }
             if let Some(why) = not_now {
                 waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("the next round {why}") });
                 planned.work.retain(|w| !build::AS_OF_STEPS.contains(&w.step.as_str()) && w.step != "prune");
             }
         }
+        self.record_update(std::mem::take(&mut planned.update), sw.per_region);
         // (The round under way's chain left, and when it began, for the forecast: one begun now,
         // now.)
         let round_left = std::mem::take(&mut planned.round_left);

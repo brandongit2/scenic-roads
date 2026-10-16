@@ -2270,13 +2270,14 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   machine with nothing it can do waits for the next work to end or another machine to be free. The
   round under way goes first, with its own regions (their slope and tree cover left, then its chain
   as its steps take). A round goes out as the plan makes one: a region done that the map hasn't as
-  it is now, an hour after the last round began (its slope and tree cover, which the build Mac makes
+  it is now, an hour (or a round per region's gap) after the last round began, by the lead's own test (`build::map_update_due`) (its slope and tree cover, which the build Mac makes
   while it waits, then the round's chain, as long as the last rounds took); its catalog carries the
   regions on the map that are rebuilt (a new pass) and done by then, their slope and tree cover too
   (they make no round of their own); after the last unit and terrain area, the
   slope and tree cover left, the last round (the roads' chain as it stands, less what the round
-  under way still does, if longer; none when nothing's stale and no region waits to go out), then
-  the overlays and a catalog, then the tree cover mids made in idle time. A z3 tile's tree cover
+  under way still does, if longer; none when nothing's stale and no region waits to go out), while
+  the 3D buildings are being raised a map update an hour after the last began (the round's chain
+  long), then the overlays and a catalog, then the tree cover mids made in idle time. A z3 tile's tree cover
   assembly waits for its pieces, the build Mac's alone. The trains' and
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
   once the pass's hiking-route ends are made, the peaks once every candidate and the terrain are,
@@ -2557,6 +2558,23 @@ between jobs into the other way. On:
        meanwhile go out together, and at most about half the time goes to rounds. (Measured on the
        live history, 15 Oct: the catalog alone 66–158 s, a round's map tiles 201 s a job on
        average, so a gap of minutes rather than an hour.) The forecast takes the same gap.
+     - **Why a map update begins, or doesn't** (task #208, whatever the switches): the plan and
+       the forecast decide by one test, `build::map_update_due` (a map update under way; the regions
+       done and not on the map as they are now; nothing left of the units and terrain; the 3D
+       buildings being raised; the time since the last began; the gap), so the forecast's map
+       updates are those the lead will run. Each time it plans, the lead records its decision
+       (`build::MapUpdate`): due or not, why in words (no region with new work, the gap not passed
+       and the minutes left, under way, waiting for a helper's work to be merged or an edit to
+       settle, the build paused, nothing new to publish), the gap and its basis (the hour, or twice
+       the measured map updates), the regions with new work and their kinds (a new region or one
+       rebuilt, its slope and tree cover still to make), and whether the 3D buildings' packs are
+       being raised. It's in the build status (`map_update`), the worker page's Map updates box and
+       `scenic status`, and in the agent's log as one line when the decision or its reasons change
+       (not as the minutes count down). The 3D buildings' packs never make a region due (a z6
+       bldtiles tile can span several regions, and the regions are done by their units and
+       terrain): a rebuild of them all (a new `BUILDINGS_V`) after the last unit goes out in a
+       map update each hour after the last began, and at once when they're all raised, by design;
+       before the last unit, with any region's.
      - `low-zoom-later`: what may lag is the low zooms alone: the roads' and rails' lo packs (z3–8)
        and the terrain's and slope's roots (z0–2), and with `near-slope` the slope and tree cover
        assemblies (their lo packs, z3–8). A round makes them only when it's the low zooms' round

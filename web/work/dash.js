@@ -585,7 +585,17 @@ function publishing(m) {
   if (next) lines.push(h("div", null, "Next: ", h("b", null, `≈ ${clock(next.at)}`), next.regions.length ? ` with ${next.regions.slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}${next.regions.length > 4 ? ` and ${next.regions.length - 4} more` : ""}` : ""));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) lines.push(h("div", "small warn", w.why));
-  lines.push(h("div", "small dim", "A round goes out when a region is done, at most hourly while areas are left; after the last, at once."));
+  // The lead's decision on the next map update, and why (agent::build::MapUpdate).
+  const u = a.map_update;
+  if (u) {
+    lines.push(h("div", null, h("b", null, u.due ? "A map update is due" : "No map update due"), `: ${u.why}`));
+    const left = u.left_s > 0 ? `, ${Math.ceil(u.left_s / 60)} min left` : ", passed";
+    lines.push(h("div", "small dim", `Gap ${Math.ceil(u.gap_s / 60)} min (${u.gap_basis})${u.since_last_s != null ? left : ""}`));
+    if (u.regions?.length) lines.push(h("div", "small", `New work: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
+    if (u.buildings) lines.push(h("div", "small dim", "3D building packs being raised: they go out with the next map update (at most hourly once all else is built)."));
+  } else {
+    lines.push(h("div", "small dim", "A map update goes out when a region is done, at most hourly while areas are left; after the last, at once."));
+  }
   if (fc?.rounds?.length > 1) lines.push(h("div", "small dim", `${plural(fc.rounds.length, "round")} to come; the last ≈ ${clock(fc.rounds[fc.rounds.length - 1].at)}`));
   return h("div", null, lines);
 }

@@ -1369,6 +1369,106 @@ fn yes() -> bool {
     true
 }
 
+/// What the decision on the next map update (a round) rests on: the same test for the plan
+/// (`plan`) and the forecast's rounds (crate::agent::forecast), so the two can't disagree.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UpdateCase {
+    /// A map update is under way (no other begins until it's over).
+    pub under_way: bool,
+    /// Nothing left to build of the units and terrain (the next would be the last).
+    pub last_now: bool,
+    /// The 3D buildings are being raised (their chain has work left but the sources' fetch).
+    pub raising: bool,
+    /// How many regions are done and not on the map as they are now (new work to publish).
+    pub new_regions: usize,
+    /// Seconds since the last map update began (None: none has).
+    pub since_last: Option<u64>,
+    /// A region's gap (`Publishing::gap`; None: PUBLISH_EVERY_S).
+    pub gap: Option<u64>,
+}
+
+/// Whether a map update is due (`UpdateCase`), and why (or why not) in plain words. Due: a region
+/// done that the map hasn't, the gap after the last began; after the last unit and terrain, at
+/// once, but while the 3D buildings are being raised only PUBLISH_EVERY_S after the last began
+/// (their packs never make a region due: they go out with the next map update, whichever it is).
+pub fn map_update_due(c: &UpdateCase) -> (bool, String) {
+    let gap = c.gap.unwrap_or(PUBLISH_EVERY_S);
+    let left = |every: u64| c.since_last.map_or(0, |s| every.saturating_sub(s));
+    let mins = |s: u64| s.div_ceil(60);
+    let regions = |n: usize| if n == 1 { "1 region".to_string() } else { format!("{n} regions") };
+    if c.under_way {
+        return (false, "a map update is under way".into());
+    }
+    if c.new_regions > 0 && left(gap) == 0 {
+        return (true, format!("{} done with new work to publish, the gap passed", regions(c.new_regions)));
+    }
+    if c.last_now {
+        if !c.raising {
+            return (true, "everything is built: the last map update".into());
+        }
+        if left(PUBLISH_EVERY_S) == 0 {
+            return (true, "the 3D buildings are being raised and an hour has passed since the last map update began: their packs so far go out".into());
+        }
+        if c.new_regions > 0 {
+            return (true, format!("{} done with new work to publish", regions(c.new_regions)));
+        }
+        return (false, format!("everything else is built and the 3D buildings are being raised: no region has new work, and their packs go out at most hourly (next map update in {} min)", mins(left(PUBLISH_EVERY_S))));
+    }
+    if c.new_regions > 0 {
+        return (false, format!("{} done with new work to publish, the gap not passed (next map update in {} min)", regions(c.new_regions), mins(left(gap))));
+    }
+    (false, "no region has new work to publish (each has units or terrain left, or is on the map as it is)".into())
+}
+
+/// The lead's decision on the next map update as last planned (`Plan::update`), for its log and the
+/// build status (docs/plan.md §8, Faster publishing).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MapUpdate {
+    /// A map update is due (begins now, or waits only for what `why` says).
+    pub due: bool,
+    pub why: String,
+    /// The gap a region's map update waits after the last began (seconds), and its basis.
+    pub gap_s: u64,
+    #[serde(default)]
+    pub gap_basis: String,
+    /// Seconds since the last began, and until the gap passes (0: passed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_last_s: Option<u64>,
+    #[serde(default)]
+    pub left_s: u64,
+    /// The regions with new work to publish (done, not on the map as they are now), each with its
+    /// kinds of work.
+    #[serde(default)]
+    pub regions: Vec<UpdateRegion>,
+    /// The 3D buildings' packs being raised (they go out with the next map update, whichever).
+    #[serde(default)]
+    pub buildings: bool,
+}
+
+/// A region with new work to publish (`MapUpdate::regions`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdateRegion {
+    pub id: String,
+    /// "new region" or "rebuilt" (its outline or units changed), and "slope and tree cover to make"
+    /// while those wait.
+    pub kinds: Vec<String>,
+}
+
+impl MapUpdate {
+    /// One line for the agent's log.
+    pub fn line(&self) -> String {
+        let regions = if self.regions.is_empty() { String::new() } else { format!("; new work: {}", self.regions.iter().map(|r| format!("{} ({})", r.id, r.kinds.join(", "))).collect::<Vec<_>>().join(", ")) };
+        format!("map update {}: {} (gap {} s, {}){regions}{}", if self.due { "due" } else { "not due" }, self.why, self.gap_s, self.gap_basis, if self.buildings { "; 3D building packs being raised" } else { "" })
+    }
+
+    /// What the log line is logged again on: the decision and its reasons, not the minutes
+    /// counting down.
+    pub fn key(&self) -> String {
+        let why = self.why.split(" (next map update in").next().unwrap_or("");
+        format!("{} {why} {} {} {:?} {}", self.due, self.gap_s, self.gap_basis, self.regions, self.buildings)
+    }
+}
+
 /// The steps a round alone plans after its slope and tree cover (the roads' chain and its
 /// catalog): run with the units as they were when it began (those of them that read none, ferries
 /// and the world-level terrain and slope, all the same).
@@ -1423,6 +1523,8 @@ pub struct Plan {
     /// The pieces whose mids are made in idle time (`TreeWork::backfill`, `TerrainWork::backfill`:
     /// the work's last): for the forecast.
     pub backfill: Vec<Work>,
+    /// The decision on the next map update and why (`map_update_due`).
+    pub update: MapUpdate,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -1543,7 +1645,8 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         let each: Vec<&Coverage> = rounds.each.iter().map(|(_, c)| c).collect();
         work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
         work.extend(backfill.iter().cloned());
-        return Plan { work, backfill, ..Default::default() };
+        let update = MapUpdate { why: "the regions' units wait for the pass's heritage sites, reaches or roadside buildings".into(), gap_s: rounds.way.gap.unwrap_or(PUBLISH_EVERY_S), since_last_s: rounds.since_last, ..Default::default() };
+        return Plan { work, backfill, update, ..Default::default() };
     };
 
     // base(U): the units the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -1706,20 +1809,43 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // unless a region waits to be published: the buildings never hold one up. Their sources'
     // fetch doesn't count: it changes nothing served, and one failing and tried again (the release
     // gone from S3) would keep the catalogs hourly for good.)
-    let hourly = rounds.since_last.is_none_or(|s| s >= PUBLISH_EVERY_S);
     // (A region's round: an hour after the last began, or, a round per region, the gap its measured
-    // rounds make: crate::agent::publish::round_gap.)
-    let region_due = rounds.since_last.is_none_or(|s| s >= rounds.way.gap.unwrap_or(PUBLISH_EVERY_S));
+    // rounds make: crate::agent::publish::round_gap. The test is `map_update_due`, the forecast's
+    // too.)
     let raising = bld.iter().any(|w| w.step != "bld-fetch");
-    if rounds.current.is_none() && ((last_now && (!raising || hourly || !to_publish.is_empty())) || (!to_publish.is_empty() && region_due)) {
+    let case = UpdateCase { under_way: rounds.current.is_some(), last_now, raising, new_regions: to_publish.len(), since_last: rounds.since_last, gap: rounds.way.gap };
+    let (due, why) = map_update_due(&case);
+    let gap_s = rounds.way.gap.unwrap_or(PUBLISH_EVERY_S);
+    let mut update = MapUpdate {
+        due,
+        why,
+        gap_s,
+        gap_basis: String::new(),
+        since_last_s: rounds.since_last,
+        left_s: rounds.since_last.map_or(0, |s| gap_s.saturating_sub(s)),
+        regions: to_publish
+            .iter()
+            .map(|r| {
+                let mut kinds = vec![if rounds.on_map.contains_key(r.id) { "rebuilt".to_string() } else { "new region".to_string() }];
+                if !ready.iter().any(|x| x == r.id) {
+                    kinds.push("slope and tree cover to make".into());
+                }
+                UpdateRegion { id: r.id.to_string(), kinds }
+            })
+            .collect(),
+        buildings: raising,
+    };
+    if due {
         let units_now = m.iter().filter(|(l, _)| crate::out::AS_OF_OUTPUTS.iter().any(|p| l.starts_with(p))).map(|(l, c)| (l.clone(), c.clone())).collect();
         let low = last_now || !rounds.way.low_later || rounds.way.since_low.is_none_or(|s| s >= LOW_EVERY_S) || low_due(m, done, Some(reach));
         let begun = Round { began: 0, regions: to_publish.iter().map(|r| r.id.to_string()).collect(), last: last_now, units: units_now, over: false, low, low_at: None };
         let p = plan(cov, date, m, done, inputs, Some(reach), tiles, Rounds { current: Some(&begun), ..rounds });
         // (One with nothing to publish that isn't out already, after the last: none.)
         if !p.ends {
-            return Plan { begins: Some(begun), ..p };
+            return Plan { begins: Some(begun), update, ..p };
         }
+        update.due = false;
+        update.why = format!("nothing new to publish that isn't out already ({})", update.why);
     }
     // The slope and tree cover of the regions done and waiting for a round (not this one): before
     // the regions' work, so their round only draws.
@@ -1829,7 +1955,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     work.extend(bld);
     // Last of all, in idle time: the mids of current pieces that have none (expected the same).
     work.extend(backfill.iter().cloned());
-    Plan { work, ready, publish_waits, regions: lefts, begins: None, ends, round_left, unknown, backfill }
+    Plan { work, ready, publish_waits, regions: lefts, begins: None, ends, round_left, unknown, backfill, update }
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
@@ -3623,6 +3749,48 @@ pub(crate) mod tests {
         // (Nothing to publish: no round, whatever the gap.)
         let on: BTreeMap<String, bool> = [("a".to_string(), true), ("c".to_string(), true)].into();
         assert!(wplan(&c, &reach, &m, &done, &on, Some(5000), None, way).begins.is_none());
+    }
+
+    #[test]
+    fn the_map_update_decision_says_why() {
+        let c = |under_way, last_now, raising, new_regions, since: Option<u64>| map_update_due(&UpdateCase { under_way, last_now, raising, new_regions, since_last: since, gap: Some(300) });
+        assert_eq!(c(true, false, false, 2, Some(5000)), (false, "a map update is under way".to_string()));
+        assert_eq!(c(false, false, false, 2, Some(300)), (true, "2 regions done with new work to publish, the gap passed".to_string()));
+        assert_eq!(c(false, false, false, 1, Some(100)), (false, "1 region done with new work to publish, the gap not passed (next map update in 4 min)".to_string()));
+        assert!(c(false, false, true, 0, Some(5000)).1.starts_with("no region has new work"));
+        assert!(c(false, true, false, 0, Some(1)).0);
+        // (The 3D buildings raised after the last unit: hourly, a region's gap aside.)
+        let (due, why) = c(false, true, true, 0, Some(1700));
+        assert!(!due && why.contains("next map update in 32 min"), "{why}");
+        assert!(c(false, true, true, 0, Some(3600)).0);
+        assert!(c(false, true, true, 1, Some(10)).0);
+        assert!(c(false, false, false, 0, None).1.starts_with("no region"));
+        // The log line changes with the reasons, not with the minutes counting down.
+        let u = |s: u64| MapUpdate { why: c(false, true, true, 0, Some(s)).1, gap_s: 300, ..Default::default() };
+        assert_eq!(u(100).key(), u(700).key());
+        assert_ne!(u(100).key(), MapUpdate { why: c(false, true, true, 0, Some(3700)).1, gap_s: 300, ..Default::default() }.key());
+    }
+
+    #[test]
+    fn the_plan_records_its_map_update_decision() {
+        let (c, reach, mut m, mut done) = three();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let r = rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a round begins");
+        let mut r = Round { began: 1, ..r };
+        through_with(&c, &reach, &mut m, &mut done, &r, Publishing::default());
+        r.over = true;
+        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
+        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
+        let way = Publishing { gap: Some(300), ..Default::default() };
+        let p = wplan(&c, &reach, &m, &done, &on, Some(120), None, way);
+        assert!(p.begins.is_none() && !p.update.due && p.update.why.contains("gap not passed"), "{:?}", p.update);
+        assert_eq!((p.update.gap_s, p.update.left_s), (300, 180));
+        assert_eq!(p.update.regions, [UpdateRegion { id: "c".into(), kinds: vec!["new region".into()] }]);
+        let p = wplan(&c, &reach, &m, &done, &on, Some(300), None, way);
+        assert!(p.begins.is_some() && p.update.due, "{:?}", p.update);
+        // Under way: why none begins.
+        let p = wplan(&c, &reach, &m, &done, &on, Some(300), Some(&Round { began: 2, regions: vec!["c".into()], ..Default::default() }), way);
+        assert_eq!(p.update.why, "a map update is under way");
     }
 
     #[test]

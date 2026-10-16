@@ -1041,7 +1041,8 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
   (`stood_down`: §6.6). Written each step of its pool it changes (§6.7), at least every two
   minutes, its beat stamped as it's written. Read by member id (the ids are in the lead's status), not by listing.
 - **The build's status,** written by the lead per term (`state/build/term/<E>/status.json`): the
-  checklist, the forecast, the regions, what waits and why, the jobs that ended lately (any
+  checklist, the forecast, the regions, what waits and why, the lead's decision on the next map
+  update and why (`map_update`: docs/plan.md §8, Faster publishing), the jobs that ended lately (any
   member's), the pause, the last catalog, the lead and its term, a handover under way.
 - **Everywhere it's shown** (the menu bar on every Mac, the map's build panel, the worker page,
   `scenic lead` and `scenic status`): the pool, a line or card per member, the lead marked;

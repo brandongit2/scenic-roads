@@ -423,6 +423,17 @@ fn status(args: &[String]) -> Result<()> {
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);
     }
+    // The lead's decision on the next map update, and why (agent::build::MapUpdate).
+    if let Some(u) = &st.map_update {
+        println!("Map update: {} — {}", if u.due { "due" } else { "not due" }, u.why);
+        println!("  gap {} min ({}){}", u.gap_s.div_ceil(60), u.gap_basis, u.since_last_s.map(|s| format!(", the last began {} min ago", s / 60)).unwrap_or_default());
+        for r in &u.regions {
+            println!("  new work: {} ({})", r.id, r.kinds.join(", "));
+        }
+        if u.buildings {
+            println!("  3D building packs being raised: they go out with the next map update");
+        }
+    }
     for d in st.recent.iter().take(5) {
         println!("{} {} ({}, {} s)", if d.ok { "Done:" } else { "Failed:" }, d.what, ago(d.ended), d.secs);
         if !d.ok {

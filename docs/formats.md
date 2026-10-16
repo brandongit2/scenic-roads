@@ -1079,7 +1079,10 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **State:** `state/status.json` (the agent's heartbeat, written on a change and at least every two
   minutes: conditions, the job, its parts (`parts`, `part`: the one it's on) and its progress, why
   it's frozen (`paused`) or stopping at its next safe point (`pausing`), what waits (one about a
-  job: its `step`), the build's `pause` while it's paused, the checklist to the end: each step's
+  job: its `step`), the build's `pause` while it's paused, the lead's decision on the next map update
+  (`map_update`, agent::build::MapUpdate: `due`, `why` in words, the gap `gap_s` and its basis
+  `gap_basis`, `since_last_s` and `left_s` until the gap passes, `regions` with new work to publish
+  `[{id, kinds}]`, and `buildings` while the 3D buildings' packs are being raised), the checklist to the end: each step's
   `done`/`total` or `left`, its jobs left by name (`next`) and why it waits (`note`), and the Mac's
   build caches (`caches`, agent::room::Caches: `clearable`, the bytes a clear would free, and
   `each`, cache by cache, `[{cache, what, bytes, back}]`, how each comes back with about how long;
