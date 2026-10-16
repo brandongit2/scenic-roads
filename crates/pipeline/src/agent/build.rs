@@ -792,8 +792,9 @@ pub const FERRIES_V: u32 = 1;
 pub const MARKS_V: u32 = 1;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
 /// area overlays from it with the marks' World Heritage dots (ovconv::overlays). (2: the registers
-/// read generically, their caches the pass's answers alone, docs/inputs.md §6.5.)
-pub const HERITAGE_V: u32 = 2;
+/// read generically, their caches the pass's answers alone, docs/inputs.md §6.5. 3: no seeds, the
+/// layers' `en` the things' own, §6.5.3.)
+pub const HERITAGE_V: u32 = 3;
 pub const OVERLAYS_V: u32 = 1;
 
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
@@ -2233,7 +2234,7 @@ fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Opt
     for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
         ins.push(get(&crate::heritage::base_logical(date, stem)).to_string());
     }
-    for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/filtered"), "sources/registers/legacy-seeds".into()] {
+    for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/filtered")] {
         ins.push(get(&l).to_string());
     }
     ins.push(coverage_all(cov));
@@ -4688,6 +4689,17 @@ pub(crate) mod tests {
         assert_eq!(heritage_sites_key(&c, "d", &m, &BTreeMap::from([("heritage".to_string(), "?".to_string())])), None);
         m.remove(&crate::inputs::logical(crate::inputs::heritage::UNIT));
         assert_eq!(heritage_sites_key(&c, "d", &m, &ins(&[reg("is-minjar", "a b", iceland)])), None);
+    }
+
+    #[test]
+    fn the_heritage_jobs_key_names_no_seeds() {
+        // (docs/inputs.md §6.5.3: the seeds' archive, while the NAS still has it, is read by nothing.)
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert(crate::heritage::base_logical("d", "heritage-sources"), "work/heritage/d/heritage-sources.1111111111111111.json".into());
+        let k = heritage_key(&c, "d", &m).unwrap();
+        m.insert("sources/registers/legacy-seeds".into(), "sources/registers/legacy-seeds.5555555555555555.tar.zst".into());
+        assert_eq!(heritage_key(&c, "d", &m).unwrap(), k);
     }
 
     #[test]

@@ -2371,9 +2371,10 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 /// pageviews, layers) in the stand-in root on the heritage-sites job's outputs (docs/phase5.md
 /// "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the kept filtered planet within
-/// it (one clip per pass and cover, kept in the cache). The seeds' park facts and pageview months
-/// seed the caches (`sources/registers/legacy-seeds`); the pageview months are the items job's
-/// cache, the epoch's months; the layers' English names use the seeds' names table.
+/// it (one clip per pass and cover, kept in the cache). The park facts are the pass's answers'
+/// (`areas-wikidata.json`: areadetails.py asks Wikidata for those it lacks); the pageview months are
+/// the items job's cache, the epoch's months; the layers' English is the things' own (the map's
+/// server adds the translations' as it serves them: docs/inputs.md §6.5.3).
 /// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`. Its
 /// caches are the pass's answers (`Epoch`: this Mac's working copy, made one with the NAS's
 /// archive); what the chain fetched goes to the NAS as it ends, finished or not, or at the next
@@ -2414,7 +2415,12 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_file(epoch.dir.join("osm/named.geojsonseq")).ok();
         epoch.keep(scratch);
     });
-    let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
+    // (Extracts of the registers' seeds, which the job read until #139: gone.)
+    for e in std::fs::read_dir(&cache)?.flatten() {
+        if e.file_name().to_string_lossy().starts_with("registers-") {
+            store::cachefile::remove_tree(&e.path());
+        }
+    }
     let p = phase("the heritage sites copied here", Class::NasRead);
     let root = heritage_root(scratch, &dem, Some(&epoch.dir))?;
     let b = root.join("data/build");
@@ -2471,29 +2477,18 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("the filtered planet clipped to the cover (osmium, once a pass)", Class::NasRead);
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
     drop(p);
-    let p = phase("the caches seeded and linked", Class::Disk);
+    let p = phase("the caches linked", Class::Disk);
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
-    // The seeds' park facts, seeding this pass's cache of them.
+    // The park facts: the pass's answers' (none yet: areadetails.py asks for them all).
     let facts = epoch.dir.join("areas-wikidata.json");
     if !facts.exists() {
-        store::sys::copy_data(seeds.join("areas/wikidata.json"), &facts)?;
+        std::fs::write(&facts, b"{}")?;
     }
     pipeline::sys::symlink(&facts, &root.join("data/areas/wikidata.json"))?;
-    // The pageview months: the items job's cache (the same files), the seeds' months seeding it.
+    // The pageview months: the items job's cache (the same files: its months' indexes).
     let pv = cache.join("items");
     std::fs::create_dir_all(pv.join("months"))?;
-    for e in std::fs::read_dir(seeds.join("pageviews/months"))?.flatten() {
-        // (Made whole under a name of its own, never over one here: store::cachefile.)
-        let dest = pv.join("months").join(e.file_name());
-        if !dest.exists() {
-            store::cachefile::create(&dest, &mut |t| store::sys::copy_data(e.path(), t).map(|_| ()))?;
-            store::cachefile::release(&dest);
-        }
-    }
     pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
-    // The seeds' names table, for the layers' English names.
-    std::fs::create_dir_all(root.join("data/names"))?;
-    pipeline::sys::symlink(&seeds.join("names/english.json"), &root.join("data/names/english.json"))?;
     drop(p);
     for (k, (part, script, sargs)) in chain.iter().enumerate() {
         if k == 0 || chain[k - 1].0 != *part {
@@ -2677,41 +2672,6 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, date).leased(out.root(), pipeline::answers::budgets_on_for_job()), dir: epoch, _hold: hold };
     eprintln!("heritage: the pass's answers {}", e.kept.sync(&pipeline::answers::heritage_files(&e.dir), &scratch.join("answers"))?.words());
     Ok(e)
-}
-
-/// An archive of `sources/registers/` extracted once into the cache (`registers-<id>`, by its
-/// content), the current ones kept: the seeds (docs/inputs.md §6.5.3, until #139).
-fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
-    let content = out.get(logical).with_context(|| format!("no {logical} in the manifest"))?.to_string();
-    let id = store::naming::hash16(content.as_bytes())[..12].to_string();
-    // (Once per archive: copied from the NAS and extracted.)
-    let _p = phase("the registers' archives extracted (once each)", Class::NasRead);
-    std::fs::create_dir_all(cache)?;
-    let dir = cache.join(format!("registers-{id}"));
-    if !dir.join(".done").exists() {
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir)?;
-        let mut c = store::spawn::command("/bin/sh");
-        c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
-        c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&dir);
-        let st = store::spawn::status(&mut c).context("zstd | tar")?;
-        anyhow::ensure!(st.success(), "extracting {content} failed: {st}");
-        std::fs::write(dir.join(".done"), b"")?;
-    }
-    // Extracts of archives the manifest no longer names go.
-    let current: std::collections::BTreeSet<String> = out
-        .manifest
-        .range("sources/registers/".to_string()..)
-        .take_while(|(l, _)| l.starts_with("sources/registers/"))
-        .map(|(_, c)| format!("registers-{}", &store::naming::hash16(c.as_bytes())[..12]))
-        .collect();
-    for e in std::fs::read_dir(cache)?.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with("registers-") && !current.contains(&n) {
-            std::fs::remove_dir_all(e.path()).ok();
-        }
-    }
-    Ok(dir)
 }
 
 /// A stand-in root laid out as the repository for the heritage scripts: `dem/` the app's
