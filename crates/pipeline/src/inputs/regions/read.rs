@@ -1,4 +1,4 @@
-//! How the build reads the regions (docs/inputs.md §6.1.4, §6.1.7): from the accepted version
+//! How the build reads the regions (docs/inputs.md §4.6, §6.1.4, §6.1.10): from the accepted version
 //! alone, the regions listed by the index (each region file's `facts`: its id, name and outline
 //! entries), the coverage made from their stored geometry (`Coverage::accepted`), the catalog's
 //! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
