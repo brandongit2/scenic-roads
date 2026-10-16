@@ -117,6 +117,9 @@ export interface Credit {
   source: string;
   terms: string;
   areas?: [number, number, number, number][];
+  /** A heritage register's id (its description's credit: docs/inputs.md §6.5), which the heritage
+   * features name their source by. */
+  register?: string;
 }
 
 export interface CatalogStatus {

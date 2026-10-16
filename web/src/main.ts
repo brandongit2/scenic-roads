@@ -11,7 +11,7 @@ import { displayName, displayOf, lineName } from './names';
 import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
-import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
+import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
 import { paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
@@ -2195,6 +2195,8 @@ async function main() {
     w.on(() => regions.setCatalog(w.status?.n));
     // The credits of the sources the catalog's data comes from.
     w.on(() => strip.setCredits(w.status?.credits));
+    // (The heritage registers' among them: what the heritage popups name as their source.)
+    w.on(() => setRegisterCredits(w.status?.credits));
     // Landmarks by view, when the catalog has them.
     w.on(() => {
       if (w.status) overlays.setMarks(w.status.marks ?? null);

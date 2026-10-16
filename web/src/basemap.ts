@@ -72,7 +72,7 @@ export const HERITAGE_GROUPS = [
   { key: 'm', label: 'Municipal', colour: '#9fb0c4' },
 ] as const;
 
-/** Kinds of designation within the groups (feature property `t`, from dem/heritagetiers.py; same
+/** Kinds of designation within the groups (feature property `t`, the registers' `tier`: docs/inputs.md §6.5; same
  * keys). Kinds cut across jurisdictions. */
 export const HERITAGE_TIERS: { key: string; label: string; help: string }[] = [
   { key: 'w.c', label: 'Cultural', help: 'Cultural World Heritage Sites' },

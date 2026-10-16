@@ -18,6 +18,7 @@ import type { LandmarkDots } from './dots';
 import { fitPopup } from './popupfit';
 import { cap, fmt, h } from './ui/dom';
 import type { LayersCard } from './ui/layers';
+import type { Credit } from './catalog';
 
 const POI_LABEL: Record<string, string> = {
   viewpoint: 'Viewpoint', peak: 'Peak', waterfall: 'Waterfall', lighthouse: 'Lighthouse', covered_bridge: 'Covered bridge',
@@ -42,6 +43,31 @@ export interface FeatureSummary {
   also?: string[];
 }
 
+/** The heritage registers' credits by id (the catalog's credits that name a `register`): what a
+ * heritage feature's popup names as its source (docs/inputs.md §6.5). */
+let registerCredits = new Map<string, string>();
+
+/** The catalog's credits, for the heritage registers' (`setCredits` as the catalog is polled). */
+export function setRegisterCredits(credits: Credit[] | undefined): void {
+  registerCredits = new Map((credits ?? []).filter((c) => c.register).map((c) => [c.register as string, `${c.source} (${c.terms})`]));
+}
+
+/** A heritage feature's source: the credits of the registers it's from (a place merged from
+ * several lists them all), else the source it carries. */
+function sourceOf(p: Record<string, any> | undefined): string {
+  if (!p) return '';
+  let ids: unknown = p.registers ?? (p.register ? [p.register] : []);
+  if (typeof ids === 'string') {
+    try {
+      ids = JSON.parse(ids);
+    } catch {
+      ids = [ids];
+    }
+  }
+  const named = Array.isArray(ids) ? ids.map((r) => registerCredits.get(String(r)) ?? String(r)) : [];
+  return named.length ? [...new Set(named)].join('; ') : p.source ?? '';
+}
+
 /** A summary with its loaded details: their facts after the layer's own, their description. */
 export function withDetails(f: FeatureSummary, d: Detail | null): FeatureSummary {
   const e = d ? enrichOf(f, d) : null;
@@ -51,7 +77,7 @@ export function withDetails(f: FeatureSummary, d: Detail | null): FeatureSummary
   // ("Bé cultural d'interès nacional (Monument Històric)"), which the details repeat.
   const said = f.kind.toLowerCase();
   for (const x of e.facts) if (!facts.includes(x) && !said.includes(x.toLowerCase())) facts.push(x);
-  return { ...f, facts, desc: e.desc ?? f.desc, source: f.source || d?.props?.source || '' };
+  return { ...f, facts, desc: e.desc ?? f.desc, source: f.source || sourceOf(d?.props) };
 }
 
 function enrichOf(f: FeatureSummary, d: Detail): Enriched | null {
@@ -736,7 +762,8 @@ export class Overlays {
         ].filter((x) => x !== null) as HTMLElement[]);
         const l = link(q.url, Number(q.level) === 1 ? 'UNESCO page' : 'Official record');
         links.replaceChildren(...(l ? [l] : []));
-        src.textContent = q.source ? `Source: ${q.source}` : '';
+        const from = sourceOf(q);
+        src.textContent = from ? `Source: ${from}` : '';
         notice.textContent = q.notice ?? '';
       };
       fill(p);
@@ -759,7 +786,7 @@ export class Overlays {
         kv('Area', p.area_km2 ? `${fmt.n(Number(p.area_km2))} km²` : null),
         p.approx ? h('div', { class: 'warn' }, 'Boundary approximated by a circle of the designated area') : null,
         h('div', { class: 'links' }, link(p.url, 'Official page')),
-        h('div', { class: 'src' }, `Source: ${p.source ?? ''}`),
+        h('div', { class: 'src' }, `Source: ${sourceOf(p)}`),
       );
     } else if (lid === 'heritage-area-fill') {
       put(
@@ -770,7 +797,7 @@ export class Overlays {
         kv('By-law', p.bylaw),
         kv('Properties', p.properties_count),
         h('div', { class: 'links' }, link(p.url, 'Official record')),
-        h('div', { class: 'src' }, `Source: ${p.source ?? ''}`),
+        h('div', { class: 'src' }, `Source: ${sourceOf(p)}`),
       );
     } else if (lid === 'indigenous-fill') {
       put(h('div', { class: 'ttl' }, named(p.name, p) || 'Indigenous land'), h('div', { class: 'sub' }, 'Indigenous land / reserve'), h('div', { class: 'src' }, 'Boundary: OpenStreetMap'));
@@ -857,7 +884,7 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
       title: named(part ? p.cn : p.name, part ? { main: p.cmain, sub: p.csub } : p) || 'Designated place', kind: part ? partOf(p) : p.designation ?? kind,
       colour: heritageGroupOf(heritageTierOf(p)).colour, area: false,
       facts: facts(p.category ?? p.type, p.in_danger && 'in danger'),
-      source: p.source ?? '',
+      source: sourceOf(p),
       ref: mref ?? undefined,
     };
   }
@@ -873,7 +900,7 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
       title: named(p.name, p), kind: SPECIAL_LABEL[p.kind] ?? p.kind, colour: SPECIAL_COLOUR, area: true,
       // (the certifier only where the kind doesn't name it: not "UNESCO" after "UNESCO Biosphere Reserve")
       facts: facts(p.category, p.year && `since ${p.year}`, p.area_km2 && `${fmt.n(Number(p.area_km2))} km²`,
-        p.certifier && !(SPECIAL_LABEL[p.kind] ?? '').includes(p.certifier) && p.certifier), source: p.source ?? '',
+        p.certifier && !(SPECIAL_LABEL[p.kind] ?? '').includes(p.certifier) && p.certifier), source: sourceOf(p),
       ref: areaRef('special'),
     };
   }
@@ -887,7 +914,7 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
   if (lid === 'heritage-area-fill') {
     return {
       title: named(p.name, p), kind: p.designation ?? 'Heritage district', colour: HERITAGE_AREA_COLOUR, area: true,
-      facts: facts(p.municipality), source: p.source ?? '',
+      facts: facts(p.municipality), source: sourceOf(p),
       ref: areaRef('harea'),
     };
   }
