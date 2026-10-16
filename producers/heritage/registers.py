@@ -304,6 +304,9 @@ class Refs:
 def ref_of(rid: str, reg: Register, p: dict) -> str | None:
     """The entry's reference in its register, where it has one we know."""
     url = p.get("url") or ""
+    # (A reader that has the register's code as a field gives it as `ref_code`: Andalucía's.)
+    if p.get("ref_code"):
+        return str(p["ref_code"])
     if rid == "us-nrhp":
         return Refs.nrhp(url)
     if rid == "ca-dfhd" and p.get("dfhd_id") is not None:
@@ -393,6 +396,7 @@ def entries(rid: str, reg: Register, pts: list[dict], areas: list[dict]) -> list
             if site in km2:
                 p["site_area_km2"] = km2[site]
         p.pop("source", None)
+        p.pop("ref_code", None)
         base = ref or made_id(p, c)
         n = seen.get(base, 0) + 1
         seen[base] = n

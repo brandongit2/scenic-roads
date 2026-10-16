@@ -721,9 +721,9 @@ def ireland() -> tuple[list[dict], list[dict]]:
 
 # ---- Spain --------------------------------------------------------------------------------------
 
-def es_site(lon, lat, name, cat, src, url=None, date=None, region=None, level=2, designation="Bien de interés cultural", municipality=None):
+def es_site(lon, lat, name, cat, src, url=None, date=None, region=None, level=2, designation="Bien de interés cultural", municipality=None, code=None):
     return site(lon, lat, name=name, level=level, designation=designation + (f" ({cat})" if cat else ""), category=cat, date=date,
-                municipality=municipality, authority=region, url=url, source=src)
+                municipality=municipality, authority=region, url=url, source=src, ref_code=code)
 
 
 def spain() -> tuple[list[dict], list[dict]]:
@@ -862,10 +862,10 @@ def spain() -> tuple[list[dict], list[dict]]:
             if abs(lon) > 180:
                 lon, lat = to_ll(25830, *c)
             if ok(lon, lat):
-                name = p.get("DENOMINACION") or p.get("denominacion") or p.get("NOMBRE") or p.get("nombre")
-                pts.append(es_site(lon, lat, name, p.get("TIPOLOGIA") or p.get("tipologia"), "Instituto Andaluz del Patrimonio Histórico (IAPH)",
+                # (The localizador's fields: DENOMINACI the name, TIPO the type, CODIGO2 the IAPH's code.)
+                pts.append(es_site(lon, lat, p.get("DENOMINACI"), p.get("TIPO"), "Instituto Andaluz del Patrimonio Histórico (IAPH)",
                                    level=3, designation="Patrimonio protegido de Andalucía", region="Junta de Andalucía",
-                                   municipality=p.get("MUNICIPIO") or p.get("municipio")))
+                                   municipality=p.get("MUNICIPIO"), code=p.get("CODIGO2")))
     except Exception as e:  # noqa: BLE001
         print(f"  Andalucía: {e}", file=sys.stderr)
     return pts, []
