@@ -77,6 +77,29 @@ ES_NOTES = ("Licence unverified: the old app said \"free use with credit\". The 
             "and the attribution it asks for, then set the licence.")
 
 
+# Checked 2026-10-16 (terms pages read; see each register's notes).
+ES_CL_NOTES = ("Licence checked 2026-10-16: the datasets (datosabiertos.jcyl.es, 'Lugares protegidos') carry the Junta's "
+               "licence IGCYL-NC, https://www.jcyl.es/licencia-IGCYL-NC: non-commercial use, derivatives that keep the "
+               "meaning, redistribution to others for non-commercial use, credit \"\u00a9Junta de Castilla y Le\u00f3n\" visible "
+               "with the data. A separate commercial tier exists (extra duty to say the data is free at jcyl.es; "
+               "Decreto 27/2012). Fine for a personal map; recheck before any commercial release.")
+ES_AR_NOTES = ("Licence checked 2026-10-16: Gobierno de Arag\u00f3n publishes its datasets under CC BY 4.0 (commercial use, "
+               "redistribution and adaptation allowed), asking 'Fuente de los datos: Gobierno de Arag\u00f3n'. Terms: "
+               "https://opendata.aragon.es/informacion/terminos-de-uso-licencias")
+ES_VC_NOTES = ("Licence checked 2026-10-16: the portal's dataset pages for the Inventario General del Patrimonio Cultural "
+               "Valenciano (hac-bie-inmuebles, Secci\u00f3n 1\u00aa BIC) say 'Licencia Creative Commons Attribution' "
+               "(version not stated), https://dadesobertes.gva.es/es/dataset/hac-bie-inmuebles; the legal notice "
+               "(portaldadesobertes.gva.es/es/avis-legal) could not be fetched. Attribution wording not stated.")
+ES_EX_NOTES = ("Licence checked 2026-10-16: CC BY 4.0, Junta de Extremadura, 'Relaci\u00f3n de Bienes de Inter\u00e9s Cultural en "
+               "Extremadura', https://datos.gob.es/en/catalogo/a11002926-bienes-de-interes-cultural-en-extremadura; "
+               "the IDEE record of the geographic dataset says 'CC BY 4.0 CICTEX', credit 'Centro de Informaci\u00f3n "
+               "Cartogr\u00e1fica y Territorial de Extremadura', https://www.idee.es/csw-codsi-idee/srv/api/records/ES-Extremadura-BIC")
+ES_AN_NOTES = ("Licence checked 2026-10-16: the IAPH's 'Patrimonio Inmueble de Andalucía' dataset says licence cc-by, "
+               "https://www.juntadeandalucia.es/datosabiertos/portal/dataset/patrimonio-inmueble-de-andalucia; the portal "
+               "is listed as CC BY 4.0 at https://datos.gob.es/es/iniciativas/datos-abiertos-de-la-junta-de-andalucia. "
+               "Attribution wording not stated; the Junta's legal note could not be read.")
+
+
 def src(s: str) -> Callable[[dict], bool]:
     return lambda p: p.get("source") == s
 
@@ -155,16 +178,16 @@ REGISTERS: dict[str, Register] = {
         src("Generalitat de Catalunya, Inventari del Patrimoni Cultural"), ["es/cat-*"],
         wikidata_property="P1600", ref_pattern=r"invarquit\.cultura\.gencat\.cat/card/(\d+)", notes=ES_NOTES),
     "es-cl-bic": Register(
-        "Bienes de interés cultural de Castilla y León", "Spain heritage: Castilla y León", "Junta de Castilla y León",
-        ES_UNVERIFIED, "https://idecyl.jcyl.es/", ["ES-CL"], eu.spain, src("Junta de Castilla y León"), ["es/cyl-*"], notes=ES_NOTES),
+        "Bienes de interés cultural de Castilla y León", "Spain heritage: Castilla y León", "\u00a9Junta de Castilla y León",
+        "IGCYL-NC (non-commercial use)", "https://idecyl.jcyl.es/", ["ES-CL"], eu.spain, src("Junta de Castilla y León"), ["es/cyl-*"], notes=ES_CL_NOTES),
     "es-ar-bic": Register(
-        "Bienes de interés cultural de Aragón", "Spain heritage: Aragón", "Gobierno de Aragón (Aragón Open Data)",
-        ES_UNVERIFIED, "https://opendata.aragon.es/", ["ES-AR"], eu.spain, src("Gobierno de Aragón (Aragón Open Data)"), ["es/aragon-*"], notes=ES_NOTES),
+        "Bienes de interés cultural de Aragón", "Spain heritage: Aragón", "Fuente de los datos: Gobierno de Aragón",
+        "CC-BY-4.0", "https://opendata.aragon.es/", ["ES-AR"], eu.spain, src("Gobierno de Aragón (Aragón Open Data)"), ["es/aragon-*"], notes=ES_AR_NOTES),
     "es-vc-bic": Register(
         "Bienes de interés cultural valencianos", "Spain heritage: Comunitat Valenciana",
-        "Generalitat Valenciana, Inventario General del Patrimonio Cultural Valenciano", ES_UNVERIFIED,
+        "Generalitat Valenciana, Inventario General del Patrimonio Cultural Valenciano", "CC-BY (version not stated)",
         "https://terramapas.icv.gva.es/", ["ES-VC"], eu.spain,
-        src("Generalitat Valenciana, Inventario General del Patrimonio Cultural Valenciano"), ["es/valencia-*"], notes=ES_NOTES),
+        src("Generalitat Valenciana, Inventario General del Patrimonio Cultural Valenciano"), ["es/valencia-*"], notes=ES_VC_NOTES),
     "es-ga-bic": Register(
         "Bens de interese cultural de Galicia", "Spain heritage: Galicia", "Xunta de Galicia", "CC-BY-SA-4.0",
         "https://ficheiros-web.xunta.gal/patrimonio/bic/", ["ES-GA"], eu.spain, src("Xunta de Galicia (CC BY-SA 4.0)"), ["es/galicia-*"]),
@@ -172,11 +195,11 @@ REGISTERS: dict[str, Register] = {
         "Bienes de interés cultural de Navarra", "Spain heritage: Navarra", "Gobierno de Navarra, IDENA", "CC-BY-4.0",
         "https://idena.navarra.es/", ["ES-NC"], eu.spain, src("Gobierno de Navarra, IDENA (CC BY 4.0)"), ["es/navarra-*"]),
     "es-ex-bic": Register(
-        "Bienes de interés cultural de Extremadura", "Spain heritage: Extremadura", "Junta de Extremadura", ES_UNVERIFIED,
-        "https://www.juntaex.es/", ["ES-EX"], eu.spain, src("Junta de Extremadura"), ["es/extremadura-*"], notes=ES_NOTES),
+        "Bienes de interés cultural de Extremadura", "Spain heritage: Extremadura", "Junta de Extremadura", "CC-BY-4.0",
+        "https://www.juntaex.es/", ["ES-EX"], eu.spain, src("Junta de Extremadura"), ["es/extremadura-*"], notes=ES_EX_NOTES),
     "es-an-iaph": Register(
         "Patrimonio inmueble protegido de Andalucía", "Spain heritage: Andalucía", "Instituto Andaluz del Patrimonio Histórico (IAPH), Junta de Andalucía",
-        ES_UNVERIFIED, "https://www.iaph.es/", ["ES-AN"], eu.spain, src("Instituto Andaluz del Patrimonio Histórico (IAPH)"), ["es/andalucia-*"], notes=ES_NOTES),
+        "CC-BY-4.0", "https://www.iaph.es/", ["ES-AN"], eu.spain, src("Instituto Andaluz del Patrimonio Histórico (IAPH)"), ["es/andalucia-*"], notes=ES_AN_NOTES),
     "pt-atlas": Register(
         "Atlas do Património Classificado", "Portugal heritage",
         "Património Cultural, I.P., Atlas do Património Classificado e em Vias de Classificação", "CC-BY-NC-4.0",
