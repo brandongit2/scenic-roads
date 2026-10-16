@@ -764,6 +764,50 @@ pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(Strin
     })
 }
 
+/// A worker the lead's coordinator knows, for `pool_lanes`: its name, whether it's a page, the
+/// memory it spares (MB: 0, not said).
+pub type PoolWorker = (String, bool, u64);
+
+/// The memory a lane is taken to have when its worker says none (MB), as a helper's.
+pub const LANE_MEM_MB: u64 = 6144;
+
+/// The lanes of the forecast for equal machines (`equal_machines`): the lead's slots (`lead`, then
+/// `second`), each other native worker a lane, the pages one lane (their measured speeds summed,
+/// the largest memory one said), each at its speed in `speeds` (one not in it: the lead's, 1) and
+/// busy with its leases' targets left (`leased`: worker, step, targets, seconds since granted; a
+/// page's, the pages' lane's); and the leased targets as running on their lanes.
+pub fn pool_lanes(lead: Machine, second: Option<Machine>, workers: &[PoolWorker], speeds: &BTreeMap<String, f64>, leased: &[(String, String, Vec<String>, u64)], cost: &dyn Fn(&str, &str) -> Cost) -> (Vec<Machine>, BTreeMap<(String, String), usize>) {
+    let speed_of = |n: &str| speeds.get(n).copied().map_or((1.0, false), |s| (s, true));
+    let left = |names: &[&str], speed: f64| leased.iter().filter(|l| names.contains(&l.0.as_str())).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed.max(0.1) - *age as f64).fold(0.0, f64::max);
+    let lane = |name: &str, speed: f64, measured: bool, helper: bool, mem_mb: u64, busy_s: f64| Machine { name: name.to_string(), speed, measured, helper, second: false, equal: false, mem_mb, busy_s, unit_extra_s: 0.0 };
+    let own: Vec<String> = std::iter::once(lead.name.clone()).chain(second.as_ref().map(|m| m.name.clone())).collect();
+    let mut lanes: Vec<Machine> = std::iter::once(lead).chain(second).collect();
+    let (mut speed, mut measured, mut mem, mut pages): (f64, bool, u64, Vec<&str>) = (0.0, true, 0, Vec::new());
+    for (n, web, mem_mb) in workers {
+        if own.contains(n) {
+            continue;
+        }
+        let (sp, m) = speed_of(n);
+        if *web {
+            (speed, measured, mem) = (speed + sp, measured && m, mem.max(*mem_mb));
+            pages.push(n);
+        } else {
+            lanes.push(lane(n, sp, m, false, if *mem_mb > 0 { *mem_mb } else { LANE_MEM_MB }, left(&[n.as_str()], sp)));
+        }
+    }
+    if !pages.is_empty() {
+        lanes.push(lane("pages", speed, measured, true, if mem > 0 { mem } else { LANE_MEM_MB }, left(&pages, speed)));
+    }
+    let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (worker, step, targets, _) in leased {
+        let name = if pages.contains(&worker.as_str()) { "pages" } else { worker.as_str() };
+        if let Some(m) = lanes.iter().position(|l| l.name == name) {
+            running.extend(targets.iter().map(|t| ((step.clone(), t.clone()), m)));
+        }
+    }
+    (lanes, running)
+}
+
 /// About how long a map update took lately (seconds): the last five's. Each from its beginning (the
 /// history's "map-update", "round" before task #209) to its catalog (the "catalog" event, or a
 /// held catalog's job's end): the time it took whoever ran its jobs. One whose beginning the
@@ -873,15 +917,17 @@ mod tests {
         // slot as fast, and the pages as one lane.
         let regions = [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
-        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 900.0, known: true, peak_mb: 0 })];
+        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 900.0, known: true, peak_mb: 0 }), ("heritage-sites".into(), "heritage-sites".into(), Cost { secs: 900.0, known: true, peak_mb: 0 })];
         let lanes = vec![mac("m4", 1.0, false), mac("m1", 1.0, false), Machine { mem_mb: 4096, ..mac("pages", 2.0, true) }];
         let f = equal_machines(&inp, lanes, BTreeMap::new());
         assert!(f.why.is_none() && f.done_at.is_some(), "{:?}", f.why);
         assert!(f.equal.is_none() && forecast(&inp).equal.is_none(), "reports only: no forecast nested");
         let steps = |lane: &str| f.lanes[lane].iter().map(|l| l.step.clone()).collect::<BTreeSet<_>>();
         // The member's slot takes what a helper never does: the work before the regions, units.
-        assert!(steps("m1").contains("reach") || steps("m4").contains("reach"));
-        assert!(steps("m1").iter().any(|s| s == "unit" || s == "reach"), "{:?}", steps("m1"));
+        // (Both free at once: the lead's slot takes the first, the member's the second, which no
+        // helper would.)
+        assert!(steps("m4").contains("reach") && steps("m1").contains("heritage-sites"), "{:?} {:?}", steps("m4"), steps("m1"));
+        assert!(steps("m1").contains("unit"), "{:?}", steps("m1"));
         // The map updates the first lane's alone; the pages' only shared steps.
         assert!(steps("m4").contains("map-update"));
         assert!(!steps("m1").contains("map-update") && !steps("pages").contains("map-update"));
@@ -892,6 +938,25 @@ mod tests {
         // More lanes finish no later than the lead's slot alone.
         let alone = equal_machines(&inp, vec![mac("m4", 1.0, false)], BTreeMap::new());
         assert!(f.done_at.unwrap() <= alone.done_at.unwrap());
+    }
+
+    #[test]
+    fn a_pages_lease_is_the_pages_lanes_running_work_and_its_time_left() {
+        let workers: Vec<PoolWorker> = vec![("m1".into(), false, 0), ("page a".into(), true, 0), ("page b".into(), true, 0), ("m4".into(), false, 9)];
+        let speeds: BTreeMap<String, f64> = [("page a".to_string(), 0.5)].into();
+        let leased = vec![("page b".to_string(), "trees".to_string(), vec!["6/1/1".to_string(), "6/1/2".to_string()], 50)];
+        let (lanes, running) = pool_lanes(mac("m4", 1.0, false), None, &workers, &speeds, &leased, &cost);
+        assert_eq!(lanes.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["m4", "m1", "pages"]);
+        let pages = &lanes[2];
+        // (Speeds summed: one measured, one the lead's; no memory said, a helper's.)
+        assert!(pages.helper && (pages.speed - 1.5).abs() < 1e-9 && !pages.measured && pages.mem_mb == LANE_MEM_MB);
+        assert_eq!(lanes[1].mem_mb, LANE_MEM_MB);
+        // Two trees targets of 100 s at 1.5, less the 50 s since.
+        assert!((pages.busy_s - (200.0 / 1.5 - 50.0)).abs() < 1e-9, "{}", pages.busy_s);
+        assert_eq!(running.get(&("trees".to_string(), "6/1/2".to_string())), Some(&2));
+        // A page saying its memory: the largest said.
+        let workers: Vec<PoolWorker> = vec![("page a".into(), true, 2048), ("page b".into(), true, 4096)];
+        assert_eq!(pool_lanes(mac("m4", 1.0, false), None, &workers, &speeds, &[], &cost).0[1].mem_mb, 4096);
     }
 
     #[test]

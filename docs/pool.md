@@ -697,7 +697,12 @@ What's planned of placement (phase 4, §12):
   order), the pages as one lane (the shared steps alone, their measured speeds summed), each at its
   speed measured against the lead (placement::measured_speeds; one not measured, the lead's), busy
   with its lease's targets left. Nothing is placed or decided by it: the slack placement reads, and
-  everything else, is the forecast's as before.
+  everything else, is the forecast's as before. Its simplifications: the pages' lane has the
+  largest memory a page said (a helper's 6 GB when none said) at their speeds summed, a page's
+  leases its lane's; a worker saying no memory has a helper's 6 GB; the lead's second job's lane has
+  a quarter of the Mac's memory, as in the forecast; and an equal lane may build a region's slope
+  and tree cover before its map update is due (every step to every member), where the build Mac's
+  forecast waits for it.
 
 **A job far over its memory** (crate::agent::memguard, built: phase 4's second batch, §12). macOS
 swaps rather than kills, so a job holding more than its Mac has (terrain's whole-area run on the
