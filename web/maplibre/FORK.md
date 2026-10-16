@@ -186,8 +186,9 @@ now source changes:
   3.86 / 26.1, gliding 5.22 / 29.9 against 5.03 / 27.7; Annecy at 72° 4.29 / 26.8 against
   4.00 / 26.6 and 5.35 / 11.0 against 5.17 / 10.8; Tokyo at 70° 9.79 / 36.8 against 9.63 / 14.5
   and 9.72 / 12.9 against 9.60 / 12.9; Chamonix at 65° 2.56 / 14.8 against 2.52 / 14.9 and
-  3.48 / 10.1 against 3.54 / 11.7. The medians within 0.3 ms either way; Tokyo's turning p95 an
-  outlier the other cases don't show. While moving, the low camera holds 37–40 tiles either way:
+  3.48 / 10.1 against 3.54 / 11.7. The medians within 0.3 ms either way. Tokyo's turning p95 run
+  again, three runs each way alternated (on battery): 35.6–36.4 ms with the rules, 36.4–36.8
+  without; the first run's 14.5 without them was the outlier. While moving, the low camera holds 37–40 tiles either way:
   the 734 were the rest's.
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
