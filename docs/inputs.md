@@ -167,9 +167,10 @@ What moves (each in its task; §11):
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
 the languages (§6.2), the translations and the descriptions (§6.3, §6.4), the regions (§6.1), the
 timetable feeds and the static timetables (§6.7.1, §6.7.2), the heritage registers and matches
-(§6.5, §6.5.4) and, while it's on, the test unit `_gate-test` (§4.10); each other input joins
-`inputs::UNITS` in its own task (#142–#145). A unit with nothing dropped yet and no records isn't
-checked nor shown. What of this section isn't built yet is marked planned.
+(§6.5, §6.5.4), the elevation datasets (§6.8) and, while it's on, the test unit `_gate-test`
+(§4.10); each other input joins `inputs::UNITS` in its own task (#142, #144, #145). A unit with
+nothing dropped yet and no records isn't checked nor shown. What of this section isn't built yet is
+marked planned.
 
 ### 4.1 Terms
 
@@ -1857,26 +1858,42 @@ accepted version, rather than count without the static files: their outputs stay
   and in `scenic status`, never drawn. It isn't a held input: nothing waits on it.
 ### 6.8 Elevation (#143, #144)
 
+**Status:** #143's first step is built as its publish 1 (the migration below): the declarations on
+the input check (crate::inputs::elevation), the one generic sampler with its blend
+(crate::dem::generic, crate::dem::declared), the switch, the units' keys and DEM cache by the
+datasets once switched, and the proof (`scenic-build elevation-proof`). Its publish 2 deletes the
+per-source code and the DEM rules and credits. Steps 2 (densification from the data) and 3 (heights
+converted) are planned. What isn't built yet is marked planned.
+
 **Kind:** source declarations, a dataset each; a small dataset's files may be dropped beside its
-declaration. **Drop box:** `inputs/elevation/`: `<dataset>.toml`, and `<dataset>/` for local files.
+declaration. **Drop box:** `inputs/elevation/`: `<dataset>.toml`, a tile index `<name>.geojson`
+beside the declaration that names it, and `<dataset>/` for local files.
 
 **Shape:** a description (§5.1) and:
 
 | Field | Type | Keyed | Meaning |
 |---|---|---|---|
 | `surface` | `ground` or `surface` | yes | bare earth (a DTM), or with trees and buildings (a DSM) |
-| `heights` | string | yes | the height reference: `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84`… |
-| `rank` | integer | yes | optional: overrides the order by resolution (lower first); needed where datasets of one resolution differ in quality (GSI's lidar over its photogrammetry) |
-| `territory` | ISO codes, or `"world"` (§5.1) | yes | required for a tile pyramid (its coverage can't be read from a header: tiles are asked for only inside it); optional for GeoTIFFs, checked against their extents |
+| `heights` | string | yes | the height reference: `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` (recorded; converted in step 3, planned); `mixed` is refused here (the terrain's alone, #144) |
+| `rank` | integer | yes | optional: overrides the order by resolution (lower first); a dataset without one ranks 0; needed where datasets of one resolution differ in quality (GSI's lidar over its photogrammetry) |
+| `code` | integer 1–255 | yes | the source byte its heights carry in the units' outputs (`src.u8`), which the map's server labels by (`roadcore::DemSource`): today's codes kept, so the outputs stay the same (§12, the DEM cache, plans the byte as a position instead) |
+| `territory` | ISO codes, or `"world"` (§5.1) | yes | required for a tile pyramid (its coverage can't be read from a header: tiles are asked for only inside it; its coverage is its territory's outlines' boxes in the newest pass); `"world"` makes any dataset's coverage the world (FABDEM); otherwise optional for GeoTIFFs (checking it against their extents is planned) |
 | `[data] format` | `geotiff` or `tiles` | yes | |
-| `[data] urls` / `index` / `files` | | yes | GeoTIFFs by URL (cloud-optimised ones read in ranges: a `range` source, keyed by each file's ETag, §1, §5.2), a tile index (GeoJSON of footprints with URLs, made by a producer from the source's listing), or files dropped beside it |
-| `[data] encoding` | `terrarium`, `terrain-rgb`, `gsi-png` | yes | for `tiles`: the encodings are formats, decoded by generic code (today Terrarium in `roadcore::grid`, GSI's PNG in `pipeline::dem::gsi`) |
+| `[data] url` / `urls` / `index` / `files` | | yes | one of: GeoTIFFs by URL (`<zip URL>#<member>` for a member of a zip, read in place), a tile index (GeoJSON of footprints with each file's `url`, or its `file` in `<dataset>/`, in the index's CRS, made by a producer from the source's listing: `producers/elevation/indexes.py`), or files dropped in `<dataset>/` by glob. (ETags pinning `range` sources, §5.2, are planned.) |
+| `[data] store` | bool | yes | each file downloaded whole once, kept in `sources/fetched/<dataset>/` as a compressed GeoTIFF (FABDEM's, as `sources/fabdem/` kept them); read in place where that can't be written |
+| `[data] encoding` | `terrarium`, `terrain-rgb`, `gsi-png` | yes | for `tiles`: the encodings are formats, decoded by generic code (crate::dem::encoding) |
 | `[data] url`, `zoom` | template, integer | yes | for `tiles` |
-| `[data] read_resolution` | metres | yes | optional: read a finer dataset at a coarser overview (HRDEM's 2 m read at its 8 m overview today) |
-| `[data] valid` | GeoJSON file beside it | yes | optional: where the dataset is trusted, when that isn't all of it (AWS's tiles south of 60°N: north of it they mix an ellipsoidal source, plan §6) |
+| `[data] read_resolution` | metres | yes | optional: read a finer dataset at its overview nearest this (HRDEM's 2 m read at its 8 m overview) |
+| `[data] valid` | GeoJSON file beside it | yes | planned (#144): where the dataset is trusted, when that isn't all of it (AWS's tiles south of 60°N: north of it they mix an ellipsoidal source, plan §6) |
 
-Read from the data at check time, never declared: each GeoTIFF's resolution, extent, CRS and no-data
-value (its header, by range requests); a tile pyramid's resolution from its zoom and latitude.
+Read from the data at check time, never declared (`facts.measured` in the index, beside the
+declaration as parsed, `facts.declaration`): a GeoTIFF dataset's CRS and resolution (the headers of
+its first file, its last and seven between, by range requests: all in one CRS the app projects, its
+resolution the coarsest of theirs at the overview read), and its coverage (`cover`): the 1° cells
+its files' footprints meet (the index's, else the files' own bounds; a projected CRS's found by
+projecting each cell's 5 × 5 points, with the cells around), merged into boxes; a tile pyramid's
+resolution from its zoom at its coverage's mid-latitude. The coverage is also the description's
+extent for the credits (§4.8: a list of boxes, `"world"` for none).
 
 ```toml
 name = "NRCan HRDEM, 2 m lidar mosaic"
@@ -1892,18 +1909,32 @@ index = "hrdem-tiles.geojson"
 read_resolution = 8
 ```
 
-**Checks.** Errors: an unknown `surface`, `heights` or encoding; a GeoTIFF whose header can't be read
-or whose CRS the app can't project (today's projections: `pipeline::dem::proj`); a tile template
-without its placeholders; files named that aren't there; an index that doesn't parse. Warnings: a
-dataset whose files don't meet its declared territory; two datasets of one resolution and no `rank`
-between them meeting (their order would fall to their ids).
+**Checks** (built: crate::inputs::elevation). Errors: a file not of the drop box's shape
+(`el-shape`); a description's field missing or of the wrong type (`el-desc`, §5.1); a declaration's
+own fields wrong: an unknown `surface`, `heights` (or `mixed`) or encoding, a `code` missing, a tile
+template without its placeholders, not exactly one way of naming files (`el-decl`); an index that
+doesn't parse (`el-index`); an index or files named that aren't there (`el-missing`); data that
+can't be read or measured: a header that can't be read, a file the server hasn't, a CRS the app
+can't project (EPSG 4326, 4269 and 3979 today: `pipeline::dem::proj`) or that contradicts its
+index's, a tile pyramid without a territory or whose territory the pass's outlines lack (`el-data`).
+Warnings: a dataset's folder or an index no declaration names (`el-orphan`); two datasets of one
+rank, resolution and surface meeting (`el-tie`: their order would fall to their ids). Planned: a
+dataset whose files don't meet its declared territory. A declaration is held with the index it
+names.
 
 **Ingesting.**
-- **The order at a point:** the datasets with valid data there, by `rank` where given, else
-  resolution, finest first, ties by id.
-- **Blended at the edges:** within a band of four of the coarser dataset's pixels inside the finer
-  one's valid area (its no-data or its coverage's edge), the two blend by a smoothstep of the
-  distance, as GLO-30 blends into AWS's tiles by latitude today (plan §6), so a seam shows no step.
+- **The order at a point:** the datasets whose coverage holds it, by `rank` (none: 0), then
+  resolution, finest first, then ground over surface, then id; the first with valid data there gives
+  the height and its `code`. A GeoTIFF dataset's files are tried in its index's order, a point in
+  those whose footprint holds it (min x ≤ x < max x, min y < y ≤ max y in the files' CRS: today's
+  HRDEM and 3DEP choice exactly), sampled as today (crate::dem::sample).
+- **Blended at the edges** (built: crate::dem::generic): where the next dataset with valid data
+  there (B) lies beneath the first (A), and the point is within a band of four of the coarser one's
+  pixels of A's invalid area (the nearest pixel cell where A has no data, or past its files' edges,
+  measured on A's own pixels, a neighbouring file's where the band crosses into one), the two blend
+  by a smoothstep of the distance d: h = B + (A − B)·s(d / band), s(t) = t²(3 − 2t), as GLO-30
+  blends into AWS's tiles by latitude today (plan §6), so a seam shows no step. Past the band the
+  height is A's to the bit, and the source byte is A's either way.
 - **Heights are converted** to one reference, EGM2008 (FABDEM's and GLO-30's), through each
   reference's geoid grid: a height H in a reference with geoid N_ref over its ellipsoid is the
   ellipsoidal height h = H + N_ref, moved to WGS 84's frame where the reference's frame differs, and
@@ -1928,20 +1959,28 @@ between them meeting (their order would fall to their ids).
 - **Ground over surface** at equal rank and resolution; a surface model ranks over a ground one only
   by `rank` (GLO-30 over AWS's tiles north of 60°N, where those are wrong).
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
-- **Keys:** a unit names the `keyed` digests of the datasets whose extent meets its reach (and the
-  fetched files' pins for datasets downloaded whole, as FABDEM's tiles are kept today), replacing
-  the DEM rules' versions by area (`rules::RULES`' `dem-*`, crates/pipeline/src/rules.rs:33–41,
-  `DEM_RULES`, :60, `dem_rules_of`, :65). Adding a dataset reruns exactly the units it meets.
-- **The units' DEM cache** (`sources/dem-cache/`, `cache/dem-units/`): today a vertex's cached
-  height stays valid while the versions of the DEM rules it depends on hold (`dem_valid_in_box`,
-  crates/pipeline/src/unit.rs:342–354, through `rules::dem_rules_of`). That can't see a newly
-  declared finer dataset. Instead each cached height records the datasets at or above its source's
-  rank that meet the vertex, by their `keyed` digests (as an index into a small table of such lists
-  kept with the cache, so a vertex costs a few bytes); it's valid while the datasets at or above
-  that rank meeting the vertex are still exactly those. A finer dataset declared over it, or its own
-  dataset changed, makes it stale and the vertex is sampled again; a coarser dataset added changes
-  nothing. The source byte (`DemSource`, crates/roadcore/src/lib.rs:145) becomes the dataset's
-  position in that list.
+- **Keys** (built, once switched): a unit names the `keyed` digests of the datasets whose coverage
+  meets its ways' extent (`agent::build::unit_key`, the datasets held by `agent::tiles`), in place
+  of the DEM rules' versions by area (`rules::versions_meeting_but_dem`). Adding or editing a dataset
+  reruns exactly the units it meets. Planned: the fetched files' pins for datasets downloaded whole.
+- **The unit's plan:** the unit job writes `elevation.json` into the unit's folder (the accepted
+  datasets in their order, each with its files whose footprints meet the unit's vertices, a few km
+  around: `dem::declared::plan`), which `elev` reads (natively or as a task's WebAssembly: it's one
+  of the tail's files); without one `elev` runs today's code (publish 1 only).
+- **The units' DEM cache** (`sources/dem-cache/`, `cache/dem-units/`): before the switch a vertex's
+  cached height stays valid while the versions of the DEM rules it depends on hold (`dem_valid_in_box`,
+  through `rules::dem_rules_of`). Built for the switch, coarser than below (`unit::DemValidity`): a
+  units' samples file made from the declarations records their digest (`made`: `u32::MAX`, 0, the
+  digest's halves, in the rules' versions' place); its samples are valid while the declarations'
+  digest is the same, and otherwise none are. Any other sample (the seed's, those made under the
+  rules) is valid only where a single dataset's coverage holds its vertex and it's that dataset's
+  code (no blend could apply there, and nothing finer covers it). Planned, finer: each cached height
+  records the datasets at or above its source's rank that meet the vertex, by their `keyed` digests
+  (as an index into a small table of such lists kept with the cache, so a vertex costs a few bytes);
+  it's valid while the datasets at or above that rank meeting the vertex are still exactly those. A
+  finer dataset declared over it, or its own dataset changed, makes it stale and the vertex is
+  sampled again; a coarser dataset added changes nothing. The source byte (`DemSource`,
+  crates/roadcore/src/lib.rs:145) becomes the dataset's position in that list.
 - **Densification** follows the data: today 8 m in North America and Japan and 15 m elsewhere by
   boxes (crates/pipeline/src/bin/extract.rs:1083–1087, duplicated in reach.rs:57), because those are
   where finer DEMs are; it becomes 8 m where a dataset of 10 m or finer meets the way, else 15 m. This
@@ -1967,6 +2006,42 @@ Then deleted: the per-source code and the DEM
 rules and credits in rules.rs (:187–204). Taiwan's MOI DTM code is already gone; its stale
 mention (crates/pipeline/src/bin/elev.rs:6) and rule (`dem-taiwan`, `meets_taiwan`, rules.rs:38,
 :92) go with the DEM rules, the re-keying of old keys (agent/rekey.rs) keeping what it needs.
+
+**Step 1's migration, in two publishes.** The declarations are written (`data/scratch/inputs/elevation/`
+in #143's worktree: nine, `hrdem`, `usgs-3dep`, `mrdem`, `gsi-1a`, `gsi-5a`, `gsi-5b`, `gsi-5c`,
+`gsi-10`, `fabdem`, with the indexes `producers/elevation/indexes.py` made from the sources'
+listings: HRDEM's 56 squares, the same as `dem/hrdem_2m_tiles.txt` names; 3DEP's 1,449 tiles;
+FABDEM's tiles in Bristol's 356 zips).
+
+*Publish 1* (the check, the sampler, both read paths). What the live output does at each step:
+1. *Installed, nothing dropped:* nothing changes (the unit isn't shown; every key is as it was;
+   `elev` without a plan runs today's code). The unit tail reads FABDEM's kept tiles from
+   `sources/fetched/fabdem/` (the generic store's place): **move `sources/fabdem/` there** once
+   every Mac runs publish 1 (one rename on the share; meanwhile a unit reads a tile in place and
+   keeps it there anew).
+2. *Declarations dropped* (the nine `.toml` and three indexes, together: a declaration is held with
+   the index it names): the check reads their headers (a few dozen range requests) and takes them in
+   when clean. Live: the catalog's credits are the declarations' (the three DEM entries of
+   `rules::CREDITS` replaced by their `what`, MRDEM's and 3DEP's lines beside HRDEM's, GSI's five
+   layers one line), so the catalog is remade once; no build step reruns (nothing reads the
+   datasets yet).
+3. *The proof:* `scenic-build elevation-proof --root <nas> --out <scratch> --store <nas>/sources
+   --write` over every unit with kept samples: each unit's vertices sampled by today's code and by
+   the generic sampler; every difference must lie in a blend band with the same source byte. Only
+   then does it write `state/inputs/elevation-proof.json` (the accepted index proved, and the app),
+   and the next check records the switch (`sources/inputs/elevation/@switched`); a declaration
+   edited between makes the proof stale (it names the index), so the proof runs again. Older apps
+   can't lead from the switch on (their keys and code are today's: `regions::read::switch_app`
+   reads both switches).
+4. *Switched:* the units' keys name the datasets meeting them. Those a single dataset meets
+   (FABDEM's alone: everywhere outside North America and Japan) are re-keyed, not built
+   (`agent::rekey`, their heights the same by the proof); those more than one meets are built again
+   with the blends, their kept samples reused where one dataset alone covers a vertex. **No rollback
+   past the switch** but by `scenic lead take --force --downgrade`.
+
+*Publish 2* (once switched): the per-source code (`dem::run`, `dem::gsi`, `dem::fabdem`, the HRDEM
+tile list and index), the DEM rules and their credits in rules.rs, `DemValidity::Rules` and the
+fallback to today's code go; `elev` and the unit job refuse to run without the datasets' plan.
 
 **#144, the 3D terrain.** AWS's Terrarium tiles (`terrain_pack::URL`, terrain_pack.rs:15) and GLO-30
 north of 60°N (`terrain_north::BUCKET`, terrain_north.rs:102; `NORTH_PIN`, terrain_pack.rs:93)

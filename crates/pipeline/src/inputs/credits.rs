@@ -54,6 +54,8 @@ pub enum Extent {
     World(String),
     /// A box (w, s, e, n).
     Box([f64; 4]),
+    /// Boxes (an elevation dataset's 1° cells merged: crate::dem::declared::Measured::cover).
+    Boxes(Vec<[f64; 4]>),
 }
 
 /// A description file parsed (TOML): it, and the findings its shape raises (an error for each
@@ -127,6 +129,7 @@ impl Described {
         match &self.extent {
             Some(Extent::World(w)) if w == "world" => Some(Vec::new()),
             Some(Extent::Box(b)) => Some(vec![*b]),
+            Some(Extent::Boxes(b)) => Some(b.clone()),
             _ => None,
         }
     }
@@ -140,8 +143,10 @@ impl Described {
         if let Some((rid, "toml")) = (self.unit == super::heritage::UNIT).then(|| super::heritage::split(&self.path)).flatten() {
             v["register"] = rid.into();
         }
-        if let Some(Extent::Box(b)) = &self.extent {
-            v["areas"] = serde_json::json!([b]);
+        match &self.extent {
+            Some(Extent::Box(b)) => v["areas"] = serde_json::json!([b]),
+            Some(Extent::Boxes(b)) => v["areas"] = serde_json::json!(b),
+            _ => {}
         }
         v
     }
@@ -214,5 +219,30 @@ pub fn catalog_credits(regions: &[crate::coverage::DrawnRegion], extents: &[[i32
         }
     }
     out.extend(listed.iter().zip(&used).filter(|(_, u)| !**u).map(|(d, _)| d.credit()));
-    out
+    // (One line for the descriptions that credit alike, their areas together: GSI's five elevation
+    // layers, one credit.)
+    let mut merged: Vec<serde_json::Value> = Vec::new();
+    for c in out {
+        let same = |m: &serde_json::Value| m["what"] == c["what"] && m["source"] == c["source"] && m["terms"] == c["terms"] && m.get("register") == c.get("register");
+        match merged.iter_mut().find(|m| same(m)) {
+            Some(m) => match (m.get("areas").cloned(), c.get("areas")) {
+                (Some(serde_json::Value::Array(mut a)), Some(serde_json::Value::Array(b))) => {
+                    for x in b {
+                        if !a.contains(x) {
+                            a.push(x.clone());
+                        }
+                    }
+                    m["areas"] = serde_json::Value::Array(a);
+                }
+                // (Either anywhere: anywhere.)
+                _ => {
+                    if let Some(o) = m.as_object_mut() {
+                        o.remove("areas");
+                    }
+                }
+            },
+            None => merged.push(c),
+        }
+    }
+    merged
 }

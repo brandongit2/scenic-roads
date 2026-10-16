@@ -117,6 +117,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("catalog", "[--held] [--ready <ids>] [--delta] [--whole]", "publish a catalog of the build manifest (--held: into catalog-held/)", &["--held", "--delta", "--whole"], &["--ready"], 0),
         c("rekey-check", "[--pass d]", "what re-keying the records for the units' new keys would do now. Reads only", &[], PASS, 0),
         c("p5-check", "terrain|trees [--pass d] [--costs f]", "what switching terrain and slope, or tree cover, to pieces and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
+        c("elevation-proof", "--out d [--declarations dir] [--units U,…] [--store dir] [--workers n] [--count] [--write]", "the declared elevation datasets against the units' kept samples: every difference in a blend band (#143's proof); --count: the units the switch builds again. Reads the NAS only, but --write (the proof the input check reads)", &["--count", "--write"], &["--out", "--declarations", "--units", "--store", "--workers"], 0),
     ],
 };
 

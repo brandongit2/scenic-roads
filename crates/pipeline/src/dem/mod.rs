@@ -18,9 +18,14 @@
 //! Changing which DEM serves where, or how: bump the rule's version in `crate::rules`
 //! ("dem-north-america", "dem-japan", "dem-taiwan", "dem-fabdem"), so its units run again.
 
+pub mod declared;
+pub mod encoding;
 pub mod fabdem;
+pub mod generic;
 pub mod gsi;
+pub mod kept;
 pub mod proj;
+pub mod proof;
 pub mod sample;
 
 use crate::fetch::Fetch;
@@ -119,6 +124,8 @@ pub struct Config {
     /// The store only read (a task's worker: docs/workers.md §2): a tile it hasn't, or hasn't
     /// whole, is read in place, and nothing there is written or removed.
     pub fabdem_read_only: bool,
+    /// The stores' folder (`sources/fetched/`) for datasets declared `store` (crate::dem::generic).
+    pub store: Option<PathBuf>,
 }
 
 /// dem-stats.json: vertices by source.
@@ -542,8 +549,17 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
     let (elev, src) = prog.finish()?;
     std::fs::write(b.join("dem-stats.json"), serde_json::to_string_pretty(&stats)?)?;
     std::fs::remove_file(b.join("dem-progress.json")).ok();
+    write_cache(&cfg.cache, verts, &elev, &src)?;
+    println!("{}", serde_json::to_string_pretty(&stats)?);
+    Ok(stats)
+}
+
+/// The cache for the next run (`dem-cache.*` in `cache`): every vertex's key, sorted, with its
+/// height and source.
+fn write_cache(cache: &Path, verts: &[[i32; 2]], elev: &[f32], src: &[u8]) -> Result<()> {
     println!("updating elevation cache");
-    std::fs::create_dir_all(&cfg.cache)?;
+    let n = verts.len();
+    std::fs::create_dir_all(cache)?;
     let keys: Vec<u64> = verts.par_iter().map(|&v| pack(v)).collect();
     let mut order: Vec<u32> = (0..n as u32).collect();
     order.par_sort_unstable_by_key(|&i| (keys[i as usize], i));
@@ -551,12 +567,11 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
     let oe: Vec<f32> = order.iter().map(|&i| elev[i as usize]).collect();
     let os: Vec<u8> = order.iter().map(|&i| src[i as usize]).collect();
     for (name, bytes) in [("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)), ("elev.f32", bytemuck::cast_slice(&oe)), ("src.u8", &os[..])] {
-        let tmp = cfg.cache.join(format!("dem-cache.{name}.tmp"));
+        let tmp = cache.join(format!("dem-cache.{name}.tmp"));
         std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, cfg.cache.join(format!("dem-cache.{name}")))?;
+        std::fs::rename(&tmp, cache.join(format!("dem-cache.{name}")))?;
     }
-    println!("{}", serde_json::to_string_pretty(&stats)?);
-    Ok(stats)
+    Ok(())
 }
 
 #[cfg(test)]

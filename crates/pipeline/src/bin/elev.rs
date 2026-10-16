@@ -36,8 +36,12 @@ fn main() -> Result<()> {
     let cache = cache.unwrap_or_else(|| build.parent().unwrap_or(&build).join("cache"));
     let env_dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let read_only = std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
-    let cfg = Config { build, workers, cache, no_cache, fabdem_store: env_dir("SCENIC_FABDEM_STORE"), fabdem_read_only: read_only };
-    // (Its phases, for the unit job's phase that runs it: pipeline::timings.)
-    pipeline::timings::job("elev", || dem::run(&cfg, &Fetcher::from_env()))?;
+    let cfg = Config { build, workers, cache, no_cache, fabdem_store: env_dir("SCENIC_FABDEM_STORE"), fabdem_read_only: read_only, store: env_dir("SCENIC_STORE") };
+    // (Its phases, for the unit job's phase that runs it: pipeline::timings.) From the declared
+    // datasets when the unit job gave it their plan (elevation.json), else as before them.
+    match dem::declared::read_plan(&cfg.build)? {
+        Some(plan) => pipeline::timings::job("elev", || dem::generic::run(&cfg, &plan, &Fetcher::from_env()).map(|_| ()))?,
+        None => pipeline::timings::job("elev", || dem::run(&cfg, &Fetcher::from_env()).map(|_| ()))?,
+    }
     Ok(())
 }

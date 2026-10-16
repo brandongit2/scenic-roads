@@ -52,7 +52,14 @@ pub struct TerrainTiles {
     /// The terrain's water digests the manifest names (crate::terrain_water::WaterIdx), by content
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
     water: HashMap<String, crate::terrain_water::WaterIdx>,
+    /// The declared elevation datasets the units' keys name once the build reads them
+    /// (crate::inputs::elevation): the accepted index's content name, and each dataset with where
+    /// it has data.
+    elevation: Option<(String, std::sync::Arc<Elevation>)>,
 }
+
+/// The declared elevation datasets as the units' keys name them: each with its coverage.
+pub type Elevation = Vec<(crate::dem::declared::Accepted, crate::dem::declared::Cover)>;
 
 impl TerrainTiles {
     /// None held yet; `dir`: where indexes are kept (the agent's `pack-idx/`).
@@ -71,6 +78,7 @@ impl TerrainTiles {
     pub fn load(&mut self, root: &Path, m: &BTreeMap<String, String>) -> usize {
         use rayon::prelude::*;
         self.load_water(root, m);
+        self.load_elevation(root, m);
         let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         self.held.retain(|c, _| want.contains(c.as_str()));
         self.unread.retain(|c, _| want.contains(c.as_str()));
@@ -98,6 +106,52 @@ impl TerrainTiles {
             self.tidy(&want);
         }
         n
+    }
+
+    /// Holds the declared elevation datasets of the accepted version `m` names, once the build reads
+    /// them (one that can't be read now: the units' keys wait, tried again with the next load).
+    fn load_elevation(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+        use crate::inputs::elevation;
+        let want = elevation::switched(m).then(|| m.get(&crate::inputs::logical(elevation::UNIT))).flatten();
+        let Some(want) = want else {
+            self.elevation = None;
+            return;
+        };
+        if self.elevation.as_ref().is_some_and(|(c, _)| c == want) {
+            return;
+        }
+        let got = crate::inputs::open(root, m, elevation::UNIT).and_then(|a| crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?));
+        match got {
+            Ok(ds) => {
+                self.unread.remove(want);
+                let e: Elevation = ds
+                    .into_iter()
+                    .map(|d| {
+                        let c = crate::dem::declared::Cover::of(d.measured.cover.as_deref());
+                        (d, c)
+                    })
+                    .collect();
+                self.elevation = Some((want.clone(), std::sync::Arc::new(e)));
+            }
+            Err(e) => {
+                self.elevation = None;
+                self.unread.insert(want.clone(), format!("{e:#}"));
+            }
+        }
+    }
+
+    /// The declared elevation datasets the units' keys name: None before the build reads them; an
+    /// error while their accepted version can't be read.
+    pub fn elevation(&self, m: &BTreeMap<String, String>) -> Result<Option<std::sync::Arc<Elevation>>, Unread> {
+        use crate::inputs::elevation;
+        if !elevation::switched(m) {
+            return Ok(None);
+        }
+        let want = m.get(&crate::inputs::logical(elevation::UNIT)).ok_or_else(|| Unread("the build reads the declared elevation datasets, but the records name no accepted version".into()))?;
+        match &self.elevation {
+            Some((c, e)) if c == want => Ok(Some(e.clone())),
+            _ => Err(Unread(format!("the elevation datasets' index {want} isn't read{}", self.unread.get(want).map(|w| format!(": {w}")).unwrap_or_default()))),
+        }
     }
 
     /// Holds the water digests `m` names, and only those (one that can't be read now: tried again
@@ -150,6 +204,11 @@ impl TerrainTiles {
 
     /// Holds a water source's digests as given, under content name `content` (tests and
     /// `scenic-build water-key-check`: no file).
+    /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them).
+    pub fn hold_elevation(&mut self, content: &str, e: Elevation) {
+        self.elevation = Some((content.to_string(), std::sync::Arc::new(e)));
+    }
+
     pub fn hold_water(&mut self, content: &str, w: crate::terrain_water::WaterIdx) {
         self.water.insert(content.to_string(), w);
     }

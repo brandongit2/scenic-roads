@@ -98,9 +98,20 @@ pub fn meets_taiwan(b: [i32; 4]) -> bool {
 
 /// The versions of the rules whose areas meet the box w, s, e, n (E7), as one string for a key.
 pub fn versions_meeting(b: [i32; 4]) -> String {
+    versions_meeting_of(b, &|_| true)
+}
+
+/// `versions_meeting` without the DEM rules: once the build reads the declared elevation datasets,
+/// a unit's key names those meeting it instead (agent::build::unit_key).
+pub fn versions_meeting_but_dem(b: [i32; 4]) -> String {
+    versions_meeting_of(b, &|r| !DEM_RULES.contains(&r.name))
+}
+
+fn versions_meeting_of(b: [i32; 4], keep: &dyn Fn(&Rule) -> bool) -> String {
     let (w, s, e, n) = (b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7);
     RULES
         .iter()
+        .filter(|r| keep(r))
         .filter(|r| r.areas.is_empty() || r.areas.iter().any(|a| a[0] <= e && a[2] >= w && a[1] <= n && a[3] >= s))
         .map(|r| format!("{}={}", r.name, r.version))
         .collect::<Vec<_>>()

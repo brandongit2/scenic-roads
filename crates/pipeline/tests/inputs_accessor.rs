@@ -76,13 +76,14 @@ const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/railfeeds.py", "keys", "\"inputs/keys.env's keys (KEY=value lines; # comments).\"", "inputs/keys.env, not an input (§2): named in its docstring"),
 ];
 
-/// Each gate unit's name as code would write it in a path. (The regions' and the heritage
-/// registers' and matches' aside: "regions" and "heritage" are words every reader of the coverage,
-/// the catalog and the heritage chain says, and their drop boxes are only ever named
-/// `inputs/regions`, `inputs/heritage`, `inputs/heritage-matches`, which `MARKERS` catches.)
+/// Each gate unit's name as code would write it in a path. (The regions', the heritage
+/// registers' and matches' and the elevation datasets' aside: "regions", "heritage" and
+/// "elevation" are words every reader of the coverage, the catalog, the heritage chain and the
+/// roads' heights says, and their drop boxes are only ever named `inputs/regions`,
+/// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, which `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    use pipeline::inputs::{heritage, heritage_matches, regions};
-    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT].contains(*u)).map(|u| format!("\"{u}")).collect()
+    use pipeline::inputs::{elevation, heritage, heritage_matches, regions};
+    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT].contains(*u)).map(|u| format!("\"{u}")).collect()
 }
 
 /// The lines naming a drop box outside the accessor, and the exemptions that matched none.

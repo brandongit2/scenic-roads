@@ -212,7 +212,7 @@ impl Fixture {
     }
 
     fn config(&self) -> Config {
-        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false }
+        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false, store: Some(self.dir.path().join("fetched")) }
     }
 
     fn outputs(&self) -> (Vec<f32>, Vec<u8>) {
@@ -326,6 +326,9 @@ fn a_store_only_read_is_neither_written_nor_pruned() {
     assert_eq!(f.outputs().1, whole.outputs().1);
     assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
 }
+
+#[path = "tests_declared.rs"]
+mod declared_tests;
 
 #[test]
 fn an_interrupted_run_resumes() {

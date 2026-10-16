@@ -42,6 +42,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),
     ("crates/pipeline/src/bin/scenic-build.rs", "water_key_check", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand (its copy in memory, never written)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),
+    ("crates/pipeline/src/dem/proof.rs", "run", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): #143's proof, run by hand"),
+    ("crates/pipeline/src/dem/proof.rs", "units_affected", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): #143's proof, run by hand"),
     ("crates/pipeline/src/bin/scenic.rs", "inputs", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): `scenic inputs`'s report"),
     ("crates/pipeline/src/agent/mod.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
     ("crates/pipeline/src/agent/gc.rs", "run", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): GC's live set"),

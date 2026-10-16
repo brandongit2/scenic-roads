@@ -196,12 +196,15 @@ pub struct Rekeyed {
     pub trees_dropped: Vec<(String, String)>,
     /// Those whose packs' times can't be read now: kept as they are, for the next pass.
     pub trees_unknown: Vec<(String, String)>,
+    /// Units current under their keys from before the build read the declared elevation datasets,
+    /// recorded under their keys now: those a single dataset meets (crate::inputs::elevation).
+    pub elevation_moved: Vec<String>,
 }
 
 impl Rekeyed {
     /// Whether it changed the records.
     pub fn changed(&self) -> bool {
-        !self.moved.is_empty() || !self.left.is_empty() || !self.trees_moved.is_empty() || !self.trees_dropped.is_empty()
+        !self.moved.is_empty() || !self.left.is_empty() || !self.trees_moved.is_empty() || !self.trees_dropped.is_empty() || !self.elevation_moved.is_empty()
     }
 }
 
@@ -292,6 +295,7 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
     rekey_trees(keys, cov, m, times, &mut out);
     let older = |x: u32, y: u32| times.hi_older(m, x, y);
     let Some(reach) = reach else { return out };
+    rekey_elevation(keys, cov, date, m, reach, tiles, &mut out);
     // (The units recorded, not all the pass's: whether the coverage builds a unit is a test of its
     // ways, seconds for all a pass's reaches.)
     let mut current: Vec<Unit> = Vec::new();
@@ -329,8 +333,12 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
                 continue;
             }
         };
+        let Ok(elevation) = tiles.elevation(m) else {
+            out.unknown.push((t, "the declared elevation datasets can't be read now".into()));
+            continue;
+        };
         if why.is_empty() {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read)));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), elevation.as_deref().map(Vec::as_slice)));
             if !outputs {
                 out.empty.push(t.clone());
             }
@@ -341,6 +349,32 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
         }
     }
     out
+}
+
+/// Re-keys the units' records once the build reads the declared elevation datasets
+/// (crate::inputs::elevation's switch): a unit current under its key from before (the DEM rules'
+/// versions) whose ways a single dataset meets is recorded under its key now. Its heights are what
+/// they were: where one dataset alone has data there's nothing to blend, and that dataset is the
+/// one the DEM rules fell through to (the declared coverages hold every file's footprint, and the
+/// migration's proof showed the same heights outside the blend bands). The others are built again.
+#[allow(clippy::too_many_arguments)]
+fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: &Reaches, tiles: &TerrainTiles, out: &mut Rekeyed) {
+    let Ok(Some(ds)) = tiles.elevation(m) else { return };
+    let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
+    for (t, k) in units {
+        let Some(u) = Unit::parse(&t) else { continue };
+        let (Some(r), Some(piece)) = (reach.get(u).filter(|r| r.builds(cov)), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash()))) else { continue };
+        let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
+        if build::unit_key(cov, date, m, u, piece, r, &terrain, None) != k {
+            continue;
+        }
+        let e = r.extent(u);
+        let deg = |v: i32| v as f64 * 1e-7;
+        if crate::dem::declared::meeting(&ds, [deg(e[0]), deg(e[1]), deg(e[2]), deg(e[3])]).len() == 1 {
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, Some(&ds)));
+            out.elevation_moved.push(t);
+        }
+    }
 }
 
 /// Re-keys tree cover's records of a z3 tile's whole run ("3/x/y", `v1::trees_targets`) as its
@@ -870,6 +904,33 @@ mod tests {
         assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
         assert_eq!(done, before);
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/29/16"]);
+    }
+
+    #[test]
+    fn at_the_elevation_switch_the_units_one_dataset_meets_are_re_keyed_and_the_others_built() {
+        let (c, reach, mut m, mut done) = iceland(&|_| {});
+        let tiles = tiles_for(&m);
+        rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert!(units(&plan(&c, &reach, &m, &done, &tiles)).is_empty());
+        // The switch: FABDEM-like everywhere, and a finer dataset over Reykjavik alone.
+        let index = "sources/inputs/elevation/@index.1111111111111111.json";
+        m.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), index.into());
+        m.insert(crate::inputs::switched_logical(crate::inputs::elevation::UNIT), "sources/inputs/elevation/@switched.2222222222222222.json".into());
+        let mut tiles = tiles_for(&m);
+        let ds = |id: &str, cover: Option<Vec<[f64; 4]>>| {
+            let declaration = crate::dem::declared::Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 1, data: crate::dem::declared::Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
+            let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
+            (crate::dem::declared::Accepted { id: id.into(), path: format!("{id}.toml"), declaration, measured, keyed: format!("{id}-k") }, crate::dem::declared::Cover::of(cover.as_deref()))
+        };
+        tiles.hold_elevation(index, vec![ds("lidar", Some(vec![[-23.0, 63.0, -21.0, 65.0]])), ds("world", None)]);
+        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3, "every key names the datasets now");
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        // (A unit's extent is its tile's and its ways': Reykjavik's and Akureyri's tile, 6/28, meets
+        // the finer dataset's cells.)
+        assert_eq!(r.elevation_moved, ["6/29/16"]);
+        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16", "6/28/17"], "those the finer dataset meets, built again");
+        // Again: nothing.
+        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
     }
 
     #[test]

@@ -29,10 +29,18 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
 /// when not switched. One that can't be read or parsed, or names no app, is an error: unknown,
 /// never taken for an app every Mac passes.
 pub fn switch_app(manifest: &BTreeMap<String, String>, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Option<String>> {
-    let Some(name) = manifest.get(&crate::inputs::switched_logical(super::UNIT)) else { return Ok(None) };
-    let v: serde_json::Value = serde_json::from_slice(&read(name)?).with_context(|| format!("parse {name}"))?;
-    let app = v.get("app").and_then(|a| a.as_str()).filter(|a| !a.is_empty()).with_context(|| format!("{name} names no app"))?;
-    Ok(Some(app.to_string()))
+    // (The elevation datasets' switch too, #143: an app from before it would key and build the
+    // units as before them. The newer of the two.)
+    let mut newest: Option<String> = None;
+    for unit in [super::UNIT, crate::inputs::elevation::UNIT] {
+        let Some(name) = manifest.get(&crate::inputs::switched_logical(unit)) else { continue };
+        let v: serde_json::Value = serde_json::from_slice(&read(name)?).with_context(|| format!("parse {name}"))?;
+        let app = v.get("app").and_then(|a| a.as_str()).filter(|a| !a.is_empty()).with_context(|| format!("{name} names no app"))?;
+        if newest.as_deref().is_none_or(|n| !crate::pool::term::app_at_least(n, app)) {
+            newest = Some(app.to_string());
+        }
+    }
+    Ok(newest)
 }
 
 /// Whether a Mac on app `app` may lead, or be handed the lead or work, given the regions' switch's
