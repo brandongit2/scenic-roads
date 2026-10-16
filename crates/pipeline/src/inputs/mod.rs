@@ -14,9 +14,9 @@
 //! descriptions (crate::inputs::credits).
 //!
 //! On the gate (docs/inputs.md §4.10): the languages (#136, crate::inputs::languages), the
-//! translations and the descriptions (#137), and the test unit `_gate-test` while
-//! `state/inputs/gate-test` exists (`TEST_FLAG`). Each other input joins `UNITS` in its own task
-//! (#135, #138–#145).
+//! translations and the descriptions (#137), the regions (#135), the timetable feeds (#140,
+//! crate::inputs::feeds), and the test unit `_gate-test` while `state/inputs/gate-test` exists
+//! (`TEST_FLAG`). Each other input joins `UNITS` in its own task (#138, #139, #141–#145).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 pub mod credits;
 pub mod descriptions;
+pub mod feeds;
 pub mod gate;
 pub mod gatetest;
 pub mod languages;
@@ -39,7 +40,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 4] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT];
+pub const UNITS: [&str; 5] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -89,6 +90,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
         translations::UNIT => Some(&translations::Translations),
         descriptions::UNIT => Some(&descriptions::Descriptions),
         regions::UNIT => Some(&*REGIONS),
+        feeds::UNIT => Some(&feeds::Feeds { catalogue_ids: None, territories: None }),
         _ => None,
     }
 }

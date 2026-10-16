@@ -86,7 +86,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 /// The content name of the newest pass's outlines the records `manifest` name.
-fn outlines_of(manifest: &BTreeMap<String, String>) -> Option<&String> {
+pub(crate) fn outlines_of(manifest: &BTreeMap<String, String>) -> Option<&String> {
     let date = crate::osmpass::latest_pass_in(manifest)?;
     manifest.get(&format!("sources/osm/{date}/outlines"))
 }
