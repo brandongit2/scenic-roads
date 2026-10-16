@@ -170,7 +170,7 @@ inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), timetables/feed
                check's test unit's drop box, checked while `state/inputs/gate-test` exists:
                inputs.md §4.10)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
-               (Planetiler's jar and data), registers/ (the heritage registers' seeds: §6), items/<date>/
+               (Planetiler's jar and data), items/<date>/
                (the pass's items' facts and pageviews, and the answers Wikidata and Wikipedia gave
                the items job and the heritage chain: §4), pageviews/ (Wikipedia's monthly
                pageviews), dem-cache/ (today's per-vertex DEM cache, the units' seed),
@@ -263,8 +263,8 @@ directly once a term exists (`crate::out::check_writer`). The exceptions:
   manifest (or the newest records) names them, an accepted index it names lists them, a journal
   entry the newest records don't reflect yet does, or an index made or replaced in the last 14 days
   lists them (none swept the day one of those can't be read).
-- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (the seeds,
-  the basemap's data, the DEM seed, the rail sources with the files they replaced), translations, descriptions, inputs, state, app and nas.
+- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (the
+  basemap's data, the DEM seed, the rail sources with the files they replaced), translations, descriptions, inputs, state, app and nas.
 
 **Backups.**
 - Daily, the agent copies the user's folders, `inputs/` and the input check's acceptances
@@ -423,7 +423,7 @@ work from the lead's coordinator. Below, the M4 (48 GB) unless said.
     its pageview months, and the heritage chain's working copy, `heritage-<date>/`), which the NAS
     keeps too (Downloads, above) but which free little; the heritage scripts' old Python
     environment (`heritage-venv/`, which their next run removes: they run in the app's); the
-    registers' seeds, extracted (`registers-<id>/`); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
+    trains' stop pairs (`rail/`, under a MB); the unit stages' timings
     (`unit-stages.json`); what a unit kept that isn't on the NAS yet (`dem-units/`,
     `scenic-units/`); and the regions' coverage as a job last read it (`coverage/<key>.cov`, ~18 MB:
     its shapes' rings, kept by `pipeline::coverage::Coverage::load` in the folder the agent names
@@ -1469,10 +1469,6 @@ folder> --scratch <local dir>` as for every step.
 - **The heritage registers** are an input (`inputs/heritage/`, one GeoJSON file and description per
   register, made by `producers/heritage/`: docs/inputs.md §6.5); the owner's matches too
   (`inputs/heritage-matches/`, §6.5.4).
-- **The heritage chain's seeds** (`sources/registers/legacy-seeds`): park facts (`areas/wikidata.json`), the
-  pageview months the chain counted before the items job's cache (`pageviews/months/`), and the
-  names table the heritage layers' English comes from (`names/english.json`, read by
-  `dem/names.py` `english_at`). Nothing makes them again (§10).
 - **The timetable feeds' declarations** (`inputs/timetables/feeds/`, docs/inputs.md §6.7.1): a
   `<id>.toml` per feed and one for the catalogue, written by hand; how the feeds were found is in
   its `how/` (`gtfs-feeds.md`, `operators.txt`). A feed's zip fetched before the app fetched it
@@ -2877,10 +2873,10 @@ At each phase's end an Opus agent reviews the work against this plan.
        their readers is published), and `sources/registers/legacy` (the registers' snapshot: the
        registers are an input since #138; its caches start the heritage job's answers until a
        pass has its heritage archive, then it can go);
-     - names that still say legacy for live code and data: `pipeline::legacy` (the units' tile and
-       their base packs) and `sources/registers/legacy-seeds` (#139);
-     - the `terrain` and `slope` programs' build-folder modes (`terrain --scan` is live);
-     - the registers' seeds, which nothing makes again (§6, Hand-made inputs).
+     - `sources/registers/legacy-seeds`, which nothing reads since #139 (docs/inputs.md §6.5.3);
+     - names that still say legacy for live code: `pipeline::legacy` (the units' tile and their
+       base packs);
+     - the `terrain` and `slope` programs' build-folder modes (`terrain --scan` is live).
 7. **Features,** each on its own.
    - Built: the terrain repair (`roadcore::grid::repair_terrain`, in the terrain job and the
      worldwide z8: §6, README "Terrain repair"). One pass that takes broken towers and pits whole,

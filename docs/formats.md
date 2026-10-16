@@ -590,7 +590,7 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         too, with kept-<date>.json: {archive, files: {name: hash16}}, the NAS's
                         archive they last matched and their hashes then; months/: copies of the
                         NAS's pageview indexes, marked used when read), rail/ (the trains' stop
-                        pairs), registers-<id>/ (the registers' seeds' archive, extracted),
+                        pairs),
                         heritage-<date>/ (the heritage chain's answers for the pass, which its
                         scripts add to; its .kept.json as items/'s), heritage-venv/
                         (the heritage scripts' old Python environment: their next run removes it),
@@ -829,8 +829,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   `wd/enwiki-shortdesc.json`; heritagedetails.py's `desc/extracts.jsonl`; whsshapes.py's
   `whs/wd-p757.json`, `whs/wd-parts.json`; areadetails.py's `areas-wikidata.json`), but what the
   chain makes again each run (`osm/`, whsshapes.py's OSM extracts in `whs/`, `wd/items.jsonl`); a
-  new pass's copy starts from the newest earlier pass's archive; `sources/registers/<name>.tar.zst`
-  (the heritage chain's seeds, `legacy-seeds`);
+  new pass's copy starts from the newest earlier pass's archive;
   `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash, as in `2026-09-23-1`; not
   content-named: raw little-endian f32 `[xmin, ymin, xmax, ymax]` in degrees, per Overture building
   whose box's centre is in the z8 tile, sorted, bit-identical boxes once; no file for a tile

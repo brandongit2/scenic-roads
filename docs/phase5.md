@@ -255,7 +255,7 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 | `pois` (per unit) | U's piece, `work/trailends/<d>`, the coverage near U | `work/pois/<u>`: U's candidates (below) |
 | `peaks` (per unit; network) | `work/pois/<u>`'s peaks, `work/summits/<d>`, z12 within 30 km of each peak (the terrain packs, else AWS's raw tile from the raw-tile cache, repaired), `terrain-z8` | `work/peaks/<u>`: prominence and isolation by candidate key |
 | `items` (per pass; network) | the QIDs of every current unit's candidates | `sources/items/<d>/{facts,views,meta}` |
-| `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the pass's answers, the seeds | `work/heritage/<d>/…`: the chain's outputs ("Heritage and area flags") |
+| `heritage` (network; off) | the heritage-sites outputs, the pass's `areas` and `named` sets and the filtered planet within the cover, the pass's answers | `work/heritage/<d>/…`: the chain's outputs ("Heritage and area flags") |
 | `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the items job's facts and views, the heritage points (the pass's heritage job's outputs, which it waits for) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` (off) | the heritage job's outputs, `work/marks/heritage-dots` | `ov-*` packs, `ovdata`, `global/heritage/{layer-summary,heritage-sources}` |
 | `stations` (roads chain) | the `rail` set, the built units' tiles | `stations` packs |
@@ -482,11 +482,13 @@ part, layers.py) runs in Python.
   - **Its OSM inputs** are the pass's areas and named objects within the cover (named with the
     chain's filter; the set also keeps the World Heritage tags). For whsshapes, it uses the filtered
     planet within the cover: one clip per pass and cover, in the cache.
-  - **Seeds:** park facts, pageview months and the names table (`sources/registers/legacy-seeds`,
-    7 MB; plan §6, Hand-made inputs).
+  - **Park facts:** the pass's answers (`areas-wikidata.json`); areadetails.py asks Wikidata for the
+    parks they lack.
   - **Pageviews:** the months are the items job's cache, and pageviews.py takes the pass's months
     (`--epoch`, the items job's rule).
-  - **English:** the layers' `en` comes from the seeds' names table.
+  - **English:** the layers' `en` is the things' own (a site's UNESCO name or English Wikipedia
+    title, an area's `name_en`); the server adds the translations' as it serves them
+    (docs/inputs.md §6.5.3).
   - **Failures:** heritagewd's short descriptions fail the run when a query fails. Every cache is
     written through a temporary file. (The special places' and UNESCO sites' local names are the
     producers': docs/inputs.md §6.5.)

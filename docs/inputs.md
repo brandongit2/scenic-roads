@@ -156,8 +156,9 @@ What moves (each in its task; §11):
   `inputs/translations/how/` (#137).
 - Per-source code moving out of the app goes to `producers/<input>/` in the repository (§8), outside
   what `publish.sh` ships and outside the guards' scans (§7).
-- `sources/registers/legacy` and `legacy-seeds` become heritage registers in `inputs/heritage/`
-  (#138) and go with #139.
+- `sources/registers/legacy` became heritage registers in `inputs/heritage/` (#138);
+  `legacy-seeds` is made by the build instead (§6.5.3, #139). Both archives are the PM's to delete
+  from the NAS.
 - The checked copies live under `sources/inputs/` (§4.6); they're the app's, never the owner's to
   edit.
 
@@ -1517,7 +1518,7 @@ its `site`, its components' items by their `ref`s and its inscribed area by `sit
 its outlines by OSM's own World Heritage tags (`ref:whc`, `heritage:operator=whc`: OSM's schema);
 filterprops.py takes `t` from the register's `tier`. The languages that pick a UNESCO site's or a
 special place's name (`lang_at`) are the producers' now (`producers/heritage/eu.py`), as those
-names are chosen there; `names.REGIONS` (dem/names.py:36) is #139's.
+names are chosen there; dem/names.py's region boxes went with the English table (§6.5.3).
 
 #### 6.5.2 The heritage chain's stand-in root
 
@@ -1530,18 +1531,36 @@ the scripts take paths for everything, which is cleanup, not this series.
 
 #### 6.5.3 The frozen seeds retired (#139)
 
-`sources/registers/legacy-seeds` (scenic-build.rs:2232) holds three things nothing can make again
-(plan §6, Hand-made inputs; §10). None is an input; each becomes made:
-- **The English names table** (`names/english.json`, read by `dem/names.py` `english_at`): the
-  heritage layers' English comes from the live translation tables and the things' own English (the
-  registers' `name_en`, Wikipedia titles), through the same lookup the server uses (plan §7). Proof:
-  the layers' `en` the same, or each difference explained (an older table's line no longer there is
-  expected; it goes on the to-do list instead).
-- **Park facts** (`areas/wikidata.json`, areadetails.py's cache): asked by the heritage job from
-  Wikidata like its other answers, kept as a pass's answers (`pipeline::answers`, as the items job's).
-- **Pageview months** (`pageviews/months/`): the items job's months (they already are the
-  chain's source for new months, plan §6).
-Then the seeds' extraction (scenic-build.rs:2232, :2290–2311) and the archive go.
+`sources/registers/legacy-seeds` held three things nothing could make again. None is an input; the
+heritage job reads none of them now (built, #139), and the archive is the PM's to delete from the
+NAS:
+- **The English names table** (`names/english.json`): the heritage layers' `en` is the things' own
+  English only (`dem/names.py` `english_at`: a site's UNESCO name or its English Wikipedia title, an
+  area's `name_en`). Any other English is the map's server's, from the translations' live tables
+  as it serves the layers (the same lookup as for every other name, plan §7: `en` is the thing's own,
+  shown first; else a line in a language spoken where it is). A name only the old table had goes
+  onto the translations' to-do list (`pipeline::namestodo`, which reads the landmarks' `en`).
+- **Park facts** (`areas/wikidata.json`): areadetails.py's cache is the pass's answers
+  (`areas-wikidata.json`, `pipeline::answers`), started from the earlier pass's archive or, for the
+  pass the registers became an input, from the answers kept beside it (§6.5, Migration);
+  areadetails.py asks Wikidata only for the parks it lacks.
+- **Pageview months** (`pageviews/months/`): the items job's months' indexes (`sources/pageviews/`,
+  plan §6), which pageviews.py reads before any older counts; the seeds' counts were never read
+  while the indexes covered the months.
+
+Proof (pass 2026-09-28, the published layers against the seeds and the accepted translations):
+- park facts: the pass's answers have all 7,952 of the seeds' parks, each the same, and 6,223
+  more;
+- pageviews: the four months' indexes count every language pageviews.py asks for, so the seeds'
+  months were never read;
+- English: of 232,716 features, 11,001 lose an `en` that came only from the old table (10,947
+  heritage sites, 23 heritage areas, 2 special places, 29 Indigenous lands). The server shows the
+  same English for 4,446 of them (a live line gives it; for generic names such as Église, Château it
+  shows the English as the main line), 3 more with the same English under a script's name, other
+  English from a live line for 152 (e.g. 琵琶湖疏水施設: "Lake Biwa Canal Facilities", the table
+  "Lake Biwa Canal"), and none for 6,400, which go onto the to-do list. The `en` of every other
+  feature is unchanged (14 differences in a reconstruction from the published files were the
+  reconstruction's: no table line was involved).
 
 #### 6.5.4 Heritage matches: the owner's judgment calls
 
@@ -2128,9 +2147,6 @@ heritagetiers.py's patterns the producers' `tier`; whsshapes.py's reading of UNE
 by the `unesco-whc` register's `site`, `site_area_km2` and `ref`; `lang_at` moved with the producers
 (the names it picks are chosen there); the snapshot's lines in the agent and scenic-build gone.
 Left:
-- `dem/names.py:19`, `:36` (`REGIONS` boxes): G (the languages input); the English table: retired
-  (#139).
-- `bin/scenic-build.rs` the seeds (`sources/registers/legacy-seeds`, laid out for the chain): #139.
 - `crates/pipeline/src/markconv.rs` the UNESCO site id from its URL and the id schemes (`whc:`,
   `reg:dfhd:` from the federal entries' `dfhd_id`, `legacy:`): kept as they are, as ids must not
   change (docs/phase5.md, Ids).
@@ -2232,7 +2248,8 @@ the dozen direct reads of drop boxes of §9.10.
   readers. (`sources/legacy/` is already gone: the owner deleted it on 9 October.)
 - **The registers' legacy names:** `sources/registers/legacy`'s only reader since #138 is the heritage
   job's first start, for its caches (`pipeline::answers::heritage_start`, while no pass has a
-  heritage archive); its archive is the PM's to retire once one has; `legacy-seeds` goes with #139.
+  heritage archive); its archive is the PM's to retire once one has. `legacy-seeds` has no reader
+  since #139 (§6.5.3); its archive is the PM's to delete.
 - **The `terrain` and `slope` programs' build-folder modes** (crates/pipeline/src/bin/terrain.rs:66,
   bin/slope.rs:185, defaulting to `data/build`): `terrain --scan` is live; the folder modes go in
   #144.
