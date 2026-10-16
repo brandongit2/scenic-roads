@@ -350,10 +350,13 @@ fn terrain_peak(z6: usize) -> u64 {
 /// owner's choice, 2026-10-05: a terrain area's 5–6 GB fits; its units took 3.7 GB at most over
 /// its first 205).
 /// The memory a helper spares (MB): three eighths of its Mac's; while its owner is away (`away`),
-/// five eighths.
-fn helper_memory(away: bool) -> u64 {
-    let total = store::spawn::output(store::spawn::command("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
-    total.map_or(6144, |b| (b >> 20) * if away { 5 } else { 3 } / 8)
+/// five eighths. `total_mb`: its Mac's memory (`Agent::mac_total_mb`: a test's Mac as it sets it,
+/// never the machine running the test); 0, unknown: 6 GB.
+fn helper_memory(total_mb: u64, away: bool) -> u64 {
+    match total_mb {
+        0 => 6144,
+        t => t * if away { 5 } else { 3 } / 8,
+    }
 }
 
 /// Whether a helper's owner is away (on mains power, not used for a quarter of an hour): it then
@@ -1337,11 +1340,11 @@ impl Agent {
             kind: "native".into(),
             label: Some(format!("{} (helper)", self.host)),
             can,
-            mem_mb: helper_memory(false),
+            mem_mb: helper_memory(self.mac_total_mb(), false),
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             max: batch_size("unit"),
             app: Some(self.app.clone()),
-            more_mb: away.then(|| helper_memory(true)),
+            more_mb: away.then(|| helper_memory(self.mac_total_mb(), true)),
             max_secs: away.then_some(AWAY_JOB),
             limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0),
             // (Its free space now, less the reserve and the owner's target, as the lead reckons its
@@ -8884,6 +8887,10 @@ mod pool_tests {
 
     const WATCHDOG: Duration = Duration::from_secs(300);
 
+    /// A member's Mac with more room than its lead's test Mac (`cond::Mac::TEST`'s 16 GB), as the
+    /// M4's 48 GB: a cold start (no job of its step measured) goes to it, whatever Mac runs the test.
+    const MEMBER_MAC: cond::Mac = cond::Mac::Fixed { ac: true, battery: None, idle_s: 0, home: true, mem_gb: 48.0, mem_free_pct: 75 };
+
     fn stop_jobs(a: &mut Agent) {
         for k in 0..SLOTS {
             if let Some(r) = a.slots[k].running.as_mut() {
@@ -9044,6 +9051,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mac = MEMBER_MAC;
         assert_eq!(m.pooled().unwrap().role, pool::Role::Member);
         assert!(m.o.helper && m.coord.is_none());
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
@@ -9282,6 +9290,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mac = MEMBER_MAC;
         // The lead on a newer app than the member's (its updater ran first): the member gets
         // nothing, saying why, however long it asks.
         let theirs = m.app.clone();
@@ -9318,6 +9327,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mac = MEMBER_MAC;
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
@@ -9382,6 +9392,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mac = MEMBER_MAC;
         m.step().unwrap();
         assert!(lead.slots_on && m.slots_on);
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
@@ -9453,6 +9464,7 @@ mod pool_tests {
         lead.step().unwrap();
         let lport = lead.coord.as_ref().unwrap().port();
         let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        m.mac = MEMBER_MAC;
         m.step().unwrap();
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
         lead.pooled().unwrap().side.know(&im);
