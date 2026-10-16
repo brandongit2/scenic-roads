@@ -1,35 +1,29 @@
 # The pool: any Mac can lead the build
 
-Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its driver and phase
-2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls built**
-(crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); **phase 4's
-first four batches built** (the steps table, crate::agent::steps; the memory guard, crate::agent::memguard; power, home and the in-use rule gone;
-the lead's slots as any member's, behind its switch: §7.2, §7.3, §7.6, §12) and its fifth (disk
-measured and learned per target, GC reading the journal, the OSM pass's clear through the caches'
-accessor, and the Mac shared by measure with its disk guard, behind its switch: §7.7, §12) and its
-sixth (the write-sets enforced: a job's `Out` writes only its step's outputs, the merge refuses
-what lies outside them, the lint gating publish: §7.3, §12) and its seventh (exclusivity where the
-resource is used, behind its switch: the Wikimedia proxy with the pool's one budget on the NAS,
-every job sandboxed to reach out only through it; the answers' lease; the Wikidata and heavy NAS
-reads' groups gone: §7.7, §12); the rest is planned. It replaces the fixed
-"build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
-them, one of which leads the build at a time, and makes the browsers' pages workers of the same
-standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
+Status: **phase 1 built, on since 8 Oct 2026 and always on** (`crate::pool`, its driver and
+phase 2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls
+built** (crate::agent::lead: §11); **phase 4's thirteen batches built** (§12): the steps table
+(crate::agent::steps), the memory guard (crate::agent::memguard), power, home and the in-use rule
+gone, the lead's slots as any member's (behind its switch), disk measured and the Mac shared by
+measure with its disk guard, the write-sets enforced, exclusivity where the resource is used (the
+Wikimedia proxy with the pool's one budget, every job sandboxed; the answers' lease), resuming
+(behind its switch), every step to every member, tasks brokered by every member (behind its
+switch), placement (behind its switch), the forecast for equal machines, and what goes (no switch
+for the pool, no claims, no named writer, no shadow run). Planned: the records' readers reading the
+term's snapshot, and the lead no longer writing today's three files (§6.2, §12). The build is
+led by a pool of peer Macs, any number of them, one of which leads the build at a time, and the
+browsers' pages are workers of the same standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
 worker page, the map's build panel or `scenic lead`, and taken by another Mac when it's gone.
 Nothing about a Mac's role is fixed at install.
 
 ## 1. What changes, and why
 
-Today the build Mac is chosen at install (`install.sh --agent` or `--helper`, written into the
-agent's launch file) and everything else follows from that: only its agent plans, runs the
-coordinator, writes the records and publishes; only its own jobs write the records directly; the
-coordinator's state (its token, leases, costs, history, the helpers' hand-offs waiting to be
-merged) is on its disk; the worker page is served from it, through a `tailscale serve` set up on it
-alone; and the tasks the pages take are offered by its unit jobs only. Taking it away from home or
-offline stops the build, strands what's on its disk, and moving the role means reinstalling both
-Macs.
+A Mac whose role is fixed at install (only its agent plans, runs the coordinator, writes the
+records and publishes; the coordinator's state on its disk; the worker page served from it alone;
+the pages' tasks offered by its jobs only) stops the build when it's taken away from home or
+offline, strands what's on its disk, and can't hand the role on without reinstalling both Macs.
 
-The pool separates two things that were one:
+The pool separates two things:
 
 - **The work**, which every Mac does alike: each runs job slots that lease work, run it and hand
   the results back, and brokers the tasks its own jobs offer. The lead's slots are workers like any
@@ -70,28 +64,27 @@ a lead that vanishes loses no work.
 Principle 2 as the build stands (on a Mac, in the app's folder, `~/Library/Application
 Support/scenic/`: its agent's folder, `agent/`, and the app's versions, `app/`; plan.md §3–4 and
 formats.md say more). Of the last
-three rows, a job's progress is work in progress, as the principle allows; the coordinator's and
-the lead's own state are on the build Mac's disk alone, the coordinator's until phase 1 (§12) puts
-it on the NAS. The rest a new lead has from the NAS, or makes again.
+three rows, a job's progress is work in progress, as the principle allows; the lead's own state
+is on the lead's disk alone; the coordinator's is on the NAS (§7.5). The rest a new lead has from the NAS, or makes again.
 
 | State | Its truth | On a Mac | A new lead |
 | --- | --- | --- | --- |
 | The records (manifest, job keys, pending uploads), what's built, the catalogs | the NAS: `state/build/`, the content-named files | copies: the mirror, the pack cache (`agent/cache/base/`), `agent/cache/blobs/`, scenic-build's of the summits and the z8 terrain | reads them there |
 | Downloads: the planet, Planetiler's data, the canopy squares, AWS's raw terrain tiles, FABDEM, the leaf types, Overture's boxes, the pageview months, the rail feeds; and what today's build left, imported: the registers' snapshot, the DEM seed | the NAS: `sources/`, each fetched once | copies in its cache, filled from the NAS when missing (room-making empties the cheap ones) | nothing: they fill again |
-| The Wikidata and Wikipedia answers of a pass (the items job's, the heritage chain's) | the NAS: `sources/items/<date>/answers.tar.zst`, `heritage-<id>.tar.zst` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>-<id>/`, made one with the NAS's as a run starts and sent as it ends (a stopped run's at its next start; the build Mac's agent sends what the NAS lacks as it starts) | nothing: its first run takes them |
+| The Wikidata and Wikipedia answers of a pass (the items job's, the heritage chain's) | the NAS: `sources/items/<date>/answers.tar.zst`, `heritage-<id>.tar.zst` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>-<id>/`, made one with the NAS's as a run starts and sent as it ends (a stopped run's at its next start; the lead's agent sends what the NAS lacks as it starts) | nothing: its first run takes them |
 | What units keep for their later runs | the NAS: `cache/dem-units/`, `cache/scenic-units/` | none (its next unit job moves any there) | nothing |
-| Made from the NAS's data and kept: the heritage chain's clip of the filtered planet (22 GB on the build Mac), the trains' stop pairs | made again from the NAS | its cache | its first runs make them again (the clip: an hour of osmium) |
+| Made from the NAS's data and kept: the heritage chain's clip of the filtered planet (22 GB on the M4), the trains' stop pairs | made again from the NAS | its cache | its first runs make them again (the clip: an hour of osmium) |
 | The Python steps' environment | the app's lock file (`dem/uv.lock`) | `app/<version>/dem/.venv`, which uv makes from it (from uv's cache, else PyPI) | its first Python step makes it |
 | A job's progress: the OSM pass's stages, the buildings scan's parts (Overture's, ~40 GB), a rail-feeds run's zips not yet put, raw tiles not yet packed | the Mac running it, until the job puts its results on the NAS | its scratch folders and cache | the OSM pass's, offered to that Mac alone for a day, behind `state/pool/resume` (§7.2, Resuming); the rest done again |
-| The coordinator's: the workers' token, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the build Mac's disk alone (a helper's hand-off, the helper's until it's sent); with the pool on (§12), the NAS: `state/coord/` (the token, the state per term, the history per writer), the journal | `agent/coord/` (`journal/`: the hand-offs taken); a helper's `agent/outbox/` | with the pool on, loads the state a handover hands it, else the newest a term before has (§6.2, §7.5); off, none: pages ask again, costs are first guesses, unmerged hand-offs are built again |
-| The lead's own: the map update under way, its retries, the daily jobs' last runs | the build Mac's disk alone | `agent/map-update.json`, `agent/state.json` | not in the phases yet: the next map update begins afresh, failed jobs may run again at once |
+| The coordinator's: the workers' token, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the NAS: `state/coord/` (the token, the state per term, the history per writer), the journal | `agent/coord/` (`journal/`: hand-offs an older app's worker sent, drained into the journal); a member's `agent/outbox/` (its leased tasks) | loads the state a handover hands it, else the newest a term before has (§6.2, §7.5) |
+| The lead's own: the map update under way, its retries, the daily jobs' last runs | the lead's disk alone | `agent/map-update.json`, `agent/state.json` | not in the phases yet: the next map update begins afresh, failed jobs may run again at once |
 
 ## 3. What the NAS gives us
 
 The design rests on what the share (SMB 3, Synology, macOS clients) does and doesn't promise.
 Checked: ✓; to check on this NAS between two Macs before phase 1 relies on it: ◻.
 
-- ✓ **Create-new is atomic** on the server for one client (crate::agent::claims relies on it).
+- ✓ **Create-new is atomic** on the server for one client (the terms and the budgets' leases rely on it).
   ◻ Between two Macs: two creates of one name at once, one wins.
 - **A rename can be delayed indefinitely:** a Mac put to sleep between writing a temporary file and
   renaming it renames when it wakes, hours later, whatever happened meanwhile.
@@ -215,7 +208,7 @@ A term is a file made once with create-new and never changed: `state/build/terms
   re-asserts; one restarted into an older app stands down (§6.6).
 - **The 3D buildings and older apps** (docs/buildings3d.md §3.6): an app from before them doesn't
   know their steps. Leading, it drops their records from `jobs.json` as it saves it (their tiles
-  then built again, about an hour of the build Mac's, once a newer app leads), and refuses a
+  then built again, about an hour of the M4's, once a newer app leads), and refuses a
   member's hand-off of them (not a step it shares). So both Macs run an app with them before the
   lead may move to either, and an owner's downgrade past them costs that rebuild. From that app on,
   the records keep what they don't know (`build::Keys::other`), so a later step's records outlive
@@ -466,7 +459,7 @@ nobody reads: invariant 5.
 
 - **No NAS clock.** A file's mtime isn't one: a client sets the mtime it writes. Whether a member
   is out of touch compares its heartbeat's own
-  `beat` time with the reader's clock, as helpers are read now; a member whose beat is over 60 s
+  `beat` time with the reader's clock, as the members' statuses are read; a member whose beat is over 60 s
   ahead is shown as "clock wrong". The Macs keep time by NTP to well under a second.
 - **Nothing persisted as an `Instant`:** lease deadlines, failures' waits and workers' last-seen
   times are wall-clock times on the NAS, so they mean the same on the next lead.
@@ -524,8 +517,8 @@ hand-backs time out and their leases lapse. So the members say so, and the lead 
   whom it failed to reach across `REPORT_S` (2 min, three tries) with no success between, with the
   cause (connection timed out, refused, no such name) and the error. The first success clears it.
   Times are the reporter's clock, compared only with its own heartbeat's.
-- **Not handed the lead.** A member that another member in touch reports unreachable (shadow runs'
-  heartbeats left out; the heartbeats as this Mac last read them, once a round, not read again
+- **Not handed the lead.** A member that another member in touch reports unreachable (an older app's shadow
+  runs' heartbeats left out; the heartbeats as this Mac last read them, once a round, not read again
   per check) can't be
   handed the lead (`Driver::hand_to`, so the controls, `scenic lead give`, the update's handover
   and the proactive offer all refuse it, saying "unreachable from m4: connection timed out (…)").
@@ -542,7 +535,7 @@ hand-backs time out and their leases lapse. So the members say so, and the lead 
   timed out (m1 asleep, off the network, or its firewall blocking Scenic: allow Scenic in System
   Settings › Network › Firewall there): m4 gets no work while m1 leads" (refused: its agent stopped
   or restarting, or its firewall refusing Scenic), and what the owner does; a member's waiting line says
-  the cause, naming the lead, rather than that the build Mac isn't coordinating.
+  the cause, naming the lead, rather than that no Mac is coordinating.
 - **What the owner does:** on the Mac named, check it's awake, on the network and its agent
   running; then System Settings › Network › Firewall › Options…: allow
   incoming connections for `scenic` (or turn the firewall off). The installed `scenic` is signed ad
@@ -573,57 +566,55 @@ hand-backs time out and their leases lapse. So the members say so, and the lead 
 
 One table, the steps table (crate::agent::steps, built: phase 4's first batch, §12), has a row per
 step the agent runs as a job. The step sets the agent and the coordinator test (the shared steps,
-the second job's, the light, alone, raw-tile, Wikidata and NAS-reading ones, those keeping the pass's
-answers) are made from it when the app is built, and a step's first guess of memory, disk, needs and
-batch are read from its row; what depends on a target rather than its step (a terrain area's whole
-run's disk, the memory a unit's piece or a 3D buildings tile is offered with) stays with the agent.
+the second job's ranks, those keeping the pass's answers: `SHARED`, `SECOND`, `ANSWERED`) are made
+from it when the app is built, and a step's first guess of memory and its batch are read from its
+row; what depends on a target rather than its step (the memory a unit's piece or a 3D buildings
+tile is offered with) stays with the agent.
 Its columns:
 
 | Column | Meaning |
 | --- | --- |
-| memory, disk | memory: a first guess per step until a target's own run says (predicted per target from its last run, crate::coord::Cost; units and candidates by their piece's size, terrain by its area's, the 3D buildings by their rows); disk: what a job starts with free on its Mac (the reserve, 30 GB; terrain's pieces and assemblies and the water 35; the OSM pass 80, less the pack cache it clears; an area's whole terrain run 55; a member's jobs 15, crate::agent's `helper_need`; with `state/pool/by-measure` on, the reserve and the job's measured disk on a Mac's own slots instead, §7.7). No column for power or home: no job waits on them (§7.7) |
+| memory | a first guess per step until a target's own run says (predicted per target from its last run, crate::coord::Cost; units and candidates by their piece's size, terrain by its area's, the 3D buildings by their rows). No column for disk (a job starts with the reserve, 30 GB, and its measured disk free: §7.7; a member asks only for what its free disk fits, crate::agent's `helper_need`: 15 GB, a task 1–5 GB), power or home (no job waits on them: §7.7) |
 | shared | whether other members take its jobs, and its rank of preference among those that are (what later steps wait on first) |
-| alone / beside | whether it runs alone on its Mac; whether a Mac's second job may be one of it, and its rank there; the groups of which two never run at once on one Mac (they read the raw terrain tiles here; they ask Wikidata, each paced as if alone; they read gigabytes of the NAS's sources a target) |
-| answered | it keeps the pass's Wikidata and Wikipedia answers (none starts while the agent sends them) |
-| batch | how many targets a job takes (a few minutes to a quarter of an hour of work) |
+| alone / beside | whether it's a run of the whole build, the lead's alone (not offered to members: crate::agent::every); a Mac's second job's rank of it in the forecast (`SECOND`) |
+| answered | it keeps the pass's Wikidata and Wikipedia answers (the lead's alone; none starts while the agent sends them) |
+| batch | how many targets a job of the lead's own takes (a few minutes to a quarter of an hour of work; a member's by measured times: §7.7) |
 | write-set | the logical names its jobs may add, change or remove in the manifest, as patterns of its targets' tiles and the pass's date, removals apart (the OSM pass removes older passes' entries; a prune only removes); a shared step's files for each target it did are kept apart too (`saves`: what its hand-off may change) |
 
-The table only gathered constants the agent had; nothing new is built on its figures. Each column
-is to be replaced by a measure, a lock where the resource is used, or the code that does the work,
-and the table to go (§7.7); planned columns it once listed (a floor of memory, moves, groups across
-the pool) aren't added to it.
+The table only gathered constants the agent had; nothing new is built on its figures. Its disk
+and groups columns went with phase 4's thirteenth batch, replaced by measures and locks where the
+resources are used (§7.7, §12); what it holds is a first guess, the code's own sets and the
+write-sets. Planned columns it once listed (a floor of memory, moves, groups across the pool)
+aren't added to it.
 
 Tree cover's rows (plan.md §6, Trees): `trees`, a piece per z6 tile (it may add, change or remove
 that tile's hi packs of the three tree layers and its mid, `work/trees-mid/6-x-y`; a lease of the
 scheme before pieces, a z3 tile's whole run, its lo pack and its z6 tiles' hi packs, for one
 release), any member, four a job; `trees-lo`, an assembly per z3 tile (its lo packs of the three),
-seconds, kept to the lead. Terrain's and slope's likewise (plan.md §6, Global-source layers):
+seconds, any member. Terrain's and slope's likewise (plan.md §6, Global-source layers):
 `terrain` and `slope`, a piece per z6 tile (it may add, change or remove its layer's hi pack and its
 mid, `work/terrain-mid/6-x-y` or `work/slope-mid/6-x-y`, a piece of a z6 tile the coverage has left
 removing them; a lease of the scheme before, an area's whole run, its lo pack and its z6 tiles' hi
 packs, for one release), any member, eight a job; `terrain-lo` and `slope-lo`, an assembly per z3
-tile (it may add, change or remove its lo pack), kept to the lead, terrain-lo apart from the other
-steps reading raw tiles. Their targets may lie outside the coverage (what it has left).
+tile (it may add, change or remove its lo pack), any member. Their targets may lie outside the coverage (what it has left).
 
 The 3D buildings' rows (docs/buildings3d.md §3.6): `bldprep`, per z6 tile (it may add, change or
-remove `work/bld/6-x-y`), memory learned (0.3 GB and 160 B a row read until then), the NAS (up to
-~3 GB of parquet read a tile), power, any member, eight a job, never two on one Mac; `bldtiles`, per
-z6 tile (`layers/buildings/hi/6-x-y`), memory learned, power, any member, sixteen a job. Neither
-needs home. `bld-fetch` (the sources, onto the NAS, outside the manifest: its write-set is empty) is
+remove `work/bld/6-x-y`), memory learned (0.3 GB and 160 B a row read until then), up to ~3 GB
+of the NAS's parquet read a tile, any member, eight a job; `bldtiles`, per z6 tile
+(`layers/buildings/hi/6-x-y`), memory learned, any member, sixteen a job. `bld-fetch` (the sources, onto the NAS, outside the manifest: its write-set is empty) is
 network work, the lead's.
 
 The input check's row (docs/inputs.md §4.3): `inputs`, a target per unit (`inputs/<unit>`), its
 write-set the unit's accepted index, last listing and held report (`sources/inputs/<unit>/@index`,
 `…/@listed`, `…/@held`; their files, the copies they list, are outside the manifest), kept to the
 lead's slots (other members taking it is planned: the coordinator's offers are made with the pass's
-region work), planned before every other job, and the second job's first choice (`beside` rank 0),
-in the heavy-NAS-reads group: so it runs beside any first job the table lets a second run beside,
-never beside a step that runs alone, nor beside `bldprep`, nor beside another check.
+region work), planned before every other job, and the second job's first choice in the forecast (`beside`
+rank 0); it starts beside another job when both jobs' measures fit (§7.7).
 
 What's planned of placement (phase 4, §12):
 
 - **Every step offered to every member** (crate::agent::every and crate::coord's `pick_every`,
-  built: phase 4's ninth batch, behind `state/pool/every-step`, §12): the plan's every step but
+  built: phase 4's ninth batch, always on since its thirteenth, §12): the plan's every step but
   the lead's own (`every::LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch; the
   steps keeping the pass's answers; and the worldwide steps, a target the world's: the road index,
   the rail stops, the ferries, the world's roots, the landmarks' and overlays' draws, the rail
@@ -638,16 +629,15 @@ What's planned of placement (phase 4, §12):
   eighths of its Mac's, the owner's choice), so a lead with room takes cold starts before a member
   of the same Mac's size would. `pack` and `lo` are a map update's steps: granted only with the map update's
   units (`as_of`, told to the coordinator with the plan's offers, cleared as the map update ends), which
-  their job reads as the lead's own does; with no map update under way, none is granted. Whatever the
-  switch, the lead's plan leaves out what other workers' leases hold. Off, a member takes the
-  shared steps alone, and the lead the rest.
+  their job reads as the lead's own does; with no map update under way, none is granted. The lead's
+  plan leaves out what other workers' leases hold.
 - **Order and locality** (built with it): a member gets work as a contiguous run of the plan's
   targets (a target held, done, kept from it or past its room ends the run), from the plan's front,
   or just after its last target of the step when that one's open; as many targets as fit a quarter
   of an hour by their measured times (`coord::JOB_S`: their cost lines, a target's own or its
   step's 90th percentile; none measured, one a job).
 - **A map update shared** (crate::agent::publish, built behind `state/pool/update-share`, task #203;
-  plan.md §8, Faster publishing): with every step to every member on, the lead's own job of a
+  plan.md §8, Faster publishing): the lead's own job of a
   map update's map tiles (`pack`, `lo`) takes an even share of them (`publish::lead_share`: the targets
   over the other agents that asked for that step in the last half minute, `Coordinator::members_asking`,
   plus one; at most the step's batch), from the front of the plan, so the rest stay offered to the
@@ -671,12 +661,11 @@ What's planned of placement (phase 4, §12):
   next piece's subtrees, a tree cover row the run comes to late) goes to a worker slower than this
   Mac only while its head start covers that worker's run. The lead's own jobs take the plan in
   its order (planned: the lead's slots placed the same way).
-- **A Mac shared by measure** (built: phase 4's fifth batch, behind `state/pool/by-measure`, §12):
+- **A Mac shared by measure** (built: phase 4's fifth batch, always on since its thirteenth, §12):
   a job starts beside another only if both jobs' measured memory and disk fit what the Mac has
-  left; a cold start runs alone (§7.7). The run-alone and second-job lists and the raw tiles' group
-  go with the switch on (the rule of only network work while the Mac is in use went with batch 3);
-  the Wikidata and heavy NAS reads' groups go with `state/pool/budgets` (batch 7, §7.7), whatever
-  this switch.
+  left; a cold start runs alone (§7.7). No list or group of steps keeps two jobs apart: the raw
+  tiles' accessor, the budgets' proxy and the answers' lease guard the resources where they're
+  used (§7.7).
 - **Resuming** (crate::agent::resume, built behind `state/pool/resume`: phase 4's eighth batch,
   §12). A job interrupted with progress on its Mac's disk is offered to that Mac only until the
   owner releases it (`scenic pool release <member> "<job>"`), or for 24 hours from when its
@@ -702,15 +691,15 @@ What's planned of placement (phase 4, §12):
 - **The forecast for equal machines** (crate::agent::forecast::equal_machines, built: phase 4's
   twelfth batch, §12; reports only): in the pool, the lead's forecast carries a second one
   (`equal`) run through on each member's slots as lanes (the lead's first slot first, which alone
-  makes the map updates; every other slot takes any work that fits its memory in the build Mac's
+  makes the map updates; every other slot takes any work that fits its memory in the lead's plan
   order), the pages as one lane (the shared steps alone, their measured speeds summed), each at its
   speed measured against the lead (placement::measured_speeds; one not measured, the lead's), busy
   with its lease's targets left. Nothing is placed or decided by it: the slack placement reads, and
   everything else, is the forecast's as before. Its simplifications: the pages' lane has the
-  largest memory a page said (a helper's 6 GB when none said) at their speeds summed, a page's
-  leases its lane's; a worker saying no memory has a helper's 6 GB; the lead's second job's lane has
+  largest memory a page said (6 GB when none said) at their speeds summed, a page's
+  leases its lane's; a worker saying no memory has 6 GB; the lead's second job's lane has
   a quarter of the Mac's memory, as in the forecast; and an equal lane may build a region's slope
-  and tree cover before its map update is due (every step to every member), where the build Mac's
+  and tree cover before its map update is due (every step to every member), where the lead's
   forecast waits for it.
 
 **A job far over its memory** (crate::agent::memguard, built: phase 4's second batch, §12). macOS
@@ -836,7 +825,7 @@ measure alone: no prediction, and nothing from the steps table, decides it.
 - **Steps with open-ended writes** declare them too: the OSM pass (with `retire_older`'s removals in
   older passes), prune (which forgets keys), the chains, `verify`, patch-ferries. Hand-run steps
   (`scenic-build` from a shell) ask the lead for an ad-hoc lease and hand off the same way.
-- **The raw tiles' index:** members only add archives (as helpers do now); compacting an area's
+- **The raw tiles' index:** members only add archives (as every job does); compacting an area's
   archives is a lead duty, or a "replace X and Y with Z" hand-off applied only while X and Y are
   still named. A member making room doesn't pack.
 - **summaries.json** is a cache keyed by content: any writer, no fencing needed.
@@ -884,11 +873,11 @@ measure alone: no prediction, and nothing from the steps table, decides it.
   files and their locks, which made a file no one used look in use.
   Outgoing connections (ureq's) aren't made under the lock: a child holding one keeps a
   connection open, never a port from being listened on.
-- **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1: while the pool
-  is on, no agent names the writer, no job carries `SCENIC_BUILD_MAC`, and `check_writer` refuses
-  every save, so a step run by hand writes nothing, `scenic-build verify`'s none either: unverified
-  uploads wait in the records; kept for the pool off); claims (leases alone,
-  phase 4); every temporary name not from crate::whole.
+- **Gone** (phase 4's thirteenth batch): the named writer (`state/build/writer`), `check_writer`'s
+  pass and `SCENIC_BUILD_MAC`: once `state/build/terms/` exists `check_writer` refuses every direct
+  save, so a step run by hand writes nothing, `scenic-build verify`'s none either (unverified
+  uploads wait in the records; a folder with no term yet, a test's or a scratch build's, saves as
+  today's files); the claims (leases alone). **Going:** every temporary name not from crate::whole.
 
 ### 7.6 The lead's own slots
 
@@ -909,10 +898,8 @@ own job ending as its lead wakes from a freeze to a later term, before its step 
 finished in its own coordinator (a stat of the next term's file first): its end is owed to the lead
 and told through its client once the part has changed, for as long as a lease lasts; a job of no
 targets of its own (a duty, as pass-sets') ends as done, and the coordinator checks a pooled end only
-for being its lease's (its entry is the merge's to check); what claims a job took (a job of the Mac's own, planned while it wasn't a helper: the lead's with the
-pool on, the build Mac's with it off) are kept and released by the job, whatever part its process
-plays since. They use the journal and validation like anyone's (none of the shortcuts
-for the build Mac's own jobs), and the in-process path never holds the coordinator's lock during
+for being its lease's (its entry is the merge's to check). They use the journal and validation
+like anyone's (no shortcut for the lead's own jobs), and the in-process path never holds the coordinator's lock during
 NAS I/O. With the part changing in its process (`state/pool/slots`), a member that takes up a term
 starts its coordinator (its port free once the last lead in that process has stopped one: a stop returns with its listener closed),
 keeping the leases of the jobs it runs (a take-up drops its own host's leases from before only for
@@ -933,8 +920,8 @@ resource is used** (a lock or accessor the code takes as it opens it, as `store:
 the caches: plan.md §8, Room on the disk), or **derived from the code that does the work**, with a
 lint that nothing goes around it. The bar for each mechanism: a declaration missing or wrong costs
 speed at worst, never a wrong output, impoliteness to a third party, lost work or a refused good
-result. The steps table (§7.2) then holds nothing the scheduler trusts; what's left of it goes
-(§12, batch 13).
+result. The steps table (§7.2) holds nothing the scheduler trusts: its disk and groups columns went
+with batch 13 (§12); what's left is first guesses, the code's own sets and the write-sets.
 
 Each of its columns, and what replaces it:
 
@@ -943,14 +930,14 @@ Each of its columns, and what replaces it:
 | power (`cpu`) | nothing: removed (the owner's choice; batch 3, built) | jobs run at any charge; `BATTERY_MIN` is left only for whether a Mac may lead |
 | home | nothing: removed (the owner's choice; batch 3, built) | the OSM pass, its sets, the reach and the world's buildings run over Tailscale away from home, slower; mounting the share (the LAN name at home, the bare name through Tailscale away) stays |
 | memory | measured per target (the jobs' `peak_mb`; the memory guard's floors, §7.2): built | a target never run is a **cold start**: placed only where it can't hurt (below); the guard is the backstop |
-| disk | **built** (phase 4's fifth batch: learning whatever the switch; the guard and the placement by measure behind `state/pool/by-measure`): measured per target, as memory is, without walking a job's folders (millions of raw tiles; Planetiler's sparse files): the bytes written through the accessors that write a job's files (`store::cachefile`'s, the scratch writers'), counted per job and target; the biggest writers, outside programs the accessors never see (Planetiler's temporary files, osmium's and extract's outputs, the Python steps'), by a cheap look every minute at the allocated sizes of the few largest files at the top of each slot's scratch folder (no walk of its tree); kept as the target's disk floor (the disk's free space falling while one job runs alone is logged beside, a weaker signal, never a floor: other programs on the Mac move it too); a **disk guard** at the point of use: when the Mac's free space falls below the reserve, the job growing fastest by those counts is frozen (not failed: its work kept), room is made from the caches no job holds (`store::cachefile`'s exclusive locks), and it goes on; if none can be made, it's given back, its disk floor learned; a job given back keeps its scratch folder (its work) while there's room, and room-making, short of what the job starting or the disk guard asked for once the caches are freed, deletes the given-back jobs' scratch folders (a job given back by either guard), the oldest given back first, never one a job running or frozen here uses (`room::free_given_back`, the agent's `given-back.json`), so nothing stalls on it | as built: store::cachefile counts the bytes a process adds to the caches (each file it names), a step's cost line notes its target's (`disk_mb`), and a running job's total is kept in a small file every 64 MB (`SCENIC_WRITTEN`) for the agent's sampler, which looks at the top of its scratch folder every minute and keeps the most per target (the disk's fall while it runs alone logged beside, a weaker signal, not a floor) (crate::agent::memguard); the floors go to the lead with the lease's end, rising only (`disks.json`, the pool's state); the disk guard freezes in the sampler, at once, and the agent's loop makes room through room::toward (store::cachefile's exclusive locks) on a thread, then lets the job go on or gives it back, kept from that Mac an hour as the memory guard's; with the switch on, beside another job, a job's disk room is the reserve and its measured disk; alone in the first slot, room is made for the reserve, its measured disk and the owner's target as the caches allow, but it waits only for the reserve and the target (a disk floor only rises: a stale or high one never holds the build), the disk guard its backstop, today's figures (30, 35, 55, 80 GB) unread; the reserve stays a policy of the Mac, not of a step; a write that bypasses the accessors is caught by their lint, as the caches' reads are. Not counted by the accessors: the Python steps' cache writes (dem/cachefile.py), which the scratch folder's look covers where they're large; the planned design's fall of the free space is kept apart, logged, not a floor (one outlier, or another program, would inflate it) |
-| alone, beside and its ranks, light (in use) | removed (the owner's choice; built, behind `state/pool/by-measure`: phase 4's fifth batch): a job starts beside another only if both jobs' **measured** memory and disk fit what the Mac has left; a cold start runs alone | what they protected besides memory and disk, each covered at the point of use: the OSM pass clearing the pack cache (`--clear`) goes through `store::cachefile`'s `remove_tree`, which passes over files another job holds (built); GC beside other jobs: it removes only what no catalog or the manifest names and is older than two weeks (abandoned temporary files after two days), but a hand-off not merged yet (a member away more than two weeks, its entry unwritten or untold) names files neither reads, so GC reads the journal's entries too (every entry not yet in the lead's records keeps the files it names, its changes and uploads; built: agent::gc::unmerged; an entry that doesn't read whole, reads damaged or isn't there as listed, or a journal that can't be read, fails GC, nothing removed, tried again as a failed job is, until the lead has refused the entry, which it does after an hour unreadable; with no term led (the pool switched off, or its term not readable whole) no one refuses, so an entry unreadable whose day is over three days past is passed over, said as GC's warning in the status: the hold is bounded either way) before batch 5 lets it run beside other jobs; scratch folders are per slot already (`scratch-2/`); two jobs of one step on one Mac share no state but the caches (accessor) and the records (hand-offs per lease); Planetiler's thread pool beside another job only slows both (cores, not correctness). The "only network work while the Mac is in use" rule went first, without a replacement (the owner's choice; batch 3, built), the light steps' list and what read it with it; `idle_s` stays for a member sparing more memory while its owner is away |
-| groups: raw tiles | `store::cachefile`, already: a raw tile is read whole under the accessor's lock, packing deletes only tiles no job holds (`try_remove`) and only once their archive is named on the NAS, and a tile gone is filled again from the archives: two jobs reading raw tiles at once are safe, at worst fetching a tile twice | checked by a chaos test (two terrain pieces of one area at once through one cache, its waiting tiles packed and every file no job holds deleted between: each piece's bytes as alone; `terrain_pack`'s `two_raw_tile_jobs_at_once_with_packing_between_make_the_same_bytes`); it found a job whose area's archives were opened before a tile it held loose was packed fetching that tile from AWS again (offline, failing): a job now opens its area's archives again, the index read afresh, when the index has changed since the archives it looked in were opened (by the index file's inode, the server's file ID on the share, its time and size: it's only written by a temporary name renamed over, so a new version has a new file ID as the share gives them, and a change the stamp missed would cost only a tile fetched again, not a wrong one; compared, and the area opened again, under the area's lock, so no thread opens it from an older index between), or when they couldn't be opened, before asking AWS (`RawTiles::get`, `refresh_area`); the group goes with `state/pool/by-measure` on |
-| groups: Wikidata | **built** (phase 4's seventh batch, behind `state/pool/budgets`, off while missing): **one budget for the whole pool**, enforced at egress (a Mac can't reliably know the address its requests leave from: a Tailscale exit node, IPv4 or IPv6; so stricter than one per address, and than the owner's "shared whenever unsure"): every job's connections out go through its agent's proxy (`HTTPS_PROXY` and the others set for every job, this Mac's own direct by `NO_PROXY`), and each job runs under a `sandbox-exec` profile that denies it every outbound connection but to the Mac itself, so a step that forgets the proxy fails at once, never reaching Wikimedia unmetered; the proxy meters by host on `CONNECT` (a tunnel is the client's TLS, never read) and on a plain HTTP request, taking a token from the pool's budget on the NAS before it opens a connection to a metered host; tokens leased in batches; the query services budgeted by query time as well as count; a `Retry-After` or a 429 seen by any process holds every process and Mac; with the NAS out of reach, each Mac takes the rate divided by the members it knows. Other hosts (the NAS's are the kernel's, SMB, not the job's sockets; AWS's tiles, the registers, PyPI) pass through unmetered | as built (crate::budget, its proxy crate::budget::proxy, its lint `tests/budgets.rs` gating publish): not one bucket file but a file per lease, made with create-new (§2, principle 3: nothing written in place by two Macs): time cut into ten-second windows, a window's tokens into slots of a batch, a lease a slot's file (`state/pool/wiki/<class>/<window>-<slot>`), so no window gives more than its tokens whatever the Macs' timing, and a batch unspent at its window's end is lost (the budget only errs below its rate); the leases' files of windows five minutes past removed by their names, no listing, but after a gap of more than 64 windows since the process last cleaned (its first lease, or one after a long idle): then by one listing of the class's folder, as the gap's windows can't be known by name (another Mac may have leased in any of them) and walking every name in a gap of days would cost more than the listing; a window is a Mac's clock's (Macs a second apart may spend a window over its length and a second). The rates are the owner's politeness, not a step's figure: Wikimedia's sites (`wiki`: Wikipedia, Wikidata's API, Commons, the dumps) four requests a second (the owner's choice, 14 Oct 2026), four a lease; the query services (`query`: WDQS and QLever, which heritagewd.py asks) one query in two seconds, and a tunnel open longer than two seconds owes a token for each two seconds more, paid before the process's next query. A 429 is told to the proxy (`POST /hold?s=<seconds>`, dem/budget.py's `seen`, called by heritage.py, heritage_eu.py and heritagewd.py; capped at 15 minutes), which holds its own Mac at once and answers, then takes every slot of the windows the wait spans on a thread of its own, one hold at a time (a batch already leased elsewhere may still be spent); the NAS's part is the wait's first five minutes at most (a create a slot, fifteen slots a window across the classes: 450 creates, some 8 to 23 s on the share; past them, another Mac still asking meets its own 429). The proxy ends a client whose request head hasn't come in 30 s, a connection idle both ways for 10 minutes (a query's tunnel charged as it ends), and answers a connection past 256 at once with a 503; the budget's state is never locked across the share's I/O (one thread leases at a time, on a lock of its own), so the status and connections not metered never wait on the share. The NAS away (a lease that can't be made): this Mac's share in memory, the members its pool knows. A job starts only once the proxy runs. The status's `budgets` says what it opened and holds. Not built: a concurrency budget (dumps.wikimedia.org's two connections an address), pageviews.py's 429s (a month's download fails, tried again by the next run) | a missing budget can only make requests wait, never exceed the polite rate |
-| groups: heavy NAS reads | **nothing** (the group dropped with `state/pool/budgets`): two large reads at once measured only to slow each other (14 Oct 2026, the M4 reading 2 GB files of a scratch folder of the NAS uncached, `F_NOCACHE`: alone 81, 86 and 80 MB/s; two at once 78, 88 and 88 MB/s together, each half) | measured with plain reads of the share, not two `bldprep` (whose reads have work between them, so overlap the better): no accessor built |
-| answered | **built** (behind `state/pool/budgets`): a lease at the point of use, across the Macs: each sync and keep of a pass's answers with the NAS's (`crate::answers::Kept`) takes the answers' lease on the NAS (`state/pool/answers.lease`, create-new, renewed every 150 s by its holder, lapsing 10 minutes after; a lapsed one broken by moving it aside by a name of the taker's own, put back if it isn't the one the taker read: renewed meanwhile, its `until` moved on, or another's); a sync or keep checks the lease is still its holder's (the file names it and hasn't lapsed: a renewal that failed while a breaker had it aside decides nothing) before each write to the NAS, and stops, writing nothing, when it isn't; on a Mac, with writer preference: the steps that keep answers hold this Mac's copies shared for their run (`answers::Local::reader`, a flock in the agent's cache), the agent sending them as it starts (`seed`) holds them alone (`Local::writer`: it waits for the steps under way, and a step that starts while it waits waits for it) | no list of the steps that keep answers waits on the agent's seed with the switch on; a lapsed lease costs a wait, never a torn answers file (the answers are written whole by temporary name). What remains possible: a holder whose check passes and whose write then lands after its lease was broken (its Mac asleep between the two, or a write that takes past the lease's 10 minutes), and a put-back that fails because a third taker made the lease meanwhile (the holder put back loses it, and finds so at its next check or renewal, but a write already past its check lands): two writers to one archive for that moment, which costs a merge (answers fetched again by the next start), never a torn archive. As built, the cross-Mac lease is exclusive and short (a sync's or keep's minutes), and the long shared hold is the Mac's own lock: what the reader's hold protects (a step adding to this Mac's copies while the agent packs them) is on one Mac, and a merge across Macs is what the NAS lease serializes |
+| disk | **built** (phase 4's fifth batch; the guard and the placement by measure always on since its thirteenth): measured per target, as memory is, without walking a job's folders (millions of raw tiles; Planetiler's sparse files): the bytes written through the accessors that write a job's files (`store::cachefile`'s, the scratch writers'), counted per job and target; the biggest writers, outside programs the accessors never see (Planetiler's temporary files, osmium's and extract's outputs, the Python steps'), by a cheap look every minute at the allocated sizes of the few largest files at the top of each slot's scratch folder (no walk of its tree); kept as the target's disk floor (the disk's free space falling while one job runs alone is logged beside, a weaker signal, never a floor: other programs on the Mac move it too); a **disk guard** at the point of use: when the Mac's free space falls below the reserve, the job growing fastest by those counts is frozen (not failed: its work kept), room is made from the caches no job holds (`store::cachefile`'s exclusive locks), and it goes on; if none can be made, it's given back, its disk floor learned; a job given back keeps its scratch folder (its work) while there's room, and room-making, short of what the job starting or the disk guard asked for once the caches are freed, deletes the given-back jobs' scratch folders (a job given back by either guard), the oldest given back first, never one a job running or frozen here uses (`room::free_given_back`, the agent's `given-back.json`), so nothing stalls on it | as built: store::cachefile counts the bytes a process adds to the caches (each file it names), a step's cost line notes its target's (`disk_mb`), and a running job's total is kept in a small file every 64 MB (`SCENIC_WRITTEN`) for the agent's sampler, which looks at the top of its scratch folder every minute and keeps the most per target (the disk's fall while it runs alone logged beside, a weaker signal, not a floor) (crate::agent::memguard); the floors go to the lead with the lease's end, rising only (`disks.json`, the pool's state); the disk guard freezes in the sampler, at once, and the agent's loop makes room through room::toward (store::cachefile's exclusive locks) on a thread, then lets the job go on or gives it back, kept from that Mac an hour as the memory guard's; beside another job, a job's disk room is the reserve and its measured disk; alone in the first slot, room is made for the reserve, its measured disk and the owner's target as the caches allow, but it waits only for the reserve and the target (a disk floor only rises: a stale or high one never holds the build), the disk guard its backstop, the table's figures of before (35, 55, 80 GB) gone; the reserve stays a policy of the Mac, not of a step; a write that bypasses the accessors is caught by their lint, as the caches' reads are. Not counted by the accessors: the Python steps' cache writes (dem/cachefile.py), which the scratch folder's look covers where they're large; the planned design's fall of the free space is kept apart, logged, not a floor (one outlier, or another program, would inflate it) |
+| alone, beside and its ranks, light (in use) | removed (the owner's choice; built: phase 4's fifth batch, always on since its thirteenth): a job starts beside another only if both jobs' **measured** memory and disk fit what the Mac has left; a cold start runs alone | what they protected besides memory and disk, each covered at the point of use: the OSM pass clearing the pack cache (`--clear`) goes through `store::cachefile`'s `remove_tree`, which passes over files another job holds (built); GC beside other jobs: it removes only what no catalog or the manifest names and is older than two weeks (abandoned temporary files after two days), but a hand-off not merged yet (a member away more than two weeks, its entry unwritten or untold) names files neither reads, so GC reads the journal's entries too (every entry not yet in the lead's records keeps the files it names, its changes and uploads; built: agent::gc::unmerged; an entry that doesn't read whole, reads damaged or isn't there as listed, or a journal that can't be read, fails GC, nothing removed, tried again as a failed job is, until the lead has refused the entry, which it does after an hour unreadable; with no term led (its term not readable whole) no one refuses, so an entry unreadable whose day is over three days past is passed over, said as GC's warning in the status: the hold is bounded either way) before batch 5 lets it run beside other jobs; scratch folders are per slot already (`scratch-2/`); two jobs of one step on one Mac share no state but the caches (accessor) and the records (hand-offs per lease); Planetiler's thread pool beside another job only slows both (cores, not correctness). The "only network work while the Mac is in use" rule went first, without a replacement (the owner's choice; batch 3, built), the light steps' list and what read it with it; `idle_s` stays for a member sparing more memory while its owner is away |
+| groups: raw tiles | `store::cachefile`, already: a raw tile is read whole under the accessor's lock, packing deletes only tiles no job holds (`try_remove`) and only once their archive is named on the NAS, and a tile gone is filled again from the archives: two jobs reading raw tiles at once are safe, at worst fetching a tile twice | checked by a chaos test (two terrain pieces of one area at once through one cache, its waiting tiles packed and every file no job holds deleted between: each piece's bytes as alone; `terrain_pack`'s `two_raw_tile_jobs_at_once_with_packing_between_make_the_same_bytes`); it found a job whose area's archives were opened before a tile it held loose was packed fetching that tile from AWS again (offline, failing): a job now opens its area's archives again, the index read afresh, when the index has changed since the archives it looked in were opened (by the index file's inode, the server's file ID on the share, its time and size: it's only written by a temporary name renamed over, so a new version has a new file ID as the share gives them, and a change the stamp missed would cost only a tile fetched again, not a wrong one; compared, and the area opened again, under the area's lock, so no thread opens it from an older index between), or when they couldn't be opened, before asking AWS (`RawTiles::get`, `refresh_area`); the group gone (batch 13) |
+| groups: Wikidata | **built** (phase 4's seventh batch, always on since its thirteenth): **one budget for the whole pool**, enforced at egress (a Mac can't reliably know the address its requests leave from: a Tailscale exit node, IPv4 or IPv6; so stricter than one per address, and than the owner's "shared whenever unsure"): every job's connections out go through its agent's proxy (`HTTPS_PROXY` and the others set for every job, this Mac's own direct by `NO_PROXY`), and each job runs under a `sandbox-exec` profile that denies it every outbound connection but to the Mac itself, so a step that forgets the proxy fails at once, never reaching Wikimedia unmetered; the proxy meters by host on `CONNECT` (a tunnel is the client's TLS, never read) and on a plain HTTP request, taking a token from the pool's budget on the NAS before it opens a connection to a metered host; tokens leased in batches; the query services budgeted by query time as well as count; a `Retry-After` or a 429 seen by any process holds every process and Mac; with the NAS out of reach, each Mac takes the rate divided by the members it knows. Other hosts (the NAS's are the kernel's, SMB, not the job's sockets; AWS's tiles, the registers, PyPI) pass through unmetered | as built (crate::budget, its proxy crate::budget::proxy, its lint `tests/budgets.rs` gating publish): not one bucket file but a file per lease, made with create-new (§2, principle 3: nothing written in place by two Macs): time cut into ten-second windows, a window's tokens into slots of a batch, a lease a slot's file (`state/pool/wiki/<class>/<window>-<slot>`), so no window gives more than its tokens whatever the Macs' timing, and a batch unspent at its window's end is lost (the budget only errs below its rate); the leases' files of windows five minutes past removed by their names, no listing, but after a gap of more than 64 windows since the process last cleaned (its first lease, or one after a long idle): then by one listing of the class's folder, as the gap's windows can't be known by name (another Mac may have leased in any of them) and walking every name in a gap of days would cost more than the listing; a window is a Mac's clock's (Macs a second apart may spend a window over its length and a second). The rates are the owner's politeness, not a step's figure: Wikimedia's sites (`wiki`: Wikipedia, Wikidata's API, Commons, the dumps) four requests a second (the owner's choice, 14 Oct 2026), four a lease; the query services (`query`: WDQS and QLever, which heritagewd.py asks) one query in two seconds, and a tunnel open longer than two seconds owes a token for each two seconds more, paid before the process's next query. A 429 is told to the proxy (`POST /hold?s=<seconds>`, dem/budget.py's `seen`, called by heritage.py, heritage_eu.py and heritagewd.py; capped at 15 minutes), which holds its own Mac at once and answers, then takes every slot of the windows the wait spans on a thread of its own, one hold at a time (a batch already leased elsewhere may still be spent); the NAS's part is the wait's first five minutes at most (a create a slot, fifteen slots a window across the classes: 450 creates, some 8 to 23 s on the share; past them, another Mac still asking meets its own 429). The proxy ends a client whose request head hasn't come in 30 s, a connection idle both ways for 10 minutes (a query's tunnel charged as it ends), and answers a connection past 256 at once with a 503; the budget's state is never locked across the share's I/O (one thread leases at a time, on a lock of its own), so the status and connections not metered never wait on the share. The NAS away (a lease that can't be made): this Mac's share in memory, the members its pool knows. A job starts only once the proxy runs. The status's `budgets` says what it opened and holds. Not built: a concurrency budget (dumps.wikimedia.org's two connections an address), pageviews.py's 429s (a month's download fails, tried again by the next run) | a missing budget can only make requests wait, never exceed the polite rate |
+| groups: heavy NAS reads | **nothing** (the group gone): two large reads at once measured only to slow each other (14 Oct 2026, the M4 reading 2 GB files of a scratch folder of the NAS uncached, `F_NOCACHE`: alone 81, 86 and 80 MB/s; two at once 78, 88 and 88 MB/s together, each half) | measured with plain reads of the share, not two `bldprep` (whose reads have work between them, so overlap the better): no accessor built |
+| answered | **built**: a lease at the point of use, across the Macs: each sync and keep of a pass's answers with the NAS's (`crate::answers::Kept`) takes the answers' lease on the NAS (`state/pool/answers.lease`, create-new, renewed every 150 s by its holder, lapsing 10 minutes after; a lapsed one broken by moving it aside by a name of the taker's own, put back if it isn't the one the taker read: renewed meanwhile, its `until` moved on, or another's); a sync or keep checks the lease is still its holder's (the file names it and hasn't lapsed: a renewal that failed while a breaker had it aside decides nothing) before each write to the NAS, and stops, writing nothing, when it isn't; on a Mac, with writer preference: the steps that keep answers hold this Mac's copies shared for their run (`answers::Local::reader`, a flock in the agent's cache), the agent sending them as it starts (`seed`) holds them alone (`Local::writer`: it waits for the steps under way, and a step that starts while it waits waits for it) | no list of the steps that keep answers waits on the agent's seed; a lapsed lease costs a wait, never a torn answers file (the answers are written whole by temporary name). What remains possible: a holder whose check passes and whose write then lands after its lease was broken (its Mac asleep between the two, or a write that takes past the lease's 10 minutes), and a put-back that fails because a third taker made the lease meanwhile (the holder put back loses it, and finds so at its next check or renewal, but a write already past its check lands): two writers to one archive for that moment, which costs a merge (answers fetched again by the next start), never a torn archive. As built, the cross-Mac lease is exclusive and short (a sync's or keep's minutes), and the long shared hold is the Mac's own lock: what the reader's hold protects (a step adding to this Mac's copies while the agent packs them) is on one Mac, and a merge across Macs is what the NAS lease serializes |
 | shared and its rank | every step offered to every member (§7.2); the order by how crucial a target is (the forecast's slack, measured times) | |
-| batch | measured: as many of a step's targets as fit a quarter of an hour by their measured times (a cold start: one target a job): **built** for a member's grants with `state/pool/every-step` (batch 9); the lead's own jobs keep the table's batches | a wrong time makes a job longer or shorter, never wrong |
+| batch | measured: as many of a step's targets as fit a quarter of an hour by their measured times (a cold start: one target a job): **built** for a member's grants (batch 9); the lead's own jobs keep the table's batches | a wrong time makes a job longer or shorter, never wrong |
 | write-set | derived from the code that writes, and enforced as it lands (the owner's choice: no soak): each step's output names are given by one function (`agent::steps::writes`, the steps table's row), which `Out` writes by and the lead's merge checks every entry by, so the writer and the check can't disagree; a job's `Out` refuses a name outside its step's (a put before it uploads; a set or removal fails the job's next save, and nothing of that save lands, though the targets it saved before stand), and the lint, best-effort (a scan of the source for what makes or writes a hand-off or an entry, or names the manifest's file or the journal's folder: nothing does but `Out` and the listed paths of the merge, the readers and the raw tiles' archives), gates publish; an entry from a member on a newer app than the lead's that its write-sets refuse is held, not refused (§7.3). The step's removals of stale names under its layer, a prune's of the pruned step's names, and the OSM pass's of older passes' are the same function's. Writes outside the manifest: the raw tiles' archives (named by their area, checked as today: crate::rawpack::named_for), the answers (`crate::answers`' own names, under its lease) and the 3D buildings' sources (bld-fetch's, under `sources/`, which nothing reads by the manifest) are outside the records, so outside the merge; each is written whole under a name its own module makes | **built** (phase 4's sixth batch): the function is a predicate over a name, not a type only it can construct (the design's first form): the same guarantee as the job runs, without rewriting every step's writes; entries of an app before it are refused as any outside is (their work done again) |
 | moves (planned) | derived: a job's progress on its Mac's disk is written through one accessor (the OSM pass's stages, a terrain area's raw tiles), which names the Mac holding it on the NAS (`state/pool/progress/<step>.json`) | |
 | floor of memory (planned) | not built: what a target held (its measured floor, §7.2) covers it, the Planetiler heap among it | |
@@ -961,7 +948,7 @@ and disk free now, the guard on; once a target of a step has run, the step's oth
 offered by the largest measured of the step's targets until their own run says (a prior learned, not
 kept by hand). Built for a Mac's own slots (crate::coord::Coordinator::measured: a run's measure or
 floor of the way its step runs now; a job of no targets of its own by its id); the member with the
-most room is batch 9's (built behind `state/pool/every-step`: crate::coord's `most_room`). As built, the prior is the step's targets' 90th percentile, not their most
+most room is batch 9's (built: crate::coord's `most_room`). As built, the prior is the step's targets' 90th percentile, not their most
 (one outlier holds no other target to its figure), and a target measured at 0 keeps its 0. A
 batch is reckoned by its targets' disks summed (cache writes add up over a batch) or by the most a
 job of its step took over its whole run (`job-disks.json`), the larger; what a running job has still
@@ -1044,8 +1031,8 @@ Planned. In phase 1 the members' messages go by mailbox on the NAS (crate::agent
 `state/pool/mail/<to>/<from>.json`, its sender's alone, its last messages there numbered; read by
 member id, never by listing, so a lead reads the mail of the members its listing of the heartbeats
 found, every two minutes), best effort as the driver's messages are, an owner's ask passed on to
-the lead among them (`HandTo`, §6.3); jobs go out through the lead's coordinator as today's
-helpers' do (`/work/*`), and the worker page's lead asks to it (`/work/lead`).
+the lead among them (`HandTo`, §6.3); jobs go out through the lead's coordinator, every
+member's (`/work/*`), and the worker page's lead asks to it (`/work/lead`).
 
 Every member answers on the pool's port (8090): the worker page and its files; `/pool/status` (its
 heartbeat); `/work/*` for its own tasks; and, on the lead, `/lead/*`: jobs (ask, beat, done), lead
@@ -1094,10 +1081,10 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
 - **A member's own status in the menu bar:** a member's agent writes `helper.json`, never
   `status.json` (the lead's); the map server shows the lead's heartbeat from the NAS, and a
   member's own `helper.json` in its place once that heartbeat is ten minutes old (no lead), so
-  the member's menu bar stays fresh. The build Mac's helpers leave out its own host (its helper
-  file from before it led, fresh for ten minutes, isn't a second card).
+  the member's menu bar stays fresh. The lead's list of its members' statuses leaves out its own host (its
+  `helper.json` from before it led, fresh for ten minutes, isn't a second card).
 - Each Mac's map server keeps the app its own agent runs, and keeps its
-  downloads' copies to 20 MB/s while the build Mac runs a job.
+  downloads' copies to 20 MB/s while the lead's heartbeat says a job runs.
 - **The history** notes each term (handed over, taken back, taken over, re-asserted), each step
   down, and a handover's offer, end, giving up and drop, as `term` events (crate::agent::lead::notes):
   appended as they come to the member's own file on the NAS (`state/coord/history/<day>/
@@ -1147,14 +1134,14 @@ Built (crate::agent::lead, `tools/status/main.swift`, `web/work/pool.js`, `web/s
 
 ## 12. Getting there from today
 
-Each phase ships switched off behind `state/pool/enabled` (the agent behaves as today while it's
-missing) and is switched on once every member's heartbeat shows the app that has it. The M1's launch
-file passes `--helper` (install.sh), so the pool's app accepts it (and ignores it once enabled).
+The pool is always on (phase 4's thirteenth batch): nothing switches it on or off. A batch that
+changes what the agent does ships behind a switch of its own under `state/pool/` (item 4), made
+once every member's heartbeat shows the app that has it.
 
 1. **Terms and records per term.**
    - **The core: built** (`crate::pool`, checked by the simulator: §13). Member ids (`member_id`,
-     bound to the Mac); `terms/` and term 1 (`term`: made with create-new, naming the Mac
-     `state/build/writer` names, its first snapshot first; a create whose bytes didn't land finished
+     bound to the Mac); `terms/` and term 1 (`term`: made with create-new by the first Mac
+     in the pool, `term::bootstrap`, or by the owner's forced takeover, its first snapshot first; a create whose bytes didn't land finished
      by its maker; the app rule, the take-back checked against the term handed over; the owner's
      forced takeover, and downgrade); records per term (`records`: term 1's first snapshot from
      today's layout, in a file of its own no lead writes, its maker's create cut short written
@@ -1180,21 +1167,20 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      settle; publish and sweep once its records are caught up, by a listing asked for under a day
      ago, a sweep only when fresh), and when it must stop (another process holds its lock); it
      answers the controls (whom the lead can be handed to, what a takeover needs). Its contract is
-     the module's doc. The agent runs it while the pool is on (below).
-   - **The integration: built, switched on since 8 Oct 2026** (crate::agent::pool; the agent, crate::agent). While
-     `state/pool/enabled` is missing the agent is as it was (one stat more a loop, and one a save's
-     `check_writer`); a change of the switch, read so two loops in a row, restarts it, between
-     jobs, into the other. Until the switch is known (the NAS not read yet), today's coordination
-     (the writer named, hand-offs merged, re-keying) waits.
+     the module's doc. The agent runs it (below).
+   - **The integration: built, on since 8 Oct 2026, with no switch since phase 4's thirteenth
+     batch** (crate::agent::pool; the agent, crate::agent). A process not in the pool (the NAS
+     not reached as it starts, or its member's lock held by another process) starts nothing and
+     restarts into the pool once it can.
      - **A process's part** is the terms', decided as it starts (its member's first step): the lead
-       plans and grants through its coordinator as the build Mac did; any other member works as a
-       helper did, `--helper` or not. A member whose part changes (it took a term up, or stepped
+       plans and grants through its coordinator; any other member asks the lead's coordinator for
+       work (`scenic agent --helper` accepted and ignored). A member whose part changes (it took a term up, or stepped
        down) changes it in its process with `state/pool/slots` on (§7.6), else restarts into its
        new part once its first job's slot is free. A process whose member's lock another
        holds starts nothing, tries the lock each loop, and restarts into the pool once it's free;
        one the driver stops (its lock taken since) saves that step's state, starts nothing, and
-       exits between jobs. A saved state naming terms when the NAS has none (an earlier time the
-       pool was on, its files since moved aside) counts for nothing but its unwritten hand-offs.
+       exits between jobs. A saved state naming terms when the NAS has none (its terms since
+       moved aside) counts for nothing but its unwritten hand-offs.
      - **The loop:** the driver steps once a loop, after the loop's ended jobs are gathered and
        before the plan; its state (`Saved`) is written whole to the agent's folder whenever the
        step changed it, before anything the step said is done (a step whose state couldn't be
@@ -1217,10 +1203,10 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        nothing journaled there). Jobs an earlier process left are handed off at its first loop,
        once any still running is stopped. No agent
        records keys, merges hand-offs or re-keys the records (phase 1 has no entry for a re-keying:
-       a new key scheme while the pool is on builds its targets again).
+       a new key scheme builds its targets again).
      - **The merge's checks** (`agent::pool::check`): a done record of the entry's step naming
        targets, content names of their logical names, raw archives of their areas, and for a
-       shared step the coordinator's check of a helper's hand-off (its done targets' files, its own
+       shared step the coordinator's check of a member's hand-off (its done targets' files, its own
        uploads); not the lease's targets (a later lead may not know the lease). An entry with a
        change outside its step's write-set is refused with them (§7.3).
      - **The lead's coordinator:** leases granted in its term (`Lease::term`, `granted_at`), its
@@ -1243,41 +1229,24 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        contact (`state/coordinator.json`) off the NAS.
      - **Settling** (§6.4) stops a catalog or GC in flight, stops granting and hands the
        coordinator's state to the step. The owner's asks start a handover (phase 3).
-     - **Seeding and draining** when it's switched on: the workers' token copied to `state/coord/` by
-       the first lead (create-new) and from there by every lead's coordinator before it starts; the coordinator's local `coord/journal/` (the lead's) and the NAS's
-       `state/build/handoff/<host>/` (every two minutes) and a helper's `outbox/` (a folder with
-       nothing to hand off removed) drained into the journal as its member's entries (term 0: from before the pool;
-       an outbox's under its old lease, the others numbered from `agent::pool::DRAINED`, apart).
-     - **Going while it's on:** the writer named, `SCENIC_BUILD_MAC`, `check_writer`'s pass (it
-       refuses every save). Kept for the pool off.
-   - **Switching it on:** `scenic pool on` (agent::pool::switch_on), once every agent runs the app
-     that has phase 1. It checks the switch isn't on, none of the pool's files from an earlier
-     time are there (`state/build/terms/`, `state/build/term/`, `state/build/lead.json`,
-     `state/journal/`, `state/pool/members/`, `state/pool/mail/`, `state/coord/`),
-     `state/build/writer` names a Mac (term 1's maker), every agent heard from in ten minutes
-     runs this app, and none runs a job (a job started before the switch saves as before, which
-     the pool refuses: `scenic pause` and wait; `--force` passes these two over); then makes
-     `state/pool/enabled`. Each agent
-     restarts into the pool between jobs: the build Mac makes term 1 from today's files, takes it
-     up and leads (its status's `pool`: `role` lead, `term` 1), the M1 works as a member (its helper
-     status's `pool`). `scenic pool status` says how it stands. The first catalog waits for the
-     records to be caught up (a listing of every day merged), the first GC for a re-assertion.
-   - **Switching it off:** `scenic pool off` (`switch_off`): once the lead is caught up, every
-     member's `pool.unacked` is 0 (each entry in the lead's records) and no job runs (`scenic
-     pause` first; `--force` passes these over, its unmerged work done again), it removes the
-     switch; each agent restarts as before between jobs (the build Mac names the writer again and
-     writes today's files, which hold the last lead's records). Run again once no agent's status
-     says it's in the pool, it moves the pool's files aside to `state/pool-off/<day>-<time>/`, so
-     a later switch-on begins afresh from today's files (each member's saved state then counts for
-     nothing: above). A member's hand-off said journaled to a coordinator whose pool is off is
-     journaled there, and merged as before.
-   - **A shadow run** (crate::agent::shadow; `state/pool/shadow` on the agent, or `scenic
-     pool-shadow` beside it): the driver beside today's coordination, shadowing this Mac's agent
-     (the build Mac's by its coordinator's history, a helper's by its outbox), each of its jobs
-     that ended an entry of the shadow's member; reading the build's records where today's files
-     keep them, writing only under `state/pool-shadow/` (`agent::pool::Overlay`); its log says the
-     terms, take-ups, merges, gates against the catalogs and GC the agent ran, and its records
-     against the build's.
+     - **Seeding and draining:** the workers' token copied to `state/coord/` by the first lead
+       (create-new) and from there by every lead's coordinator before it starts; the hand-offs
+       from before the pool, the coordinator's local `coord/journal/` (the lead's) and a member's
+       `outbox/` (once a process; a folder with nothing to hand off removed), drained into the
+       journal as its member's entries (term 0: from before the pool; an outbox's under its old
+       lease, the others numbered from `agent::pool::DRAINED`, apart).
+     - **Gone** (phase 4's thirteenth batch): the writer named, `SCENIC_BUILD_MAC`, `check_writer`'s
+       pass (once a term is made it refuses every direct save), the NAS's hand-off folders.
+   - **Switched on** 8 Oct 2026 on the real NAS: term 1 the M4's, made from today's files, the M1
+     a member. With no term yet, the first Mac in the pool makes term 1 and its first snapshot
+     from today's files (create-new: of Macs making them at once, one makes each), takes it up
+     and leads (its status's `pool`: `role` lead, `term` 1). `scenic pool status` says how it
+     stands. The first catalog waits for the records to be caught up (a listing of every day
+     merged), the first GC for a re-assertion.
+   - **No switching off, no shadow run** (phase 4's thirteenth batch): `scenic pool on|off`,
+     `state/pool-off/`, the `pool-shadow` command and `state/pool-shadow/` are gone; `state/pool/enabled`
+     and `state/pool/shadow` are no longer read, left on the NAS while an older app that reads them
+     may run (never `scenic pool off` from an older app).
 2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core, built);
    the owner's asks reach the agent (phase 3); the agent's part, built with phase 4's fourth batch
    (below), behind its switch: staying awake while leading, and a part changing in its process,
@@ -1386,22 +1355,23 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       clear of the pack cache through `store::cachefile`; a chaos test of two raw-tile jobs at
       once; then the run-alone, second-job and raw-tile lists removed: a job starts beside
       another only if both jobs' measured memory and disk fit what the Mac has left, a cold start
-      alone. Learning needs no switch; the lists' removal is behind `state/pool/by-measure`. Tests:
+      alone. Learning needs no switch; the lists' removal, behind `state/pool/by-measure` at first, is
+      always on since batch 13. Tests:
       a disk floor learned; a job frozen short of room and going on once it's made; a second job
       started or held by the measures alone; the chaos test's same bytes; GC keeping an unmerged
       entry's files. As built: GC reads the newest records and every journal entry they don't
       reflect (agent::gc::unmerged); the caches' accessor counts what a process adds, a step's cost
       line notes it per target, the sampler counts each job's disk (those bytes, the top of its
       scratch folder each minute; the disk's fall while it runs alone logged, not counted) and the floors reach the
-      lead with the lease's end (`disks`), whatever the switch; the disk guard freezes the job
+      lead with the lease's end (`disks`); the disk guard freezes the job
       growing fastest in the sampler, the loop makes room (room::toward) and lets it go on or gives
-      it back, kept from that Mac an hour; with the switch, the second job is the plan's first in
+      it back, kept from that Mac an hour; the second job is the plan's first in
       plan order that fits, the first slot waits for one that doesn't, beside another job, a
       job's disk room is the reserve and its measured disk (alone in the first slot, room is made
       for its measured disk too as the caches allow, but it waits only for the reserve and the
       target, the disk guard its backstop), and a cold start runs alone, nothing beside it; a job of no
       targets of its own (GC, a catalog, the OSM pass) is measured by its id. **Scratch state (§13):
-      both Macs** (`state/pool/by-measure` made in the scratch folder) before the switch goes on.
+      both Macs**: planned (§13).
    6. **Write-sets enforced where they're written: built** (§7.3, §7.7): one outputs function per
       step (`agent::steps::writes`, its row's), which `Out` writes by and the merge checks by, so
       they can't disagree; a job's `Out` refusing any other name (`Out::open` takes the step, as
@@ -1436,8 +1406,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       refused, its why noted beside the journal, the lead merging the next jobs' entries; the real
       `scenic-build` on the M1, a pooled job writing outside its step, failing before anything
       reached the NAS.
-   7. **Exclusivity where the resource is used: built** (§7.7), behind `state/pool/budgets` (off
-      while missing: the agent as it was, exactly). On: each agent runs a proxy (crate::budget::proxy,
+   7. **Exclusivity where the resource is used: built** (§7.7), behind `state/pool/budgets` at
+      first, always on since batch 13: each agent runs a proxy (crate::budget::proxy,
       127.0.0.1, a port of its own) and every job's connections out go through it (`HTTPS_PROXY`
       and the others in its environment, this Mac's own direct), the job run under `sandbox-exec`
       with a profile denying every other way out (crate::budget::SANDBOX); a connection to a
@@ -1458,8 +1428,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       never past a window's tokens (a clock that moves only when waited on, `StepClock`: no real
       time); a 429 told to one proxy holding the other; a query's time charged; the NAS away
       dividing the rate; old leases removed; a sandboxed job denied around the proxy and metered
-      through it; the agent with the switch on, its jobs given the proxy and sandboxed, the
-      Wikidata steps side by side, no job without the proxy, and off again as before; the answers'
+      through it; the agent's jobs given the proxy and sandboxed, the Wikidata steps side by side,
+      no job without the proxy (`agent::tests::jobs_go_out_through_the_proxy_and_no_group_keeps_steps_apart`); the answers'
       lease one holder's, a lapsed one broken, a holder whose lease was broken unable to renew or
       remove the new one's; a sender waiting for the readers under way, a reader that starts
       meanwhile waiting for it; the lint. **Scratch state (§13): both Macs, run** (14 Oct 2026, the
@@ -1472,8 +1442,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       processes, one a Mac, taking the answers' lease five times each, holding it three seconds:
       no two holds overlapping, the second Mac waiting while the first held it.
    8. **Resuming, and planning from the records alone: built** (§7.2 Resuming, §7.4;
-      crate::agent::resume), behind `state/pool/resume` (off while missing: the agent as it was;
-      it acts only in the pool). A resumable job's (the OSM pass's) progress noted as its job
+      crate::agent::resume), behind `state/pool/resume` (off while missing: the agent as it was). A resumable job's (the OSM pass's) progress noted as its job
       starts and ends in its member's file, `state/pool/progress/<member>.json` (one a member,
       principle 3); the lead not running a pass a member's live file holds, nor one a lease of its
       coordinator holds, its coordinator granting it to that member's worker alone
@@ -1501,8 +1470,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       the records (the status's checklist 6 of 6), the M1's file then dropping it; the lead never
       started the pass. (A member reads its own file once a process: only it writes it.)
    9. **Every step to every member: built** (§7.2, §7.7; crate::agent::every, crate::coord's
-      `pick_every`), behind `state/pool/every-step` (off while missing: the agent as it was; it acts
-      only in the pool). The lead's coordinator offers the plan's every step but its own
+      `pick_every`), behind `state/pool/every-step` at first, always on since batch 13. The lead's coordinator offers the plan's every step but its own
       (`every::LEAD_ONLY`, the steps keeping the pass's answers, the worldwide steps) to every member
       whose measured room fits the target's measures, the map tiles' `pack` and `lo` among them
       (each Mac's saves reach the records only through the journal; a map update's step granted only
@@ -1510,9 +1478,9 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       member with the most room, the lead counted, alone; a
       job's targets as many as fit a quarter of an hour by their measured times (`pack` and `lo`
       now note their targets' costs); contiguous runs from the front of the plan, or just after the
-      member's last; claims neither made nor read. The pass's worldwide jobs stay the lead's (they
+      member's last; no claims. The pass's worldwide jobs stay the lead's (they
       aren't the plan's work; plan.md §10). Tests: a member offered `pack`, with the map update's units,
-      no claim made, and its entry merged, two agents in one process, and off as before; a member
+      and its entry merged, two agents in one process; a member
       short of a target's measured memory or disk offered none of it; a cold start alone on the
       largest asking, none while a job of its step is under way or the lead has more; a map update's step
       only with the map update's units, none with no map update; others' leases left out of the lead's plan
@@ -1527,7 +1495,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       whose records hold a map update's work).
    10. **Tasks brokered by every member, pages talking to members directly: built** (§8, §9;
       crate::agent::brokers, crate::coord::brokers), behind `state/pool/brokers` (off while missing:
-      the agent as it was; it acts only in the pool). A member's agent runs a coordinator of its own
+      the agent as it was). A member's agent runs a coordinator of its own
       for its jobs' tasks alone (its broker, on the pool's port; `become_broker`: no plan offered,
       no job lease held), its jobs given its address (`SCENIC_COORD`), their tasks closed as they
       end; its heartbeat's `broker` says its addresses (and its HTTPS one, when `tailscale serve`
@@ -1564,12 +1532,11 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       HTTPS: not run (no member has `tailscale serve` for the pool's port).
    11. **Placement by how crucial a job is, and work offered ahead: built** (§7.2, workers.md §3;
       crate::agent::placement), behind `state/pool/placement` (off while missing: the agent and its
-      coordinator as they were; it acts only in the pool, and its order and draws of the plan's
-      targets only with every step to every member on, `pick_every`). The lead tells its
+      coordinator as they were; its order and draws of the plan's targets through `pick_every`). The lead tells its
       coordinator each loop each step's slack in its forecast (the build's end less the step's: the
       long poles none) and each worker its coordinator knows measured against the lead by the
       build's history, under the name it asks with (`placement::measured_speeds`: the shared steps
-      both ran; the forecast's own machines are the helpers' status files', not the members). A member's ask
+      both ran; the forecast's own machines are the members' status files, `state/helpers/`). A member's ask
       is tried on the offers by their steps' slack, least first (plan order between equals), and
       within a step from the target measured to take longest (its cost lines, `secs_of`; plan order
       between equals, those never measured last), its run contiguous from there as before; each
@@ -1611,17 +1578,47 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       lane (the work before the regions and the units too), the map updates the first lane's
       alone, the pages' lane only the shared steps, the same input the same forecast and more
       lanes done no later; a lane given only what fits its memory, its running targets its own.
-   13. **What goes:** the steps table (its last columns replaced: §7.7), the claims
-      (crate::agent::claims, `state/build/claims/`), once no app that reads them runs; `install.sh`
-      without `--agent` and `--helper` (a launch file passing them still accepted and ignored); the
-      agent without the pool, the owner's choice: `scenic pool off` and the switch
-      `state/pool/enabled` (the pool always on), and everything kept for the pool off: the writer
-      named (`state/build/writer`), `check_writer`'s pass, `SCENIC_BUILD_MAC`, the build Mac's own
-      merging of hand-offs, re-keying and records-writing, the helpers' coordination (`--helper`'s
-      outbox, the NAS's hand-off folders), and today's three files as the records' truth (the
-      records' readers read the term's snapshot first, §6.2, and the lead stops writing today's
-      files once no reader of them is left); the docs (plan.md §8, workers.md, formats.md)
-      rewritten around the pool. **Scratch state (§13): both Macs** (the pool always on).
+   13. **What goes: built** (the owner's choice: the pool always on). Gone: the switch
+      (`state/pool/enabled` no longer read), `scenic pool on|off` and the shadow run
+      (crate::agent::shadow, the `pool-shadow` command, `state/pool/shadow`); a process not in the pool
+      (the NAS not reached as it starts, or its member's lock held by another process) starts
+      nothing and restarts into the pool once it can. The claims (crate::agent::claims,
+      `state/build/claims/`): every step to every member always on (`state/pool/every-step` no
+      longer read). The named writer (`state/build/writer`), `check_writer`'s pass and
+      `SCENIC_BUILD_MAC`: once `state/build/terms/` exists `check_writer` refuses every direct save
+      (a folder with no term yet saves as today's files) and every job hands off
+      (`SCENIC_HANDOFF`); term 1 made by the first Mac in the pool or by the owner's forced
+      takeover (`term::bootstrap`, create-new, its first snapshot likewise). A Mac's own merging of
+      hand-offs, re-keying (the agent's `rekey_records`) and records-writing outside the lead's
+      merge; the NAS's hand-off folders (`state/build/handoff/`, crate::handoff's merge and
+      folders), the drain of hand-offs from before the pool keeping the lead's coordinator's
+      journal and a member's outbox, which otherwise holds its leased tasks alone. The Mac shared
+      by measure and the budgets always on (`state/pool/by-measure`, `state/pool/budgets` no longer
+      read; GC's "no term led" a term not readable whole), so the steps table's `disk` and groups
+      columns (and its raw-tile, Wikidata, NAS-reading and run-alone sets) gone with the
+      passed-over machinery (a slot's only clash: the other slot running the same unshared step). `install.sh` without
+      `--agent` and `--helper`, and `scenic agent --helper` (accepted and ignored: every Mac runs
+      the agent); `tools/app/publish.sh` from either Mac (a lock on the NAS, `app/publish.lock`;
+      refused unless the tree is clean, the task board's database aside, and HEAD is on origin's
+      main). The docs (workers.md, formats.md) rewritten around the pool.
+      - **What stays:** the steps table's other columns (memory's first guess, shared and its
+        rank, the second slot's ranks, the lead's own steps and those keeping answers, the batch
+        of the lead's own jobs, the write-set: §7.2); the lead writes today's three files
+        (`manifest.json`, `jobs.json`, `pending.json`) after each save for their readers, older
+        apps among them. **Planned:** the records' readers reading the term's snapshot first
+        (§6.2), and the lead no longer writing today's files once no reader of them is left.
+      - **The transition:** an older app reads the switch files, so `state/pool/enabled` and the
+        others stay on the NAS until no older app runs; never `scenic pool off` from an older app.
+      - **Tests:** `agent::pool_tests::the_pool_is_always_on_with_no_switch_read`,
+        `a_member_whose_lock_is_held_waits_for_it_then_restarts_into_the_pool`;
+        `out::tests::once_the_pool_has_begun_no_step_saves_the_records`; rawpack's
+        `once_the_pool_has_begun_only_a_jobs_hand_off_packs`; `pool::term`'s
+        `term_one_is_the_first_macs_to_make`; `agent::tests::which_jobs_run_beside_each_other`,
+        `jobs_go_out_through_the_proxy_and_no_group_keeps_steps_apart`,
+        `plans_with_the_hand_offs_waiting_in_the_journal`,
+        `the_lead_sends_the_passs_answers_to_the_nas_once_as_it_starts`; handoff's
+        `a_folders_hand_offs_wait_in_order_and_a_damaged_one_is_set_aside`. **Scratch state
+        (§13): both Macs** (the pool always on): planned.
 
    The memory guard's follow-up (batch 2: grants refused to a member on another app than the
    lead's, plan.md §8) ran the in-process harness (two agents in one process,
@@ -1720,15 +1717,15 @@ on a scratch state where marked above, then the live switch.
   forgetting them: the forget horizon is the modules' tests'); the coordinator (leases are numbered
   in order per term, granted by no one, and the lead's check depends on its term alone).
 - **The integration's tests** (phase 1; crate::agent::pool's, and the agent's `pool_tests`): the
-  switch; a member's step, its state saved before anything is done, its heartbeat, its listing made
+  pool always on with no switch read; a member's step, its state saved before anything is done, its heartbeat, its listing made
   off its loop and a failed one made again; a second process of a member running no driver, and
   one whose lock was taken stopping with its hand-offs kept; two members' mail, entries,
   acknowledgements and a handover settled with the coordinator's state handed over; a job's entry,
   the jobs a process left, draining, the token and devices, the merge's checks, today's files and
-  the history per writer; a shadow run writing nothing of the real folder; and the agent: off as it
-  was, the switch changing restarting it, on the build Mac leading with its jobs handing off under
-  its term's leases and its sweep after a re-assertion, a member's job reaching the lead's records
-  through the journal and its mail, the lead's gates on catalogs and sweeps, the shadow beside it.
+  the history per writer; and the agent: leading with its jobs handing off under its term's
+  leases and its sweep after a re-assertion, a member's job reaching the lead's records through
+  the journal and its mail, the lead's gates on catalogs and sweeps, a member whose lock another
+  process holds waiting for it, then restarting into the pool.
 - **The controls' tests** (phase 3; crate::agent::lead's, and the agent's `pool_tests`): two
   members in one process, their clocks moved on by the test (`Side::ahead`): the lead handed over
   each way (a member's "Make This Mac Lead" passed on by mail, and the lead's own "Hand the Build
@@ -1752,19 +1749,17 @@ on a scratch state where marked above, then the live switch.
   `handover:after-ready`, `takeup:after-copy`): planned.
 - **Two Macs on the real NAS** (`tools/check/pool-two-macs.sh`): the real agents on both Macs, over
   a scratch folder of the NAS, each in a folder of its own, their jobs played by a script that
-  hands off. Run on 2026-10-08: term 1 the build Mac's, both Macs' hand-offs from before the pool
+  hands off. Run on 2026-10-08: term 1 the M4's, both Macs' hand-offs from before the pool
   drained, the lead's jobs and a sweep, the member's entry merged and acknowledged by mail, the lead
   restarted re-asserting, then standing down on an older app and the member taking over by itself
   and leading. Run on 2026-10-14 for phase 4's seventh batch (§12, item 7: the shared Wikimedia
   budget, a 429's hold across the Macs, the answers' lease), and on 2026-10-15 for its eighth (§12,
-  item 8: an OSM pass held by the member's progress, resumed there alone, complete by the records). Planned: phase 4's fifth batch with `state/pool/by-measure` (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
+  item 8: an OSM pass held by the member's progress, resumed there alone, complete by the records). Planned: phase 4's fifth batch (two jobs beside each other by measure, the disk guard freezing one and making room, GC beside a job; the script's `measure` step); the ◻ checks of §3 (create-new between two Macs contended, exclusive
   rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it; run on
   one Mac with two scratch agents: §13, the controls) and load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
   reads between clients.)
-- **A shadow run on the real NAS** (§12), beside both Macs' agents, before the switch: what the
-  pool decides against what the agents did.
-- **Each phase end to end** on the scratch folder with both Macs before `state/pool/enabled` is
-  made on the real one: phase 1's as above.
+- **Each batch with a switch end to end** on the scratch folder with both Macs before its switch
+  is made on the real one: phase 1's as above.
 
 ## 14. Decisions
 
@@ -1782,5 +1777,5 @@ Taken (the owner may revise them):
   it over; task #198 makes that visible). Until then, a page opened over plain HTTP on the tailnet reaches
   every member (WireGuard encrypts it anyway); one opened over HTTPS reaches only members with HTTPS
   (browsers block plain HTTP from it), and takes their tasks alone.
-- **Work order:** every slot from the front of the plan, in contiguous runs, in place of today's
-  helpers-from-the-far-end.
+- **Work order:** every slot from the front of the plan, in contiguous runs (none from the plan's
+  far end).

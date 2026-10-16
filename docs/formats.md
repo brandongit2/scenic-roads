@@ -369,7 +369,7 @@ from the coarser texel's centre: a child's offset plus its centre's, ±¼ of the
   held's `f`, `w`, `v`, `ox`, `oy` planes as 512 × 512 f32 LE (the level-8 values exactly, so the lo levels
   are the same whatever made them).
 
-**A z8 area's task** (`pipeline::bld::task`, docs/buildings3d.md §3.6; a folder on the build Mac,
+**A z8 area's task** (`pipeline::bld::task`, docs/buildings3d.md §3.6; a folder on the job's Mac,
 its files sent to the worker as `u/…`, not in the manifest): `6-<x>-<y>.sect`, of T's and its 8
 neighbours' normalized files those with a block the area reads (its own and those within 620 m
 around it), each a normalized file as above with the same meta and only those blocks, their bytes
@@ -385,7 +385,7 @@ meta `{"layer": "buildings-field", "area": "8/x/y", "encoding": "field5-webp"}`:
 it made: `bld::job::Summary`, as `bldtiles` logs a tile's).
 
 **A row of tree cover blocks' task** (`pipeline::trees::task`, docs/plan.md §6 Trees; a folder on
-the build Mac, its file sent to the worker as `u/…`, not in the manifest): `coverage.json`, the
+the job's Mac, its file sent to the worker as `u/…`, not in the manifest): `coverage.json`, the
 piece's coverage as the trees program reads one (`{"shapes": [[ring, …], …]}`, a ring
 `[[lon, lat], …]` in degrees) with only the rings whose box meets the row's box, a hundredth of a
 degree around it (a shape left with none goes). The program `trees --blocks` writes there
@@ -395,7 +395,7 @@ order it made them) and `trees-tops.bin` (its zoom-8 values, `pyramid::Tops::to_
 --block` writes one block's.
 
 **A terrain piece's subtrees' task** (`pipeline::terrain_task`, docs/plan.md §6 Terrain; a folder
-on the build Mac, its file sent to the worker as `u/…`, not in the manifest): `in.sect` (RDSECT v1),
+on the job's Mac, its file sent to the worker as `u/…`, not in the manifest): `in.sect` (RDSECT v1),
 meta `{"fmt": 1, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
 "levels": [[z, [[x, y], …]], …] (the group's tiles, z12 → z9), "water", "north", "coarse" (whether
 the job's run has those sources), "cells": [[lat, lon, "sea" | "missing" | "cell", width, first
@@ -528,7 +528,7 @@ delta:
 
 ```
 bin/scenic-launcher     the launcher (never rebuilt)
-run/<name>              what the launcher runs, one argument per line: server, agent (build Mac), status
+run/<name>              what the launcher runs, one argument per line: server, agent (every Mac), status
 app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
                         web/, fonts/   (app/current → the one in use); dem/.venv: the Python steps'
                         environment, which uv makes from dem/uv.lock the first time a step runs here
@@ -565,8 +565,8 @@ map-page                the address to open the map on another device (docs/plan
                         0600, rewritten when it changes: HTTPS where tailscale serve proxies the
                         server)
 agent/                  timings.jsonl, timings-run.json, timings-run-2.json (the jobs' timings: Timings,
-                        below); status.json (the build Mac's; a helper writes helper.json, which that Mac's
-                        server shows), state.json, map-update.json (the last map update:
+                        below); status.json (the lead's; a member not leading writes helper.json, which
+                        that Mac's server shows), state.json, map-update.json (the last map update:
                         {began, regions, last, units: {logical: content name}, over},
                         agent::build::MapUpdate; the jobs of the one under way read its units,
                         SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/,
@@ -594,7 +594,7 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         scripts add their answers to; its .kept.json as items/'s), heritage-venv/
                         (the heritage scripts' old Python environment: their next run removes it),
                         unit-stages.json (the unit stages' times here) and answers.gate and
-                        answers.use (with state/pool/budgets on, the flocks holding this Mac's
+                        answers.use (the flocks holding this Mac's
                         answers: the steps keeping them shared, the agent's seed alone, writer
                         first: crate::answers::Local).
                         When a job starts with too little free, raw tiles waiting are packed onto
@@ -605,7 +605,7 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         copied there first, or kept; a month the NAS lacks kept; what the queued
                         jobs read last, room::Hints), until the Mac has a sixth more
                         free than the job needs (the OSM pass: what it needs). Once the build is
-                        done, the agent trims the same four by the same rules (the build Mac keeps
+                        done, the agent trims the same four by the same rules (the lead keeps
                         chm10/); on the owner's ask, it clears them, base/, the seed (while the NAS
                         has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md §4
                         and §8, agent::room). Never through a link, nor in the NAS's folder.
@@ -617,12 +617,12 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         without waiting, jobs running or not.
 agent/member            this Mac's member id in the pool (docs/pool.md §5): `m-<16 hex>`, then the
                         Mac's hardware UUID, a line each (crate::pool::member_id; made once)
-agent/pool/             the pool's part of the agent (crate::agent::pool; only with the pool on):
+agent/pool/             the pool's part of the agent (crate::agent::pool):
                         saved.json (the driver's state, crate::pool::driver::Saved: {member, mine:
                         {entries: {key: term acknowledged or null}, unwritten: {key: entry}}, term,
                         led, made, unfinished?, stood_down?, passing?}, written whole after every
-                        step that changed it; `saved.earlier.json`: one set aside, of an earlier time
-                        the pool was on, the NAS having no terms), mail.json ({read: {member: n}, the last message taken
+                        step that changed it; `saved.earlier.json`: one set aside, naming a term
+                        while the NAS has none), mail.json ({read: {member: n}, the last message taken
                         from each; sent: {member: [[n, msg], …]}, the last sent each; n}),
                         members.json (the members it knows, by id), jobs/<term>-<n>/ (a job's
                         folder under its lease: work.json {step, targets: [[target, key], …],
@@ -633,12 +633,7 @@ agent/pool/             the pool's part of the agent (crate::agent::pool; only w
                         since], auto_at, no_lead: [term, since] (the term with no lead, as first
                         seen so: the alert's start)}), notes.jsonl (the terms' history events a member kept for
                         its next process's coordinator, removed once noted there)
-agent/shadow/           a shadow run beside the agent (`state/pool/shadow`; crate::agent::shadow):
-                        member, and pool-shadow/ with saved.json, mail.json, members.json as pool/'s,
-                        watch.json ({seq: the agent's history read up to, jobs: {id: the jobs under
-                        way as seen}, started}) and shadow.jsonl (its log: a JSON line each, {t,
-                        kind: start, observed, handed, event, sent, list, `gate` (the lead's holds on new work and GC, pool.md §7: not the input check), compare, restarted,
-                        …}); `scenic pool-shadow --home <dir>` keeps the same in <dir>/pool-shadow/
+agent/shadow/           an older app's shadow run, no longer made or read
 pool-<id>.lock          (in the app's folder) the lock of this Mac's member `<id>`: one process runs
                         it (crate::pool::MemberLock); like `agent.lock` and the build manifest's
                         `scenic-build-<hash16>.lock` in the temporary folder, removed as it's let go
@@ -680,12 +675,12 @@ phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub
 Where they're kept:
 
 - A job writes its record, once, where `SCENIC_TIMINGS` says: `agent/timings-run.json`
-  (`timings-run-2.json` for the second job), or a helper's leased job's or task's
-  `outbox/<lease>/timings.json`. A child program writes its phases (a record, its phases read)
+  (`timings-run-2.json` for the second job), or, on a member not leading, a leased
+  task's `outbox/<lease>/timings.json`. A child program writes its phases (a record, its phases read)
   where `SCENIC_PHASES_TO` says (`$TMPDIR/scenic-phases-<pid>-<n>.json`, removed once read).
 - `agent/timings.jsonl`: every job this Mac's agent ran, a line each, as it ends.
-- `agent/coord/timings.jsonl` (the build Mac's coordinator): every worker's, its own jobs' as they
-  end, a helper's and a page's with their done (`/work/done {…, timings}`), `host` the worker's
+- `agent/coord/timings.jsonl` (the lead's coordinator): every worker's, its own jobs' as they
+  end, a member's and a page's with their done (`/work/done {…, timings}`), `host` the worker's
   name; read back by `/work/timings {kind?, last?}` (`{runs: [record, …]}`, each kind's last `last`,
   20 by default).
 - Each log is cut to its newer half once past 16 MB.
@@ -864,7 +859,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
   have);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (the per-vertex DEM cache's seed, which
-  the build Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
+  each Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).
 - **The rail sources** (`sources/rail/`, content-named, in the build manifest; `pipeline::rail`, plan
   §6 Rail service; never swept, so a file one replaces stays):
@@ -899,12 +894,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   view results: canopy.keys, canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
   samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json: {v (scache::SCENIC_V),
   basis: [[[x, y], hash16 of the z11 tile's terrain and land cover], …]}).
-- **Two Macs and other workers** (`docs/workers.md`):
-  - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
+- **The Macs and other workers** (`docs/workers.md`):
+  - `state/coordinator.json`: how to reach the lead's coordinator, `{urls: [Tailscale's, then
     the LAN name's, "http://…:8090"], token, page}`; there while its agent runs. `page`, when
     `tailscale serve` proxies the coordinator: the build page over HTTPS (`https://<its tailnet
     name>/work/`), which the menu bar's web view can load (it loads no plain HTTP but the LAN's).
-  - On the build Mac, in the agent's folder, `coord/`: `workers-token` (the build's own key, 32 hex
+  - On the lead, in the agent's folder, `coord/`: `workers-token` (the build's own key, 32 hex
     digits, mode 600: the Macs' agents use it; `token`, the one pages carried long ago, and
     `devices.json`, the devices pages once had to be accepted as, are removed as the agent starts),
     `page` (the build page's address: the status bar's "Copy the Build Page's Address"),
@@ -921,7 +916,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     latest pass's alone: docs/pool.md §7.7; listed and cleared with the floors; a target measured at
     0 keeps its 0), `job-disks.json` (`{<step>: MB}`: the most disk a job of the step took over its
     whole run, rising only),
-    `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
+    `journal/<worker>/` (hand-offs a worker sent rather than wrote to the pool's journal, an older
+    app's, as below, drained into the pool's journal; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when
     it last changed);
@@ -933,8 +929,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     slot's job's bytes added to the caches so far, a decimal number, `SCENIC_WRITTEN`, rewritten
     every 64 MB, for the disk guard's sampler); `timings.jsonl` (every worker's
     jobs' and tasks' timings: Timings, below).
-  - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
-    `costs.jsonl`, `timings.json` (its timings: Timings), `spec.json` (a task's), `task.json`
+  - On a member, in the agent's folder, `outbox/<lease>/`: a leased task's files and results (its
+    jobs' saves go to the pool's journal, `agent/pool/jobs/`; a leased job's outbox from before the
+    pool is drained into the journal once), `costs.jsonl`, `timings.json` (its timings: Timings), `spec.json` (a task's), `task.json`
     (`scenic run-task`'s result) and `result.json`
     (`{ok, done: [step, [[target, key], …]] or null (some of the lease's targets when it paused at
     a safe point, or failed after them), failed (it failed after those: the rest held against it),
@@ -947,9 +944,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `SCENIC_CONTROL`) and `done.txt` (the targets it finished, `<step> <target>` a line,
     `SCENIC_DONE`). A job that stopped at a safe point exits 75. The coordinator's answers carry the
     pause: an ask refused (409) `{error, pause}`, a beat `{ok, pause}`; `POST /work/pause {pause, at}`
-    passes a Mac's ask on (one older than the last change is passed over); a helper's leased job
-    keeps `work.json` (its step and targets) and `done.txt` in its outbox folder; `/work/fail {…, interrupted}` gives a lease back unheld.
-    `state/build/pause.json` on the NAS mirrors the build Mac's.
+    passes a Mac's ask on (one older than the last change is passed over); a leased job
+    keeps `work.json` (its step and targets) and `done.txt` in its lease's folder; `/work/fail {…, interrupted}` gives a lease back unheld.
+    `state/build/pause.json` on the NAS mirrors the lead's.
   - **The input check's asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5), in each Mac's agent's folder:
     `inputs-asks/<at, 20 digits>-<pid or "menu">-….json`, a file each, `{unit, accept: [finding
     id], all, unaccept: [finding id], check, full, forget, by, at}`, from its menu bar (Accept), the
@@ -972,19 +969,20 @@ class, id) within a tile. The client sends the id with the clicked point.
     minutes old or more (no lead to show: the menu bar stays fresh).
   - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
     pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
-    null, raw: [[area, {name, bytes}], …] (a helper's raw tiles' archives, on the NAS, for the build
-    Mac to name; left out when none)}`, named `<ns>-<pid>.json` in the order written, each after the
+    null, raw: [[area, {name, bytes}], …] (a job's raw tiles' archives, on the NAS, for the lead to
+    name; left out when none)}`, named `<ns>-<pid>.json` in the order written, each after the
     last; `<folder>.merged`
     holds the last merged, by name; a `.bad` file is one set aside unparsed.
-  - For a helper on an older app: `state/build/claims/<step> <target>` (the target's `/` as `-`,
-    e.g. `unit 6-31-20`; the claiming agent, "<host> <pid>"; fresh while its mtime is within 15
-    minutes) and `state/build/handoff/<host>/`.
-  - `state/build/writer` (the build Mac's name: the records' one writer); `state/helpers/<host>.json`
-    (a helper's status, as the heartbeat's; the heartbeat lists those fresh within ten minutes as
-    `helpers`, and the workers the coordinator heard from in two minutes as `workers`).
-- **The pool** (docs/pool.md; `state/pool/enabled`, an empty file, switches it on; `state/pool/shadow`
-  runs it in the shadow, below). Its files are made only while it's on:
-  - `state/build/terms/<E>.json`: term E, made once with create-new, `{term, member, host, app,
+  - No longer made or read (docs/pool.md §12, phase 4's thirteenth batch), left where an older
+    app made them: `state/build/claims/`, `state/build/handoff/<host>/`, `state/build/writer`.
+  - `state/helpers/<host>.json` (a member's status while it doesn't lead, as the heartbeat's; the
+    heartbeat lists those fresh within ten minutes as `helpers`, and the workers the coordinator
+    heard from in two minutes as `workers`).
+- **The pool** (docs/pool.md; always on: `state/pool/enabled`, `state/pool/shadow`,
+  `state/pool/every-step`, `state/pool/by-measure` and `state/pool/budgets` are no longer read, left
+  on the NAS for older apps until none runs):
+  - `state/build/terms/<E>.json`: term E, made once with create-new (term 1 by the first Mac in the
+    pool, or the owner's forced take-over), `{term, member, host, app,
     since (unix seconds), how, from, seq (a handover's: the snapshot of term from to take up)}`;
     `state/build/lead.json`, a copy of the newest a lead took up (a hint, never the truth).
   - `state/build/term/1/first.json` (term 1's first snapshot, made from today's three files) and
@@ -995,38 +993,29 @@ class, id) within a tile. The client sends the id with the clicked point.
     `pending.json`; a later term's lead writes them after each of its saves.
   - `state/journal/<day>/<term>-<n>.json`: a job's entry, written whole by its member, `{member,
     lease: "<term>-<n>", step, handoff (a hand-off, as below), at}`, `<day>` its UTC day by its
-    member's clock; term 0, from before the pool: a helper's outbox under its old lease, the rest
+    member's clock; term 0, from before the pool: a member's outbox under its old lease, the rest
     numbered from 2⁶² up. `state/journal/rejected/<day>/<term>-<n>.why`: a refusal's why.
   - `state/pool/members/<id>.json`: a member's heartbeat, `{member, host, app, beat, leads,
     handing_to: {to, term, offer, since, stage: offered | settling | passed}, ready_for: {term,
-    offer}, stood_down, addresses, members: [ids it knows], shadow, conds: {home, ac, battery,
+    offer}, stood_down, addresses, members: [ids it knows], shadow (an older app's shadow run: such a heartbeat is left out), conds: {home, ac, battery,
     able}}`, what isn't so left out (`conds`: apps from phase 3's controls on; older ones ignore it).
   - `state/pool/auto-handover`: the owner's switch for the proactive offer to be taken by itself
     (`scenic lead auto on|off`; a line saying who turned it on), off while missing.
   - `state/pool/slots`: the switch for a member's part changing in its process (docs/pool.md §7.6):
     present (or `on` in it) on, `off` in it or missing off.
   - `state/pool/memory-guard`: the memory guard's switch (crate::agent::memguard: docs/pool.md
-    §7.2), `off` or `on` in it; missing, on. Read by every agent, the pool on or off.
-  - `state/pool/by-measure`: the switch for the Mac shared by measure and its disk guard
-    (docs/pool.md §7.7): present (or `on` in it) on, `off` in it or missing off. Read by every
-    agent, the pool on or off.
-  - `state/pool/budgets`: the switch for the budgets (docs/pool.md §7.7, crate::budget): every
-    job's connections through its agent's proxy, sandboxed, Wikimedia's metered by the pool's one
-    budget; the answers' lease. Present (or `on` in it) on, `off` in it or missing off. Read by
-    every agent, the pool on or off.
+    §7.2), `off` or `on` in it; missing, on. Read by every agent.
   - `state/pool/resume`: the switch for resuming on a job's Mac and a pass complete by the records
     (docs/pool.md §7.2 Resuming, §7.4; crate::agent::resume). Present (or `on` in it) on, `off` in
-    it or missing off. Read by every agent; it acts only in the pool.
-  - `state/pool/every-step`: the switch for every step to every member (docs/pool.md §7.2, §12
-    phase 4's ninth batch; crate::agent::every). Present (or `on` in it) on, `off` in it or missing
-    off. Read by every agent; it acts only in the pool. On, no agent makes or reads the claims
-    (`state/build/claims/`), and a member's ask carries `disk_mb` (its free disk less the agent's job reserve, `pipeline::agent::room::RESERVE`, 30 GiB, and the owner's
+    it or missing off. Read by every agent.
+  - Every step to every member (docs/pool.md §7.2, §12 phase 4's ninth batch; crate::agent::every):
+    a member's ask carries `disk_mb` (its free disk less the agent's job reserve, `pipeline::agent::room::RESERVE`, 30 GiB, and the owner's
     room target, MB); a
     grant of a map update's step carries `as_of: {began, units}`, which the member's job reads from its
     lease's folder (`map-update.json`, through `SCENIC_UNITS_AS_OF`).
   - `state/pool/brokers`: the switch for tasks brokered by every member (docs/pool.md §8, §12
     phase 4's tenth batch; crate::agent::brokers). Present (or `on` in it) on, `off` in it or
-    missing off. Read by every agent; it acts only in the pool. On, a member's heartbeat carries
+    missing off. Read by every agent. On, a member's heartbeat carries
     `broker: {urls, https, waiting: {<kind>: {n, mb}}, out}` (its coordinator's or broker's
     addresses, its HTTPS one when `tailscale serve` proxies it, its tasks waiting by kind with the
     least memory one takes, and those out); every coordinator answers `POST /work/where`
@@ -1034,7 +1023,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     and the members' pages with CORS.
   - `state/pool/placement`: the switch for placement by how crucial a job is, and work offered
     ahead (docs/pool.md §7.2, §12 phase 4's eleventh batch; crate::agent::placement). Present (or
-    `on` in it) on, `off` in it or missing off. Read by every agent; it acts only in the pool. On,
+    `on` in it) on, `off` in it or missing off. Read by every agent. On,
     every job is given `SCENIC_OFFER_AHEAD=1`, and a task's offer (`POST /task/offer`) from a
     terrain piece's or a tree cover row's job carries `ahead` (how much of the job's own work comes
     before it needs the task, in tasks' worth of this Mac's time at its kind; absent otherwise).
@@ -1072,11 +1061,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     done with none); `/work/done` and `/work/fail` carry `floors` and `disks` (`[[cost key, MB],
     …]`), what the job saw its lease's targets take at least, and `job_disk_mb`, the most it took
     on the disk over its run. The coordinator's state per term carries `job_disks` beside `disks`.
-  - `state/pool-off/<day>-<unix seconds>/`: the pool's files above, moved aside by `scenic pool off`
-    once its agents left it, by their paths.
-  - `state/pool-shadow/`: a shadow run's files, as the pool's above under it (its terms, records,
-    journal, heartbeats, mail); it reads today's three files and `state/build/writer` from the real
-    folder and writes nothing else.
+  - `state/pool-off/<day>-<unix seconds>/` and `state/pool-shadow/`: an older app's (the pool
+    switched off, a shadow run), no longer made or read.
 - **State:** `state/status.json` (the agent's heartbeat, written on a change and at least every two
   minutes: conditions, the job, its parts (`parts`, `part`: the one it's on) and its progress, why
   it's frozen (`paused`) or stopping at its next safe point (`pausing`), what waits (one about a
@@ -1093,9 +1079,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   months (the pageview months' indexes), base, dem, copies and heritage; `room`, the owner's disk
   room target: `{target: {bytes, by, at}, free (bytes), toward (the last freeing toward it, a
   Freed with its `target` and, when it freed toward a held job's room past it, that room as
-  `goal`), short (why the disk is short of it and stays so)}`); with the pool on, `pool`:
+  `goal`), short (why the disk is short of it and stays so)}`); `pool`:
   `{member, role: lead | member, gates: {term, leads, duties, settle, caught_up, fresh, listed_at},
-  members, unacked, restart, lead}`, a helper's status too; `lead`, the pool as the controls show
+  members, unacked, restart, lead}`, a member's status too; `lead`, the pool as the controls show
   it, crate::agent::lead::View: `{at, term, lead: {term, member, host, app, since, how}, leading,
   members: [{member, host, app, beat, me, leads, state, out_of_touch, away, can_lead, why_not,
   conds}], takeover: {refused, force, downgrade}, no_lead, alert (no lead for an hour or more:

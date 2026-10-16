@@ -1,9 +1,10 @@
 # Builds anywhere: one coordinator, its data plane, any number of workers
 
 Status: **partly built** (design of 2026-10-04; what's built is marked so, the rest is planned).
-This extends plan §8 (Building): the build Mac's agent plans, alone writes the build's records, and
-runs a coordinator; every other worker (the M1's agent, any device that opens a page) asks it for
-work that fits, does it, and hands it back.
+This extends plan §8 (Building) and docs/pool.md: the lead's agent (the Mac leading the current
+term) plans, alone merges the build's records, and runs the coordinator; every worker (each Mac's
+agent, the lead's own slots among them, any device that opens a page) asks it for work that fits,
+does it, and hands it back.
 
 ## 1. Goals, and where the time goes
 
@@ -18,7 +19,7 @@ work that fits, does it, and hands it back.
 - **Same bytes everywhere** (plan §8, Determinism): a task gives identical output on every worker,
   at any thread count. Results can then be re-run anywhere and checked by running them twice.
 
-**Measured:** in the build Mac's dense units of 2026-10-04, the Rust steps were 18% of a unit's wall
+**Measured:** in the M4's dense units of 2026-10-04, the Rust steps were 18% of a unit's wall
 time and elevation sampling (then in Python) 39%; the rest was staging from packs, the DEM cache slice
 and copies to and from the NAS. A dense unit's tail after its canopy step (view, buildings, flags)
 is 15–20% of its time. So the data plane came first, and paid off on the Macs before any browser.
@@ -27,21 +28,21 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 **One planner, many workers; pure tasks, impure work at the hub.**
 
-- **The coordinator** (`pipeline::coord`, built) runs in the build Mac's agent: the planner (as
-  before), the one writer of the records (as before), the data plane (§4) and the broker of work
-  (§5), on port 8090.
+- **The coordinator** (`pipeline::coord`, built) runs in the lead's agent: the planner, the one
+  merger of the records (docs/pool.md §7.3), the data plane (§4) and the broker of work (§5), on
+  port 8090.
 - **Two kinds of work,** by what a worker can reach:
   - **Jobs** of the plan (the shared steps': terrain's, slope's and tree cover's pieces, units, candidates
-    and peaks, the 3D buildings' bldprep and bldtiles), for workers that mount the NAS (the M1's
-    agent). A job saves into
-    the store's content-named files as before; its record changes come back as one hand-off.
+    and peaks, the 3D buildings' bldprep and bldtiles), for workers that mount the NAS (every
+    Mac's agent, the lead's slots too). A job saves into the store's content-named files; its
+    record changes come back as one hand-off, through the journal (docs/pool.md §7.3).
   - **Tasks** (`coord::task`), pure work a running job offers to any worker: programs run over a
     folder of files, giving files back. What a task reads of its unit's folder was staged on the
-    build Mac, which serves it; what it reads of the NAS's data and the DEM servers' files it reads
+    Mac whose job offers it, which serves it; what it reads of the NAS's data and the DEM servers' files it reads
     where it lies, through the coordinator (§3, Read where they lie), never writing there.
 - **Impure work stays at the hub:** downloading into the NAS's stores (FABDEM tiles, Meta's canopy
   squares, AWS's terrain), staging from packs, the scenic carry-over between runs, keeping a
-  unit's DEM samples, and every write to the records. (Sampling the DEMs is a task's: the unit's
+  unit's DEM samples (each in the job on a Mac), and every write to the records (the lead's merge). (Sampling the DEMs is a task's: the unit's
   slice of the per-vertex cache goes with it and its samples come back.)
 - **Workers** hold nothing the build depends on: a lost worker costs only its work in hand.
 
@@ -72,11 +73,11 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   (none of the five redirects), keeps a couple of dozen open, and serves 8 MB at most a request; a
   NAS file or folder it can't read now, or read whole, is a 503, never "not there" or fewer files (a
   task fails rather than take another source for one it couldn't read). A native worker reads
-  the NAS at its own mount and the servers as the build Mac does, and, like a browser, only reads
+  the NAS at its own mount and the servers as a job does, and, like a browser, only reads
   the NAS's stores (`Tools::stores_read_only`, `SCENIC_STORES_READ_ONLY`): a FABDEM tile the store
   hasn't whole is read in place inside Bristol's zip (`dem::fabdem::stored`, the same values the
   store's copy has), a canopy square is read as it is (one not whole fails the task; nothing there
-  is downloaded, touched or removed: the build Mac keeps the store).
+  is downloaded, touched or removed: the jobs keep the store).
 - **What comes back:** the files the steps changed; one written back as it was sent isn't sent (a
   hash of each input; the unit's folder has it). Checks compare them whole, what says how long a
   run took aside (`dem-stats.json`'s `seconds`).
@@ -87,9 +88,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **The unit job** (`pipeline::offload`) clones those files into the task's folder (copy-on-write,
   instant; the roadside buildings' links to the NAS stay links) and offers the task when a worker
   that takes tails is around and fewer than such are out (at most three: each holds a unit's folder
-  on the build Mac's disk), then prepares the next unit. Tails back from workers are committed
+  on its job's Mac's disk), then prepares the next unit. Tails back from workers are committed
   between units.
-- **Nothing waits on a worker that's slower than the build Mac:** the coordinator measures each
+- **Nothing waits on a worker that's slower than the job's own Mac:** the coordinator measures each
   worker's pace at each kind of task, its time from lease to done over the job's own run of the same
   task (the job's run when it made one, else what it takes it to be), weighed in half and half as
   they come (`Tasks::note_pace`; kept while the coordinator runs). When the job needs a task (at the
@@ -97,21 +98,21 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   - **No one took it:** it waits up to 30 s (`offload::LEASE_WAIT`) only while a worker that could
     take it asks for work (around, not found wrong, doing its kind, sparing its memory, not one it
     failed on, asked in the last 30 s, as a page with a slot idle does every 15–20 s: the task's
-    `takers` in `/task/<id>`, each with its pace) and that worker's pace beats the build Mac's with
+    `takers` in `/task/<id>`, each with its pace) and that worker's pace beats this Mac's with
     a quarter's margin (`task::beats`), or isn't measured yet and wasn't waited for in the last hour
-    (`EXPLORE_EVERY`, `/task/<id>/explore`). Then it's taken back and run on the build Mac.
+    (`EXPLORE_EVERY`, `/task/<id>/explore`). Then it's taken back and run in the job.
   - **A worker holds it:** waited on only while that worker's pace says it'll be back, with the
-    margin, before the build Mac's own run of it, begun when the waiting began, would end
+    margin, before the job's own run of it, begun when the waiting began, would end
     (`offload::Patience`; that run is the tail's stages as this Mac has timed them,
     `unit-stages.json`, else 120 s). A worker not measured is raced at once. Past that it's raced
-    there (the build Mac's result counts; a worker's that comes in too is compared: each file it
+    there (the job's result counts; a worker's that comes in too is compared: each file it
     sent with this Mac's, and each this Mac's run changed that it didn't send with the copy it was
     sent).
   - **Measured by finishing:** a task the job ran itself while a worker not measured holds it is
     kept for that worker to finish (`Tasks::measure`: its files moved into the coordinator's folder,
     no longer the job's, so the job may end), its result not used, its time its pace.
   - So a slow worker costs a unit nothing, and an unmeasured one 30 s once an hour; a fast one
-    frees the build Mac's cores for the job beside. While the build pauses, nothing is waited on.
+    frees the Mac's cores for the job beside. While the build pauses, nothing is waited on.
     With no worker around, a unit builds as before.
 - **Source versions:** a task names the programs' build (the job's binary); a web worker fetches
   that build's WebAssembly programs from the coordinator (`/work/prog/<name>.wasm`, shipped in the
@@ -119,7 +120,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **The 3D buildings' areas** (kind `bldtile`, docs/buildings3d.md §3.6, `pipeline::bld::task`): a
   `bldtiles` job offers some of a z6 tile's z8 areas the same way, while workers that take them are
   around (one per worker, three at most out at once, from the far end of the tile's list; topped up
-  before each area it makes itself). A task's files are cut from the work files on the build Mac
+  before each area it makes itself). A task's files are cut from the work files on the job's Mac
   (only the blocks the area reads, as stored, and the coverage's shapes that can answer there:
   docs/formats.md); its one run is the program `bldtile` over `{dir}` and the area; it writes the
   area's tiles (`area.tiles`) and summary (`area.json`). Its spec has a tail's shape (`unit` the area
@@ -155,10 +156,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   rows of one block, a dense forest's of four across a canopy square's edge in longitude, the
   tropics' of three, and four across the edges of four squares): natively on one thread and on all,
   each block alone, as WebAssembly under Node's WASI and under the page's own runtime, every block
-  the same bytes, and the same tiles and values as the NAS's packs and mid. A helper takes them too
+  the same bytes, and the same tiles and values as the NAS's packs and mid. A member's agent takes them too
   (1 GB of disk: it reads the squares where they lie). They pay off only for a worker measured
-  faster than the build Mac at them: a page on the M1 took 20 s for a row the M1's own run made in
-  about as long (its pace 1.07), and the build Mac makes a row on its threads in about 3 s.
+  faster than the job's Mac at them: a page on the M1 took 20 s for a row the M1's own run made in
+  about as long (its pace 1.07), and the M4 makes a row on its threads in about 3 s.
 - **Terrain's z8 subtrees** (kind `terrainsub`, docs/plan.md §6 Terrain, `pipeline::terrain_task`):
   a terrain piece's run (`scenic-build terrain` on z6 tiles; it inherits the agent's coordinator)
   offers some of its z8 subtrees the same way. A piece is 16 subtrees, each a z8 tile's z9–12 tiles
@@ -177,8 +178,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   read (a subtree touches up to 16 cells, 15 MB each whole). Nothing is read through `/net`. Its
   one run is `terrainsub --in {dir}/in.sect --out {dir}`, writing `hi.sect` (the group's tiles) and
   `mid.sect` (its mid's part). Its memory: its file twice and 1.3 MB a tile of its largest level,
-  120 MB more, until a worker measures it (`terrainsub 8/x/y`, its first subtree). A helper takes
-  them too (1 GB of disk).
+  120 MB more, until a worker measures it (`terrainsub 8/x/y`, its first subtree). A member's agent
+  takes them too (1 GB of disk).
   - **Measured** (2026-10-09, the M4, the NAS's data): a whole piece is no task (6/5/17, Fairbanks:
     5,440 tiles, 29 s, 125 CPU-s, 5.9 GB at its peak); a subtree is 4.5 CPU-s (0.55 s on the M4's
     14 threads), 330 MB at its peak natively on one thread, as WebAssembly 6.4 s and 323 MB (a
@@ -192,8 +193,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     worker (as `scenic run-task` runs one), and again by a page (headless Chrome against a scratch
     coordinator), each the hi pack and the mid the manifest has (`terrain_task` tests,
     `live_pieces_with_a_worker`).
-  - **They pay off only for a worker measured faster than the build Mac at them,** and none is: the
-    build Mac makes a subtree in about half a second on its threads, a page in 6–16 s. So with
+  - **They pay off only for a worker measured faster than the job's Mac at them,** and none is: the
+    M4 makes a subtree in about half a second on its threads, a page in 6–16 s. So with
     placement off a worker is given one, measured, and then none (the coordinator gives no worker
     a kind it's measured slower at). With placement on (`state/pool/placement`, docs/pool.md §12
     batch 11) a job offers its next piece's groups as a piece begins (`terrain_task::offer_ahead`),
@@ -210,10 +211,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 4. Data: the coordinator's plane
 
-- **Built:** the packs staging reads are copied from the NAS once to the build Mac's SSD (`blobs/`,
+- **Built:** the packs staging reads are copied from the NAS once to the job's Mac's SSD (`blobs/`,
   content-named, so a copy is always right) and shared by its units; the next unit's piece, packs
   and canopy squares are copied ahead while the current one builds; a task's files are served to
-  its worker from the build Mac's SSD, so another worker costs the NAS nothing; one disk budget for
+  its worker from that Mac's SSD, so another worker costs the NAS nothing; one disk budget for
   the caches (plan §8, Room on the disk).
 - **Planned:**
   - **Ranges:** the exact byte ranges a task reads (DEM tiles, canopy strips, pack entries), so only
@@ -245,16 +246,17 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **Leases** (`coord::lease`) are timed on the coordinator's monotonic clock (clocks between devices
   don't matter), ten minutes, renewed by a beat each minute while the work goes on. A job paused
   for its conditions doesn't beat, so its work may go to another; while the build is paused, every
-  lease is held, beats or not, and each has a whole ten minutes again when it goes on. The build
-  Mac's own jobs hold leases too, and one that lapsed is taken again when no one took its work
+  lease is held, beats or not, and each has a whole ten minutes again when it goes on. The lead's
+  own jobs hold leases too, and one that lapsed is taken again when no one took its work
   meanwhile. A lapsed lease's work is offered again.
 - **Handing back:** a job's saves (merged in order), done record and what its units cost go back as
-  one hand-off, kept in an outbox folder per lease on the worker until taken (across restarts),
-  journaled whole on the build Mac and merged with the records all at once. A hand-off for a lease
+  one hand-off, kept in an outbox folder per lease on the worker until taken (across restarts), written whole
+  to the journal on the NAS and merged with the records all at once by the lead (docs/pool.md §7.3). A hand-off for a lease
   that's gone is refused (410) and dropped: its work was offered again, and a late save could put
   an older build in the manifest. One that names another unit's files is refused.
-- **Restarts:** the token, the jobs' leases and the units' costs are kept on the build Mac's disk,
-  so its agent restarting (a new app) is a pause to workers, nothing more. A worker reads the
+- **Restarts:** the token, the jobs' leases and the units' costs are kept on the NAS per term
+  (`state/coord/`, docs/pool.md §7.5), so the lead's agent restarting (a new app), or the lead
+  moving to another Mac, is a pause to workers, nothing more. A worker reads the
   contact (`state/coordinator.json`) again whenever it can't reach the coordinator or its token is
   refused.
 - **Failures:** finished units aren't offered again before the plan shows them; a worker's failed
@@ -262,11 +264,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   that spare more; one failed otherwise, or held by a worker that went quiet, isn't offered to that
   worker again, and after two the job runs it.
 - **Verification, ramped:** a worker's first three results, then one in eight, are checked against
-  the build Mac's own run of the same steps; the steps are deterministic, so any difference is the
+  a run of the same steps by the job that offered them; the steps are deterministic, so any difference is the
   worker's fault, and it gets no more work.
-- **Regression accepted:** the M1 builds only while the build Mac's agent runs (the claim files let
-  it go on alone): one protocol instead of two. The build Mac still claims its own jobs' targets,
-  and merges the NAS's hand-off files, for a helper on an older app.
+- **One protocol:** a member builds only while a lead's coordinator runs (a lead gone is taken
+  over: docs/pool.md §6.5); no claims, no hand-off folders on the NAS.
 - **Planned:** a NAS outage extending leases rather than letting them lapse; a task a slow worker
   holds given to an idle one too when the queue runs dry.
 
@@ -296,11 +297,11 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **Leaving the page, and coming back:** behind another app or with the screen off, iOS freezes
   the page and its tasks where they are; back within the lease's ten minutes, they go on where they
   were (the next heartbeat renews the lease), else the lease has lapsed, the task's gone to another
-  worker or the build Mac, and the page drops it ("taken back") and asks for more. Reloaded or
+  worker or back to its job, and the page drops it ("taken back") and asks for more. Reloaded or
   closed, the page gives its tasks back as it goes (`pagehide`: offered again at once, to it too,
   not held against it) and marks its note gone, so the next page gives them back again should those
   not have got through; brought back from the browser's back-forward cache, its slots start
-  afresh. The worker page shows a task given back as such, not as a failure. The build Mac never
+  afresh. The worker page shows a task given back as such, not as a failure. No job ever
   waits on a page: a tail it needs is run there if a worker still holds it.
 - **Planned:** cutting a task to the worker (smaller sample ranges for smaller ceilings).
 
@@ -337,28 +338,28 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     matter (areas built, regions on the map, as drawn now and as they were, terrain and slope, tree
     cover, map tiles, the last map update (the catalog served) and the next, the
     machines).
-  - **The machines,** a card each (the build Mac, each helper, the pages together; a helper that's
+  - **The machines,** a card each (the lead, each member, the pages together; a member that's
     stopped reporting, with when it was last heard from): its job, its parts, its progress with its
     time left, its threads and memory, whether it's stuck; its next jobs (the forecast's); why it
-    waits; the build Mac's second job beside it (docs/plan.md §8, Two jobs at once), or why it has
-    none, with its next jobs; for a helper, how the work offered fits it (taken by another, done, kept from it after it
+    waits; the lead's second job beside it (docs/plan.md §8, Two jobs at once), or why it has
+    none, with its next jobs; for a member, how the work offered fits it (taken by another, done, kept from it after it
     failed it, too large for its memory); its power, the NAS's answer (and room), its disk and
     caches, memory, load, whether it's in use, its app and pace (measured, or a guess); its last day
-    by the hour. The helpers' statuses are read each loop.
-  - **The pool** (with it on: `web/work/pool.js`, docs/pool.md §11): who leads and since when; a
+    by the hour. The members' statuses are read each loop.
+  - **The pool** (`web/work/pool.js`, docs/pool.md §11): who leads and since when; a
     card per Mac in the pool, with its state (home on power, on battery, away, out of touch, app
     too old), "Make lead" (confirming; greyed with why when the lead can't be handed to it), on the
     lead's a handover's progress as it happens; "Take it" when there's no lead in touch; the
     proactive offer; the last ask and the last change of lead. From the serving Mac's agent's
     status (`/work/swarm`'s `agent.pool.lead`).
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
-    a colour, each map update marked: pointed at, the regions it adds; the build Mac's
-    second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
+    a colour, each map update marked: pointed at, the regions it adds; the lead's
+    second job's lane under its own; the pages' lane is the area runs, every slot's,
     whose last steps it hands them as it builds them, drawn while a page around is measured faster
-    than the build Mac at tails (`/work/swarm`'s workers' `paces`, by kind) and spares what a tail
+    than the Macs at tails (`/work/swarm`'s workers' `paces`, by kind) and spares what a tail
     takes typically (the last tails offered, `task_mb`, by kind), and its tree cover pieces, whose
     rows of blocks it hands them, while one is likewise faster at `treeblock`; with a worker faster
-    at tails around, the forecast gives each of the build Mac's units the 30 s it gives one to take
+    at tails around, the forecast gives each unit the 30 s it gives one to take
     its tail; a piece gets nothing more: its run makes its other blocks while it waits); the map updates
     (the last, the next with its regions, the map updates to come); the steps (done of all, the work
     left, done when, why one waits); the regions, in the order they reach the map with the map updates
@@ -372,24 +373,24 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     selected stays until they're done, the feed keeps its place, the region search redraws its rows
     alone.
   - **The details,** folded: the leases (since their last beat, until they lapse), what's waiting
-    and why, the build Mac's last jobs, recipes that don't read, its job's last lines, the workers.
-  - It reads `/work/swarm` every 10 s (the build Mac's heartbeat with its checklist, forecast,
-    resources and last catalog, its helpers', every worker with how the work offered fits it, every
+    and why, the lead's last jobs, recipes that don't read, its job's last lines, the workers.
+  - It reads `/work/swarm` every 10 s (the lead's heartbeat with its checklist, forecast,
+    resources and last catalog, its members', every worker with how the work offered fits it, every
     lease, the tasks by state, the history's last number and the last day by the hour) and
     `/work/history` (the events after the last it has), one read at a time. A page says, in its
     asks, whether it's in front, and in its beats how far its task is.
 - **HTTPS:** the screen wake lock, the page as an app and OPFS (below) need a secure context. The
   coordinator is reached over HTTPS through `tailscale serve` (the owner turned it on, 2026-10-05:
-  the tailnet has a certificate for the build Mac's name), and the page's address (the status
+  the tailnet has a certificate for each Mac's name; docs/pool.md §6.8), and the page's address (the status
   bar's, `scenic status`'s) is HTTPS while it proxies the coordinator; a job's requests can't come
-  through it (they come from the build Mac itself, through no
+  through it (they come from the lead itself, through no
   proxy). Plain HTTP on the tailnet still works (WireGuard
   encrypts it), the device then kept awake by hand.
 - **The page as an app** (a PWA: `manifest.webmanifest`, `sw.js`, `icons/`, served without the
   token like the page): installable (the browser's own Install, or on an iPhone or iPad Share, Add
   to Home Screen, which the page says how to, an iPad's too), opening full screen straight to work.
   - Its service worker keeps the page's files (the coordinator's list, in it) as it installs. It
-    takes them from the build Mac when it answers well within 4 s (a newly published app's page at
+    takes them from the Mac serving it when it answers well within 4 s (a newly published app's page at
     once), else from what it kept. A Mac that doesn't (asleep, away, or its agent restarting:
     `tailscale serve` answers 502) is taken for away for a minute.
   - It keeps the programs' WebAssembly by version (their addresses' `?v=`): opened again, the page
@@ -400,8 +401,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     service worker, which takes over, and the page reloads into it once no task is running (paused,
     it stays paused). The page asks for one whenever it comes back to the front and every half hour.
   - An installed app on an iPhone keeps its own storage, apart from Safari's: when it's to help (or
-    pause the build), the page asks the build Mac there too, and keeps its own key once accepted;
-    forgotten on the build Mac, it stops helping and may ask again.
+    pause the build), the page asks the lead there too, and keeps its own key once accepted;
+    forgotten by the lead, it stops helping and may ask again.
   - It still runs only while it's open on screen: neither iOS nor Android lets a web app work in
     the background.
 - **Planned:** inputs and outputs in OPFS, read through a `FileSystemSyncAccessHandle`, so a worker
@@ -409,16 +410,17 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 8. Native workers (built)
 
-- **The M1** asks for the shared steps' jobs (terrain's, slope's and tree cover's pieces, units,
-  candidates, peaks, the 3D buildings' bldprep and bldtiles: docs/plan.md §8, Two Macs) and tasks
-  (tails, the 3D buildings' areas) over HTTP. A job runs the build Mac's own command for its step,
+- **Every Mac's agent** (the lead's slots too: docs/pool.md §7.6) asks for the plan's jobs (terrain's, slope's and tree cover's pieces, units,
+  candidates, peaks, the 3D buildings' bldprep and bldtiles, the map tiles: every step but the
+  lead's own, docs/pool.md §7.2) and tasks
+  (tails, the 3D buildings' areas) over HTTP. A job runs its step's one command, whatever the Mac,
   its saves handed back through the coordinator; a task runs as `scenic run-task` (its files fetched
   from the coordinator, its steps run natively, the files they wrote sent back).
-- **The build Mac's second job** (docs/plan.md §8, Two jobs at once) is a worker of its own in the
+- **A Mac's second job** (docs/plan.md §8, Two jobs at once) is a worker of its own in the
   history and the forecast ("<host> (second job)"): beside its first job, the network-bound steps
   first, then the candidates and peaks, then units and slope, then the 3D buildings; its units
   offer their tails as the first job's do.
-- **Planned:** the build Mac's own work as tasks too.
+- **Planned:** the jobs' own work as tasks too.
 
 ## 9. Security
 
@@ -433,12 +435,12 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     `application/json` alone, which a page elsewhere can't send without asking first (nothing here
     answers that).
   - Keys, compared in constant time: the Macs' agents carry the workers' token (128 random bits,
-    kept on the build Mac and in the contact on the NAS); a wrong one is refused (401), so an agent
+    kept in the term's state and in the contact on the NAS); a wrong one is refused (401), so an agent
     with an old one reads the new one. A page carries none: it may take a page's tasks (its asks,
     beats, hand-backs, failures and its tasks' files, under "page <its name>", never an agent's; what
-    its tasks took no more than a page's 4 GB) and pause the build (made now by the build Mac's
+    its tasks took no more than a page's 4 GB) and pause the build (made now by the lead's
     clock, said to be the build page's), nothing else.
-  - From the build Mac itself only, through no proxy (`tailscale serve` hands the tailnet's
+  - From the lead itself only, through no proxy (`tailscale serve` hands the tailnet's
     requests over from loopback, and says so: `crate::net::own`): a running job's (offering tasks,
     with the agent's own token, never published).
   - A worker is served only the files of the task it holds, and uploads only into that task's
@@ -448,10 +450,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     holds a task of the coordinator's runtime, not a thread; a hand-off may change only the files a
     unit job saves for its lease's units, each to a content name of that file; lease ids are never
     given twice, across restarts too; an agent's ask to pause can't say it was made more than a
-    minute ahead of the build Mac's clock; what a worker says it's doing is kept to 200
+    minute ahead of the lead's clock; what a worker says it's doing is kept to 200
     characters, and a worker not heard from for a day, holding nothing, is dropped.
 - **Known limits:** any device on the LAN or the tailnet can take a page's tasks, hand back wrong
-  outputs for them (a worker's first results are checked against the build Mac's, then one in
+  outputs for them (a worker's first results are checked against a job's own run, then one in
   eight: §7), or pause the build: no keys, the owner's choice (2026-10-08). A page's uploads are
   bounded by the file (8 GB), not by the task.
 - Licensed data on the owner's own devices isn't redistribution (plan §3, sources' terms).
@@ -466,7 +468,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   (WebGPU too), but the view step is ~0.4% of a unit's time and nothing else is GPU-bound: not
   pursued.
 - **End to end (2026-10-04):** the coordinator offered 6/20/22's view, buildings and flags to the
-  page in the app's browser, which ran them in 16 s at 1,603 MB; the build Mac's own run of them gave
+  page in the app's browser, which ran them in 16 s at 1,603 MB; the M4's own run of them gave
   the same bytes.
 - **The canopy step in bands (2026-10-05):** it reads only the strips and columns each band of 1,024
   rows needs: 3.4 GB → 0.55 GB natively and 3.5 → 0.55 GB in WebAssembly on 6/20/22, the same bytes
@@ -485,8 +487,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 1. **Measure and check:** a unit's wall time part by part; the determinism check. *Done.*
 2. **The data plane under today's jobs:** the SSD copies, prefetching the next unit. *Done;* journaled
    group commits, dataset indexes, latency pacing *planned.*
-3. **The M1 through HTTP leases.** *Done;* claims and NAS hand-off files kept one release for a
-   helper on an older app, then retired.
+3. **The M1 through HTTP leases.** *Done;* the claims and the NAS's hand-off folders retired
+   (docs/pool.md §12, phase 4's thirteenth batch).
 4. **Units fan out:** a unit's last steps to any worker; the canopy step in bands. *Done;* sample
    ranges, ranged reads *planned.*
 5. **Browsers:** the page, imported-memory ceilings, ramped verification. *Done;* HTTPS through
@@ -494,4 +496,4 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 6. **The Python steps in Rust:** *done* (the same bytes; the units run them; tree cover's, the same
    pixels); then more kinds of task: the 3D buildings' z8 areas (`bldtile`) *done* (B3), tree
    cover's rows of blocks (`treeblock`) *done*; others,
-   and the build Mac's own work as tasks, *planned.*
+   and the jobs' own work as tasks, *planned.*

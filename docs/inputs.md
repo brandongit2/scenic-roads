@@ -1821,7 +1821,7 @@ Each with its proof (the step's outputs the same) and the code's constant delete
 
 ## 7. The guards
 
-Two guards, both run before every publish (`tools/app/publish.sh:36–38` runs the pipeline's whole-crate
+Two guards, both run before every publish (`tools/app/publish.sh` runs the pipeline's whole-crate
 checks with `--test`; a failure stops publishing), built on the pattern of
 `crates/pipeline/tests/cache_accessor.rs`: one accessor that the code must go through, a test that
 finds every way around it, an exemption list (file, function, reason) whose every entry must name a

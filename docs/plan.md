@@ -35,7 +35,7 @@ nothing built depends on how the coverage is divided into regions.
   2026-10-08): an island or lake smaller than a pixel is as faint as its share of the pixel, the
   same at every zoom, never exaggerated nor dropped, and keeps the coastal shading full detail would
   give it (§6, Water).
-- `scenic status` shows what the build Mac is doing, and so does the menu bar item on both Macs
+- `scenic status` shows what the pool is doing, and so does the menu bar item on both Macs
   (Scenic.app, `tools/status`). It shows the state as an icon: building, paused, waiting, nothing to
   build, a problem, or out of touch. A click opens the build page in a popover (the jobs, the
   machines, the schedule, every step to the end); a right-click opens its menu, which pauses and
@@ -72,7 +72,7 @@ nothing built depends on how the coverage is divided into regions.
       so with the numbers.
     - The Mac's own line: what's downloaded, the free space and the reserve; the copy under way,
       and when the build runs, that downloads keep to 20 MB/s.
-- Coverage is drawn on the map. The status bar shows the build Mac's state and offers to reload when
+- Coverage is drawn on the map. The status bar shows the build's state and offers to reload when
   new data or a new app is in.
 - New areas appear when the build publishes its catalog: a map update goes out as regions
   are done, about every hour while the build goes on, or (switched on: §8, Faster publishing) a few
@@ -98,18 +98,18 @@ nothing built depends on how the coverage is divided into regions.
   map is idle.
 - Backups.
 
-Publishing the app is a command I run (`tools/app/publish.sh`). Commands are safe to re-run, and
-messages say what happened and what to do, in plain words.
+Publishing the app is a command I run on either Mac (`tools/app/publish.sh`, §8, App publishing).
+Commands are safe to re-run, and messages say what happened and what to do, in plain words.
 
 ## 2. How the work is divided
 
 **Units.** A unit is a z6 tile: about 600 km across at the equator, 300 km at 60°.
 - Units are fixed by the OSM pass's cut. A split into z7 or z8 tiles waits until a unit outgrows
-  the build Mac (§11).
+  the M4 (§11).
 - Packs for serving are per z6 tile (hi), per z3 tile (lo) and one root (z0–2).
 
-**Where it runs.** All work happens on the build Mac (the M4), except the planet's download, which
-the NAS does itself. The jobs (§8 has their order and keys):
+**Where it runs.** All work happens on the pool's Macs (the M4 and the M1: §8, The pool), except
+the planet's download, which the NAS does itself. The jobs (§8 has their order and keys):
 1. **The OSM pass**, when the NAS holds a newer planet. It makes:
    - the filtered planet;
    - the worldwide sets (rail, ferries, designated areas, places, outlines, labels, summits, hiking
@@ -208,11 +208,12 @@ nas/           fetch-planet.sh, which the NAS runs itself (from tools/nas/; publ
   (the regions' outlines, simplified) and the credits of the sources its data comes from.
 - **The build manifest** (`state/build/manifest.json`) lists everything built: sources, work and
   outputs.
-- **Job keys** (`state/build/jobs.json`) say what each output was made from;
-  `state/build/jobs.pre-rekey.json` keeps them as they were before the first re-keying (§8, A new
-  key scheme).
+- **Job keys** (`state/build/jobs.json`) say what each output was made from.
+- These two and the unverified uploads (`state/build/pending.json`) are written by the lead from
+  its term's records (`state/build/term/<E>/records.json`), the truth, for their readers, older
+  apps among them (§8, The pool).
 
-**Deletions go through SMB.** They're permanent on this share. The build Mac can't use SSH
+**Deletions go through SMB.** They're permanent on this share. The Macs can't use SSH
 unattended, because 1Password asks to approve every new session.
 
 **Copies carry the bytes and permissions, nothing else** (`store::sys::copy_data`; `cp -X` in
@@ -241,13 +242,13 @@ program wrote, copied into the backups).
 - **Base packs, hidata, markdata and ovdata** are sectioned files (named arrays): mapped when local,
   read from the NAS in pages (§4).
 
-**Writers.** The build Mac's agent writes the build's records (the manifest, its unverified
-uploads, the job keys): one agent per Mac (a lock), and build steps merge their manifest changes
-under this Mac's lock. The M1's helper uploads its jobs' files (content-named) and hands its
-record changes back through the build Mac's coordinator, which journals them for its agent to merge
-(§8, Two Macs). The exceptions:
+**Writers.** The lead (the Mac leading the pool's current term: §8, The pool) writes the build's
+records (the manifest, its unverified uploads, the job keys): one agent per Mac (a lock). Every
+job, the lead's own too, uploads its files (content-named) and hands its record changes off to
+the journal on the NAS, which the lead merges into the term's records; no step writes the records
+directly once a term exists (`crate::out::check_writer`). The exceptions:
 - The user's folders (the drop boxes, the regions' among them: the app never writes them).
-- **The app:** `tools/app/publish.sh`, run by hand.
+- **The app:** `tools/app/publish.sh`, run by hand on either Mac.
 - **The planet:** the NAS's own fetch.
 
 **GC** runs daily, in the agent.
@@ -268,20 +269,23 @@ record changes back through the build Mac's coordinator, which journals them for
 **Backups.**
 - Daily, the agent copies the user's folders, `inputs/` and the input check's acceptances
   (`state/inputs/accepted/`) into a content-addressed store under `state/backups/`. It writes a dated list on days something changed and keeps lists for 30 days.
-  The store is mirrored to the build Mac, and `todo/` isn't backed up.
+  The store is mirrored to the M4, and `todo/` isn't backed up.
 - Everything else can be regenerated.
 - A separate share with DSM snapshots would be cleaner. That needs the user in DSM, so it's offered,
   not assumed.
 
 ## 4. Macs
 
-**Build Mac (M4, 48 GB).**
-- **The agent:** `scenic agent` runs under the launcher, as a LaunchAgent with `ProcessType
-  Interactive`. Without it, launchd throttles the agent.
+**Each Mac's agent.** Every Mac runs the agent (`scenic agent`, set up by `tools/app/install.sh`;
+its old `--agent` and `--helper` are accepted and ignored, as is `scenic agent --helper`), a member
+of the pool (§8, The pool): it leads the build while its Mac holds the term, and otherwise takes
+work from the lead's coordinator. Below, the M4 (48 GB) unless said.
+- **The agent** runs under the launcher, as a LaunchAgent with `ProcessType Interactive`. Without
+  it, launchd throttles the agent.
 - **Two jobs at once at most:** the plan's first, and a second beside it when the two fit (§8, Two
   jobs at once). Each job is a child process group at utility priority (`taskpolicy -c utility`;
   `-b` would confine it to the efficiency cores, ~17× slower).
-  - The first job's Rust steps take all the cores (`RAYON_NUM_THREADS`; a helper's, all but two),
+  - The first job's Rust steps take all the cores (`RAYON_NUM_THREADS`; on the M1, all but two),
     whoever is at the Mac (the owner's choice: it may be busier while they use it); the second's,
     half.
   - osmium, Planetiler and the Python steps take what they take.
@@ -309,7 +313,7 @@ record changes back through the build Mac's coordinator, which journals them for
   languages, and one added later streams the month again). A Mac's copy is a cache filled from the
   NAS; one the NAS lacks (an upload that failed) is uploaded the next time it's looked up, and a
   damaged one is copied again, or the month streamed again.
-  - **AWS's raw terrain tiles** are kept in the build Mac's cache as they come, then packed onto
+  - **AWS's raw terrain tiles** are kept in the fetching Mac's cache as they come, then packed onto
     the NAS (`pipeline::rawpack`, `sources/aws-terrarium/packs/`, listed in its `index.json`) in
     archives grouped as the terrain's packs are: z9–12 by z6 tile, z3–8 by z3 tile, z0–2
     together, so a job copies the archives of what it makes and no more. A job's new tiles go up
@@ -318,15 +322,15 @@ record changes back through the build Mac's coordinator, which journals them for
     a second and stall it; nothing there is written again for them. An area's archives are kept
     each more than twice the size of all those after it (from the first that isn't, they're merged
     into one), so an area has a dozen at most and a tile is rewritten a dozen times at most. On the
-    NAS the build Mac's archives are named by the index or listed in its `gone`, with when: listed
+    NAS the archives are named by the index or listed in its `gone`, with when: listed
     before it's put there (taken off once named, and named only once it's there whole) and when the
     index stops naming it, and deleted a day later, so a job that read the index before stays right
     and one cut short leaves nothing behind (its temporary file swept a day later too); one the
-    index names that's gone from the NAS is passed over and taken out of it. Only the build Mac
-    changes the index, under its build lock. A helper's jobs pack too (every loose tile in its
-    cache, whichever job fetched it): they put their archives there unlisted and hand them off, and
-    the build Mac names them as it merges the hand-off; one still unnamed a day later (its hand-off
-    never came) is listed to go then. (Never while the index names nothing: an index read as none
+    index names that's gone from the NAS is passed over and taken out of it. Only the lead
+    changes the index, under its build lock. Every job packs (every loose tile in its Mac's cache,
+    whichever job fetched it): it puts its archives there unlisted and hands them off, and the lead
+    names them as it merges the hand-off; one still unnamed a day later (its hand-off never came)
+    is listed to go then. (Never while the index names nothing: an index read as none
     would list every archive.) A tile is read from its area's archives: an area's
     first 16 by range from the NAS's (a job that wants a tile or two of an area, as peaks do,
     copies nothing), then each copied to the Mac whole once, three at a time, and checked against
@@ -356,7 +360,7 @@ record changes back through the build Mac's coordinator, which journals them for
     but never over another writer's archive (the heritage-sites and heritage jobs share one; once
     the lead can move, another Mac may run a step meanwhile): merged where it can be, else left,
     for the next start to take. An archive that doesn't read whole is moved aside
-    (`<archive>.bad-<unix seconds>`), not written over. The build Mac's agent, as it starts,
+    (`<archive>.bad-<unix seconds>`), not written over. The lead's agent, as it starts,
     sends the pass's answers its cache has where the NAS lacks their archive. A new pass asks
     again (the items' everything, the heritage chain what the snapshot lacks).
   - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
@@ -378,10 +382,10 @@ record changes back through the build Mac's coordinator, which journals them for
   - **The cheap ones**, emptied when a job starts with too little free (the canopy files idle an
     hour first, then least recently used first), trimmed once the build is done, and cleared:
     - Meta's canopy 10° squares (`chm10/`), filled from `sources/canopy/` (one the NAS lacks is
-      copied there before it goes); the build Mac's trim keeps them: every pass's areas read them
+      copied there before it goes); the M4's trim keeps them: every pass's areas read them
       again, and they never change;
     - AWS's raw terrain tiles (`aws-terrarium/`): as fetched, until packed onto the NAS (packed
-      there before they go; a helper's stay until a job of its own packs them), and copies of its
+      there before they go; they stay until a job of that Mac's own packs them), and copies of its
       archives (`packs/`), filled from the NAS's archives;
     - copies of the records' files staging reads (`blobs/`), filled from the store (a terrain hi
       pack only for the unit whose z6 tile it is, or one holding half of the unit's box: a
@@ -395,7 +399,7 @@ record changes back through the build Mac's coordinator, which journals them for
       heritage job reads them.
   - **Cleared too** (by the owner's ask alone):
     - the pack cache (`base/`): base packs for pack(T) and lo not in its mirror, pruned every run
-      and cleared when an OSM pass starts; the next map update copies them again (66 GB on the build Mac,
+      and cleared when an OSM pass starts; the next map update copies them again (66 GB on the M4,
       2026-10-06), from the mirror where it has them, else the NAS. A unit job on a Mac that has
       this cache puts its own base pack and road values there as it uploads them, so that Mac's
       pack jobs don't copy back what it just wrote;
@@ -410,7 +414,7 @@ record changes back through the build Mac's coordinator, which journals them for
     - local copies of the NAS's files the summits and peaks jobs read (the z8 terrain, the
       summits: `sources-*/`, `work-*/`), copied again when they next run;
     - the heritage jobs' clip of the pass's filtered planet to the coverage
-      (`heritage-merged-<date>-<cover>.osm.pbf`, 22 GB on the build Mac, 2026-10-06), made again
+      (`heritage-merged-<date>-<cover>.osm.pbf`, 22 GB on the M4, 2026-10-06), made again
       from the NAS's filtered planet (an hour or so of osmium) when the heritage chain next runs for
       that pass and coverage.
   - Nothing is deleted through a link, nor anything in the NAS's project folder (§8, Room on the
@@ -442,15 +446,15 @@ record changes back through the build Mac's coordinator, which journals them for
   them (both building the unit) aren't used.
 - **A unit's build folders** go once it's built (a failed unit's, when the next unit job starts).
 
-**The M1 helps (16 GB).** Its agent runs as a helper (`scenic agent --helper`, under the launcher
-like the build Mac's; `tools/app/install.sh --helper` sets it up).
-- **What it builds:** what the build Mac's coordinator gives it (§8, Two Macs): the shared steps'
-  jobs that fit the memory it spares (6 GB of its 16: three eighths) and its disk, from the far end of the
+**The M1 (16 GB).** Its agent runs under the launcher as the M4's does; it leads when it holds the
+term (§8, The pool), and as a member it builds:
+- **What:** what the lead's coordinator gives it (§8, The pool): any step's jobs but the lead's own
+  duties that fit the memory it spares (6 GB of its 16: three eighths) and its disk, from the far end of the
   list (terrain from the near end), and when none does, units' tails (tasks, `docs/workers.md`);
-  nothing while it runs another app than the build Mac's. While its owner is away (on mains power,
+  nothing while it runs another app than the lead's. While its owner is away (on mains power,
   not used for a quarter of an hour) it spares five eighths (10 GB) for a job that doesn't fit its
-  usual memory, if the job's targets' last runs say it ends within twenty minutes (twice the build
-  Mac's time where only the build Mac ran it; never one not yet measured), once no step's work fits
+  usual memory, if the job's targets' last runs say it ends within twenty minutes (twice the M4's
+  time where only the M4 ran it; never one not yet measured), once no step's work fits
   its usual memory. A unit's predicted peak is the most memory its job's processes held together
   while it was built last time (each unit job notes it, sampled, as the memory guard measures a job:
   `cost_version` 1; a measure of its programs' most, one at a time, counting for nothing now), else
@@ -459,9 +463,9 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **How:** at any charge; all but two of its cores, whoever is at it; each job started with its step's room free (15 GB, terrain's
   pieces too, a task 5), from the caches the NAS keeps; only work it can make that for is asked
   for, and a job it can't is given back.
-- **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
-  the build Mac's shows it from that file while the build Mac's agent runs. Leases keep the two apart
-  (§8, Two Macs).
+- **Status:** a member's on the NAS is `state/helpers/<host>.json` (`helper.json` in its folder),
+  the lead's the heartbeat (`state/status.json`). Its status bar shows its job from its own status;
+  the lead's shows it from that file. Leases keep the two apart (§8, The pool).
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) is built once and never rebuilt.
@@ -483,8 +487,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 **Server.**
 - **Finding the NAS:** `getfsstat(MNT_NOWAIT)`, never `statfs`.
   - At home (when `fishandchips.local` answers on port 445), it mounts the share with `osascript`
-    and the Keychain, at most every five minutes. Away it mounts nothing (the build Mac's agent
-    may, through Tailscale: §4, Build Mac).
+    and the Keychain, at most every five minutes. Away it mounts nothing (the agent may, through
+    Tailscale: §4, Each Mac's agent).
   - It mounts by the LAN name `fishandchips.local` when the Keychain has its password, else by the
     bare name. The bare name resolves to the NAS's Tailscale address, whose userspace networking held
     SMB to 12 MB/s.
@@ -522,7 +526,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     same keeps it), on three threads of its own, a label's copies at zooms 8 and 12 once (by its
     feature id). It's let go after half an hour unsearched, and its memory with it: its arrays are
     mapped for them alone, as macOS's allocator keeps the big blocks it frees.
-  - **Its cost,** measured on the build Mac with a synthetic set the size of the live build's (4.4
+  - **Its cost,** measured on the M4 with a synthetic set the size of the live build's (4.4
     million places, no translations): made in 3–3.5 s, the server's memory some 500 MB more at
     most while it's made and 340 MB more while it's kept, back to within about 50 MB once it's let
     go; a two-letter search in about 5 ms, a word in about 1 ms.
@@ -591,7 +595,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   lo packs, hi data and road values (and the per-tile records), base packs, hi packs, the 3D
   buildings' hi packs and their field's (a city's z6 tile is a few hundred MB to 2 GB: the roads and
   terrain first), then the
-  basemap's pieces. While the build runs (the build Mac's heartbeat on the NAS says a job runs,
+  basemap's pieces. While the build runs (the lead's heartbeat on the NAS says a job runs,
   as the copies' pause read it before downloads), copies keep to 20 MB/s, so the build's uploads
   have the NAS first, and the panel says why a download is slower; the rest of the time, at full
   speed. A copy is checked (a file against its content hash, a piece tile by tile) before it's
@@ -604,7 +608,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   warning, for run files written before.) A download that wouldn't fit (all that's downloaded and not
   here yet, more than the free space above the reserve) is refused, saying so. When the disk
   fills later, what doesn't fit waits ("waiting for room"), and nothing downloaded goes for it.
-- **The build Mac:** its jobs don't need the mirror. The pack and lo jobs read a base pack from it
+- **The agent's jobs** don't need the mirror. The pack and lo jobs read a base pack from it
   where it has one (a downloaded region's), else from their own cache (`agent/cache/base`, copied
   from the NAS); the marks and overlays jobs read the heritage job's files from it where it has
   them, else from the NAS. Nothing is deleted from the mirror while that Mac's own agent runs
@@ -614,7 +618,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **From before downloads** (the switch, 2026-10-08): a Mac's kept regions and views
   (`keep.json`) become downloads, with the World; the use times (`mirror/.uses`) go. At its first
   round the new server lets go of whatever no download names (with nothing downloaded, all of it:
-  the M1's 7.3 GB of essentials, the build Mac's 1.8 GB) and copies the rest; what a download
+  the M1's 7.3 GB of essentials, the M4's 1.8 GB) and copies the rest; what a download
   names and the Mac has stays as it is, never copied again. A whole basemap kept before goes too,
   its pieces copied from the NAS.
 - The state, for the panel (`/api/downloads`): the World's and each region's size and how much of
@@ -805,7 +809,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
    - Sets are versioned (a changed filter is a new set, `summits-v2`).
    - `pass-sets` makes a finished pass's missing sets from (a): copied to the SSD first when that
      leaves room for the sets and the agent's reserve (its size, 20 GB and 30: 111 GB for the
-     2026-09-28 pass's 60.6 GB), else read from the NAS, two or three times a set. The build Mac
+     2026-09-28 pass's 60.6 GB), else read from the NAS, two or three times a set. The M4
      (~40 GB free) reads it from the NAS: the water set took 65 min so (2026-10-06).
 5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons from the
    outline set. They go in a sectioned file, with simplified copies for the panel.
@@ -858,7 +862,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      hand) gives each piece the set's ferry ways it meets, as the cut keeps ways, and lacks. Only
      the pieces that lack some change, so only their units, their landmark candidates and the
      reaches are built again. It saves the records once, at the end: a changed piece makes the
-     reaches stale, and units aren't planned on either Mac until the build Mac remakes them. Every
+     reaches stale, and units aren't planned on either Mac until the reaches are made again. Every
      piece has them: those meeting the regions (their tile and 10 km round, `--near-coverage`)
      gained 3,563 ferry ways in 84 pieces, then a run over all of them, while the units built, 21,452
      in 567 more (the first 84 lacking none). So does a ferry that reaches the regions from a
@@ -871,7 +875,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 ### Global-source layers
 
 - **Terrain** is built in two steps (`pipeline::terrain_pack`), as tree cover is:
-  - **terrain**, a piece per z6 tile near the coverage (`build_piece`; a helper takes them too):
+  - **terrain**, a piece per z6 tile near the coverage (`build_piece`; any member takes them):
     its z9–12, within the coverage plus 20 km (viewsheds see 15 km), zoom capped by latitude so
     pixels stay ≥ 15 m (z12 to 67°, z11 to 79°, z10 beyond): its hi pack; and its mid
     (`work/terrain-mid/6-x-y`, a sectioned file, never served: its z9 tiles' 2×2 means, as f32,
@@ -881,14 +885,14 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     earlier run's hi tiles stay above the z8–z6 its area's assembly makes from the raw tiles alone.
     Where a hi pack goes, the map's server makes those tiles from the z8 ones over them, and a
     unit stages none there, as beyond 20 km of the coverage.
-  - **terrain-lo**, an assembly per z3 tile with a piece (`build_lo`, the build Mac's): the whole z3
+  - **terrain-lo**, an assembly per z3 tile with a piece (`build_lo`): the whole z3
     tile's z8 → z3, z8 and coarser made again from their children where those exist (a piece's z9
     tiles' means, from its mid), since AWS's coarse levels come from coarser sources: its lo pack.
     Not a piece's z8–z6 alone: a lake's level at z8 is gathered from the whole area's z8 tiles.
     A z3 tile the coverage has left (no piece) with a lo pack is a "none" assembly, whose run drops
     it (`drop_lo`).
   - A piece's z8 subtrees, in groups closed under the lakes they share, are tasks (`terrainsub`,
-    docs/workers.md §3, `pipeline::terrain_task`): a piece's run offers some to pages and helpers,
+    docs/workers.md §3, `pipeline::terrain_task`): a piece's run offers some to pages and members,
     each group's raw tiles, water and GLO-30's windows in one file, and takes their tiles and mid
     into the piece, the same bytes.
 
@@ -897,10 +901,10 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   against main's area run (TERRAIN_V 3) on synthetic tiles with GLO-30, a lake across two pieces and
   the walled patches' z9 tiles (`terrain_pack` tests), and on the build's own data (§10).
   - **The root (z0–2):** from the lo packs (AWS's raw z3 tile where there's none), made again
-    when one changes or goes (41 s on the build Mac, slope's 17 s: 2026-10-09), once nothing that
+    when one changes or goes (41 s on the M4, slope's 17 s: 2026-10-09), once nothing that
     makes them is left (terrain's pieces and assemblies; for slope's root, slope's too), so a root
     isn't made while an assembly runs and again after it.
-  - **Sources:** AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's cache
+  - **Sources:** AWS's raw tiles, each downloaded once (64 at a time) into the fetching Mac's cache
     and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the cache
     when it lacks one; north of 60°N, Copernicus DEM GLO-30 (`sources/copernicus-dem/`, below); and
     the water of the latest pass's basemap (below). **The terrain depends on AWS's tiles, GLO-30's
@@ -995,11 +999,11 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   which runs the `trees` program, `pipeline::trees`), made for a region before it's published (§8,
   Order: once it's done, or earlier while the units wait for the pass's worldwide jobs) in two
   steps:
-  - **trees**, a piece per z6 tile the coverage meets (`trees --z6`; a helper takes them too): its
+  - **trees**, a piece per z6 tile the coverage meets (`trees --z6`; any member takes them): its
     blocks' zoom 9–12 tiles, its hi packs, and its mid (`work/trees-mid/6-x-y`, a sectioned file:
     its blocks' zoom-8 tiles and zoom-8 values, which the tiles can't give back, rounded to whole
     steps; never served). A z6 tile the coverage has left drops its hi packs and mid.
-  - **trees-lo**, an assembly per z3 tile with a piece (`trees --assemble-lo`, the build Mac's, in
+  - **trees-lo**, an assembly per z3 tile with a piece (`trees --assemble-lo`, in
     seconds): its zoom 8–4 from its pieces' mids, its lo packs. One with lo packs and no piece drops
     them.
 
@@ -1023,7 +1027,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     blocks. A row of a piece's blocks (one z8 row, up to four) runs together too (`trees
     --blocks`: each canopy strip, a row of its square's whole width, read and decoded once for the
     row; each block the same bytes as alone), and is a task (`treeblock`, docs/workers.md §3): a
-    piece's run with the job's coordinator offers some of its last rows to pages and helpers,
+    piece's run with the job's coordinator offers some of its last rows to pages and members,
     reading the squares where they lie, and takes their blocks into the piece in their turn, the
     same bytes (`tools/check/treeblock-same.mjs`: four real rows, natively and as WebAssembly, and
     the NAS's packs).
@@ -1035,9 +1039,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   tile. Built (B1): the steps `bldprep` and `bldtiles` (`pipeline::bld`, dem/bldprep.py), run by
   hand; the catalog's layer `buildings`, the server's `/tiles/buildings`, the map's layer and its
   settings. Built (B2, published 2026-10-08): the agent runs them for every tile, their sources'
-  fetch a network job (§8, Order: the fourth chain), shared with helpers; the mirror's group, the
+  fetch a network job (§8, Order: the fourth chain), the lead's; the mirror's group, the
   iPad's budget, the credits. Built (B3, 2026-10-08, not yet published): a tile's z8 areas offered
-  as tasks to pages and helpers (`bldtile`, the same bytes in WebAssembly: workers.md §3); on the
+  as tasks to pages and members (`bldtile`, the same bytes in WebAssembly: workers.md §3); on the
   map, walls on the terrain under each corner, the globe's 3D positions without float32's noise
   (the saw at the buildings' feet), fog, bridges and elevated rail drawn after the buildings, the
   camera kept above roofs, colour by height on the shared colour scale, heritage sites in their
@@ -1075,7 +1079,7 @@ they treat any raster.
     value throughout, as an 8-bit grey-and-alpha PNG (`layers/water/{root,lo,hi}`; docs/formats.md).
   - **Deeper zooms are drawn by the server when asked** (`crates/server/src/water.rs`), from the z14
     tiles under the tile (z10: 256, z13: 4) or the one over it (z15–18).
-  - **Worldwide** (2026-09-28's basemap, 2026-10-08, on the build Mac, reading the basemap from the
+  - **Worldwide** (2026-09-28's basemap, 2026-10-08, on the M4, reading the basemap from the
     NAS): 25.4 million z14 tiles read, 4.5 min, 7.7 GB of memory at most. 75,683 tiles, 1.38 GB:
     - z0–8: 0.56 GB, the root and lo packs;
     - z9: 0.82 GB, 52,398 tiles, hi packs.
@@ -1166,7 +1170,7 @@ they treat any raster.
     tiles in view (12 → 30); first left out as changing nothing in the app's colours, then done
     (8 Oct) for sharpness, as above.
 - **Checked toward the poles** (`--screen`, 2026-10-08, the reference's shading measured the same
-  way, its water from this Mac's water tiles as a stand-in for the build Mac's store): 26 views,
+  way, its water from this Mac's water tiles as a stand-in for the NAS's store): 26 views,
   the whole globe at each pole and with a pole near the limb, Antarctica, the Arctic Ocean,
   Svalbard, East Greenland and the Antarctic Peninsula at z2–6.
   - Visibly different in the app's colours: 0.02 % of the pixels. Before, 25.5 %: capped in tile
@@ -1231,7 +1235,7 @@ they treat any raster.
       pieces might not all have been read) is left out;
     - a sheet is filled only where under half of the source's lakes in it already touch OSM's water
       (`FillOpts::canvec`): otherwise OSM has its lakes, and the sheet isn't a gap.
-  - **The fill** (2026-10-15, the build Mac, the 13 provinces' and territories' zips;
+  - **The fill** (2026-10-15, the M4, the 13 provinces' and territories' zips;
     `lakefill::run::fill` by longitude bands of the gap sheets, `run::BANDS`, one at a time, then
     `run::merge`): 2.80 million lakes, 136,200 km², a 793 MB file, 4.3 min, 10.4 GB of memory at
     most. Of the source's
@@ -1431,7 +1435,7 @@ in a chain of their own (§8):
   - each feed's trains on its typical weekday (`dem/railgtfs.py`): the median-busy Tuesday to
     Thursday from 30 days before the day its zip was fetched to 90 days after, so a zip's counts
     don't depend on the day they're made. A train in two feeds is counted once (the national
-    operators' first). The stop pairs don't depend on the coverage either: the build Mac keeps them
+    operators' first). The stop pairs don't depend on the coverage either: the rail job's Mac keeps them
     for the list of feeds;
   - the MTR's lines, as stop pairs (from the research, `mtr.json`, by `dem/mtrpairs.py`);
   - each pair's stops beyond the coverage marked (`railfreq` runs a cross-border service as far as
@@ -1500,8 +1504,8 @@ folder> --scratch <local dir>` as for every step.
   translation work became the tables, and the scripts that sized the work (`inputs/translations/how/analysis/`:
   `latinwords.py`, `namecount.py`).
 - **Descriptions' method** (§7): the writers' briefs (`inputs/descriptions/how/briefs-2026-09/`:
-  `WRITERS.md`, `FIXERS.md`, `RESEARCH.md`); the lists to write and today's brief are the build
-  Mac's (`inputs/descriptions/todo/`, tools/names/descriptions-todo.md).
+  `WRITERS.md`, `FIXERS.md`, `RESEARCH.md`); the lists to write and today's brief are the
+  agent's (`inputs/descriptions/todo/`, tools/names/descriptions-todo.md).
 - **Fonts** (`app/fonts/` on the NAS, `data/fonts` in a checkout): MapLibre's glyph ranges of three
   Noto Sans styles, `scripts/fonts.sh <folder>`.
 
@@ -1513,7 +1517,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   its tiles, each assembly), run when the source's digests file (`work/water-idx/<hash16 of the
   pin>`, formats.md) lacks one of them: a new basemap, or the coverage grown. It reads the
   basemap's water under each piece's tiles and each assembly's z6–8 (on 2026-10-09, 398 pieces and
-  18 areas, 1.06 million tiles, the basemap read over SMB: 13.5 min on the build Mac the first
+  18 areas, 1.06 million tiles, the basemap read over SMB: 13.5 min on the M4 the first
   time, under other work, 6 min again; 10 and 7 min on the M1), keeping the digests the file has
   for the same reads. The plan itself reads only the file (a few KB, kept beside the terrain
   indexes), so it stays fast. The digest of a target's water (`terrain_water::tiles_digest`) is over
@@ -1572,9 +1576,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   terrain's indexes can't be read now for N of them", with the pack and why), and the read is tried
   again each time the agent plans. A pack that stays unreadable holds those units, and their
   regions' publishing, until it's made again: move the damaged file aside on the NAS (a
-  content-named file is never written over), then run its area's terrain on the build Mac
-  (`scenic-build terrain 3/x/y --root <the NAS project folder>`), which writes it again under its
-  name;
+  content-named file is never written over); a step run by hand (`scenic-build terrain 3/x/y`)
+  is refused while the pool leads (`crate::out::check_writer`), so making it again takes a job:
+  planned;
 - **pack(T):** the base packs and road values it reads (above), those within its 100 km halo; and,
   after a dot, those of its owners alone (the units whose owned extent meets the tile itself: its
   ways-here index points into their base packs), so a map update tells a tile whose owners changed from
@@ -1866,17 +1870,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   of what's never been rewritten since); otherwise its record goes and it's built again. Any other
   record stays as it is: stale under the old scheme, it's stale under the new. Safe because a
   target's outputs are a function of the inputs its new key names (Determinism), and those are
-  what they were when it was built. The build Mac's agent re-keys after merging hand-offs: it
-  reads what that takes first (the indexes, the coverage, the reaches, the files' times) and works
-  the re-keying out, and only when that changes the records does it take the build lock, as the
-  merge takes it (a job saving holds it), re-key the records as they are then and write
-  `state/build/jobs.json` whole. Before its first such write it keeps them as they were, in
-  `state/build/jobs.pre-rekey.json` (written once, never over one there: the way back to an app
-  from before the units' keys, README; one from before tree cover's pieces needs no copy: it drops
-  the assemblies' records and makes the tree cover again by z3 tiles). The plan and the status
-  re-key the keys they read in memory, so a dry run, or a loop that couldn't take the lock, plans
-  as the records will be. A second pass finds nothing (a new key is never an old one), and a
-  record of an older app's job merged later is re-keyed then (tree cover's as below).
+  what they were when it was built. The records aren't re-keyed where they're kept: every reader
+  re-keys them as it reads them (`agent::rekey::as_read`: the plan, the status, the checklist, the
+  regions' state, the jobs' `--expect-same`, `scenic-build p5-check`), so a dry run plans as the
+  lead does. A second pass finds nothing (a new key is never an old one), and a record of an older
+  app's job merged later is re-keyed as it's read (tree cover's as below).
   `scenic-build rekey-check` says what it would do, reading only. The old scheme's keys
   (`agent::rekey::v1`) are kept for those late records.
   - **The units' terrain** (§6, Job keys: they named the terrain hi packs within 30 km): their
@@ -1948,7 +1946,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     z3 tile's pieces and assembly, all made again. `scenic-build p5-check trees` says what it would
     do, reading only: on 2026-10-06 all 18 z3 tiles were current and trees.py's, so none is
     re-keyed and the switch makes the 380 pieces and 18 assemblies again (2.3 h by trees.py's last
-    runs, less with the program: a z3 tile's run of it took 5 to 24 s on the build Mac for 3/7/2,
+    runs, less with the program: a z3 tile's run of it took 5 to 24 s on the M4 for 3/7/2,
     3/7/3, 3/4/2 and 3/3/2, the canopy squares local), 14.6 GB of packs uploaded again, then one
     catalog. The same four areas' pieces and assemblies made the program's z3 runs' packs byte for
     byte (and every one of their 129,455 tiles has trees.py's pixels).
@@ -1977,67 +1975,44 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   indexes, which the units' keys read: each read once by its pack's content name, two range reads,
   and kept in the agent's `pack-idx/`, so after the first plan only a terrain job's new packs;
   13–64 s for the build's 529 on 2026-10-06, and a unit's terrain worked out again only when a pack
-  it reads or its reach changes); other workers' hand-offs are merged each loop while it waits, every
+  it reads or its reach changes); on the lead, the journal is merged each loop while it waits, every
   two minutes while a job runs.
-- **Two jobs at once** (`agent::steps::SECOND`, the steps table's: docs/pool.md §7.2): beside the first job, the build Mac runs a second, the
-  plan's first job of these steps, in this order: the trains', the landmarks' and the 3D buildings'
-  steps that mostly wait on the internet (the heritage chain, the items' facts, the rail feeds and
-  trains a day, the 3D buildings' sources, the landmark points and overlays), then the candidates
-  and peaks, then units and slope, then the 3D buildings' bldprep and bldtiles (they hold up
-  neither the roads nor the terrain), whoever is at the Mac (the owner's choice). A unit spent
-  380 of its 860 s writing to the NAS and reading the caches (6/17/25, 2026-10-05): two at once build
-  more. A second job:
-  - never runs beside a job that runs alone (the OSM pass, the pass's worldwide jobs, GC), nor
-    beside a job of the same step unless it's a shared one (its targets are held apart, as a
-    helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots),
-    nor the items' facts beside the heritage chain (both ask Wikidata, each paced as if alone),
-    nor a bldprep beside another (each reads up to ~3 GB of the NAS's parquet a tile); with
-    `state/pool/budgets` on (docs/pool.md §7.7, phase 4's seventh batch), those two rules go: every
-    job's Wikimedia requests are taken from the pool's one budget at its agent's proxy, and two
-    heavy NAS readers measured only to slow each other;
-  - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
-    second's within three quarters of the Mac's, and the second's free now with 2 GB to spare (a
-    target's prediction never below its floor, what a run saw it hold: docs/pool.md §7.2);
+- **Two jobs at once** (the steps table's `beside`: docs/pool.md §7.2, §7.7): beside the first
+  job, each Mac runs a second, the plan's first job, in plan order, whose measured memory and disk
+  fit beside the first's (crate::coord::Coordinator::measured: a target's run's measure or floor,
+  or its step's largest once any target of it ran; a job of no targets of its own, GC or a catalog,
+  by its id), whoever is at the Mac (the owner's choice). A unit spent 380 of its 860 s writing to
+  the NAS and reading the caches (6/17/25, 2026-10-05): two at once build more. A second job:
+  - only when the two fit: their memory within the Mac's limit (the first's as measured, or as it
+    holds now if more), and the second's disk with what the first has still to take and the
+    reserve within the disk's free space;
+  - never beside a cold start (a step none of whose targets has run), which runs alone, nothing
+    starting beside it; nor beside a job of the same step unless it's a shared one (its targets are
+    held apart by the leases). What else two jobs share is guarded where it's used: the raw tiles'
+    cache accessor, the budgets (every job's Wikimedia requests taken from the pool's one budget
+    on the NAS at its agent's proxy, every job's connections through that proxy, sandboxed: §8,
+    The pool; crate::budget), the answers' lease;
   - when they hold more together than the Mac's limit all the same, the memory guard stops the job
     beside the larger at its next safe point, or the larger at once if it passes the limit alone
     (docs/pool.md §7.2, crate::agent::memguard);
-  - starts only with the reserve free: room on the disk is made only while no other job runs (a job
-    beside may read what's deleted, and the loop that looks after it waits meanwhile);
-  - doesn't starve the first: when the first's next job can't start beside the second's because it
-    runs alone, needs room made, or the two wouldn't fit the memory, the first waits for it rather
-    than start later work, and the second starts nothing new meanwhile, nor while one that runs
-    alone or needs room made is the first's next; when it only can't share the Mac with the second's
-    (one of the steps table's groups: two Wikidata steps, two raw-tile readers, two heavy NAS
-    readers), the first takes the next job in plan order that can start, and the job passed over
-    starts as soon as the clash ends (in whichever slot frees, if it's one of the second job's
-    steps: else in the first's alone); one passed over for half an hour is waited for, the second
-    starting nothing new but it (so for one the second doesn't take, the second stands idle until
-    the first slot frees and starts it); started in either slot, or gone from the plan (done, or
-    waiting for a reason of its own), it holds nothing up;
-  - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
-    claims its own, and half the cores;
+  - beside another job, a job's room on the disk is the reserve and its measured disk; alone in the
+    first slot, room is made for the reserve, its measured disk and the owner's target as the
+    caches allow, but the job waits only for the reserve and the target (a disk floor only rises: a
+    stale or high one never holds the build), the disk guard its backstop; room is made only while
+    no other job runs (a job beside may read what's deleted, and the loop that looks after it waits
+    meanwhile);
+  - doesn't starve the first: when the first's next job can't start beside the second's (a cold
+    start, room to make, or the two wouldn't fit), the first waits for it rather than start later
+    work, and the second starts nothing new meanwhile;
+  - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, and
+    half the cores;
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
-    measured as a helper's is (four fifths of the build Mac's until it is). The status has it as
+    measured as a member's is (four fifths of the lead's until it is). The status has it as
     `beside`, or why there's none (`beside_why`).
-  - **By measure** (`state/pool/by-measure`, off while missing: docs/pool.md §7.7, phase 4's fifth
-    batch): the list of the second job's steps, the jobs that run alone and the raw tiles' readers'
-    rule go. The second job is the plan's first, in plan order, whose measured memory and disk fit
-    beside the first's (crate::coord::Coordinator::measured: a target's run's measure or floor, or
-    its step's largest once any target of it ran; a job of no targets of its own, GC or a catalog,
-    by its id): the two's memory within the Mac's limit (the first's as measured, or as it holds now
-    if more), and the second's disk with what the first has still to take and the reserve within
-    the disk's free space. A cold start (a step none of whose targets has run) runs alone, and
-    nothing starts beside it; the first slot waits for its next job that doesn't fit beside the
-    second's, as above. Two jobs of one step that isn't shared still never run at once; two
-    Wikidata steps and two heavy NAS readers neither, unless `state/pool/budgets` is on (batch 7). Beside another job, a job's room on the disk is
-    the reserve and its measured disk; alone in the first slot, room is made for the reserve, its
-    measured disk and the owner's target as the caches allow, but the job waits only for the
-    reserve and the target (a disk floor only rises: a stale or high one never holds the build),
-    the disk guard its backstop.
 - **A newly installed app:** nothing new starts, and every running job is asked to stop at its next
   safe point (as a pause asks, `crate::control`; what it finished kept), whatever part the Mac plays:
-  a lone build Mac, the pool's lead, a member or broker (one that just handed the lead over for its
-  update too), or a helper. Once the first job's slot is free the agent exits so the launcher starts
+  the pool's lead, a member or broker (one that just handed the lead over for its update too).
+  Once the first job's slot is free the agent exits so the launcher starts
   the new one; a second job still running stops then (what it finished kept) and goes on under the
   new one. A first job that reaches no safe point in the time a pause gives (15 min) isn't frozen:
   the agent stops it then and restarts, its finished targets kept. (Timed from the update's drain itself: while
@@ -2051,19 +2026,19 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   - **Asked for** from either Mac's menu bar item (Pause Building; Option: Pause Building Now), the
     map's build panel (Pause building, Pause now) or `scenic pause [--now]`, and lifted the same
     ways (Resume, `scenic resume`): an ask in that Mac's agent's folder (`pause-request.json`), which
-    its agent takes up within seconds and passes on to the build Mac's coordinator, with when it was
-    asked: an ask older than the build's last change (a helper's, held while it couldn't reach the
-    build Mac) is passed over. A helper that can't reach it holds the ask itself meanwhile, and
+    its agent takes up within seconds and passes on to the lead's coordinator, with when it was
+    asked: an ask older than the build's last change (a member's, held while it couldn't reach the
+    lead) is passed over. A member that can't reach it holds the ask itself meanwhile, and
     passes it on once it can. The opposite ask is always there (a menu never sticks on "Pausing…").
-  - **Held** by the build Mac's coordinator, on its disk (`coord/pause.json`, `{pause, at}`, so a
+  - **Held** by the lead's coordinator, on its disk (`coord/pause.json`, `{pause, at}`, so a
     restart keeps it; one the agent knew from before its coordinator was up is given to it) and
     mirrored to the NAS (`state/build/pause.json`); told to every worker in its answers to their
     asks (an agent: refused, with the pause; a page: nothing now) and beats; each agent keeps what it
-    last heard (`pause.json`), so a helper that can't reach the build Mac stays as it last heard.
+    last heard (`pause.json`), so a member that can't reach the lead stays as it last heard.
   - **At a safe point** (the default): each running job finishes the target it's on (an area, a map
     tile, a terrain, slope or tree cover piece, a batch's candidates or peaks), saves it, notes it done
     (`SCENIC_DONE`) and ends as paused (exit 75; its channel, `SCENIC_CONTROL`, said "drain"). The
-    agent records what it noted done (a helper hands those off: the coordinator takes part of a
+    agent records what it noted done (it hands those off: the coordinator takes part of a
     lease's targets) and starts nothing new; on resume the plan picks up the rest. A job that hasn't
     reached a safe point in 15 minutes (an area's whole terrain run mid-way) is frozen where it is instead, and
     goes on from there. **Now:** every running job frozen where it is at once (SIGSTOP), going on
@@ -2076,13 +2051,13 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     back. None waits for power or home (the owner's choice).
   - **Any job's end** (done, paused, failed, stopped) records the targets it noted done, so they're
     never built again.
-- **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
+- **Room on the disk:** before a job starts (and before its targets are leased), when the Mac has
   less free than the job needs (30 GB; the water's 35 GB, for its tiles' archive and packs, 1.4 GB
   each worldwide, written here before they go up; an area's whole terrain run 55 GB, for its
   area's raw tiles held twice while they're packed onto the NAS, and on a run again the area's
   archives copied here and merged, those copies spared; terrain's pieces and assemblies 35 GB, a
   job's z6 tiles' or z3 tile's archives copied here and spared; the OSM pass, its own 80 GB less
-  the pack cache it clears; the M1's helper, 15 GB), the local copies of what the NAS
+  the pack cache it clears; the M1, 15 GB), the local copies of what the NAS
   keeps (Meta's canopy squares, AWS's raw terrain tiles, the copies of the records' files staging
   reads, `blobs/`, and of the pageview months' indexes, `items/months/`) lose files until it has a
   sixth more (the OSM pass: what it needs), so the next jobs start without deleting again.
@@ -2120,7 +2095,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     at the top of the job's scratch folder (the allocated sizes of the files there: the outside
     programs' outputs) (the disk's fall while it runs alone logged beside, not counted); the most each
     target took is its **disk floor**, kept by the lead's coordinator (`disks.json`) and sent with a
-    member's lease's end. With `state/pool/by-measure` on, the **disk guard**: when the disk's free
+    member's lease's end. The **disk guard**: when the disk's free
     space falls below the reserve, the sampler freezes the job growing fastest at once, the agent
     makes room from what no job holds (room::toward, on a thread), and the job goes on once the
     reserve is free again, or is given back (not failed, kept from the Mac an hour, as the memory
@@ -2151,18 +2126,18 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   - **After the build** (`room::trim`): once the build has nothing left to build (and no job an
     earlier agent left runs on the Mac, nor one that couldn't be shown stopped), its agent, at home
     (through Tailscale it would take hours), empties those copies by the same rules, once, and
-    again only after a job (not a daily one) has run there since: a helper all of them, the build
-    Mac all but the canopy squares, which every pass's areas read again and which never change.
-    "Nothing left to build" is the build Mac's forecast's (no work, no map update under way, no machine
-    busy), made within ten minutes and after the last job on the Mac ended; a helper reads it in
-    the build Mac's heartbeat, which must have beaten within ten minutes and show no job of the
-    build Mac's running, nor one beside it. Not down to the reserve: room-making makes that much
+    again only after a job (not a daily one) has run there since: the M1 all of them, the M4 all
+    but the canopy squares, which every pass's areas read again and which never change.
+    "Nothing left to build" is the lead's forecast's (no work, no map update under way, no machine
+    busy), made within ten minutes and after the last job on the Mac ended; a member reads it in
+    the lead's heartbeat, which must have beaten within ten minutes and show no job of the
+    lead's running, nor one beside it. Not down to the reserve: room-making makes that much
     room before each job, so the build ends with about that free (36 GB, with 39 GB of archive
     copies and copies of the records' files, once it was done on 2026-10-06), and a trim to it
     would free little or nothing, while that Mac's downloads copy nothing past a 150 GB reserve.
     It's logged, in the agent's status (`caches.trimmed`: when, what it freed by cache, what
-    stayed) and, when it freed anything or what it keeps changed, in the history (a helper's, as
-    the build Mac reads it in its status).
+    stayed) and, when it freed anything or what it keeps changed, in the history (a member's, as
+    the lead reads it in its status).
   - **On the owner's ask** (`room::clear`): Clear the Build's Caches in a Mac's menu bar item, or
     `scenic clean` there, after a confirmation that names what goes, cache by cache, and how each
     comes back (copied from the NAS at the measured 60 MB/s, 12 through Tailscale: the base packs
@@ -2196,7 +2171,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       can't have it waits, saying why in the status's `waiting`; the jobs after it that need as
       much room wait with it, unsaid, and one that needs less is tried. Room-making isn't tried
       again for those for ten minutes, or until a job ends, or the caches have been freed toward
-      them. A helper asks the build Mac for no work its disk can't fit past the target; a lease it
+      them. A member asks the lead for no work its disk can't fit past the target; a lease it
       can't start for the target alone it gives back without a failure held against its targets,
       and asks for none for ten minutes (or until a job ends, or the disk has the room).
     - Whenever the disk is short of the target, or of the least room a job waiting for it needs
@@ -2265,7 +2240,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   and in-process parts', each weighted by about how long it takes on that Mac, learned as areas
   finish and kept with the caches: `unit-stages.json`), its elevations by the vertices that have a
   height, each area whose last steps are out with another worker by the stages before them; a
-  map tile by its ways read, its tiles drawn, then written; a helper's task by its files fetched,
+  map tile by its ways read, its tiles drawn, then written; a member's task by its files fetched,
   its steps, what they wrote sent back. A part shows only what it has said itself (none at first),
   its time left from its own pace in its unit (a word in brackets after it may change: `steps
   (clipping…)` and `steps (filtering…)` are both steps), and when its progress last moved on (one
@@ -2281,10 +2256,10 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   be cleared now, and the last trim and clear, and the owner's room target with the disk's free
   space (`caches.room`; Room on the disk).
 - **The forecast** (`agent::forecast`), made with each plan (at most each minute) and in the
-  heartbeat: the work left run through in the order the agent runs it. The build Mac takes the first
+  heartbeat: the work left run through in the order the agent runs it. The lead takes the first
   it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with
   none it can do now, the chains' work), its second job the first of its steps that fits beside it,
-  each helper the far end of the first shared step with work it can do that fits its memory (terrain's
+  each other member the far end of the first shared step with work it can do that fits its memory (terrain's
   near end): terrain at once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
   roadside buildings are made (as the plan's units wait for), slope once its area's terrain is.
   Units built now but reading stale terrain (`RegionLeft::expected`) go stale or not only once that
@@ -2294,7 +2269,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   machine with nothing it can do waits for the next work to end or another machine to be free. The
   map update under way goes first, with its own regions (their slope and tree cover left, then its chain
   as its steps take). A map update goes out as the plan makes one: a region done that the map hasn't as
-  it is now, an hour (or a map update per region's gap) after the last map update began, by the lead's own test (`build::map_update_due`) (its slope and tree cover, which the build Mac makes
+  it is now, an hour (or a map update per region's gap) after the last map update began, by the lead's own test (`build::map_update_due`) (its slope and tree cover, which the lead makes
   while it waits, then the map update's chain, as long as the last map updates took); its catalog carries the
   regions on the map that are rebuilt (a new pass) and done by then, their slope and tree cover too
   (they make no map update of their own); after the last unit and terrain area, the
@@ -2302,21 +2277,21 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   under way still does, if longer; none when nothing's stale and no region waits to go out), while
   the 3D buildings are being raised a map update the gap after the last began (the map update's chain
   long), then the overlays and a catalog, then the tree cover mids made in idle time. A z3 tile's tree cover
-  assembly waits for its pieces, the build Mac's alone. The trains' and
+  assembly waits for its pieces. The trains' and
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
   once the pass's hiking-route ends are made, the peaks once every candidate and the terrain are,
   the items' facts once every candidate is, the heritage chain once the heritage sites are, the
   landmark points once those four are, trains a day once their feeds are, the 3D buildings' tiles
   once the normalized files are). Each
-  target takes its last run's time at the build Mac's pace (one measured on a helper, over that
-  helper's speed, asleep or not), else its step's mean, else what its jobs took here a target, else
-  a first guess; each machine at its measured speed (a helper's: the build Mac's mean time a target
+  target takes its last run's time at the lead's pace (one measured on a member, over that
+  member's speed, asleep or not), else its step's mean, else what its jobs took here a target, else
+  a first guess; each machine at its measured speed (a member's: the lead's mean time a target
   over its own, for the shared steps both did, from the history; half until measured, said as a
   guess); each free once its job under way is done (its targets not yet done as they took last
   time, less what it's spent on the one under way; a job with no record, its step's time here, less
-  what it's spent; if longer than its part's pace says; a helper's lease likewise); with a worker
-  around that takes tails, spares what one takes typically and is measured faster than the build
-  Mac at them, each of the build Mac's units 30 s more, the moment its job gives that worker to
+  what it's spent; if longer than its part's pace says; a member's lease likewise); with a worker
+  around that takes tails, spares what one takes typically and is measured faster than the lead
+  at them, each of the lead's units 30 s more, the moment its job gives that worker to
   take its tail (docs/workers.md §3; a tree cover piece nothing more for a worker that takes its
   rows of blocks: its run makes its other blocks meanwhile). Run three times: as
   estimated, and for a range, the measured times a little off and the guessed much more. It says
@@ -2328,16 +2303,16 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   units wait for the pass's heritage sites, reaches or buildings (the regions' work can't be
   listed): why instead.
 - **The history** (`coord::history`): the coordinator keeps what happened, the last week's (50,000
-  events at most), on the build Mac's disk (`coord/history.jsonl`, a line an event, numbered): each job the build Mac
+  events at most), on the lead's disk (`coord/history.jsonl`, a line an event, numbered): each job the lead
   started and ended (what it does, what it finished, how long, how it ended), each lease a worker took, handed
   back, failed or let lapse, each task done or failed, the map updates begun (their regions), the
   catalogs (the regions they added), the
-  pauses, the workers first heard from, the agents started, the build Mac's conditions changing
+  pauses, the workers first heard from, the agents started, the lead's conditions changing
   (mains or battery, the NAS, home or away, a sleep), and each Mac's build caches trimmed or
-  cleared, or an ask to clear them declined (what was freed, or why not; a helper's as the build
-  Mac reads it in its status). Summed by the hour for the worker page (a job whose end went
+  cleared, or an ask to clear them declined (what was freed, or why not; a member's as the lead
+  reads it in its status). Summed by the hour for the worker page (a job whose end went
   unsaid, its agent stopped, counted to the next agent's start), and the forecast's measure of the
-  helpers' pace and of a map update's time. Each cost the coordinator keeps says which worker measured
+  members' pace and of a map update's time. Each cost the coordinator keeps says which worker measured
   it.
 - **Timings** (`pipeline::timings`; its Python twin `dem/timings.py`; a page's task in
   `web/work/worker.js`): every job's run is broken into named phases, each with its wall time, its
@@ -2366,26 +2341,40 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   its phases (`timings: …` lines: each phase's time, share, class, CPU, spans and bytes, then the
   untimed share). The run's record (docs/formats.md, Timings) goes where the agent says
   (`SCENIC_TIMINGS`), however the job ends (a job killed leaves none); the agent keeps it in its
-  `timings.jsonl`, and the build Mac's coordinator keeps every worker's in `coord/timings.jsonl`:
-  its own jobs' directly, a helper's job's and task's and a page's task's with its done (an older
+  `timings.jsonl`, and the lead's coordinator keeps every worker's in `coord/timings.jsonl`:
+  its own jobs' directly, a member's job's and task's and a page's task's with its done (an older
   worker sends none; an older lead ignores it). `scenic timings [kind] [--last N] [--host mac]`
   prints each kind's phases over its last runs (20 by default) with their totals, shares, CPU over
-  wall (marked `~` where approximate), class and bytes: on the build Mac from its coordinator's
+  wall (marked `~` where approximate), class and bytes: on the lead from its coordinator's
   log, on another Mac by asking the coordinator (`/work/timings`), or `--here` this Mac's own jobs.
 
-**Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
-coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.
-The M1's agent (`--helper`) plans nothing: it asks for the shared steps' jobs (it mounts the NAS)
-and, when none fits it, units' last steps.
-- **Shared steps** (`agent::steps::SHARED`, the steps table's, in this order of preference: what later steps wait on
-  first): terrain's and slope's pieces (eight z6 tiles a job), tree cover's pieces (four), units, the
+**The pool** (`docs/pool.md`; `crate::pool`, the agent's part `crate::agent::pool`; and any other
+worker: `docs/workers.md`), always on. Every Mac's agent is a member; one leads each term. A
+process not in the pool (the NAS not reached as it starts, or its member's lock held by another
+process) starts nothing, and restarts into the pool once it can. `scenic pool [status]` shows it.
+- **Who leads** is the terms' (`state/build/terms/`): the first Mac in the pool makes term 1 (or
+  the owner's take-over: `scenic lead`, pool.md §11), and leads it: it plans, runs a coordinator
+  (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it, and
+  merges the journal into the records. A lead restarting, waking from a sleep, or before GC makes
+  the next term naming itself; one on an app older than its term's stands down, and another member
+  able to lead takes over after two minutes. A process whose part changes restarts into it between
+  jobs, or, with `state/pool/slots` on, changes it in place, its coordinator started or stopped and
+  its jobs going on through the lead wherever it is (docs/pool.md §7.6). The other members plan
+  nothing: they ask the lead's coordinator for jobs and, when none fits, units' last steps.
+- **What's offered** (crate::agent::every): every step of the plan, to every member, but the
+  lead's own: its duties (`LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch,
+  the OSM pass, GC, the backup, the input checks, …), the steps that keep the pass's answers, and
+  the worldwide steps (one target, the world: the roads' index, the rail stops, the world's roots,
+  …), whose inputs aren't followed onto a member's Mac. The steps table (`agent::steps`, docs/pool.md
+  §7.2: its `alone` and `answered` rows are those not offered; `shared`, the shared steps' ranks;
+  `beside`, the forecast's second-slot ranks; `batch`, `mem` and the write-set) ranks the shared
+  steps (`agent::steps::SHARED`, in this order of preference: what later steps wait on first):
+  terrain's and slope's pieces (eight z6 tiles a job), tree cover's pieces (four), units, the
   landmarks' candidates and peaks, and the 3D buildings' bldprep and bldtiles (8 and 16 z6 tiles a
-  job; bldprep reads the NAS, which every helper mounts). The rest stays the build Mac's: the
-  pass, the worldwide sets, terrain's, slope's and tree cover's assemblies, map tiles, indexing, trains, Wikidata and
-  pageviews, heritage, the 3D buildings' sources, publishing. The status marks each step a helper
-  may take (⇄; the landmarks', its candidates and peaks; terrain's, slope's and tree cover's, their tiles; the 3D
+  job; bldprep reads the NAS, which every member mounts). The status marks each shared step (⇄;
+  the landmarks', its candidates and peaks; terrain's, slope's and tree cover's, their tiles; the 3D
   buildings', its sources read and tiles).
-- **What fits a helper:** each target is offered with the memory its job is expected to take: a
+- **What fits a member:** each target is offered with the memory its job is expected to take: a
   unit's from its piece; another's what its last run took (the job notes, per target, the most its
   processes held together, sampled four times a second from the start of that target: a pool's
   workers summed, `SCENIC_COSTS`, "<step> <target>"), else candidates' their unit's (they read the
@@ -2399,19 +2388,19 @@ and, when none fits it, units' last steps.
   run, `v` 2 and before, counting for nothing now); peaks 2.5; the 3D buildings' by the rows of the row
   groups a z6 tile's bldprep reads (`agent::bld_peak`, from `crate::bld::sources`): bldprep 0.3 GB
   and 160 B a row, bldtiles 0.25 GB and 280 B for two fifths of them (its largest z8 area's
-  buildings; B1's six tiles each within 0.16 GB of it). A helper asks only for the steps its disk
+  buildings; B1's six tiles each within 0.16 GB of it). A member asks only for the steps its disk
   has room for (15 GB: a terrain piece copies its z6 tile's raw tiles' archive, a tree cover piece
   the one to four canopy squares its blocks touch; a task 5, a row of tree cover blocks 1 (it reads
   the squares where they lie), and a sixth more, counting what its caches can free:
   not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from
-  the far end of the plan (terrain from the near end: the build Mac's next units wait on it), a
+  the far end of the plan (terrain from the near end: the lead's next units wait on it), a
   job's worth (units: as many as it asks). A job it still has no room for
   once its caches are emptied goes back.
-- **The same app** (with the pool on, its app rule: docs/pool.md §6.1; an app from before the 3D
+- **The same app** (the term's app rule: docs/pool.md §6.1; an app from before the 3D
   buildings drops their records and refuses their hand-offs, so both Macs run one with them before
   the lead may move; from it on, the records keep the steps' they don't know, `build::Keys::other`):
-  a helper says which app it runs; on any other than the lead's (older: its updater hasn't run yet;
+  a member says which app it runs; on any other than the lead's (older: its updater hasn't run yet;
   newer: the lead's hasn't) it gets nothing (409, why in words: its status shows it), since its work
   would be recorded under keys another app's code made, which may say a result is current that its
   code didn't make (a step changed with its key or without it); no list of what changed. Its jobs
@@ -2423,72 +2412,51 @@ and, when none fits it, units' last steps.
   a native worker's tasks', are checked as any worker's are (its first three, then one in eight,
   against the job's own run: docs/workers.md §5).
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
-  name) and the token (kept on the build Mac) the agents' requests carry (a page helps with no key:
+  name) and the token the agents' requests carry (a page helps with no key:
   docs/workers.md §7); taken off the NAS when the agent stops. A worker reads it again when it can't reach the coordinator or its token is refused.
 - **Leases:** work goes out on a lease (ten minutes, on the coordinator's own clock), renewed by a
-  beat each minute while the work goes on, not while it's paused for its conditions (a helper beats
+  beat each minute while the work goes on, not while it's paused for its conditions (a member beats
   through its client without the NAS too); a lapsed lease's work is offered again. While the build
   is paused, every lease is held, beats or not, and each has a whole ten minutes again as it goes
-  on. The build Mac's own jobs hold leases too (a lapsed one is taken again if no one took its
-  work), so a target is never built twice at once; each plan leaves out what's leased. Finished units
+  on. The lead's own jobs hold leases too (a lapsed one is taken again if no one took its
+  work), so a target is never built twice at once; each plan leaves out what's leased. What
+  another worker builds is the coordinator's leases alone. Finished units
   aren't offered again before the plan shows them; a worker's failed unit isn't offered to it for an
-  hour, doubling. The jobs' leases, the token and what units cost are kept on the build Mac's disk:
-  its agent restarting (a new app) is a pause to workers.
-- **One writer of the records:** the build Mac alone writes the manifest, its unverified uploads
-  and the job keys (its agent, and its jobs). A helper's job saves its changes into an outbox folder
-  per lease instead (`SCENIC_HANDOFF`, `pipeline::handoff`); when it ends, its agent sends them, merged
-  in order, with the job's done record and what its units cost, as one hand-off, kept until the
-  coordinator has it (across restarts). The coordinator takes it only for a lease it still holds
-  (else 410: the work was offered again, and a late save could put an older build in the manifest)
-  and only for the files its step saves for the lease's targets (a unit's base pack, road values,
-  English and grids; candidates' and peaks' own; a tree cover, terrain or slope piece's hi packs
-  and mid, written or dropped; an area's lo pack and its z6 tiles' hi packs of terrain or slope, or of the tree layers for a z3 tile's
-  whole run, a lease of the scheme before pieces), and journals it whole on the build Mac
-  (`coord/journal/<worker>/`); the agent merges the journal before it plans, under its own lock (not
-  while a paused job holds it), all of a hand-off or none, as it merged the NAS's hand-off files.
-  Until they're merged, the agent plans with their done records on top of the keys, and a tree
-  cover piece's mid one saves counts as made: the piece isn't made again for it, and its z3 tile's
-  assembly waits for the merge.
-- **Raw terrain tiles a helper fetches** (terrain, peaks): it packs them into archives and puts them
+  hour, doubling.
+- **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
+  (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
+  devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
+  each lead's own file per day (`state/coord/history/`).
+- **Every job hands off**, the lead's too: under a lease `<term>-<id>` of the lead's coordinator, it
+  saves into `agent/pool/jobs/<term>-<id>/` (`SCENIC_HANDOFF`, `pipeline::handoff`), then, as an
+  entry, to the journal on the NAS (`state/journal/<day>/<term>-<id>.json`), with the job's done
+  record and what its targets cost. A member's outbox holds its leased tasks' alone. The lead
+  merges the journal into its term's records (`state/build/term/<E>/records.json`, the truth), all
+  of an entry or none, checking each against its step's write-set (`agent::steps::writes`) and,
+  for a shared step, the files its step saves for the targets it did (a unit's base pack, road
+  values, English and grids; candidates' and peaks' own; a tree cover, terrain or slope piece's hi
+  packs and mid, written or dropped; an area's lo pack). It writes today's three files
+  (`state/build/manifest.json`, `jobs.json`, `pending.json`) from them for their readers, older
+  apps among them. No step writes the records directly: once `state/build/terms/` exists every
+  save outside a job's hand-off is refused (`crate::out::check_writer`). Until an entry is merged,
+  the agent plans with its done records on top of the keys, and a tree cover piece's mid one saves
+  counts as made: the piece isn't made again for it, and its z3 tile's assembly waits for the
+  merge.
+- **Raw terrain tiles a job fetches** (terrain, peaks): it packs them into archives and puts them
   on the NAS itself (content-named, written whole: as a unit's packs), keeping none, and hands the
-  build Mac only their names (`Handoff::raw`: every loose tile in its cache, an earlier stopped job's
-  too, each archive named for its area); merging the hand-off, the build Mac names them in the raw
+  lead only their names (`Handoff::raw`: every loose tile in its Mac's cache, an earlier stopped
+  job's too, each archive named for its area); merging the entry, the lead names them in the raw
   store's index, which it alone writes, each whose tiles are all its area's, and merges an area's
-  archives when it next packs there. A hand-off it doesn't take (its lease gone, or refused) still
-  has its archives named (journaled on their own, `coord/journal/raw-tiles/`), and so does a merge
-  that couldn't name them then. An archive the index neither names nor lists to go, a day old (a
-  hand-off that never came), is listed to go; and an index whose file is missing while archives are
-  there is never written (one saved then would name none of them), unless the only archives are
-  those being named (a helper's first). One that can't be read now is named with a later merge; a
-  merge of nothing but those writes no records.
-- **A helper's job that fails** hands off the targets it finished (they're kept), the rest held
-  against it as a failure's; a hand-off refused from a helper on a newer app than the build Mac's
-  (its step may save what the build Mac's doesn't know) isn't held against its targets.
-- **For a helper on an older app** (one release): the build Mac still claims its own jobs' targets
-  on the NAS (`state/build/claims/`), leaves out the targets such a helper claims, and merges the
-  NAS's hand-off files (`state/build/handoff/<host>/`).
-- **Enforced:** the build Mac's agent names its Mac in `state/build/writer` (every five minutes, by
-  its name then), and its jobs carry `SCENIC_BUILD_MAC`; any other save on another Mac outside a
-  helper's job (a step run there by hand) is refused.
-- **Temporary names** are each Mac's own (kept results), and each process's too (uploads), so the
-  two never write into the same one.
-
-**The pool** (`docs/pool.md`, phase 1, `crate::agent::pool`): built, and switched on since 8 Oct 2026. While
-`state/pool/enabled` isn't on the NAS, all of the above holds; a change of it restarts each agent
-between jobs into the other way. On:
-- **Who leads** is the terms' (`state/build/terms/`): the Mac `state/build/writer` names makes term
-  1, and leads it as the build Mac did (it plans, its coordinator grants); any other Mac's agent works
-  as a helper did, `--helper` or not. A lead restarting, waking from a sleep, or before GC makes the
-  next term naming itself; one on an app older than its term's stands down, and another member able
-  to lead takes over after two minutes. A process whose part changes restarts into it between jobs,
-  or, with `state/pool/slots` on, changes it in place, its coordinator started or stopped and its
-  jobs going on through the lead wherever it is (docs/pool.md §7.6).
-- **Every job hands off**, the lead's too: under a lease `<term>-<id>` of the lead's coordinator, its
-  saves into `agent/pool/jobs/<term>-<id>/` (`SCENIC_HANDOFF`), then, as an entry, to the journal on
-  the NAS (`state/journal/<day>/<term>-<id>.json`), which the lead merges into its term's records
-  (`state/build/term/<E>/records.json`) and writes into today's three files for their readers. No
-  agent records keys, merges hand-offs or names the writer; no job carries `SCENIC_BUILD_MAC`; every
-  save outside a job's hand-off is refused.
+  archives when it next packs there. An archive the index neither names nor lists to go, a day
+  old (a hand-off that never came), is listed to go; and an index whose file is missing while
+  archives are there is never written (one saved then would name none of them), unless the only
+  archives are those being named. One that can't be read now is named with a later merge; a merge
+  of nothing but those writes no records.
+- **A job that fails** hands off the targets it finished (they're kept), the rest held against it
+  as a failure's; an entry refused from a member on a newer app than the lead's (its step may save
+  what the lead's doesn't know) isn't held against its targets.
+- **From before the pool**, what waits is drained into the journal as an agent starts: its
+  coordinator's journal of old (`coord/journal/`) and its outbox.
 - **A catalog** goes out only once the lead's records reflect the journal (a listing of every day,
   under a day old, merged, nothing told or listed waiting); **GC** only on a step that re-asserted
   the lead's term, so caught up; it keeps every file the newest records, or a journal entry they
@@ -2501,15 +2469,8 @@ between jobs into the other way. On:
   put back; a tombstone a sweep finds (a GC stopped between) is never removed as a stale file:
   it's put back under its name for the next run to decide, or removed only when its name holds
   the same bytes again (a put-back never replaces a file there).
-- **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
-  (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
-  devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
-  each lead's own file per day (`state/coord/history/`).
-- **As it's switched on**, what waits from before is drained into the journal: the build Mac's
-  coordinator's journal, the NAS's hand-off folders, a helper's outbox.
-- **A shadow run** (`state/pool/shadow`, or `scenic pool-shadow` beside an agent) runs the pool's
-  driver beside today's coordination, writing only under `state/pool-shadow/`, and logs what it would
-  decide.
+- **Temporary names** are each Mac's own (kept results), and each process's too (uploads), so the
+  two never write into the same one.
 
 **Order:**
 0. **The input check** (`inputs <unit>`, docs/inputs.md §4.3), before every other job: a unit
@@ -2541,11 +2502,11 @@ between jobs into the other way. On:
      slope (a piece once the terrain of its area and of its edge neighbours' areas is built, an
      area's assembly once its pieces are) and tree cover (its pieces, then each z3 tile's assembly
      once every piece of it has its mid: a piece current but without one comes with them, made
-     again as it is), after them for the build Mac. A helper takes the
+     again as it is), after them for the lead. Another member takes the
      earliest shared step with work that fits it (terrain, slope, tree cover's pieces, units, …:
      what later steps wait on first), from the far end of all of that step's (the agent offers a
-     step's targets together): the last regions', while the build Mac does the first's. Terrain it
-     takes from the near end: the next region's, whose units the build Mac builds next.
+     step's targets together): the last regions', while the lead does the first's. Terrain it
+     takes from the near end: the next region's, whose units the lead builds next.
    - **A map update** when a region is done that the map hasn't as it is now, an hour after the last
      map update began (`PUBLISH_EVERY_S`; before the agent kept map updates, after the last catalog went out
      or last started) while units or terrain are left, and at once after the last unit and terrain
@@ -2557,14 +2518,14 @@ between jobs into the other way. On:
      outline redrawn). It's over once its catalog (or held catalog) is made, whatever changed in
      the meantime (that goes out with the next): it can't grow as the units go on being built, nor
      wait for work that keeps failing (its catalog goes out without that region). It begins once
-     every helper's work done is merged (the units it counts as built are in its copy), and not
+     every member's work done is merged (the units it counts as built are in its copy), and not
      while an edit is held; only the agent that runs the build's jobs keeps it (a dry run beside it
      plans with its own). Its work: the slope and tree cover of its regions' areas (slope's the z3 tiles
      within 20 km of it, tree cover's those it meets: their pieces and assemblies; after the last
      unit, all that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the
      roads' chain, and a catalog. A region done waits for its map update with its slope and tree cover made: the
-     build Mac makes them as it's done, before more of the regions' work, so the map update only draws.
-     The units follow the map update in the list (a helper's, and the build Mac's while the map update's work
+     lead makes them as it's done, before more of the regions' work, so the map update only draws.
+     The units follow the map update in the list (a member's, and the lead's while the map update's work
      waits out a failure). A map update before the last draws only the map tiles that go out with it:
      those meeting a region it publishes, those no unit to build when it began is near (their 100 km
      halo), and those whose owners changed (Job keys, pack(T): their base packs go out as they are,
@@ -2589,7 +2550,7 @@ between jobs into the other way. On:
        buildings being raised; the time since the last began; the gap), so the forecast's map
        updates are those the lead will run. Each time it plans, the lead records its decision
        (`build::UpdateDecision`): due or not, why in words (no region with new work, the gap not passed
-       and the minutes left, under way, waiting for a helper's work to be merged or an edit to
+       and the minutes left, under way, waiting for a member's work to be merged or an edit to
        settle, the build paused, nothing new to publish), the gap and its basis (the hour, or twice
        the measured map updates), the regions with new work and their kinds (a new region or one
        rebuilt, its slope and tree cover still to make), and whether the 3D buildings' packs are
@@ -2679,15 +2640,15 @@ between jobs into the other way. On:
      once the sources are here. Its tiles in the regions' order (those of the region built first,
      first), each step's together.
 
-   The trains', the landmarks' and the 3D buildings' work is listed after the regions' (the build
-   Mac's own job takes it once the regions' work is done or waits), the 3D buildings' last: the
-   second job takes it first (the buildings after its other steps), a helper the candidates and
+   The trains', the landmarks' and the 3D buildings' work is listed after the regions' (the lead's
+   own job takes it once the regions' work is done or waits), the 3D buildings' last: the
+   second job takes it first (the buildings after its other steps), another member the candidates and
    peaks, and the 3D buildings' tiles. Last of all, in idle time: the mids of tree cover's,
    terrain's and slope's pieces current without one (those a key scheme's switch recorded, or
    derived: §8, A new key scheme; terrain's in an area whose assembly won't run), each made again as
    it is and expected the same (`scenic-build trees|terrain|slope --expect-same`: a pack coming out other than the manifest
    has it fails the job, nothing uploaded; so a change to a piece's bytes alone bumps `TREES_V`:
-   §6, Job keys); a helper takes them from the far end too.
+   §6, Job keys); another member takes them from the far end too.
 5. **A catalog** once the roads chain is done, in a map update: a new one whenever the served files
    change, or the regions it records (their recipes and the outline files they name), or which of
    them are done. It lists the units as they were when the map update began. It records as built the
@@ -2698,7 +2659,7 @@ between jobs into the other way. On:
    if it had them (on the map as they were); the Regions panel shows the rest as pending, or building with their areas
    counted. It waits while another worker builds a slope or tree cover piece of a region it
    would publish (it would go out without the region, which would then wait an hour), and while a
-   helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
+   member's hand-offs wait to be merged (their areas counted as built, their files not yet in the
    manifest). What the trains', the landmarks' and the 3D buildings' chains made goes out with the
    next map update's catalog; after the last unit, a catalog follows any chain's change, but while the
    3D buildings' chain has work left (their sources' fetch aside: it changes nothing served, and
@@ -2717,7 +2678,7 @@ between jobs into the other way. On:
 - stale work after step-version bumps, done oldest first in idle time;
 - registers, Overture and timetables fetched every ~6 months.
 
-**Interruptions.** The build Mac may be asleep, away or unplugged at any time, or close its lid
+**Interruptions.** Any Mac, the lead too, may be asleep, away or unplugged at any time, or close its lid
 mid-job. Nothing depends on it being available at a given time.
 - **No deadlines.** Until work is done, the map serves the last catalog.
 - **Conditions per step:**
@@ -2740,12 +2701,12 @@ mid-job. Nothing depends on it being available at a given time.
 **Status.**
 - `scenic status` (each Mac's build caches too); `scenic clean` clears this Mac's, and `scenic room`
   sets its disk room target (Room on the disk, above).
-- The app's status bar: the build Mac's state, the NAS, and new data or a new app in.
+- The app's status bar: the build's state (the lead's heartbeat), the NAS, and new data or a new app in.
 - The menu bar item. It asks the local server (`/api/build`): this Mac's agent's status when it runs
   here, else the NAS's copy. Each agent writes its status at least every two minutes; one not heard
   from for six is shown as out of touch (asleep, off, or stuck), not as it last was. It pauses and
   resumes the build (Pausing, above), as does the map's build panel. From this Mac's agent's own
-  status, read in its folder (the build Mac's `status.json`, a helper's `helper.json`), it shows
+  status, read in its folder (the lead's `status.json`, a member's `helper.json`), it shows
   what that Mac's build caches hold and their last trim and clear, and offers Clear the Build's
   Caches, after a confirmation, and Disk Room: the disk's free space and the room target, set
   from a few presets or Off (Room on the disk, above).
@@ -2761,7 +2722,7 @@ mid-job. Nothing depends on it being available at a given time.
   - **Its menu** (a right-click, or the panel's "⋯"): the state in a line, this Mac's downloads and
     build caches; Pause Building (Option: Pause Building Now) or Resume Building, and an ask under
     way; the pool's lead items (docs/pool.md §11); Clear the Build's Caches; Disk Room ▸; Open the
-    Build Log (on the build Mac, while a job runs); Open the Map; Copy the Map's Address; Open the
+    Build Log (while a job runs on that Mac); Open the Map; Copy the Map's Address; Open the
     Build Page in the Browser; Copy the Build Page's Address.
   - Its timers run in the run loop's common modes: the polls, the icon and the notifications go on
     while a menu is open (`scenic-status --menu-proof` shows it).
@@ -2771,8 +2732,7 @@ mid-job. Nothing depends on it being available at a given time.
     status's `inputs` (the lead's) says each unit's state; `scenic status` prints a line per unit
     held or checking, `scenic inputs` every unit; the build page and the map's build panel show
     a banner per held unit.
-- Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
-  in at home").
+- Each says what's waiting and why ("the M4 last seen yesterday; Kanto waits for it").
 
 **Determinism:** the same inputs give the same bytes, on any machine and in WebAssembly: sorted
 outputs, no hash-map order, reductions that don't depend on the thread count, and every
@@ -2793,8 +2753,7 @@ planned: a "build twice, compare hashes" test per step.
 **Tests:** a test holds on any Mac in any state: loaded by builds beside it, unplugged, away from
 home, its owner at the keyboard or not. So no test turns on the wall clock, on the real machine or
 on the order its siblings run in. What it tests is given its time and its machine:
-- A decision is a function of its inputs, the time among them (`edit_held`, `claims::fresh_at`,
-  `runs_at`), tested on its own.
+- A decision is a function of its inputs, the time among them (`edit_held`, `runs_at`), tested on its own.
 - Code that waits takes a clock (`store::clock`): the job's waits on workers (`Offload::clock`), the
   coordinator's leases, workers around and paces (`Shared::clock`), and the pool's member
   (`Side::set_clock`). Their tests run on a virtual clock that moves only when slept on, a worker's
@@ -2815,15 +2774,23 @@ on the order its siblings run in. What it tests is given its time and its machin
 **Format bumps:** publish an app that reads both forms, then the data; drop the old reader once
 everything is rebuilt.
 
-**App publishing:** `tools/app/publish.sh`, run by hand on this Mac with the NAS mounted. It:
-1. builds the server and pipeline;
-2. runs the crates' tests, the type check (our MapLibre's declarations written and checked first)
+**App publishing:** `tools/app/publish.sh`, run by hand on either Mac with the NAS mounted. It:
+1. takes a lock on the NAS (`app/publish.lock`, made with create-new, naming its Mac, process and
+   time; removed as it exits; one older than six hours taken over), so two publishes never write
+   `app/current.json` at once;
+2. refuses unless the tree is clean (the task board's db, `tools/taskboard/taskboard.db*`, aside)
+   and HEAD is on origin's main, so every version names a commit either Mac can check out (no
+   `-dirty` versions);
+3. refuses while the lead's role's old name appears in the code, docs or UI (`tools/taskboard`
+   exempt: the owner's rule, 14 Oct 2026);
+4. builds the server and pipeline;
+5. runs the crates' tests, the type check (our MapLibre's declarations written and checked first)
    and the web build (which compiles our MapLibre's source with the app), and checks every Python
    step the agent runs loads from a copy of the app's `dem/` (in an environment made from its lock
    file for the check, then thrown away) and passes pyflakes;
-3. smoke-tests a server on a spare port against the NAS's catalog;
-4. writes `app/<version>/` and `app/current.json` with every file's SHA-256;
-5. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
+6. smoke-tests a server on a spare port against the NAS's catalog;
+7. writes `app/<version>/` and `app/current.json` with every file's SHA-256;
+8. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
 
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
 
@@ -2852,7 +2819,7 @@ everything is rebuilt.
 | outlines | 2.7 GB |
 | OSM pieces (all land) | ~58 GB (measured as the cut finished) |
 | basemap (worldwide) | 28.6 GB (its input 16.3 GB; Planetiler needs ~6× its input while it runs; 46 min) |
-| water (worldwide) | 75,683 tiles, 1.38 GB (z0–8 0.56 GB, z9 0.82 GB), from 25.4 million z14 tiles of 2026-09-28's basemap in 4.5 min on the build Mac, the basemap read from the NAS (2026-10-08); deeper zooms drawn by the server |
+| water (worldwide) | 75,683 tiles, 1.38 GB (z0–8 0.56 GB, z9 0.82 GB), from 25.4 million z14 tiles of 2026-09-28's basemap in 4.5 min on the M4, the basemap read from the NAS (2026-10-08); deeper zooms drawn by the server |
 | NAS | 8.5 TB free of 35 TB |
 
 **Estimated:**
@@ -2975,14 +2942,14 @@ At each phase's end an Opus agent reviews the work against this plan.
    units' Python steps in Rust (`elev`, `landcover`, `areaflags`: the same bytes), and tree cover's
    (`trees`: the same pixels); the build page, a dashboard for anyone and HTTPS through `tailscale
    serve`, any page on the LAN or the tailnet helping, with no key. Next: OPFS, ranged
-   reads, journaled group commits, retiring the claim and hand-off files.
+   reads, journaled group commits.
 
 **Gaps:** the code falls short of the design here.
 1. **The pool** (`crate::pool`, `crates/pipeline/src/pool/`; `docs/pool.md` §12): phase 1 is built
-   and switched on since 8 Oct 2026 (`state/pool/enabled`, §8, The pool), the agent's part with it
-   (`crate::agent::pool`), phase 3's controls (`crate::agent::lead`: the owner's asks to hand the
-   lead over or take it, the menu bar, the build page, the map's panel, `scenic lead`), and a shadow
-   run beside today's agents (`crate::agent::shadow`). What they leave open:
+   and always on (§8, The pool), the agent's part with it (`crate::agent::pool`), phase 3's
+   controls (`crate::agent::lead`: the owner's asks to hand the lead over or take it, the menu bar,
+   the build page, the map's panel, `scenic lead`), and phase 4's batches (pool.md §12).
+   What they leave open:
    - the build page is served by the lead's coordinator alone (any member serving it is phase 4),
      so its "Take it" can't reach a Mac while the lead is gone: the menu bar and `scenic lead take`
      do;
@@ -2992,25 +2959,19 @@ At each phase's end an Opus agent reviews the work against this plan.
      fourth batch: pool.md §12); on, the part changes in the process, its jobs going on;
    - the records' readers read today's three files, which the lead writes from its records after
      each save; the snapshot itself is read by no reader yet;
-   - with the pool on, nothing re-keys the records (`agent::rekey`): a new key scheme builds its
-     targets again, but terrain's and slope's pieces, which every reader derives in memory from an
-     area's whole run's record (§8, A new key scheme);
    - the raw tiles' archives the lead names stay in its records (nothing takes them off);
    - the coordinator's state per term is written on the loop after a grant, not in it;
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
-   - the forecast doesn't model the agent's passing over a first job that can't share the Mac with
-     the second's (§8, Two jobs at once), nor these clashes at all: it takes such jobs as running
-     beside each other;
+   - the forecast doesn't model a first job waiting for one that can't start beside the second's
+     (§8, Two jobs at once): it takes such jobs as running beside each other;
    - the memory guard (`agent::memguard`) samples each job's memory every 5 s: a job growing faster
      can swap its Mac that long before it's frozen; a unit's measure is taken while it's built
-     here, so a tail it runs here later is counted against the unit under way then; and a helper's
-     job with the pool off sends its targets' floors nowhere (its result has none: the pool-off path
-     goes, pool.md §12);
+     here, so a tail it runs here later is counted against the unit under way then;
    - the steps' write-sets (`agent::steps::writes`) are a predicate over a name per step, which a
      job's `Out` and the merge share, not a type only the function can construct (pool.md §7.7's
      design): a step's code can still form a name outside, which fails its job as it's written
      (pool.md §7.3, §12 phase 4's sixth batch);
-   - the budgets (`state/pool/budgets`, off while missing; crate::budget, pool.md §7.7) meter a
+   - the budgets (always on; crate::budget, pool.md §7.7) meter a
      Wikimedia request's rate, not how many run at once (dumps.wikimedia.org asks for two
      connections an address at most: pageviews.py's months are one at a time by its own code); a
      429 pageviews.py's curl gets fails its month and isn't told to the proxy; a window is each
@@ -3043,10 +3004,6 @@ At each phase's end an Opus agent reviews the work against this plan.
      asking for it holds it from the others until the minute's window turns; slope has no tasks, so
      nothing of it is offered ahead; a head start is reckoned at this Mac's time per task of its kind
      (its tiles or blocks counted, not timed);
-   - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
-     on in today's files without them: switched on again, the pool would take up its newest
-     snapshot, older than today's files. `scenic pool off` moves its files aside once the agents
-     have left it (pool.md §12, Switching it off).
    What the core leaves open, by design:
    - create-new between two Macs is unchecked on the real share (pool.md §3, ◻), and invariant 1
      (one lead a term) rests on it;
@@ -3089,13 +3046,12 @@ At each phase's end an Opus agent reviews the work against this plan.
      (unchecked, as plan §10's stale reads). An entry that doesn't read whole holds GC until its
      lead refuses it, after an hour unreadable, or with no term led, three days on its day, when
      GC passes over it: a member's entry that reads whole only later (a share's stale reads over
-     three days, the pool off) may then name files GC removed, if older than its two weeks;
+     three days, no term led) may then name files GC removed, if older than its two weeks;
    - the disk a job takes is counted by the caches' accessor in Rust alone: dem/cachefile.py's
      writes (the pageview months) count only through the scratch folder's look (the disk's fall,
      logged, is no floor); a unit's disk is what the accessor wrote while it was built here, its
      tail's writes after the next unit began counted to that one; a member's job's disk is learned,
-     and with `state/pool/every-step` off members are offered work by `helper_need`'s figures (on,
-     by measured room: pool.md §12, batch 9); with the Mac shared by measure a member takes every
+     and members are offered work by measured room (pool.md §12, batch 9), a member taking every
      job as a cold start on its own slots (pool.md §7.7, §12);
    - every step to every member (pool.md §12, batch 9): the pass's worldwide jobs (its sets, the
      reach, the summits, the labels, the water, the lake fill, …), the catalogs and prune, GC, the
@@ -3145,7 +3101,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    from the basemap. Dropping it from `osmpass::SETS` would leave the check to build its store from
    the basemap's own z14 tiles (then not an independent reference).
 7. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
-   mirror's reserve (50 GB on the M1, 150 GB on the build Mac) can be filled by a download's copies
+   mirror's reserve (50 GB on the M1, 150 GB on the M4) can be filled by a download's copies
    once the agent frees toward it, leaving the agent short of it with nothing of its own to free
    (it says so). Fix: the server reads the agent's `room-target.json` and keeps its mirror's
    reserve at the larger of the two while one is set.
@@ -3173,10 +3129,10 @@ At each phase's end an Opus agent reviews the work against this plan.
      two overlap the smaller wins, so a thing within about a kilometre of a border may take its
      neighbour's languages (the ruins of Wasigenstein, in Alsace 300 m from the border, read German).
      Fix, if it matters: the outlines' full rings near borders.
-9. **A worker's tail in a one-unit job only frees the build Mac's cores** (docs/workers.md §3):
+9. **A worker's tail in a one-unit job only frees its Mac's cores** (docs/workers.md §3):
    the job waits on a worker holding its tail only while its measured pace says it'll be back
-   before the build Mac's own run would end, so a worker slower than the build Mac is raced at once
-   (and kept to finish only to measure it), and the build Mac runs the tail anyway. The paces live
+   before the job's own run would end, so a worker slower than the job's Mac is raced at once
+   (and kept to finish only to measure it), and the job's Mac runs the tail anyway. The paces live
    in the coordinator alone: a restart measures each worker again. Fix: the job ends while a worker holds its tail,
    its slot free for new work, and the agent commits the unit when the tail is back (or runs it
    then, past its time): planned with the pool's phase 4.
@@ -3188,11 +3144,11 @@ At each phase's end an Opus agent reviews the work against this plan.
   - a hung SMB session once stalled this Mac's reads, even a forced unmount, for minutes.
   - Planned: a rate limit on the pass's uploads, and remounting a hung mount (the breaker's probe
     times out) rather than waiting.
-- **The build Mac's availability:**
-  - work progresses only while the M4 is awake, reaches the NAS (away from home through Tailscale,
-    at ~12 MB/s, the whole-planet and whole-world jobs waiting for home), and has power;
-  - a closed lid stops building, and nothing is lost while it waits;
-  - the M1 builds units too when it's open (§8, Two Macs); everything else waits for the M4.
+- **The Macs' availability:**
+  - work progresses only while a Mac of the pool is awake, reaches the NAS (away from home through
+    Tailscale, at ~12 MB/s), and has power;
+  - a closed lid stops that Mac's building, and nothing is lost while it waits; the lead's duties
+    wait for a lead (another member takes the lead over once its lead is gone: §8, The pool).
 - **Dense units:**
   - the densest (Kanto, a 3 GB base pack);
   - if a unit or its 110 km halo doesn't fit in 48 GB, units split into z7 or z8 tiles, and pack(T)
@@ -3217,7 +3173,7 @@ jobs) go with no replacement, as does the rule of only network work beside the f
 Mac is in use; the run-alone and second-job lists go once disk is measured like memory (a job beside
 another only if both jobs' measures fit); the groups go to accessors (the raw tiles' safety is
 `store::cachefile`'s already; Wikidata's politeness one budget for the pool on the NAS, taken at
-each agent's proxy: built, behind `state/pool/budgets`, docs/pool.md §7.7).
+each agent's proxy: built, always on, docs/pool.md §7.7).
 The batches after the memory guard were reordered around it.
 
 **The pool's phase 4 in batches (2026-10-10):** docs/pool.md §12, item 4. Why the plan is so:
@@ -3263,7 +3219,7 @@ whole catalog as its room allowed, the essentials first, then kept areas, then t
 use, and let files go for room. Why the rest of the design: the basemap is split into pieces by z6
 tile rather than copied whole (28.5 GB for any area) or kept as a sparse copy (§4); a region needs
 the World offline, so it brings it; copies keep to 20 MB/s while the build runs rather than
-pausing, which with the pool on would hold an owner's download off for hours.
+pausing, which in the pool would hold an owner's download off for hours.
 
 **v7, names as built (2026-10-08):** §7's design built, with these choices:
 - Hong Kong's and Macau's names are read in Cantonese (`yue`), a language of its own: Chinese lines
@@ -3291,7 +3247,7 @@ pausing, which with the pool on would hold an owner's download off for hours.
   - the gaps listed in §10.
 
 **Implementation decisions since v6 (2026-10-02 to 06), now in the sections above:**
-- **No SSH from the build Mac:** 1Password asks for every new session. So GC deletes over SMB,
+- **No SSH from the Macs:** 1Password asks for every new session. So GC deletes over SMB,
   uploads are checked by reading them back, and the planet fetch runs from DSM.
 - **Units are z6 tiles only;** the split waits for a unit that needs it.
 - **The NAS by its LAN name.** Tailscale's userspace networking on the NAS held SMB to 12 MB/s,
@@ -3331,13 +3287,13 @@ pausing, which with the pool on would hold an owner's download off for hours.
 - **The menu bar item,** with progress to the end (asked for 2026-10-03).
 - **What the internet answered is kept on the NAS** (§4, Downloads): the items job's and the
   heritage chain's Wikidata and Wikipedia answers, a pass's at a time, as an archive each step
-  writes as it starts and ends. They were on the build Mac alone, so another Mac leading the build
+  writes as it starts and ends. They were on the M4 alone, so another Mac leading the build
   (docs/pool.md) or a lost disk would have asked again (the 2026-09-28 pass's 59,000 items took
   about 37 minutes of queries), and the owner wants nothing fetched twice without a good reason.
   After its review: a file deleted by hand stays deleted (one cut short would otherwise come back
   from the NAS, the job failing again), a step's end never writes over another writer's archive
-  (merged by key where it can be: once the lead moves, two Macs' runs can overlap), and the build
-  Mac's agent sends what the NAS lacks as it starts (the next run may be the next pass's, months
+  (merged by key where it can be: once the lead moves, two Macs' runs can overlap), and the lead's
+  agent sends what the NAS lacks as it starts (the next run may be the next pass's, months
   away). The heritage scripts run in the app's Python environment, as the other steps do: theirs
   was the only one kept in the cache.
 - **A unit's key names the terrain tiles it reads, by their contents** (§6, Job keys; 2026-10-06),
@@ -3362,10 +3318,10 @@ pausing, which with the pool on would hold an owner's download off for hours.
   each; a new pass makes the summits again.
 - **A change of key scheme re-keys the records** (§8, A new key scheme): a change of keys
   mustn't build again what would come out the same, and the units' alone would have rebuilt all
-  284 (some seven hours of the build Mac).
+  284 (some seven hours of the M4).
 - **Tree cover a z6 tile at a time, each z3 tile's zoomed-out tree cover assembled from mids**
   (§6, Trees; 2026-10-06). A z3 tile's whole run took up to half an hour and 30 GB of canopy squares
-  on a helper's disk, and a change anywhere in it made it all again; a piece copies its z6 tile's
+  on the M1's disk, and a change anywhere in it made it all again; a piece copies its z6 tile's
   one to four squares and takes about a minute, and a change makes its pieces and its z3 tile's
   assembly (seconds) again. Its switch makes the whole tree cover again once, with the program:
   trees.py had made every pack, in bytes the pieces don't reproduce (§8, A new key scheme). Byte
@@ -3373,8 +3329,8 @@ pausing, which with the pool on would hold an owner's download off for hours.
   pixels.
 - **Terrain and slope a z6 tile at a time, each z3 tile's zoomed-out levels assembled from mids**
   (§6, Global-source layers; 2026-10-08). An area's run made every z6 tile of it again for a
-  change in one, and held the build Mac for up to 15 minutes, where a piece takes seconds and a
-  helper can take it; a slope piece's key names the terrain tiles it reads, so a change in one
+  change in one, and held the M4 for up to 15 minutes, where a piece takes seconds and any
+  member can take it; a slope piece's key names the terrain tiles it reads, so a change in one
   piece makes its slope and its edge neighbours' again, not the area's. Terrain's mid holds its z9
   tiles' means and its lakes' levels, not its z8–z6 tiles: a lake's level at z8 comes from the
   whole area's z8 tiles (the water, 2026-10-08), so the assembly makes the area's z8–z3. The
