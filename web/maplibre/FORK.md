@@ -180,8 +180,15 @@ now source changes:
   equal to three decimals (1.845 against 1.843 for the low Chamonix camera; 1.581 at upstream's
   zoom). The median GPU time of a moving frame for the zoom over the terrain without the two rules
   (quiet gate, upstream's → this): Chamonix at 65° 2.96 → 3.94 ms turning, 3.25 → 3.55 gliding;
-  Annecy at 70° 1.84 → 2.28 and 2.16 → 2.29; Tokyo at 65° 7.88 → 8.00 and 8.10 → 8.68. With the two
-  rules: not measured yet.
+  Annecy at 70° 1.84 → 2.28 and 2.16 → 2.29; Tokyo at 65° 7.88 → 8.00 and 8.10 → 8.68. With and
+  without the two rules (`drape.mjs --sizing 1|0`, quiet gate, four repetitions, the medians of the
+  repetitions' median and p95, this zoom; ms): the low Chamonix camera turning 4.03 / 29.9 against
+  3.86 / 26.1, gliding 5.22 / 29.9 against 5.03 / 27.7; Annecy at 72° 4.29 / 26.8 against
+  4.00 / 26.6 and 5.35 / 11.0 against 5.17 / 10.8; Tokyo at 70° 9.79 / 36.8 against 9.63 / 14.5
+  and 9.72 / 12.9 against 9.60 / 12.9; Chamonix at 65° 2.56 / 14.8 against 2.52 / 14.9 and
+  3.48 / 10.1 against 3.54 / 11.7. The medians within 0.3 ms either way; Tokyo's turning p95 an
+  outlier the other cases don't show. While moving, the low camera holds 37–40 tiles either way:
+  the 734 were the rest's.
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`'s grids, `Terrain.getMinMaxElevation`):
   a tile deeper than its DEM tile took the whole DEM tile's range (a z14 tile in the Alps the peak
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser

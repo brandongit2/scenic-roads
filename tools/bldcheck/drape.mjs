@@ -139,7 +139,7 @@ const measure = (t, on) => t.ev(`
     const q = (a, p) => (a.length ? [...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(a.length * p))] : null);
     const ms = fr.map((f) => f.ms).filter((x) => x != null);
     const mean = (a) => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
-    return { frameMed: q(ms, 0.5), frameP90: q(ms, 0.9), frameMean: mean(ms), n: ms.length,
+    return { frameMed: q(ms, 0.5), frameP90: q(ms, 0.9), frameP95: q(ms, 0.95), frameMean: mean(ms), n: ms.length,
       tilesMean: mean(fr.map((f) => f.tiles)), drawnMean: mean(fr.map((f) => f.drawn)), drawnTotal: fr.reduce((s, f) => s + f.drawn, 0),
       framesDrawing: fr.filter((f) => f.drawn > 0).length, stacks: fr[0]?.stacks,
       drawnMs: mean(fr.filter((f) => f.drawn > 0 && f.ms != null).map((f) => f.ms)), quietMs: mean(fr.filter((f) => f.drawn === 0 && f.ms != null).map((f) => f.ms)),
