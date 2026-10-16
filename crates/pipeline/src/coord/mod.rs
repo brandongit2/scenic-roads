@@ -1326,15 +1326,15 @@ impl Coordinator {
     }
 
     /// The agent among the workers heard from in the last ten minutes with the largest memory
-    /// limit: its label (its host name, what `scenic lead give` takes) and that limit (MB). A page
-    /// can't lead: agents only.
+    /// limit: its worker name (an agent's host name, which `scenic lead give` matches; not its
+    /// label, "<host> (helper)") and that limit (MB). A page can't lead: agents only.
     pub fn roomiest_agent(&self) -> Option<(String, u64)> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
         s.workers
-            .values()
-            .filter(|w| w.kind == "native" && now.duration_since(w.seen) < Duration::from_secs(600))
-            .filter_map(|w| w.ask.as_ref().and_then(|a| a.limit_mb).map(|l| (w.label.clone(), l)))
+            .iter()
+            .filter(|(_, w)| w.kind == "native" && now.duration_since(w.seen) < Duration::from_secs(600))
+            .filter_map(|(n, w)| w.ask.as_ref().and_then(|a| a.limit_mb).map(|l| (n.clone(), l)))
             .max_by_key(|(_, l)| *l)
     }
 

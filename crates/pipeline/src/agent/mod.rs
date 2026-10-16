@@ -7793,7 +7793,7 @@ mod tests {
         assert!(h.here.contains(&("terrain".to_string(), "6/1/1".to_string())) && h.here.len() == 1 && h.all.len() == 1 && h.alone.is_empty());
         assert!(h.why[0].why.contains("more than any Mac in the pool has"), "{:?}", h.why);
         let w = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{}", c.contact.urls[0].rsplit(':').next().unwrap())], c.contact.token.clone(), "big");
-        let _ = w.ask(&crate::coord::Ask { kind: "native".into(), can: vec!["terrain".into()], mem_mb: 30 << 10, limit_mb: Some(42 << 10), ..Default::default() });
+        let _ = w.ask(&crate::coord::Ask { kind: "native".into(), label: Some("big (helper)".into()), can: vec!["terrain".into()], mem_mb: 30 << 10, limit_mb: Some(42 << 10), ..Default::default() });
         let h = a.guard_holds(&works);
         assert!(h.here.len() == 1 && h.all.is_empty() && h.why[0].why.contains("left to a Mac with room"), "{:?}", h.why);
         // A step only the lead runs (heritage), its floor past the lead's limit: judged against the
@@ -7806,7 +7806,7 @@ mod tests {
         let h = a.guard_holds(&lead_only);
         assert!(h.all.len() == 1, "{:?}", h.why);
         let why = &h.why[0].why;
-        assert!(why.contains("past the lead's limit of 12.0 GB; this step runs only on the lead") && why.contains("big's limit is 42.0 GB") && why.contains("`scenic lead give big`") && !why.contains("more than any Mac"), "{why}");
+        assert!(why.contains("past the lead's limit of 12.0 GB; this step runs only on the lead") && why.contains("big's limit is 42.0 GB") && why.contains("`scenic lead give big`") && !why.contains("(helper)") && !why.contains("more than any Mac"), "{why}");
         c.add_floors(&floor(50 << 10));
         let why = &a.guard_holds(&lead_only).why[0].why;
         assert!(why.contains("past the lead's limit of 12.0 GB") && why.contains("no member's limit fits it") && !why.contains("lead give"), "{why}");
