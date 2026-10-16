@@ -1001,6 +1001,13 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         popover.appearance = NSApp.effectiveAppearance
         root.appearance = NSApp.effectiveAppearance
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // The popover's own glass (one NSGlassEffectView under the arrow and the body alike) in its
+        // clear style (the regular one is near opaque over a window), tinted with the window's
+        // colour so the dim text stays readable over a bright window behind.
+        for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
+            g.style = .clear
+            g.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
+        }
         popover.contentViewController?.view.window?.makeKey()
         find()
     }
@@ -1067,10 +1074,18 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // keep theirs, so their text stays as legible as in a browser).
         // (At the start, so no opaque flash on a load or Reload; `!important`, so no later rule of
         // the page's undoes it.)
-        let clear = "const s = document.createElement('style'); s.textContent = 'html,body{background:transparent!important}'; document.documentElement.appendChild(s);"
+        // Its cards, boxes and bars (index.html's --panel, --bg) partly see-through too, so what's
+        // behind the popover shows, the text on them still clear.
+        let css = "html,body{background:transparent!important}"
+            + ":root{--bg:rgba(14,16,19,.4)!important;--panel:rgba(22,26,31,.55)!important}"
+            + "@media (prefers-color-scheme: light){:root{--bg:rgba(244,246,248,.4)!important;--panel:rgba(255,255,255,.55)!important}}"
+        let clear = "const s = document.createElement('style'); s.textContent = '\(css)'; document.documentElement.appendChild(s);"
         conf.userContentController.addUserScript(WKUserScript(source: clear, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let w = WKWebView(frame: NSRect(x: 0, y: Panel.footerHeight, width: root.frame.width, height: root.frame.height - Panel.footerHeight), configuration: conf)
         w.autoresizingMask = [.width, .height]
+        // (Without this the web view paints its own opaque backdrop under the page, whatever the
+        // page's and the under-page colours: no public switch for it on macOS.)
+        w.setValue(false, forKey: "drawsBackground")
         w.underPageBackgroundColor = .clear
         w.navigationDelegate = self
         w.uiDelegate = self
