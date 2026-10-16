@@ -2055,10 +2055,11 @@ impl Agent {
             if self.o.once || STOP.load(Ordering::SeqCst) {
                 break;
             }
-            // A newer app is in place and the first job's slot is free: exit (the second job stops
+            // A newer app is in place and the first job's slot is free (its job stopped at a safe
+            // point, `tend`, or past the grace still draining): exit (a job still running stops
             // here, its finished targets kept, and goes on under the new one), and the launcher
             // starts the new one.
-            if self.slots[0].running.is_none() && self.newer_app() {
+            if self.update_due() {
                 eprintln!("agent: a newer app is installed; restarting into it");
                 break;
             }
@@ -2614,6 +2615,10 @@ impl Agent {
         // save without the NAS); else going on.
         let control = self.control_path(k);
         let pause = self.pause.clone();
+        // (A newer app installed: every job stops at its next safe point, whatever part this Mac
+        // plays, lead, member, broker or helper, and the loop restarts into it once the first job's
+        // slot is free, `Agent::update_due`.)
+        let update = self.pending_app().map(|a| update_why(&a));
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut().unwrap();
         // (The memory guard's drain holds whatever else stops it: asked through its channel, timed
@@ -2628,7 +2633,7 @@ impl Agent {
                 slot.drain_since = Some(Instant::now());
             }
         }
-        match stop_for(&r.spec.needs, c, pause.as_ref()).or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why))) {
+        match stop_for(&r.spec.needs, c, pause.as_ref()).or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why))).or_else(|| update.clone().map(|why| (crate::control::Mode::Drain, why))) {
             Some((crate::control::Mode::Freeze, why)) => {
                 if r.paused.is_none() {
                     eprintln!("agent: pausing {}: {why}", r.spec.id);
@@ -2643,7 +2648,10 @@ impl Agent {
                     }
                     Instant::now()
                 });
-                if r.paused.is_none() && since.elapsed() >= DRAIN_GRACE {
+                // (For the update, not frozen past the grace: the loop stops it then, its finished
+                // targets kept, and restarts, `Agent::update_due`.)
+                let for_update = update.as_deref() == Some(why.as_str());
+                if r.paused.is_none() && since.elapsed() >= DRAIN_GRACE && !for_update {
                     eprintln!("agent: {} reached no safe point in {} min; frozen where it is", r.spec.id, DRAIN_GRACE.as_secs() / 60);
                     r.pause(&format!("{why}; frozen where it is (it reached no safe point in {} min): it goes on from there", DRAIN_GRACE.as_secs() / 60));
                 } else if r.paused.is_some() && since.elapsed() < DRAIN_GRACE {
@@ -6459,6 +6467,18 @@ impl Agent {
         Some(JobSpec { id: format!("regions-extract {date}"), what: "Extracting the regions' OSM relations and ways".into(), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "regions-extract".into(), targets: vec![(target, key)] }) })
     }
 
+    /// Whether the loop restarts into a newer app now: one is installed and the first job's slot
+    /// is free, or its job, asked to stop at its next safe point for the update, has had the time a
+    /// pause gives (`DRAIN_GRACE`) and reached none (a long job may have none for hours).
+    fn update_due(&self) -> bool {
+        let Some(app) = self.pending_app() else { return false };
+        let why = update_why(&app);
+        match &self.slots[0].running {
+            None => true,
+            Some(r) => r.pausing.as_deref() == Some(why.as_str()) && self.slots[0].drain_since.is_some_and(|t| t.elapsed() >= DRAIN_GRACE),
+        }
+    }
+
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
     fn newer_app(&self) -> bool {
         let Some(apps) = self.o.bin.parent() else { return false };
@@ -6608,6 +6628,11 @@ fn annotate(list: &mut [build::Step], now: &[String], helpers: &[Status], waitin
 /// Why a running job stops, and how, if it does: at once (frozen where it is) without what it can't
 /// save without, the NAS, or away from home with a job that needs it; as the build's pause says;
 /// at its next safe point when the battery runs low (CPU work), before the charge runs out.
+/// Why a running job stops at its next safe point for a newer app installed.
+fn update_why(app: &str) -> String {
+    format!("restarting into the newly installed app ({app})")
+}
+
 fn stop_for(n: &Needs, c: &Conditions, pause: Option<&crate::control::Pause>) -> Option<(crate::control::Mode, String)> {
     use crate::control::Mode;
     match lapsed(n, c) {
@@ -8679,6 +8704,65 @@ mod tests {
         a.step().unwrap();
         let st = read_status(Some(&root), &home).unwrap();
         assert!(st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
+    }
+
+    #[test]
+    fn a_newer_app_stops_the_running_jobs_at_their_safe_points_then_restarts() {
+        // (Task #210: a Mac that had handed the lead over for its update, a member then, ran its
+        // jobs to their ends, hours, before restarting. Whatever part it plays, its jobs are asked to
+        // stop at their next safe points as a pause asks.)
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join("v1")).unwrap();
+        std::fs::create_dir_all(apps.join("v2")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: false, once: true, helper: false }).unwrap();
+        a.free_set = Some(40 << 30);
+        let job = |id: &str, t: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "bldtiles".into(), targets: vec![(t.into(), "k".into())] }) };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job("bldtiles 6/1/1", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(1, job("bldtiles 6/2/2", "6/2/2"), &cond, Some(&root), &mut Vec::new()));
+        let tend = |a: &mut Agent| {
+            for k in 0..SLOTS {
+                a.tend(k, &cond, Some(&root), 0).unwrap();
+            }
+        };
+        // Its own app current: the jobs go on, no restart.
+        tend(&mut a);
+        assert!(a.slots.iter().all(|s| s.running.as_ref().is_some_and(|r| r.pausing.is_none())) && !a.update_due());
+        // A newer app installed: both asked to stop at their next safe points; no restart yet.
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
+        tend(&mut a);
+        for k in 0..SLOTS {
+            assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "drain");
+            assert_eq!(a.slots[k].running.as_ref().unwrap().pausing.as_deref(), Some("restarting into the newly installed app (v2)"));
+        }
+        assert!(!a.update_due());
+        // Past the grace with no safe point: not frozen (it would never end), the restart due; the
+        // loop stops it, its finished targets kept.
+        a.slots[0].drain_since = Some(Instant::now() - DRAIN_GRACE - Duration::from_secs(1));
+        tend(&mut a);
+        assert!(a.slots[0].running.as_ref().is_some_and(|r| r.paused.is_none()));
+        assert!(a.update_due());
+        // The install undone (current back on its own): the jobs told to go on, no restart.
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        tend(&mut a);
+        assert!(!a.update_due());
+        for k in 0..SLOTS {
+            assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "run");
+            assert!(a.slots[k].running.as_ref().unwrap().pausing.is_none());
+        }
+        // The first slot free with a newer app: due at once.
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.slots[0].running = None;
+        assert!(a.update_due());
+        a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
     }
 
     #[test]

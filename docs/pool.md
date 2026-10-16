@@ -900,7 +900,8 @@ jobs no longer running), and a lead that loses its term stops its coordinator an
 off the NAS, then stops its duties in flight (a catalog, a sweep), their leases ended through the
 new lead; neither restarts. A coordinator that can't start leaves the part to a restart, as without
 the switch, and isn't tried again in that process. A lead whose update waits on one of its jobs (a newer app installed: it starts
-nothing new and restarts once its slots are free) hands the lead, once per app, to a member already
+nothing new, its jobs are asked to stop at their next safe points, as on any Mac, and it restarts
+once its first slot is free: plan.md §8, A newly installed app) hands the lead, once per app, to a member already
 on that app that can lead, as the owner's ask would (the same-app rule otherwise leaves that member
 idle meanwhile: plan.md §8).
 
@@ -1344,8 +1345,11 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
       stops: a coordinator stopped frees its port as its stop returns), and the lead stays awake while
       it leads with leases out (§6.7). A lead whose own update is pending (a newer app installed,
       its slot busy, a member on the newer app idle by the same-app rule: plan.md §8) hands the lead
-      to such a member by itself, rather than leave the members idle while its job runs (hours,
-      during an OSM pass). Behind `state/pool/slots` (`on`, or present; off while missing, until
+      to such a member by itself, rather than leave the members idle while its job stops at its
+      next safe point (up to the 15 min a pause gives; before task #210 the job ran to its end,
+      hours during an OSM pass, and went on running after the handover, the Mac a member shown
+      "app too old"). Every Mac's jobs drain so for a newer app, whatever its part; the lead grants
+      a member on another app nothing (409), and that member asks for nothing. Behind `state/pool/slots` (`on`, or present; off while missing, until
       the both-Macs scratch run). Tests: two agents in one process (a member's job granted in term
       1 running while the lead is handed to its Mac, neither restarting, the new lead's coordinator
       up and the old one's stopped, the job's entry reaching the new lead's records and its lease

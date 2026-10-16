@@ -2019,9 +2019,16 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     measured disk and the owner's target as the caches allow, but the job waits only for the
     reserve and the target (a disk floor only rises: a stale or high one never holds the build),
     the disk guard its backstop.
-- **A newly installed app:** the first job finishes under the old one, nothing new starts, and the
-  agent exits so the launcher starts the new one; a second job still running stops then (what it
-  finished kept) and goes on under the new one.
+- **A newly installed app:** nothing new starts, and every running job is asked to stop at its next
+  safe point (as a pause asks, `crate::control`; what it finished kept), whatever part the Mac plays:
+  a lone build Mac, the pool's lead, a member or broker (one that just handed the lead over for its
+  update too), or a helper. Once the first job's slot is free the agent exits so the launcher starts
+  the new one; a second job still running stops then (what it finished kept) and goes on under the
+  new one. A first job that reaches no safe point in the time a pause gives (15 min) isn't frozen:
+  the agent stops it then and restarts, its finished targets kept. (Before task #210 the running jobs
+  ran to their ends, which for a 3D buildings' batch or an OSM pass is hours.) The lead's
+  coordinator grants nothing to an agent on another app (the same-app rule below), and an agent with
+  a newer app installed asks for nothing: both sides refuse, so neither waits on the other.
 - **Pausing** (`pipeline::control`): one pause for the whole build, every Mac's jobs and the worker
   pages' tasks.
   - **Asked for** from either Mac's menu bar item (Pause Building; Option: Pause Building Now), the
