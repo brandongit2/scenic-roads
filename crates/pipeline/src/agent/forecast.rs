@@ -128,10 +128,7 @@ pub struct Forecast {
     pub guessed: Vec<String>,
     pub steps: Vec<StepFc>,
     pub regions: Vec<RegionFc>,
-    /// The map updates to come, in order. On the wire under `updates` and, until the cleanup
-    /// (docs/plan.md §8, Renamed), its name before task #209 `rounds` too: an older app requires
-    /// it (no default) and drops the whole status without it. Read from either (`both_names`).
-    #[serde(flatten, with = "both_names")]
+    /// The map updates to come, in order.
     pub updates: Vec<UpdateFc>,
     /// What each machine does next: its first few jobs.
     pub next: BTreeMap<String, Vec<NextFc>>,
@@ -144,34 +141,6 @@ impl Forecast {
     /// Whether the build is done: nothing left to build, no map update under way, no machine busy.
     pub fn nothing_left(&self) -> bool {
         self.why.as_deref() == Some(NOTHING_LEFT)
-    }
-}
-
-/// `Forecast::updates` under both names (task #209): written as `updates` and `rounds` (OLD: drop
-/// at the cleanup), read from `updates`, else `rounds`.
-mod both_names {
-    use super::UpdateFc;
-    use serde::ser::SerializeMap;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(v: &[UpdateFc], s: S) -> Result<S::Ok, S::Error> {
-        let mut m = s.serialize_map(Some(2))?;
-        m.serialize_entry("updates", v)?;
-        m.serialize_entry("rounds", v)?;
-        m.end()
-    }
-
-    #[derive(Deserialize)]
-    struct Either {
-        #[serde(default)]
-        updates: Option<Vec<UpdateFc>>,
-        #[serde(default)]
-        rounds: Option<Vec<UpdateFc>>,
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<UpdateFc>, D::Error> {
-        let e = Either::deserialize(d)?;
-        Ok(e.updates.or(e.rounds).unwrap_or_default())
     }
 }
 
@@ -1033,23 +1002,6 @@ mod tests {
         assert_eq!(update_secs(&mid), Some(400.0));
         // A map update under way, its catalog not out: not counted yet.
         assert_eq!(update_secs(&[ev("map-update", 5, "", 0.0), ev("done", 50, "pack", 40.0)]), None);
-    }
-
-    #[test]
-    fn the_forecast_goes_out_under_both_names_and_reads_either() {
-        // (Task #209: `rounds` before, required by an older app: written under both until the
-        // cleanup; another Mac's older status has `rounds` alone.)
-        let f = Forecast { updates: vec![UpdateFc { at: 5, regions: vec!["a".into()], last: true }], ..Default::default() };
-        let v = serde_json::to_value(&f).unwrap();
-        assert_eq!(v["updates"], v["rounds"]);
-        assert_eq!(v["updates"][0]["at"], 5);
-        assert_eq!(serde_json::from_value::<Forecast>(v.clone()).unwrap(), f);
-        let mut old = v.clone();
-        old.as_object_mut().unwrap().remove("updates");
-        assert_eq!(serde_json::from_value::<Forecast>(old).unwrap(), f);
-        let mut new = v;
-        new.as_object_mut().unwrap().remove("rounds");
-        assert_eq!(serde_json::from_value::<Forecast>(new).unwrap(), f);
     }
 
     #[test]

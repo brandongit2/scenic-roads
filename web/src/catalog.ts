@@ -101,8 +101,6 @@ export interface BuildForecast {
   why?: string | null;
   /** The map updates to come: when each goes out and the regions it adds. */
   updates?: MapUpdateFc[];
-  /** The same, from an older app (before task #209, a map update was a "round"). */
-  rounds?: MapUpdateFc[];
 }
 
 /** A map update to come (pipeline::agent::forecast::UpdateFc). */

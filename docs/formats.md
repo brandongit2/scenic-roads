@@ -568,9 +568,7 @@ agent/                  timings.jsonl, timings-run.json, timings-run-2.json (the
                         server shows), state.json, map-update.json (the last map update:
                         {began, regions, last, units: {logical: content name}, over},
                         agent::build::MapUpdate; the jobs of the one under way read its units,
-                        SCENIC_UNITS_AS_OF=<path>#<began>; round.json before task #209,
-                        still written beside it for an older app and read when it began later:
-                        plan.md §8, Renamed), job.json, agent.lock, logs/, cache/,
+                        SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/,
                         pack-idx/; clear-request.json (the owner's ask to clear this Mac's build
                         caches, from its menu or `scenic clean`: {by, at}, agent::room::ClearRequest;
                         renamed clear-request.json.taken as the agent takes it up, removed once it's

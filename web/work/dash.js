@@ -51,11 +51,7 @@ const STEP = {
   catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], "map-update": ["Map update", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
 };
 const stepName = (s) => (STEP[s] || [s])[0];
-// A map update was a "round" before task #209: an older app's forecast (`rounds`, its lanes' step
-// "round") and history (kind "round") read as the new names.
 const UPDATE = "map-update";
-const asUpdate = (s) => (s === "round" ? UPDATE : s);
-const mapUpdates = (fc) => fc && { ...fc, updates: fc.updates ?? fc.rounds ?? [], lanes: fc.lanes && Object.fromEntries(Object.entries(fc.lanes).map(([nm, ls]) => [nm, ls.map((l) => ({ ...l, step: asUpdate(l.step) }))])) };
 const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
 // The noun a step's targets are counted in.
 const NOUN = { unit: "area", terrain: "tile", "terrain-lo": "area", slope: "tile", "slope-lo": "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task", treeblock: "task", terrainsub: "task" };
@@ -89,7 +85,7 @@ function model(sw) {
   const a = sw.agent || {};
   const now = sw.now;
   const fresh = (beat) => beat && now - beat < STALE_S;
-  const fc = mapUpdates(a.forecast);
+  const fc = a.forecast && { ...a.forecast, updates: a.forecast.updates ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
   // (Not the build Mac's own helper file, from while it was a member: it leads now.)
   const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600 && x.host !== a.host);
@@ -655,8 +651,7 @@ function eventText(m, e, k = 1) {
     case "task": return [k > 1 ? `${who} did ${k} areas' last steps` : `${who} did an area's last steps (${t[0] || ""}) in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-fail": return /^stopped:/.test(e.note || "") ? [`${who}: a task given back (${e.note.replace(/^stopped:\s*/, "")})`, "warn"] : [`${who}: a task failed: ${e.note}`, "bad"];
-    case "map-update":
-    case "round": return [`A map update began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
+    case "map-update": return [`A map update began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
     case "catalog": return [t.length ? `The map got ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : "The map was updated", "ok"];
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
     case "resume": return ["The build went on", "ok"];
@@ -670,7 +665,7 @@ function eventText(m, e, k = 1) {
   }
 }
 
-const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || e.kind === "map-update" || e.kind === "round" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
+const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || e.kind === "map-update" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
 
 function feed(m, events, seen) {
   // (A job's start is shown only while it runs: once it's ended, its end says it all.)

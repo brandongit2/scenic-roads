@@ -299,7 +299,7 @@ export class BuildStatus {
       const f = a.forecast;
       if (f && !stale) {
         const names = Object.fromEntries(a.regions.map((r) => [r.id, r.name]));
-        const next = (f.updates ?? f.rounds ?? []).find((r) => r.regions.length);
+        const next = (f.updates ?? []).find((r) => r.regions.length);
         const which = next ? next.regions.slice(0, 3).map((id) => names[id] ?? id).join(', ') + (next.regions.length > 3 ? ` and ${next.regions.length - 3} more` : '') : '';
         out.push(h('div', { class: 'bs-row' }, [
           f.done_at ? `Done ≈ ${at(f.done_at)}${f.range ? ` (${at(f.range[0])}–${at(f.range[1])})` : ''}` : `No finish to forecast: ${f.why ?? 'unknown'}`,

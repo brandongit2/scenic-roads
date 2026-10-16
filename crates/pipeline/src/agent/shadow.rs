@@ -317,7 +317,7 @@ impl Shadow {
                     }
                 }
                 "catalog" => saw.catalogs.push(format!("map update's catalog: {}", e.note)),
-                "lease" | "done" | "fail" | "lapse" | "map-update" | "round" | "pause" | "resume" => saw.notes.push(serde_json::json!({ "what": e.kind, "event": e })),
+                "lease" | "done" | "fail" | "lapse" | "map-update" | "pause" | "resume" => saw.notes.push(serde_json::json!({ "what": e.kind, "event": e })),
                 _ => {}
             }
             if e.kind == "start" && e.step.as_deref() == Some("gc") {

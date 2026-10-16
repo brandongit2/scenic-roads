@@ -115,25 +115,14 @@ use steps::{ANSWERED, SECOND};
 // The last map update, in the agent's folder (build::MapUpdate): its jobs read the units of
 // the one under way there (crate::out::UNITS_AS_OF_ENV).
 use crate::out::MAP_UPDATE_FILE;
-// Its name before task #209 (a "round"): read when it's the newer of the two (an older app ran
-// here since), and written beside the new one so an older app started here still finds it.
-use crate::out::OLD_MAP_UPDATE_FILE;
-
-/// The last map update kept in `home` (`MAP_UPDATE_FILE`, else `OLD_MAP_UPDATE_FILE`; the one
-/// that began later when both read). None: neither reads.
+/// The last map update kept in `home` (`MAP_UPDATE_FILE`). None: it doesn't read.
 fn read_map_update(home: &Path) -> Option<build::MapUpdate> {
-    let read = |f: &str| std::fs::read(home.join(f)).ok().and_then(|b| serde_json::from_slice::<build::MapUpdate>(&b).ok());
-    match (read(MAP_UPDATE_FILE), read(OLD_MAP_UPDATE_FILE)) {
-        (Some(new), Some(old)) if old.began > new.began => Some(old),
-        (new, old) => new.or(old),
-    }
+    std::fs::read(home.join(MAP_UPDATE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// Keeps the map update in `home`: `MAP_UPDATE_FILE`, then `OLD_MAP_UPDATE_FILE` for an older app.
+/// Keeps the map update in `home` (`MAP_UPDATE_FILE`).
 fn write_map_update(home: &Path, r: &build::MapUpdate) -> Result<()> {
-    let b = serde_json::to_vec(r)?;
-    crate::whole::write(&home.join(MAP_UPDATE_FILE), &b)?;
-    crate::whole::write(&home.join(OLD_MAP_UPDATE_FILE), &b)
+    crate::whole::write(&home.join(MAP_UPDATE_FILE), &serde_json::to_vec(r)?)
 }
 
 /// The build's records as they were before the first re-keying that changed them (agent::rekey;
@@ -7825,141 +7814,6 @@ mod tests {
         // (A file from before the low zooms later: it made the low zooms, none noted.)
         let old: build::MapUpdate = serde_json::from_str(r#"{"began":1,"regions":[],"last":false,"units":{}}"#).unwrap();
         assert!(old.low && old.low_at.is_none());
-    }
-
-    /// The shapes an app from before task #209 parses (26009d0's, copied): what it requires (no
-    /// default) must stay on the wire until the cleanup (docs/plan.md §8, Renamed).
-    mod before_209 {
-        use serde::Deserialize;
-        use std::collections::BTreeMap;
-
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct Forecast {
-            pub at: u64,
-            pub done_at: Option<u64>,
-            pub range: Option<[u64; 2]>,
-            #[serde(default)]
-            pub why: Option<String>,
-            pub measured: f64,
-            pub speed: BTreeMap<String, f64>,
-            #[serde(default)]
-            pub guessed: Vec<String>,
-            pub steps: Vec<serde_json::Value>,
-            pub regions: Vec<serde_json::Value>,
-            pub rounds: Vec<RoundFc>,
-            pub next: BTreeMap<String, Vec<serde_json::Value>>,
-            #[serde(default)]
-            pub lanes: BTreeMap<String, Vec<Lane>>,
-        }
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct Lane {
-            pub step: String,
-            pub from: u64,
-            pub until: u64,
-            pub n: usize,
-        }
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct RoundFc {
-            pub at: u64,
-            pub regions: Vec<String>,
-            pub last: bool,
-        }
-        fn yes() -> bool {
-            true
-        }
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct Round {
-            pub began: u64,
-            pub regions: Vec<String>,
-            pub last: bool,
-            pub units: BTreeMap<String, String>,
-            #[serde(default)]
-            pub over: bool,
-            #[serde(default = "yes")]
-            pub low: bool,
-            #[serde(default)]
-            pub low_at: Option<u64>,
-        }
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct MapUpdate {
-            pub due: bool,
-            pub why: String,
-            pub gap_s: u64,
-            #[serde(default)]
-            pub gap_basis: String,
-            #[serde(default)]
-            pub since_last_s: Option<u64>,
-            #[serde(default)]
-            pub left_s: u64,
-            #[serde(default)]
-            pub regions: Vec<UpdateRegion>,
-            #[serde(default)]
-            pub buildings: bool,
-        }
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct UpdateRegion {
-            pub id: String,
-            pub kinds: Vec<String>,
-        }
-        /// The status's parts #209 changed (its other fields' types are as they were).
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        pub struct Status {
-            pub forecast: Option<Forecast>,
-            pub map_update: Option<MapUpdate>,
-        }
-    }
-
-    #[test]
-    fn an_app_from_before_209_parses_the_status_forecast_and_map_update_file() {
-        let f = forecast::Forecast {
-            updates: vec![forecast::UpdateFc { at: 9, regions: vec!["a".into()], last: false }],
-            lanes: [("m4".to_string(), vec![forecast::Lane { step: "map-update".into(), from: 1, until: 2, n: 1 }])].into(),
-            ..Default::default()
-        };
-        let d = build::UpdateDecision { due: true, why: "w".into(), gap_s: 300, regions: vec![build::UpdateRegion { id: "a".into(), kinds: vec!["new region".into()] }], ..Default::default() };
-        let st = Status { forecast: Some(f), map_update: Some(d), ..Default::default() };
-        let b = serde_json::to_vec(&st).unwrap();
-        let old: before_209::Status = serde_json::from_slice(&b).unwrap();
-        let of = old.forecast.unwrap();
-        assert_eq!((of.rounds.len(), of.rounds[0].at, of.lanes["m4"].len()), (1, 9, 1));
-        assert_eq!(old.map_update.unwrap().regions[0].id, "a");
-        // (And this app's own, whole.)
-        assert!(serde_json::from_slice::<Status>(&b).unwrap().forecast.is_some_and(|f| f.updates.len() == 1));
-        // The map update's file, under either name.
-        let t = tempfile::tempdir().unwrap();
-        write_map_update(t.path(), &build::MapUpdate { began: 4, regions: vec!["a".into()], ..Default::default() }).unwrap();
-        for f in [MAP_UPDATE_FILE, OLD_MAP_UPDATE_FILE] {
-            let r: before_209::Round = serde_json::from_slice(&std::fs::read(t.path().join(f)).unwrap()).unwrap();
-            assert_eq!(r.began, 4);
-        }
-    }
-
-    #[test]
-    fn the_map_update_file_is_read_by_its_old_name_too_and_written_by_both() {
-        // (Task #209: `round.json` before; an older app on this Mac reads and writes only that.)
-        let d = tempfile::tempdir().unwrap();
-        let at = |began: u64| build::MapUpdate { began, regions: vec!["a".into()], ..Default::default() };
-        assert_eq!(read_map_update(d.path()), None);
-        // Only the old name (as an older app left it): read.
-        std::fs::write(d.path().join(OLD_MAP_UPDATE_FILE), serde_json::to_vec(&at(5)).unwrap()).unwrap();
-        assert_eq!(read_map_update(d.path()).map(|r| r.began), Some(5));
-        // Kept: under both names, the same.
-        write_map_update(d.path(), &at(7)).unwrap();
-        assert_eq!(std::fs::read(d.path().join(MAP_UPDATE_FILE)).unwrap(), std::fs::read(d.path().join(OLD_MAP_UPDATE_FILE)).unwrap());
-        assert_eq!(read_map_update(d.path()).map(|r| r.began), Some(7));
-        // An older app began one since (the old name only): the later one is read.
-        std::fs::write(d.path().join(OLD_MAP_UPDATE_FILE), serde_json::to_vec(&at(9)).unwrap()).unwrap();
-        assert_eq!(read_map_update(d.path()).map(|r| r.began), Some(9));
-        // The old name unreadable: the new.
-        std::fs::write(d.path().join(OLD_MAP_UPDATE_FILE), b"{").unwrap();
-        assert_eq!(read_map_update(d.path()).map(|r| r.began), Some(7));
     }
 
     #[test]

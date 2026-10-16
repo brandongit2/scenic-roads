@@ -73,17 +73,12 @@ pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>
         .collect()
 }
 
-/// The map update's file in the agent's folder, and its name before task #209: an app writes both
-/// (crate::agent), but one from before writes only the old, so a reader takes either.
+/// The map update's file in the agent's folder (crate::agent).
 pub const MAP_UPDATE_FILE: &str = "map-update.json";
-pub const OLD_MAP_UPDATE_FILE: &str = "round.json";
 
 /// The units of a map update's file (`UNITS_AS_OF_ENV`: `<path>#<began>`): an error when it can't be
 /// read, or it's another map update's, or the map update's over, so a map update's job fails rather
-/// than make its part from other units than the map update's. The file named, or the same folder's
-/// under its other name (`MAP_UPDATE_FILE`, `OLD_MAP_UPDATE_FILE`): whichever is this map update's
-/// (task #209: a map update an older app began has only `round.json`, and a job the new app ran
-/// for it failed on a missing `map-update.json`).
+/// than make its part from other units than the map update's.
 fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
     #[derive(serde::Deserialize)]
     struct MapUpdate {
@@ -93,29 +88,11 @@ fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
         over: bool,
     }
     let (p, began) = spec.rsplit_once('#').and_then(|(p, b)| Some((p, b.parse::<u64>().ok()?))).with_context(|| format!("{UNITS_AS_OF_ENV}={spec:?}: not <path>#<began>"))?;
-    let path = std::path::Path::new(p);
-    let other = match path.file_name().and_then(|n| n.to_str()) {
-        Some(MAP_UPDATE_FILE) => Some(path.with_file_name(OLD_MAP_UPDATE_FILE)),
-        Some(OLD_MAP_UPDATE_FILE) => Some(path.with_file_name(MAP_UPDATE_FILE)),
-        _ => None,
-    };
-    let read = |f: &std::path::Path| -> Result<MapUpdate> {
-        let b = std::fs::read(f).with_context(|| format!("read the map update's units, {}", f.display()))?;
-        serde_json::from_slice(&b).with_context(|| format!("parse {}", f.display()))
-    };
-    let named = read(path);
-    let theirs = |r: &MapUpdate| r.began == began && !r.over;
-    if let Ok(r) = &named {
-        if theirs(r) {
-            return Ok(named.unwrap().units);
-        }
+    let b = std::fs::read(p).with_context(|| format!("read the map update's units, {p}"))?;
+    let r: MapUpdate = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
+    if r.began == began && !r.over {
+        return Ok(r.units);
     }
-    if let Some(Ok(r)) = other.as_deref().map(read) {
-        if theirs(&r) {
-            return Ok(r.units);
-        }
-    }
-    let r = named?;
     anyhow::bail!("{p} is no longer the map update this job is for (it began at {began}; the file's began at {}{})", r.began, if r.over { ", and is over" } else { "" })
 }
 
@@ -787,26 +764,12 @@ mod tests {
         let mut want = now.clone();
         want.insert("hidata/6-1-1".into(), "hidata/6-1-1.6666666666666666.hidata".into());
         assert_eq!(on_disk, want);
-        // A map update an app from before task #209 began: only its `round.json` there, read for
-        // the `map-update.json` named; and the other way round.
-        let o = tempfile::tempdir().unwrap();
-        std::fs::write(o.path().join(OLD_MAP_UPDATE_FILE), serde_json::to_vec(&serde_json::json!({ "began": 5, "regions": ["a"], "last": false, "units": { "base/6-1-1": "base/6-1-1.old.base" } })).unwrap()).unwrap();
-        assert_eq!(read_as_of(&format!("{}#5", o.path().join(MAP_UPDATE_FILE).display())).unwrap()["base/6-1-1"], "base/6-1-1.old.base");
-        // (As a catalog step opens its output with it: crate::out::Out::open_as_of.)
-        assert!(Out::open_as_of(&root, &d.path().join("s-old"), Some(&format!("{}#5", o.path().join(MAP_UPDATE_FILE).display()))).is_ok());
-        std::fs::rename(o.path().join(OLD_MAP_UPDATE_FILE), o.path().join(MAP_UPDATE_FILE)).unwrap();
-        assert_eq!(read_as_of(&format!("{}#5", o.path().join(OLD_MAP_UPDATE_FILE).display())).unwrap()["base/6-1-1"], "base/6-1-1.old.base");
-        // Both there, the named one another's (an older app began one since): the other, its.
-        std::fs::write(o.path().join(OLD_MAP_UPDATE_FILE), serde_json::to_vec(&serde_json::json!({ "began": 9, "regions": [], "last": false, "units": {} })).unwrap()).unwrap();
-        assert!(read_as_of(&format!("{}#9", o.path().join(MAP_UPDATE_FILE).display())).unwrap().is_empty());
-        // Neither this one's: the named one's error.
-        let e = read_as_of(&format!("{}#7", o.path().join(MAP_UPDATE_FILE).display())).unwrap_err().to_string();
-        assert!(e.contains("no longer the map update") && e.contains("began at 5"), "{e}");
-        assert!(read_as_of(&format!("{}#7", o.path().join("x").join(MAP_UPDATE_FILE).display())).is_err());
         // Its file unreadable, another map update's, or the map update over: the job fails rather than read
         // other units than its map update's.
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#1", d.path().join("none.json").display()))).is_err());
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#2", map_update.display()))).is_err());
+        let e = read_as_of(&format!("{}#2", map_update.display())).unwrap_err().to_string();
+        assert!(e.contains("no longer the map update") && e.contains("began at 1"), "{e}");
         std::fs::write(&map_update, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true })).unwrap()).unwrap();
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).is_err());
     }
