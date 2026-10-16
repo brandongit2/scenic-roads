@@ -13,7 +13,8 @@
 //!   `wikidata` not `Q<digits>`, a `tier` the map doesn't know, a `kind` that isn't `biosphere`,
 //!   `geopark` or `dark_sky` …), and entries missing what their register's class needs (`level`,
 //!   and `designation` for `heritage`; `kind` for `special`), one finding per file and check listing
-//!   them; an id twice; a description without its credit or licence, an unknown `class`, a
+//!   them; an id twice; a description without its credit or licence, or with the licence
+//!   `unverified`, an unknown `class`, a
 //!   `territory` that isn't ISO codes or `"world"`, a `wikidata_property` that isn't `P<digits>`,
 //!   `osm_ref_tags` that aren't strings.
 //! - **Warnings** (each finding's id names its counts and versions, or the entries it lists): a
@@ -59,6 +60,7 @@ const ENTRY: &str = "he-entry";
 const TWICE: &str = "he-twice";
 const CLASS: &str = "he-class";
 const DESC: &str = "he-desc";
+const LICENCE: &str = "he-licence";
 const NEEDS: &str = "he-needs";
 const LOST: &str = "he-loss";
 const GONE: &str = "he-removed";
@@ -402,6 +404,11 @@ impl Checks for Heritage {
         if ext == "toml" {
             let (d, findings, keyed) = super::credits::parse_description(path, bytes);
             c.findings = findings;
+            // (A licence nobody checked never reaches the credits and popups: the register is held
+            // until the owner sets the real one.)
+            if let Some(l) = d.as_ref().map(|d| d.licence.trim()).filter(|l| l.eq_ignore_ascii_case("unverified")) {
+                c.findings.push(Finding::new(LICENCE, Level::Error, &[path], &[l], vec![path.into()], format!("{path}: the licence is \"{l}\": check the source's terms (its notes say what) and set the real licence; the register is held until then")));
+            }
             match declared(bytes) {
                 Ok(own) => {
                     if let Some(d) = d {

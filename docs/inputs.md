@@ -1402,7 +1402,8 @@ Every entry has a position when it's dropped: locating (Canada's federal designa
   missing or twice; a property of the wrong type (a `level` outside 1–5, a `tier` the map doesn't
   know, a `kind` not one of the three, a malformed `wikidata`); entries missing what their class
   needs (`level`; and `designation` for `heritage`; `kind` for `special`); a description missing,
-  or without its credit or licence; an unknown `class`; a malformed `wikidata_property` or
+  or without its credit or licence, or with the licence `unverified` (`he-licence`: a licence
+  nobody checked never reaches the credits or popups); an unknown `class`; a malformed `wikidata_property` or
   `osm_ref_tags`; a `territory` missing, or that isn't ISO codes or `"world"`; a `.geojson`
   without its `.toml` or the reverse (the two are held and taken together, §4.3). One finding per
   file and check, listing the entries (their feature number and id).
@@ -1466,7 +1467,9 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
    them "free use with credit", which nobody checked. Their descriptions' `notes` say what the
    owner must check (each portal's legal notice or reuse conditions: an open licence or Spain's
    default reuse terms, whether commercial reuse and redistribution in a map are allowed, the
-   attribution asked for) before setting the licence.
+   attribution asked for) before setting the licence. Until then the input check holds them (an
+   error: `he-licence`), so they're never read; heritage-sites reads the other accepted registers,
+   and Spain's regions have no heritage sites from them meanwhile.
 2. The heritage-sites job reads the registers generically, the chain reads the registers' fields
    heritage-sites lists (`heritage-sources.json`'s `registers`), and the chain's own caches (its
    Wikidata, Wikipedia and World Heritage answers, which lived in the snapshot) are the pass's
