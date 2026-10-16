@@ -11,7 +11,7 @@ GROUPS = [
     ('Written by Claude agents', [
         ('part', None, 'base', 'Place-name translations (today’s)',
          'English everywhere: labels, basemap names, roads, rail, popups (the servers, names::table)',
-         'the earlier translation work (its own repository): word rules, romanisation, Claude agents (lines tagged agent:sonnet); converted once by tools/names/convert-tables.py',
+         'the earlier translation work (its own repository): word rules, romanisation, Claude agents (lines tagged agent:sonnet); converted once (log in translations/how/conversion-log.txt)',
          'NAS translations/0-converted/ (2.78 M lines); the area tables it came from in translations/<area>/',
          'plan.md §7 (the conversion, its log); the rules and the agents’ brief only in the other repository',
          'that repository’s rules and brief, or translating again from the to-do lists'),
