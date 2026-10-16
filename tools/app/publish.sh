@@ -23,14 +23,24 @@ lock=$NAS/app/publish.lock
 cleanup=()
 on_exit() { for c in $cleanup; do eval $c; done; }
 trap on_exit EXIT
+# (Ctrl-C or a kill leaves through EXIT too, so the lock is freed.)
+trap 'exit 130' INT TERM HUP
 who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null; then
+  held=$(cat $lock 2>/dev/null)
   age=$(( $(date +%s) - $(stat -f %m $lock 2>/dev/null || date +%s) ))
   if (( age < 6 * 3600 )); then
-    echo "another publish holds $lock ($(cat $lock 2>/dev/null), $(( age / 60 )) min ago): try again once it's over"
+    echo "another publish holds $lock ($held, $(( age / 60 )) min ago): try again once it's over"
     exit 1
   fi
-  mv $lock $lock.stale-$$ 2>/dev/null || true
+  # Moved aside, then checked to be the stale lock read above: one another publish took meanwhile
+  # (moving the stale one first) is put back and left to it.
+  mv $lock $lock.stale-$$ 2>/dev/null || { echo "another publish took $lock just now"; exit 1; }
+  if [[ $(cat $lock.stale-$$ 2>/dev/null) != $held ]]; then
+    ( set -o noclobber; cat $lock.stale-$$ > $lock ) 2>/dev/null
+    rm -f $lock.stale-$$
+    echo "another publish took $lock just now"; exit 1
+  fi
   ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null || { echo "another publish took $lock just now"; exit 1; }
   echo "publish: took over a lock $(( age / 3600 )) h old ($(cat $lock.stale-$$ 2>/dev/null))"
   rm -f $lock.stale-$$
@@ -48,8 +58,9 @@ fi
 # Only a clean tree is published (everything published comes from the working tree: the crates
 # and their lock, the web app and the worker page, the Python steps, the status app, the NAS's
 # script), its commit on origin's main, so every version names a commit either Mac can check out.
-# (The task board's database changes all the time and isn't published.)
-unclean() { git status --porcelain -- . ':(exclude)tools/taskboard/taskboard.db*'; }
+# (The task board's database changes all the time and isn't published; untracked files, such as
+# notes, aren't counted.)
+unclean() { git status --porcelain --untracked-files=no -- . ':(exclude)tools/taskboard/taskboard.db*'; }
 [[ -z $(unclean) ]] || { echo "the tree isn't clean: commit or set aside what changed first"; unclean | head -20; exit 1; }
 git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
 git merge-base --is-ancestor HEAD origin/main || { echo "HEAD ($(git rev-parse --short HEAD)) isn't on origin's main: push it first"; exit 1; }

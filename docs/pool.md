@@ -1406,8 +1406,7 @@ once every member's heartbeat shows the app that has it.
       refused, its why noted beside the journal, the lead merging the next jobs' entries; the real
       `scenic-build` on the M1, a pooled job writing outside its step, failing before anything
       reached the NAS.
-   7. **Exclusivity where the resource is used: built** (§7.7), behind `state/pool/budgets` at
-      first, always on since batch 13: each agent runs a proxy (crate::budget::proxy,
+   7. **Exclusivity where the resource is used: built** (§7.7), always on: each agent runs a proxy (crate::budget::proxy,
       127.0.0.1, a port of its own) and every job's connections out go through it (`HTTPS_PROXY`
       and the others in its environment, this Mac's own direct), the job run under `sandbox-exec`
       with a profile denying every other way out (crate::budget::SANDBOX); a connection to a
