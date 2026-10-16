@@ -1438,8 +1438,7 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
   registers' sizes now: a register that grows past the other (or shrinks below it) in an update
   flips which of their colocated local entries is kept, its id, register and properties with it; a
   `same` match (§6.5.4) keeps the highest-graded entry (among equals the first register by id)
-  whatever the sizes, and is the way to pin a
-  pair that matters. The place kept
+  whatever the sizes, and is the way to pin a pair that matters. The place kept
   lists every register it was merged from (`registers`), its level the highest.
 - **Keys:** heritage-sites names the registers meeting its cover by their `keyed` digests (the
   agent reads them from the accepted index each loop, `pipeline::heritage::registers_now`), the
