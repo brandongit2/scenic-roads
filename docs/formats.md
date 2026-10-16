@@ -890,9 +890,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `ferry-feeds.json`: `{fmt: 1, feeds: […]}`, the ferry feeds (the declarations whose `modes` take
     them to the ferry counter), each `{id, name, url, source, ferry_routes}` with `zip` and
     `fetched`, or a `status`, as `feeds.json`;
-  - `mtr-pairs.bin`: the MTR's lines as stop pairs (below), and `mtr.json`, the research
-    `dem/mtrpairs.py` makes them from.
-- **Stop pairs** (railgtfs.py's, `mtr-pairs`): 21-byte records, f32 lon_a, lat_a, lon_b, lat_b,
+- **Stop pairs** (railgtfs.py's: the timetables' trains, and apart the static timetables' count
+  rows, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b, lat_b,
   u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 when the trains are a lower bound; +0x20 /
   +0x40 when stop A / B is beyond the coverage, which the `rail` job sets), f32 trains from A to B on
   the typical weekday.

@@ -259,7 +259,7 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 | `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, the items job's facts and views, the heritage points (the pass's heritage job's outputs, which it waits for) | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` (off) | the heritage job's outputs, `work/marks/heritage-dots` | `ov-*` packs, `ovdata`, `global/heritage/{layer-summary,heritage-sources}` |
 | `stations` (roads chain) | the `rail` set, the built units' tiles | `stations` packs |
-| `ferries` (roads chain) | the `ferries` set (worldwide), the ferry feeds' list and zips (`sources/rail/ferry-feeds`, counted by `dem/ferrygtfs.py`), `inputs/ferries/freq`'s looked-up timetables | `ferries` packs |
+| `ferries` (roads chain) | the `ferries` set (worldwide), the ferry feeds' list and zips (`sources/rail/ferry-feeds`, counted by `dem/ferrygtfs.py`), the static timetables' accepted zips (`inputs/timetables/gtfs/`, docs/inputs.md §6.7.2) | `ferries` packs |
 
 **Keys** are mostly the step version plus the content names of what a job reads:
 - heritage-sites, heritage and items include the pass's date, and the coverage enters as a hash of its

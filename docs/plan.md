@@ -165,7 +165,7 @@ deletions over SMB bypass it (tested 2026-10-02).
 ```
 translations/  descriptions/  the old places of inputs/translations and inputs/descriptions: left empty (#137)
 inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), timetables/feeds/ (the feeds'
-               declarations), ferries/freq/ (looked-up timetables), keys.env
+               declarations), timetables/gtfs/ (static GTFS compiled by hand), keys.env
                (API keys, KEY=value lines: the rail feeds'), hold-catalog; _gate-test/ (the input
                check's test unit's drop box, checked while `state/inputs/gate-test` exists:
                inputs.md §4.10)
@@ -178,7 +178,7 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                (Overture's building boxes for the world, in z8 tiles, and their index), trees/
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
-               rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v3,
+               rail feeds: the catalogue, their zips; §6), terrain-z8-v3,
                copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), inputs/<unit>/ (the input
                check's checked copies of a drop box's files, its accepted indexes and held reports:
                inputs.md §4.6)
@@ -223,11 +223,6 @@ and the share refuses a copy's attempt to set one that differs from its folder's
 program wrote, copied into the backups).
 
 **Packs, never one file per tile.** SMB manages about 80 random reads per second per file.
-- **Small inputs read again and again** (the region recipes, the ferries' timetables): the agent
-  and the map server keep each in memory and read it again only when its size or time changes
-  (`pipeline::smallfiles`; a file changed in the last 5 s is always read). Opening and reading
-  them took 1–11 s for each set under load (8 Oct 2026), stat'ing them a fraction of a second,
-  and a plan read them twice.
 - **Our layers** (roads, rails, terrain, slope, trees, labels, water, overlays,
   marks, stations, ferries) use packs.
   - A pack is a header and meta, then the blobs (identical blobs are stored once), then an index of
@@ -760,8 +755,10 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
   - rail: the Mobility Database catalogue's feeds of the countries the coverage is in (worked out
     from the pass's outlines: `pipeline::rail::countries`), and the declared feeds (national
     operators' own, feeds behind a key), each with its territories (§6, Rail service;
-    docs/inputs.md §6.7.1);
-  - ferries: the declared ferry feeds, worldwide, and `inputs/ferries/freq`'s looked-up timetables;
+    docs/inputs.md §6.7.1), and the static timetables compiled by hand (the MTR's lines), by
+    where their stops are;
+  - ferries: the declared ferry feeds, worldwide, and the static timetables compiled by hand
+    (`inputs/timetables/gtfs/`: docs/inputs.md §6.7.2), worldwide too;
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
   made by the trees job where a square is missing, not tagged complete, or not whole);
@@ -1382,8 +1379,9 @@ one pinned release (2026-09-23.1), before any unit runs:
   pass's outlines (§7).
 - **Rail stops:** from the rail set, for the built units' tiles + 20 km.
 - **Ferries:** worldwide, from the ferries set, the ferry feeds rail-feeds fetched (counted by the
-  ferries job: `dem/ferrygtfs.py`, docs/inputs.md §6.7.0) and `inputs/ferries/freq`'s looked-up
-  timetables. The job waits for the ferry feeds' list.
+  ferries job: `dem/ferrygtfs.py`, docs/inputs.md §6.7.0) and the static timetables' accepted
+  version (`inputs/timetables/gtfs/`, §6.7.2: the timetables looked up by hand). The job waits for
+  the ferry feeds' list and for the static timetables' first accepted version.
 - **Rail service:** trains a day on the coverage's rail ways (below).
 - **Landmarks:** candidates and peaks per unit, then Wikidata facts and pageviews, marks, and
   overlays (`docs/phase5.md`).
@@ -1393,7 +1391,8 @@ one pinned release (2026-09-23.1), before any unit runs:
 ### Rail service
 
 Trains a day on each rail way of the coverage (`global/railfreq`), from operators' published
-timetables (GTFS) and the MTR's hand-researched lines (`pipeline::rail`). Two jobs, after the units,
+timetables (GTFS) and the static timetables compiled by hand, the MTR's lines among them
+(`pipeline::rail`; docs/inputs.md §6.7.2). Two jobs, after the units,
 in a chain of their own (§8):
 - **`rail-feeds`** finds the feeds (`dem/railfeeds.py`) from the accepted declarations of
   `inputs/timetables/feeds/` (docs/inputs.md §6.7.1): the rail feeds where the coverage is, and the
@@ -1422,8 +1421,8 @@ in a chain of their own (§8):
   - Left out: a feed another replaces (an operator's own over a copy: LTA's over the catalogue's
     three copies of Singapore's timetable, of which one is read without it; Catenary Transit's Hong
     Kong trams over the Transport Department's) while that one has a zip, and what the catalogue
-    declaration's `exclude` names (a community feed of the MTR's lines, which come from the
-    hand-researched pairs).
+    declaration's `exclude` names (a community feed of the MTR's lines, which come from the static
+    file `mtr.zip`).
   - Each feed's zip is fetched once, into `sources/rail/gtfs/` (the ferry feeds' too), as its
     declaration's `[data.fetch]` says. A zip already there is never fetched again, except one that
     was already out of date when fetched (no rail or, for a ferry feed, ferry service in its
@@ -1443,16 +1442,18 @@ in a chain of their own (§8):
     don't depend on the day they're made. A train in two feeds is counted once (the national
     operators' first). The stop pairs don't depend on the coverage either: the rail job's Mac keeps them
     for the list of feeds;
-  - the MTR's lines, as stop pairs (from the research, `mtr.json`, by `dem/mtrpairs.py`);
+  - the static timetables' accepted zips (docs/inputs.md §6.7.2), by the same counter: their trains
+    on the median-busy Tuesday to Thursday of a reference year (their calendars are months and days),
+    counted once with the feeds'; and apart, their count rows as given (the MTR's lines: trains a
+    day per pair of stations), kept with the feeds' pairs;
   - each pair's stops beyond the coverage marked (`railfreq` runs a cross-border service as far as
     the track goes toward the stop), and pairs with both beyond left out;
   - `railfreq` matches the pairs onto the rail ways of the pass's rail set that touch the coverage:
     the set clipped to the tiles within 20 km of it, `extract` at 8 m (as the units), then the ways
     touching it.
 - **The rail sources** (`sources/rail/`, docs/formats.md): the jobs add the checks, zips and days,
-  and the catalogue, fetched from its declaration's URL when there's no copy; the MTR's lines are
-  put there by hand (Hand-made inputs, below). The chain waits for the declarations' first accepted
-  version.
+  and the catalogue, fetched from its declaration's URL when there's no copy. The chain waits for
+  the declarations' first accepted version, and `rail` for the static timetables'.
 - **Planned:**
   - Japan's ODPT and Taiwan's TDX feeds, behind the keys `inputs/keys.env` names for them
     (`ODPT_KEY`; `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`), each a keyed feed's declaration once
@@ -1473,16 +1474,15 @@ folder> --scratch <local dir>` as for every step.
   `<id>.toml` per feed and one for the catalogue, written by hand; how the feeds were found is in
   its `how/` (`gtfs-feeds.md`, `operators.txt`). A feed's zip fetched before the app fetched it
   goes in as its first pin by its declaration's `pin` (its path and day), which rail-feeds takes.
-- **Ferry timetables looked up by hand** (`inputs/ferries/freq/timetables-*.json`, which the
-  ferries job reads): sailings from operators' published timetables, each with its page: the
-  researchers' brief, batches and not-found lists are in `inputs/ferries/research/` (`PROMPT.md`).
-- **The MTR's lines** (`sources/rail/mtr`, `mtr.json`: researched by hand from MTR's published
-  frequencies) and their stop pairs (`sources/rail/mtr-pairs`): `mtrpairs.py --mtr mtr.json
-  --stations hk-stations.geojsonseq --out pairs-mtr.bin`, the stations from the pass's filtered
-  planet (`osmium extract -b 113.8,22.1,114.5,22.6`, then `osmium tags-filter … n/railway=station,halt,stop,tram_stop
-  n/public_transport=station w/railway=station` and `osmium export … -f geojsonseq`); then
-  `scenic-build put sources/rail/mtr-pairs bin pairs-mtr.bin` (and `mtr.json` as `sources/rail/mtr`).
-  The rail job's key follows them.
+- **Static timetables compiled by hand** (`inputs/timetables/gtfs/`, docs/inputs.md §6.7.2): a GTFS
+  zip each, read by the rail and ferries jobs. The ferry timetables looked up by hand are 24 zips of
+  count rows (sailings from operators' published timetables, each with its page); the researchers'
+  brief (`PROMPT.md`, answering in static GTFS), batches and not-found lists are in its `how/`. The
+  MTR's lines (`mtr.zip`: researched by hand from MTR's published frequencies, `how/mtr.json`) are
+  made by `producers/timetables/mtr.py --mtr mtr.json --stations hk-stations.geojsonseq --out
+  mtr.zip`, the stations from the pass's filtered planet (`osmium extract -b 113.8,22.1,114.5,22.6`,
+  then `osmium tags-filter … n/railway=station,halt,stop,tram_stop n/public_transport=station
+  w/railway=station` and `osmium export … -f geojsonseq`).
 - **Translations' method** (§7): `inputs/translations/how/conversion-log.txt`, how the earlier
   translation work became the tables, and the scripts that sized the work (`inputs/translations/how/analysis/`:
   `latinwords.py`, `namecount.py`).
@@ -1575,8 +1575,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   of the keys the declarations fetch with `inputs/keys.env` holds, by name (never their values). Not what it writes (the feeds' lists,
   its checks and zips), so it doesn't run again for its own sake; it waits while `inputs/keys.env`
   or the declarations' accepted index can't be read;
-- **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
-  pairs, the pass's rail set and the coverage;
+- **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the
+  static timetables' accepted index, the pass's rail set and the coverage;
 - **water:** its version and the pass's basemap, by content name;
 - **bld-fetch** (the 3D buildings' sources, network): its version, the pinned Overture release and
   the whole coverage. Not the footers it reads and writes (`footers.json.gz`): a release's files

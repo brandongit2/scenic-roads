@@ -150,7 +150,7 @@ What moves (each in its task; §11):
   so a drop there is seen.
 - `inputs/outlines/` (`.poly` files, Geofabrik's and three of our own) goes, each file converted
   to GeoJSON in `inputs/regions/` first: no recipe uses one today (§6.1).
-- `inputs/ferries/` becomes timetable declarations and hand-compiled GTFS (#140, #141); its
+- `inputs/ferries/` became timetable declarations and hand-compiled GTFS (#140, #141); its
   research notes and feed-finding notes move to `inputs/timetables/*/how/`.
 - `inputs/names/analysis/` (how earlier translation work was sized) moves to
   `inputs/translations/how/` (#137).
@@ -166,10 +166,10 @@ What moves (each in its task; §11):
 
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
 the languages (§6.2), the translations and the descriptions (§6.3, §6.4), the regions (§6.1), the
-timetable feeds (§6.7.1), the heritage registers and matches (§6.5, §6.5.4) and, while it's on,
-the test unit `_gate-test` (§4.10); each other input joins `inputs::UNITS` in its own task (#139,
-#141–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
-section isn't built yet is marked planned.
+timetable feeds and the static timetables (§6.7.1, §6.7.2), the heritage registers and matches
+(§6.5, §6.5.4) and, while it's on, the test unit `_gate-test` (§4.10); each other input joins
+`inputs::UNITS` in its own task (#142–#145). A unit with nothing dropped yet and no records isn't
+checked nor shown. What of this section isn't built yet is marked planned.
 
 ### 4.1 Terms
 
@@ -1601,12 +1601,12 @@ what its mode shows today.
 
 #### 6.7.0 The counters, per mode
 
-- **Rail** (today `dem/railgtfs.py`): trains per stop pair on the typical day, as the PAIR records
+- **Rail** (`dem/railgtfs.py`): trains per stop pair on the typical day, as the PAIR records
   the `rail` job matches onto the tracks (`rail::PAIR`, crates/pipeline/src/rail.rs:57: the two
   stops' positions, a mode byte, trains a day). The typical day is a feed's median-busy Tuesday to
   Thursday from 30 days before the day its zip was fetched to 90 days after; a train in two feeds
   counts once (trips keyed by their first and last stops and their times, the operator's feed
-  first). Unchanged.
+  first). The static files' trains and count rows: §6.7.2.
 - **Ferries** (`dem/ferrygtfs.py`, run by the `ferries` job's `dem/ferries.py`, built #140): per
   OSM ferry line, the record the map shows (`ferries.py`'s `info["freq"]`): `per_day` (each way, both
   directions averaged, on the days it runs; for a line sailing fewer than four days a week, the
@@ -1617,9 +1617,10 @@ what its mode shows today.
   line's length) of each of its two ends. Generic GTFS code, run on the ferry feeds the `rail-feeds`
   job fetched (§6.7.1), each from its reference day: the day its zip was fetched, as rail's, so a zip
   gives the same counts whenever it's read. The feeds are read in id order, the first feed's count
-  for a line winning. The static files' ferries (§6.7.2) are planned with #141.
+  for a line winning. The static files (§6.7.2) are counted by the same counter over one reference
+  year, and their count rows taken as given.
 - **Precedence** for a ferry line (`ferries.py`'s `rank`): a feed's count, then a looked-up
-  timetable's (a static file's, #141), then OSM's `interval` tag.
+  timetable's (a static file's, in the zips' order), then OSM's `interval` tag.
 
 #### 6.7.1 Feeds (#140)
 
@@ -1668,7 +1669,7 @@ sources have no copy, `sources/rail/catalogue`), and the corrections to it:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `exclude` | table id → where its trains come from | feeds left out (the MTR's lines, which come from the hand-researched pairs: its status says "replaced by" that) |
+| `exclude` | table id → where its trains come from | feeds left out (the MTR's lines, which come from the static file `mtr.zip`, §6.7.2: its status says "replaced by" that) |
 | `country` | table id → ISO code | feeds the catalogue files under another country (two of Singapore's, under Malaysia) |
 | `replaces` | table id → ids | copies of one timetable, each listed left out while the feed listing it has a zip |
 | `own_code` | table ISO 3166-2 code → alpha-2 code, or `""` for none | territories with an ISO 3166-1 code of their own that isn't their code's end, and two whose ends are other countries' codes (Åland's FI-01 is AX, Guadeloupe's FR-971 GP, Kosovo's RS-KM XK; Ceuta's ES-CE and Melilla's ES-ML none) |
@@ -1731,74 +1732,118 @@ the sources) `inputs/ferries/gtfs/` removed, and the `pin`s may go from the decl
 
 #### 6.7.2 Static GTFS (#141)
 
-**Kind:** declare (and the fulfil half of §6.7.3's to-do). **Drop box:** `inputs/timetables/gtfs/`,
-`<name>.zip`, each a GTFS feed compiled by hand from timetables found anywhere, with a
-`<name>.toml` description beside it (§5.1) when its sources need a credit line beyond each route's
-page.
+**Built** (crate::inputs::gtfs; `dem/staticgtfs.py`, read by the counters; the producers in
+`producers/timetables/`). **Kind:** declare (and the fulfil half of §6.7.3's to-do). **Drop box:**
+`inputs/timetables/gtfs/`, the unit `timetables/gtfs`: `<name>.zip` (a name of letters, digits, `-`
+and `_`), each a GTFS feed compiled by hand from timetables found anywhere, with a `<name>.toml`
+description (§5.1) beside it when its sources need a credit line beyond each route's page (the two
+are held together). The researchers' brief, how to answer in static GTFS, is in its `how/`.
 
-**Shape:** GTFS (the reference's required files: `agency.txt`, `stops.txt`, `routes.txt`,
-`trips.txt`, `stop_times.txt`, `calendar.txt`; `feed_info.txt` naming the publisher), with:
+**Shape:** GTFS, with the reference's required files (`agency.txt`, `stops.txt`, `routes.txt`,
+`trips.txt`, `stop_times.txt`, `calendar.txt`; `feed_info.txt` naming the publisher), each with at
+least the columns the counters read (`trips.txt` and `stop_times.txt` may hold their header alone
+when every route is counted in `counts.txt`), and:
 - `frequencies.txt` allowed: a trip plus "every 600 s from 06:00 to 23:00" instead of each departure;
 - **no expiry, but seasons:** static files are counted without years. `calendar.txt`'s start and
-  end dates are read as month and day, the year ignored (`20000501`–`20001031` is May to October
-  every year; a start after the end wraps the new year; `0101`–`1231` is all year), and its weekday
-  columns give the days. `calendar_dates.txt` is ignored. So a service never expires, and a
-  seasonal one is seasonal every year;
+  end dates are read as month and day over one reference year, the year written ignored
+  (`20000501`–`20001031` is May to October every year; a start after the end wraps the new year;
+  `0101`–`1231` is all year; 29 February is read as the 28th), and its weekday columns give the
+  days. `calendar_dates.txt` is ignored. So a service never expires, and a seasonal one is seasonal
+  every year;
 - **each route's source page** in `routes.txt`'s `route_url` (required here, an error without it),
   and extra columns (GTFS lets producers add columns, which consumers ignore): `checked` (when the
-  source was read), `months` (the season as the source words it, "May–Oct", shown as today's
-  `months`), and an optional `osm` pin (`r14098916`, `w23471991`) for a route matching by stops
-  wouldn't find;
+  source was read), `months` (the season as the source words it, "May–Oct"), and an optional `osm`
+  pin (`r14098916`, `w23471991`), the OSM line a route is counted for;
 - **counts where the source gives no times: `counts.txt`,** an extension table (ignored by other
   GTFS tools) for services the source describes only by counts ("about 10 sailings a day"), so no
-  departure time is ever invented. A row: `route_id`; for rail, `from_stop_id` and `to_stop_id` (a
-  stop pair); then the mode's fields as the counter outputs them: `per_day`, `per_week`,
-  `per_day_low`, `headway` (minutes), `days`, `months`, `season`, `overnight`, `note`. A route with
-  count rows has no trips; a ferry route counted so needs its `osm` pin (it has no stops to match
-  by). Count rows are taken as given: they're never matched against other feeds' trips by times
-  (they have none), so a service shouldn't be both in a feed and in counts; the catalogue's
-  `exclude` keeps a feed's copy out where that would happen (as the MTR's is today).
+  departure time is ever invented. A row: `route_id`; for rail, `from_stop_id` and `to_stop_id`
+  (trains each way between the two stops) and `at_least` (1: a lower bound, shown "at least"); then
+  the mode's fields as the counter outputs them: `per_day`, `per_week`, `per_day_low`, `headway`
+  (minutes), `days`, `months`, `season`, `overnight` (1 or 0), `note`. An empty cell isn't given;
+  a number is read as written (`10` a whole number, `1.5` not), `null` where the source was read and
+  gives none; a `headway` may be the source's words ("about every 20 minutes"), which the ferries
+  read by its first number. A route with count rows has no trips; a ferry route counted so needs
+  its `osm` pin (it has no stops to match by). Count rows are taken as given: they're never matched
+  against other feeds' trips by times (they have none), so a service shouldn't be both in a feed and
+  in counts; the catalogue's `exclude` keeps a feed's copy out where that would happen (as it does
+  the MTR's).
 
-The rail counter on a static file: trips by day of the week from `calendar.txt`, its typical day the
-median of Tuesday to Thursday (a service not running then: the days it runs), trains deduplicated
-across feeds by times as for feeds; count rows added as pairs. The ferry counter: per line, from
-trips (both directions averaged, the seasons from the calendar's month-day ranges, `per_day_low`
-from the quietest of them) or from count rows as given.
+**The counters** read the accepted zips in their paths' order (`inputs::gtfs::zips`; `--static` of
+`dem/railgtfs.py` and `dem/ferries.py`):
+- **Rail:** a static file's trips as a feed's (frequencies expanded), its typical day the
+  median-busy Tuesday to Thursday of the reference year, its trains deduplicated with the feeds' by
+  times. Its count rows of rail routes (by `route_type`, as a feed's) go apart, in their order, to
+  the stop pairs read after the trains': per row the trains each way (`per_day`, else `per_week` ÷
+  7), A to B then B to A, at the stops' positions as f32, the mode by the route's type, with the
+  lower-bound bit (0x80) for `at_least`. Their stops beyond the coverage are marked as the feeds'.
+- **Ferries:** a count row of a ferry route with an `osm` pin is the record of that line: the row's
+  fields as given, `source` the route's `route_long_name`, `url` its `route_url`, `checked` its
+  `checked` (`kind` "timetable"). Trips are counted by the ferry counter over the reference year (a
+  break of a month or more, the new year's included, makes the line seasonal; otherwise it's
+  year-round or some days), each record's source the first matched route's; a route pinned to a
+  line counts for that line alone, its ports the calls nearest the line's ends.
 
-**Checks.** Errors: not a zip; a required file missing (`trips.txt` and `stop_times.txt` may be
-empty when every route is counted in `counts.txt`); references broken (a trip's route, a stop
-time's stop or trip, a frequency's trip, a count row's route or stops); times that don't parse; a
-calendar date that isn't a valid month and day; a `route_type` GTFS doesn't define; a headway not
-positive; a route without `route_url`; a ferry route with count rows and no `osm` pin; a route with
-both trips and count rows; a stop's coordinates out of range. Warnings: a route with no trips and
-no count rows; two zips with one `route_id` and agency.
+**Checks** (`inputs::gtfs::Gtfs`). Errors: a file that isn't `<name>.zip` or `<name>.toml`; a
+description without its credit and licence; a zip that can't be read (only stored and deflated
+entries, no Zip64); a required file or a column the counters read missing; references broken (a
+trip's route or service, a stop time's trip or stop, a frequency's trip, a count row's route or, for
+a rail route, its two stops); a time that doesn't parse (`H:MM:SS`); a calendar date that isn't a
+valid month and day; a `route_type` GTFS doesn't define; a `headway_secs` or a numeric count
+`headway` not positive; a count row's number that isn't one (nor `null`), an `overnight` or
+`at_least` not 0 or 1; a route without `route_url`; an `osm` pin that isn't `w<id>` or `r<id>`; a
+ferry route with count rows and no `osm` pin; a route with both trips and count rows; a stop's
+coordinates out of range. Warnings: a route with no trips and no count rows; two zips with one
+`route_id` of one agency.
 
-Whether a route matches something on the map isn't a finding of the input check: it depends on OSM, which changes
-each pass, and a warning there would hold the file again every pass. It's #142's report.
+Whether a route matches something on the map isn't a finding of the input check: it depends on
+OSM, which changes each pass, and a warning there would hold the file again every pass. It's #142's
+report.
 
-**Ingesting.** `rail` and `ferries` count the accepted zips with their counters, and name them by
-content in their keys.
+**Ingesting.** `rail` and `ferries` read the accepted version the agent planned with
+(`--gtfs-index`), name its index in their keys (each zip by content), and wait while the unit has no
+accepted version, rather than count without the static files: their outputs stay as they were
+(the agent shows "waiting for the static timetables' first accepted version"). Neither reads
+`inputs/` itself.
 
-**Migration.**
-1. **The MTR:** `sources/rail/mtr` (`mtr.json`, researched by hand) becomes `mtr.zip`: its stations
-   as stops at the positions `dem/mtrpairs.py` takes from OSM today, a route per line, and a count
-   row per stop pair holding the trains a day `mtrpairs.py` works out from the research (its
-   MTR-specific parsing of "weekday off-peak N min" notes, dem/mtrpairs.py:31, moves to the
-   producer, `producers/timetables/`). Proof: the rail counter's pairs for it, byte for byte, the
-   pairs of `sources/rail/mtr-pairs` (the same positions as f32, the same trains), so
-   `global/railfreq` is the same.
+**Migration** (done in #141):
+1. **The MTR:** `sources/rail/mtr` (`mtr.json`, researched by hand) became `mtr.zip`
+   (`producers/timetables/mtr.py`, which holds the MTR-specific parsing of the research: the
+   service hours at the slowest published weekday off-peak headway as a lower bound, the LOHAS Park
+   shuttle off-peak): its 160 stations as stops at the positions the old pairs had them (read back
+   from `sources/rail/mtr-pairs`, `--pairs`; `--stations` places them from OSM by name, as
+   `dem/mtrpairs.py` did), a route per line or branch with a count (23; the High Speed Rail's one
+   station makes no row), and a count row per pair of consecutive stations at two places (314). Proof
+   (`tools/check/static-gtfs-same.py`): the rail counter's count rows for it are the 628 records of
+   `sources/rail/mtr-pairs` byte for byte, and they're railfreq's last input as the pairs were, the
+   feeds' pairs before them unchanged (the counter with and without the static files, on six feeds
+   with Hong Kong's, wrote the same bytes), so `global/railfreq` is the same.
 2. **The ferries' looked-up timetables:** the 24 `inputs/ferries/freq/timetables-*.json` files (658
-   lines on 2026-10-10, each `{"line": "w23471991", "per_day" | "per_week", "per_day_low"?,
-   "headway"?, "days"?, "months"?, "season"?, "overnight"?, "source", "url", "checked", "note"}`)
-   become zips of count rows: a route per line with its `osm` pin (the record's `line`), `route_url`
-   its `url`, `route_long_name` its `source`, `checked` its `checked`, and a count row with exactly
-   the record's fields, so nothing is invented and nothing is lost. Proof: the ferries job's lines,
-   field for field, the same.
-3. Then deleted: `dem/mtrpairs.py`, `sources/rail/mtr` and `mtr-pairs` (rail.rs:37–42), the rail
-   job's merging of the pairs (scenic-build.rs:3980), the `timetables-*.json` path in `ferries.py`;
-   `inputs/ferries/research/` (the researchers' brief and batches) moves to
-   `inputs/timetables/gtfs/how/`, its brief rewritten to answer in static GTFS, with times where the
-   source has them and count rows where it doesn't.
+   lines) became 24 zips of count rows (`producers/timetables/ferry_lookups.py`,
+   `timetables-batch-01.json` → `ferries-batch-01.zip`, so in the files' order): a route per line
+   (`route_id` and `osm` the record's `line`, `route_long_name` its `source`, `route_url` its `url`,
+   `checked` its `checked`, `route_type` 4) and a count row with exactly the record's other fields
+   (the one `per_day` given as null written `null`). Proof: the 658 records the zips give equal the
+   files' field for field, each value of the same JSON type; and `ferries.py` on the 2026-09-28
+   pass's ferries set, without feeds, wrote `ferries.json` and `ferry-lines.json` byte for byte the
+   same from the files and from the zips (25,287 lines, 1,005 with a frequency).
+3. Deleted: `dem/mtrpairs.py`, `rail::MTR` and `MTR_PAIRS` and the rail job's merging of the
+   pairs, the `timetables-*.json` path in `ferries.py`, the ferries job's and the agent's reads of
+   `inputs/ferries/freq` (with `pipeline::smallfiles`, kept for them alone).
+
+**Rollout** (#141), each state's output said:
+1. Before the publish, the PM drops the 25 zips into `inputs/timetables/gtfs/` together (the app
+   published before #141 doesn't know the unit: nothing reads them), and into its `how/` the
+   rewritten brief (`PROMPT.md`), `inputs/ferries/research/`'s batches and not-found lists (as
+   `how/research/`) and the MTR's research (`sources/rail/mtr`'s file, as `how/mtr.json`).
+2. The publish. Until the input check takes the zips in, rail and the ferries wait, their outputs as
+   they were. The zips have no findings (checked against the converted files), so the first check
+   takes all 25 in one version; rail and the ferries then run once (their keys and `RAIL_V`,
+   `FERRIES_V` changed) and write the same `global/railfreq` and ferry layers. (A zip dropped after
+   the first check is a second version: rail and the ferries would run on the first without it,
+   which is why they go in together.)
+3. After the first rail and ferries runs: `sources/rail/mtr` and `mtr-pairs` are read by nothing
+   (the PM removes their records and files), and `inputs/ferries/freq/` and `inputs/ferries/research/`
+   (now in `how/`) can be removed from the NAS.
 
 #### 6.7.3 The to-do list and the report (#142)
 
@@ -2157,15 +2202,17 @@ Left:
   the catalogue's corrections and the fetch methods (`get-key-json-link`, `get-key-header`): G,
   from the declarations (#140); user agent and retry tuning: C.
 - `dem/railgtfs.py`: G (the counter). `:47` `mode_of`: G (GTFS route types).
-- `dem/mtrpairs.py` (whole, hand-run): P, then deleted (#141).
-- `dem/ferrygtfs.py` (the ferry counter, run by the ferries job): G (§6.7.0, #140).
+- `dem/mtrpairs.py` (whole, hand-run): P (`producers/timetables/mtr.py`), deleted (#141).
+- `dem/ferrygtfs.py` (the ferry counter, run by the ferries job): G (§6.7.0, #140); `dem/staticgtfs.py`
+  (the static files' calendar and count rows): G (§6.7.2, #141).
 - `dem/ferries.py:10–14`, `:326`, `:510` the sources' precedence and reading: G; `:49` `URBAN_NETS`,
   `:58`: C.
-- `crates/pipeline/src/rail.rs` the rail sources' logical paths (catalogue, MTR, its pairs): D/P;
-  the territories' own codes: D (the catalogue declaration's `own_code`, #140).
-- `bin/scenic-build.rs:3877–3895`, `:3946–3950`: G; `:3980–3983` the MTR's pairs merged: goes.
-- `crates/pipeline/src/ovconv.rs:384–397` the ferries job reading `inputs/ferries/freq`: reads the
-  accepted units instead.
+- `crates/pipeline/src/rail.rs` the rail sources' logical paths (catalogue; the MTR's and its
+  pairs gone, #141): D; the territories' own codes: D (the catalogue declaration's `own_code`, #140).
+- `bin/scenic-build.rs` `rail_step`: G; the MTR's pairs merged: gone, the static files' count rows
+  read instead (#141).
+- `crates/pipeline/src/ovconv.rs` the ferries job reading `inputs/ferries/freq`: reads the static
+  files' accepted version instead (#141).
 - `crates/pipeline/src/stations.rs:24` `INTERCITY_WORDS` (brands in OSM names): C.
 
 ### 9.7 Names and languages [#136, #137]
@@ -2207,7 +2254,7 @@ Not source names, but every place that would bypass the input check:
   gone (#137; the server reads the accepted copies, crates/server/src/accepted.rs).
 - Descriptions: `namestodo::run`'s read of `descriptions/` and the server's copy: gone (#137).
 - Ferries: `input_digests`' read of `inputs/ferries/freq`'s looked-up timetables (agent/mod.rs),
-  the ferries job's (ovconv.rs) [#141].
+  the ferries job's (ovconv.rs): gone, the static files' accepted version read instead [#141].
 - Keyed feeds: `key_names` of `inputs/keys.env` (agent/mod.rs:4658): stays (keys.env isn't an input),
   exempt with its reason.
 - The never-swept and backed-up folders: `agent/gc.rs` (`NEVER`, which also holds all of
