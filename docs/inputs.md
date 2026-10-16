@@ -2047,9 +2047,12 @@ downloaded or stored twice before the rename. The rollout, in order:
 5. *The proof:* `scenic-build elevation-proof --root <nas> --out <scratch> --store <nas>/sources
    --write` (`--write` needs `--store`): each unit's vertices sampled by today's code and by the
    generic sampler; every difference must lie in a blend band with the same source byte. It refuses
-   up front when any unit the records list has no kept samples (it would be unproved). Only when
-   every recorded unit passed does it write `state/inputs/elevation-proof.json`: the accepted index
-   proved, the app, the sampler's version (`generic::SAMPLER_V`), the units proved and recorded.
+   up front when any unit the records list has no kept samples but has roads (`base/<u>` or
+   `global/roads/<u>` in the manifest): it would be unproved. A unit with neither has no road
+   vertices (the unit run samples and keeps none for it) and counts as proved, listed as such. Only
+   when every recorded unit passed does it write `state/inputs/elevation-proof.json`: the accepted
+   index proved, the app, the sampler's version (`generic::SAMPLER_V`), the units proved (the
+   roadless among them, also listed as `roadless`) and recorded.
 6. *The switch:* the next check records it (`sources/inputs/elevation/@switched`) when the proof
    names the accepted index, the sampler this app has, and as many units proved as recorded; a
    declaration edited between, or a newer sampler, makes the proof stale, so it runs again. From the

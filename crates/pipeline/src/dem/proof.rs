@@ -122,24 +122,31 @@ pub fn accept_folder(dir: &Path, scratch: &Path, root: &Path, m: &BTreeMap<Strin
 
 /// The proof over the units: each's comparison; the report written to the scratch folder.
 /// Asked to `write`, it refuses first what couldn't be proved: no stores given, units or declarations
-/// of its own chosen, a unit the records list without kept samples.
+/// of its own chosen, a unit the records list with roads but without kept samples (one without
+/// roads, no `base/` or `global/roads/` in the manifest, is proved as having no road vertices).
 pub fn run(o: &Opts) -> Result<Vec<UnitProof>> {
-    // (The proof the input check reads is of every unit the records list, each with kept samples:
-    // one without is a unit unproved, and nothing is written. Known before any is sampled.)
-    let recorded: Vec<String> = if o.write {
+    // (The proof the input check reads is of every unit the records list, each with kept samples or
+    // roadless: no `base/<u>` or `global/roads/<u>` in the manifest, the unit run's sign of no road
+    // vertices in it (it samples none, keeps none). One with roads and no samples is a unit unproved,
+    // and nothing is written. Known before any is sampled.)
+    let m: BTreeMap<String, String> = crate::out::read_record(&o.root.join("state/build/manifest.json"))?;
+    let (recorded, roadless): (Vec<String>, Vec<String>) = if o.write {
         ensure!(o.units.is_none() && o.declarations.is_none(), "the proof the input check reads is of every unit and of the accepted version");
         ensure!(o.store.is_some(), "--write needs --store <nas>/sources: the datasets kept whole are proved from the stores the units read");
         let keys = crate::agent::build::Keys::load_strict(&o.root)?;
         let recorded: Vec<String> = keys.unit.keys().filter_map(|t| crate::legacy::Unit::parse(t)).map(|u| u.dash()).collect();
         let files = crate::unit::dem_samples_files(&o.root.join("cache").join(crate::unit::DEM_UNITS));
         let have: std::collections::BTreeSet<&str> = files.iter().map(|(u, ..)| u.as_str()).collect();
-        let lacking: Vec<&String> = recorded.iter().filter(|u| !have.contains(u.as_str())).collect();
-        ensure!(lacking.is_empty(), "{} of the {} units recorded have no kept samples ({}{}): they'd be unproved, so no proof is written", lacking.len(), recorded.len(), lacking.iter().take(5).map(|u| u.as_str()).collect::<Vec<_>>().join(", "), if lacking.len() > 5 { ", …" } else { "" });
-        recorded
+        let (roadless, lacking): (Vec<&String>, Vec<&String>) = recorded.iter().filter(|u| !have.contains(u.as_str())).partition(|u| !m.contains_key(&format!("base/{u}")) && !m.contains_key(&format!("global/roads/{u}")));
+        ensure!(lacking.is_empty(), "{} of the {} units recorded have roads but no kept samples ({}{}): they'd be unproved, so no proof is written", lacking.len(), recorded.len(), lacking.iter().take(5).map(|u| u.as_str()).collect::<Vec<_>>().join(", "), if lacking.len() > 5 { ", …" } else { "" });
+        if !roadless.is_empty() {
+            eprintln!("elevation-proof: {} of the {} units recorded have no road vertices (no base/ or global/roads/ in the manifest), proved as such: {}", roadless.len(), recorded.len(), roadless.iter().map(|u| u.as_str()).collect::<Vec<_>>().join(", "));
+        }
+        let roadless = roadless.into_iter().cloned().collect();
+        (recorded, roadless)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    let m: BTreeMap<String, String> = crate::out::read_record(&o.root.join("state/build/manifest.json"))?;
     std::fs::create_dir_all(&o.scratch)?;
     let accepted = match &o.declarations {
         Some(d) => accept_folder(d, &o.scratch, &o.root, &m)?,
@@ -207,11 +214,11 @@ pub fn run(o: &Opts) -> Result<Vec<UnitProof>> {
     std::fs::write(o.scratch.join("elevation-proof-report.json"), serde_json::to_vec_pretty(&report)?)?;
     if o.write {
         ensure!(failed == 0, "{failed} vertices differ outside the blend bands: no proof written");
-        let proved: std::collections::BTreeSet<&str> = out.iter().map(|r| r.unit.as_str()).collect();
+        let proved: std::collections::BTreeSet<&str> = out.iter().map(|r| r.unit.as_str()).chain(roadless.iter().map(|u| u.as_str())).collect();
         let unproved: Vec<&String> = recorded.iter().filter(|u| !proved.contains(u.as_str())).collect();
         ensure!(unproved.is_empty(), "{} of the {} units recorded weren't proved ({}{}): no proof written", unproved.len(), recorded.len(), unproved.iter().take(5).map(|u| u.as_str()).collect::<Vec<_>>().join(", "), if unproved.len() > 5 { ", …" } else { "" });
         let me = crate::agent::app_version(std::env::current_exe()?.parent().context("the program's folder")?);
-        let proof = serde_json::json!({ "index": accepted.version, "ok": true, "app": me, "sampler": super::generic::SAMPLER_V, "units": out.len(), "units_recorded": recorded.len(), "vertices": out.iter().map(|r| r.vertices).sum::<usize>(), "blended": out.iter().map(|r| r.blended).sum::<usize>() });
+        let proof = serde_json::json!({ "index": accepted.version, "ok": true, "app": me, "sampler": super::generic::SAMPLER_V, "units": out.len() + roadless.len(), "roadless": roadless, "units_recorded": recorded.len(), "vertices": out.iter().map(|r| r.vertices).sum::<usize>(), "blended": out.iter().map(|r| r.blended).sum::<usize>() });
         crate::whole::write(&o.root.join(elevation::PROOF), &serde_json::to_vec_pretty(&proof)?)?;
     }
     Ok(out)
@@ -260,7 +267,24 @@ mod tests {
         assert!(e.to_string().contains("--write needs --store"), "{e:#}");
         std::fs::create_dir_all(d.path().join("state/build")).unwrap();
         std::fs::write(d.path().join("state/build/jobs.json"), br#"{"unit": {"6/1/1": "k1", "6/1/2": "k2"}}"#).unwrap();
+        std::fs::write(d.path().join("state/build/manifest.json"), br#"{"base/6-1-1": "b", "global/roads/6-1-2": "r"}"#).unwrap();
         let e = run(&opts(d.path(), Some(d.path().join("sources")))).unwrap_err();
-        assert!(e.to_string().contains("2 of the 2 units recorded have no kept samples (6-1-1, 6-1-2)"), "{e:#}");
+        assert!(e.to_string().contains("2 of the 2 units recorded have roads but no kept samples (6-1-1, 6-1-2)"), "{e:#}");
+    }
+
+    #[test]
+    fn a_roadless_unit_is_proved_and_one_with_roads_but_no_samples_refuses() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("state/build")).unwrap();
+        std::fs::write(d.path().join("state/build/jobs.json"), br#"{"unit": {"6/1/1": "k1", "6/1/2": "k2"}}"#).unwrap();
+        // 6-1-1 has a base, 6-1-2 none: only 6-1-1 refuses.
+        std::fs::write(d.path().join("state/build/manifest.json"), br#"{"base/6-1-1": "b"}"#).unwrap();
+        let e = run(&opts(d.path(), Some(d.path().join("sources")))).unwrap_err();
+        assert!(e.to_string().contains("1 of the 2 units recorded have roads but no kept samples (6-1-1)"), "{e:#}");
+        // Both roadless: past the refusal (on to the accepted index, of which there is none here).
+        std::fs::write(d.path().join("state/build/manifest.json"), b"{}").unwrap();
+        let e = run(&opts(d.path(), Some(d.path().join("sources")))).unwrap_err();
+        assert!(!e.to_string().contains("no kept samples"), "{e:#}");
+        assert!(e.to_string().contains("no accepted version"), "{e:#}");
     }
 }
