@@ -1041,7 +1041,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   map, walls on the terrain under each corner, the globe's 3D positions without float32's noise
   (the saw at the buildings' feet), fog, bridges and elevated rail drawn after the buildings, the
   camera kept above roofs, colour by height on the shared colour scale, heritage sites in their
-  colour. National heights (PLATEAU, BD TOPO) later.
+  colour. Built (B5, on by default since 2026-10-16): below zoom 14 the far buildings' field
+  (buildings3d.md §4.8), where the catalog has its layer (`?bldfield=off` leaves it out). National
+  heights (PLATEAU, BD TOPO) later.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 

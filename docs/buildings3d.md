@@ -8,8 +8,8 @@ layer; the tiles building since. **B3 built** (2026-10-08, not yet published): a
 tasks for pages and helper Macs (§3.6), and on the map the walls on the terrain under each corner,
 the globe's feet without their saw (task #115), fog, bridges after the buildings, the camera above
 roofs, colour by height on the shared scale, the heritage tint (§4). Nothing of B4 built. B5, the far buildings (§4.8): the field's builder and the renderer's work
-built and piloted by hand (2026-10-14, §5.1), behind `?bldfield` and not yet in the build's
-published catalog; the meshes are z14's alone since (the z12 and z13 tiles of tall and large
+built and piloted by hand (2026-10-14, §5.1), its layer in the catalog for z4–14 everywhere and on
+by default since 16 Oct (`?bldfield=off` leaves it out); the meshes are z14's alone since (the z12 and z13 tiles of tall and large
 buildings gone). The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order),
 `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
@@ -41,8 +41,9 @@ as roads do.
 **At which zooms.** Meshes from z14 tiles alone, every building, drawn wherever MapLibre's cover takes
 z14 tiles (from map zoom 14, and below it near the camera of a tilted view); above z14
 the map draws the z14 tiles, whole, up to its 19.5 (§4.1). Below zoom 14 the buildings are the
-field's (§4.8, behind `?bldfield` until it's on by default): every building at every zoom, the
-ones under a pixel as their summed roofs and walls; without it, none below zoom 14.
+field's (§4.8, on by default where the catalog has its layer): every building at every zoom, the
+ones under a pixel as their summed roofs and walls; without it (`?bldfield=off`, or a catalog
+without the layer), none below zoom 14.
 - The tiles' sizes (B0, §2.5), against ~300 KB a tile: z14 holds every building, and about 15 of
   its 2.2 million tiles are over 300 KB, at most 490 KB: old towns drawn on Spain's cadastral
   parcels and three of Tokyo's wards. They stay as they are until the iPad is measured (§4.6):
@@ -1006,12 +1007,13 @@ artefacts call for it (B4):
 
 ### 4.8 Far away, the field (task #102)
 
-**Built and piloted (B5, 2026-10-14), not yet on by default nor in the build's catalog.** The
+**Built and piloted (B5, 2026-10-14), in the catalog (z4–14 everywhere) and on by default since 16 Oct, imperfect as it is (the owner's decision).** The
 owner's aim: buildings at every zoom, each zoom looking practically as the closer ones do, "as
 though the map were rendered at extremely high resolution at full detail and then downsampled to
 the screen". Without the field the buildings vanish below zoom 14 (§1). The builder is
 `pipeline::bld::field` (in `bldtiles` and the `bldfield-lo` step), the renderer
-`web/src/bldfield.ts` with its worker (behind `?bldfield`), the comparison `web/src/bldcmp.ts`
+`web/src/bldfield.ts` with its worker (loaded by `web/src/main.ts` where the catalog has the layer
+`buildings-field`, unless `?bldfield=off`; `?bldfield=<url>` takes its tiles from <url>), the comparison `web/src/bldcmp.ts`
 (`?bldcmp`) and `tools/bldcheck/`. `tools/bldfield/` is the prototype's builder (16-bit planes from a
 pack's z14 tiles), kept for the prototype's numbers below.
 
@@ -1686,10 +1688,10 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 | **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
 | **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
-| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, not yet on by default) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). Not done: colour by height, fog, the coverage build, measured on the iPad. | 1–2 weeks |
+| **B5 Far away** (prototyped 2026-10-10; built and piloted 2026-10-14, on by default since 2026-10-16) | Built: the field (§4.8) in `bldtiles` with the meshes, levels 14–9 and the mids, a `bldfield-lo` step per z3 tile for levels 8–4, `BUILDINGS_V` 3 (4 with the feature ids), the catalog's layer and the server's route; the meshes z14's alone; the renderer's work (below). Piloted by hand on the build Mac into a scratch root (the NAS read only) on 6/56/25, 6/33/22, 6/17/23, 6/18/24 and six small high-latitude and Aleutian tiles: 93–311 s a tile for the large ones with the Mac under other agents' load (a load average of 30–180; Kantō 167 s), 1.8–7.9 GB at most; `bldfield-lo` 0.1–2 s a z3 tile, 0.7 GB at most. The hand-over at zoom 14: the walls matched (§4.8.1, 15 Oct). The mirror's group and the World download (§4.8). The heritage list drawn (§4.8). On by default where the catalog has the layer (16 Oct, the owner's decision; `?bldfield=off` leaves it out). Not done: colour by height, fog, measured on the iPad. | 1–2 weeks |
 
 **B5: the renderer's work before the field is on by default** (from the review of the prototype,
-11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker, still behind `?bldfield`):
+11 Oct; built 14 Oct in `web/src/bldfield.ts` and its worker; on by default since 16 Oct):
 - GPU memory: the class textures R11F_G11F_B10F (v, w, f: 4 bytes a texel, half RGBA16F's; with
   mipmaps 1.4 MB a class), each class's roof ground R16F (0.7 MB with mipmaps), up to 5 classes a
   tile, and 0.4 MB of masks and tops, so a view's tiles take 310–850 MB (Tokyo at 13.5 and 60°,
@@ -1707,7 +1709,8 @@ against streets of buildings in rows), 1.5–2 at z11–13 straight down.
 - The scene's depth along the march, from the fork's `sceneDepth` (`readsSceneDepth`): the faces
   tested against it in the shader, and on the flat map the march stopped where the ray meets a mesh
   or the terrain; on the globe the march still stops at its own ground.
-- The layer's code loaded by `import()` only with `?bldfield`.
+- The layer's code loaded by `import()` only when the field is wanted: the catalog has the layer
+  `buildings-field` (at start, or a later catalog), or `?bldfield=<url>`; never with `?bldfield=off`.
 - The cover: the field wherever MapLibre's cover has no loaded z14 mesh tile showing (below zoom 14
   everywhere, above it beyond the meshes of a tilted view); the fork's tile zoom by depth (FORK.md)
   so the tiles at the screen's sides are as sharp as the middle's.

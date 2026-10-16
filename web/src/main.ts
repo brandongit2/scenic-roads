@@ -145,13 +145,19 @@ async function main() {
     ...(CMP ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(CMP.dpr ? { pixelRatio: CMP.dpr } : {}) } : {}),
   });
   if (EVAL) installEval(map);
-  // The far buildings' field (bldfield.ts, task #102; loaded only with `?bldfield`, not yet on by
-  // default) and its comparison mode (bldcmp.ts).
-  const fieldUrl = new URLSearchParams(location.search).get('bldfield');
+  // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
+  // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from
+  // <url> (whatever the catalog says). Without it the meshes alone (z14), as before the field.
+  // Its comparison mode: bldcmp.ts.
+  const fieldParam = new URLSearchParams(location.search).get('bldfield');
   let field: FieldLayer | null = null;
-  const fieldReady: Promise<FieldLayer> | null = fieldUrl !== null ? import('./bldfield').then((m) => (field = new m.FieldLayer(fieldUrl || null))) : null;
+  let fieldReady: Promise<FieldLayer> | null = null;
+  const wantField = (m: Meta) => fieldParam !== 'off' && (!!fieldParam || !!m.layers?.['buildings-field']);
+  const loadField = () =>
+    (fieldReady ??= import('./bldfield').then((m) => (field = new m.FieldLayer(fieldParam || null))));
+  const fieldAtStart = wantField(meta) ? loadField() : null;
   if (CMP) {
-    if (fieldReady) void fieldReady.then((f) => installCmp(map, f));
+    if (fieldAtStart) void fieldAtStart.then((f) => installCmp(map, f));
     else installCmp(map, null);
   }
   // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
@@ -2105,6 +2111,11 @@ async function main() {
       applyBuildingsNow(store.s);
       heritageChanged(map, store.s.overlays.heritage);
     }
+    // The field, once a catalog has its layer (not in the comparison mode: set up at start).
+    if (!fieldReady && !CMP && wantField(m) && styleReady && map.getLayer('buildings')) {
+      loadField();
+      addField();
+    }
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     markDirty();
   };
@@ -2126,6 +2137,14 @@ async function main() {
     ferries.release();
   };
   boot.at(2);
+  // The field's layer, once loaded, right after the extruded buildings (when they're there).
+  const addField = () =>
+    void fieldReady?.then((f) => {
+      const ids = map.getStyle().layers.map((l) => l.id);
+      const next = ids[ids.indexOf('buildings') + 1];
+      if (!map.getLayer(f.id) && ids.includes('buildings')) map.addLayer(f, next);
+      applyBuildingsNow(store.s);
+    });
   // Attach as soon as the style is parsed; basemap tiles keep streaming in behind.
   // (An inline style can finish parsing before listeners are registered.)
   const attach = () => {
@@ -2140,14 +2159,7 @@ async function main() {
     if (meta.layers?.buildings) {
       addBuildings(map, 'water-name-line', 'boundary-county');
       heritageChanged(map, store.s.overlays.heritage);
-      if (fieldReady)
-        void fieldReady.then((f) => {
-          // (Right after the extruded buildings.)
-          const ids = map.getStyle().layers.map((l) => l.id);
-          const next = ids[ids.indexOf('buildings') + 1];
-          if (!map.getLayer(f.id) && ids.includes('buildings')) map.addLayer(f, next);
-          applyBuildingsNow(store.s);
-        });
+      addField();
     }
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).

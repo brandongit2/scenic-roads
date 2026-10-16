@@ -1,4 +1,4 @@
-// PROTOTYPE (task #102): the far buildings' comparison mode, `?bldcmp` (with `?bldfield=<url>` for
+// PROTOTYPE (task #102): the far buildings' comparison mode, `?bldcmp` (the field as the app loads it, or `?bldfield=<url>` for
 // the field, bldfield.ts). The owner's setup: nothing on the map but the 3D buildings, the 3D
 // terrain, land and water and the hill-shading; the buildings a light colour so they stand out.
 // `window.__bld` hands the map to tools/bldcheck/check.mjs:
