@@ -190,6 +190,18 @@ now source changes:
   5 km away); each DEM tile now keeps the minimum and maximum of a 32 × 32 grid and its coarser
   levels, made with its own min and max in the worker, and a tile's range is read from at most
   5 × 5 cells. Tighter culling volumes too.
+- **Draped textures at a steady pace** (`terrain_tile_manager.ts`'s `pacedDrapes`, true by default,
+  and `movingRedraws`, 2; `render_to_texture.ts`'s `prepareForRender`; `map.ts`'s
+  `_handleTerrainDataEvent`). Upstream drops a terrain tile's textures, to redraw them in the next
+  frame, whenever a tile of any source under it loads, even of a source with nothing draped; turning
+  a tilted view brings in tiles of eight draped sources at their own pace, a hundred a second, and
+  frames redrew up to twenty textures (0.3–0.5 ms of GPU each). Now a tile of a source with no layer
+  draped (`drapes`: lifted lines and fills don't count) shown leaves the textures alone; the other
+  drops are noted and done at the next frame's start; and while the camera moves at most
+  `movingRedraws` existing textures are redrawn a frame, whatever the reason (a source's tiles, a
+  revision, a custom layer's `drapeRevision`), the others kept a few frames longer. A terrain tile
+  without textures is drawn at once; at rest, as upstream. Until task #155 this was the app's
+  `web/src/drape.ts`, patching these internals. Tested in `render_to_texture.test.ts`.
 
 ### Custom layers: their place in the passes, and the frame's depth
 

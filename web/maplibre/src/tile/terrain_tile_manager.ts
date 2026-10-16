@@ -91,6 +91,20 @@ export class TerrainTileManager extends Evented {
     footprintSizing: boolean = true;
     /** Scenic Roads: the smallest texture footprintSizing gives a tile. */
     minRttSize: number = 128;
+    /**
+     * Scenic Roads: draped textures redrawn at a steady pace. A source tile's load (`releaseRTT`)
+     * notes the terrain tiles under it (`_dirtyRTT`) for the next frame instead of dropping their
+     * textures at once; the map leaves the textures alone for a tile of a source with no layer
+     * draped (render_to_texture.ts `drapes`) shown; and while the camera moves at most
+     * `movingRedraws` existing textures are redrawn a frame, whatever the reason, the others kept a
+     * few frames longer (`RenderToTexture.prepareForRender`). A terrain tile without textures is drawn
+     * at once; at rest, as upstream. True by default; false gives upstream's drops.
+     */
+    pacedDrapes: boolean = true;
+    /** Scenic Roads: with pacedDrapes, the textures redrawn a frame while the camera moves. */
+    movingRedraws: number = 2;
+    /** Scenic Roads: with pacedDrapes, the terrain tiles (by key) whose textures are to be redrawn. */
+    _dirtyRTT: Set<string> = new Set();
 
     constructor(tileManager: TileManager) {
         super();
@@ -184,9 +198,13 @@ export class TerrainTileManager extends Evented {
     releaseRTT(tileID: OverscaledTileID): void {
         for (const key in this._tiles) {
             const tile = this._tiles[key];
-            if (tile.tileID.equals(tileID) || tile.tileID.isChildOf(tileID) || tileID.isChildOf(tile.tileID))
-                tile.releaseRTT(this.tileManager.map.painter);
+            if (tile.tileID.equals(tileID) || tile.tileID.isChildOf(tileID) || tileID.isChildOf(tile.tileID)) {
+                // Scenic Roads: with pacedDrapes, noted for the next frame (prepareForRender).
+                if (this.pacedDrapes) this._dirtyRTT.add(key);
+                else tile.releaseRTT(this.tileManager.map.painter);
+            }
         }
+        if (this.pacedDrapes) this.tileManager.map?.triggerRepaint();
     }
 
     /**

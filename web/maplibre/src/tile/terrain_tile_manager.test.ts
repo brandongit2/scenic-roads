@@ -267,6 +267,19 @@ describe('TerrainTileManager', () => {
             return {parent, same, child, sibling, tiles, rttObjects, painter};
         }
 
+        test('with pacedDrapes, a tileID notes the matching tile, its ancestors and descendants for the next frame', () => {
+            const {parent, same, child, sibling, tiles, painter} = setupTilesWithRttObjects();
+            tsc.tileManager.map.triggerRepaint = vi.fn();
+
+            tsc.releaseRTT(same);
+
+            expect(painter.releaseRTT).not.toHaveBeenCalled();
+            expect([...tsc._dirtyRTT].sort()).toEqual([parent.key, same.key, child.key].sort());
+            expect(tiles[sibling.key].getRTT(0)).toBeTruthy();
+            expect(tsc.tileManager.map.triggerRepaint).toHaveBeenCalled();
+            tsc._dirtyRTT.clear();
+        });
+
         test('with no tileID releases every cached tile', () => {
             const {tiles, rttObjects, painter} = setupTilesWithRttObjects();
 
@@ -281,6 +294,7 @@ describe('TerrainTileManager', () => {
 
         test('with a tileID releases the matching tile, its ancestors, and its descendants', () => {
             const {parent, same, child, sibling, tiles, rttObjects, painter} = setupTilesWithRttObjects();
+            tsc.pacedDrapes = false; // upstream's immediate drops
 
             tsc.releaseRTT(same);
 
@@ -293,6 +307,7 @@ describe('TerrainTileManager', () => {
             expect(painter.releaseRTT).toHaveBeenCalledWith(rttObjects[same.key]);
             expect(painter.releaseRTT).toHaveBeenCalledWith(rttObjects[child.key]);
             expect(painter.releaseRTT).not.toHaveBeenCalledWith(rttObjects[sibling.key]);
+            tsc.pacedDrapes = true;
         });
     });
 });

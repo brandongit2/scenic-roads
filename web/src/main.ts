@@ -47,7 +47,6 @@ import { terrainDist } from './terrainstats';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
 import { slicedGlyphs } from './glyphs';
-import { pacedDrapes } from './drape';
 import { installTrackpad } from './trackpad';
 import { Boot } from './ui/boot';
 import { BuildStatus } from './ui/buildstatus';
@@ -168,7 +167,6 @@ async function main() {
   cacheTerrainRays(map);
   cheaperCovers(map);
   slicedGlyphs(map);
-  pacedDrapes(map);
   if (v?.elev) map.jumpTo({ elevation: v.elev });
   // Once the terrain is ready, set the pivot for the view (camera fixed; see camera3d.relevel).
   const levelOnce = () => {

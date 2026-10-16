@@ -25,7 +25,7 @@ import {type MapEventType, type MapLayerEventType, MapMouseEvent, MapSourceDataE
 import {TaskQueue} from '../util/task_queue.ts';
 import {throttle} from '../util/throttle.ts';
 import {Terrain} from '../render/terrain.ts';
-import {RenderToTexture} from '../webgl/render_to_texture.ts';
+import {RenderToTexture, drapes} from '../webgl/render_to_texture.ts';
 import {config} from '../util/config.ts';
 import {defaultLocale} from './default_locale.ts';
 import {isAbortError} from '../util/abort_error.ts';
@@ -2996,6 +2996,17 @@ export class Map extends Evented<MapEventType> {
         return this;
     }
 
+    /** Scenic Roads: whether a layer of the source, shown at this zoom, is draped (`drapes`). */
+    private _sourceDraped(sourceId: string | undefined): boolean {
+        if (!sourceId) return true;
+        const zoom = this.getZoom();
+        for (const id of this.style._order) {
+            const layer = this.style._layers[id];
+            if (layer.source === sourceId && drapes(layer) && !layer.isHidden(zoom)) return true;
+        }
+        return false;
+    }
+
     private _handleTerrainDataEvent(event: MapStyleDataEvent | MapSourceDataEvent, terrainSourceId: string): void {
         if (event.dataType === 'style') {
             this.terrain.tileManager.releaseAllRTT();
@@ -3013,6 +3024,9 @@ export class Map extends Evented<MapEventType> {
         }
 
         if (!event.tile) return;
+        // Scenic Roads: with pacedDrapes, a tile of a source with no layer draped shown (stops,
+        // sights, a source only lifted layers use) leaves the textures alone.
+        if (this.terrain.tileManager.pacedDrapes && !this._sourceDraped(event.sourceId)) return;
         if (event.source?.type === 'image') {
             this.terrain.tileManager.releaseAllRTT();
             return;

@@ -187,6 +187,31 @@ describe('render to texture', () => {
         expect(painter.releaseRTT).toHaveBeenCalledWith(obj);
     });
 
+    test('pacedDrapes: a source tile\'s drop is done at the next frame, and none past movingRedraws while moving', () => {
+        rtt.prepareForRender(style, 0);
+        const obj = {texture: {}, size: 512} as unknown as RTTObject;
+        markRendered(tile, obj, new RTTFingerprint([tile.tileID], 0, 0, visibleLayerIds()));
+        terrain.tileManager._tiles = {[tile.tileID.key]: tile};
+        terrain.tileManager.tileManager.map = {painter, triggerRepaint: vi.fn()} as any as Map;
+
+        terrain.tileManager.releaseRTT(tile.tileID);
+        expect(tile.getRTT(0)).toBe(obj);
+        expect(terrain.tileManager._dirtyRTT.has(tile.tileID.key)).toBe(true);
+
+        painter.options.moving = true;
+        terrain.tileManager.movingRedraws = 0;
+        rtt.prepareForRender(style, 0);
+        expect(tile.getRTT(0)).toBe(obj);
+        expect(rtt.needsFollowUpFrame).toBe(true);
+
+        painter.options.moving = false;
+        terrain.tileManager.movingRedraws = 2;
+        rtt.prepareForRender(style, 0);
+        expect(tile.getRTT(0)).toBeUndefined();
+        expect(terrain.tileManager._dirtyRTT.size).toBe(0);
+        terrain.tileManager._tiles = {};
+    });
+
     test('should not clear tile cache if state remains same', () => {
         rtt.prepareForRender(style, 0);
         tile.rttFingerprint = {maine: new RTTFingerprint([tile.tileID], 0, 0, visibleLayerIds())};

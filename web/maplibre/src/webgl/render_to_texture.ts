@@ -176,6 +176,26 @@ export class RenderToTexture {
         // check tiles to render
         this.needsFollowUpFrame = false;
         const moving = zoomChanged || this.painter.options.moving;
+        // Scenic Roads: with pacedDrapes, the source tiles' drops noted since the last frame first,
+        // and while moving at most movingRedraws textures redrawn this frame, the rest next frames.
+        const tm = this.terrain.tileManager;
+        let budget = tm.pacedDrapes && moving ? tm.movingRedraws : Infinity;
+        const release = (tile: Tile): boolean => {
+            if (tile.rttObjects.length) {
+                if (budget <= 0) {
+                    this.needsFollowUpFrame = true;
+                    return false;
+                }
+                budget--;
+            }
+            tile.releaseRTT(this.painter);
+            return true;
+        };
+        for (const key of [...tm._dirtyRTT]) {
+            const tile = tm._tiles[key];
+            if (tile && !release(tile)) break;
+            tm._dirtyRTT.delete(key);
+        }
         let staleTileReleased = false;
         for (const tile of this._renderableTiles) {
             const difference = this._textureDifference(tile);
@@ -184,10 +204,10 @@ export class RenderToTexture {
                 this.needsFollowUpFrame = true;
             } else if (difference === 'zoom' || difference === 'sourceTiles') {
                 if (staleTileReleased) this.needsFollowUpFrame = true;
-                else tile.releaseRTT(this.painter);
+                else release(tile);
                 staleTileReleased = true;
             } else {
-                tile.releaseRTT(this.painter);
+                release(tile);
             }
         }
     }
