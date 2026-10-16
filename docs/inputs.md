@@ -120,7 +120,7 @@ inputs/
   heritage-matches/          declare: *.jsonl, the owner's same/not-same pairs (§6.5.4)
   timetables/
     feeds/                   source declarations: <feed>.toml, <catalogue>.toml (§6.7.1)
-    gtfs/                    declare: <name>.zip, hand-compiled static GTFS; todo/ (the app's) (§6.7.2, §6.7.3)
+    gtfs/                    declare: <name>.zip, hand-compiled static GTFS; todo/ (the app's: lines.jsonl, README.md) (§6.7.2, §6.7.3)
   elevation/                 source declarations: <dataset>.toml, its files (if local) in <dataset>/ (§6.8)
   sources/                   source declarations for everything else the build reads (§6.9)
   keys.env                   not an input (secrets)
@@ -1847,15 +1847,48 @@ accepted version, rather than count without the static files: their outputs stay
 
 #### 6.7.3 The to-do list and the report (#142)
 
-- **The to-do:** `inputs/timetables/gtfs/todo/lines.jsonl`, written after each build: OSM's rail and
-  ferry lines in the coverage that no timetable covers, each
+**Built** (crate::timetables; the rail and ferries jobs' pieces; the lead-only `timetables-todo`
+job). Both depend on OSM, which changes each pass: neither is a finding of the input check, and
+nothing waits on them.
+
+- **The to-do:** `inputs/timetables/gtfs/todo/lines.jsonl`, rewritten whole after each rail and
+  ferries run: OSM's rail and ferry lines in the coverage that no timetable covers, each
   `{"osm": "r123", "kind": "rail"|"ferry", "name", "ref", "operator", "from", "to", "km", "priority"}`,
-  by priority (length, and whether it's a passenger line by its tags), beside a brief
-  (`todo/README.md`: how to compile static GTFS for a line, what to cite). The owner answers with
-  zips in `inputs/timetables/gtfs/`.
-- **The report:** timetable routes that match nothing on the map (a feed's line OSM lacks, or a line
-  that closed; a static route whose `osm` pin names no line of this pass), listed on the build page
-  and in `scenic status`, never drawn. It isn't a held input: nothing waits on it.
+  highest priority first (`priority`: the length, a tenth of it for a line whose tags say it carries
+  no passengers: `passenger=no`, `service=freight`), beside a brief (`todo/README.md`,
+  `tools/timetables/todo.md`: how to compile static GTFS for a line, what to cite, the `osm` pin).
+  The owner answers with zips in `inputs/timetables/gtfs/` (§6.7.2).
+  - *Rail lines:* the rail set's service relations (`route` train, subway, tram, light_rail,
+    monorail, funicular; not `railway`, the track) grouped into lines as the ferries' are (one
+    network's or operator's `ref`, else the same two ends, else the relation alone; the first
+    relation's id names it), measured over their ways in the coverage; on the list while less than
+    half that length has trains in `global/railfreq`.
+  - *Ferry lines:* ferries.py's lines with an end in the coverage and no count from a feed or a
+    static file (an OSM `interval` tag isn't a timetable).
+- **The report** (`work/timetables/report`): timetable routes that match nothing on the map, each
+  `{mode, source (the feed's id or the zip's name), static, route, name, agency, osm, why}`, listed
+  on the build page (Details, Timetables: the first 40) and in `scenic status`, never drawn:
+  - a rail route with stop pairs in the coverage none of which found a track (railfreq's
+    `rail-miss.bin`): a line OSM lacks, or one that closed; a static rail route whose `osm` pin
+    names neither a service relation nor a rail way of the pass in the coverage;
+  - a ferry route sailing in its counting window, between two stops, that no line took (its ports
+    match no OSM ferry line); a static ferry route, timed or counted, whose `osm` pin names no ferry
+    line of this pass (a pin naming a direction variant other than the line's first relation is
+    one).
+
+**How it's made.** `rail` (railgtfs.py's `--routes`: each route's stop pairs, as the pairs files
+hold them; railfreq's misses; the rail set's service relations, `osmium tags-filter` of the
+clipped set) hands off `work/rail/lines`; `ferries` (ferries.py's `timetables.json`) hands off
+`work/ferries/lines` (`RAIL_V` 3, `FERRIES_V` 3: the layers and `global/railfreq` as they were).
+`timetables-todo` (lead-only, keyed on the two pieces, the coverage and its version) merges them,
+writes the to-do and its brief into the drop box's `todo/` itself, outside the records (as
+`names-todo` writes the translations' and descriptions' to-dos), and hands off the report. The
+input check never lists `todo/` (`inputs::list` skips `todo/` and `how/` at a drop box's top, for
+every unit), so the to-do's rewrites are no drop-box change, and `todo/` isn't backed up. The lead
+reads the report again when its content name changes, for its status (`Status::timetables`).
+
+**Rollout:** the publish; rail and ferries run once more (their versions), then `timetables-todo`
+once. Nothing is deleted.
 ### 6.8 Elevation (#143, #144)
 
 **Status:** #143's first step is built as its publish 1 (the migration below): the declarations on
@@ -2473,8 +2506,11 @@ publish; only then delete the old path and its NAS files (after GC's 14 days for
   feed is fetched once before it's known whether it's near the coverage. That costs a download per
   new declaration, never a wrong count.
 - **Ferry pins.** OSM ids pinned in static GTFS (every counted ferry route has one: the 658
-  migrated records) go stale when OSM changes a ferry; #142's report lists each pin naming nothing in
-  the pass, every pass.
+  migrated records) go stale when OSM changes a ferry; the report (§6.7.3) lists each pin naming
+  nothing in the pass, every pass.
+- **Rail routes matched by pairs.** A rail route is reported when none of its stop pairs in the
+  coverage found a track; one with a single pair matched isn't, so a route running partly on a line
+  OSM lacks goes unreported. Matching routes to lines by their tracks is planned.
 - **The ferry counter's reference day.** Counting from a zip's fetch day instead of the day the
   counter runs makes counts deterministic, but a feed whose copy is old counts its seasons from then;
   the feeds' weekly refresh (`days:7`) keeps that within a week, as for rail.

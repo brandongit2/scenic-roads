@@ -11,6 +11,7 @@
 !/tools/taskboard/
 !/tools/coastcheck/
 !/tools/names/
+!/tools/timetables/
 !/tools/bldfield/
 /tools/bldfield/target/
 /tools/bldfield/Cargo.lock

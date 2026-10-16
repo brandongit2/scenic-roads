@@ -111,6 +111,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("regions-extract", "--pass d --ids r<id>,w<id>,…", "regions' outlines cut from the pass", &[], &["--pass", "--ids"], 0),
         c("regions-fixture", "<id> <lon,lat,km>", "an accepted version of one region, a circle, in a scratch folder (never the project folder)", &[], &[], 2),
         c("names-todo", "--translations-index i --descriptions-index i [--out dir]", "the translations' and descriptions' to-do lists from the newest catalog", &[], &["--translations-index", "--descriptions-index", "--out"], 0),
+        c("timetables-todo", "[--pass d] [--regions dir] [--out dir]", "the timetables' to-do list (into the static timetables' todo/ under the root, or --out) and the report of routes matching nothing on the map, from the rail and ferries jobs' pieces", &[], &["--pass", "--regions", "--out"], 0),
         c("inputs", "<unit> [--full] [--listing f] [--dem dir] [--forget]", "a gate unit's drop box checked: its clean changes taken in, the held ones reported", &["--full", "--forget"], &["--listing", "--dem"], 1),
         c("put", "<logical> <ext> <file>", "upload a file under a logical name", &[], &[], 3),
         c("verify", "", "check every unverified upload on the NAS (SHA-256 over SSH)", &[], &[], 0),

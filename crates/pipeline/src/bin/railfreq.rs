@@ -40,7 +40,9 @@
 //! paths; RAILFREQ_STOP=lon,lat the paths of the pairs from or to a stop there; RAILFREQ_DEBUG the
 //! pairs that found no track or path.
 //!
-//! Output: rail-freq.bin, sorted (u32 way index, f32 trains a day each way — both directions added
+//! Output: rail-miss.bin, the pairs that found no track or path (f32 lon_a, lat_a, lon_b, lat_b,
+//! sorted, each once: for the report of timetable routes that match nothing on the map); and
+//! rail-freq.bin, sorted (u32 way index, f32 trains a day each way — both directions added
 //! and halved; negative when any of it is a lower bound, i.e. "at least") for the rail ways with
 //! any trains.
 
@@ -344,13 +346,14 @@ fn main() -> Result<()> {
         (v.len() == 2).then(|| [v[0], v[1]])
     });
     let n_rail = rail.len();
-    let (mut runs, matched, partial) = pairs
+    let (mut runs, matched, partial, mut missed) = pairs
         .par_chunks(2048)
         .map(|chunk| {
             // Where each pair's trains run: (edge, from, to along it, trains, a lower bound).
             let mut runs: Vec<(u32, f32, f32, f32, bool)> = Vec::new();
             let mut matched = 0usize;
             let mut partial = 0usize;
+            let mut missed: Vec<[u32; 4]> = Vec::new();
             // The search's states: a stretch travelled one way (edge × 2, + 1 from v to u), so the
             // turn at each node is known.
             let mut dist: HashMap<u32, f32> = HashMap::new();
@@ -358,6 +361,7 @@ fn main() -> Result<()> {
             let mut src: HashMap<u32, At> = HashMap::new(); // first state → the point of A's stretch it starts from
             for p in chunk {
                 let r0 = runs.len();
+                let m0 = matched;
                 let bits = mode_bits(p.mode);
                 // First the nearest few tracks at each stop. With no path along them that doesn't turn
                 // back (a stop in a big station, nearest tracks its line doesn't reach without
@@ -520,6 +524,9 @@ fn main() -> Result<()> {
                     }
                     break;
                 }
+                if matched == m0 {
+                    missed.push([p.a[0] as f32, p.a[1] as f32, p.b[0] as f32, p.b[1] as f32].map(f32::to_bits));
+                }
                 let at_stop = debug_stop.is_some_and(|q| dist_m(q[0], q[1], p.a[0], p.a[1]) < 50.0 || dist_m(q[0], q[1], p.b[0], p.b[1]) < 50.0);
                 if debug_way.is_some() || at_stop {
                     let dw = debug_way.unwrap_or(0);
@@ -534,11 +541,12 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            (runs, matched, partial)
+            (runs, matched, partial, missed)
         })
-        .reduce(|| (Vec::new(), 0usize, 0usize), |(mut a, ma, pa), (mut b, mb, pb)| {
+        .reduce(|| (Vec::new(), 0usize, 0usize, Vec::new()), |(mut a, ma, pa, mut xa), (mut b, mb, pb, mut xb)| {
             a.append(&mut b);
-            (a, ma + mb, pa + pb)
+            xa.append(&mut xb);
+            (a, ma + mb, pa + pb, xa)
         });
     eprintln!("{partial} pairs with one stop beyond the tracks run to the nearest track end toward it");
     // The trains at each point of each stretch: breakpoints (from here on, this many), a sweep over
@@ -625,7 +633,11 @@ fn main() -> Result<()> {
         }
     }
     std::fs::write(roadcore::tmp(&dir, "rail-freq.bin"), &out)?;
-    roadcore::commit(&dir, &["rail-freq.bin"])?;
+    // The pairs that found no track or path, sorted, each once: f32 lon_a, lat_a, lon_b, lat_b.
+    missed.sort_unstable();
+    missed.dedup();
+    std::fs::write(roadcore::tmp(&dir, "rail-miss.bin"), missed.iter().flatten().flat_map(|b| b.to_le_bytes()).collect::<Vec<u8>>())?;
+    roadcore::commit(&dir, &["rail-freq.bin", "rail-miss.bin"])?;
     let km_with = rail.iter().zip(&sums).filter(|(_, &s)| s > 0.0).map(|(&w, _)| {
         let wr = &ways[w as usize];
         let v = &verts[wr.vstart as usize..(wr.vstart + wr.vcount as u64) as usize];

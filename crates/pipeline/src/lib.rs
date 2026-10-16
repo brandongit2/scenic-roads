@@ -33,6 +33,7 @@ pub mod offload;
 pub mod marksjob;
 pub mod marks;
 pub mod namestodo;
+pub mod timetables;
 pub mod osmpass;
 pub mod outlines;
 pub mod rawpack;

@@ -145,10 +145,11 @@ def has_service(zpath: Path, feed: dict, day: date) -> bool:
         return any(dates.get(t["service_id"]) for t in trips.values())
 
 
-def process(feed: dict, zpath: Path, lines: dict, day: date | None, static: bool = False) -> list[dict]:
+def process(feed: dict, zpath: Path, lines: dict, day: date | None, static: bool = False, unmatched: list | None = None) -> list[dict]:
     """The records of the lines of `lines` (id → {"ends": [a, b]}) a feed's ferries sail, counted
     from `day`, the day its zip was fetched. `feed`: its `id`, `name`, `url`, `source` (the page
-    about it) and `ferry_routes`. A static file (`static`): see the module's docs."""
+    about it) and `ferry_routes`. A static file (`static`): see the module's docs. `unmatched`, when
+    given, gets the routes with service in the window that match no line (`unmatched_route`)."""
     z = zipfile.ZipFile(zpath)
     if static:
         day = date(staticgtfs.REF_YEAR, 1, 1)
@@ -201,6 +202,7 @@ def process(feed: dict, zpath: Path, lines: dict, day: date | None, static: bool
 
     out = []
     pinned_lines = set(pins.values())
+    all_matched: set = set()
     for lid, L in lines.items():
         a, b = L["ends"]
         sep = km(a, b)
@@ -237,6 +239,7 @@ def process(feed: dict, zpath: Path, lines: dict, day: date | None, static: bool
             starts = runs.get(tid) or [0]
             t0 = c[ia][2]
             matched_routes.add(trips[tid]["route_id"])
+            all_matched.add(trips[tid]["route_id"])
             for day in dates.get(trips[tid]["service_id"], ()):
                 per_date[d][day] += len(starts)
                 if d == 0 and t0 >= 0:
@@ -307,4 +310,19 @@ def process(feed: dict, zpath: Path, lines: dict, day: date | None, static: bool
             if gaps:
                 rec["headway"] = round(statistics.median(gaps) / 60)
         out.append(rec)
+    if unmatched is not None:
+        # Routes sailing in the window, between two ports, that no line took.
+        live = {trips[tid]["route_id"] for tid, c in calls.items() if dates.get(trips[tid]["service_id"]) and len({s for _, s, _ in c if s in stops}) >= 2}
+        for rid in sorted(live - all_matched):
+            r = routes[rid]
+            pin = pins.get(rid, "")
+            unmatched.append(unmatched_route(feed["id"], static, r, agencies.get(r.get("agency_id", ""), ""), pin,
+                                             "its osm pin names no ferry line of this pass" if pin and pin not in lines else
+                                             "its ports match no OpenStreetMap ferry line"))
     return out
+
+
+def unmatched_route(source: str, static: bool, r: dict, agency: str, pin: str, why: str) -> dict:
+    """A timetable route that matches nothing on the map (docs/inputs.md §6.7.3)."""
+    return {"mode": "ferry", "source": source, "static": static, "route": r.get("route_id", ""),
+            "name": r.get("route_short_name") or r.get("route_long_name") or "", "agency": agency, "osm": pin, "why": why}

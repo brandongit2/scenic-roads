@@ -109,6 +109,37 @@ class Static(unittest.TestCase):
         self.assertEqual((lake["kind"], lake["per_day"], lake["months"], lake["season"], lake["url"], lake["checked"], lake["source"]), ("timetable", 5.5, "May–Sep", "seasonal", "https://e.org/lake", "2026-09", "Lake ferry"))
         self.assertEqual((recs["w9"]["per_day"], recs["w9"]["season"]), (1, "year"))
         self.assertNotIn("w2", recs, "a pinned route counts for its line alone")
+        # The report (docs/inputs.md §6.7.3): with no line at the lake, its route matches nothing;
+        # pinned to a line this pass lacks, the far route's pin names none.
+        un = []
+        ferrygtfs.process({"id": "f.zip", "url": ""}, p, {"w2": lines["w2"]}, None, static=True, unmatched=un)
+        self.assertEqual([(u["route"], u["why"]) for u in un], [("far", "its osm pin names no ferry line of this pass"), ("lake", "its ports match no OpenStreetMap ferry line")])
+        un = []
+        ferrygtfs.process({"id": "f.zip", "url": ""}, p, lines, None, static=True, unmatched=un)
+        self.assertEqual(un, [])
+
+    def test_rail_routes_pairs(self):
+        p = os.path.join(self.d, "r.zip")
+        make(p, {
+            "stops.txt": "stop_id,stop_name,stop_lat,stop_lon\na,A,46.5,7.5\nb,B,46.6,7.6\nc,C,46.7,7.7\n",
+            "routes.txt": "route_id,agency_id,route_short_name,route_type,route_url,osm\nv,a,V,2,https://e.org,r5\nh,a,H,1,https://e.org,\n",
+            "trips.txt": "route_id,service_id,trip_id\nv,s,t1\n",
+            "stop_times.txt": "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nt1,06:00:00,06:00:00,a,1\nt1,06:20:00,06:20:00,b,2\n",
+            "calendar.txt": CAL + "s,1,1,1,1,1,1,1,20000101,20001231\n",
+            "counts.txt": "route_id,from_stop_id,to_stop_id,per_day\nh,b,c,40\n",
+        })
+        lst, feeds = os.path.join(self.d, "s.json"), os.path.join(self.d, "f.json")
+        put(lst, {"zips": [{"name": "r.zip", "path": p}]})
+        put(feeds, {"feeds": []})
+        out, counts, used, routes = (os.path.join(self.d, n) for n in ("p.bin", "c.bin", "u.json", "routes.json"))
+        subprocess.run([sys.executable, "railgtfs.py", "--feeds", feeds, "--out", out, "--used", used, "--static", lst, "--counts", counts, "--routes", routes], cwd=dem, check=True, capture_output=True)
+        r = json.loads(get(routes))
+        by = {x["route"]: x for x in r["routes"]}
+        self.assertEqual((by["v"]["osm"], by["v"]["agency"], by["v"]["static"], by["v"]["name"]), ("r5", "A", True, "V"))
+        # Each pair as the pairs files hold it, bit for bit.
+        held = {struct.unpack("<ffff", b[i:i + 16]) for b in (get(out), get(counts)) for i in range(0, len(b), 21)}
+        self.assertEqual({tuple(r["pairs"][i]) for x in r["routes"] for i in x["pairs"]}, held)
+        self.assertEqual(len(by["h"]["pairs"]), 2, "a count row both ways")
 
 
 if __name__ == "__main__":

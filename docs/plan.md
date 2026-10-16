@@ -1390,7 +1390,9 @@ one pinned release (2026-09-23.1), before any unit runs:
 - **Landmarks:** candidates and peaks per unit, then Wikidata facts and pageviews, marks, and
   overlays (`docs/phase5.md`).
 - **The to-do lists** (`names-todo`, after each catalog the map serves): names to translate and
-  descriptions to write (§7).
+  descriptions to write (§7); (`timetables-todo`, after each rail and ferries run) the rail and
+  ferry lines with no timetable, and the report of timetable routes that match nothing on the map
+  (docs/inputs.md §6.7.3).
 
 ### Rail service
 

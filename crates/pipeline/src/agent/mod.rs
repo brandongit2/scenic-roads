@@ -465,6 +465,10 @@ pub struct Status {
     /// (build::UpdateDecision; docs/plan.md §8, Faster publishing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_update: Option<build::UpdateDecision>,
+    /// The timetables' to-do list's counts and the routes matching nothing on the map
+    /// (crate::timetables, docs/inputs.md §6.7.3): the lead's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timetables: Option<crate::timetables::View>,
     /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSeen>,
@@ -929,6 +933,8 @@ pub struct Agent {
     /// The lead's decision on the next map update as last planned (build::UpdateDecision), and the key
     /// of the last one logged (logged again only when it changes).
     update_decision: std::cell::RefCell<Option<build::UpdateDecision>>,
+    /// The timetables' report as last read (its content name, and what the status shows).
+    timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
     update_logged: std::cell::RefCell<String>,
     catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
     /// The last map update (build::MapUpdate, its folder's `map-update.json`): the one under way,
@@ -1103,7 +1109,7 @@ impl Agent {
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), slots_on: false, proxy: None, resume: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), planned: None, queued: Default::default(), coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, restart_for: None, inputs: Gate::default(), start_soon: Default::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), slots_on: false, proxy: None, resume: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), planned: None, queued: Default::default(), coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), timetables: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, restart_for: None, inputs: Gate::default(), start_soon: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2366,6 +2372,7 @@ impl Agent {
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             map_update: if self.o.helper { None } else { self.update_decision.borrow().clone() },
+            timetables: if self.o.helper { None } else { self.timetables.borrow().as_ref().map(|t| t.1.clone()) },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: match self.try_pooled() {
@@ -4091,6 +4098,17 @@ impl Agent {
     /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
     /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
     /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
+    /// The timetables' report, read again when the records name another (a small file).
+    fn note_timetables(&self, root: &Path, manifest: &BTreeMap<String, String>) {
+        let Some(c) = manifest.get(crate::timetables::REPORT) else { return };
+        if self.timetables.borrow().as_ref().is_some_and(|t| &t.0 == c) {
+            return;
+        }
+        if let Some(v) = std::fs::read(root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
+            *self.timetables.borrow_mut() = Some((c.clone(), crate::timetables::View::of(&v)));
+        }
+    }
+
     fn plan_seen(&self, root: &Path) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -4412,6 +4430,12 @@ impl Agent {
             }
         };
         let cov = &covs.all;
+        // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
+        // writes into the static timetables' drop box's todo/, never read as an input).
+        if let Some(w) = build::timetables_todo_work(cov, &manifest, &keys) {
+            jobs.push(job("timetables-todo".into(), "Listing the lines with no timetable", "timetables-todo", vec!["--pass".to_string(), date.to_string()], Some(w)));
+        }
+        self.note_timetables(root, &manifest);
         let mut done = keys;
         let mut inputs = input_digests(root);
         // (The inputs' descriptions' credits, for the catalog's key: crate::inputs::credits. None
@@ -6755,6 +6779,7 @@ fn first_secs(step: &str) -> f64 {
         "bldtiles" => 2.0,
         "catalog" => 60.0,
         "names-todo" => 1070.0,
+        "timetables-todo" => 10.0,
         "spoken" => 60.0,
         _ => 300.0,
     }

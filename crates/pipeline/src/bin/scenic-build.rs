@@ -699,6 +699,16 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "rail-feeds" => rail_feeds_step(&mut out, &args, &scratch)?,
         "rail" => rail_step(&mut out, &args, &scratch)?,
+        "timetables-todo" => {
+            // timetables-todo [--pass d] [--regions dir] [--out dir]: the timetables' to-do list
+            // into the static timetables' todo/ under the root (or --out), and the report of the
+            // routes matching nothing on the map (pipeline::timetables), from the rail and ferries
+            // jobs' pieces.
+            let cov = coverage_of(&out, &args)?;
+            let to = opt(&args, "--out").map_or_else(|| out.root().to_path_buf(), PathBuf::from);
+            let r = pipeline::timetables::run(&mut out, &cov, &to)?;
+            eprintln!("timetables-todo: {} rail and {} ferry lines with no timetable ({:.0} km), {} routes matching nothing on the map", r.rail, r.ferry, r.km, r.unmatched);
+        }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
             let raw = raw_tiles(&out, &raw_dir);
@@ -4199,16 +4209,17 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(0);
     let tag = store::naming::hash16(format!("{} {feeds} {}", pipeline::agent::build::RAIL_V, statics.version).as_bytes());
     let (raw, raw_counts) = (cache.join(format!("pairs-{tag}.bin")), cache.join(format!("pairs-{tag}.counts")));
-    if !raw.exists() || !raw_counts.exists() {
+    let raw_routes = cache.join(format!("pairs-{tag}.routes"));
+    if !raw.exists() || !raw_counts.exists() || !raw_routes.exists() {
         let (list, pairs, used) = (scratch.join("feeds.json"), scratch.join("pairs-raw.bin"), scratch.join("used.json"));
-        let (static_list, counts) = (scratch.join("static.json"), scratch.join("counts-raw.bin"));
+        let (static_list, counts, routes) = (scratch.join("static.json"), scratch.join("counts-raw.bin"), scratch.join("routes.json"));
         let p = phase("the feeds and static files listed", Class::NasRead);
         std::fs::write(&list, serde_json::to_vec(&rail::feeds_for_counting(out, rail::FEEDS)?)?)?;
         std::fs::write(&static_list, serde_json::to_vec(&pipeline::inputs::gtfs::zips_json(&statics))?)?;
         drop(p);
         let p = phase("railgtfs.py", Class::Mixed);
         let mut c = store::spawn::command("uv");
-        c.current_dir(&dem).args(["run", "python", "railgtfs.py", "--feeds"]).arg(&list).arg("--out").arg(&pairs).arg("--used").arg(&used).arg("--static").arg(&static_list).arg("--counts").arg(&counts);
+        c.current_dir(&dem).args(["run", "python", "railgtfs.py", "--feeds"]).arg(&list).arg("--out").arg(&pairs).arg("--used").arg(&used).arg("--static").arg(&static_list).arg("--counts").arg(&counts).arg("--routes").arg(&routes);
         pipeline::timings::child(&mut c);
         let st = store::spawn::status(&mut c).context("run railgtfs.py")?;
         anyhow::ensure!(st.success(), "railgtfs.py failed: {st}");
@@ -4223,7 +4234,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         // (Where it can't be moved, copied by a temporary name: a copy cut short is never taken for
         // the pairs. The count rows first: the trains' pairs there mean both are.)
-        for (from, to) in [(&counts, &raw_counts), (&pairs, &raw)] {
+        for (from, to) in [(&routes, &raw_routes), (&counts, &raw_counts), (&pairs, &raw)] {
             if std::fs::rename(from, to).is_err() {
                 let tmp = to.with_extension("tmp");
                 store::sys::copy_data(from, &tmp)?;
@@ -4263,6 +4274,16 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     c.args(["extract", "--strategy", "complete_ways", "--overwrite", "-p"]).arg(&poly).arg(&local).arg("-o").arg(&clip);
     osmium_run(c, "osmium extract (the rail set over the coverage)")?;
     std::fs::remove_file(&local).ok();
+    // (Its service relations, for the timetables' to-do list: pipeline::timetables.)
+    let rels_pbf = scratch.join("rail-rels.osm.pbf");
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["tags-filter", "--overwrite", "-R"]).arg(&clip).arg("r/route=train,subway,tram,light_rail,monorail,funicular").arg("-o").arg(&rels_pbf);
+    osmium_run(c, "osmium tags-filter (the rail set's service relations)")?;
+    let rels_opl = scratch.join("rail-rels.opl");
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["cat", "--overwrite", "-t", "relation", "-f", "opl"]).arg(&rels_pbf).arg("-o").arg(&rels_opl);
+    osmium_run(c, "osmium cat (the rail set's service relations)")?;
+    std::fs::remove_file(&rels_pbf).ok();
     drop(p);
     parts.start(3);
     let p = phase("its ways extracted and those in the coverage kept (extract)", Class::Compute);
@@ -4282,8 +4303,31 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let ways = roadcore::Ways::open(&dir)?;
     let freq = rail::by_way_id(ways.ways(), &std::fs::read(dir.join("rail-freq.bin"))?);
     drop(p);
+    // The lines and the routes matching nothing, for the timetables' to-do list and report.
+    let p = phase("the lines served and the routes matching nothing found", Class::Compute);
+    let verts = ways.verts();
+    let mut len: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+    for w in ways.ways() {
+        let v = &verts[w.vstart as usize..(w.vstart + w.vcount as u64) as usize];
+        let e7 = roadcore::E7;
+        *len.entry(w.id as u64).or_default() += v.windows(2).map(|q| roadcore::dist_m(q[0][0] as f64 * e7, q[0][1] as f64 * e7, q[1][0] as f64 * e7, q[1][1] as f64 * e7)).sum::<f64>();
+    }
+    let served: std::collections::HashSet<u64> = freq.chunks_exact(8).map(|c| u32::from_le_bytes(c[..4].try_into().unwrap()) as u64).collect();
+    let rels = pipeline::timetables::read_rels(std::io::BufReader::new(std::fs::File::open(&rels_opl)?))?;
+    std::fs::remove_file(&rels_opl).ok();
+    let lines = pipeline::timetables::rail_lines(&rels, &len, &served);
+    let mut kept = pipeline::timetables::pair_keys(&pairs);
+    kept.extend(pipeline::timetables::pair_keys(&counted));
+    let missed = pipeline::timetables::miss_keys(&std::fs::read(dir.join("rail-miss.bin"))?);
+    let routes: serde_json::Value = serde_json::from_slice(&std::fs::read(&raw_routes)?)?;
+    let rel_ids = rels.iter().map(|r| r.id).collect();
+    let way_ids = len.keys().copied().collect();
+    let unmatched = pipeline::timetables::rail_unmatched(&routes, &kept, &missed, &rel_ids, &way_ids);
+    eprintln!("rail: {} lines in the coverage, {} timetable routes match nothing on the map", lines.len(), unmatched.len());
+    drop(p);
     let p = phase("uploaded", Class::NasWrite);
     out.put_bytes(rail::RAILFREQ, "bin", &freq)?;
+    out.put_bytes(pipeline::timetables::RAIL_LINES, "json", &serde_json::to_vec(&serde_json::json!({"lines": lines, "unmatched": unmatched}))?)?;
     drop(p);
     out.save()?;
     drop(ways);

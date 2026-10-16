@@ -250,7 +250,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "inputs" | "outlines" | "regions-extract" | "labels" | "spoken" | "names-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
+        if step.ends_with("-root") || matches!(step, "inputs" | "outlines" | "regions-extract" | "labels" | "spoken" | "names-todo" | "timetables-todo" | "lakefill" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -403,6 +403,16 @@ pub fn names_todo_work(served: Option<u64>, m: &BTreeMap<String, String>, done: 
     let de = m.get(&crate::inputs::logical(crate::inputs::descriptions::UNIT))?;
     let k = h(&[&format!("names-todo {}", crate::namestodo::VERSION), &n.to_string(), tr, de]);
     (done.lo.get("names-todo").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
+}
+
+/// The timetables' to-do list and report (crate::timetables), once per rail and ferries pieces
+/// (`work/rail/lines`, `work/ferries/lines`: after each rail and ferries run), coverage (it keeps
+/// the ferry lines in it) or step version. None until both pieces are made.
+pub fn timetables_todo_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let rail = m.get(crate::timetables::RAIL_LINES)?;
+    let ferries = m.get(crate::timetables::FERRY_LINES)?;
+    let k = h(&[&format!("timetables-todo {}", crate::timetables::VERSION), rail, ferries, &coverage_all(cov)]);
+    (done.lo.get("timetables-todo").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "timetables-todo".into(), targets: vec![("timetables-todo".into(), k)] })
 }
 
 /// The lakefill step's version (crate::lakefill::run): bumped with any change to what it makes.
@@ -798,9 +808,10 @@ pub const ITEMS_V: u32 = 1;
 pub const ROADUNITS_V: u32 = 1;
 /// Rail stops near the built units (pipeline::ovconv::stations_job), and ferries worldwide
 /// (ferries_job).
-/// (Ferries 2: the looked-up timetables read from the accepted static files, docs/inputs.md §6.7.2.)
+/// (Ferries 2: the looked-up timetables read from the accepted static files, docs/inputs.md §6.7.2.
+/// 3: the lines no timetable counts and the routes matching none, `work/ferries/lines`, §6.7.3.)
 pub const STATIONS_V: u32 = 1;
-pub const FERRIES_V: u32 = 2;
+pub const FERRIES_V: u32 = 3;
 /// The landmark points from the candidates (crate::marksjob).
 pub const MARKS_V: u32 = 1;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
@@ -812,9 +823,10 @@ pub const OVERLAYS_V: u32 = 1;
 
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
 /// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq). (Rail 2: the static
-/// files counted with the feeds, the MTR's among them, docs/inputs.md §6.7.2.)
+/// files counted with the feeds, the MTR's among them, docs/inputs.md §6.7.2. 3: the lines in the
+/// coverage and the routes matching nothing, `work/rail/lines`, §6.7.3.)
 pub const RAIL_FEEDS_V: u32 = 1;
-pub const RAIL_V: u32 = 2;
+pub const RAIL_V: u32 = 3;
 
 /// The current units' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {

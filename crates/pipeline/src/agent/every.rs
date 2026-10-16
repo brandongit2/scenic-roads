@@ -20,8 +20,9 @@
 /// The steps kept to the lead: the map update's catalogs and prune (its gates:
 /// crate::agent's catalog and sweep), the 3D buildings' sources' fetch (written outside the records,
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
-/// its progress: crate::agent::resume; GC, the backup, the input checks, the names to do).
-pub const LEAD_ONLY: [&str; 10] = ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "backup", "inputs", "names-todo", "regions-extract"];
+/// its progress: crate::agent::resume; GC, the backup, the input checks, the names and timetables to do: written into the drop boxes'
+/// `todo/`, outside the records).
+pub const LEAD_ONLY: [&str; 11] = ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "backup", "inputs", "names-todo", "timetables-todo", "regions-extract"];
 
 /// Whether the lead offers its members `step`'s targets: a step of the steps
 /// table of targets by area (not a worldwide one: `names_target` of its name, a run alone, the

@@ -433,6 +433,12 @@ fn status(args: &[String]) -> Result<()> {
             println!("  3D building packs being raised: they go out with the next map update");
         }
     }
+    // The timetables' to-do list and the routes matching nothing on the map (docs/inputs.md §6.7.3).
+    if let Some(t) = &st.timetables {
+        for l in t.lines() {
+            println!("{l}");
+        }
+    }
     for d in st.recent.iter().take(5) {
         println!("{} {} ({}, {} s)", if d.ok { "Done:" } else { "Failed:" }, d.what, ago(d.ended), d.secs);
         if !d.ok {

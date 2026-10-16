@@ -726,6 +726,13 @@ function details(m) {
     leases.length ? table(["Worker", "Work", "For", "Last beat", "Lapses in", "Says"], leases.map((l) => [l.worker, l.what.length > 60 ? `${l.what.slice(0, 60)}…` : l.what, dur(l.for_s), l.beat_s != null ? `${dur(l.beat_s)} ago` : "–", l.lapses_in_s != null ? dur(l.lapses_in_s) : "–", l.progress || ""])) : h("div", "small dim", "None."));
   const waits = a.waiting || [];
   box.append(h("h3", null, "Waiting", h("span", null, "what can't run yet, and why")), waits.length ? table(["What", "Why"], waits.map((w) => [w.what, w.why])) : h("div", "small dim", "Nothing."));
+  // The timetables' to-do list and the routes matching nothing on the map (docs/inputs.md §6.7.3).
+  const tt = a.timetables;
+  if (tt) {
+    box.append(h("h3", null, "Timetables", h("span", null, `${n(tt.to_do)} lines with no timetable (${n(tt.rail)} rail, ${n(tt.ferry)} ferry, ${n(Math.round(tt.to_do_km))} km): ${tt.file}`)),
+      tt.unmatched_total ? table(["Mode", "Timetable", "Route", "OSM pin", "Matches nothing because"], tt.unmatched.map((u) => [u.mode, u.source, u.name ? `${u.route} (${u.name})` : u.route, u.osm || "", u.why])) : h("div", "small dim", "Every timetable route matches a line on the map."),
+      tt.unmatched_total > tt.unmatched.length ? h("div", "small dim", `… and ${n(tt.unmatched_total - tt.unmatched.length)} more (work/timetables/report)`) : null);
+  }
   const recent = a.recent || [];
   box.append(h("h3", null, "The lead's last jobs"), recent.length ? table(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
   if ((a.bad_recipes || []).length) box.append(h("h3", null, "Region recipes that don't read"), table(["File", "Problem"], a.bad_recipes));

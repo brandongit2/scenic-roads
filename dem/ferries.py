@@ -22,7 +22,9 @@ Service groups: urban & commuter (city water buses and commuter boats), short cr
 distance & overnight (2 h 30 or more), cable & chain ferries.
 
 Outputs (--out): ferries.json (GeoJSON: one feature per way, plus terminals) and
-ferry-lines.json (every line's details, for the hover card). Their English is the map's server's,
+ferry-lines.json (every line's details, for the hover card), and timetables.json (the lines no
+timetable counts and the timetable routes that match no line, for the timetables' to-do list and
+report: docs/inputs.md §6.7.3). Their English is the map's server's,
 from the translations' live tables (crates/names), as it serves them.
 
 usage: ferries.py --src DIR --out DIR [--feeds FILE] [--static FILE]
@@ -336,13 +338,14 @@ def main() -> None:
     # ---- Frequencies from feeds and timetables ------------------------------------
     ends = {lid: line_ends([ways[w]["coords"] for w in L["ways"]]) for lid, L in lines.items()}
     counted: list[list[dict]] = []
+    unmatched: list[dict] = []
     if FEEDS:
         with phase("the ferry feeds counted", "mixed"):
             feeds = sorted(json.loads(FEEDS.read_text())["feeds"], key=lambda f: f["id"])
             by_ends = {lid: {"ends": e} for lid, e in ends.items()}
             for f in feeds:
                 try:
-                    recs = ferrygtfs.process(f, inputs.arg(f["path"]), by_ends, date.fromisoformat(f["fetched"]))
+                    recs = ferrygtfs.process(f, inputs.arg(f["path"]), by_ends, date.fromisoformat(f["fetched"]), unmatched=unmatched)
                 except Exception as e:  # a malformed feed shouldn't stop the others
                     print(f"  {f['id']}: {e.__class__.__name__}: {e}", file=sys.stderr)
                     continue
@@ -354,14 +357,23 @@ def main() -> None:
             for zf in json.loads(STATIC.read_text())["zips"]:
                 path = inputs.arg(zf["path"])
                 try:
+                    found: list[dict] = []
                     with zipfile.ZipFile(path) as z:
                         recs = staticgtfs.ferry_counts(z, ferrygtfs.is_ferry)
-                    recs += ferrygtfs.process({"id": zf["name"], "url": ""}, path, by_ends, None, static=True)
+                        # Count rows whose pin names no line of this pass.
+                        rs = staticgtfs.routes(z)
+                        for rid in dict.fromkeys(c.get("route_id", "") for c in staticgtfs.count_rows(z)):
+                            r = rs.get(rid)
+                            pin = (r.get("osm") or "").strip() if r else ""
+                            if r and ferrygtfs.is_ferry(r.get("route_type", "")) and pin and pin not in lines:
+                                found.append(ferrygtfs.unmatched_route(zf["name"], True, r, "", pin, "its osm pin names no ferry line of this pass"))
+                    recs += ferrygtfs.process({"id": zf["name"], "url": ""}, path, by_ends, None, static=True, unmatched=found)
                 except Exception as e:  # a malformed file shouldn't stop the others
                     print(f"  {zf['name']}: {e.__class__.__name__}: {e}", file=sys.stderr)
                     continue
                 print(f"{zf['name']}: {len(recs)} lines", file=sys.stderr)
                 counted.append(recs)
+                unmatched += found
     with phase("the frequencies read", "disk"):
         freq: dict[str, dict] = {}
         for recs in counted:
@@ -533,6 +545,12 @@ def main() -> None:
         OUT.mkdir(parents=True, exist_ok=True)
         (OUT / "ferries.json").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False, separators=(",", ":")))
         (OUT / "ferry-lines.json").write_text(json.dumps(out_lines, ensure_ascii=False, separators=(",", ":")))
+        # For the timetables' to-do list and report (docs/inputs.md §6.7.3): the lines no timetable
+        # counts (an OSM interval tag isn't one), and the timetable routes that match no line.
+        todo = [{"osm": lid, "kind": "ferry", **{k: i[k] for k in ("name", "ref", "operator", "from", "to", "km")},
+                 "passenger": lines[lid]["tags"].get("passenger") != "no", "ends": i["ends"]}
+                for lid, i in out_lines.items() if lid not in freq]
+        (OUT / "timetables.json").write_text(json.dumps({"lines": todo, "with_timetable": len(out_lines) - len(todo), "unmatched": unmatched}, ensure_ascii=False, separators=(",", ":")))
         (F / "lines.json").write_text(json.dumps({lid: {**i, "tags": lines[lid]["tags"]} for lid, i in out_lines.items()}, ensure_ascii=False, indent=1))
     by_g = defaultdict(int)
     for i in out_lines.values():

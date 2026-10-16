@@ -431,6 +431,10 @@ row) and `mid.sect` (the group's part of the piece's mid, as `work/terrain-mid/6
 - **To translate** (`inputs/translations/todo/<language>.jsonl`, the `names-todo` job's, rewritten whole
   after each catalog): `{"n", "kind", "langs", "things", "example": {"osm" (n123, w123, r123) | "qid" | "label"
   (its row, labels before `LABELS_V` 2), "at": [lon, lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
+- **Lines with no timetable** (`inputs/timetables/gtfs/todo/lines.jsonl`, the `timetables-todo`
+  job's, rewritten whole after each rail and ferries run): `{"osm", "kind" ("rail" | "ferry"), "name",
+  "ref", "operator", "from", "to", "km", "priority"}`, by priority; with `README.md`
+  (docs/inputs.md §6.7.3).
 - **To describe** (`inputs/descriptions/todo/landmarks.jsonl`, `areas.jsonl`, likewise): `{"qid", "id",
   "name", "en", "kind", "designation", "at", "enwiki", "wiki", "register" (its record's link),
   "source" (its heritage register's id, docs/inputs.md §6.5), "fame"}` (landmarks) and `{"qid", "id", "name", "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by
@@ -798,6 +802,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   across the antimeridian, in those its parts' boxes meet); `work/marks/heritage-dots.json`;
   `work/rail/used.json` (railgtfs.py's report: per feed, `id`, `provider`, `url`, `licence`,
   `fetched`, and `status` with, when "ok", `day`, `trips`, `duplicates`, `rail_routes`);
+  `work/rail/lines.json` (the rail job's: `{"lines": [{osm, kind, name, ref, operator, from, to, km,
+  served_km, passenger}], "unmatched": [...]}`), `work/ferries/lines.json` (the ferries job's,
+  ferries.py's `timetables.json`: `{"lines": [{osm, kind, name, ref, operator, from, to, km,
+  passenger, ends}] (those no timetable counts), "with_timetable", "unmatched": [...]}`) and
+  `work/timetables/report.json` (`timetables-todo`'s: `{to_do, to_do_km, by_kind: {rail, ferry},
+  file, unmatched: [{mode, source, static, route, name, agency, osm, why}]}`: docs/inputs.md §6.7.3);
   `work/trees-mid/6-x-y` (sectioned: a tree cover piece's mid, what its z3 tile's assembly reads;
   meta `{fmt: 1, step: "trees", tile: "6/x/y", v}`, `v` the layers' version, `TREES_V`; per block
   of the tile, by column then row, `<layer>-8-<x>-<y>` for each of cover, height and leaf whose

@@ -398,6 +398,9 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &c
     let fc: Value = serde_json::from_slice(&std::fs::read(work.join("ferries.json"))?)?;
     let lines: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(work.join("ferry-lines.json"))?)?;
     eprintln!("ferries: {} features, {} lines ({n_static} static files)", fc["features"].as_array().map_or(0, Vec::len), lines.len());
+    // (The lines no timetable counts and the routes matching none, for the timetables' to-do list
+    // and report: crate::timetables.)
+    out.put_file(crate::timetables::FERRY_LINES, "json", &work.join("timetables.json"))?;
     let mut ntiles = 0;
     ferry_blocks(out, &fc, &lines, &mut ntiles)
 }

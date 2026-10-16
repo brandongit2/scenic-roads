@@ -36,7 +36,12 @@ Static files (--static: the accepted zips of inputs/timetables/gtfs/, docs/input
     the stops' positions as f32, the mode by the route's type, +0x80 for a lower bound (`at_least`).
     Never merged with timed trains (they have no times).
 
-usage: railgtfs.py --feeds feeds.json --out pairs.bin --used used.json [--static static.json --counts counts.bin] [--today YYYY-MM-DD]
+--routes: per rail route (its feed or static file, id, name, agency, a static route's `osm` pin), the
+stop pairs its trains or count rows run between, as the f32 positions --out and --counts hold them:
+`{"pairs": [[lon_a, lat_a, lon_b, lat_b]], "routes": [{..., "pairs": [index]}]}`, for the report of
+the routes that match nothing on the map (the rail job, docs/inputs.md §6.7.3).
+
+usage: railgtfs.py --feeds feeds.json --out pairs.bin --used used.json [--static static.json --counts counts.bin] [--routes routes.json] [--today YYYY-MM-DD]
 """
 from __future__ import annotations
 
@@ -151,9 +156,41 @@ def has_service(zpath: Path, anchor: date) -> bool:
         return bool(routes) and typical_day(trips, service_days(z, anchor), anchor) is not None
 
 
-def process(zpath: Path, anchor: date | None, seen: set, pairs: dict, weekly: dict, seen_week: set) -> dict:
+def f32(v: float) -> float:
+    """`v` as the f32 the pairs hold it."""
+    return struct.unpack("<f", struct.pack("<f", v))[0]
+
+
+class Routes:
+    """Each route's stop pairs (--routes)."""
+
+    def __init__(self):
+        self.index: dict[tuple, int] = {}
+        self.routes: dict[tuple, dict] = {}
+
+    def add(self, source: str, static: bool, rid: str, r: dict, agency: str, a, b) -> None:
+        k = (f32(a[0]), f32(a[1]), f32(b[0]), f32(b[1]))
+        i = self.index.setdefault(k, len(self.index))
+        e = self.routes.get((source, rid))
+        if e is None:
+            e = self.routes[(source, rid)] = {"mode": "rail", "source": source, "static": static, "route": rid,
+                                              "name": r.get("route_short_name") or r.get("route_long_name") or "",
+                                              "agency": agency, "osm": (r.get("osm") or "").strip() if static else "", "pairs": set()}
+        e["pairs"].add(i)
+
+    def json(self) -> dict:
+        return {"pairs": [list(k) for k in self.index],
+                "routes": [{**e, "pairs": sorted(e["pairs"])} for e in self.routes.values()]}
+
+
+def route_facts(z: zipfile.ZipFile) -> tuple[dict, dict]:
+    """routes.txt by id, and agencies' names by id."""
+    return ({r["route_id"]: r for r in rows(z, "routes.txt")}, {a.get("agency_id", ""): a.get("agency_name", "") for a in rows(z, "agency.txt")})
+
+
+def process(zpath: Path, anchor: date | None, seen: set, pairs: dict, weekly: dict, seen_week: set, source: str = "", rp: Routes | None = None) -> dict:
     """A zip's trains into `pairs` (and `weekly`): a feed's from `anchor`, a static file's (None) by
-    its months and days."""
+    its months and days; each route's stop pairs into `rp`, named by `source`."""
     with phase("the feeds' tables read", "mixed"):
         z = zipfile.ZipFile(zpath)
         routes = rail_routes(z)
@@ -193,6 +230,7 @@ def process(zpath: Path, anchor: date | None, seen: set, pairs: dict, weekly: di
                 calls[tid].append((seq, st["stop_id"], secs(st.get("departure_time") or st.get("arrival_time") or "")))
     with phase("the trains counted", "compute"):
         n_trips = n_dup = 0
+        facts, agencies = route_facts(z) if rp is not None else ({}, {})
         for tid, c in calls.items():
             c.sort()
             c = [x for x in c if x[1] in stops]  # calls at stops with no location are passed over
@@ -200,6 +238,12 @@ def process(zpath: Path, anchor: date | None, seen: set, pairs: dict, weekly: di
             if len(c) < 2:
                 continue
             mode = routes[trips[tid][0]][0]
+            if rp is not None:
+                rid = trips[tid][0]
+                r = facts.get(rid, {})
+                for a, b in zip(pts, pts[1:]):
+                    if a != b:
+                        rp.add(source, anchor is None, rid, r, agencies.get(r.get("agency_id", ""), ""), (round(a[0], 5), round(a[1], 5)), (round(b[0], 5), round(b[1], 5)))
             t0, t1 = c[0][2], c[-1][2]
             if tid in in_week:
                 # Not on the typical day: its runs that week, a seventh each.
@@ -227,13 +271,14 @@ def process(zpath: Path, anchor: date | None, seen: set, pairs: dict, weekly: di
     return {"status": "ok", "day": day.isoformat() if anchor is not None else day.strftime("%m-%d"), "trips": n_trips, "duplicates": n_dup, "rail_routes": len(routes)}
 
 
-def counted(zpath: Path) -> tuple[bytes, int]:
+def counted(zpath: Path, source: str = "", rp: Routes | None = None) -> tuple[bytes, int]:
     """A static file's count rows of rail routes as stop pairs (see the module's docs), and how many
-    rows."""
+    rows; each route's pairs into `rp`."""
     out = bytearray()
     n = 0
     with zipfile.ZipFile(zpath) as z:
         routes = rail_routes(z)
+        facts, agencies = route_facts(z)
         stops = {}
         for s in rows(z, "stops.txt"):
             try:
@@ -254,6 +299,9 @@ def counted(zpath: Path) -> tuple[bytes, int]:
             mode = r[0] | (0x80 if (c.get("at_least") or "").strip() == "1" else 0)
             for p, q in ((a, b), (b, a)):
                 out += struct.pack("<ffffBf", p[0], p[1], q[0], q[1], mode, float(per_day))
+                if rp is not None:
+                    r = facts.get(c["route_id"].strip(), {})
+                    rp.add(source, True, c["route_id"].strip(), r, agencies.get(r.get("agency_id", ""), ""), p, q)
             n += 1
     return bytes(out), n
 
@@ -266,6 +314,7 @@ def main():
     ap.add_argument("--today", help="every feed's window at this day (YYYY-MM-DD), not the day it was fetched")
     ap.add_argument("--static", help="the static files' list, with each zip's path")
     ap.add_argument("--counts", help="the static files' count rows as stop pairs")
+    ap.add_argument("--routes", help="each rail route's stop pairs")
     a = ap.parse_args()
     if bool(a.static) != bool(a.counts):
         ap.error("--static and --counts go together")
@@ -279,6 +328,7 @@ def main():
     seen: set = set()
     seen_week: set = set()
     used = []
+    rp = Routes() if a.routes else None
     for k, feed in enumerate(feeds):
         print(f"progress: {k}/{len(feeds)} feeds", file=sys.stderr, flush=True)
         facts = {key: feed[key] for key in ("id", "provider", "url", "licence", "fetched") if key in feed}
@@ -290,7 +340,7 @@ def main():
             continue
         anchor = today or date.fromisoformat(feed["fetched"])
         try:
-            res = process(Path(feed["path"]), anchor, seen, pairs, weekly, seen_week)
+            res = process(Path(feed["path"]), anchor, seen, pairs, weekly, seen_week, feed["id"], rp)
         except (zipfile.BadZipFile, KeyError, csv.Error) as e:
             res = {"status": f"unreadable: {e}"}
         used.append({**facts, **res})
@@ -300,8 +350,8 @@ def main():
     for zf in static:
         facts = {"static": zf["name"]}
         try:
-            b, n = counted(Path(zf["path"]))
-            res = process(Path(zf["path"]), None, seen, pairs, weekly, seen_week)
+            b, n = counted(Path(zf["path"]), zf["name"], rp)
+            res = process(Path(zf["path"]), None, seen, pairs, weekly, seen_week, zf["name"], rp)
             counts += b
             res["count_rows"] = n
         except (zipfile.BadZipFile, KeyError, csv.Error) as e:
@@ -325,6 +375,8 @@ def main():
         tmp.replace(out)
         print(f"{n_week} stop pairs served only on other days of the week (weekly average)", file=sys.stderr)
         Path(a.used).write_text(json.dumps(used, ensure_ascii=False, indent=1))
+        if rp is not None:
+            Path(a.routes).write_text(json.dumps(rp.json(), ensure_ascii=False, separators=(",", ":")))
     ok = [u for u in used if u.get("status") == "ok"]
     print(f"{len(pairs)} stop pairs from {len(ok)} feeds, {sum(u['trips'] for u in ok)} trains, {sum(u['duplicates'] for u in ok)} duplicates dropped", file=sys.stderr)
 

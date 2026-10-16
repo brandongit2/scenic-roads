@@ -58,7 +58,7 @@ const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
 }
 
 /// The table, in no order of its own (the ranks order what's ranked).
-pub const TABLE: [Step; 48] = [
+pub const TABLE: [Step; 49] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values.
     Step { alone: true, ..base("osm-pass", w_osm_pass) },
     Step { alone: true, ..base("pass-sets", w_pass_sets) },
@@ -90,6 +90,7 @@ pub const TABLE: [Step; 48] = [
     // a heavy NAS reader.
     Step { alone: true, ..base("regions-extract", w_regions_extract) },
     Step { ..base("names-todo", w_none) },
+    Step { ..base("timetables-todo", w_timetables_todo) },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
     // before pieces).
     Step { shared: Some(0), batch: 8, ..base("terrain", w_terrain) },
@@ -542,7 +543,7 @@ fn w_stations(l: &str, _: bool) -> bool {
 }
 
 fn w_ferries(l: &str, _: bool) -> bool {
-    pack(l, "ferries", &ALL)
+    pack(l, "ferries", &ALL) || l == crate::timetables::FERRY_LINES
 }
 
 /// The timetable feeds: each feed's zip, the lists of those checked, fetched and kept (the rail
@@ -552,7 +553,13 @@ fn w_rail_feeds(l: &str, _: bool) -> bool {
 }
 
 fn w_rail(l: &str, _: bool) -> bool {
-    l == "work/rail/used" || l == "global/railfreq"
+    l == "work/rail/used" || l == "global/railfreq" || l == crate::timetables::RAIL_LINES
+}
+
+/// The timetables' report (its to-do list is written into the drop box's todo/, outside the
+/// records).
+fn w_timetables_todo(l: &str, _: bool) -> bool {
+    l == crate::timetables::REPORT
 }
 
 fn w_bldprep(l: &str, _: bool) -> bool {

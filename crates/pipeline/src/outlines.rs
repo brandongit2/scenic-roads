@@ -582,7 +582,7 @@ fn nest(outers: Vec<Vec<[i32; 2]>>, inners: Vec<Vec<[i32; 2]>>) -> Result<Vec<Ve
 }
 
 /// Reading osmium's OPL: the set's relations and the repaired ones' ways and nodes.
-mod opl {
+pub(crate) mod opl {
     use super::Tags;
     use anyhow::{Context, Result};
     use std::collections::HashMap;
