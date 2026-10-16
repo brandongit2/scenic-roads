@@ -575,8 +575,10 @@ pub fn heritage_archive(root: &Path, date: &str) -> PathBuf {
 /// `sources/registers/legacy`'s archive: its wd/, desc/ and whs/, read only) with the pass's
 /// answers kept beside it laid over them (`sources/items/<date>/heritage-<id>.tar.zst`: its wd/,
 /// desc/, whs/ and areas-wikidata.json), less what the chain makes again each run (`REMADE`); the
-/// job's keep then sends them as the pass's archive, under the answers' lease. The archive it
-/// started from, when there was one.
+/// job's keep then sends them as the pass's archive, under the answers' lease. Without a snapshot,
+/// the pass's answers alone; a snapshot named (`legacy` given) that can't be read is an error, so
+/// an empty copy is never kept as the pass's answers. The archive it started from, when there was
+/// one (the snapshot's, else the pass's answers').
 pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Path>) -> Result<Option<PathBuf>> {
     if heritage_archive(root, date).exists() || epoch.join(".kept.json").exists() {
         return Ok(None);
@@ -595,13 +597,19 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
             return Ok(Some(a));
         }
     }
-    let Some(legacy) = legacy.filter(|l| l.is_file()) else { return Ok(None) };
+    // (A snapshot the manifest names but that can't be read now, the NAS away: an error, the job
+    // tried again; never an empty copy kept as the pass's answers.)
+    if let Some(l) = legacy {
+        let md = std::fs::metadata(l).with_context(|| format!("the registers' snapshot {} can't be read", l.display()))?;
+        ensure!(md.is_file(), "the registers' snapshot {} isn't a file", l.display());
+    }
     let kept: Vec<PathBuf> = match std::fs::read_dir(root.join(format!("sources/items/{date}"))) {
         Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("heritage-") && n.ends_with(".tar.zst"))).collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list the pass's answers"),
     };
     ensure!(kept.len() <= 1, "more than one heritage answers archive for {date}: {kept:?}");
+    let Some(from) = legacy.map(Path::to_path_buf).or_else(|| kept.first().cloned()) else { return Ok(None) };
     let parent = epoch.parent().context("the working copy's folder")?;
     let tmp = parent.join(format!(".heritage-start-{date}"));
     std::fs::remove_dir_all(&tmp).ok();
@@ -621,7 +629,9 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
             Ok(())
         };
         let cache = |n: &str| ["wd/", "desc/", "whs/"].iter().any(|d| n.starts_with(d));
-        lay(legacy, &cache)?;
+        if let Some(l) = legacy {
+            lay(l, &cache)?;
+        }
         if let Some(a) = kept.first() {
             lay(a, &|n: &str| cache(n) || n == "areas-wikidata.json")?;
         }
@@ -631,8 +641,8 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
         Ok(())
     })();
     std::fs::remove_dir_all(&tmp).ok();
-    r.with_context(|| format!("the heritage answers from {}", legacy.display()))?;
-    Ok(Some(legacy.to_path_buf()))
+    r.with_context(|| format!("the heritage answers from {}", from.display()))?;
+    Ok(Some(from))
 }
 
 /// The answers this Mac's agent cache (`cache`) has for the newest complete pass on the NAS
@@ -1303,9 +1313,16 @@ mod tests {
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
         pack(&ans, &names(&ans), &kept).unwrap();
         let before = names(&root);
-        // No snapshot named: an empty copy, as before.
+        // No snapshot named: the pass's answers alone.
+        let alone = d.path().join("alone").join(format!("heritage-{date}"));
+        assert_eq!(heritage_start(&root, &alone, date, None).unwrap(), Some(kept.clone()));
+        assert_eq!(heritage_files(&alone), ["areas-wikidata.json", "wd/ids.jsonl"]);
+        assert_eq!(read(&alone.join("wd/ids.jsonl")), "new ids");
+        // A snapshot named but not there (the NAS away): an error, nothing made.
+        let away = d.path().join("away").join(format!("heritage-{date}"));
+        assert!(heritage_start(&root, &away, date, Some(&root.join("sources/registers/gone.tar.zst"))).is_err());
+        assert!(heritage_files(&away).is_empty());
         let epoch = d.path().join("cache").join(format!("heritage-{date}"));
-        assert_eq!(heritage_start(&root, &epoch, date, None).unwrap(), None);
         assert_eq!(heritage_start(&root, &epoch, date, Some(&legacy)).unwrap(), Some(legacy.clone()));
         assert_eq!(heritage_files(&epoch), ["areas-wikidata.json", "desc/en.jsonl", "wd/ids.jsonl", "whs/wd-p757.json"]);
         assert_eq!(read(&epoch.join("wd/ids.jsonl")), "new ids", "the pass's answers over the snapshot's");

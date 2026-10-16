@@ -1476,7 +1476,9 @@ Andalusia's 3,929 entries without a name, and Singapore's 4 conservation areas w
    desc/ and whs/ of `sources/registers/legacy`, read only) with the pass's answers kept beside it
    (`sources/items/<date>/heritage-<id>.tar.zst`) laid over them, less what the chain makes again
    each run (`pipeline::answers::heritage_start`); its keep then writes the pass's archive under
-   the answers' lease, as every run's does.
+   the answers' lease, as every run's does. Without the snapshot, the pass's answers alone; a
+   snapshot the manifest names that can't be read (the NAS away) fails the job, tried again, so an
+   empty copy is never kept as the pass's answers.
 3. **Proof** (run for #138, the old app and this one on the same pass, cover and answers, seven
    regions: Moncton, Halifax, Mont-Mégantic, Paris, Barcelona, Edinburgh, Kyoto; the new side's
    answers made as the job's first start makes them, from the snapshot's caches and the pass's
