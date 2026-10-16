@@ -909,15 +909,6 @@ final class LeadBox: NSObject {
     init(_ a: LeadAction) { action = a }
 }
 
-/// The panel's background: the window's colour in the panel's appearance (the popover's own
-/// material takes the menu bar's, which follows the wallpaper).
-final class Backdrop: NSView {
-    override func draw(_ r: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        r.fill()
-    }
-}
-
 /// A view whose subviews lay out from the top.
 final class Flipped: NSView {
     override var isFlipped: Bool { true }
@@ -950,7 +941,9 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     var all: [Line] = []
     /// Why the page isn't shown (nil: it is, or it's being looked for).
     var why: String?
-    let root = Backdrop(frame: NSRect(x: 0, y: 0, width: Panel.pageWidth, height: 400))
+    /// The content: clear, so the popover's own translucent material shows through, the same
+    /// under the body and the arrow.
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: Panel.pageWidth, height: 400))
     let state = NSTextField(labelWithString: "")
     let reload = NSButton(title: "Reload", target: nil, action: nil)
     let more = NSButton(title: "⋯", target: nil, action: nil)
@@ -997,12 +990,16 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         if Date().timeIntervalSince(closedAt) < 0.3 { return }
         anchor = button
         self.pages = pages
-        NSApp.activate()
+        // (Active, so a click elsewhere closes the transient popover: the cooperative `activate()`
+        // can be declined for a menu bar app, and an inactive app's popover never sees the click
+        // outside.)
+        NSApp.activate(ignoringOtherApps: true)
         popover.contentSize = NSSize(width: Panel.pageWidth, height: 400)
         // (The system's light or dark, not the menu bar's, which follows the wallpaper.)
         popover.appearance = NSApp.effectiveAppearance
         root.appearance = NSApp.effectiveAppearance
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
         find()
     }
 
@@ -1064,8 +1061,14 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         let measure = "new ResizeObserver(() => webkit.messageHandlers.size.postMessage(Math.ceil(document.body.getBoundingClientRect().height))).observe(document.body);"
         conf.userContentController.addUserScript(WKUserScript(source: measure, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         conf.userContentController.add(self, name: "size")
+        // The page's own background let go, so the popover's material shows through (its cards
+        // keep theirs, so their text stays as legible as in a browser).
+        let clear = "document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent';"
+        conf.userContentController.addUserScript(WKUserScript(source: clear, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let w = WKWebView(frame: NSRect(x: 0, y: Panel.footerHeight, width: root.frame.width, height: root.frame.height - Panel.footerHeight), configuration: conf)
         w.autoresizingMask = [.width, .height]
+        w.setValue(false, forKey: "drawsBackground")
+        w.underPageBackgroundColor = .clear
         w.navigationDelegate = self
         w.uiDelegate = self
         root.addSubview(w)
