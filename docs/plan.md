@@ -164,7 +164,8 @@ deletions over SMB bypass it (tested 2026-10-02).
 
 ```
 translations/  descriptions/  the old places of inputs/translations and inputs/descriptions: left empty (#137)
-inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), keys.env
+inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), timetables/feeds/ (the feeds'
+               declarations), ferries/freq/ (looked-up timetables), keys.env
                (API keys, KEY=value lines: the rail feeds'), hold-catalog; _gate-test/ (the input
                check's test unit's drop box, checked while `state/inputs/gate-test` exists:
                inputs.md §4.10)
@@ -760,9 +761,10 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
 - heritage registers (the snapshot, `dem/heritage.py`);
 - timetables:
   - rail: the Mobility Database catalogue's feeds of the countries the coverage is in (worked out
-    from the pass's outlines: `pipeline::rail::countries`), and national operators' own, each
-    with its country, in `dem/railfeeds.py` (§6, Rail service);
-  - ferries: `inputs/ferries/freq`;
+    from the pass's outlines: `pipeline::rail::countries`), and the declared feeds (national
+    operators' own, feeds behind a key), each with its territories (§6, Rail service;
+    docs/inputs.md §6.7.1);
+  - ferries: the declared ferry feeds, worldwide, and `inputs/ferries/freq`'s looked-up timetables;
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
   made by the trees job where a square is missing, not tagged complete, or not whole);
@@ -1382,7 +1384,9 @@ one pinned release (2026-09-23.1), before any unit runs:
 - **The languages spoken where** (per pass, worldwide: the `spoken` job): `global/spoken`, from the
   pass's outlines (§7).
 - **Rail stops:** from the rail set, for the built units' tiles + 20 km.
-- **Ferries:** worldwide, from the ferries set and `inputs/ferries/freq`.
+- **Ferries:** worldwide, from the ferries set, the ferry feeds rail-feeds fetched (counted by the
+  ferries job: `dem/ferrygtfs.py`, docs/inputs.md §6.7.0) and `inputs/ferries/freq`'s looked-up
+  timetables. The job waits for the ferry feeds' list.
 - **Rail service:** trains a day on the coverage's rail ways (below).
 - **Landmarks:** candidates and peaks per unit, then Wikidata facts and pageviews, marks, and
   overlays (`docs/phase5.md`).
@@ -1394,7 +1398,9 @@ one pinned release (2026-09-23.1), before any unit runs:
 Trains a day on each rail way of the coverage (`global/railfreq`), from operators' published
 timetables (GTFS) and the MTR's hand-researched lines (`pipeline::rail`). Two jobs, after the units,
 in a chain of their own (§8):
-- **`rail-feeds`** finds the feeds where the coverage is (`dem/railfeeds.py`):
+- **`rail-feeds`** finds the feeds (`dem/railfeeds.py`) from the accepted declarations of
+  `inputs/timetables/feeds/` (docs/inputs.md §6.7.1): the rail feeds where the coverage is, and the
+  ferry feeds (all of them: the ferries are mapped worldwide), which the ferries job counts:
   - The Mobility Database catalogue's active GTFS feeds of the countries the coverage is in, whose
     box meets it and whose download needs no key.
     - A country counts when it holds 5 % of one of the coverage's outlines (each point of the
@@ -1405,26 +1411,29 @@ in a chain of their own (§8):
       Matsu).
     - A territory with an ISO 3166-2 code brings its country too (Hong Kong and Macau bring China,
       under which the catalogue files Hong Kong's feeds); the feeds' boxes keep that to those near.
-      Its own code is its code's end, or for the few whose isn't, looked up (`rail::OWN_CODE`:
-      Åland's FI-01 is AX, Guadeloupe's FR-971 GP, Kosovo's RS-KM XK, not Comoros' KM).
-      Where the catalogue files a feed under another country than its trains', `dem/railfeeds.py`
-      corrects it (two of Singapore's, under Malaysia).
+      Its own code is its code's end, or for the few whose isn't, the catalogue declaration's
+      `own_code` (Åland's FI-01 is AX, Guadeloupe's FR-971 GP, Kosovo's RS-KM XK, not Comoros' KM).
+      Where the catalogue files a feed under another country than its trains', the declaration's
+      `country` corrects it (two of Singapore's, under Malaysia).
   - Of those, the ones that run rail: each checked once, by reading its `routes.txt` out of the zip
     with range requests. An answer counts only whole (the bytes the zip says, with its CRC); one cut
     short or failing is no answer, and the feed is checked again.
-  - National operators the catalogue lacks (SNCF, Renfe, Great Britain's timetable as GTFS by
-    Catenary Transit, Hong Kong's trams), and Singapore's LTA feed when `inputs/keys.env` holds its
-    key, each where its country and box are.
+  - The declared feeds, first (in their `order`): national operators the catalogue lacks (SNCF,
+    Renfe, Great Britain's timetable as GTFS by Catenary Transit, Hong Kong's trams), and
+    Singapore's LTA feed when `inputs/keys.env` holds its key, each where one of its territories is
+    a country the coverage is in and its stops (its zip's `stops.txt`) meet the coverage.
   - Left out: a feed another replaces (an operator's own over a copy: LTA's over the catalogue's
     three copies of Singapore's timetable, of which one is read without it; Catenary Transit's Hong
-    Kong trams over the Transport Department's) while that one has a zip, and a community feed of
-    the MTR's lines, which come from the hand-researched pairs.
-  - Each feed's zip is fetched once, into `sources/rail/gtfs/`. A zip already there is never fetched
-    again, except one that was already out of date when fetched (no rail service in its window):
-    rail-feeds runs only when its key changes (Job keys, below), and its next run at least a week
-    after the day the zip counts from fetches it again. A new file replaces it; the same file is
-    kept once and counts from that day, so it isn't fetched again for another week; a refusal or no
-    answer leaves the old copy.
+    Kong trams over the Transport Department's) while that one has a zip, and what the catalogue
+    declaration's `exclude` names (a community feed of the MTR's lines, which come from the
+    hand-researched pairs).
+  - Each feed's zip is fetched once, into `sources/rail/gtfs/` (the ferry feeds' too), as its
+    declaration's `[data.fetch]` says. A zip already there is never fetched again, except one that
+    was already out of date when fetched (no rail or, for a ferry feed, ferry service in its
+    window): rail-feeds runs only when its key changes (Job keys, below), and its next run at least
+    its declaration's `refresh` days (a week by default) after the day the zip counts from fetches
+    it again. A new file replaces it; the same file is kept once and counts from that day; a refusal
+    or no answer leaves the old copy.
   - A request without an answer (no connection, a 429 or a 5xx, an answer cut short) is tried
     three times. A feed still without one fails the job (what it checked and fetched is kept), which
     the agent tries again (waiting up to 6 hours); after 3 days without an answer it's left out
@@ -1443,13 +1452,14 @@ in a chain of their own (§8):
   - `railfreq` matches the pairs onto the rail ways of the pass's rail set that touch the coverage:
     the set clipped to the tiles within 20 km of it, `extract` at 8 m (as the units), then the ways
     touching it.
-- **The rail sources** (`sources/rail/`, docs/formats.md): the jobs add the checks, zips and days;
-  the catalogue and the MTR's lines are put there by hand (Hand-made inputs, below), and the chain
-  waits for the catalogue.
+- **The rail sources** (`sources/rail/`, docs/formats.md): the jobs add the checks, zips and days,
+  and the catalogue, fetched from its declaration's URL when there's no copy; the MTR's lines are
+  put there by hand (Hand-made inputs, below). The chain waits for the declarations' first accepted
+  version.
 - **Planned:**
   - Japan's ODPT and Taiwan's TDX feeds, behind the keys `inputs/keys.env` names for them
-    (`ODPT_KEY`; `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`), each a keyed feed in `dem/railfeeds.py`
-    once there are values to fetch with. ODPT's licence allows no redistribution of its raw feeds;
+    (`ODPT_KEY`; `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`), each a keyed feed's declaration once
+    there are values to fetch with. ODPT's licence allows no redistribution of its raw feeds;
     TDX asks for a credit line (`pipeline::rules::CREDITS`);
   - the catalogue and the timetables fetched again every ~6 months (§8).
 
@@ -1479,20 +1489,13 @@ folder> --scratch <local dir>` as for every step.
   pageview months the chain counted before the items job's cache (`pageviews/months/`), and the
   names table the heritage layers' English comes from (`names/english.json`, read by
   `dem/names.py` `english_at`). Nothing makes them again (§10).
-- **Ferry timetables** (`inputs/ferries/freq/`, which the ferries job reads):
-  - `gtfs-<feed>.json`, sailings counted from operators' GTFS feeds: `gtfs.py --feeds
-    inputs/ferries/gtfs-feeds.json --lines <lines.json> --cache inputs/ferries/gtfs --out
-    inputs/ferries/freq` (`--refresh` asks for newer zips). `gtfs-feeds.json` is the verified feed
-    list (how it was found: `gtfs-feeds.md`, `operators.txt`); `gtfs/` the zips today's counts came
-    from; `lines.json` the lines `ferries.py` writes into its `--src` folder (the ferries job's
-    work folder: its osmium exports of the pass's ferries set, as `pipeline::ovconv::ferries_job`
-    makes them).
-  - `timetables-*.json`, sailings looked up by hand from operators' published timetables, each with
-    its page: the researchers' brief, batches and not-found lists are in
-    `inputs/ferries/research/` (`PROMPT.md`).
-- **The rail catalogue** (`sources/rail/catalogue`): the Mobility Database's `feeds_v2.csv`
-  (files.mobilitydatabase.org), downloaded once: `scenic-build put sources/rail/catalogue csv
-  feeds_v2.csv`.
+- **The timetable feeds' declarations** (`inputs/timetables/feeds/`, docs/inputs.md §6.7.1): a
+  `<id>.toml` per feed and one for the catalogue, written by hand; how the feeds were found is in
+  its `how/` (`gtfs-feeds.md`, `operators.txt`). A feed's zip fetched before the app fetched it
+  goes in as its first pin with `scenic-build feeds-seed --day <the day it was fetched> <id>.zip…`.
+- **Ferry timetables looked up by hand** (`inputs/ferries/freq/timetables-*.json`, which the
+  ferries job reads): sailings from operators' published timetables, each with its page: the
+  researchers' brief, batches and not-found lists are in `inputs/ferries/research/` (`PROMPT.md`).
 - **The MTR's lines** (`sources/rail/mtr`, `mtr.json`: researched by hand from MTR's published
   frequencies) and their stop pairs (`sources/rail/mtr-pairs`): `mtrpairs.py --mtr mtr.json
   --stations hk-stations.geojsonseq --out pairs-mtr.bin`, the stations from the pass's filtered
@@ -1586,11 +1589,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   stale is taken as its owners changed);
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
   its own version: a change in the tiling it shares with pack bumps both);
-- **rail-feeds:** what decides which feeds there are: the catalogue, the coverage, the pass's
-  outlines (the countries it's in), and which of the keys its keyed feeds use
-  (`pipeline::rail::FEED_KEYS`) `inputs/keys.env` holds, by name (never their values). Not what it
-  writes (the feeds' list, its checks and zips), so it doesn't run again for its own sake; it waits
-  while `inputs/keys.env` can't be read;
+- **rail-feeds:** what decides which feeds there are: the feeds' declarations (their accepted
+  index), the catalogue's copy, the coverage, the pass's outlines (the countries it's in), and which
+  keys `inputs/keys.env` holds, by name (never their values). Not what it writes (the feeds' lists,
+  its checks and zips), so it doesn't run again for its own sake; it waits while `inputs/keys.env`
+  can't be read;
 - **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
   pairs, the pass's rail set and the coverage;
 - **water:** its version and the pass's basemap, by content name;
@@ -3136,6 +3139,15 @@ At each phase's end an Opus agent reviews the work against this plan.
    in the coordinator alone: a restart measures each worker again. Fix: the job ends while a worker holds its tail,
    its slot free for new work, and the agent commits the unit when the tail is back (or runs it
    then, past its time): planned with the pool's phase 4.
+10. **The timetable feeds** (docs/inputs.md §6.7.1): the catalogue is fetched only when there's no
+    copy (never refreshed: a new copy is put by hand, `scenic-build put sources/rail/catalogue csv
+    feeds_v2.csv`); a declaration's `key` that `inputs/keys.env` doesn't hold isn't a warning (the
+    feed just waits); a feed's box isn't kept in the index's facts (rail-feeds reads it from
+    the zip's stops each run), so the declarations' credits are listed in no catalog yet (the
+    catalog keeps `rules::CREDITS`' "Rail service frequency" and "Ferry sailings"); rail-feeds' key
+    names the declarations' accepted index and every key name `inputs/keys.env` holds, not the
+    `keyed` digests of the declarations it reads nor only the keys they use, so an edited note or a
+    new key runs it again (it then finds the same feeds, and rail doesn't run).
 
 ## 11. Risks and checks
 

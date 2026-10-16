@@ -866,23 +866,30 @@ class, id) within a tile. The client sends the id with the clicked point.
   sources).
 - **The rail sources** (`sources/rail/`, content-named, in the build manifest; `pipeline::rail`, plan
   §6 Rail service; never swept, so a file one replaces stays):
-  - `catalogue.csv`: the Mobility Database catalogue (`feeds_v2.csv`), as downloaded;
+  - `catalogue.csv`: the Mobility Database catalogue (`feeds_v2.csv`), as downloaded (fetched from
+    its declaration's URL when there's none, docs/inputs.md §6.7.1);
   - `checked.json`: every catalogue feed checked for rail routes, sorted by `id`: the catalogue's
-    `id`, `provider`, `name`, `country` (as `dem/railfeeds.py` corrects it, for a few),
+    `id`, `provider`, `name`, `country` (as the catalogue declaration's `country` corrects it, for a few),
     `subdivision`, `url`, `licence`, and the check's `size_mb`, `rail_routes`, `examples` and
     `status`: "ok"; a definite answer ("http <code>", "no size given", "no range requests", "not a
     zip", "no routes.txt", "an unknown compression…", "routes.txt unreadable (…)", and
     the first checks' "no routes.txt (or no range requests)"); or "no answer (…)", which is checked
     again (as is an older "http <code>" with a 429 or a 5xx, and the first checks' "no answer
     (today's check, asked again)");
-  - `gtfs/<feed id>.zip`: each feed's GTFS, as fetched;
+  - `gtfs/<feed id>.zip`: each feed's GTFS, as fetched (the rail feeds' and the ferry feeds');
   - `fetched.json`: `{zip's content name: "YYYY-MM-DD"}`, the day its timetable counts from (the day
-    it was fetched, or last fetched again unchanged; the first zips, 2026-09-30);
+    it was fetched, or last fetched again unchanged; the first zips, 2026-09-30; the ferry feeds'
+    first, 2026-09-28, the day their counts were first made);
   - `feeds.json`: `{fmt: 1, feeds: […]}`, the coverage's feeds in the order railgtfs.py reads them,
     each `{id, provider, name?, country, url, licence, replaces?, rail_routes?}` with `zip` (its
     content name) and `fetched`, or without them, a `status` saying why it's left out ("replaced by
     …", a download refused, "no answer since <day> (last tried <day>): …", "its check: no answer
-    since <day> (last tried <day>)");
+    since <day> (last tried <day>)", "its stops are beyond the coverage", "no rail routes"); a
+    declared feed's `provider` is its declaration's `name` and its `country` the first of its
+    territories the coverage is in;
+  - `ferry-feeds.json`: `{fmt: 1, feeds: […]}`, the ferry feeds (the declarations whose `modes` take
+    them to the ferry counter), each `{id, name, url, source, ferry_routes}` with `zip` and
+    `fetched`, or a `status`, as `feeds.json`;
   - `mtr-pairs.bin`: the MTR's lines as stop pairs (below), and `mtr.json`, the research
     `dem/mtrpairs.py` makes them from.
 - **Stop pairs** (railgtfs.py's, `mtr-pairs`): 21-byte records, f32 lon_a, lat_a, lon_b, lat_b,

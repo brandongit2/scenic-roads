@@ -163,9 +163,9 @@ What moves (each in its task; §11):
 ## 4. The input check (#134)
 
 **Built** (crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`), checking
-the languages (§6.2), the translations and the descriptions (§6.3, §6.4), the regions (§6.1) and, while it's on, the
-test unit `_gate-test` (§4.10); each other input joins `inputs::UNITS` in its own task (#135,
-#138–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
+the languages (§6.2), the translations and the descriptions (§6.3, §6.4), the regions (§6.1), the
+timetable feeds (§6.7.1) and, while it's on, the test unit `_gate-test` (§4.10); each other input
+joins `inputs::UNITS` in its own task (#138, #139, #141–#145). A unit with nothing dropped yet and no records isn't checked nor shown. What of this
 section isn't built yet is marked planned.
 
 ### 4.1 Terms
@@ -585,8 +585,9 @@ and the worker pages' proxy allow-list (`coord::WEB_HOSTS`, crates/pipeline/src/
 five hosts by name today) is derived from the declarations' hosts.
 
 **Fetched data** goes to `sources/fetched/<declaration id>/…`, content-named, each version pinned in
-the records by the job that fetched it; steps' keys name the pins (as the rail feeds' zips and the
-terrain's raw tiles are pinned today). A refresh is a new pin, never a silent change.
+the records by the job that fetched it; steps' keys name the pins (as the terrain's raw tiles are
+pinned). A refresh is a new pin, never a silent change. (The timetable feeds' zips are pinned where
+the rail sources keep them, `sources/rail/gtfs/<declaration id>`: §6.7.1.)
 
 **`range` sources can't be pinned by content** (§1): their files are read a range at a time where
 they lie, never whole, and may change under the same URL (3DEP's `current/` folder is replaced as
@@ -1491,105 +1492,115 @@ what its mode shows today.
   Thursday from 30 days before the day its zip was fetched to 90 days after; a train in two feeds
   counts once (trips keyed by their first and last stops and their times, the operator's feed
   first). Unchanged.
-- **Ferries** (today `dem/gtfs.py`, run by hand, its output read by `dem/ferries.py`): per OSM ferry
-  line, the record the map shows (`ferries.py:381`): `per_day` (each way, both directions averaged,
-  on the days it runs; for a line sailing fewer than four days a week, the weekly count over 7),
-  `per_day_low` (the quietest month's, for a line running all year with a lower winter), `headway`
-  (the typical day's median gap, 07:00–19:00), `days` ("daily", "Mo–Fr"), `months` and `season`
-  (`year`, `some-days`, `seasonal`), `overnight`, `source`, `url`, `checked`. A GTFS route is matched
-  to a line by its stops: trips calling within 400 m (at most 30 % of the line's length) of each of
-  its two ends (gtfs.py's rule, generic). `gtfs.py`'s counting and matching move into the app as
-  this counter: generic GTFS code, run by the `ferries` job on the declared feeds and the static
-  files, no longer by hand. One change makes it deterministic: gtfs.py's reference day is the day
-  it's run (`date.today()`, dem/gtfs.py:170); the counter's is the day the feed's zip was fetched,
-  as rail's is.
-- **Precedence** for a ferry line, as today (`ferries.py:510`): a feed's count, then a static file's,
-  then OSM's `interval` tag.
+- **Ferries** (`dem/ferrygtfs.py`, run by the `ferries` job's `dem/ferries.py`, built #140): per
+  OSM ferry line, the record the map shows (`ferries.py`'s `info["freq"]`): `per_day` (each way, both
+  directions averaged, on the days it runs; for a line sailing fewer than four days a week, the
+  weekly count over 7), `per_day_low` (the quietest month's, for a line running all year with a
+  lower winter), `headway` (the typical day's median gap, 07:00–19:00), `days` ("daily", "Mo–Fr"),
+  `months` and `season` (`year`, `some-days`, `seasonal`), `overnight`, `source`, `url`, `checked`.
+  A GTFS route is matched to a line by its stops: trips calling within 400 m (at most 30 % of the
+  line's length) of each of its two ends. Generic GTFS code, run on the ferry feeds the `rail-feeds`
+  job fetched (§6.7.1), each from its reference day: the day its zip was fetched, as rail's, so a zip
+  gives the same counts whenever it's read. The feeds are read in id order, the first feed's count
+  for a line winning. The static files' ferries (§6.7.2) are planned with #141.
+- **Precedence** for a ferry line (`ferries.py`'s `rank`): a feed's count, then a looked-up
+  timetable's (a static file's, #141), then OSM's `interval` tag.
 
 #### 6.7.1 Feeds (#140)
 
-**Kind:** source declarations. **Drop box:** `inputs/timetables/feeds/`.
+**Built** (crate::inputs::feeds; `dem/railfeeds.py`; crate::rail). **Kind:** source declarations.
+**Drop box:** `inputs/timetables/feeds/`, the unit `timetables/feeds`; how the feeds were found is
+in its `how/` (`gtfs-feeds.md`, `operators.txt`).
 
-**A feed:** `<id>.toml`, a description (§5.1) and:
+**A feed:** `<id>.toml` (an id of letters, digits, `-` and `_`), a description (§5.1) and:
 
 | Field | Type | Keyed | Meaning |
 |---|---|---|---|
 | `[data] format` | `"gtfs"` | yes | |
 | `[data] url` | string | yes | the zip's URL, or the API's for a keyed feed |
-| `[data.fetch]` | table | yes | `method` and its fields (§5.2): `get-key-json-link` with `header = "AccountKey"`, `key = "LTA_ACCOUNT_KEY"`, `link = "value[0].link"` for LTA's |
-| `[data] refresh` | string | yes | `days:7` by default: fetched again once the copy is a week old and out of date, as rail's are today (plan §6, Rail service) |
+| `[data.fetch]` | table | yes | `method` and its fields (§5.2): `get` (default); `get-key-header` (`header`, `key`); `get-key-json-link` (also `link`, the download link's JSON path in the answer): `header = "AccountKey"`, `key = "LTA_ACCOUNT_KEY"`, `link = "value[0].link"` for LTA's |
+| `[data] refresh` | string | yes | `days:7` by default: a copy out of date when fetched (no service in its window) is fetched again once it's that many days old |
+| `modes` | list of `"rail"`, `"ferry"` | yes | the counters that take it; none: both, a rail feed by its `routes.txt` having rail routes |
+| `order` | whole number | yes | where it comes among the declared feeds (then by id); the declared come before the catalogue's, so a train they share with an aggregate counts as theirs |
 | `replaces` | list of feed ids | yes | feeds left out while this one has a zip (an operator's own over copies) |
-| `ferry_routes` | list of route ids | yes | routes counted as ferries though their `route_type` says otherwise (today `ferry_route_ids` in `inputs/ferries/gtfs-feeds.json`) |
+| `ferry_routes` | list of route ids | yes | routes counted as ferries though their `route_type` says otherwise |
 | `operator` | string | no | shown |
 
-No country and no box: a feed is used where its stops are (its box read from `stops.txt` by range
-requests, as `routes.txt` is read today, and kept in the index's facts once fetched). Which modes a
-feed serves is read from its `routes.txt` too: a feed may serve both counters.
+`territory` (§5.1) and `name`, `licence` and `source` are keyed too: `territory` says which
+countries' coverage takes a rail feed; `name` and `licence` are in the rail feeds' list; a ferry
+record's `source` is "`<name or agencies>` timetable (GTFS)" and its `url` the declaration's
+`source`. No box: a rail feed is used where its stops are (the box of its zip's `stops.txt`, read by
+rail-feeds once the zip is there), the ferry feeds everywhere (the ferries are mapped worldwide).
 
 ```toml
 name = "SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER)"
-what = "Rail service frequency"
+what = "Rail timetables"
 credit = "SNCF Voyageurs"
 licence = "Licence Ouverte 2.0"
 source = "https://ressources.data.sncf.com/"
 territory = ["FR"]
+modes = ["rail"]
+order = 1
 [data]
 format = "gtfs"
 url = "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"
 ```
 
-**A catalogue:** `<id>.toml` with `format = "mdb-catalogue"` (the Mobility Database's
-`feeds_v2.csv` columns, a published format read generically), its `url` (today it was downloaded
-once by hand), and the corrections that today are hand lists in code:
+**The catalogue:** `<id>.toml` with `format = "mdb-catalogue"` (the Mobility Database's
+`feeds_v2.csv` columns, a published format read generically), its `url` (fetched when the rail
+sources have no copy, `sources/rail/catalogue`), and the corrections to it:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `exclude` | table id → reason | feeds left out (today `ELSEWHERE`, dem/railfeeds.py:98: the MTR's lines, which come from static GTFS) |
-| `country` | table id → ISO code | feeds the catalogue files under another country (today `COUNTRY`, :110) |
-| `replaces` | table id → ids | copies of one timetable (today `REPLACES`, :115) |
-| `own_code` | table ISO 3166-2 code → alpha-2 code, or `""` for none | territories with an ISO 3166-1 code of their own that isn't their code's end, and two whose ends are other countries' codes (today `rail::OWN_CODE`, crates/pipeline/src/rail.rs:137, 14 entries: Åland's FI-01 is AX, Guadeloupe's FR-971 GP, Kosovo's RS-KM XK; Ceuta's ES-CE and Melilla's ES-ML none) |
+| `exclude` | table id → where its trains come from | feeds left out (the MTR's lines, which come from the hand-researched pairs: its status says "replaced by" that) |
+| `country` | table id → ISO code | feeds the catalogue files under another country (two of Singapore's, under Malaysia) |
+| `replaces` | table id → ids | copies of one timetable, each listed left out while the feed listing it has a zip |
+| `own_code` | table ISO 3166-2 code → alpha-2 code, or `""` for none | territories with an ISO 3166-1 code of their own that isn't their code's end, and two whose ends are other countries' codes (Åland's FI-01 is AX, Guadeloupe's FR-971 GP, Kosovo's RS-KM XK; Ceuta's ES-CE and Melilla's ES-ML none) |
 
-The catalogue's feeds are chosen as today (the countries the coverage is in, by the pass's outlines
-and `own_code`; the feeds' boxes; no key needed: plan §6), a generic rule over the catalogue's
-fields.
+The catalogue's feeds are chosen by a generic rule over its fields: the countries the coverage is in
+(by the pass's outlines and `own_code`: `rail::countries`), the feeds' boxes, no key needed (plan
+§6).
 
-**Checks.** Errors: a declaration that doesn't parse; an unknown format or fetch method; a `key`
-that isn't a valid name; `replaces`, `exclude` or `country` naming a malformed id; a `country` or
-`own_code` value that isn't ISO 3166 syntax. Warnings: `replaces` or `exclude` naming a feed neither
-declared nor in the catalogue's fetched copy; an `own_code` key no outline of the pass has; a `key`
-that `inputs/keys.env` doesn't hold (the feed waits, as keyed feeds do today); two declarations with
-one URL.
+**Checks** (`inputs::feeds::Feeds`). Errors: a file that isn't `<id>.toml`; a description without
+its credit and licence; no `[data]`, an unknown format or fetch method, a `url` not http(s); a
+keyed method without its `header`, a `key` that isn't a key's name, a `get-key-json-link` without
+`link`; a `refresh` not `days:<n>`; `modes` other than `rail` and `ferry`; an `order` not a whole
+number; `replaces`, `exclude` or `country` naming a malformed id; a `country` or `own_code` value
+that isn't ISO 3166 syntax; two catalogue declarations. Warnings: `replaces` or `exclude` naming a
+feed neither declared nor in the catalogue's copy (when there is one); an `own_code` key no outline
+of the pass has; two declarations with one URL. A declaration that `replaces` another is held with
+it. (A `key` that `inputs/keys.env` doesn't hold isn't a finding: the feed waits. Plan §10.)
 
-What a fetch brings back (a zip that isn't one, a feed without rail) isn't a finding of the input check: the data
-isn't the owner's drop. It's the fetching job's status, as today (a refusal leaves the feed out, an
-old copy is kept: the last good version already).
+What a fetch brings back (a zip that isn't one, a feed without rail) isn't a finding of the input
+check: the data isn't the owner's drop. It's the fetching job's status (a refusal leaves the feed
+out, an old copy is kept: the last good version already).
 
-**Ingesting and rebuilding.** `rail-feeds` (plan §6) reads the accepted declarations and the
-catalogue's pinned copy; its key names the declarations' `keyed` digests instead of the code's
-lists, plus what it names today (the coverage, the outlines, the key names held: agent/build.rs:1696).
-`rail` names the fetched zips by content, as today; `ferries` names the ferry feeds' zips by content
-and their fetch days, replacing today's digest of `inputs/ferries/freq` (`input_digests`,
-agent/mod.rs:4640).
+**Fetching and rebuilding.** `rail-feeds` (plan §6) reads the accepted declarations (the index the
+agent names: `--feeds-index`) and the catalogue's pinned copy, and writes two lists: the rail feeds
+(`sources/rail/feeds`) and the ferry feeds (`sources/rail/ferry-feeds`), each feed's zip pinned by
+content in `sources/rail/gtfs/<id>` with the day it was fetched (`sources/rail/fetched`). Its key
+names the declarations' accepted index, the catalogue's copy, the coverage, the pass's outlines and
+the key names `inputs/keys.env` holds. `rail` names the rail list (the zips by content);
+`ferries` names the ferry list (the zips by content and their days) and waits for it. While the
+rail sources have a catalogue's copy and the accepted version has no catalogue declaration (held),
+rail-feeds fails rather than read the catalogue without its corrections.
+`scenic-build feeds-seed --day <day> <id>.zip…` pins a zip fetched before the app fetched it, with
+that day.
 
-**Migration.**
-1. **Rail:** declarations written from `railfeeds.py`'s `EXTRA` (:79: SNCF, two of Renfe's, Great
-   Britain's, Hong Kong's trams) and `KEYED` (:102: LTA), and the catalogue's with its corrections
-   and `own_code`; the catalogue's pinned copy (`sources/rail/catalogue`) and the feeds' fetched zips
-   (`sources/rail/gtfs/`) become the declarations' first pins, not downloaded again;
-   `rail::FEED_KEYS` (rail.rs:54) is derived from the declarations' keys. Proof: rail-feeds' feed
-   list the same, `global/railfreq` the same.
-2. **Ferries:** `inputs/ferries/gtfs-feeds.json`'s 40 verified feeds become declarations, with their
-   `ferry_route_ids` as `ferry_routes`. Their first pins are the zips today's counts were made from
-   (`inputs/ferries/gtfs/`, kept for that), each with the day `gtfs.py` counted it as its fetch day
-   (the day its `gtfs-<feed>.json` was written, from the NAS's file times, recorded in the task's
-   report). Proof: the counter in the app, on those zips and days, gives every `gtfs-<feed>.json`
-   record field for field, and the ferries job's lines the same. Only then are the feeds refreshed,
-   whose new counts are new data, not a migration difference.
-3. Then deleted: the lists in railfeeds.py (:79–115), its `keyed_link` LTA branch (:417, now the
-   `get-key-json-link` method), the test reading them (rail.rs:459), `FEED_KEYS`, `OWN_CODE`, the
-   `gtfs-*.json` files, `gtfs.py` (its counting now the app's) and `gtfs-feeds.json`;
-   `gtfs-feeds.md` and `operators.txt` (how the feeds were found) move to
-   `inputs/timetables/feeds/how/`.
+**Migration** (done in #140; the proof in its report):
+1. **Rail:** declarations written from the lists railfeeds.py had (SNCF, two of Renfe's, Great
+   Britain's, Hong Kong's trams; LTA's behind its key), and the catalogue's with its corrections and
+   `own_code`; their zips and the catalogue's copy stay the pins they were. Proof: railfeeds.py
+   with the lists and with the declarations, on the same inputs, write the same feed list byte for
+   byte, so `rail`'s key and `global/railfreq` are the same.
+2. **Ferries:** the 40 verified feeds of the old hand-run counter's list became declarations
+   (`modes = ["ferry"]`), their first pins the zips its counts were made from, each counting from
+   the day it counted them (2026-09-28). Proof: the counter in the app, on those zips and that day,
+   gives every record of the `gtfs-<feed>.json` files field for field, but two whose lines OSM has
+   moved since (the routes they match are named otherwise, which the map doesn't show).
+3. Deleted: the lists in railfeeds.py, `rail::FEED_KEYS` and `OWN_CODE`, the hand-run counter and
+   its feed list; the `gtfs-*.json` files on the NAS go (the ferries job reads only
+   `timetables-*.json` there now).
 
 #### 6.7.2 Static GTFS (#141)
 
@@ -2029,20 +2040,16 @@ a source (stays; out of the guard's scope). The task that changes it is in brack
 
 ### 9.6 Timetables [#140, #141, #142]
 
-- `dem/railfeeds.py:7`, `:391–414` the catalogue's columns: G (the `mdb-catalogue` format). `:79`
-  `EXTRA` (SNCF, Renfe ×2, GB national rail via Catenary Transit, Hong Kong's trams), `:98`
-  `ELSEWHERE`, `:102` `KEYED` (LTA), `:110` `COUNTRY`, `:115` `REPLACES`: D. `:417` `keyed_link`'s
-  LTA branch: G (the `get-key-json-link` method). `:69–76` user agent and retry tuning: C.
+- `dem/railfeeds.py`: the catalogue's columns: G (the `mdb-catalogue` format); the declared feeds,
+  the catalogue's corrections and the fetch methods (`get-key-json-link`, `get-key-header`): G,
+  from the declarations (#140); user agent and retry tuning: C.
 - `dem/railgtfs.py`: G (the counter). `:47` `mode_of`: G (GTFS route types).
 - `dem/mtrpairs.py` (whole, hand-run): P, then deleted (#141).
-- `dem/gtfs.py` (hand-run today, writes the ferries' counts): G, its counting and matching moved
-  into the app as the ferry counter (§6.7.0); `ferry_route_ids` in its feed list: D
-  (`ferry_routes`).
+- `dem/ferrygtfs.py` (the ferry counter, run by the ferries job): G (§6.7.0, #140).
 - `dem/ferries.py:10–14`, `:326`, `:510` the sources' precedence and reading: G; `:49` `URBAN_NETS`,
   `:58`: C.
-- `crates/pipeline/src/rail.rs:37–42` the rail sources' logical paths (catalogue, MTR, its pairs):
-  D/P; `:54` `FEED_KEYS`: derived; `:137` `OWN_CODE` (ISO 3166-2 territories with their own
-  alpha-2): D (the catalogue declaration's `own_code`, #140); `:459` the test reading railfeeds.py: goes.
+- `crates/pipeline/src/rail.rs` the rail sources' logical paths (catalogue, MTR, its pairs): D/P;
+  the territories' own codes: D (the catalogue declaration's `own_code`, #140).
 - `bin/scenic-build.rs:3877–3895`, `:3946–3950`: G; `:3980–3983` the MTR's pairs merged: goes.
 - `crates/pipeline/src/ovconv.rs:384–397` the ferries job reading `inputs/ferries/freq`: reads the
   accepted units instead.
@@ -2086,8 +2093,8 @@ Not source names, but every place that would bypass the input check:
 - Translations: `scenic-build`'s `--translations` default and the server's `livefolder` copy:
   gone (#137; the server reads the accepted copies, crates/server/src/accepted.rs).
 - Descriptions: `namestodo::run`'s read of `descriptions/` and the server's copy: gone (#137).
-- Ferries: `input_digests`' read of `inputs/ferries/freq` (agent/mod.rs:4640), the ferries job's
-  (ovconv.rs:384) [#140, #141].
+- Ferries: `input_digests`' read of `inputs/ferries/freq`'s looked-up timetables (agent/mod.rs),
+  the ferries job's (ovconv.rs) [#141].
 - Keyed feeds: `key_names` of `inputs/keys.env` (agent/mod.rs:4658): stays (keys.env isn't an input),
   exempt with its reason.
 - The never-swept and backed-up folders: `agent/gc.rs` (`NEVER`, which also holds all of
@@ -2249,8 +2256,9 @@ spec's review (10 October 2026, by the project manager the owner delegated appro
    (§6.7.0).
 7. **Timetable matching problems are a report, not a warning of the input check:** they depend on OSM, which
    changes each pass; a warning would hold the owner's file again every pass.
-8. **Feeds carry no country or box.** Both can be read from the data (`stops.txt`), so declaring them
-   would be a hand figure that goes stale; the catalogue's country rule stays, since it reads the
+8. **Feeds carry no country or box.** The box is read from the data (`stops.txt`), so declaring it
+   would be a hand figure that goes stale; which countries' coverage takes a rail feed is its
+   description's `territory` (§5.1); the catalogue's country rule stays, since it reads the
    catalogue's own fields.
 9. **Heritage geometry:** points are sites, polygons heritage areas, lines lines; a polygon shows a
    dot only with `dot: true`, which reproduces today's map (Québec's perimeters and Ontario's

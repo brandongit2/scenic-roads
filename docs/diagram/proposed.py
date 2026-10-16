@@ -273,7 +273,7 @@ def build(check=False):
                   [(['layers/stations/ · ferries/'], 'packs · MVT, GeoJSON blocks')], scope='global')
     s_tt = d.src('net', cy, 'Rail feeds (GTFS)', ['Mobility Database, operators’', 'own: found and fetched by', 'the job'], kept=['sources/rail/gtfs/'])
     c_mtr = d.cur('net', s_tt.b + 10, 'The MTR’s lines', ['Hong Kong’s trains: stations,', 'headways, from mtr.com.hk'], 'Claude research, by hand', 'part')
-    c_fy = d.cur('net', c_mtr.b + 10, 'Ferry timetables', ['sailings a day: 40 operators’', 'GTFS counted, pages read'], 'Claude research; gtfs.py by hand', 'part')
+    c_fy = d.cur('net', c_mtr.b + 10, 'Ferry timetables', ['sailings a day: 40 operators’', 'GTFS counted, pages read'], 'Claude research; feeds declared, counted by the job', 'part')
     s_osm6 = d.src('osm', c_fy.b + 8, 'OSM sets', ['the world’s tracks, stations,', 'routes and ferries'])
     p_rf = d.pill('net', n_rf.y + 30, ['/api/railfreq'], note='trains a day, per way')
     b_rf = d.layer('net', 0, 'Trains a day', ['rail lines coloured and', 'filtered by it'], cy=p_rf.my)
