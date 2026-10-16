@@ -7,7 +7,9 @@ directions: the relations of a route_master, or the direction variants of the sa
 pair of ports, or a named route=ferry way (or run of them) that no route relation uses.
 
 Frequencies are never estimated. Each line's sailings come from, in order:
-  1. a timetable feed (GTFS) the operator publishes (freq/gtfs-*.json, gtfs.py),
+  1. a timetable feed (GTFS) the operator publishes: the declared feeds the rail-feeds job fetched
+     (--feeds), counted here by the ferry counter (ferrygtfs.py), each from the day it was fetched,
+     in feed id order (the first feed's count for a line wins);
   2. a published timetable looked up by hand (freq/timetables-*.json, with the page
      it came from),
   3. the line's OSM interval and opening_hours tags, when they give both the headway and the day's
@@ -21,10 +23,12 @@ Outputs (--out): ferries.json (GeoJSON: one feature per way, plus terminals) and
 ferry-lines.json (every line's details, for the hover card). Names carry en, their English where it
 truly differs (names.py english_at).
 
-usage: ferries.py --src DIR --out DIR
+usage: ferries.py --src DIR --out DIR [--feeds FILE]
   --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq) and freq/ (the
-         NAS's inputs/ferries/freq)
+         looked-up timetables)
   --out: where ferries.json and ferry-lines.json go
+  --feeds: the ferry feeds ({"feeds": [{id, name, url, source, ferry_routes, path, fetched}]}: the
+         rail-feeds job's ferry list, each zip's path on the NAS and the day it was fetched)
 """
 from __future__ import annotations
 
@@ -33,13 +37,17 @@ import math
 import re
 import sys
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 
+import ferrygtfs
+import inputs
 import names
 from timings import phase
 
 F = Path()
 OUT = Path()
+FEEDS: Path | None = None
 
 URBAN, CROSSING, LONG, CABLE = 0, 1, 2, 3
 GROUP_NAMES = ["Urban & commuter", "Short crossing", "Long-distance & overnight", "Cable & chain ferry"]
@@ -321,10 +329,25 @@ def main() -> None:
                 way_lines[w].append(lid)
 
     # ---- Frequencies from feeds and timetables ------------------------------------
+    ends = {lid: line_ends([ways[w]["coords"] for w in L["ways"]]) for lid, L in lines.items()}
+    counted: list[list[dict]] = []
+    if FEEDS:
+        with phase("the ferry feeds counted", "mixed"):
+            feeds = sorted(json.loads(FEEDS.read_text())["feeds"], key=lambda f: f["id"])
+            by_ends = {lid: {"ends": e} for lid, e in ends.items()}
+            for f in feeds:
+                try:
+                    recs = ferrygtfs.process(f, inputs.arg(f["path"]), by_ends, date.fromisoformat(f["fetched"]))
+                except Exception as e:  # a malformed feed shouldn't stop the others
+                    print(f"  {f['id']}: {e.__class__.__name__}: {e}", file=sys.stderr)
+                    continue
+                print(f"{f['id']}: {len(recs)} lines matched", file=sys.stderr)
+                counted.append(recs)
     with phase("the frequencies read", "disk"):
         freq: dict[str, dict] = {}
-        for src in sorted((F / "freq").glob("*.json")) if (F / "freq").exists() else []:
-            for rec in json.loads(src.read_text()):
+        files = sorted((F / "freq").glob("timetables-*.json")) if (F / "freq").exists() else []
+        for recs in counted + [json.loads(src.read_text()) for src in files]:
+            for rec in recs:
                 lid = rec.get("line")
                 if isinstance(rec.get("headway"), str):  # "20 minutes", "2 hours (peak)"
                     m = re.match(r"\s*(\d+(?:\.\d+)?)\s*(h|hour|hours|hr)?", rec["headway"])
@@ -374,7 +397,7 @@ def main() -> None:
                 "osm": [f"relation/{r}" for r in L["rels"]] or [f"way/{w}" for w in L["ways"][:3]],
                 "season": season,
                 "seasonText": season_text,
-                "ends": line_ends([ways[w]["coords"] for w in L["ways"]]),
+                "ends": ends[lid],
             }
             season_txt_osm = t.get("seasonal", "") + " " + (t.get("opening_hours") or "")
             if rec:
@@ -514,7 +537,8 @@ def rank(rec: dict) -> int:
 if __name__ == "__main__":
     args = sys.argv[1:]
     if "--src" not in args or "--out" not in args:
-        sys.exit("usage: ferries.py --src DIR --out DIR")
+        sys.exit("usage: ferries.py --src DIR --out DIR [--feeds FILE]")
     F = Path(args[args.index("--src") + 1])
     OUT = Path(args[args.index("--out") + 1])
+    FEEDS = inputs.arg(args[args.index("--feeds") + 1]) if "--feeds" in args else None
     sys.exit(main())

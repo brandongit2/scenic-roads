@@ -1,45 +1,37 @@
 #!/usr/bin/env python3
-"""Ferry sailings from operators' published timetables (GTFS).
+"""The ferry counter (docs/inputs.md §6.7.0): ferry sailings per OSM ferry line from timetable feeds
+(GTFS), for the `ferries` job (ferries.py), which runs it on the declared feeds the `rail-feeds` job
+fetched (docs/inputs.md §6.7.1), each zip with the day it was fetched.
 
-For every ferry line in --lines (ferries.py's lines.json), counts the timetabled ferry trips
-that call at both of its ports, i.e. stop within 400 m (at most 30 % of the distance between them) of each end of the line, from the feeds
-listed in --feeds (gtfs-feeds.json). Per day of service: departures each way (both
-directions averaged). Reported per line:
+For every ferry line (its two ends), counts the timetabled ferry trips that call at both of its
+ports, i.e. stop within 400 m (at most 30 % of the distance between them) of each end of the line.
+Per day of service: departures each way (both directions averaged). Reported per line:
   per_day      median over the days the line runs; lines not sailing both ways most days: the
                weekly count ÷ 7 (a weekly crossing reads "1 a week"),
   per_day_low  median in the quietest month (feeds covering a whole year only),
   headway      median gap between departures from the first port, 07:00–19:00, on a typical day,
   days         weekdays with service (e.g. "daily", "Mo–Fr"),
-  months       months with service over the next 12 months, when the line's timetable breaks for a
-               month or more (seasonal); a timetable that just ends says nothing about the season.
-Only service dates from a year ago onwards count (older feeds are skipped as stale). Only ferry
-routes are counted (route_type 4, 1000–1099, 1200–1299, or the route ids a feed entry
-lists under "ferry_route_ids" when the feed labels its ferries as something else).
-
-Writes <out>/gtfs-<feed>.json, which the ferries job reads (the NAS's inputs/ferries/freq). Run by
-hand (docs/plan.md "Hand-made inputs").
-
-usage: gtfs.py --feeds gtfs-feeds.json --lines lines.json --cache dir --out dir [--refresh] [feed-id ...]
-  --cache: the feeds' zips (downloaded once; --refresh asks for newer ones)
+  months       months with service over the 12 months from the feed's day, when the line's
+               timetable breaks for a month or more (seasonal); a timetable that just ends says
+               nothing about the season.
+The reference day is the day the feed's zip was fetched, so a zip gives the same counts whenever
+it's read. Only service dates from a year before it to 400 days after count (a feed with none is
+stale). Only ferry routes are counted (route_type 4, 1000–1099, 1200–1299, or the route ids the
+declaration lists in `ferry_routes` when the feed labels its ferries as something else).
 """
 from __future__ import annotations
 
 import csv
 import io
-import json
 import math
 import statistics
-import subprocess
 import sys
 import zipfile
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-CACHE = Path()
-OUT = Path()
 R_KM = 0.4
-UA = "scenic-roads/0.1 (personal offline map)"
 DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
@@ -72,21 +64,6 @@ def secs(t: str) -> int:
 
 def ymd(s: str) -> date:
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
-
-
-def download(feed: dict, refresh: bool) -> Path | None:
-    CACHE.mkdir(parents=True, exist_ok=True)
-    path = CACHE / f"{feed['id']}.zip"
-    if path.exists() and not refresh:
-        return path
-    tmp = path.with_suffix(".part")
-    r = subprocess.run(["curl", "-sSL", "--fail", "-A", UA, "-o", str(tmp), feed["url"]])
-    if r.returncode != 0 or not zipfile.is_zipfile(tmp):
-        print(f"  {feed['id']}: download failed", file=sys.stderr)
-        tmp.unlink(missing_ok=True)
-        return None
-    tmp.rename(path)
-    return path
 
 
 def days_text(active_wd: set[int]) -> str:
@@ -124,10 +101,47 @@ def months_text(ms: set[int]) -> str:
     return ", ".join(MONTHS[r[0]] if len(r) == 1 else f"{MONTHS[r[0]]}–{MONTHS[r[-1]]}" for r in runs)
 
 
-def process(feed: dict, zpath: Path, lines: dict) -> list[dict]:
+def ferry_routes(z: zipfile.ZipFile, feed: dict) -> dict[str, dict]:
+    """The feed's ferry routes, by id: by their type, or listed in its `ferry_routes`."""
+    extra = set(feed.get("ferry_routes") or [])
+    return {r["route_id"]: r for r in rows(z, "routes.txt") if is_ferry(r.get("route_type", "")) or r["route_id"] in extra}
+
+
+def service_dates(z: zipfile.ZipFile, day: date) -> dict[str, set[date]]:
+    """Each service's dates (calendar.txt, then calendar_dates.txt), from a year before `day` to 400
+    days after."""
+    dates: dict[str, set[date]] = defaultdict(set)
+    for c in rows(z, "calendar.txt"):
+        d, end = ymd(c["start_date"]), ymd(c["end_date"])
+        wd = [c[k] == "1" for k in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")]
+        while d <= end:
+            if wd[d.weekday()]:
+                dates[c["service_id"]].add(d)
+            d += timedelta(days=1)
+    for c in rows(z, "calendar_dates.txt"):
+        d = ymd(c["date"])
+        (dates[c["service_id"]].add if c["exception_type"] == "1" else dates[c["service_id"]].discard)(d)
+    lo, hi = day - timedelta(days=365), day + timedelta(days=400)
+    for sid in dates:
+        dates[sid] = {d for d in dates[sid] if lo <= d <= hi}
+    return dates
+
+
+def has_service(zpath: Path, feed: dict, day: date) -> bool:
+    """Whether a feed's zip has ferry service around `day` (the fetching job's check of a copy)."""
+    with zipfile.ZipFile(zpath) as z:
+        routes = ferry_routes(z, feed)
+        trips = {t["trip_id"]: t for t in rows(z, "trips.txt") if t["route_id"] in routes}
+        dates = service_dates(z, day)
+        return any(dates.get(t["service_id"]) for t in trips.values())
+
+
+def process(feed: dict, zpath: Path, lines: dict, day: date) -> list[dict]:
+    """The records of the lines of `lines` (id → {"ends": [a, b]}) a feed's ferries sail, counted
+    from `day`, the day its zip was fetched. `feed`: its `id`, `name`, `url`, `source` (the page
+    about it) and `ferry_routes`."""
     z = zipfile.ZipFile(zpath)
-    extra = set(feed.get("ferry_route_ids") or [])
-    routes = {r["route_id"]: r for r in rows(z, "routes.txt") if is_ferry(r.get("route_type", "")) or r["route_id"] in extra}
+    routes = ferry_routes(z, feed)
     if not routes:
         print(f"  {feed['id']}: no ferry routes", file=sys.stderr)
         return []
@@ -147,36 +161,23 @@ def process(feed: dict, zpath: Path, lines: dict) -> list[dict]:
             calls[tid].append((int(st["stop_sequence"]), st["stop_id"], secs(t) if t else -1))
     for c in calls.values():
         c.sort()
-    # Service dates.
-    dates: dict[str, set[date]] = defaultdict(set)
-    for c in rows(z, "calendar.txt"):
-        d, end = ymd(c["start_date"]), ymd(c["end_date"])
-        wd = [c[k] == "1" for k in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")]
-        while d <= end:
-            if wd[d.weekday()]:
-                dates[c["service_id"]].add(d)
-            d += timedelta(days=1)
-    for c in rows(z, "calendar_dates.txt"):
-        d = ymd(c["date"])
-        (dates[c["service_id"]].add if c["exception_type"] == "1" else dates[c["service_id"]].discard)(d)
+    # Service dates: the current timetable only, from a year before the feed's day to a year and a
+    # bit after. A feed with nothing in that window is stale (its lines are left to the looked-up
+    # timetables).
+    today = day
+    lo = today - timedelta(days=365)
+    dates = service_dates(z, today)
     # Headway-based trips: departures per trip run.
     runs: dict[str, list[int]] = defaultdict(list)  # trip → start offsets (s)
     for fr in rows(z, "frequencies.txt"):
         if fr["trip_id"] in trips:
             a, b, hw = secs(fr["start_time"]), secs(fr["end_time"]), int(fr["headway_secs"])
             runs[fr["trip_id"]] += list(range(a, b, max(hw, 60)))
-    # The current timetable only: service from a year ago to a year and a bit ahead. A feed with
-    # nothing in that window is stale (its lines are left to the looked-up timetables).
-    today = date.today()
-    lo, hi = today - timedelta(days=365), today + timedelta(days=400)
-    for sid in dates:
-        dates[sid] = {d for d in dates[sid] if lo <= d <= hi}
     all_dates = sorted({d for tid in trips for d in dates.get(trips[tid]["service_id"], ())})
     if not all_dates:
         print(f"  {feed['id']}: stale (no service since {lo})", file=sys.stderr)
         return []
-    ops = [o for o in (feed.get("operators") or []) if o]
-    feed_name = feed.get("name") or (", ".join(ops[:2]) + (" …" if len(ops) > 2 else "") if ops else feed["id"])
+    feed_name = feed.get("name") or feed["id"]
 
     # Only stops ferries call at, and lines with both ports near one.
     fstops = {s: stops[s] for c in calls.values() for _, s, _ in c if s in stops}
@@ -238,7 +239,7 @@ def process(feed: dict, zpath: Path, lines: dict) -> list[dict]:
             "kind": "gtfs",
             "per_day": round(typical, 2 if typical < 1 else 1),
             "source": f"{who} timetable (GTFS)",
-            "url": feed.get("portal") or feed["url"],
+            "url": feed.get("source") or feed["url"],
             "checked": f"{all_dates[0].isoformat()} to {all_dates[-1].isoformat()}",
             "gtfs_routes": sorted(routes[x].get("route_short_name") or routes[x].get("route_long_name") or x for x in matched_routes),
         }
@@ -272,36 +273,3 @@ def process(feed: dict, zpath: Path, lines: dict) -> list[dict]:
                 rec["headway"] = round(statistics.median(gaps) / 60)
         out.append(rec)
     return out
-
-
-def main() -> None:
-    global CACHE, OUT
-    a = sys.argv[1:]
-    opts = {k: a[i + 1] for i, k in enumerate(a[:-1]) if k in ("--feeds", "--lines", "--cache", "--out")}
-    if len(opts) != 4:
-        sys.exit("usage: gtfs.py --feeds gtfs-feeds.json --lines lines.json --cache dir --out dir [--refresh] [feed-id ...]")
-    args = [x for i, x in enumerate(a) if not x.startswith("--") and (i == 0 or a[i - 1] not in opts)]
-    refresh = "--refresh" in a
-    CACHE, OUT = Path(opts["--cache"]), Path(opts["--out"])
-    feeds = json.loads(Path(opts["--feeds"]).read_text())
-    lines = json.loads(Path(opts["--lines"]).read_text())
-    OUT.mkdir(parents=True, exist_ok=True)
-    for feed in feeds:
-        if args and feed["id"] not in args:
-            continue
-        if feed.get("status") != "verified" or not feed.get("url"):
-            continue
-        zpath = download(feed, refresh)
-        if not zpath:
-            continue
-        try:
-            recs = process(feed, zpath, lines)
-        except Exception as e:  # a malformed feed shouldn't stop the others
-            print(f"  {feed['id']}: {e}", file=sys.stderr)
-            continue
-        (OUT / f"gtfs-{feed['id']}.json").write_text(json.dumps(recs, ensure_ascii=False, indent=1))
-        print(f"{feed['id']}: {len(recs)} lines matched")
-
-
-if __name__ == "__main__":
-    main()

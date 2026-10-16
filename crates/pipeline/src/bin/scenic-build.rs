@@ -92,10 +92,14 @@
 //!                                tiles; `--archive`: into that local file, the NAS untouched)
 //!   stations --pass d [--geojson f]  the rail stops of the pass's rail set within the coverage,
 //!                                as the stations' tiles
-//!   ferries --pass d [--dem dir]  the pass's ferries set through ferries.py (with
-//!                                inputs/ferries/freq), as the ferries' blocks
-//!   rail-feeds [--pass d] [--dem dir]  the rail feeds for the coverage (dem/railfeeds.py), each
+//!   ferries --pass d [--dem dir]  the pass's ferries set through ferries.py (with the ferry feeds
+//!                                and inputs/ferries/freq's looked-up timetables), as the
+//!                                ferries' blocks
+//!   rail-feeds [--pass d] [--dem dir] [--feeds-index i]  the timetable feeds (the declarations of
+//!                                index i, else the records' accepted one; dem/railfeeds.py), each
 //!                                fetched once into the rail sources
+//!   feeds-seed --day d <zip>...  puts each zip as sources/rail/gtfs/<its name> counting from day d
+//!                                (a feed's first pin, fetched before the app fetched it)
 //!   rail [--pass d] [--dem dir] [--cache dir]  trains a day on the coverage's rail ways
 //!                                (dem/railgtfs.py, then railfreq on the pass's rail set), as
 //!                                global/railfreq
@@ -675,6 +679,22 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "slope-root" => {
             let n = pipeline::slope_pack::build_root(&mut out)?;
             eprintln!("slope root: {n} tiles");
+        }
+        "feeds-seed" => {
+            // feeds-seed --day <YYYY-MM-DD> <zip>...: feeds' zips fetched before the app fetched
+            // them (each <feed id>.zip), as those feeds' first pins in the rail sources, counting
+            // from that day (pipeline::rail::seed).
+            let day = opt(&args, "--day").context("--day <the day they were fetched>")?;
+            let dir = scratch.join("feeds-seed");
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir)?;
+            for f in positional(&args) {
+                let f = std::path::PathBuf::from(f);
+                anyhow::ensure!(f.extension().is_some_and(|x| x == "zip"), "{}: not a <feed id>.zip", f.display());
+                store::sys::copy_data(&f, dir.join(f.file_name().context("zip")?))?;
+            }
+            let n = pipeline::rail::seed(&mut out, &dir, &day)?;
+            eprintln!("feeds-seed: {n} zips, counting from {day}");
         }
         "put" => {
             // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
@@ -4047,28 +4067,42 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// rail-feeds [--pass <date>] [--dem dir]: the rail feeds for the coverage (pipeline::rail):
-/// dem/railfeeds.py on the rail sources (the catalogue, the feeds checked so far, the NAS's zips)
-/// with the countries the coverage is in (from the pass's outlines), each feed fetched once, as
-/// `sources/rail/feeds`. What it checked and fetched is kept even when it fails (a feed's server
-/// that doesn't answer, an upload that fails), so the next try starts from there.
+/// rail-feeds [--pass <date>] [--dem dir] [--feeds-index <index>]: the timetable feeds
+/// (pipeline::rail): dem/railfeeds.py on the accepted declarations of the timetable feeds (the
+/// index the agent names, else the records', pipeline::inputs::feeds) and the rail sources (the catalogue, the feeds
+/// checked so far, the NAS's zips) with the countries the coverage is in (from the pass's outlines
+/// and the catalogue declaration's `own_code`), each feed fetched once, as `sources/rail/feeds` (the
+/// rail feeds) and `sources/rail/ferry-feeds`. What it checked and fetched is kept even when it
+/// fails (a feed's server that doesn't answer, an upload that fails), so the next try starts from
+/// there.
 fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::rail;
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
-    let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail catalogue (put by hand: docs/plan.md, Hand-made inputs)")?);
+    let decls = {
+        let unit = pipeline::inputs::feeds::UNIT;
+        let index = opt(args, "--feeds-index").or_else(|| out.get(&pipeline::inputs::logical(unit)).map(str::to_string)).context("no accepted version of the timetable feeds yet (--feeds-index <its index's content name>)")?;
+        let m = std::collections::BTreeMap::from([(pipeline::inputs::logical(unit), index)]);
+        let a = pipeline::inputs::open(out.root(), &m, unit)?.with_context(|| format!("no accepted version of {unit}"))?;
+        pipeline::inputs::feeds::of_accepted(&a)?
+    };
+    let catalogue = out.get(rail::CATALOGUE).map(|c| out.path(c));
+    // (A catalogue without its declaration, held by the input check, would be read without its
+    // corrections: the job waits for it instead.)
+    anyhow::ensure!(catalogue.is_none() || decls.iter().any(|d| d["format"] == pipeline::inputs::feeds::CATALOGUE), "the catalogue's declaration isn't in the accepted version of the timetable feeds (held?): its corrections would be missing");
     let parts = Parts(&["Finding the countries the coverage is in", "Finding and fetching the feeds (railfeeds.py)", "Uploading"]);
     parts.start(0);
     let p = phase("the countries the coverage is in found", Class::NasRead);
     let outlines = pipeline::outlines::Outlines::open(&out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?))?;
-    let countries = rail::countries(&cov, &outlines)?;
+    let countries = rail::countries(&cov, &outlines, &pipeline::inputs::feeds::own_code(&decls))?;
     drop(p);
     let p = phase("the feeds checked and fetched before read", Class::NasRead);
     eprintln!("rail-feeds: the coverage is in {}", countries.join(", "));
     std::fs::create_dir_all(scratch)?;
-    let (cover, checked, cache) = (scratch.join("coverage.geojson"), scratch.join("checked-in.json"), scratch.join("cache.json"));
+    let (cover, checked, cache, declared) = (scratch.join("coverage.geojson"), scratch.join("checked-in.json"), scratch.join("cache.json"), scratch.join("declarations.json"));
     std::fs::write(&cover, serde_json::to_vec(&rail::coverage_geojson(&cov))?)?;
+    std::fs::write(&declared, serde_json::to_vec(&decls)?)?;
     match out.get(rail::CHECKED) {
         Some(c) => store::sys::copy_data(out.path(c), &checked).map(|_| ())?,
         None => std::fs::write(&checked, b"[]")?,
@@ -4082,8 +4116,9 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let p = phase("railfeeds.py", Class::Mixed);
     let mut c = store::spawn::command("uv");
     c.current_dir(&dem)
-        .args(["run", "python", "railfeeds.py", "--catalogue"])
-        .arg(&catalogue)
+        .args(["run", "python", "railfeeds.py", "--declarations"])
+        .arg(&declared)
+        .args(catalogue.iter().flat_map(|c| [std::ffi::OsStr::new("--catalogue"), c.as_os_str()]))
         .arg("--coverage")
         .arg(&cover)
         .arg("--countries")
@@ -4105,16 +4140,21 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         out.put_file(rail::CHECKED, "json", &found.join("checked.json"))?;
         out.save()?;
     }
+    // (The catalogue fetched from its declaration's URL, there being no copy: its first pin.)
+    if catalogue.is_none() && found.join("catalogue.csv").exists() {
+        out.put_file(rail::CATALOGUE, "csv", &found.join("catalogue.csv"))?;
+        out.save()?;
+    }
     if !st.success() {
         let n = rail::keep_downloads(out, &found.join("gtfs"))?;
         out.save()?;
         bail!("railfeeds.py failed ({st}); the {n} zips it fetched are kept");
     }
-    let new = rail::put_feeds(out, &found.join("feeds.json"), &found.join("gtfs"))?;
+    let new = rail::put_feeds(out, &found.join("feeds.json"), &found.join("gtfs"), rail::FEEDS)? + rail::put_feeds(out, &found.join("ferries.json"), &found.join("gtfs"), rail::FERRY_FEEDS)?;
     drop(p);
     out.save()?;
     std::fs::remove_dir_all(&found).ok();
-    for f in [cover, checked, cache] {
+    for f in [cover, checked, cache, declared] {
         std::fs::remove_file(f).ok();
     }
     eprintln!("rail-feeds: {new} zips fetched");
@@ -4146,7 +4186,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     if !raw.exists() {
         let (list, pairs, used) = (scratch.join("feeds.json"), scratch.join("pairs-raw.bin"), scratch.join("used.json"));
         let p = phase("the feeds listed", Class::NasRead);
-        std::fs::write(&list, serde_json::to_vec(&rail::feeds_for_counting(out)?)?)?;
+        std::fs::write(&list, serde_json::to_vec(&rail::feeds_for_counting(out, rail::FEEDS)?)?)?;
         drop(p);
         let p = phase("railgtfs.py", Class::Mixed);
         let mut c = store::spawn::command("uv");

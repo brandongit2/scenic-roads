@@ -353,8 +353,10 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
 }
 
 /// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as ferries.py
-/// reads it, ferries.py with the timetables (`inputs/ferries/freq`:
-/// GTFS-derived sailings and the ones looked up by hand), and the blocks from what it writes.
+/// reads it, ferries.py with the ferry feeds the rail-feeds job fetched (`rail::FERRY_FEEDS`, each
+/// zip's path on the NAS and its day: ferries.py counts them, dem/ferrygtfs.py) and the timetables
+/// looked up by hand (`inputs/ferries/freq`'s `timetables-*.json`), and the blocks from what it
+/// writes.
 pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<usize> {
     use std::process::Command;
     let logical = crate::osmpass::set_name(date, "ferries");
@@ -384,15 +386,17 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
     let freq = out.root().join("inputs/ferries/freq");
     let mut n_freq = 0;
     for e in std::fs::read_dir(&freq).with_context(|| format!("{} (the timetables)", freq.display()))?.flatten() {
-        if e.path().extension().is_some_and(|x| x == "json") {
+        if e.path().extension().is_some_and(|x| x == "json") && e.file_name().to_string_lossy().starts_with("timetables-") {
             store::sys::copy_data(e.path(), work.join("freq").join(e.file_name()))?;
             n_freq += 1;
         }
     }
+    let feeds = work.join("ferry-feeds.json");
+    std::fs::write(&feeds, serde_json::to_vec(&crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?)?)?;
     drop(p);
     let p = crate::timings::phase("ferries.py", crate::timings::Class::Mixed);
     let mut py = store::spawn::command("uv");
-    py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work);
+    py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work).arg("--feeds").arg(&feeds);
     crate::timings::child(&mut py);
     run(py, "ferries.py")?;
     drop(p);

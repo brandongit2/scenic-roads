@@ -1,31 +1,41 @@
 #!/usr/bin/env python3
-"""The GTFS feeds that run passenger rail (trains, metros, trams, funiculars) where the coverage
-is, each fetched once. The `rail-feeds` job runs it (docs/plan.md §6, Rail service); railgtfs.py
-reads what it finds.
+"""The timetable feeds (GTFS) where the coverage is, each fetched once: those that run passenger
+rail (trains, metros, trams, funiculars) for the rail counter (railgtfs.py), and the ferry feeds for
+the ferry counter (ferrygtfs.py, run by the ferries job). The `rail-feeds` job runs it (docs/plan.md
+§6, Rail service) on the accepted declarations of inputs/timetables/feeds/ (docs/inputs.md §6.7.1,
+--declarations: each as pipeline::inputs::feeds gives it, `facts.feed`).
 
 The feeds:
-  - the Mobility Database catalogue's (--catalogue: feeds_v2.csv, files.mobilitydatabase.org, as
-    downloaded once): active GTFS feeds of the countries the coverage is in (--countries, ISO
-    3166-1, which the job works out from the pass's outlines; COUNTRY corrects the catalogue's
-    country of a few) whose bounding box meets the coverage (--coverage), with a download that needs
-    no key. Of those, the ones with rail routes: only routes.txt is read, straight out of the zip by
-    HTTP range requests (the catalogue's mirror, else the operator's URL), once per feed (--checked
-    keeps every feed's answer; one that got no answer is asked again next time);
-  - national operators the catalogue lacks (EXTRA), and feeds behind an API key (KEYED) whose key
-    --keys holds (the NAS's inputs/keys.env, KEY=value lines: a key is read only to fetch its feed,
-    and never written anywhere), each where its box meets the coverage, in the same countries.
-A feed another `replaces` (an operator's own feed over an aggregate republishing it, and REPLACES
-among the catalogue's copies of one timetable) is left out while that one has a zip (or is tried
-again), and read when it has none. A feed whose trains come from elsewhere is left out (ELSEWHERE:
-the MTR's lines, researched by hand).
+  - the Mobility Database catalogue's (the `mdb-catalogue` declaration; --catalogue: its pinned copy,
+    else fetched from its URL into --out/catalogue.csv): active GTFS feeds of the countries the
+    coverage is in (--countries, ISO 3166-1, which the job works out from the pass's outlines; the
+    declaration's `country` corrects the catalogue's country of a few) whose bounding box meets the
+    coverage (--coverage), with a download that needs no key, and not in its `exclude`. Of those,
+    the ones with rail routes: only routes.txt is read, straight out of the zip by HTTP range
+    requests (the catalogue's mirror, else the operator's URL), once per feed (--checked keeps every
+    feed's answer; one that got no answer is asked again next time);
+  - the declared feeds (`gtfs`), in their `order`, then by id: for the rail list those whose `modes`
+    have rail (or say none: then their routes.txt must have rail routes) where one of their
+    territories is a country the coverage is in and their stops (the zip's stops.txt) meet the
+    coverage; for the ferry list those whose `modes` have ferry (or say none), wherever they are
+    (the ferries are mapped worldwide). A feed behind an API key (`[data.fetch] key`) is in either
+    only when --keys holds its key (the NAS's inputs/keys.env, KEY=value lines: a key is read only
+    to fetch its feed, and never written anywhere).
+A feed another `replaces` (an operator's own feed over an aggregate republishing it, and the
+catalogue declaration's `replaces` among its copies of one timetable) is left out while that one
+has a zip (or is tried again), and read when it has none. The rail list has the declared feeds
+first, so a train they share with a regional aggregate counts as theirs.
 
 Each feed is downloaded once: --cache lists the zips the NAS already has (feed id → its path and
 the day it counts from), and only a feed not there is fetched, into --out/gtfs/<id>.zip (a zip left
-there by a run cut short is used as it is). A cached zip without rail service in its window (see
-railgtfs.py: it was out of date when fetched) is fetched again when this runs REFETCH_DAYS or more
-after its day: the new zip replaces it, counting from today (the NAS keeps one copy if it's the
-same file, which then isn't fetched again for another REFETCH_DAYS); a refusal or no answer leaves
-the old one, asked again the next time.
+there by a run cut short is used as it is). A cached zip without service in its window (see
+railgtfs.py and ferrygtfs.py: it was out of date when fetched) is fetched again when this runs its
+declaration's `refresh` days (REFRESH_DAYS for the catalogue's) or more after its day: the new zip
+replaces it, counting from today (the NAS keeps one copy if it's the same file, which then isn't
+fetched again for another while); a refusal or no answer leaves the old one, asked again the next
+time. How a feed is fetched is its declaration's `[data.fetch] method`: `get` (default),
+`get-key-header` (the key in a header), `get-key-json-link` (the key in a header, the answer JSON
+holding the download link at `link`).
 
 A request that gets no answer (no connection, a 429 or a 5xx, an answer cut short) is tried three
 times. A feed still without one (or whose file changed while it was read) fails the run, after the
@@ -35,14 +45,15 @@ job completes and removes --out), it's left out instead, its status naming the f
 day, and it's tried again the next time rail-feeds runs. A definite refusal (a 404, a file that
 isn't a zip) leaves that feed out. A cached zip the NAS can't read now fails the run.
 
-Writes --out/feeds.json, {"feeds": […]}: the feeds in the order railgtfs.py reads them (national
-operators first, so a train they share with a regional aggregate counts as theirs; the catalogue's by
-country and provider), each with its facts, `zip` ("cache" for the NAS's, "new" for a download,
-none when left out, with `status` saying why) and `fetched`; and --out/checked.json (--checked with
-this run's answers). Each is written by a temporary name, then renamed.
+Writes --out/feeds.json, {"feeds": […]}: the rail feeds in the order railgtfs.py reads them, each
+with its facts, `zip` ("cache" for the NAS's, "new" for a download, none when left out, with
+`status` saying why) and `fetched`; --out/ferries.json likewise, the ferry feeds (id, name, url,
+source, ferry_routes); and --out/checked.json (--checked with this run's answers). Each is written
+by a temporary name, then renamed.
 
-usage: railfeeds.py --catalogue feeds_v2.csv --coverage coverage.geojson --countries FR,ES,…
-                    --checked checked.json --cache cache.json --keys keys.env --out dir
+usage: railfeeds.py --declarations feeds.json [--catalogue feeds_v2.csv] --coverage coverage.geojson
+                    --countries FR,ES,… --checked checked.json --cache cache.json --keys keys.env
+                    --out dir
 """
 from __future__ import annotations
 
@@ -63,56 +74,19 @@ from pathlib import Path
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
+import ferrygtfs
 import railgtfs
 from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
-# A stale cached zip is fetched again when this runs this many days or more after its day.
-REFETCH_DAYS = 7
+# A stale cached zip is fetched again when this runs this many days or more after its day, unless its
+# declaration says.
+REFRESH_DAYS = 7
 # Tries of a request that gets no answer, and the waits between them.
 TRIES = 3
 WAIT_S = 20
 # Days a feed's server may give no answer before the feed is left out, rather than failing the run.
 NO_ANSWER_DAYS = 3
-
-# National operators the catalogue lacks, each with its country and the box its trains run in.
-EXTRA = [
-    {"id": "sncf", "provider": "SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER)", "url": "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip", "licence": "Licence Ouverte 2.0",
-     "country": "FR", "bbox": [-5.2, 41.3, 9.6, 51.2]},
-    {"id": "renfe-av-ld-md", "provider": "Renfe (AVE, Larga y Media Distancia)", "url": "https://ssl.renfe.com/gtransit/Fichero_AV_LD/google_transit.zip", "licence": "CC BY 4.0",
-     "country": "ES", "bbox": [-9.4, 35.9, 3.4, 43.8]},
-    {"id": "renfe-cercanias", "provider": "Renfe Cercanías / Rodalies", "url": "https://ssl.renfe.com/ftransit/Fichero_CER_FOMENTO/fomento_transit.zip", "licence": "CC BY 4.0",
-     "country": "ES", "bbox": [-9.4, 35.9, 3.4, 43.8]},
-    # Great Britain: the national rail timetable (RDG's ATOC CIF) as GTFS, rebuilt daily by Catenary
-    # Transit (the official download needs a Rail Data Marketplace account).
-    {"id": "gb-national-rail", "provider": "National Rail (GB), RDG timetable via Catenary Transit", "url": "https://github.com/catenarytransit/pfaedled-gtfs-actions/releases/download/latest/nationalrailuk.zip", "licence": "RDG open data (attribution)",
-     "country": "GB", "bbox": [-6.5, 49.8, 1.8, 60.9]},
-    # (The Transport Department's own feed, with Catenary Transit's shapes.)
-    {"id": "hk-pfaedle", "provider": "Hong Kong Transport Department (trams, Peak Tram), via Catenary Transit", "url": "https://github.com/catenarytransit/pfaedled-gtfs-actions/releases/download/latest/hk-gtfs-pfaedle.zip", "licence": "DATA.GOV.HK terms",
-     "country": "HK", "bbox": [113.8, 22.1, 114.5, 22.6], "replaces": ["mdb-1924"]},
-]
-
-# Catalogue feeds whose trains the map takes from elsewhere, and where: Just Use Wheels' Hong Kong
-# feed has the MTR's lines, which come from the hand-researched MTR pairs (railgtfs.py would add
-# them to those).
-ELSEWHERE = {"mdb-2933": "the MTR's lines, researched by hand"}
-
-# Feeds behind an API key, used when --keys has their key; `get` names how the download link is
-# obtained. (The Mobility Database's Singapore feeds have the same trains, mostly at other times.)
-KEYED = [
-    {"id": "sg-lta-train", "provider": "Land Transport Authority, LTA DataMall (MRT and LRT)", "licence": "Singapore Open Data Licence 1.0",
-     "url": "https://datamall2.mytransport.sg/ltaodataservice/GTFSScheduleTrain", "key": "LTA_ACCOUNT_KEY", "get": "lta", "replaces": ["mdb-1076", "mdb-3051", "mdb-3409"],
-     "country": "SG", "bbox": [103.5, 1.1, 104.2, 1.5]},
-]
-
-# Catalogue feeds filed under another country than the one their trains run in (by their boxes):
-# two of Singapore's, under Malaysia.
-COUNTRY = {"mdb-3051": "SG", "mdb-3409": "SG"}
-
-# Catalogue feeds that are copies of one timetable (Singapore's, from LTA's data, each with trips of
-# its own, which needn't match another's): each in a list is left out while the feed listing it has
-# a zip, so one copy is read.
-REPLACES = {"mdb-1076": ["mdb-3051", "mdb-3409"], "mdb-3051": ["mdb-3409"]}
 
 
 class NoAnswer(Exception):
@@ -388,13 +362,13 @@ def unanswered(c: dict) -> bool:
     return len(w) == 2 and w[0] == "http" and w[1].isdigit() and transient(int(w[1]))
 
 
-def catalogue_feeds(path: str, cover, countries: set[str]) -> list[dict]:
-    """The catalogue's active GTFS feeds of `countries` (as COUNTRY corrects them) whose box meets the
-    coverage, in its order."""
+def catalogue_feeds(path: str, cover, countries: set[str], country_of: dict[str, str]) -> list[dict]:
+    """The catalogue's active GTFS feeds of `countries` (as `country_of`, its declaration's `country`,
+    corrects them) whose box meets the coverage, in its order."""
     out = []
     with open(path, encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            country = COUNTRY.get(row["id"], row["location.country_code"])
+            country = country_of.get(row["id"], row["location.country_code"])
             if row["data_type"] != "gtfs" or country not in countries or row["status"] in ("deprecated", "inactive"):
                 continue
             if row["redirect.id"]:
@@ -414,17 +388,39 @@ def catalogue_feeds(path: str, cover, countries: set[str]) -> list[dict]:
     return out
 
 
-def keyed_link(feed: dict, key: str) -> str | None:
-    """The download link of a keyed feed (LTA: a signed link, valid 15 minutes, in the answer)."""
+def json_at(v, path: str):
+    """The value at `path` (`value[0].link`: keys and list indexes) in JSON `v`; a string on the way
+    that holds JSON (or a Python literal, as LTA's does) is read as such."""
     import ast
+    import re
+
+    for part in re.findall(r"[^.\[\]]+|\[\d+\]", path):
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                v = ast.literal_eval(v)
+        v = v[int(part[1:-1])] if part.startswith("[") else v[part]
+    return v
+
+
+def keyed(feed: dict, key: str):
+    """A request of a keyed feed's URL, its key in its header (an error names the API's status, never
+    the key)."""
     import urllib.request
 
-    if feed["get"] == "lta":
-        req = urllib.request.Request(feed["url"], headers={"User-Agent": UA, "AccountKey": key, "accept": "application/json"})
-        v = json.loads(urllib.request.urlopen(req, timeout=60).read())["value"]
-        v = ast.literal_eval(v) if isinstance(v, str) else v
-        return v[0]["link"] if v else None
-    return None
+    f = feed["fetch"]
+    req = urllib.request.Request(feed["url"], headers={"User-Agent": UA, f["header"]: key, "accept": "application/json" if f["method"] == "get-key-json-link" else "*/*"})
+    return urllib.request.urlopen(req, timeout=60 if f["method"] == "get-key-json-link" else 3600)
+
+
+def keyed_link(feed: dict, key: str) -> str | None:
+    """The download link of a `get-key-json-link` feed (LTA's: a signed link, valid 15 minutes, in the
+    answer)."""
+    try:
+        return json_at(json.loads(keyed(feed, key).read()), feed["fetch"]["link"]) or None
+    except IndexError:
+        return None
 
 
 def fetch(feed: dict, dest: Path, key: str | None) -> tuple[bool, str]:
@@ -436,10 +432,21 @@ def fetch(feed: dict, dest: Path, key: str | None) -> tuple[bool, str]:
         return True, "ok"
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
+    method = feed.get("fetch", {}).get("method", "get")
     for attempt in range(TRIES):
         last = attempt + 1 == TRIES
         try:
-            url = keyed_link(feed, key or "") if feed.get("get") else feed["url"]
+            if method == "get-key-header":
+                # (The zip itself, the key in a header: not through curl, whose arguments others see.)
+                with keyed(feed, key or "") as r, open(tmp, "wb") as w:
+                    while chunk := r.read(1 << 20):
+                        w.write(chunk)
+                if zipfile.is_zipfile(tmp):
+                    tmp.rename(dest)
+                    return True, "ok"
+                tmp.unlink(missing_ok=True)
+                return False, "download failed: not a zip"
+            url = keyed_link(feed, key or "") if method == "get-key-json-link" else feed["url"]
         except urllib.error.HTTPError as e:
             # (Errors name the API's status, never the key, which travels in a header.)
             if not transient(e.code):
@@ -454,6 +461,7 @@ def fetch(feed: dict, dest: Path, key: str | None) -> tuple[bool, str]:
             time.sleep(WAIT_S * (attempt + 1))
             continue
         except (ValueError, KeyError, IndexError, TypeError, SyntaxError):
+            tmp.unlink(missing_ok=True)
             return False, "its download link: an answer it can't read"
         if not url:
             return False, "no download link"
@@ -471,9 +479,41 @@ def fetch(feed: dict, dest: Path, key: str | None) -> tuple[bool, str]:
     return False, "download failed"
 
 
+def declared(d: dict, countries: set[str]) -> dict:
+    """A declared feed (its declaration's `facts.feed`) as this lists it: `provider` its name,
+    `country` the first of its territories the coverage is in."""
+    f = {"id": d["id"], "provider": d["name"], "url": d["url"], "licence": d["licence"], "country": next((c for c in d["territory"] if c in countries), ""),
+         "replaces": d.get("replaces") or [], "fetch": d.get("fetch") or {"method": "get"}, "refresh_days": d.get("refresh_days", REFRESH_DAYS),
+         "modes": d.get("modes") or [], "name_": d["name"], "source": d.get("source", ""), "ferry_routes": d.get("ferry_routes") or []}
+    if f["fetch"].get("key"):
+        f["key"] = f["fetch"]["key"]
+    return f
+
+
+def serves(d: dict, mode: str) -> bool:
+    """Whether a declaration's `modes` take it to `mode`'s counter (none: by its routes)."""
+    return not d.get("modes") or mode in d["modes"]
+
+
+def stops_box(path: Path):
+    """The box of a zip's stops (stops.txt), or None when it has none."""
+    xs, ys = [], []
+    with zipfile.ZipFile(path) as z:
+        for s in railgtfs.rows(z, "stops.txt"):
+            try:
+                x, y = float(s.get("stop_lon", "")), float(s.get("stop_lat", ""))
+            except ValueError:
+                continue
+            if (x, y) != (0.0, 0.0) and -180 <= x <= 180 and -90 <= y <= 90:
+                xs.append(x)
+                ys.append(y)
+    return box(min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--catalogue", required=True)
+    ap.add_argument("--declarations", required=True, help="the accepted declarations (pipeline::inputs::feeds), as JSON")
+    ap.add_argument("--catalogue", help="the catalogue's pinned copy; none: fetched from its declaration's URL")
     ap.add_argument("--coverage", required=True, help="the coverage's outlines (GeoJSON, from the job)")
     ap.add_argument("--countries", required=True, help="ISO 3166-1 codes, comma-separated")
     ap.add_argument("--checked", required=True, help="the catalogue feeds checked so far")
@@ -487,6 +527,11 @@ def main():
         cover = coverage(a.coverage)
     with phase("the checks, keys and the NAS's list read", "disk"):
         countries = {c for c in a.countries.split(",") if c}
+        decls = json.loads(Path(a.declarations).read_text())
+        cat = next((d for d in decls if d["format"] == "mdb-catalogue"), None) or {}
+        gtfs_decls = sorted((d for d in decls if d["format"] == "gtfs"), key=lambda d: (d.get("order", 0), d["id"]))
+        exclude: dict[str, str] = cat.get("exclude") or {}
+        cat_replaces: dict[str, list[str]] = cat.get("replaces") or {}
         have = keys(a.keys)
         cache = json.loads(Path(a.cache).read_text())
         checked = {c["id"]: c for c in json.loads(Path(a.checked).read_text())} if Path(a.checked).exists() else {}
@@ -502,9 +547,19 @@ def main():
         since = silent.setdefault(i, today().isoformat())
         return since if (today() - date.fromisoformat(since)).days >= NO_ANSWER_DAYS else None
 
+    # The catalogue: its pinned copy, else its declaration's URL fetched.
+    catalogue = a.catalogue
+    if not catalogue and cat.get("url"):
+        with phase("the catalogue fetched", "net"):
+            dest = out / "catalogue.csv"
+            code, body, _ = curl(cat["url"])
+            if code != 200 or not body.startswith(b"id,"):
+                sys.exit(f"the catalogue, {cat['url']}: {'no answer' if transient(code) else f'http {code}'}" if code != 200 else f"the catalogue, {cat['url']}: not its CSV")
+            dest.write_bytes(body)
+            catalogue = str(dest)
     # The catalogue's feeds here, each checked once (again while one gets no answer).
     with phase("the catalogue's feeds listed", "compute"):
-        cands = catalogue_feeds(a.catalogue, cover, countries)
+        cands = catalogue_feeds(catalogue, cover, countries, cat.get("country") or {}) if catalogue else []
         todo = [dict(c) for c in cands if c["id"] not in checked or unanswered(checked[c["id"]])]
     print(f"{len(cands)} catalogue feeds where the coverage is ({', '.join(sorted(countries))}); {len(todo)} to check", file=sys.stderr, flush=True)
     done = []
@@ -526,21 +581,26 @@ def main():
         else:
             waiting.append(f"{c['id']}: its check got {c['status']}")
 
-    def here(f: dict) -> bool:
-        return f["country"] in countries and cover.intersects(box(*f["bbox"]))
+    def here(d: dict) -> bool:
+        """A declared feed in a country the coverage is in, with its key if it needs one (where its
+        stops are is known once its zip is: `beyond`)."""
+        return any(c in countries for c in d["territory"]) and (not d.get("fetch", {}).get("key") or bool(have.get(d["fetch"]["key"])))
 
     listed = sorted((checked[c["id"]] for c in cands if checked[c["id"]].get("rail_routes") or c["id"] in left_out), key=lambda f: (f["country"], f["provider"]))
-    order = [dict(f) for f in EXTRA if here(f)] + [dict(f) for f in KEYED if here(f) and have.get(f["key"])] + [dict(f) for f in listed]
+    own = [declared(d, countries) for d in gtfs_decls if here(d)]
+    # (The ferries are mapped worldwide: every ferry feed whose key is held, wherever it is.)
+    ferry_feeds = [next((f for f in own if f["id"] == d["id"]), None) or declared(d, countries) for d in gtfs_decls if serves(d, "ferry") and (not d.get("fetch", {}).get("key") or have.get(d["fetch"]["key"]))]
+    order = [f for f in own if serves(f, "rail")] + [dict(f) for f in listed]
     for f in order:
-        if f["id"] in REPLACES:
-            f["replaces"] = REPLACES[f["id"]]
+        if f["id"] in cat_replaces:
+            f["replaces"] = cat_replaces[f["id"]]
     by_id = {f["id"]: f for f in order}
     replacers: dict[str, list[str]] = {}
     for f in order:
         for r in f.get("replaces", ()):
             replacers.setdefault(r, []).append(f["id"])
 
-    # Each feed's zip: the NAS's, else fetched; a stale one again once it's REFETCH_DAYS old. A feed
+    # Each feed's zip: the NAS's, else fetched; a stale one again once it's its `refresh` days old. A feed
     # is placed as "zip" (it has one), "trying" (tried again later: the run fails) or "out".
     placed: dict[str, tuple[str, dict]] = {}
 
@@ -565,8 +625,8 @@ def main():
         for g in replacers.get(i, ()):
             if place(by_id[g])[0] != "out":
                 return "out", {**rec, "status": f"replaced by {g}"}
-        if i in ELSEWHERE:
-            return "out", {**rec, "status": f"replaced by {ELSEWHERE[i]}"}
+        if i in exclude:
+            return "out", {**rec, "status": f"replaced by {exclude[i]}"}
         if i in left_out:
             print(f"{i}: left out ({left_out[i]})", file=sys.stderr, flush=True)
             return "out", {**rec, "status": left_out[i]}
@@ -578,7 +638,7 @@ def main():
             day = date.fromisoformat(c["fetched"])
             with phase("the NAS's zips checked for service", "nas-read"):
                 try:
-                    fresh = railgtfs.has_service(Path(c["path"]), day)
+                    fresh = (serves(f, "rail") and railgtfs.has_service(Path(c["path"]), day)) or ("name_" in f and serves(f, "ferry") and ferrygtfs.has_service(Path(c["path"]), f, day))
                 except OSError as e:
                     # Not read now (the NAS): the run fails, and is tried again, rather than fetching it.
                     failed.append(f"{i}: its zip on the NAS can't be read now ({e.__class__.__name__}: {e})")
@@ -587,7 +647,7 @@ def main():
                     # Its tables can't be read (railgtfs.py can't count it either): as one out of date.
                     print(f"{i}: its zip can't be read ({e.__class__.__name__}: {e})", file=sys.stderr, flush=True)
                     fresh = False
-            if fresh or (today() - day).days < REFETCH_DAYS:
+            if fresh or (today() - day).days < f.get("refresh_days", REFRESH_DAYS):
                 return "zip", cached
             try:
                 with phase("the feeds' zips downloaded", "net"):
@@ -618,14 +678,50 @@ def main():
         print(f"{i}: left out ({why})", file=sys.stderr, flush=True)
         return "out", {**rec, "status": why}
 
+    def zip_path(i: str, rec: dict) -> Path:
+        return Path(cache[i]["path"]) if rec.get("zip") == "cache" else out / "gtfs" / f"{i}.zip"
+
+    def beyond(f: dict, rec: dict) -> str | None:
+        """Why a declared feed with a zip is left out of the rail list: its stops all beyond the
+        coverage, or (its modes not said) no rail routes. None: it's in."""
+        try:
+            with phase("the declared feeds' stops read", "nas-read"):
+                b = stops_box(zip_path(f["id"], rec))
+                if b is None or not cover.intersects(b):
+                    return "its stops are beyond the coverage"
+                if not f.get("modes"):
+                    with zipfile.ZipFile(zip_path(f["id"], rec)) as z:
+                        if not railgtfs.rail_routes(z):
+                            return "no rail routes"
+        except (zipfile.BadZipFile, KeyError, csv.Error, zlib.error, EOFError) as e:
+            print(f"{f['id']}: its stops can't be read ({e.__class__.__name__}: {e})", file=sys.stderr, flush=True)
+        return None
+
+    mine = {f["id"] for f in own}
     with phase("the feeds' zips placed", "mixed"):
         feeds = []
         for k, f in enumerate(order):
             progress(k, len(order), "feeds' zips")
             state, rec = place(f)
+            if state == "zip" and f["id"] in mine and (why := beyond(f, rec)):
+                rec = {key: v for key, v in rec.items() if key not in ("zip", "fetched")} | {"status": why}
             if state != "trying":
                 feeds.append(rec)
         progress(len(order), len(order), "feeds' zips")
+        # The ferry list: the declared feeds that serve ferries, wherever they are (zips already
+        # placed for the rail list are named as the NAS's: they're uploaded with it).
+        new_in_rail = {r["id"] for r in feeds if r.get("zip") == "new"}
+        ferries = []
+        for f in ferry_feeds:
+            state, rec = place(f)
+            if state == "trying":
+                continue
+            fr = {"id": f["id"], "name": f["name_"], "url": f["url"], "source": f["source"], "ferry_routes": f["ferry_routes"]}
+            if state == "zip":
+                fr |= {"zip": "cache" if f["id"] in new_in_rail else rec["zip"], "fetched": rec["fetched"]}
+            else:
+                fr["status"] = rec.get("status", "")
+            ferries.append(fr)
     with phase("the lists written", "disk"):
         write_json(silent_path, dict(sorted(silent.items())))
     n_new = sum(1 for f in feeds if f.get("zip") == "new")
@@ -639,6 +735,7 @@ def main():
         sys.exit(3)
     with phase("the lists written", "disk"):
         write_json(out / "feeds.json", {"feeds": feeds})
+        write_json(out / "ferries.json", {"feeds": ferries})
 
 
 if __name__ == "__main__":

@@ -4312,8 +4312,8 @@ impl Agent {
         }
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
-        if !manifest.contains_key(crate::rail::CATALOGUE) {
-            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the rail sources' catalogue isn't on the NAS yet (put by hand: docs/plan.md, Hand-made inputs)".into() });
+        if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
+            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
         }
@@ -4576,6 +4576,10 @@ impl Agent {
             }
             let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != w.step).collect();
             extra.extend(self.step_args(&w.step, date));
+            // (The timetable feeds' declarations: the accepted version it was planned with.)
+            if w.step == "rail-feeds" {
+                extra.extend(["--feeds-index".to_string(), manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)).cloned().unwrap_or_default()]);
+            }
             // (Tree cover pieces made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
             if !same.is_empty() {
@@ -6166,15 +6170,16 @@ impl Agent {
     }
 }
 
-/// What jobs read from inputs/ beside the manifest, by digest: the ferry timetables
+/// What jobs read from inputs/ beside the manifest, by digest: the ferries' looked-up timetables
 /// ("ferries-freq", by content), which keys inputs/keys.env holds ("keys", `key_names`), and the 3D
 /// buildings' downloaded sources ("bld-release", "bldprep 6/x/y", "bldprep-rows 6/x/y":
 /// crate::bld::sources::digests).
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
-        // (Read as kept while unchanged: crate::smallfiles.)
-        let mut files: Vec<(String, std::sync::Arc<Vec<u8>>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), crate::smallfiles::read(&e.path()).ok()?))).collect();
+        // (Read as kept while unchanged: crate::smallfiles. The looked-up timetables alone: the
+        // feeds' counts are the ferries job's own, from the ferry feeds.)
+        let mut files: Vec<(String, std::sync::Arc<Vec<u8>>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json") && e.file_name().to_string_lossy().starts_with("timetables-")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), crate::smallfiles::read(&e.path()).ok()?))).collect();
         files.sort();
         let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
         inputs.insert("ferries-freq".into(), store::naming::hash16(&all));

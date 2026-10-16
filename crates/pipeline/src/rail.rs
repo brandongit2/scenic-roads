@@ -1,30 +1,36 @@
 //! Rail service (docs/plan.md §6, Rail service): trains a day on every rail way of the coverage,
-//! from the operators' timetables (GTFS) and the MTR's hand-researched lines, as `global/railfreq`.
+//! from the operators' timetables (GTFS) and the MTR's hand-researched lines, as `global/railfreq`;
+//! and the timetable feeds the ferries are counted from.
 //!
-//! Two jobs. `rail-feeds` finds the feeds for the coverage (`dem/railfeeds.py`: the Mobility
-//! Database catalogue's feeds of the countries the coverage is in, by their boxes, the ones that run
-//! rail, and national operators' own) and fetches each once into the rail sources. `rail` counts
-//! their trains (`dem/railgtfs.py`), marks the stops beyond the coverage, and matches the stop pairs
-//! onto the rail ways of the pass's rail set that touch the coverage (`extract`, then `railfreq`).
+//! Two jobs. `rail-feeds` finds the feeds (`dem/railfeeds.py`) from the accepted declarations of
+//! `inputs/timetables/feeds/` (crate::inputs::feeds, docs/inputs.md §6.7.1): the Mobility Database
+//! catalogue's feeds of the countries the coverage is in, by their boxes, the ones that run rail,
+//! and the declared feeds (operators' own, feeds behind an API key, the ferries'), and fetches
+//! each once into the rail sources. `rail` counts their trains (`dem/railgtfs.py`), marks the stops
+//! beyond the coverage, and matches the stop pairs onto the rail ways of the pass's rail set that
+//! touch the coverage (`extract`, then `railfreq`). The `ferries` job counts the ferry list's
+//! sailings (crate::ovconv).
 //!
 //! The rail sources (`sources/rail/`, content-named, in the build manifest; docs/formats.md):
 //!
 //! | logical | what |
 //! |---|---|
-//! | `catalogue` | the Mobility Database catalogue (`feeds_v2.csv`), as downloaded once |
+//! | `catalogue` | the Mobility Database catalogue (`feeds_v2.csv`), as fetched once |
 //! | `checked` | every catalogue feed checked for rail routes so far (railfeeds.py's answers) |
-//! | `gtfs/<feed id>` | each feed's zip, as fetched |
+//! | `gtfs/<feed id>` | each feed's zip, as fetched (the ferry feeds' too) |
 //! | `fetched` | the day each zip's timetable counts from, by its content name |
-//! | `feeds` | the coverage's feeds, in reading order, each with its zip and day |
+//! | `feeds` | the coverage's rail feeds, in reading order, each with its zip and day |
+//! | `ferry-feeds` | the ferry feeds, each with its zip and day |
 //! | `mtr-pairs`, `mtr` | the MTR's lines as stop pairs, and the research they were made from |
 //!
 //! A zip's typical weekday is looked for around the day it counts from (the day it was fetched),
 //! not the day it's read, so its counts don't change with the day they're made, and a zip with
 //! service is never fetched again. Only one already out of date when fetched is: the next time
-//! rail-feeds runs (when its key changes: a new pass's outlines, the coverage, the catalogue or the
-//! keys) at least a week after its day, and the same file then counts from that run's day
-//! (railfeeds.py). The catalogue and the MTR's files are put there by hand (docs/plan.md, Hand-made
-//! inputs); the rail chain waits for the catalogue.
+//! rail-feeds runs (when its key changes: a new pass's outlines, the coverage, the declarations,
+//! the catalogue or the keys) at least its declaration's `refresh` days after its day, and the same
+//! file then counts from that run's day (railfeeds.py). The catalogue is fetched from its
+//! declaration's URL when there's no copy; the MTR's files are put there by hand (docs/plan.md,
+//! Hand-made inputs).
 
 use crate::coverage::{Coverage, Shape};
 use crate::out::Out;
@@ -38,6 +44,7 @@ pub const CATALOGUE: &str = "sources/rail/catalogue";
 pub const CHECKED: &str = "sources/rail/checked";
 pub const FETCHED: &str = "sources/rail/fetched";
 pub const FEEDS: &str = "sources/rail/feeds";
+pub const FERRY_FEEDS: &str = "sources/rail/ferry-feeds";
 pub const MTR_PAIRS: &str = "sources/rail/mtr-pairs";
 pub const MTR: &str = "sources/rail/mtr";
 /// Trains a day per rail way: sorted `(u32 OSM way id, f32 trains a day each way)`, negative for a
@@ -48,10 +55,6 @@ pub const RAILFREQ: &str = "global/railfreq";
 pub fn zip_logical(id: &str) -> String {
     format!("sources/rail/gtfs/{id}")
 }
-
-/// The keys of railfeeds.py's keyed feeds (its `KEYED`), by name: the rail-feeds job's key holds
-/// which of these inputs/keys.env has, not the names of keys nothing uses yet.
-pub const FEED_KEYS: &[&str] = &["LTA_ACCOUNT_KEY"];
 
 /// A stop-pair record (railgtfs.py, mtrpairs.py): f32 lon_a, lat_a, lon_b, lat_b, u8 mode, f32 trains.
 pub const PAIR: usize = 21;
@@ -133,31 +136,17 @@ fn alpha2(iso: &str) -> Option<String> {
 }
 
 /// The ISO 3166-2 codes of the territories with an ISO 3166-1 code of their own that isn't their
-/// code's end (and of two without one, whose ends are other countries' codes): their own code.
-const OWN_CODE: [(&str, Option<&str>); 14] = [
-    ("FI-01", Some("AX")),
-    ("FR-971", Some("GP")),
-    ("FR-972", Some("MQ")),
-    ("FR-973", Some("GF")),
-    ("FR-974", Some("RE")),
-    ("FR-976", Some("YT")),
-    ("NL-BQ1", Some("BQ")),
-    ("NL-BQ2", Some("BQ")),
-    ("NL-BQ3", Some("BQ")),
-    ("NO-21", Some("SJ")),
-    ("NO-22", Some("SJ")),
-    ("RS-KM", Some("XK")),
-    ("ES-CE", None),
-    ("ES-ML", None),
-];
+/// code's end (and of two without one, whose ends are other countries' codes): their own code (the
+/// catalogue declaration's `own_code`, crate::inputs::feeds::own_code).
+pub type OwnCode = BTreeMap<String, Option<String>>;
 
 /// The ISO 3166-1 codes a territory's outline stands for: its own, and for one with an ISO 3166-2
-/// code, its country's too ("CN-HK": HK and CN; "FR-PM": PM and FR; "FI-01": AX and FI, `OWN_CODE`),
-/// which the catalogue may file its feeds under (Hong Kong's under CN). The feeds' boxes keep the
-/// country's to those near.
-fn territory_codes(iso: &str) -> Vec<String> {
-    let own = match OWN_CODE.iter().find(|(c, _)| *c == iso) {
-        Some((_, own)) => own.map(str::to_string),
+/// code, its country's too ("CN-HK": HK and CN; "FR-PM": PM and FR; "FI-01": AX and FI, by
+/// `own_code`), which the catalogue may file its feeds under (Hong Kong's under CN). The feeds' boxes
+/// keep the country's to those near.
+fn territory_codes(iso: &str, own_code: &OwnCode) -> Vec<String> {
+    let own = match own_code.get(iso) {
+        Some(own) => own.clone(),
         None => alpha2(iso),
     };
     let mut codes: Vec<String> = own.into_iter().collect();
@@ -179,12 +168,12 @@ fn territory_codes(iso: &str) -> Vec<String> {
 /// Ontario's is the US) is neither; a small outline's wide margin may be (Monaco's is 44 % France,
 /// Taiwan's 11 % China, around Kinmen and Matsu). A territory with an ISO 3166-2 code brings its
 /// country too (`territory_codes`: Hong Kong brings China).
-pub fn countries(cov: &Coverage, outlines: &Outlines) -> Result<Vec<String>> {
+pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Result<Vec<String>> {
     let mut terr: Vec<(&crate::outlines::OutlineRec, Vec<String>)> = outlines
         .recs
         .iter()
         .filter(|r| r.flags & flag::ISO1 != 0 && cov.meets_box(r.bbox))
-        .map(|r| (r, territory_codes(outlines.string(r.iso))))
+        .map(|r| (r, territory_codes(outlines.string(r.iso), own_code)))
         .filter(|(_, codes)| !codes.is_empty())
         .collect();
     terr.sort_by(|a, b| a.0.area_km2.total_cmp(&b.0.area_km2).then(a.0.id.cmp(&b.0.id)));
@@ -283,13 +272,14 @@ fn record_days(out: &mut Out, days: &Fetched) -> Result<()> {
     Ok(())
 }
 
-/// railfeeds.py's result as `sources/rail/feeds`: each feed with a zip given its zip's content name
+/// A list railfeeds.py wrote (`found`: its rail feeds, or its ferry feeds) as `logical` (`FEEDS`,
+/// `FERRY_FEEDS`): each feed with a zip given its zip's content name
 /// (`zip`) and day (`fetched`), `new` ones uploaded first from `gtfs` (railfeeds.py's `--out/gtfs`;
 /// one the same as a zip already there is kept once, counting from its new day). The manifest is
 /// saved after each upload, since put_file removes the local copy: a failure later keeps them all,
 /// with their days, and a run cut short keeps all but the last, counting from their files' days.
 /// Returns how many zips were new.
-pub fn put_feeds(out: &mut Out, found: &Path, gtfs: &Path) -> Result<usize> {
+pub fn put_feeds(out: &mut Out, found: &Path, gtfs: &Path, logical: &str) -> Result<usize> {
     let mut v: Value = serde_json::from_slice(&std::fs::read(found)?)?;
     let mut fetched = read_fetched(out)?;
     let mut days = Fetched::new();
@@ -297,7 +287,7 @@ pub fn put_feeds(out: &mut Out, found: &Path, gtfs: &Path) -> Result<usize> {
     let recorded = record_days(out, &days);
     let new = named?;
     recorded?;
-    out.put_bytes(FEEDS, "json", &serde_json::to_vec_pretty(&serde_json::json!({"fmt": 1, "feeds": v["feeds"]}))?)?;
+    out.put_bytes(logical, "json", &serde_json::to_vec_pretty(&serde_json::json!({"fmt": 1, "feeds": v["feeds"]}))?)?;
     Ok(new)
 }
 
@@ -338,6 +328,20 @@ fn name_zips(out: &mut Out, feeds: &mut [Value], gtfs: &Path, fetched: &mut Fetc
 /// What railfeeds.py downloaded before failing (`gtfs`, its `--out/gtfs`): kept in the sources, each
 /// counting from the day it was downloaded, so the next run has them; saved as put_feeds does.
 pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
+    put_zips(out, gtfs, None)
+}
+
+/// Feeds' zips fetched before the app fetched them (`dir`'s `<feed id>.zip`), put in the sources as
+/// those feeds' first pins, each counting from `day` (the day it was fetched); saved as put_feeds
+/// does.
+pub fn seed(out: &mut Out, dir: &Path, day: &str) -> Result<usize> {
+    let b = day.as_bytes();
+    anyhow::ensure!(b.len() == 10 && b[4] == b'-' && b[7] == b'-' && day.replace('-', "").bytes().all(|c| c.is_ascii_digit()), "{day}: not a day (YYYY-MM-DD)");
+    put_zips(out, dir, Some(day))
+}
+
+/// `gtfs`'s zips in the sources, each counting from `day`, else from its file's day.
+fn put_zips(out: &mut Out, gtfs: &Path, day: Option<&str>) -> Result<usize> {
     let mut days = Fetched::new();
     let mut n = 0;
     let kept = (|| -> Result<()> {
@@ -346,7 +350,10 @@ pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
         files.sort();
         for p in files {
             let id = p.file_stem().context("zip")?.to_string_lossy().into_owned();
-            let day = day_of(std::fs::metadata(&p)?.modified()?);
+            let day = match day {
+                Some(d) => d.to_string(),
+                None => day_of(std::fs::metadata(&p)?.modified()?),
+            };
             let name = out.put_file(&zip_logical(&id), "zip", &p)?;
             out.save()?;
             days.insert(name, day);
@@ -360,9 +367,10 @@ pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
     Ok(n)
 }
 
-/// `sources/rail/feeds` for railgtfs.py: each zip's content name as its path on the NAS.
-pub fn feeds_for_counting(out: &Out) -> Result<Value> {
-    let c = out.get(FEEDS).context("no rail feeds yet (the rail-feeds step)")?;
+/// A feeds list (`FEEDS` for railgtfs.py, `FERRY_FEEDS` for ferries.py): each zip's content name as
+/// its path on the NAS.
+pub fn feeds_for_counting(out: &Out, logical: &str) -> Result<Value> {
+    let c = out.get(logical).with_context(|| format!("no {logical} yet (the rail-feeds step)"))?;
     let mut v: Value = serde_json::from_slice(&std::fs::read(out.path(c)).with_context(|| format!("read {c}"))?)?;
     for f in v["feeds"].as_array_mut().context("feeds")? {
         if let Some(z) = f.get("zip").and_then(Value::as_str) {
@@ -376,9 +384,16 @@ pub fn feeds_for_counting(out: &Out) -> Result<Value> {
 mod tests {
     use super::*;
 
+    /// The catalogue declaration's `own_code` as it was written when it moved out of the code (#140).
+    fn own_code() -> OwnCode {
+        let one = |c: &str, own: Option<&str>| (c.to_string(), own.map(str::to_string));
+        [one("FI-01", Some("AX")), one("FR-971", Some("GP")), one("FR-972", Some("MQ")), one("FR-973", Some("GF")), one("FR-974", Some("RE")), one("FR-976", Some("YT")), one("NL-BQ1", Some("BQ")), one("NL-BQ2", Some("BQ")), one("NL-BQ3", Some("BQ")), one("NO-21", Some("SJ")), one("NO-22", Some("SJ")), one("RS-KM", Some("XK")), one("ES-CE", None), one("ES-ML", None)].into()
+    }
+
     #[test]
     fn a_territorys_codes() {
-        let c = |iso: &str| territory_codes(iso);
+        let own = own_code();
+        let c = |iso: &str| territory_codes(iso, &own);
         assert_eq!(c("FR"), vec!["FR"]);
         assert_eq!(c("CN-HK"), vec!["HK", "CN"]);
         assert_eq!(c("FR-PM"), vec!["PM", "FR"]);
@@ -447,21 +462,13 @@ mod tests {
         assert_eq!(alpha2("NO-21"), None);
         assert_eq!(alpha2(""), None);
         // A territory with an ISO 3166-2 code stands for its country too.
-        assert_eq!(territory_codes("CN-HK"), vec!["HK", "CN"]);
-        assert_eq!(territory_codes("FR-PM"), vec!["PM", "FR"]);
-        assert_eq!(territory_codes("FR"), vec!["FR"]);
-        assert_eq!(territory_codes("NO-21"), vec!["SJ", "NO"], "Svalbard");
-        assert!(territory_codes("").is_empty());
-    }
-
-    #[test]
-    fn feed_keys_are_railfeeds() {
-        let py = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem/railfeeds.py")).unwrap();
-        let mut keys: Vec<&str> = py.split("\"key\": \"").skip(1).filter_map(|s| s.split('"').next()).collect();
-        keys.sort_unstable();
-        let mut want = FEED_KEYS.to_vec();
-        want.sort_unstable();
-        assert_eq!(keys, want, "the keys of railfeeds.py's KEYED feeds");
+        let own = own_code();
+        assert_eq!(territory_codes("CN-HK", &own), vec!["HK", "CN"]);
+        assert_eq!(territory_codes("FR-PM", &own), vec!["PM", "FR"]);
+        assert_eq!(territory_codes("FR", &own), vec!["FR"]);
+        assert_eq!(territory_codes("NO-21", &own), vec!["SJ", "NO"], "Svalbard");
+        assert_eq!(territory_codes("NO-21", &OwnCode::new()), vec!["NO"], "no own code declared: its country's alone");
+        assert!(territory_codes("", &own).is_empty());
     }
 
     /// Outlines of five territories: A (10° square), its neighbour B, C inside A (and inside A's
@@ -489,6 +496,7 @@ mod tests {
             format!("poly:{name}")
         };
         let cov = |outline: Vec<String>| Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline }], None, d.path()).unwrap();
+        let countries = |c: &Coverage, o: &Outlines| countries(c, o, &own_code());
         // Most of A, running 0.2° into B: A's, and C's and D's (each all inside, though a small part
         // of the outline); not B's (a margin).
         assert_eq!(countries(&cov(vec![poly("a.poly", 0.5, 0.5, 10.2, 9.5)]), &o).unwrap(), vec!["AA", "CC", "DD"]);
@@ -516,7 +524,7 @@ mod tests {
         std::fs::write(gtfs.join("sncf.zip"), b"new").unwrap();
         let found = d.path().join("feeds.json");
         std::fs::write(&found, r#"{"feeds": [{"id": "sncf", "zip": "new", "fetched": "2026-10-04"}, {"id": "mdb-1", "zip": "cache", "fetched": "2026-09-30"}, {"id": "mdb-2", "status": "replaced by sncf"}]}"#).unwrap();
-        assert_eq!(put_feeds(&mut out, &found, &gtfs).unwrap(), 1);
+        assert_eq!(put_feeds(&mut out, &found, &gtfs, FEEDS).unwrap(), 1);
         let v: Value = serde_json::from_slice(&std::fs::read(out.path(out.get(FEEDS).unwrap())).unwrap()).unwrap();
         let f = v["feeds"].as_array().unwrap();
         assert_eq!(f[0]["zip"], Value::from(out.get(&zip_logical("sncf")).unwrap()));
@@ -524,13 +532,19 @@ mod tests {
         assert_eq!(f[1]["zip"], Value::from(cname.as_str()));
         assert!(f[2].get("zip").is_none());
         // For counting: the zips' paths on the NAS.
-        let c = feeds_for_counting(&out).unwrap();
+        let c = feeds_for_counting(&out, FEEDS).unwrap();
         assert!(c["feeds"][0]["path"].as_str().unwrap().ends_with(".zip") && c["feeds"][2].get("path").is_none());
         // A zip fetched again, the same file as the cached one: kept once, counting from its new day.
         std::fs::write(gtfs.join("mdb-1.zip"), b"cached").unwrap();
         std::fs::write(&found, r#"{"feeds": [{"id": "mdb-1", "zip": "new", "fetched": "2026-10-20"}]}"#).unwrap();
-        assert_eq!(put_feeds(&mut out, &found, &gtfs).unwrap(), 1);
+        assert_eq!(put_feeds(&mut out, &found, &gtfs, FEEDS).unwrap(), 1);
         assert_eq!(out.get(&zip_logical("mdb-1")), Some(cname.as_str()));
+        // The ferry list beside it: a zip the rail list just uploaded named as the NAS's.
+        std::fs::write(&found, r#"{"feeds": [{"id": "mdb-1", "name": "M", "zip": "cache", "fetched": "2026-10-20"}, {"id": "ferry", "status": "http 404"}]}"#).unwrap();
+        assert_eq!(put_feeds(&mut out, &found, &gtfs, FERRY_FEEDS).unwrap(), 0);
+        let c = feeds_for_counting(&out, FERRY_FEEDS).unwrap();
+        assert_eq!(c["feeds"][0]["fetched"], "2026-10-20");
+        assert!(c["feeds"][0]["path"].as_str().unwrap().ends_with(".zip") && c["feeds"][1].get("path").is_none());
         assert_eq!(read_fetched(&out).unwrap()[&cname], "2026-10-20");
     }
 
@@ -546,7 +560,7 @@ mod tests {
         let found = d.path().join("feeds.json");
         std::fs::write(&found, r#"{"feeds": [{"id": "sncf", "zip": "new", "fetched": "2026-10-04"}, {"id": "renfe", "zip": "new", "fetched": "2026-10-04"}]}"#).unwrap();
         let mut out = Out::open(&root, &scratch, "rail-feeds").unwrap();
-        assert!(put_feeds(&mut out, &found, &gtfs).is_err());
+        assert!(put_feeds(&mut out, &found, &gtfs, FEEDS).is_err());
         let out = Out::unbound(&root, &scratch).unwrap();
         let sncf = out.get(&zip_logical("sncf")).unwrap().to_string();
         assert!(!gtfs.join("sncf.zip").exists() && out.path(&sncf).exists());
@@ -561,5 +575,15 @@ mod tests {
         let a = out.get(&zip_logical("a")).unwrap().to_string();
         assert!(read_fetched(&out).unwrap().get(&a).is_some_and(|d| d.len() == 10));
         assert!(read_fetched(&out).unwrap().contains_key(&sncf), "the other days kept");
+        // First pins, from the day they were fetched.
+        let seeds = d.path().join("seeds");
+        std::fs::create_dir_all(&seeds).unwrap();
+        std::fs::write(seeds.join("mbta.zip"), b"m").unwrap();
+        let mut out = Out::open(&root, &scratch, "feeds-seed").unwrap();
+        assert!(seed(&mut out, &seeds, "28 Sep 2026").is_err());
+        assert_eq!(seed(&mut out, &seeds, "2026-09-28").unwrap(), 1);
+        let m = out.get(&zip_logical("mbta")).unwrap().to_string();
+        assert_eq!(read_fetched(&out).unwrap()[&m], "2026-09-28");
+        assert_eq!(cache_index(&out, &read_fetched(&out).unwrap())["mbta"]["fetched"], "2026-09-28");
     }
 }

@@ -545,9 +545,10 @@ fn w_ferries(l: &str, _: bool) -> bool {
     pack(l, "ferries", &ALL)
 }
 
-/// The rail feeds: each feed's zip, and the lists of those checked, fetched and kept.
+/// The timetable feeds: each feed's zip, the lists of those checked, fetched and kept (the rail
+/// feeds' and the ferry feeds'), and the catalogue when it was fetched.
 fn w_rail_feeds(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "rail", "checked" | "fetched" | "feeds"]) || matches!(parts(l).as_slice(), ["sources", "rail", "gtfs", id] if !id.is_empty())
+    matches!(parts(l).as_slice(), ["sources", "rail", "checked" | "fetched" | "feeds" | "ferry-feeds" | "catalogue"]) || matches!(parts(l).as_slice(), ["sources", "rail", "gtfs", id] if !id.is_empty())
 }
 
 fn w_rail(l: &str, _: bool) -> bool {
@@ -699,7 +700,7 @@ mod tests {
             ("heritage", &[("work/heritage/2026-09-28/details-harea", false), ("work/heritage/2026-09-28/layer-whs", true)]),
             ("marks", &[("layers/marks-peak/lo/3-1-2", false), ("markdata/6-1-2", true), ("global/marks/summary", false), ("work/marks/heritage-dots", false)]),
             ("overlays", &[("layers/ov-whs/hi/6-1-2", false), ("ovdata/3-1-2", false), ("global/heritage/layer-summary", false)]),
-            ("rail-feeds", &[("sources/rail/gtfs/de-db", false), ("sources/rail/feeds", false)]),
+            ("rail-feeds", &[("sources/rail/gtfs/de-db", false), ("sources/rail/feeds", false), ("sources/rail/ferry-feeds", false), ("sources/rail/catalogue", false)]),
             ("rail", &[("global/railfreq", false)]),
             ("bldprep", &[("work/bld/6-56-25", true)]),
             ("bldtiles", &[("layers/buildings/hi/6-56-25", false)]),

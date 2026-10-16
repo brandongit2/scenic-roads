@@ -38,7 +38,6 @@ const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/every.rs", "LEAD_ONLY", "\"inputs\"", "the `inputs` step's name, kept to the lead, not a drop box"),
     ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", "\"inputs/keys.env\"", "inputs/keys.env, not an input (§2): its key names enter keys, never its values"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
