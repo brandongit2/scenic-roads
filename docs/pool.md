@@ -238,6 +238,19 @@ spares, its free disk, cores, conditions, app and member id. The lead answers wi
 that fit, in plan order; a member on another app than the lead's gets nothing (409) until they
 match (plan.md §8, The same app).
 
+An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optional `cap`): the
+memory guard's limit and what the running jobs hold, the memory free under the limit less each
+running job's predicted need (the larger of what it holds and its targets' measured peak), its
+cores and those the last minute's load leaves free, the disk free less the reserve and the owner's
+room target (`reserved_mb`, for reservations, is 0: none are made yet), in use, mains or battery,
+the NAS's reach, the guard's switch and its running leases. The lead sets its own each loop
+(its jobs ask nothing). The coordinator keeps the last per member (`Coordinator::capacities`):
+`scenic status` prints a line per member, and the worker page's details a table. Placement doesn't
+read it yet. It rides the ask, not the heartbeat: the coordinator places at ask time, and the
+ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
+coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
+`cap`, and a newer one takes an ask without it (an older agent's) as before.
+
 ### 7.2 Placement: the steps table
 
 `crate::agent::steps` has a row per step the agent runs as a job (docs/pipeline.md: its id, title,

@@ -146,7 +146,7 @@ Common rules:
   verdict (going, done when, what needs a look, pause controls); the overview; the stages (a card
   per stage, a row per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the
   road to done (each machine's forecast lane, map updates); the regions; the activity (last day by
-  the hour, events); folded details (leases, waits, workers, the steps table). It reads
+  the hour, events); folded details (leases, waits, each Mac's capacity, workers, the steps table). It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally.
 - **HTTPS** through `tailscale serve` (docs/pool.md §14) gives the secure context the wake lock

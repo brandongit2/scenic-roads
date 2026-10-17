@@ -449,6 +449,10 @@ pub struct Status {
     /// The workers the coordinator heard from in the last two minutes (helpers, web pages).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers: Vec<WorkerView>,
+    /// Each member's capacity as the lead's coordinator last heard it (crate::coord::Capacity):
+    /// the lead's own first, then each member whose ask carried one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capacity: Vec<(String, crate::coord::Capacity)>,
     /// Helpers on other Macs building now (`state/helpers/<host>.json`, fresh within ten minutes):
     /// their own status, with their job.
     #[serde(default)]
@@ -1349,6 +1353,7 @@ impl Agent {
             // (Its free space now, less the reserve and the owner's target, as the lead reckons its
             // own: `own_room`. What its caches could free isn't counted: nothing frees it first.)
             disk_mb: every.then(|| self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20),
+            cap: Some(self.capacity(c)),
             ..Default::default()
         };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
@@ -2369,6 +2374,7 @@ impl Agent {
             built,
             checklist,
             helpers,
+            capacity: self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default(),
             workers: self.coord.as_ref().map(|c| c.workers().into_iter().map(|(name, w)| WorkerView { name, label: w.label, kind: w.kind, what: w.what, mem_mb: w.mem_mb, done: w.done, failed: w.failed, bad: w.bad }).collect()).unwrap_or_default(),
             pause: self.pause.clone(),
             resources: Some(self.resources(root.as_deref())),
@@ -2974,6 +2980,52 @@ impl Agent {
         match (&self.coord, spec.record.as_ref()) {
             (Some(c), Some(w)) => w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| first_peak(&w.step)).max(c.floor(&w.step, t).map_or(0, |f| f.mb))).max().unwrap_or(0),
             _ => first_peak(&step),
+        }
+    }
+
+    /// This Mac's whole capacity now (crate::coord::Capacity), for its asks and, leading, its own
+    /// coordinator: the memory guard's limit less each running job's predicted need (the larger of
+    /// what it holds and its targets' measured peak: `spec_peak`), the cores the load leaves, the
+    /// disk's free space less the reserve and the owner's room target (no reservations yet), the
+    /// owner's use, power and the NAS as `c` says, and its jobs' leases.
+    fn capacity(&self, c: &Conditions) -> crate::coord::Capacity {
+        let total = match self.total_mb() {
+            0 => self.mac_total_mb(),
+            t => t,
+        };
+        let limit_mb = memguard::limit_mb(total);
+        let (mut held_mb, mut need, mut leases) = (0u64, 0u64, Vec::new());
+        for (k, s) in self.slots.iter().enumerate() {
+            if let Some(r) = &s.running {
+                let held = self.held_mb(k).unwrap_or(0);
+                held_mb += held;
+                need += held.max(self.spec_peak(&r.spec));
+            }
+            if let Some(l) = &s.lease {
+                leases.push(match l {
+                    Held::Own(n) | Held::Leased { lease: n, .. } | Held::Pooled { id: n, .. } => *n,
+                });
+            }
+        }
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
+        let busy = self.mac.load1().map_or(0, |l| l.ceil() as u32);
+        let reserved_mb = 0;
+        crate::coord::Capacity {
+            at: now_s(),
+            limit_mb,
+            held_mb,
+            mem_mb: limit_mb.saturating_sub(need),
+            cores,
+            cores_free: cores.saturating_sub(busy),
+            disk_mb: (self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20).saturating_sub(reserved_mb),
+            reserved_mb,
+            in_use: c.user_active(),
+            ac: c.ac,
+            battery: c.battery,
+            nas: c.nas,
+            home: c.home,
+            guard: self.guard_stops(),
+            leases,
         }
     }
 
@@ -5719,6 +5771,7 @@ impl Agent {
         let placed = self.placement_now();
         if let Some(c) = &self.coord {
             c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
+            c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
             if !self.every_on() {
                 c.set_map_update(None);
@@ -9167,6 +9220,13 @@ mod pool_tests {
         until(&mut m, |m| m.slots[0].running.is_none() && m.pooled().is_some_and(|p| p.entries.is_empty()));
         let (can, disk) = asked(&lead).unwrap();
         assert!(can.iter().any(|s| s == "pack") && can.iter().any(|s| s == "lo") && !can.iter().any(|s| s == "catalog") && disk.is_some(), "{can:?}");
+        // Its Mac's capacity carried by its ask (the test's Mac: 16 GB, on mains, in use, its cores
+        // all free), and the lead's own set by its loop: both kept, the lead's first.
+        let caps = lead.coord.as_ref().unwrap().capacities();
+        assert_eq!(caps.len(), 2, "{caps:?}");
+        let mc = &caps[1].1;
+        assert_eq!(mc.limit_mb, memguard::limit_mb(16 << 10));
+        assert!(mc.mem_mb <= mc.limit_mb && mc.cores_free == mc.cores && mc.ac && mc.in_use && mc.nas && mc.disk_mb > 0 && mc.at > 0, "{mc:?}");
         let env = std::fs::read_to_string(bin.join("env-pack")).unwrap();
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
         let as_of = env.lines().find_map(|l| l.strip_prefix(&format!("{}=", crate::out::UNITS_AS_OF_ENV))).expect("the map update's units");

@@ -186,6 +186,9 @@ pub struct Worker {
     /// A page: whether it was in front when it last asked (an iPhone or iPad stops one that isn't).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    /// Its Mac's capacity, as its last ask said (an older agent's: none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap: Option<Capacity>,
     /// Its last ask, for why it gets no work (`/work/swarm`).
     #[serde(skip)]
     pub ask: Option<Ask>,
@@ -272,6 +275,8 @@ pub struct Shared {
     /// a cold start only to the one with the most room (this Mac's own room, `Every::own`, counted
     /// as a member's). None: as before (`pick`).
     pub every: Option<Every>,
+    /// The lead's own Mac's capacity (`Coordinator::set_capacity`), as its members' asks carry theirs.
+    pub own_cap: Option<Capacity>,
     /// Placement by how crucial a job is (docs/pool.md §12, phase 4's eleventh batch:
     /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
     /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
@@ -660,11 +665,12 @@ impl Shared {
             let holding: BTreeSet<String> = self.leases.all(now).iter().map(|l| l.worker.clone()).collect();
             self.workers.retain(|n, w| now.duration_since(w.seen) < Duration::from_secs(86400) || holding.contains(n));
         }
-        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, visible: None, ask: None, seen: now, asked: None, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
+        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, visible: None, cap: None, ask: None, seen: now, asked: None, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
         w.seen = now;
         w.what = what.chars().take(WHAT_MAX).collect();
         if let Some(a) = a {
             (w.kind, w.can, w.mem_mb, w.cores, w.app, w.visible) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone(), a.visible);
+            w.cap = a.cap.clone();
             w.ask = Some(a.clone());
             w.asked = Some(now);
             if let Some(l) = &a.label {
@@ -761,6 +767,49 @@ pub struct Ask {
     /// offers it only targets whose measured disk fits (`pick_every`). An older worker says none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_mb: Option<u64>,
+    /// Its whole Mac's capacity now (Ask v2, `Capacity`); the fields above still filled for an
+    /// older coordinator, which ignores this. None: an older agent, or a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<Capacity>,
+}
+
+/// A Mac's capacity as its agent measured it (docs/pool.md §7.1): its whole Mac's, where an ask's
+/// `mem_mb`, `cores` and `disk_mb` are one job's. Carried by each ask (a member's) and set each
+/// loop by the lead for its own Mac (`Coordinator::set_capacity`); the coordinator keeps the last
+/// per member (`capacities`). Every field defaults: an older or newer agent's capacity parses.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Capacity {
+    /// When it was measured (unix s).
+    pub at: u64,
+    /// The memory guard's limit: the most its jobs may hold together (MB: memguard::limit_mb).
+    pub limit_mb: u64,
+    /// What its running jobs hold now, as the guard's sampler last saw them (MB).
+    pub held_mb: u64,
+    /// The memory free under the limit less each running job's predicted need (the larger of
+    /// what it holds and its targets' measured peak) (MB).
+    pub mem_mb: u64,
+    /// Its cores, and those free by the last minute's load average.
+    pub cores: u32,
+    pub cores_free: u32,
+    /// The disk's free space less the reserve (room::RESERVE), the owner's room target and the
+    /// running jobs' reservations (MB).
+    pub disk_mb: u64,
+    /// The running jobs' disk reservations (MB; none are made yet: 0).
+    pub reserved_mb: u64,
+    /// Its owner used it within the last five minutes (cond::AWAY_S).
+    pub in_use: bool,
+    /// On mains power, and the battery's charge when it has one.
+    pub ac: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery: Option<u8>,
+    /// The NAS mounted and answering, and by its LAN name (at home).
+    pub nas: bool,
+    pub home: bool,
+    /// Whether the memory guard stops jobs past the limit.
+    pub guard: bool,
+    /// The leases of its running jobs.
+    pub leases: Vec<u64>,
 }
 
 /// Every step to every member, as the lead has it on (`Shared::every`).
@@ -946,7 +995,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, min_app: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, min_app: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, own_cap: None, dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -1106,6 +1155,21 @@ impl Coordinator {
     /// phase 4's ninth batch; crate::agent::every).
     pub fn set_every(&self, every: Option<Every>) {
         self.shared.lock().unwrap().every = every;
+    }
+
+    /// The lead's own Mac's capacity, measured each loop (its jobs ask nothing).
+    pub fn set_capacity(&self, cap: Option<Capacity>) {
+        self.shared.lock().unwrap().own_cap = cap;
+    }
+
+    /// Each member's capacity as last said: this Mac's own first (`set_capacity`), then each worker
+    /// around whose ask carried one.
+    pub fn capacities(&self) -> Vec<(String, Capacity)> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let own = s.own_cap.clone().map(|c| (self.me.clone(), c));
+        let others = s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
+        own.into_iter().chain(others).collect()
     }
 
     /// Placement by how crucial a job is on (`Some`: the forecast's slack and measured speeds) or
@@ -2255,7 +2319,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 .iter()
                 .map(|(n, w)| {
                     let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs(), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
+                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "cap": w.cap, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs(), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
                 })
                 .collect();
             // The tasks, by state.
@@ -3210,6 +3274,45 @@ mod tests {
 
     fn ask(mem_mb: u64) -> Ask {
         Ask { worker: "m1".into(), kind: "native".into(), can: vec!["unit".into()], mem_mb, cores: 8, max: 6, ..Default::default() }
+    }
+
+    #[test]
+    fn asks_parse_with_and_without_a_capacity() {
+        // An older agent's ask: no capacity, the rest as before.
+        let old = r#"{"worker":"m1","kind":"native","can":["unit"],"mem_mb":6144,"cores":8,"max":6,"disk_mb":90000}"#;
+        let a: Ask = serde_json::from_str(old).unwrap();
+        assert_eq!((a.mem_mb, a.disk_mb, a.cap.clone()), (6144, Some(90_000), None));
+        assert!(!serde_json::to_string(&a).unwrap().contains("cap"), "none said: none written");
+        // A newer one's: its capacity, a field this app doesn't know ignored, ones missing defaulted.
+        let new = r#"{"worker":"m1","can":["unit"],"mem_mb":6144,"cap":{"at":5,"limit_mb":12288,"held_mb":2000,"mem_mb":8000,"cores":8,"cores_free":6,"disk_mb":50000,"in_use":true,"ac":false,"battery":54,"nas":true,"home":true,"guard":true,"leases":[3,4],"nas_share":0.5}}"#;
+        let a: Ask = serde_json::from_str(new).unwrap();
+        let cap = a.cap.clone().unwrap();
+        assert_eq!((cap.limit_mb, cap.mem_mb, cap.cores_free, cap.disk_mb, cap.reserved_mb, cap.battery, cap.leases.clone()), (12_288, 8000, 6, 50_000, 0, Some(54), vec![3, 4]));
+        assert!(cap.in_use && !cap.ac && cap.nas && cap.guard);
+        let partial: Capacity = serde_json::from_str(r#"{"limit_mb":1}"#).unwrap();
+        assert_eq!(partial, Capacity { limit_mb: 1, ..Default::default() });
+        // Round trip.
+        assert_eq!(serde_json::from_str::<Ask>(&serde_json::to_string(&a).unwrap()).unwrap().cap, Some(cap));
+    }
+
+    #[test]
+    fn the_coordinator_keeps_each_members_capacity() {
+        let (_d, c, w) = start();
+        c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
+        // The lead's own, then a member's from its ask; an older member's ask says none.
+        c.set_capacity(Some(Capacity { limit_mb: 36_000, cores: 10, ac: true, ..Default::default() }));
+        let cap = Capacity { at: 7, limit_mb: 12_288, mem_mb: 9000, cores: 8, cores_free: 7, disk_mb: 40_000, nas: true, home: true, leases: vec![], ..Default::default() };
+        w.ask(&Ask { cap: Some(cap.clone()), ..ask(4096) }).unwrap();
+        let old = client::Client::at(w.urls(), c.contact.token.clone(), "old");
+        old.ask(&ask(4096)).unwrap();
+        let caps = c.capacities();
+        assert_eq!(caps.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["m4", "m1"], "the lead's first; the older member's none");
+        assert_eq!(caps[0].1.limit_mb, 36_000);
+        assert_eq!(caps[1].1, cap);
+        // Shown by the swarm, for the build page.
+        let s = c.shared.lock().unwrap();
+        assert_eq!(s.workers["m1"].cap.as_ref().map(|c| c.mem_mb), Some(9000));
+        assert!(s.workers["old"].cap.is_none());
     }
 
     fn handoff(units: &[(&str, &str)]) -> Handoff {

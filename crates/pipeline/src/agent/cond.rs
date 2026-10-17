@@ -78,6 +78,14 @@ impl Mac {
         }
     }
 
+    /// `load1`: a fixed Mac's none (its cores all free).
+    pub fn load1(&self) -> Option<f64> {
+        match *self {
+            Mac::Real => load1(),
+            Mac::Fixed { .. } => None,
+        }
+    }
+
     /// `resources`: a fixed Mac's memory its own, its disk's free space as the agent's tests set it
     /// (super::room::disk_free), no load or NAS measured.
     pub fn resources(&self, home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
@@ -192,6 +200,18 @@ impl Resources {
     }
 }
 
+/// The last minute's load average (None when it can't be read).
+pub fn load1() -> Option<f64> {
+    #[cfg(unix)]
+    {
+        let mut load = [0f64; 3];
+        // SAFETY: getloadavg fills at most the 3 doubles it's given.
+        (unsafe { libc::getloadavg(load.as_mut_ptr(), 3) } >= 1).then_some((load[0] * 100.0).round() / 100.0)
+    }
+    #[cfg(not(unix))]
+    None
+}
+
 /// This Mac's resources now (`Resources`): its disk's where `home` is, the NAS's at `root`; the
 /// caches' and the NAS's answer as the agent last measured them.
 pub fn resources(home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
@@ -205,14 +225,7 @@ pub fn resources(home: &std::path::Path, root: Option<&std::path::Path>, cache_g
         let s = String::from_utf8_lossy(&o.stdout).into_owned();
         s.split("free percentage:").nth(1)?.trim().trim_end_matches('%').trim().parse::<u8>().ok()
     });
-    #[cfg(unix)]
-    let load1 = {
-        let mut load = [0f64; 3];
-        // SAFETY: getloadavg fills at most the 3 doubles it's given.
-        (unsafe { libc::getloadavg(load.as_mut_ptr(), 3) } >= 1).then_some((load[0] * 100.0).round() / 100.0)
-    };
-    #[cfg(not(unix))]
-    let load1 = None;
+    let load1 = load1();
     let gb = |b: u64| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0;
     Resources {
         mem_gb: (mem_gb * 10.0).round() / 10.0,

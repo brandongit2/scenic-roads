@@ -785,6 +785,10 @@ function details(m) {
   box.append(h("h3", null, "The lead's last jobs"), recent.length ? tbl(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
   if ((a.bad_recipes || []).length) box.append(h("h3", null, "Region recipes that don't read"), tbl(["File", "Problem"], a.bad_recipes));
   if (a.job?.tail) box.append(h("h3", null, "The lead's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, a.job.tail));
+  // Each member's capacity as the lead's coordinator last heard it (coord::Capacity: the lead's own first).
+  const caps = a.capacity || [];
+  const gb = (mb) => `${n(Math.round(mb / 102.4) / 10)} GB`;
+  if (caps.length) box.append(h("h3", null, "Capacity per Mac"), tbl(["Mac", "Memory free", "Cores free", "Disk free", "Power", "Use", "NAS", "Leases", "Said"], caps.map(([name, c]) => [name, `${gb(c.mem_mb)} of ${gb(c.limit_mb)} (${gb(c.held_mb)} held)`, `${n(c.cores_free)} of ${n(c.cores)}`, gb(c.disk_mb), c.ac ? "mains" : `battery${c.battery != null ? ` ${c.battery} %` : ""}`, c.in_use ? "in use" : "idle", !c.nas ? "not reachable" : c.home ? "reachable" : "Tailscale", (c.leases || []).join(", "), ago(now, c.at)])));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
   if (workers.length) box.append(h("h3", null, "Workers heard from"), tbl(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
   // The steps table itself: every step the same row (docs/pipeline.md).

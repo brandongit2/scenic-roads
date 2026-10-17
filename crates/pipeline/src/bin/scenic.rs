@@ -366,6 +366,29 @@ fn inputs(args: &[String]) -> Result<()> {
     }
 }
 
+/// A member's capacity in a line: "memory 9.5 GB free of the 12.0 GB limit (1.2 GB held) · 6 of 8
+/// cores free · disk 120.4 GB free · on power · in use · NAS reachable · leases 12, 14 · 20 s ago".
+fn capacity_line(c: &pipeline::coord::Capacity) -> String {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    let mut v = vec![
+        format!("memory {} free of the {} limit ({} held{})", gb(c.mem_mb), gb(c.limit_mb), gb(c.held_mb), if c.guard { "" } else { ", not guarded" }),
+        format!("{} of {} cores free", c.cores_free, c.cores),
+        format!("disk {} free{}", gb(c.disk_mb), if c.reserved_mb > 0 { format!(" ({} reserved)", gb(c.reserved_mb)) } else { String::new() }),
+        match (c.ac, c.battery) {
+            (true, _) => "on power".to_string(),
+            (false, Some(b)) => format!("on battery ({b} %)"),
+            (false, None) => "on battery".to_string(),
+        },
+        (if c.in_use { "in use" } else { "idle" }).to_string(),
+        (if !c.nas { "NAS not reachable" } else if c.home { "NAS reachable" } else { "NAS through Tailscale" }).to_string(),
+    ];
+    if !c.leases.is_empty() {
+        v.push(format!("lease{} {}", if c.leases.len() == 1 { "" } else { "s" }, c.leases.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")));
+    }
+    v.push(ago(c.at));
+    v.join(" · ")
+}
+
 fn status(args: &[String]) -> Result<()> {
     let root = root(args, false).ok();
     // (This Mac's own agent's folder, for what its own status adds (its memory, its view of the
@@ -488,6 +511,10 @@ fn status(args: &[String]) -> Result<()> {
         for l in agent::lead::said(&v, now_s()) {
             println!("  {l}");
         }
+    }
+    // Each member's capacity, as the lead's coordinator last heard it (coord::Capacity).
+    for (name, c) in &st.capacity {
+        println!("Capacity of {name}: {}", capacity_line(c));
     }
     // Each Mac's build caches (agent::room): what a clear would free, the last trim and clear.
     for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.helpers.iter().map(|h| (&h.host, &h.caches))) {
