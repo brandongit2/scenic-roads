@@ -986,11 +986,12 @@ territory.
   [--first <square>,…]` (crate::dem::fabdem_fetch), from that Hugging Face mirror (the same pixels,
   two tiles compared; Bristol's server resets our requests):
   every tile of the mirror's listing the store lacks, one at a time, the 10° squares named first;
-  each downloaded into the local work folder (resumed by range, retried with backoff), its size
-  checked against the listing, decoded and written as every stored tile is (`dem::kept::store`:
+  each downloaded into the local work folder (resumed by range with `If-Range` and the ETag compared,
+  so a changed file starts again; retried with backoff; one fetcher a folder, by a lock), its size
+  and SHA-256 checked against the listing's (its LFS oid; a mismatch is fetched once more), decoded and written as every stored tile is (`dem::kept::store`:
   rewritten, read back and compared under a temporary name, then renamed). It skips stored tiles,
   so a stopped run is started again as it is. The input check measures a stored dataset's sampled
-  files from the store too.
+  files from the store too, so fetch the tiles first, then change FABDEM's declaration.
 - **Keys:** a unit names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`); a dataset's `keyed` includes its index's content and dropped files, so
   adding a tile reruns the units it meets. `agent::rekey` keeps what keys made before the

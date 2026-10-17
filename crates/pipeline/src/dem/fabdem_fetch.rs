@@ -32,6 +32,8 @@ pub struct Tile {
     /// Its file name, which is its name in the store.
     pub name: String,
     pub size: u64,
+    /// Its content's SHA-256 (the listing's LFS oid), checked before it's stored.
+    pub sha256: Option<String>,
 }
 
 /// The tiles of the listing's JSON (`siblings`: `rfilename`, `size`), the squares in `first` first,
@@ -46,22 +48,54 @@ pub fn tiles(listing: &[u8], first: &[String]) -> Result<Vec<Tile>> {
         let [ "tiles", dir, name ] = parts[..] else { continue };
         let (Some(square), true) = (dir.strip_suffix("_FABDEM_V1-2"), name.ends_with("_FABDEM_V1-2.tif")) else { continue };
         let size = s["size"].as_u64().with_context(|| format!("{p}: no size in the listing"))?;
-        out.push(Tile { path: p.to_string(), square: square.to_string(), name: name.to_string(), size });
+        let sha256 = s["lfs"]["sha256"].as_str().map(str::to_string);
+        out.push(Tile { path: p.to_string(), square: square.to_string(), name: name.to_string(), size, sha256 });
     }
     ensure!(!out.is_empty(), "the listing names no tile");
     out.sort_by(|a, b| (!first.contains(&a.square), &a.path).cmp(&(!first.contains(&b.square), &b.path)));
     Ok(out)
 }
 
-/// An answer to a GET from byte `from`: its status and body.
+/// An answer to a GET from byte `from`: its status, ETag and body.
 pub struct Answer {
     pub status: u16,
+    pub etag: Option<String>,
     pub body: Box<dyn Read>,
 }
 
-/// What GETs a URL from a byte on.
+/// Why a download stops for good (not retried).
+#[derive(Debug)]
+pub enum Refused {
+    /// The mirror has no such file.
+    NotOnMirror(u16),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::NotOnMirror(s) => write!(f, "not on the mirror (status {s})"),
+        }
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// A transfer that brought more bytes than the listing's size (the part is started again).
+#[derive(Debug)]
+struct TooLong(u64);
+
+impl std::fmt::Display for TooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "more than the listing's {} bytes", self.0)
+    }
+}
+
+impl std::error::Error for TooLong {}
+
+/// What GETs a URL from a byte on; a range asked `if_range` (an ETag) is answered whole (200) when
+/// the file is no longer that one.
 pub trait Get {
-    fn get(&self, url: &str, from: u64) -> Result<Answer>;
+    fn get(&self, url: &str, from: u64, if_range: Option<&str>) -> Result<Answer>;
 }
 
 /// The network, as the project asks (crate::fetch::USER_AGENT); redirects followed (the mirror's
@@ -88,16 +122,20 @@ impl Default for Net {
 }
 
 impl Get for Net {
-    fn get(&self, url: &str, from: u64) -> Result<Answer> {
+    fn get(&self, url: &str, from: u64, if_range: Option<&str>) -> Result<Answer> {
         crate::fetch::online(url)?;
         let mut req = self.0.get(url);
         if from > 0 {
             req = req.header("Range", format!("bytes={from}-"));
+            if let Some(e) = if_range {
+                req = req.header("If-Range", e);
+            }
         }
         let r = req.call()?;
         let status = r.status().as_u16();
+        let etag = r.headers().get("etag").and_then(|v| v.to_str().ok()).map(str::to_string);
         let body = r.into_body().into_with_config().limit(u64::MAX).reader();
-        Ok(Answer { status, body: Box::new(body) })
+        Ok(Answer { status, etag, body: Box::new(body) })
     }
 }
 
@@ -107,8 +145,9 @@ fn backoff(n: u32) -> Duration {
 }
 
 /// `url` into `part` until it holds `size` bytes: a part already there goes on from its end (a
-/// range request); a transfer that breaks off goes on from what it got. Attempts that move nothing
-/// count against `tries`; a server answering a range whole starts the part again.
+/// range request, `If-Range` the ETag its first bytes came with, kept in `<part>.etag`, so a file
+/// changed meanwhile is answered whole and started again rather than spliced); a transfer that
+/// breaks off goes on from what it got. Attempts that move nothing count against `tries`.
 pub fn download(get: &dyn Get, url: &str, part: &Path, size: u64, tries: u32, wait: &dyn Fn(Duration)) -> Result<()> {
     let mut idle = 0u32;
     let mut last = String::new();
@@ -118,7 +157,7 @@ pub fn download(get: &dyn Get, url: &str, part: &Path, size: u64, tries: u32, wa
             return Ok(());
         }
         if have > size {
-            std::fs::remove_file(part)?;
+            discard(part);
             continue;
         }
         if idle > 0 {
@@ -128,12 +167,28 @@ pub fn download(get: &dyn Get, url: &str, part: &Path, size: u64, tries: u32, wa
         // (The bytes it got, and whether it went on from `have`: a range answered whole starts the
         // part again, which isn't progress.)
         let r = (|| -> Result<(u64, bool)> {
-            let mut a = get.get(url, have)?;
-            let mut f = match (a.status, have) {
-                (206, _) => std::fs::OpenOptions::new().append(true).open(part)?,
-                (200, _) => std::fs::File::create(part)?,
-                (404 | 410, _) => bail!("{url}: not on the mirror (status {})", a.status),
-                (s, _) => return Err(anyhow::anyhow!("status {s}")),
+            let tag = std::fs::read_to_string(etag_file(part)).ok();
+            let mut a = get.get(url, have, tag.as_deref())?;
+            let mut f = match a.status {
+                // (A range of another file than the part's first bytes, from a server that ignores
+                // `If-Range`, as the mirror's CDN does: the part started again.)
+                206 if tag.is_some() && a.etag.is_some() && tag != a.etag => {
+                    discard(part);
+                    return Ok((0, false));
+                }
+                206 => std::fs::OpenOptions::new().append(true).open(part)?,
+                200 => {
+                    let f = std::fs::File::create(part)?;
+                    match &a.etag {
+                        Some(e) => std::fs::write(etag_file(part), e)?,
+                        None => {
+                            std::fs::remove_file(etag_file(part)).ok();
+                        }
+                    }
+                    f
+                }
+                s @ (404 | 410) => return Err(anyhow::Error::new(Refused::NotOnMirror(s)).context(url.to_string())),
+                s => return Err(anyhow::anyhow!("status {s}")),
             };
             let start = if a.status == 206 { have } else { 0 };
             let mut got = 0u64;
@@ -143,7 +198,7 @@ pub fn download(get: &dyn Get, url: &str, part: &Path, size: u64, tries: u32, wa
                     Ok(0) => break Ok(()),
                     Ok(n) => {
                         if start + got + n as u64 > size {
-                            break Err(anyhow::anyhow!("more than the listing's {size} bytes"));
+                            break Err(anyhow::Error::new(TooLong(size)));
                         }
                         f.write_all(&buf[..n])?;
                         got += n as u64;
@@ -159,20 +214,54 @@ pub fn download(get: &dyn Get, url: &str, part: &Path, size: u64, tries: u32, wa
             Ok((n, true)) if n > 0 => idle = 0,
             Ok((_, on)) => {
                 idle += 1;
-                last = if on { "an empty answer" } else { "a range answered whole" }.into();
+                last = if on { "an empty answer" } else { "the file changed: started again" }.into();
             }
             Err(e) => {
-                if format!("{e:#}").contains("not on the mirror") {
+                if e.downcast_ref::<Refused>().is_some() {
                     return Err(e);
                 }
-                if format!("{e:#}").contains("more than the listing") {
-                    std::fs::remove_file(part).ok();
+                if e.downcast_ref::<TooLong>().is_some() {
+                    discard(part);
                 }
                 idle += 1;
                 last = format!("{e:#}");
             }
         }
     }
+}
+
+/// Where a part's ETag is kept.
+fn etag_file(part: &Path) -> std::path::PathBuf {
+    let mut s = part.as_os_str().to_owned();
+    s.push(".etag");
+    s.into()
+}
+
+/// A part and its ETag removed.
+fn discard(part: &Path) {
+    std::fs::remove_file(part).ok();
+    std::fs::remove_file(etag_file(part)).ok();
+}
+
+/// The SHA-256 of file `p`, hex.
+fn sha256_of(p: &Path) -> Result<String> {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    std::io::copy(&mut std::fs::File::open(p)?, &mut h)?;
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The work folder held by this process alone (an exclusive `flock` on `<work>/.lock`, let go
+/// when the file is dropped): a second fetcher on it stops, saying so.
+pub fn lock_work(work: &Path) -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    std::fs::create_dir_all(work)?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(work.join(".lock"))?;
+    // SAFETY: flock on a descriptor we own.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        bail!("another fabdem-fetch is using the work folder {} (one fetcher a folder)", work.display());
+    }
+    Ok(f)
 }
 
 /// The names in the store folder (`.tif`s, as stored: a temporary file never has its final name).
@@ -205,7 +294,7 @@ pub struct Done {
 /// Every tile of `tiles` not in `store` (by name), downloaded through `work` and stored, in order;
 /// a tile that fails is noted and the run goes on. `say` hears each line of progress.
 pub fn run(get: &dyn Get, mirror: &str, tiles: &[Tile], store: &Path, work: &Path, tries: u32, wait: &dyn Fn(Duration), say: &mut dyn FnMut(&str)) -> Result<Done> {
-    std::fs::create_dir_all(work)?;
+    let _held = lock_work(work)?;
     std::fs::create_dir_all(store)?;
     let have = stored(store)?;
     let mut done = Done::default();
@@ -221,18 +310,29 @@ pub fn run(get: &dyn Get, mirror: &str, tiles: &[Tile], store: &Path, work: &Pat
             let mut again = false;
             loop {
                 download(get, &url, &part, t.size, tries, wait)?;
-                match super::kept::store(store, &t.name, &part) {
-                    Ok(_) => break,
-                    // (Bytes of the right length that don't decode: taken once more.)
+                // (Its content the listing's, then decoded and stored.)
+                let r = match &t.sha256 {
+                    Some(want) => match sha256_of(&part)? {
+                        got if got == *want => super::kept::store(store, &t.name, &part).map(|_| ()),
+                        got => Err(anyhow::anyhow!("its SHA-256 is {got}, the listing's {want}")),
+                    },
+                    None => super::kept::store(store, &t.name, &part).map(|_| ()),
+                };
+                match r {
+                    Ok(()) => break,
+                    // (Bytes that aren't the listing's, or don't decode: taken once more.)
                     Err(e) if !again => {
                         say(&format!("  {}: {e:#}; downloading it again", t.name));
-                        std::fs::remove_file(&part).ok();
+                        discard(&part);
                         again = true;
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        discard(&part);
+                        return Err(e);
+                    }
                 }
             }
-            std::fs::remove_file(&part).ok();
+            discard(&part);
             Ok(())
         })();
         match r {
@@ -273,7 +373,7 @@ pub fn listing(net: &Net, mirror: &str) -> Result<Vec<u8>> {
         if n > 0 {
             std::thread::sleep(backoff(n));
         }
-        match net.get(&url, 0) {
+        match net.get(&url, 0, None) {
             Ok(mut a) if a.status == 200 => {
                 let mut b = Vec::new();
                 match a.body.read_to_end(&mut b) {
@@ -297,19 +397,40 @@ mod tests {
     const MIRROR: &str = "https://mirror.example/datasets/o/fabdem";
 
     /// A mirror in memory: `breaks` answers cut off after that many bytes, `whole` answers ranges
-    /// with the whole file (200).
+    /// with the whole file (200); `swap` replaces a file after its first request. Its ETag is its
+    /// content's hash, and a range whose `If-Range` isn't it is answered whole, as HTTP has it.
     struct Mem {
-        files: std::collections::HashMap<String, Vec<u8>>,
+        files: Mutex<std::collections::HashMap<String, Vec<u8>>>,
         breaks: Mutex<Vec<usize>>,
         whole: bool,
         asked: Mutex<Vec<(String, u64)>>,
+        swap: Mutex<Option<(String, Vec<u8>)>>,
+        /// `If-Range` ignored (a range answered 206 whatever the file), as the mirror's CDN does.
+        deaf: bool,
+    }
+
+    fn mem(files: Vec<(String, Vec<u8>)>, breaks: Vec<usize>, whole: bool) -> Mem {
+        Mem { files: Mutex::new(files.into_iter().collect()), breaks: Mutex::new(breaks), whole, asked: Mutex::default(), swap: Mutex::default(), deaf: false }
+    }
+
+    fn hex(b: &[u8]) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
     }
 
     impl Get for Mem {
-        fn get(&self, url: &str, from: u64) -> Result<Answer> {
+        fn get(&self, url: &str, from: u64, if_range: Option<&str>) -> Result<Answer> {
+            let first = !self.asked.lock().unwrap().iter().any(|(u, _)| u == url);
             self.asked.lock().unwrap().push((url.to_string(), from));
-            let Some(b) = self.files.get(url) else { return Ok(Answer { status: 404, body: Box::new(std::io::empty()) }) };
-            let (status, mut body) = if from > 0 && !self.whole { (206, b[from as usize..].to_vec()) } else { (200, b.clone()) };
+            let Some(b) = self.files.lock().unwrap().get(url).cloned() else { return Ok(Answer { status: 404, etag: None, body: Box::new(std::io::empty()) }) };
+            if first {
+                if let Some((u, nb)) = self.swap.lock().unwrap().take_if(|(u, _)| u == url) {
+                    self.files.lock().unwrap().insert(u, nb);
+                }
+            }
+            let etag = Some(format!("\"{}\"", hex(&b)));
+            let same = self.deaf || if_range.is_none_or(|t| Some(t) == etag.as_deref());
+            let (status, mut body) = if from > 0 && !self.whole && same { (206, b[from as usize..].to_vec()) } else { (200, b.clone()) };
             if let Some(n) = self.breaks.lock().unwrap().pop() {
                 body.truncate(n);
                 struct Broken(std::io::Cursor<Vec<u8>>);
@@ -321,9 +442,9 @@ mod tests {
                         }
                     }
                 }
-                return Ok(Answer { status, body: Box::new(Broken(std::io::Cursor::new(body))) });
+                return Ok(Answer { status, etag, body: Box::new(Broken(std::io::Cursor::new(body))) });
             }
-            Ok(Answer { status, body: Box::new(std::io::Cursor::new(body)) })
+            Ok(Answer { status, etag, body: Box::new(std::io::Cursor::new(body)) })
         }
     }
 
@@ -362,7 +483,7 @@ mod tests {
         let pb = "tiles/N00E000-N10E010_FABDEM_V1-2/N02E002_FABDEM_V1-2.tif";
         let t = tiles(&listing_of(&[(pa, a.len()), (pb, b.len())]), &[]).unwrap();
         let ub = format!("{MIRROR}/resolve/main/{pb}");
-        let mem = Mem { files: [(ub.clone(), b.clone())].into(), breaks: Mutex::new(vec![b.len() / 2, 1000]), whole: false, asked: Mutex::default() };
+        let mem = mem(vec![(ub.clone(), b.clone())], vec![b.len() / 2, 1000], false);
         let mut lines = Vec::new();
         let done = run(&mem, MIRROR, &t, &store, &work, 5, &|_| {}, &mut |l| lines.push(l.to_string())).unwrap();
         assert_eq!((done.stored, done.skipped, done.failed.len()), (1, 1, 0));
@@ -375,7 +496,7 @@ mod tests {
         let mut names: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, ["N01E001_FABDEM_V1-2.tif", "N02E002_FABDEM_V1-2.tif", "N34E140.none"]);
-        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0, "no part left");
+        assert_eq!(std::fs::read_dir(&work).unwrap().filter(|e| e.as_ref().unwrap().file_name() != ".lock").count(), 0, "no part left");
         assert!(lines.iter().any(|l| l.starts_with("[1/1]")));
         mem.asked.lock().unwrap().clear();
         let again = run(&mem, MIRROR, &t, &store, &work, 5, &|_| {}, &mut |_| {}).unwrap();
@@ -398,7 +519,7 @@ mod tests {
         let u = |p: &str| format!("{MIRROR}/resolve/main/{p}");
         // (N05's listing says it's longer than the mirror's file: it never completes.)
         let t = tiles(&listing_of(&[(pb2, bad.len()), (pg2, good.len()), (pl2, good.len() + 10)]), &[]).unwrap();
-        let mem = Mem { files: [(u(pb2), bad.clone()), (u(pg2), good.clone()), (u(pl2), good.clone())].into(), breaks: Mutex::new(vec![100]), whole: true, asked: Mutex::default() };
+        let mem = mem(vec![(u(pb2), bad.clone()), (u(pg2), good.clone()), (u(pl2), good.clone())], vec![100], true);
         let done = run(&mem, MIRROR, &t, &store, &work, 2, &|_| {}, &mut |_| {}).unwrap();
         let failed: Vec<&str> = done.failed.iter().map(|f| f.0.as_str()).collect();
         assert_eq!(failed, ["N03E003_FABDEM_V1-2.tif", "N05E005_FABDEM_V1-2.tif"]);
@@ -407,5 +528,86 @@ mod tests {
         assert_eq!(listing_url(&format!("{MIRROR}/")).unwrap(), "https://mirror.example/api/datasets/o/fabdem?blobs=true");
         assert_eq!(names, ["N04E004_FABDEM_V1-2.tif"], "nothing else in the store, no temporary file");
         assert_eq!(mem.asked.lock().unwrap().iter().filter(|(x, _)| *x == u(pb2)).count(), 3, "a range answered whole started again, then downloaded once more");
+    }
+
+    /// Two tiles padded to one length (a TIFF's trailing bytes are never read).
+    fn same_len(mut a: Vec<u8>, mut b: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+        let n = a.len().max(b.len());
+        a.resize(n, 0);
+        b.resize(n, 0);
+        (a, b)
+    }
+
+    fn listing_sha(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let sib: Vec<_> = files.iter().map(|(p, b)| serde_json::json!({"rfilename": p, "size": b.len(), "lfs": {"sha256": hex(b), "size": b.len()}})).collect();
+        serde_json::to_vec(&serde_json::json!({"siblings": sib})).unwrap()
+    }
+
+    /// A tile whose bytes aren't the listing's SHA-256 is never stored: discarded, fetched once
+    /// more, then failed; one whose bytes are is stored.
+    #[test]
+    fn a_tile_is_stored_only_when_its_sha256_is_the_listings() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, work) = (d.path().join("fabdem"), d.path().join("work"));
+        let (good, other) = same_len(tif(5), tif(6));
+        assert_eq!(good.len(), other.len());
+        let (pa, pb) = ("tiles/S_FABDEM_V1-2/N05E005_FABDEM_V1-2.tif", "tiles/S_FABDEM_V1-2/N06E006_FABDEM_V1-2.tif");
+        let u = |p: &str| format!("{MIRROR}/resolve/main/{p}");
+        // (N05's listing names `good`; the mirror serves `other`, a valid tile of that length.)
+        let t = tiles(&listing_sha(&[(pa, &good), (pb, &good)]), &[]).unwrap();
+        assert_eq!(t[0].sha256.as_deref(), Some(hex(&good).as_str()));
+        let m = mem(vec![(u(pa), other.clone()), (u(pb), good.clone())], vec![], false);
+        let done = run(&m, MIRROR, &t, &store, &work, 2, &|_| {}, &mut |_| {}).unwrap();
+        assert_eq!(done.failed.len(), 1);
+        assert!(done.failed[0].1.contains("SHA-256"), "{:?}", done.failed);
+        assert_eq!(m.asked.lock().unwrap().iter().filter(|(x, _)| *x == u(pa)).count(), 2, "fetched once more");
+        let names: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["N06E006_FABDEM_V1-2.tif"]);
+        let left: Vec<String> = std::fs::read_dir(&work).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != ".lock").collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// A resume asks `If-Range` with the ETag its first bytes came with: a file changed meanwhile
+    /// is answered whole and started again, never spliced (the stored tile is wholly the new one).
+    #[test]
+    fn a_file_changed_between_resumes_starts_again() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, work) = (d.path().join("fabdem"), d.path().join("work"));
+        let (old, new) = same_len(tif(7), tif(8));
+        assert_eq!(old.len(), new.len());
+        let p = "tiles/S_FABDEM_V1-2/N07E007_FABDEM_V1-2.tif";
+        let url = format!("{MIRROR}/resolve/main/{p}");
+        let t = tiles(&listing_sha(&[(p, &new)]), &[]).unwrap();
+        let m = mem(vec![(url.clone(), old.clone())], vec![1000], false);
+        *m.swap.lock().unwrap() = Some((url.clone(), new.clone()));
+        let done = run(&m, MIRROR, &t, &store, &work, 3, &|_| {}, &mut |_| {}).unwrap();
+        assert!(done.failed.is_empty(), "{:?}", done.failed);
+        assert_eq!(m.asked.lock().unwrap().clone(), vec![(url.clone(), 0), (url.clone(), 1000)], "the resume answered whole, no fetch again");
+        // A server deaf to `If-Range` (206 of the new file): its ETag differs from the part's, so
+        // the part is started again, never spliced.
+        let (store2, work2) = (d.path().join("fabdem2"), d.path().join("work2"));
+        let mut m = mem(vec![(url.clone(), old.clone())], vec![1000], false);
+        m.deaf = true;
+        *m.swap.lock().unwrap() = Some((url.clone(), new.clone()));
+        let done = run(&m, MIRROR, &t, &store2, &work2, 3, &|_| {}, &mut |_| {}).unwrap();
+        assert!(done.failed.is_empty(), "{:?}", done.failed);
+        assert_eq!(m.asked.lock().unwrap().clone(), vec![(url.clone(), 0), (url.clone(), 1000), (url.clone(), 0)]);
+        assert_eq!(std::fs::read(store2.join("N07E007_FABDEM_V1-2.tif")).unwrap(), std::fs::read(store.join("N07E007_FABDEM_V1-2.tif")).unwrap());
+        let got = crate::geotiff::Tiff::open(std::sync::Arc::new(std::fs::read(store.join("N07E007_FABDEM_V1-2.tif")).unwrap())).unwrap();
+        let want = crate::geotiff::Tiff::open(std::sync::Arc::new(new)).unwrap();
+        assert_eq!(got.read_window(0, 0, 0, 300, 200).unwrap(), want.read_window(0, 0, 0, 300, 200).unwrap());
+    }
+
+    /// One fetcher a work folder: a second stops, saying so; free again once the first lets go.
+    #[test]
+    fn a_second_fetcher_on_the_work_folder_stops() {
+        let d = tempfile::tempdir().unwrap();
+        let held = lock_work(d.path()).unwrap();
+        let e = format!("{:#}", lock_work(d.path()).unwrap_err());
+        assert!(e.contains("another fabdem-fetch is using the work folder"), "{e}");
+        let e = format!("{:#}", run(&mem(vec![], vec![], false), MIRROR, &[], &d.path().join("s"), d.path(), 1, &|_| {}, &mut |_| {}).unwrap_err());
+        assert!(e.contains("another fabdem-fetch"), "{e}");
+        drop(held);
+        assert!(lock_work(d.path()).is_ok());
     }
 }
