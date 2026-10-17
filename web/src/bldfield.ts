@@ -49,7 +49,7 @@
 import { boundTarget } from './glstate';
 import { meshKey } from './bldfield.offsets';
 import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MLMap } from 'maplibre-gl';
-import { link } from './roads/layer';
+import { linkLater, type Later } from './glprog';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from './fog';
 import { hostFor } from './hosts';
 import type { FieldIn, FieldOut } from './bldfield.worker';
@@ -789,7 +789,7 @@ export class FieldLayer implements CustomLayerInterface {
   private map!: MLMap;
   private gl!: WebGL2RenderingContext;
   private tiles = new Map<string, FTile>();
-  private progs = new Map<string, Prog>();
+  private progs = new Map<string, Later<Prog>>();
   private worker: Worker | null = null;
   /** Tiles waiting for a fetch, nearest first when started; those in flight. */
   private queue: FTile[] = [];
@@ -903,7 +903,7 @@ export class FieldLayer implements CustomLayerInterface {
   private cache: {
     w: number; h: number; tex: WebGLTexture; fb: WebGLFramebuffer;
     depth: WebGLTexture; depthFb: WebGLFramebuffer; readFb: WebGLFramebuffer; readTex: WebGLTexture | null;
-    same: Prog; over: Prog; key: string; valid: boolean;
+    same: Later<Prog>; over: Later<Prog>; key: string; valid: boolean;
   } | null = null;
   /** The last frame's inputs (the still view's cache: the same twice running, the view is still). */
   private lastKey = '';
@@ -940,7 +940,7 @@ export class FieldLayer implements CustomLayerInterface {
     this.worker?.terminate();
     this.worker = null;
     this.drop(true);
-    for (const pr of this.progs.values()) this.gl.deleteProgram(pr.p);
+    for (const pr of this.progs.values()) this.gl.deleteProgram(pr.program);
     this.progs.clear();
     if (this.lutTex) this.gl.deleteTexture(this.lutTex);
     this.lutTex = null;
@@ -956,8 +956,8 @@ export class FieldLayer implements CustomLayerInterface {
     gl.deleteTexture(c.tex);
     gl.deleteTexture(c.depth);
     for (const f of [c.fb, c.depthFb, c.readFb]) gl.deleteFramebuffer(f);
-    gl.deleteProgram(c.same.p);
-    gl.deleteProgram(c.over.p);
+    gl.deleteProgram(c.same.program);
+    gl.deleteProgram(c.over.program);
     this.cache = null;
   }
 
@@ -985,12 +985,11 @@ export class FieldLayer implements CustomLayerInterface {
     gl.bindFramebuffer(gl.FRAMEBUFFER, depthFb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, depth, 0);
     const readFb = gl.createFramebuffer()!;
-    const prog = (fs: string, names: string[]): Prog => {
-      const p = link(gl, FULL_VS, fs);
+    const prog = (fs: string, names: string[]): Later<Prog> => linkLater(this.map, gl, FULL_VS, fs, (p) => {
       const u: Record<string, WebGLUniformLocation | null> = {};
       for (const n of names) u[n] = gl.getUniformLocation(p, n);
       return { p, u };
-    };
+    });
     this.cache = { w, h, tex, fb, depth, depthFb, readFb, readTex: null, same: prog(SAME_FS, ['u_now', 'u_was']), over: prog(OVER_FS, ['u_field']), key: '', valid: false };
     return this.cache;
   }
@@ -1057,12 +1056,13 @@ export class FieldLayer implements CustomLayerInterface {
     return n;
   }
 
-  private program(sd: CustomRenderMethodInput['shaderData']): Prog {
+  /** The field's program for MapLibre's projection and the switches; null while it links (glprog.ts). */
+  private program(sd: CustomRenderMethodInput['shaderData']): Prog | null {
     const o = this.opt & 3;
     const spec = o & 1 ? `|${this.dbg}|${!!this.heightLut}|${this.linear}|${this.stepTexel}` : '';
     const key = `${sd.variantName}|${o}${spec}`;
     let pr = this.progs.get(key);
-    if (pr) return pr;
+    if (pr) return pr();
     const gl = this.gl;
     const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
     let fs = FS;
@@ -1077,13 +1077,14 @@ export class FieldLayer implements CustomLayerInterface {
       }
     }
     if (o & 2) fs = fs.replace('#version 300 es\n', '#version 300 es\n#define OPT_PMEAN\n');
-    const p = link(gl, head + VS, fs);
-    const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_stepTexel', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_update', 'u_was', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
-    pr = { p, u };
+    pr = linkLater(this.map, gl, head + VS, fs, (p) => {
+      const u: Record<string, WebGLUniformLocation | null> = {};
+      for (const n of ['u_stepTexel', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
+        'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_update', 'u_was', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
+      return { p, u };
+    });
     this.progs.set(key, pr);
-    return pr;
+    return pr();
   }
 
   /** The meshes' tiles MapLibre has loaded in view (the buildings' source `bld`, z14), while its
@@ -1645,6 +1646,18 @@ export class FieldLayer implements CustomLayerInterface {
       }
     }
     const scene = opts.sceneDepth;
+    // (the program before anything is drawn: none while it links, glprog.ts)
+    let pr: Prog | null;
+    try {
+      pr = this.program(opts.shaderData);
+    } catch (e) {
+      // (warned once, the layer off: not thrown again every frame)
+      if (!this.failed) console.warn('bldfield: shader failed, the field is off', e);
+      this.failed = true;
+      this.on = false;
+      return;
+    }
+    if (!pr) return;
     const timed = this.timing && this.timer.ext;
     let q: WebGLQuery | null = null;
     if (timed) {
@@ -1663,8 +1676,11 @@ export class FieldLayer implements CustomLayerInterface {
       const key = this.frameKey(opts, vp, tiles2);
       const still = key === this.lastKey;
       this.lastKey = key;
-      if (still) {
-        cache = this.cacheFor(vp[2], vp[3]);
+      const c = still ? this.cacheFor(vp[2], vp[3]) : null;
+      // (straight into the frame while the cache's programs link, glprog.ts)
+      const same = c?.same(), over = c?.over();
+      if (c && same && over) {
+        cache = c;
         if (cache.readTex !== scene.texture) {
           gl.bindFramebuffer(gl.FRAMEBUFFER, cache.readFb);
           gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, scene.texture, 0);
@@ -1682,13 +1698,13 @@ export class FieldLayer implements CustomLayerInterface {
         } else {
           // (where the depth differs from the cached one's: cleared, to be drawn again)
           this.cacheStats.update++;
-          gl.useProgram(cache.same.p);
+          gl.useProgram(same.p);
           gl.activeTexture(gl.TEXTURE14);
           gl.bindTexture(gl.TEXTURE_2D, scene.texture);
           gl.activeTexture(gl.TEXTURE13);
           gl.bindTexture(gl.TEXTURE_2D, cache.depth);
-          gl.uniform1i(cache.same.u.u_now, 14);
-          gl.uniform1i(cache.same.u.u_was, 13);
+          gl.uniform1i(same.u.u_now, 14);
+          gl.uniform1i(same.u.u_was, 13);
           gl.disable(gl.BLEND);
           gl.disable(gl.DEPTH_TEST);
           gl.disable(gl.CULL_FACE);
@@ -1705,16 +1721,6 @@ export class FieldLayer implements CustomLayerInterface {
       }
       if (still) this.moving = 0;
     } else this.dropCache();
-    let pr: Prog;
-    try {
-      pr = this.program(opts.shaderData);
-    } catch (e) {
-      // (warned once, the layer off: not thrown again every frame)
-      if (!this.failed) console.warn('bldfield: shader failed, the field is off', e);
-      this.failed = true;
-      this.on = false;
-      return;
-    }
     const u = pr.u;
     gl.useProgram(pr.p);
     // Into MapLibre's own frame, its depth tested in hardware (a box face behind the terrain or a mesh
@@ -1913,10 +1919,11 @@ export class FieldLayer implements CustomLayerInterface {
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, cache.depthFb);
       gl.blitFramebuffer(0, 0, cache.w, cache.h, 0, 0, cache.w, cache.h, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
       gl.bindFramebuffer(gl.FRAMEBUFFER, opts.framebuffer);
-      gl.useProgram(cache.over.p);
+      const over = cache.over()!;
+      gl.useProgram(over.p);
       gl.activeTexture(gl.TEXTURE13);
       gl.bindTexture(gl.TEXTURE_2D, cache.tex);
-      gl.uniform1i(cache.over.u.u_field, 13);
+      gl.uniform1i(over.u.u_field, 13);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       cache.valid = true;
     }

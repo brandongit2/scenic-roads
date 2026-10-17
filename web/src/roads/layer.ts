@@ -21,6 +21,7 @@
 //   fringe, and behind the terrain) read instead of projecting every corner again.
 
 import { boundTarget } from '../glstate';
+import { linkLater, type Later } from '../glprog';
 import { hostFor } from '../hosts';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
@@ -1030,7 +1031,7 @@ export class RoadLayer implements CustomLayerInterface {
   private gl!: WebGL2RenderingContext;
   /** The draw programs per MapLibre projection variant (mercator, globe): quads (instanced) and
    * point sprites; and the current ones. */
-  private progs = new Map<string, { q: Prog; s: Prog; a: Prog; qa: Prog }>();
+  private progs = new Map<string, Record<'prep' | 'q' | 's' | 'a' | 'qa', Later<Prog>>>();
   private progQ!: Prog;
   private progS!: Prog;
   /** The sprites summed instead of painted (FS_SPRITE with ACCUM), the quads' pieces thinner than a
@@ -1038,10 +1039,10 @@ export class RoadLayer implements CustomLayerInterface {
    * (RESOLVE_FS); their float targets (null: none yet, false: not supported). */
   private progA!: Prog;
   private progQA!: Prog;
-  private resolve: { prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> } | null = null;
+  /** The sums' resolve (glprog.ts: null while linking). */
+  private resolve: Later<Prog> | null = null;
   private accum: { fb: WebGLFramebuffer; acc: WebGLTexture; w: number; h: number } | null | false = null;
-  /** The projection pass's program per projection variant, and the current one. */
-  private preps = new Map<string, Prog>();
+  /** The projection pass's current program. */
   private prep!: Prog;
   /** Largest point sprite the GPU draws (device px). */
   private maxPt = 64;
@@ -1098,21 +1099,23 @@ export class RoadLayer implements CustomLayerInterface {
     }
   }
 
-  private program(sd: CustomRenderMethodInput['shaderData']) {
-    let p = this.progs.get(sd.variantName);
-    if (!p) {
-      const gl = this.gl;
+  /** The programs for MapLibre's projection (mercator, globe); false while one is still linking
+   * (glprog.ts: the roads wait for the next frame). */
+  private program(sd: CustomRenderMethodInput['shaderData']): boolean {
+    let L = this.progs.get(sd.variantName);
+    if (!L) {
+      const gl = this.gl, map = this.map;
       const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
-      const prep = link(gl, head + PREP_VS, PREP_FS, ['o_s', 'o_z']);
-      const pu: Record<string, WebGLUniformLocation | null> = {};
-      for (const n of ['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_clipN', 'u_clip', 'u_projection_matrix',
-        'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) pu[n] = gl.getUniformLocation(prep, n);
-      this.preps.set(sd.variantName, { prog: prep, u: pu });
-      const draw = (sprite: boolean, accum = false): Prog => {
-        const def = (sprite ? '#define SPRITE\n' : '') + (accum ? '#define ACCUM\n' : '');
-        const prog = link(gl, head + def + VS_BODY, `#version 300 es\n${accum ? '#define ACCUM\n' : ''}${sprite ? FS_SPRITE : FS_BODY}`);
+      const uniforms = (names: string[]) => (prog: WebGLProgram): Prog => {
         const u: Record<string, WebGLUniformLocation | null> = {};
-        for (const n of [
+        for (const n of names) u[n] = gl.getUniformLocation(prog, n);
+        return { prog, u };
+      };
+      const prep = linkLater(map, gl, head + PREP_VS, PREP_FS, uniforms(['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_clipN', 'u_clip', 'u_projection_matrix',
+        'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']), ['o_s', 'o_z']);
+      const draw = (sprite: boolean, accum = false) => {
+        const def = (sprite ? '#define SPRITE\n' : '') + (accum ? '#define ACCUM\n' : '');
+        return linkLater(map, gl, head + def + VS_BODY, `#version 300 es\n${accum ? '#define ACCUM\n' : ''}${sprite ? FS_SPRITE : FS_BODY}`, uniforms([
           'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
           'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_thinSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB',
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
@@ -1120,17 +1123,20 @@ export class RoadLayer implements CustomLayerInterface {
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
         'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern', 'u_ties',
           'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over', 'u_clipN', 'u_clip', ...FOG_UNIFORMS,
-        ]) u[n] = gl.getUniformLocation(prog, n);
-        return { prog, u };
+        ]));
       };
-      p = { q: draw(false), s: draw(true), a: draw(true, true), qa: draw(false, true) };
-      this.progs.set(sd.variantName, p);
+      L = { prep, q: draw(false), s: draw(true), a: draw(true, true), qa: draw(false, true) };
+      this.progs.set(sd.variantName, L);
     }
-    this.progQ = p.q;
-    this.progS = p.s;
-    this.progA = p.a;
-    this.progQA = p.qa;
-    this.prep = this.preps.get(sd.variantName)!;
+    // (each asked, so all are waited for at once)
+    const prep = L.prep(), q = L.q(), s = L.s(), a = L.a(), qa = L.qa();
+    if (!prep || !q || !s || !a || !qa) return false;
+    this.progQ = q;
+    this.progS = s;
+    this.progA = a;
+    this.progQA = qa;
+    this.prep = prep;
+    return true;
   }
 
   onRemove() {
@@ -1679,10 +1685,7 @@ export class RoadLayer implements CustomLayerInterface {
       this.accum = false;
       return null;
     }
-    if (!this.resolve) {
-      const prog = link(gl, RESOLVE_VS, RESOLVE_FS);
-      this.resolve = { prog, u: Object.fromEntries(['u_acc', 'u_opacity'].map((n) => [n, gl.getUniformLocation(prog, n)])) };
-    }
+    this.resolve ??= linkLater(this.map, gl, RESOLVE_VS, RESOLVE_FS, (prog) => ({ prog, u: Object.fromEntries(['u_acc', 'u_opacity'].map((n) => [n, gl.getUniformLocation(prog, n)])) }));
     this.gpuBytes += w * h * 8;
     return (this.accum = { fb, acc, w, h });
   }
@@ -1820,8 +1823,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.drawn = draw;
     for (const t of draw) t.lastUsed = now;
     this.prepared = true;
-    if (!this.style.visible || draw.length === 0) return;
-    this.program(opts.shaderData);
+    if (!this.style.visible || draw.length === 0 || !this.program(opts.shaderData)) return;
     // Sprites while every piece of the tile fits in one (SPRITE_MAX_CSS), else quads (see the top).
     const s = this.style;
     const { zoom, dpr, casingW, glowW, nearZoom } = this.frameParams();
@@ -1976,8 +1978,8 @@ export class RoadLayer implements CustomLayerInterface {
     const frame = this.frame;
     if (!this.style.visible || draw.length === 0 || !frame) return;
 
+    if (!this.program(opts.shaderData)) return;
     const { zoom, dpr, casingW, glowK, glowW, nearZoom, farZoom } = this.frameParams();
-    this.program(opts.shaderData);
     const s = this.style;
     const three = s.terrain3d;
     const fog = fogUniforms(this.map);
@@ -2387,10 +2389,11 @@ export class RoadLayer implements CustomLayerInterface {
     }
     /** The sums onto the map (RESOLVE_FS). */
     const resolveSums = (a: NonNullable<typeof acc>) => {
+      const R = this.resolve?.();
+      if (!R) return;
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.DEPTH_TEST);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      const R = this.resolve!;
       gl.useProgram(R.prog);
       bindUnit(6, a.acc);
       gl.uniform1i(R.u.u_acc, 6);
@@ -3102,19 +3105,3 @@ function texParams(gl: WebGL2RenderingContext) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
-export function link(gl: WebGL2RenderingContext, vs: string, fs: string, feedback?: string[]): WebGLProgram {
-  const sh = (type: number, src: string) => {
-    const s = gl.createShader(type)!;
-    gl.shaderSource(s, src);
-    gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) || 'shader');
-    return s;
-  };
-  const p = gl.createProgram()!;
-  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
-  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
-  if (feedback) gl.transformFeedbackVaryings(p, feedback, gl.INTERLEAVED_ATTRIBS);
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) || 'link');
-  return p;
-}

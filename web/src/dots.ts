@@ -25,7 +25,8 @@
 import type { CustomLayerInterface, CustomRenderMethodInput, Map as MLMap } from 'maplibre-gl';
 import { HALO, HERITAGE_GROUPS, HER_R, POI_R, POI_STYLE, landmarkScoreOf, type NameScale } from './basemap';
 import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WORDS, lodZoom, tileRun, type DotData } from './dotlayout';
-import { link, perspectiveP22 } from './roads/layer';
+import { perspectiveP22 } from './roads/layer';
+import { linkLater, type Later } from './glprog';
 
 export type { DotData } from './dotlayout';
 
@@ -328,8 +329,10 @@ export class LandmarkDots implements CustomLayerInterface {
   readonly renderingMode = '3d' as const;
   private map!: MLMap;
   private gl!: WebGL2RenderingContext;
-  private progs = new Map<string, { prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> }>();
-  private hprog: { prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> } | null = null;
+  private progs = new Map<string, Later<{ prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> }>>();
+  /** The heights' program was still linking this frame (prerender): the dots wait. */
+  private heightsLinking = false;
+  private hprog: Later<{ prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> }> | null = null;
   private tf: WebGLTransformFeedback | null = null;
   private maxPt = 64;
   private srcs = new Map<string, Src>();
@@ -569,33 +572,37 @@ export class LandmarkDots implements CustomLayerInterface {
     gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
   }
 
+  /** The program for MapLibre's projection (mercator, globe); null while it links (glprog.ts). */
   private program(sd: CustomRenderMethodInput['shaderData']) {
     let p = this.progs.get(sd.variantName);
     if (!p) {
       const gl = this.gl;
       const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
-      const prog = link(gl, head + VS, FS);
-      const u: Record<string, WebGLUniformLocation | null> = {};
-      for (const n of ['u_lodZ', 'u_world', 'u_heights', 'u_viewport', 'u_dpr', 'u_maxPt', 'u_camDist', 'u_zmul', 'u_lift', 'u_cam', 'u_ztol', 'u_p22', 'u_depth',
-        'u_depthOn', 'u_occluded', 'u_range', 'u_eqOn', 'u_eq', 'u_lowFade', 'u_lowSpan', 'u_thrOn', 'u_thrDir', 'u_thrValue', 'u_balance',
-        'u_emphasis', 'u_opacity', 'u_baseR', 'u_strokeW', 'u_col', 'u_halo', 'u_projection_matrix', 'u_projection_tile_mercator_coords',
-        'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(prog, n);
-      p = { prog, u };
+      p = linkLater(this.map, gl, head + VS, FS, (prog) => {
+        const u: Record<string, WebGLUniformLocation | null> = {};
+        for (const n of ['u_lodZ', 'u_world', 'u_heights', 'u_viewport', 'u_dpr', 'u_maxPt', 'u_camDist', 'u_zmul', 'u_lift', 'u_cam', 'u_ztol', 'u_p22', 'u_depth',
+          'u_depthOn', 'u_occluded', 'u_range', 'u_eqOn', 'u_eq', 'u_lowFade', 'u_lowSpan', 'u_thrOn', 'u_thrDir', 'u_thrValue', 'u_balance',
+          'u_emphasis', 'u_opacity', 'u_baseR', 'u_strokeW', 'u_col', 'u_halo', 'u_projection_matrix', 'u_projection_tile_mercator_coords',
+          'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(prog, n);
+        return { prog, u };
+      });
       this.progs.set(sd.variantName, p);
     }
-    return p;
+    return p();
   }
 
+  /** The heights' program; null while it links (glprog.ts). */
   private heightProgram() {
     if (!this.hprog) {
       const gl = this.gl;
-      const prog = link(gl, HVS, HFS, ['v_h']);
-      const u: Record<string, WebGLUniformLocation | null> = {};
-      for (const n of ['u_tile', 'u_dem', 'u_demXform', 'u_unpack', 'u_dim']) u[n] = gl.getUniformLocation(prog, n);
-      this.hprog = { prog, u };
+      this.hprog = linkLater(this.map, gl, HVS, HFS, (prog) => {
+        const u: Record<string, WebGLUniformLocation | null> = {};
+        for (const n of ['u_tile', 'u_dem', 'u_demXform', 'u_unpack', 'u_dim']) u[n] = gl.getUniformLocation(prog, n);
+        return { prog, u };
+      }, ['v_h']);
       this.tf = gl.createTransformFeedback();
     }
-    return this.hprog;
+    return this.hprog();
   }
 
   /** MapLibre's terrain while 3D terrain is on. */
@@ -612,6 +619,7 @@ export class LandmarkDots implements CustomLayerInterface {
   prerender(gl: WebGL2RenderingContext) {
     const terrain = this.mapTerrain();
     this.inViewFrom3D = false;
+    this.heightsLinking = false;
     if (!terrain) return;
     if (terrain !== this.terrainObj) {
       this.terrainObj = terrain;
@@ -651,6 +659,11 @@ export class LandmarkDots implements CustomLayerInterface {
         if (k1 <= k0) continue;
         if (!P) {
           P = this.heightProgram();
+          if (!P) {
+            // (its program still linking: the heights next frame, and no dots till then)
+            this.heightsLinking = true;
+            return;
+          }
           gl.useProgram(P.prog);
           gl.bindBuffer(gl.ARRAY_BUFFER, null); // a feedback buffer may not be bound elsewhere
           gl.enable(gl.RASTERIZER_DISCARD);
@@ -729,7 +742,7 @@ export class LandmarkDots implements CustomLayerInterface {
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     const map = this.map;
-    if (!this.to || !this.scale) return;
+    if (!this.to || !this.scale || this.heightsLinking) return;
     const zoom = map.getZoom();
     const now = performance.now();
     const q = this.current(now);
@@ -743,7 +756,9 @@ export class LandmarkDots implements CustomLayerInterface {
       return;
     }
     if (!three) this.inViewFromBounds(zoom);
-    const { prog, u } = this.program(opts.shaderData);
+    const P = this.program(opts.shaderData);
+    if (!P) return;
+    const { prog, u } = P;
     gl.useProgram(prog);
     const dpr = window.devicePixelRatio || 1;
     const tr = (map as unknown as { _camera?: { transform?: { cameraToCenterDistance?: number; getCameraLngLat?: () => { lng: number; lat: number }; getCameraAltitude?: () => number } } })._camera?.transform;

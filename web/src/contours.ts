@@ -14,7 +14,8 @@
 // standing in for missing ones draws only where they are missing (MapLibre clips its tiles with
 // the stencil buffer).
 import { MercatorCoordinate, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
-import { link, perspectiveP22 } from './roads/layer';
+import { perspectiveP22 } from './roads/layer';
+import { linkLater, type Later } from './glprog';
 import type { ContourRequest, ContourResponse } from './contours.worker';
 
 /** What the layer draws (main.ts, from the terrain settings). */
@@ -234,7 +235,7 @@ export class ContourLayer implements CustomLayerInterface {
   };
   private map!: MLMap;
   private gl!: WebGL2RenderingContext;
-  private progs = new Map<string, Prog | null>();
+  private progs = new Map<string, Later<Prog> | null>();
   private cache = new Map<string, Entry>();
   private pending = new Map<number, Entry>();
   private seq = 0;
@@ -328,24 +329,26 @@ export class ContourLayer implements CustomLayerInterface {
     e.bytes = r.slots.byteLength;
   }
 
-  /** The program for MapLibre's projection (mercator, globe); null if it failed to build (logged
-   * once: the rest of the map still draws). */
+  /** The program for MapLibre's projection (mercator, globe); null while it links (glprog.ts) or if
+   * it failed to build (logged once: the rest of the map still draws). */
   private program(sd: CustomRenderMethodInput['shaderData']): Prog | null {
+    const gl = this.gl;
     let p = this.progs.get(sd.variantName);
-    if (p === undefined) {
-      const gl = this.gl;
-      try {
-        const prog = link(gl, `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n${VS}`, FS);
-        const u = {} as Prog['u'];
-        for (const n of UNIFORMS) u[n] = gl.getUniformLocation(prog, n);
-        p = { prog, u };
-      } catch (err) {
-        console.error('contour lines:', err);
-        p = null;
+    try {
+      if (p === undefined) {
+        p = linkLater(this.map, gl, `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n${VS}`, FS, (prog) => {
+          const u = {} as Prog['u'];
+          for (const n of UNIFORMS) u[n] = gl.getUniformLocation(prog, n);
+          return { prog, u };
+        });
+        this.progs.set(sd.variantName, p);
       }
-      this.progs.set(sd.variantName, p);
+      return p?.() ?? null;
+    } catch (err) {
+      console.error('contour lines:', err);
+      this.progs.set(sd.variantName, null);
+      return null;
     }
-    return p;
   }
 
   private tileManager(): TileManagerLike | null {
