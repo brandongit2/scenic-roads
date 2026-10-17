@@ -802,6 +802,38 @@ mod tests {
         assert_eq!(trees_extra(&changed).unwrap(), Some(want));
     }
 
+    /// The depth's declarations staged in producers/depth/declarations/ pass the file check, one code
+    /// each; a depth index's grids need a file and a zoom.
+    #[test]
+    fn the_depth_declarations_pass_the_check() {
+        let staged: [(&str, &[u8]); 11] = [
+        ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
+        ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
+        ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
+        ("gebco-2026.toml", include_bytes!("../../../../producers/depth/declarations/gebco-2026.toml")),
+        ("gttm.toml", include_bytes!("../../../../producers/depth/declarations/gttm.toml")),
+        ("masswildlife-ponds.toml", include_bytes!("../../../../producers/depth/declarations/masswildlife-ponds.toml")),
+        ("mn-dnr-lakes.toml", include_bytes!("../../../../producers/depth/declarations/mn-dnr-lakes.toml")),
+        ("nonna-10.toml", include_bytes!("../../../../producers/depth/declarations/nonna-10.toml")),
+        ("nonna-100.toml", include_bytes!("../../../../producers/depth/declarations/nonna-100.toml")),
+        ("shom-homonim-100.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-100.toml")),
+        ("shom-homonim-20.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-20.toml")),
+        ];
+        let mut codes = BTreeSet::new();
+        for (p, b) in staged {
+            let c = SourcesCheck::default().file(p, b);
+            assert!(c.findings.is_empty(), "{p}: {:?}", c.findings);
+            let d = parse(b).unwrap();
+            assert!(codes.insert(d.data.params["code"].as_u64().unwrap()), "{p}");
+        }
+        let ok = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"url":"https://a.org/x","file":"a.tif","zoom":8},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}]}"#;
+        assert!(depth_index_problems(&parse_index(ok).unwrap()).is_empty());
+        let bad = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"url":"https://a.org/x","file":"../a.tif"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}]}"#;
+        assert_eq!(depth_index_problems(&parse_index(bad).unwrap()).len(), 2);
+        let wrong = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 16\nwater = \"river\"\n");
+        assert!(SourcesCheck::default().file("w.toml", wrong.as_bytes()).findings.iter().any(|f| f.check() == DECL));
+    }
+
     #[test]
     fn a_key_part_is_the_codes_while_the_declaration_names_the_same() {
         let s = Source { id: "x".into(), data: parse(decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}-{m}\"\n").as_bytes()).unwrap().data, keyed: "k".into(), index: Vec::new() };
