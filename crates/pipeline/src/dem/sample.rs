@@ -97,9 +97,7 @@ pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool
         if !(cf > -0.5 && rf > -0.5 && cf < w as f64 - 0.5 && rf < h as f64 - 0.5) {
             continue;
         }
-        let bx = (cf.floor() as i64).clamp(0, w - 1) / BLOCK;
-        let by = (rf.floor() as i64).clamp(0, h - 1) / BLOCK;
-        pts.push((by * nbx + bx, i as u32, cf, rf));
+        pts.push((block_key(w, (cf.floor() as i64).clamp(0, w - 1), (rf.floor() as i64).clamp(0, h - 1)), i as u32, cf, rf));
     }
     pts.sort_by_key(|p| p.0);
     let mut groups: Vec<&[(i64, u32, f64, f64)]> = Vec::new();
@@ -145,7 +143,7 @@ pub fn window_clean(t: &Tiff, level: usize, clean: &Clean, cs: i64, ce: i64, rs:
     let (w, h) = (img.width as i64, img.height as i64);
     for by in rs / BLOCK..=re / BLOCK {
         for bx in cs / BLOCK..=ce / BLOCK {
-            let key = by * ((w + BLOCK - 1) / BLOCK) + bx;
+            let key = block_key(w, bx * BLOCK, by * BLOCK);
             let known = match clean.get(level, key) {
                 Some(c) => c,
                 None => {

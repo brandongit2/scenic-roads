@@ -234,7 +234,9 @@ impl Block {
 /// Decoded blocks kept for reuse, least recently used out first: a file's own (`Tiff::with_cache`),
 /// or one shared by many files under one budget (`Tiff::with_shared_cache`: a reader with many
 /// files open holds what the budget allows, not a cache's worth per file). Keyed by the file's id,
-/// the image and the block.
+/// the image and the block. The budget bounds what the cache keeps, not the process: a block a
+/// reader holds (an `Arc<Block>` out of `Tiff::block`) lives on after the cache lets it go, so
+/// many threads each holding one hold that much over it.
 pub struct BlockCache {
     map: HashMap<(u64, usize, u64), (Arc<Block>, u64)>,
     tick: u64,
@@ -246,11 +248,6 @@ impl BlockCache {
     /// A cache holding up to `bytes` of decoded blocks.
     pub fn new(bytes: usize) -> BlockCache {
         BlockCache { map: HashMap::new(), tick: 0, bytes: 0, cap: bytes }
-    }
-
-    /// What it holds now (bytes).
-    pub fn bytes(&self) -> usize {
-        self.bytes
     }
 
     fn get(&mut self, k: (u64, usize, u64)) -> Option<Arc<Block>> {
