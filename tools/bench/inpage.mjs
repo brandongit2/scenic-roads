@@ -3,7 +3,7 @@
 //
 //   node tools/bench/inpage.mjs --browser safari|chrome [--app http://localhost:5199] [--port 5300]
 //        [--views tokyo,manhattan] [--runs static,pan,orbit] [--secs 5] [--cold] [--label name]
-//        [--out dir] [--timeout 180] [--w 1440 --h 900 (Chrome's window)] [--prof (selfbench.ts's prof=1)]
+//        [--out dir] [--timeout 180] [--w 1440 --h 900 (the window)] [--wd-port 4445] [--prof (selfbench.ts's prof=1)]
 //        [--query "fcache=0&glcheck=1" (the page's own switches)]
 //
 // --app is the map as served (Vite's dev server or the map server). The page is opened on
@@ -12,8 +12,9 @@
 // to --out (default $TMPDIR/scenic-bench/) and printed as a row. --cold: view i opened on port + i, an
 // origin whose HTTP cache is empty, so every view loads cold (no browser data is cleared); the
 // proxy listens on each. Names under localhost (roads.localhost …, web/src/hosts.ts) reach the proxy
-// too. Safari: opened with `open -a Safari` (a tab in Safari's front window, left showing "done";
-// WebDriver isn't needed). Chrome: a window of its own (a fresh profile in the scratch directory,
+// too. Safari: a WebDriver session (safaridriver: Develop > Allow Remote Automation, once
+// `safaridriver --enable`), a window of its own without the owner's extensions, closed at the end.
+// Chrome: a window of its own (a fresh profile in the scratch directory,
 // GPU and display pacing as the owner's), quit by its PID at the end.
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -74,9 +75,22 @@ for (let i = 0; i < (args.cold ? views.length : 1); i++) {
 
 const hash = new URLSearchParams({ views: views.join(','), runs: String(args.runs ?? 'static,pan,orbit'), secs: String(args.secs ?? 5), label, sid, ...(args.cold ? { cold: String(PORT) } : {}), ...(args.prof ? { prof: '1' } : {}) });
 const url = `http://localhost:${PORT}/?bench=0${args.query ? `&${args.query}` : ''}#bench&${hash}`;
-let child = null;
-if (browser === 'safari') execFileSync('open', ['-a', 'Safari', url]);
-else {
+let child = null, session = null;
+const WD = `http://127.0.0.1:${args['wd-port'] ?? 4445}`;
+const wd = async (method, p, body) => (await (await fetch(`${WD}${p}`, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) })).json()).value;
+if (browser === 'safari') {
+  // A WebDriver session (safaridriver): a window of its own, without the owner's extensions or data.
+  child = spawn('/usr/bin/safaridriver', ['-p', String(args['wd-port'] ?? 4445)], { stdio: 'ignore' });
+  for (let i = 0; i < 50 && !session; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    session = await wd('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'safari' } } }).then((v) => v.sessionId, () => null);
+  }
+  if (!session) throw new Error('no Safari WebDriver session (Develop > Allow Remote Automation, safaridriver --enable)');
+  await wd('POST', `/session/${session}/window/rect`, { x: 0, y: 0, width: Number(args.w ?? 1440), height: Number(args.h ?? 900) });
+  console.error(`safaridriver pid ${child.pid}, session ${session}`);
+  // (navigation answers once the page has loaded; the benchmark runs on by itself)
+  void wd('POST', `/session/${session}/url`, { url });
+} else {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'bench-chrome-'));
   child = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
     `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions',
@@ -105,6 +119,7 @@ try {
 } finally {
   for (const s of servers) s.close();
   servers.forEach((s) => s.closeAllConnections?.());
+  if (session) await wd('DELETE', `/session/${session}`).catch(() => {});
   if (child) child.kill('SIGTERM');
 }
 fs.writeFileSync(path.join(outDir, `${sid}-${label}.json`), JSON.stringify(Object.fromEntries(got), null, 1));

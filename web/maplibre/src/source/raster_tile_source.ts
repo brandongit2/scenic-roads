@@ -22,6 +22,9 @@ import type {
     RasterDEMSourceSpecification
 } from '@maplibre/maplibre-gl-style-spec';
 
+/** Scenic Roads: whether raster tiles in Safari are decoded to bytes (png_rgba.ts). */
+const BYTES_IN_SAFARI = typeof location === 'undefined' || new URLSearchParams(location.search).get('pngdec') !== '0';
+
 /**
  * A source containing raster tiles (See the [raster source documentation](https://maplibre.org/maplibre-style-spec/sources/#raster) for detailed documentation of options.)
  *
@@ -224,8 +227,8 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
         tile.abortController = new AbortController();
         try {
             // Scenic Roads: in Safari the tile's bytes, decoded on a worker when it's a plain PNG
-            // (png_rgba.ts), the bitmap only otherwise.
-            const response = isSafari(globalThis) && this.type === 'raster' ?
+            // (png_rgba.ts), the bitmap only otherwise (`?pngdec=0` in the page's address: always).
+            const response = BYTES_IN_SAFARI && isSafari(globalThis) && this.type === 'raster' ?
                 await this._loadBytes(url, tile.abortController, premultiply, imageBitmapOptions) :
                 await ImageRequest.transformAndGetImage(
                     this.map._requestManager,

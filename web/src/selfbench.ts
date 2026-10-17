@@ -45,6 +45,69 @@ export const BENCH = location.hash.startsWith('#bench') && names[index]
   }
   : null;
 
+/**
+ * `prof=1`: the main thread's other tasks timed too, from the page's start: worker and message-port
+ * messages (by the worker's script), timers and animation-frame callbacks other than the map's
+ * render (by function name). Installed as this module loads, before the map makes its workers.
+ */
+const tasks: Record<string, [number, number]> = {};
+if (BENCH?.prof) {
+  const add = (k: string, ms: number) => {
+    const x = (tasks[k] ??= [0, 0]);
+    x[0]++;
+    x[1] += ms;
+  };
+  const timed = (k: string, f: (...a: any[]) => unknown) => function (this: unknown, ...a: unknown[]) {
+    const t = performance.now();
+    try {
+      return f.apply(this, a);
+    } finally {
+      add(k, performance.now() - t);
+    }
+  };
+  const label = (target: unknown, f: { name?: string }) =>
+    target instanceof Worker ? `worker:${(target as Worker & { __src?: string }).__src ?? '?'}` : `${(target as object)?.constructor?.name ?? '?'}:${f.name || 'anon'}`;
+  const W = window.Worker;
+  window.Worker = class extends W {
+    __src: string;
+    constructor(u: string | URL, o?: WorkerOptions) {
+      super(u, o);
+      this.__src = String(u).split('/').pop()!.split('?')[0];
+    }
+  } as typeof Worker;
+  const ael = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (this: EventTarget, type: string, f: any, o?: any) {
+    if (type === 'message' && typeof f === 'function') {
+      const w = timed(label(this, f), f);
+      (f as { __w?: unknown }).__w = w;
+      return ael.call(this, type, w, o);
+    }
+    return ael.call(this, type, f, o);
+  };
+  const rel = EventTarget.prototype.removeEventListener;
+  EventTarget.prototype.removeEventListener = function (this: EventTarget, type: string, f: any, o?: any) {
+    return rel.call(this, type, (f as { __w?: EventListener })?.__w ?? f, o);
+  };
+  for (const C of [W, MessagePort]) {
+    const d = Object.getOwnPropertyDescriptor(C.prototype, 'onmessage')!;
+    Object.defineProperty(C.prototype, 'onmessage', {
+      configurable: true,
+      get() { return d.get!.call(this); },
+      set(f) { d.set!.call(this, typeof f === 'function' ? timed(label(this, f), f) : f); },
+    });
+  }
+  const st = window.setTimeout.bind(window);
+  window.setTimeout = ((f: unknown, ms?: number, ...a: unknown[]) => st(typeof f === 'function' ? timed(`timeout:${f.name || 'anon'}`, f as () => void) : (f as string), ms, ...a)) as typeof setTimeout;
+  const raf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (f: FrameRequestCallback) => raf(timed(`raf:${f.name || 'anon'}`, f) as FrameRequestCallback);
+}
+/** The tasks timed since the last call, the longest first (prof=1). */
+const takeTasks = () => {
+  const r = Object.entries(tasks).sort((a, b) => b[1][1] - a[1][1]).slice(0, 20).map(([k, [c, ms]]) => [k, c, Math.round(ms)] as const);
+  for (const k in tasks) delete tasks[k];
+  return r;
+};
+
 /** The hash the map opens on: the benchmark view's, as a `#map=` link. */
 export const benchHash = (): string => `#map=${BENCH!.view[1]}`;
 
@@ -350,7 +413,9 @@ function drawing(map: any): string[] {
  * exact, the times good over many calls.)
  */
 function profile(gl: WebGL2RenderingContext, map: any) {
-  let calls: Record<string, [number, number]> = {}, layers: Record<string, [number, number]> = {};
+  let calls: Record<string, [number, number]> = {}, layers: Record<string, [number, number]> = {}, callers: Record<string, [number, number]> = {};
+  const SLOW = new Set(['texSubImage2D', 'texImage2D', 'getProgramParameter', 'getShaderParameter', 'getParameter', 'readPixels', 'bufferData']);
+  const caller = () => (new Error().stack ?? '').split('\n').slice(3, 6).map((l) => l.replace(/^\s*(at )?/, '').replace(/\?[^:)]*/, '').replace(/https?:\/\/[^/]+\//, '').slice(0, 70)).join(' < ');
   const add = (o: Record<string, [number, number]>, k: string, ms: number) => {
     const x = (o[k] ??= [0, 0]);
     x[0]++;
@@ -365,7 +430,10 @@ function profile(gl: WebGL2RenderingContext, map: any) {
       g[k] = function (...a: unknown[]) {
         const t = performance.now();
         const r = f.apply(gl, a);
-        add(calls, k, performance.now() - t);
+        const ms = performance.now() - t;
+        add(calls, k, ms);
+        // (the slow kinds by caller too: who uploads, who waits on a link)
+        if (SLOW.has(k)) add(callers, `${k} <- ${caller()}`, ms);
         return r;
       };
     }
@@ -388,8 +456,9 @@ function profile(gl: WebGL2RenderingContext, map: any) {
     Object.entries(o).sort((a, b) => b[1][1] - a[1][1]).slice(0, n).map(([k, [c, ms]]) => [k, c, Math.round(ms * 10) / 10] as const);
   return {
     take() {
-      const r = { gl: top(calls, 25), glCalls: Object.values(calls).reduce((a, [c]) => a + c, 0), glMs: Math.round(Object.values(calls).reduce((a, [, m]) => a + m, 0)), layers: top(layers, 25) };
+      const r = { tasks: takeTasks(), gl: top(calls, 25), glCalls: Object.values(calls).reduce((a, [c]) => a + c, 0), glMs: Math.round(Object.values(calls).reduce((a, [, m]) => a + m, 0)), layers: top(layers, 25), callers: top(callers, 15) };
       calls = {};
+      callers = {};
       layers = {};
       return r;
     },
