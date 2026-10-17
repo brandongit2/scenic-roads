@@ -42,6 +42,7 @@
 
 use crate::legacy::Unit;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Where a step's output goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,8 +286,8 @@ pub fn stage(id: &str) -> Option<&'static Stage> {
 }
 
 /// The title of stage `id` (its id for one the table doesn't know).
-pub fn stage_title(id: &str) -> &'static str {
-    stage(id).map_or_else(|| Box::leak(id.to_string().into_boxed_str()) as &str, |s| s.title)
+pub fn stage_title(id: &str) -> Cow<'static, str> {
+    stage(id).map_or_else(|| Cow::Owned(id.to_string()), |s| Cow::Borrowed(s.title))
 }
 
 /// The stage of `step` (a task's its step's; a map update's publishing).
@@ -300,18 +301,18 @@ pub fn stage_of(step: &str) -> Option<&'static Stage> {
 }
 
 /// The name people see for `step` (a step's, a task's, a map update's; an unknown's its id).
-pub fn title(step: &str) -> &'static str {
+pub fn title(step: &str) -> Cow<'static, str> {
     if let Some(s) = row(step) {
-        return s.title;
+        return Cow::Borrowed(s.title);
     }
     if let Some(t) = task(step) {
-        return t.title;
+        return Cow::Borrowed(t.title);
     }
     if step == MAP_UPDATE {
-        return "Map update";
+        return Cow::Borrowed("Map update");
     }
-    // (A step of a newer app's: its id, leaked to a `&'static` the once.)
-    Box::leak(step.to_string().into_boxed_str())
+    // (A step of a newer app's: its id.)
+    Cow::Owned(step.to_string())
 }
 
 /// What one target of `step` is called ("tile", "area", "run", "input"; a task's "task"; an
@@ -934,9 +935,10 @@ mod tests {
         assert_eq!(said("terrain", 8, Some(8)), "Terrain: 8 tiles");
         assert_eq!(said("terrain-lo", 1, None), "Terrain, zoomed out: 1 area");
         assert_eq!(said("outlines", 1, None), "Outlines");
-        assert_eq!((title("map-update"), title("tail"), title("a-newer-step")), ("Map update", "Roads' last steps", "a-newer-step"));
+        assert_eq!([title("map-update"), title("tail"), title("a-newer-step")], ["Map update", "Roads' last steps", "a-newer-step"]);
+        assert!(matches!(title("a-newer-step"), Cow::Owned(_)) && matches!(title("unit"), Cow::Borrowed(_)));
         assert_eq!(stage_of("map-update").map(|g| g.id), Some("publish"));
-        assert_eq!((stage_title("trains"), stage_title("x")), ("Trains", "x"));
+        assert_eq!([stage_title("trains"), stage_title("x")], ["Trains", "x"]);
         // The place, from the pool's rules: the shared steps and the map tiles any member's, the
         // lead's own and the worldwide steps the lead's.
         for s in ["terrain", "unit", "pack", "lo", "bldprep"] {
