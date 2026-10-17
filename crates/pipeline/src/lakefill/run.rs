@@ -298,12 +298,17 @@ impl FillOpts {
 
 /// The lake fill's source as its key names it, under the project root `root` and records `m`: its
 /// zips' pin (`source_pin` of `source_dir`), and the declaration (`Source::key_extra`: nothing while
-/// it names what the code read, agent::rekey::declared_before::LAKE_FILL). Ok(None): no zips (no
-/// fill made); Err: not declared, or not to be read now (the step and what reads its fill wait).
+/// it names what the code read, agent::rekey::declared_before::LAKE_FILL). Ok(None): its folder holds
+/// no zip (no fill made); Err: not declared, its declared folder not there (the zips not moved yet,
+/// or the NAS away), or not to be read now: the step and what reads its fill wait.
 pub fn planned_source(root: &Path, m: &std::collections::BTreeMap<String, String>) -> std::result::Result<Option<String>, String> {
     let s = crate::inputs::sources::open(root, m).map_err(|e| format!("the declared sources can't be read now ({e:#})"))?.ok_or("the source declarations have no accepted version yet")?;
     let src = s.role(crate::inputs::sources::LAKE_FILL).map_err(|e| format!("{e:#}"))?;
-    let pin = source_pin(&root.join(source_dir(src))).map_err(|e| format!("its source's folder can't be read now ({e})"))?;
+    let dir = root.join(source_dir(src));
+    if !dir.is_dir() {
+        return Err(format!("its source's folder, {}, isn't there (its zips are kept there: docs/inputs.md §6.9)", source_dir(src)));
+    }
+    let pin = source_pin(&dir).map_err(|e| format!("its source's folder can't be read now ({e})"))?;
     Ok(pin.map(|p| match src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL) {
         Some(x) => format!("{p}\n{x}"),
         None => p,
@@ -897,9 +902,11 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         assert!(planned_source(d.path(), &m).unwrap_err().contains("no accepted version"));
         crate::inputs::sources::accept_fixture(d.path(), &mut m);
-        assert_eq!(planned_source(d.path(), &m), Ok(None), "no zips: no fill");
+        // (Declared, its folder not there: an error, which holds the water, terrain and catalog.)
+        assert!(planned_source(d.path(), &m).unwrap_err().contains("isn't there"));
         let z = d.path().join("sources/fetched/canvec-lakes");
         std::fs::create_dir_all(&z).unwrap();
+        assert_eq!(planned_source(d.path(), &m), Ok(None), "no zips: no fill");
         std::fs::write(z.join("canvec_50K_AB_Hydro_shp.zip"), b"zip").unwrap();
         assert_eq!(planned_source(d.path(), &m).unwrap(), source_pin(&z).unwrap());
     }

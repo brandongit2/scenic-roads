@@ -1104,13 +1104,20 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 Also kept: fonts (`scripts/fonts.sh`, the app's own assets). GEBCO and NCEI's bathymetry on the NAS
 get declarations once a step reads them.
 
-**The rollout:** first both Macs run the app that reads the declarations (until a version is
-accepted, the units, tree cover, items, heritage chain and lake fill wait, and say so); then CanVec's
-zips are copied with their times kept (`cp -p`, so the fill's pin and key are unchanged) from
-`sources/canvec/50k/` to `sources/fetched/canvec-lakes/`, the old folder deleted later; then the
-files of `producers/sources/` (the `.toml` declarations, `canopy-squares.geojson` and
-`ghsl-tiles.geojson`) are dropped
-into `inputs/sources/`. Once accepted, everything goes on under the keys it had.
+**The rollout:**
+1. Both Macs run the app that reads the declarations. Until a version is accepted, the units, tree
+   cover, items, heritage chain, lake fill (and the water, terrain and catalog that read it), the
+   roadside buildings' job and the 3D buildings wait, and say so.
+2. CanVec's zips are copied with their times kept (`cp -p`) from `sources/canvec/50k/` to
+   `sources/fetched/canvec-lakes/`, and each copy's modification time checked to match its
+   original's to the second (`stat`): over SMB a time not kept changes the fill's pin, and its key,
+   and the fill is made again. A declared lake-fill source whose folder isn't there holds the fill
+   and what reads it (`lakefill::run::planned_source`), so the copy comes before the drop.
+3. The files of `producers/sources/` (the `.toml` declarations, `canopy-squares.geojson` and
+   `ghsl-tiles.geojson`) are dropped into `inputs/sources/`. Once accepted, everything goes on under
+   the keys it had.
+4. `sources/canvec/50k/` is deleted only after both Macs run the new app (an older app still reads
+   it).
 
 ## 7. The guards
 
