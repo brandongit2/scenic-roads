@@ -66,6 +66,12 @@ The app compiles this source with its own code; there is no separate build or `d
   later tasks; a city's CJK labels drew 300–600 ms of glyphs in one task. The labels come a frame or
   two later.
 
+- **Raster tiles in Safari as bytes** (`raster_tile_source.ts`, `util/png_rgba.ts`): Safari reads an
+  ImageBitmap back on the main thread to upload it (~2.8 ms a 512 px tile on an M1 Pro), so there a
+  `raster` source's plain PNGs (8-bit RGB or RGBA, untagged) are decoded on two workers and uploaded
+  as bytes, the same pixels; other images, and other browsers, as before. `?pngdec=0`: always as
+  bitmaps.
+
 ### Tile covers over 3D terrain
 
 - **Covers redone when elevations arrive** (`bounding_volume_cache.ts`, `TileManager.demVersion`,
