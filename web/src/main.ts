@@ -50,7 +50,7 @@ import { steadierPlacement } from './placement';
 import { slicedGlyphs } from './glyphs';
 import { installTrackpad } from './trackpad';
 import { Boot } from './ui/boot';
-import { BuildStatus } from './ui/buildstatus';
+import { MapStatus } from './ui/mapstatus';
 import { ColourCard } from './ui/colour';
 import { cap, fmt, h, toast } from './ui/dom';
 import { DrivesPane } from './ui/drives';
@@ -2228,11 +2228,9 @@ async function main() {
     watch.onSwitch = newCatalog;
     // Newer points on the server than the page has (a 409): the catalog now, not in a minute.
     overlays.onStale = () => void watch?.poll();
-    new BuildStatus(strip.buildStatus, watch);
-    // How far each region is built, from the lead's heartbeat; the coverage drawn is the
-    // catalog's, so it follows a new one.
+    new MapStatus(strip.buildStatus, watch);
+    // The coverage drawn is the catalog's, so it follows a new one.
     const w = watch;
-    w.on(() => regions.setProgress(w.status?.agent?.built));
     w.on(() => regions.setCatalog(w.status?.n));
     // The credits of the sources the catalog's data comes from.
     w.on(() => strip.setCredits(w.status?.credits));

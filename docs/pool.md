@@ -140,9 +140,8 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 
 ### 6.3 Asking
 
-The menu bar ("Hand the Build To ▸", "Make This Mac Lead"), `scenic lead` and the map's build panel
-ask their own Mac's agent (`lead-request.json`, `crate::control::LeadRequest`; the map through
-`/api/build/lead`); the worker page asks the agent serving it (`/work/lead`). `crate::agent::lead`
+The menu bar ("Hand the Build To ▸", "Make This Mac Lead"), and `scenic lead`
+ask their own Mac's agent (`lead-request.json`, `crate::control::LeadRequest`); the worker page asks the agent serving it (`/work/lead`). `crate::agent::lead`
 checks the ask as the driver would (`Driver::hand_to`, `Driver::takeover`) and either hands over (on
 the lead) or mails it to the lead (`Msg::HandTo`, §9). Asks naming a Mac that isn't a live member,
 is on too old an app, is unreachable (§6.8), or whose conditions say it can't lead (away, on
@@ -434,7 +433,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
   waits, map-update decision, recent jobs, pause, last catalog, the lead.
   A member writes `helper.json` instead.
-- **Views** (menu bar, map's build panel, worker page, `scenic lead`, `scenic status`) read the
+- **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it
   (`Driver::hand_to`), what a takeover needs (`Driver::takeover`), "no lead" and why, the offer, the
@@ -446,7 +445,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 
 ## 11. Controls
 
-`crate::agent::lead`, `tools/status/main.swift`, `web/work/pool.js`, `web/src/ui/buildstatus.ts`:
+`crate::agent::lead`, `tools/status/main.swift`, `web/work/pool.js`:
 
 - **Menu bar:** on the lead, "Hand the Build To ▸" with each member's state (greyed with why); on a
   member, "Make This Mac Lead", or "Take Over the Build…" with no lead in touch (says what it forces
@@ -454,7 +453,6 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced).
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
   [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
-- **Map's build panel:** "Make this Mac lead", "Take over…" (unforced).
 - **Forcing stays on the Mac:** `/api/build/lead` and `/work/lead` refuse forced takeovers.
 - Every control asks the driver (`Driver::hand_to`, `Driver::takeover`) rather than re-checking.
 

@@ -10,7 +10,7 @@ it, its licence, its credit) is written in a declaration file in a drop box.
 **The input check** (§4) checks every change dropped into a drop box: first its shape, then the
 input's own rules. A change that passes is copied into `sources/inputs/` and becomes the version the
 build reads. A change with a problem is held: the app keeps the last version that passed, shows the
-problem on the menu bar icon, the build page and the map's build panel, and takes the change in once
+problem on the menu bar icon and the build page, and takes the change in once
 it's fixed or, for a warning, once the owner accepts it. Each drop box is checked on its own and is
 a **unit** of the input check. (In the code the mechanism keeps the older word "gate":
 `gate_work`, `_gate-test`.)
@@ -153,7 +153,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.5 Accepting a warning
 
-- **How:** Accept and Accept All in the build page's banner, the map's build panel, the menu bar
+- **How:** Accept and Accept All in the build page's banner, the menu bar
   item, or `scenic inputs accept <unit> <finding id>|--all`. Errors have no Accept.
 - **What it writes:** `state/inputs/accepted/<unit>/<finding id>.json`, create-new (pool.md §2),
   holding who, when, how, and the message. The asking Mac writes it itself (the menu bar and map via
@@ -212,8 +212,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   is held and when it's taken in.
 - **The build page** (`web/work/dash.js`): a banner per held unit with its files, findings, places,
   Accept and Accept All; a quiet line while checking.
-- **The map's build panel** (`web/src/ui/buildstatus.ts`): the same banners, compact, with links to
-  places (`/api/build/inputs`). The Regions panel marks a held region (§6.1.9).
+- **The Regions panel** marks a held region (§6.1.9).
 - **`scenic status`** prints held or checking units; `scenic inputs` lists every unit's version,
   state, findings and acceptances.
 

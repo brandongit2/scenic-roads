@@ -293,19 +293,8 @@ export class RegionsPanel {
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
   }
 
-  /** Per region, how many of its areas are built (the lead's heartbeat). */
-  private progress: Record<string, { built: number; total: number }> = {};
-
-  setProgress(p: Record<string, { built: number; total: number }> | undefined) {
-    const next = p ?? {};
-    if (JSON.stringify(next) === JSON.stringify(this.progress)) return;
-    this.progress = next;
-    this.renderList();
-  }
-
-  /** A region's state in words: waiting or building (how many of its areas), from the lead's
-   * heartbeat; else pending while the map's catalog doesn't have it, built when the heartbeat or
-   * the catalog says so. */
+  /** A region's state in words: pending while the map's catalog doesn't have it, built when the
+   * catalog says so. */
   private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
     // The check comes first: a region not accepted yet isn't what's built.
     if (r.state === 'checking') return { text: 'checking…', cls: 'wait', title: 'Its file changed: being checked before it’s used' };
@@ -313,10 +302,8 @@ export class RegionsPanel {
       const fs = r.held ?? [];
       return { text: `held: ${fs[0]?.message ?? 'a finding holds it'}${fs.length > 1 ? ` (+${fs.length - 1})` : ''}`, cls: 'held', title: `Its last accepted outline stays in use until these are fixed:\n${fs.map((f) => `${f.id}: ${f.message}`).join('\n')}` };
     }
-    const p = this.progress[r.id];
-    if (p?.total && p.built < p.total) return p.built === 0 ? { text: 'waiting to build', cls: 'wait' } : { text: `building · ${p.built} of ${p.total} areas`, cls: 'on' };
     if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
-    if (p?.total || this.coverage?.regions) return { text: 'built', cls: 'ok' };
+    if (this.coverage?.regions) return { text: 'built', cls: 'ok' };
     return null;
   }
 

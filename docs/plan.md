@@ -44,7 +44,7 @@ coverage, or once for the whole world, so region size, count and borders never s
   - Remove confirms with the size. A download that wouldn't fit above the reserve is refused.
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies
     keep to 20 MB/s while the build runs.
-- The status bar shows the build's state and offers to reload when new data or a new app is in.
+- The status bar offers to reload when new data or a new app is in, and says when the NAS or the map server can't be reached.
 - New areas appear when a map update publishes its catalog (§8, A map update).
 
 **Translations and descriptions** (§7) are drop boxes of the input check: `inputs/translations/` and
@@ -1139,7 +1139,7 @@ available. Until work is done, the map serves the last catalog.
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean`, `scenic room` (Room on the
   disk, above).
-- The app's status bar: the build's state, the NAS, new data or a new app.
+- The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for six minutes shows as out of touch.
   - **Its panel:** a click opens the lead's build page in a popover (`/api/build`'s `pages`, the
@@ -1152,7 +1152,7 @@ available. Until work is done, the map serves the last catalog.
     (`scenic-status --menu-proof`).
   - **The input check** (docs/inputs.md §4.7): a held input badges the icon, its menu has a line per
     held unit (Accept its warnings; Show on the Build Page), and it notifies. `scenic status` and
-    `scenic inputs` print the units' states; the build page and the map's build panel show a banner
+    `scenic inputs` print the units' states; the build page shows a banner
     per held unit.
 
 **Determinism:** the same inputs give the same bytes, on any machine and in WebAssembly: sorted

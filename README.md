@@ -47,7 +47,7 @@ Rail frequencies come only from published timetables (GTFS feeds from the Mobili
 
 The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the map into the NAS from a worldwide OpenStreetMap download, a region at a time, and publishes a catalog that each Mac's server switches to in place. Other Macs and any browser on the LAN help through its coordinator (`docs/workers.md`); the lead can be handed between Macs (`scenic lead`, `docs/pool.md`).
 
-- `scenic status` shows what the build is doing; `scenic pause` / `scenic resume` pause the whole build; `scenic --help` lists the commands. The menu bar item, the map's build panel and the lead's build page (`/work/`) show and control the same.
+- `scenic status` shows what the build is doing; `scenic pause` / `scenic resume` pause the whole build; `scenic --help` lists the commands. The menu bar item and the lead's build page (`/work/`) show and control the same.
 - **Inputs** are NAS drop boxes, each checked before use (`docs/inputs.md`): regions (`inputs/regions/`, §6.1), translations and descriptions (`inputs/translations/`, `inputs/descriptions/`; what still lacks them is listed in each `todo/`), heritage registers (§6.5), languages (§6.2), timetables (§6.7), elevation (§6.8).
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust (per `rust-toolchain.toml`), Node and the wasi-sdk (per `mise.toml`, `mise install`) and `npm ci` in `web/`. The agent also needs uv, `osmium-tool`, Java 21+ and Planetiler's jar on the NAS.
 - Tools: `tools/bench/` (load and frame benchmarks), `tools/coastcheck/` (shoreline accuracy), `tools/taskboard/` (task board).
