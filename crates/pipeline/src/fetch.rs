@@ -776,13 +776,18 @@ mod net {
         /// 2 s; only a request that moves nothing counts against the retries (as `retrying`: 10
         /// more, waiting 2 s, then twice as long each time, at most a minute), and a hundred
         /// requests in all end it. So a zip's member of tens of MB from a server that drops
-        /// connections is never fetched again from its start.
+        /// connections is never fetched again from its start. A resumed request says which file it
+        /// goes on with (`If-Range`: the first answer's ETag, else its Last-Modified) and the bytes
+        /// are checked against the first answer's length: a file changed meanwhile (the server
+        /// answering it whole, 200, or another validator or length) is fetched again from the start.
         pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
             const CHUNK: usize = 1 << 20;
             let want = (e - s) as usize;
             let mut out: Vec<u8> = Vec::with_capacity(want);
             let (mut idle, mut requests) = (0u32, 0u32);
             let mut last = String::new();
+            // (The first answer's validator and the file's length, which every later one must match.)
+            let mut first: Option<(Option<String>, Option<u64>)> = None;
             loop {
                 if requests > 0 {
                     std::thread::sleep(Duration::from_secs(if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) }));
@@ -792,7 +797,11 @@ mod net {
                 let from = s + out.len() as u64;
                 let before = out.len();
                 let r = (|| -> Result<std::result::Result<(), String>> {
-                    let mut r = match self.agent.get(url).header("Range", format!("bytes={from}-{}", e - 1)).call() {
+                    let mut req = self.agent.get(url).header("Range", format!("bytes={from}-{}", e - 1));
+                    if let Some((Some(v), _)) = &first {
+                        req = req.header("If-Range", v);
+                    }
+                    let mut r = match req.call() {
                         Ok(r) => r,
                         Err(err) => return Ok(Err(err.to_string())),
                     };
@@ -800,6 +809,13 @@ mod net {
                         206 => {
                             let cr = header(&r, "content-range").as_deref().and_then(content_range);
                             ensure!(matches!(cr, Some((Some((a, b)), _)) if a == from && b == e - 1), "{url}: asked for bytes {from}-{}, answered {cr:?}", e - 1);
+                            let total = cr.and_then(|(_, t)| t);
+                            let validator = header(&r, "etag").or_else(|| header(&r, "last-modified"));
+                            match &first {
+                                None => first = Some((validator, total)),
+                                Some((v, t)) if *v != validator || *t != total => return Ok(Err("the file changed while it was read".into())),
+                                Some(_) => {}
+                            }
                             let mut rd = r.body_mut().with_config().limit(e - from + 1).reader();
                             let mut buf = vec![0u8; CHUNK.min(want - out.len())];
                             loop {
@@ -819,6 +835,9 @@ mod net {
                                 Ok(Err(format!("{} of {} bytes", out.len(), want)))
                             }
                         }
+                        // (The whole file: a resumed request whose If-Range no longer matches, or a
+                        // server that ignores ranges; either way not what was asked for.)
+                        200 if first.is_some() => Ok(Err("the file changed while it was read".into())),
                         c if transient(c) => Ok(Err(format!("status {c}"))),
                         c => bail!("{url}: bytes {from}-{}: status {c}", e - 1),
                     }
@@ -827,14 +846,19 @@ mod net {
                     Ok(()) => return Ok(out),
                     Err(why) => last = why,
                 }
-                if out.len() > before {
+                if last == "the file changed while it was read" {
+                    // (From the start, of the file as it is now.)
+                    out.clear();
+                    first = None;
+                    idle += 1;
+                } else if out.len() > before {
                     // (It moved: on from here, after a breath.)
                     idle = 0;
                 } else {
                     idle += 1;
-                    if idle > 10 {
-                        bail!("{url}: no answer ({last}); tried 11 times");
-                    }
+                }
+                if idle > 10 {
+                    bail!("{url}: no answer ({last}); tried 11 times");
                 }
                 if requests >= 100 {
                     bail!("{url}: {} of {want} bytes after {requests} requests ({last})", out.len());
@@ -971,9 +995,14 @@ mod tests {
         assert!(r.covers(5, 9) && r.covers(1, 2) && !r.covers(3, 6));
     }
 
-    /// A server that answers range requests from `data` but closes the connection after `cut`
-    /// bytes of each of its first `drops` answers (as a server dropping a long transfer does).
-    fn dropping_server(data: Arc<Vec<u8>>, cut: usize, drops: usize) -> String {
+    /// A server's file: its bytes and ETag (swapped to play a file changed mid-transfer), and the
+    /// ranges asked of it so far.
+    type Served = Arc<std::sync::Mutex<(Vec<u8>, String, Vec<(usize, usize)>)>>;
+
+    /// A server that answers range requests from `file` (with its ETag, honouring `If-Range`:
+    /// a whole 200 answer when it doesn't match) but closes the connection after `cut` bytes of
+    /// each of its first `drops` answers (as a server dropping a long transfer does).
+    fn dropping_server(file: Served, cut: usize, drops: usize) -> String {
         use std::io::{Read, Write};
         let l = store::spawn::listen("127.0.0.1:0").unwrap();
         l.set_nonblocking(true).unwrap();
@@ -997,16 +1026,29 @@ mod tests {
                     break;
                 }
             }
-            let text = String::from_utf8_lossy(&req);
-            let range = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string)).map(|r| {
-                let (a, b) = r.trim().split_once('-').unwrap();
+            let text = String::from_utf8_lossy(&req).to_ascii_lowercase();
+            let hdr = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
+            let (data, etag) = {
+                let f = file.lock().unwrap();
+                (f.0.clone(), f.1.clone())
+            };
+            let range = hdr("range: bytes=").map(|r| {
+                let (a, b) = r.split_once('-').unwrap();
                 (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap())
             });
-            let (a, b) = range.unwrap_or((0, data.as_slice().len() - 1));
-            let body = &data[a..=b];
+            if let Some(r) = range {
+                file.lock().unwrap().2.push(r);
+            }
             let n = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let whole = range.is_none() || hdr("if-range:").is_some_and(|v| v != etag.to_ascii_lowercase());
+            let (a, b) = if whole { (0, data.len() - 1) } else { range.unwrap() };
+            let body = &data[a..=b];
             let send = if n < drops { body.len().min(cut) } else { body.len() };
-            let head = format!("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.as_slice().len(), body.len());
+            let head = if whole {
+                format!("HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+            } else {
+                format!("HTTP/1.1 206 Partial Content\r\nETag: {etag}\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len(), body.len())
+            };
             s.write_all(head.as_bytes()).ok();
             s.write_all(&body[..send]).ok();
             s.flush().ok();
@@ -1015,19 +1057,58 @@ mod tests {
         url
     }
 
+    fn served(data: Vec<u8>, etag: &str) -> Served {
+        Arc::new(std::sync::Mutex::new((data, etag.to_string(), Vec::new())))
+    }
+
     #[test]
     fn a_dropped_transfer_goes_on_from_where_it_stopped() {
-        let data: Arc<Vec<u8>> = Arc::new((0..300_000u32).map(|i| (i % 251) as u8).collect());
-        // Dropped twice after 100 KB: three requests, the bytes never fetched twice.
-        let url = dropping_server(data.clone(), 100_000, 2);
-        let before = fetched_bytes();
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        // Dropped twice after 100 KB: three requests, each going on where the last stopped, so
+        // no byte is asked for twice.
+        let file = served(data.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), 100_000, 2);
         let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
         assert_eq!(got, data[1000..251_000]);
-        assert_eq!(fetched_bytes() - before, 250_000, "every byte fetched once");
+        assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (201_000, 250_999)]);
         // A whole-file read through the fetcher's own path (the same server, dropping once).
-        let url = dropping_server(data.clone(), 50_000, 1);
+        let url = dropping_server(served(data.clone(), "\"v1\""), 50_000, 1);
         let r = net::Net::new().open(&url, None, None).unwrap().unwrap();
         assert_eq!(r.read_at(200_000, 100_000).unwrap(), data[200_000..300_000]);
+    }
+
+    #[test]
+    fn a_file_changed_mid_transfer_is_fetched_again_from_its_start() {
+        let v1: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let v2: Vec<u8> = (0..300_000u32).map(|i| (i % 241) as u8).collect();
+        // Dropped once after 100 KB; the file swapped meanwhile: the resumed request's If-Range
+        // no longer matches, the server answers the whole file (200), and the read starts again,
+        // so the bytes are the new file's throughout, never a mix.
+        let file = served(v1.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), 100_000, 1);
+        let swap = file.clone();
+        let n2 = v2.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let mut f = swap.lock().unwrap();
+            (f.0, f.1) = (n2, "\"v2\"".to_string());
+        });
+        let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
+        assert_eq!(got, v2[1000..251_000]);
+        assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (1000, 250_999)], "resumed, answered whole, started again");
+        // The validator the same but the length changed: fetched again from the start too.
+        let file = served(v1.clone(), "\"same\"");
+        let url = dropping_server(file.clone(), 100_000, 1);
+        let swap = file.clone();
+        let shorter: Vec<u8> = v2[..260_000].to_vec();
+        let n2 = shorter.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let mut f = swap.lock().unwrap();
+            (f.0, f.1) = (n2, "\"same\"".to_string());
+        });
+        let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
+        assert_eq!(got, shorter[1000..251_000]);
     }
 
     #[test]
