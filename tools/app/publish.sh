@@ -55,9 +55,8 @@ if [[ ${1:-} == --rollback ]]; then
   echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
 fi
-# Only a clean tree is published (everything published comes from the working tree: the crates
-# and their lock, the web app and the worker page, the Python steps, the status app, the NAS's
-# script), its commit on origin's main, so every version names a commit either Mac can check out.
+# Only a clean tree's commit is published, and only one on origin's main, so every version names a
+# commit either Mac can check out. (Built from a snapshot of that commit, below.)
 # (The task board's database changes all the time and isn't published; untracked files, such as
 # notes, aren't counted.)
 unclean() { git status --porcelain --untracked-files=no -- . ':(exclude)tools/taskboard/taskboard.db*'; }
@@ -72,10 +71,29 @@ if git grep -qniI -E 'build[ -]mac' -- . ':(exclude)tools/taskboard'; then
   git grep -niI -E 'build[ -]mac' -- . ':(exclude)tools/taskboard' | head -20
   exit 1
 fi
+# The commit it's built from, read now, and built from a snapshot of it: a checkout of its own kept
+# for publishing (~/Library/Caches/scenic-publish/tree), so commits and edits here meanwhile change
+# nothing published. Kept between publishes as a build cache: its target/ and web/node_modules
+# (reinstalled when web's lockfile changed) carry over, so only what changed is rebuilt.
+head=$(git rev-parse --short HEAD)
+repo=$PWD
+snap=~/Library/Caches/scenic-publish/tree
+if [[ ! -e $snap/.git ]]; then
+  git worktree prune
+  mkdir -p ${snap:h}
+  git worktree add -q --detach $snap $head
+fi
+git -C $snap checkout -q --detach --force $head
+git -C $snap clean -qfdx -e /target -e /web/node_modules
+cd $snap
+mise trust -q 2>/dev/null || true
 # Rust (rust-toolchain.toml's) and the wasi-sdk (mise.toml's), installed by `mise install` once.
 eval "$(mise env -s zsh)"
-# The commit it's built from, read now: one made while it runs would name a version it isn't.
-head=$(git rev-parse --short HEAD)
+lockhash=$(shasum -a 256 web/package-lock.json | cut -c1-64)
+if [[ ! -d web/node_modules || $(cat target/.publish-npm-lock 2>/dev/null) != $lockhash ]]; then
+  (cd web && npm ci --no-audit --no-fund >/dev/null) || { echo "npm ci failed"; exit 1; }
+  mkdir -p target && print -r -- $lockhash > target/.publish-npm-lock
+fi
 # The certificate the listening programs are signed with (below), tried now on a scratch file so a
 # keychain that won't let codesign use its key (locked, or no GUI to answer its prompt) stops the
 # publish before the build rather than after.
@@ -123,7 +141,7 @@ zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
 # the app: web/maplibre/FORK.md.)
 (cd web && npm run typecheck && npx vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
-fonts=data/fonts
+fonts=$repo/data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
 # Smoke test: the new server, its own empty home (no mirror), the NAS's catalog.
@@ -144,9 +162,6 @@ for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/road
 done
 [[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }
 kill $pid; wait $pid 2>/dev/null || true
-# (The tree as it was built: a change or a commit made meanwhile would name a version it isn't.)
-[[ -z $(unclean) ]] || { echo "the tree changed while publishing: publish again"; unclean | head -20; exit 1; }
-[[ $(git rev-parse --short HEAD) == $head ]] || { echo "a commit was made while publishing ($head, now $(git rev-parse --short HEAD)): publish again"; exit 1; }
 version=$(date -u +%Y%m%d-%H%M)-$head
 dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
