@@ -970,7 +970,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
         eprintln!("{what}, the end of its log:\n{}", log_tail(log, 40));
         bail!("{what} failed ({st}); see {}", log.display());
     }
-    eprintln!("  {what}: {:.0?}", t.elapsed());
+    eprintln!("  {what}: {:.0?}, {} MB at most", t.elapsed(), peak >> 20);
     stage_said(what, 1.0, Some(t.elapsed()));
     Ok(())
 }
