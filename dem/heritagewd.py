@@ -11,8 +11,9 @@ Wikipedia/Wikimedia sitelinks (a notability measure), inception, and the labels 
 architectural style (P149) and architect (P84). English Wikipedia's short descriptions ("Cathedral
 in Salisbury, England") are then fetched for the English titles.
 
-Queries go to QLever's Wikidata endpoint (qlever.dev, University of Freiburg): the Wikidata Query
-Service was rate-limiting to one request a minute during an outage (2026-09-28).
+Queries go to the declared `wikidata` source (docs/inputs.md §6.9: QLever's Wikidata endpoint;
+the Wikidata Query Service was rate-limiting to one request a minute during an outage, 2026-09-28),
+the short descriptions to the declared `wikipedia` source (English Wikipedia's API).
 
 Sites with no item, or whose register item has no Wikipedia article, are then linked through
 OpenStreetMap: an OSM feature tagged with a Wikidata item (data/heritage/osm/named.geojsonseq)
@@ -46,13 +47,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import budget
+import declared
 from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 W = ROOT / "data" / "heritage" / "wd"
 UA = "scenic-roads/0.1 (personal offline map)"
-WDQS = "https://qlever.dev/api/wikidata"
 PREFIXES = ("PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
             "PREFIX schema: <http://schema.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
             "PREFIX wikibase: <http://wikiba.se/ontology#> ")
@@ -67,12 +68,12 @@ def sparql(q: str) -> list[dict]:
     """Run a query; on errors retry with growing pauses (longer when rate-limited, HTTP 429)."""
     for attempt in range(10):
         r = subprocess.run(["curl", "-sS", "-m", "180", "-A", UA, "-H", "Accept: application/sparql-results+json",
-                            "--data-urlencode", f"query={PREFIXES}{q}", WDQS], capture_output=True)
+                            "--data-urlencode", f"query={PREFIXES}{q}", declared.url("wikidata")], capture_output=True)
         try:
             return json.loads(r.stdout)["results"]["bindings"]
         except (json.JSONDecodeError, KeyError):
             if b"429" in r.stdout[:200]:
-                budget.seen(WDQS, 429, None)
+                budget.seen(declared.url("wikidata"), 429, None)
             time.sleep((45 if b"429" in r.stdout[:200] else 10) * (attempt + 1))
     raise RuntimeError(f"WDQS failed: {r.stdout[:300]!r}")
 
@@ -120,7 +121,7 @@ def shortdescs(titles: list[str]) -> dict[str, str]:
         out: dict[str, str] = {}
         for i in range(0, len(titles), 50):
             chunk = titles[i:i + 50]
-            url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+            url = declared.url("wikipedia") + "?" + urllib.parse.urlencode(
                 {"action": "query", "format": "json", "formatversion": 2, "prop": "pageprops", "ppprop": "wikibase-shortdesc",
                  "redirects": 1, "titles": "|".join(chunk)})
             d, last = None, ""

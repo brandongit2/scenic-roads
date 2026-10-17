@@ -2355,7 +2355,8 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(p);
     let dir = scratch.join("items-out");
     let mut c = store::spawn::command("uv");
-    c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
+    let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
+    c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).env(pipeline::inputs::sources::PYTHON_ENV, &declared).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let p = phase("items.py", Class::Mixed);
     pipeline::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run items.py")?;
@@ -2504,13 +2505,15 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::create_dir_all(pv.join("months"))?;
     pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
     drop(p);
+    // (The declared sources the chain asks: Wikidata, Wikipedia, the pageviews.)
+    let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
     for (k, (part, script, sargs)) in chain.iter().enumerate() {
         if k == 0 || chain[k - 1].0 != *part {
             parts.start(*part);
         }
         let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
         stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64 + (*part == 4) as u64, script);
-        heritage_script(&root, &dem, out.root(), script, sargs)?;
+        heritage_script(&root, &dem, out.root(), Some(&declared), script, sargs)?;
     }
     stage(1, 2, "uploading");
     let p = phase("uploaded", Class::NasWrite);
@@ -2713,10 +2716,14 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<Pat
 
 /// Runs one of the heritage scripts in a stand-in root, in the Python environment of the app's `dem`
 /// (`dem/.venv`, which uv makes from the app's lock file the first time a step runs on a Mac, as
-/// for every other Python step; the lock file as is).
-fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&str]) -> Result<()> {
+/// for every other Python step; the lock file as is), given the declared sources' file `declared`
+/// when it reads any (pipeline::inputs::sources::write_for_python).
+fn heritage_script(root: &Path, dem: &Path, nas: &Path, declared: Option<&Path>, script: &str, args: &[&str]) -> Result<()> {
     let t = std::time::Instant::now();
     let mut c = store::spawn::command("uv");
+    if let Some(d) = declared {
+        c.env(pipeline::inputs::sources::PYTHON_ENV, d);
+    }
     // (The pageview months' indexes the items job keeps, on the NAS: pageviews.py.)
     c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", dem.join(".venv")).env("SCENIC_PAGEVIEWS_STORE", nas.join("sources/pageviews")).args(["run", "--frozen", "python", script]).args(args);
     // (Its phase, its own phases under it: dem/timings.py.)
@@ -2806,7 +2813,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     if let Some(m) = &match_arg {
         hargs.extend(["--matches", m.as_str()]);
     }
-    heritage_script(&root, &dem, out.root(), "heritage.py", &hargs)?;
+    heritage_script(&root, &dem, out.root(), None, "heritage.py", &hargs)?;
     parts.start(3);
     // The units' slices, then the whole files.
     let p = phase("the sites and areas sliced per area", Class::Compute);

@@ -1044,8 +1044,8 @@ unchanged:
 | Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`dem/leaftype.py`, given the sources) | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
 | Overture buildings | `buildtiles::RELEASE`, `dem/buildings.py`, `dem/bldfetch.py` | `geoparquet`, version, bucket prefix; `estimated_sources` replacing `bld/fill.rs`'s `ESTIMATES` |
 | GHSL building heights | `bld/sources.rs`, `dem/bldfetch.py` | `geotiff`, its grid as an index |
-| Wikidata, Wikipedia's API | `dem/heritagewd.py` | endpoints |
-| Wikipedia pageviews | `dem/pageviews.py` (`DUMP`) | URL template; the months stay the items job's rule |
+| Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikidata-query-service.toml`, `wikipedia-api.toml`, the `wikidata`, `wikidata-live` and `wikipedia` roles, read by the Python steps by role (`dem/declared.py`) | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
+| Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
 | Geoid grids | none yet | `geoid-grid`, pinned (§6.8 step 3) |
 | Canada's lake fill (CanVec) | `lakefill::run::SOURCE_DIR`, `FillOpts::canvec` | `zip` of shapefiles, its layer and values in the declaration |
 

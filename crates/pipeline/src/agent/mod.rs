@@ -8796,11 +8796,11 @@ mod tests {
     #[test]
     fn the_jobs_reading_the_declared_sources_wait_for_them() {
         let spec = |id: &str| JobSpec { id: id.into(), what: format!("doing {id}"), cmd: Vec::new(), needs: Needs { nas: true }, restart_after_sleep: true, record: None };
-        let jobs = || ["labels 2026-09-28", "unit 6/1/2", "terrain 6/18/20", "trees 6/3/4"].map(spec).to_vec();
+        let jobs = || ["labels 2026-09-28", "unit 6/1/2", "terrain 6/18/20", "trees 6/3/4", "items 2026-09-28", "heritage 2026-09-28", "heritage-sites 2026-09-28"].map(spec).to_vec();
         let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut waiting = Vec::new();
-        assert_eq!(ids(&hold_for_sources(jobs(), true, &mut waiting)), ["labels 2026-09-28", "terrain 6/18/20"]);
-        assert_eq!(waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(), ["unit", "trees"]);
+        assert_eq!(ids(&hold_for_sources(jobs(), true, &mut waiting)), ["labels 2026-09-28", "terrain 6/18/20", "heritage-sites 2026-09-28"]);
+        assert_eq!(waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(), ["unit", "trees", "items", "heritage"]);
         assert!(waiting.iter().all(|w| w.why.contains("inputs/sources/")));
         let mut waiting = Vec::new();
         assert_eq!(ids(&hold_for_sources(jobs(), false, &mut waiting)), ids(&jobs()));

@@ -1,0 +1,15 @@
+name = "Wikimedia pageview dumps (pageview_complete, monthly, user agents)"
+what = "Fame: Wikipedia pageviews"
+credit = "Wikimedia Foundation, pageview dumps"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://dumps.wikimedia.org/other/pageview_complete/readme.html"
+territory = "world"
+notes = "A month's dump streamed once into an index kept in sources/pageviews/ (dem/pageviews.py); which months are read is the items job's rule (MONTHS), not the declaration's."
+
+[data]
+role = "pageviews"
+format = "pageviews-dump"
+# A month's dump: `{y}` its year, `{m}` its month (two digits).
+url = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
+refresh = "pinned"

@@ -1,0 +1,14 @@
+name = "English Wikipedia's API"
+what = "Wikipedia short descriptions"
+credit = "Wikipedia"
+licence = "CC-BY-SA-4.0"
+licence_url = "https://creativecommons.org/licenses/by-sa/4.0/"
+source = "https://en.wikipedia.org/w/api.php"
+territory = "world"
+notes = "The short descriptions of the articles the heritage sites link (dem/heritagewd.py's shortdescs: pageprops, wikibase-shortdesc)."
+
+[data]
+role = "wikipedia"
+format = "mediawiki-api"
+url = "https://en.wikipedia.org/w/api.php"
+refresh = "live"

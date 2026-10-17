@@ -1,0 +1,14 @@
+name = "Wikidata, through QLever's SPARQL endpoint (University of Freiburg)"
+what = "Facts about places (heights, inception, Wikipedia articles, park details)"
+credit = "Wikidata, via QLever (University of Freiburg)"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://qlever.dev/wikidata"
+territory = "world"
+notes = "The heritage chain's and the items job's queries (dem/heritagewd.py's sparql: heritagewd, areadetails, items), POSTed with the chain's prefixes. The Wikidata Query Service was rate-limiting to one request a minute during an outage (2026-09-28)."
+
+[data]
+role = "wikidata"
+format = "sparql"
+url = "https://qlever.dev/api/wikidata"
+refresh = "live"

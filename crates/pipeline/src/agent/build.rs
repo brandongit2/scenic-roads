@@ -443,9 +443,10 @@ pub fn water_waits_for_lakefill(lakefill: bool, failures: u32) -> bool {
 
 /// The steps that read the declared sources (crate::inputs::sources), which wait for their first
 /// accepted version (agent's `hold_for_sources`): the units (their land cover and canopy), the tree
-/// cover (its canopy and leaf-type squares).
+/// cover (its canopy and leaf-type squares), the items and the heritage chain (Wikidata, Wikipedia, the
+/// pageviews).
 pub fn reads_sources(step: &str) -> bool {
-    matches!(step, "unit" | "trees")
+    matches!(step, "unit" | "trees" | "items" | "heritage")
 }
 
 /// The steps that read the pass's lake fill, which wait for it (agent's `hold_for_lakefill`).

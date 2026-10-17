@@ -12,6 +12,8 @@
 //!   `no_proxy` of its own) but what `BYPASS` lists, with why;
 //! - dem/budget.py's hosts are crate::budget's.
 //!
+//! A step asking a declared source (docs/inputs.md §6.9: dem/whsshapes.py, dem/pageviews.py ask theirs
+//! by role, dem/declared.py) names no host to scan: the proxy holds it at egress all the same.
 //! A new file naming a metered host, or a new way around the proxy, fails here until it's listed;
 //! an entry matching nothing fails too, so the lists can't go stale.
 
@@ -30,8 +32,6 @@ const ASKS: &[(&str, &str)] = &[
     ("dem/heritagewd.py", "curl (honours HTTPS_PROXY); a 429 told (budget.seen)"),
     ("dem/items.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
     ("dem/areadetails.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
-    ("dem/whsshapes.py", "urllib (honours HTTPS_PROXY), a query its cache lacks; a 429 told (budget.seen)"),
-    ("dem/pageviews.py", "curl and urllib (both honour HTTPS_PROXY): a month's dump a connection; a 429 fails the month (curl --fail), tried again by the step's next run, not told"),
 ];
 
 /// The Python that asks, so reports a 429 (`budget.seen`).

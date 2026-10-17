@@ -1,0 +1,14 @@
+name = "Wikidata Query Service"
+what = "World Heritage Sites' Wikidata items"
+credit = "Wikidata"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://query.wikidata.org/"
+territory = "world"
+notes = "dem/whsshapes.py's query of the items with a World Heritage id (P757), asked by GET with its built-in prefixes, once (its answer cached)."
+
+[data]
+role = "wikidata-live"
+format = "sparql"
+url = "https://query.wikidata.org/sparql"
+refresh = "live"

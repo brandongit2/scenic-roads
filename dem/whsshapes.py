@@ -53,6 +53,7 @@ from shapely.geometry import mapping, shape
 from shapely.ops import polylabel
 
 import budget
+import declared
 from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,7 +89,7 @@ def wd_sparql(query: str, cache: Path) -> list[dict]:
     """A Wikidata query's answer (JSON bindings), from its cache (asked once, when it isn't there)."""
     if not (cache.exists() and cache.stat().st_size > 0):
         with phase("sources downloaded", "net"):
-            url = "https://query.wikidata.org/sparql?" + urllib.parse.urlencode({"query": query, "format": "json"})
+            url = declared.url("wikidata-live") + "?" + urllib.parse.urlencode({"query": query, "format": "json"})
             req = urllib.request.Request(url, headers={"User-Agent": "scenic-roads/0.1 (personal offline map)"})
             try:
                 with urllib.request.urlopen(req, timeout=600) as r:

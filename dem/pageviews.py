@@ -9,7 +9,7 @@ articles in the languages of the map's regions
 Basque …) are counted and summed. The item's articles come from data/heritage/wd/wp.jsonl
 (heritagewd.py), filled here for POI items not in it.
 
-Views come from Wikimedia's monthly pageview dumps (dumps.wikimedia.org, pageview_complete, user
+Views come from Wikimedia's monthly pageview dumps (the declared `pageviews` source: pageview_complete, user
 agents only). The API allows anonymous clients ten requests a minute, too few for ~100,000
 articles. One month per season is sampled (MONTHS), so summer-heavy places aren't favoured.
 A month is streamed (~5 GB through bzip2) once: every article of the map's languages is counted,
@@ -40,6 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cachefile
+import declared
 import heritagewd
 from timings import count, phase
 
@@ -53,14 +54,13 @@ LANGS = {"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "
 # LANGS as it was then, written out (LANGS may grow; these indexes don't).
 LANGS_UNSAID = frozenset({"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"})
 MONTHS = ["2025-11", "2026-02", "2026-05", "2026-08"]
-DUMP = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
 # The NAS's months' indexes (scenic-build sets it); none: here only.
 STORE = Path(os.environ["SCENIC_PAGEVIEWS_STORE"]) if os.environ.get("SCENIC_PAGEVIEWS_STORE") else None
 
 
 def months_before(epoch: str) -> list[str]:
     """The last November, February, May and August that ended at least 20 days before the epoch
-    (dumps.wikimedia.org publishes a month's dump in its first days), oldest first: a pass's months,
+    (Wikimedia publishes a month's dump in its first days), oldest first: a pass's months,
     the same for the items job and the heritage chain."""
     import datetime
 
@@ -207,10 +207,10 @@ def _langs_of(wanted: set[str]) -> set[str]:
 
 
 def _dump_size(month: str) -> int:
-    """A month's dump's size in bytes, as dumps.wikimedia.org says (0 when it doesn't say)."""
+    """A month's dump's size in bytes, as its server says (0 when it doesn't say)."""
     y, m = month.split("-")
     try:
-        req = urllib.request.Request(DUMP.format(y=y, m=m), method="HEAD", headers={"User-Agent": UA})
+        req = urllib.request.Request(declared.url("pageviews").format(y=y, m=m), method="HEAD", headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=30) as r:
             return int(r.headers.get("Content-Length") or 0)
     except (OSError, ValueError):
@@ -287,7 +287,7 @@ def _report(final: bool = False) -> None:
 
 def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
     """Each month's views of the wanted articles (month_views), two months streamed at once (the
-    most dumps.wikimedia.org asks for), with a progress line every half minute: the bytes streamed
+    most its server asks for), with a progress line every half minute: the bytes streamed
     of all the dumps to stream (each one's size asked first), and of the months' indexes as they're
     copied and read, so the build's status shows how far it is and when it'll be done, not the step
     before's last line for half an hour."""
@@ -369,7 +369,7 @@ def _stream_index(month: str) -> Path:
         # truncated stream) fails the month instead of keeping what arrived as its index. curl's bytes
         # reach bzip2 through here, counted (the progress line's: a few MB a second). A download that
         # stalls (under 10 kB/s for five minutes) is given up.
-        curl = subprocess.Popen(["curl", "-sSL", "--fail", "--connect-timeout", "30", "--speed-limit", "10000", "--speed-time", "300", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
+        curl = subprocess.Popen(["curl", "-sSL", "--fail", "--connect-timeout", "30", "--speed-limit", "10000", "--speed-time", "300", "-A", UA, declared.url("pageviews").format(y=y, m=m)], stdout=subprocess.PIPE)
         bz = subprocess.Popen(["bzip2", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         grep = subprocess.Popen(["grep", "-E", f"^({langs})\\.wikipedia "], stdin=bz.stdout, stdout=subprocess.PIPE,
                                 env={**os.environ, "LC_ALL": "C"}, text=True, encoding="utf-8", errors="replace")

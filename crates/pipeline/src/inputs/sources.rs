@@ -38,7 +38,7 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 10] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 11] = [
     // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -53,6 +53,8 @@ pub const ROLES: [(&str, &[&str], &[&str]); 10] = [
     (BUILDING_HEIGHTS, &["zip-geotiff"], &[]),
     // (Wikidata's facts: dem/heritagewd.py.)
     (WIKIDATA, &["sparql"], &[]),
+    // (Wikidata as it is now, by the Query Service's built-in prefixes: dem/whsshapes.py.)
+    (WIKIDATA_LIVE, &["sparql"], &[]),
     // (Wikipedia's short descriptions and links: dem/heritagewd.py.)
     (WIKIPEDIA, &["mediawiki-api"], &[]),
     // (Wikipedia's monthly pageviews: dem/pageviews.py; the months are the items job's.)
@@ -68,6 +70,7 @@ pub const LEAF_NORTH_AMERICA: &str = "leaf-type-north-america";
 pub const BUILDINGS: &str = "buildings";
 pub const BUILDING_HEIGHTS: &str = "building-heights";
 pub const WIKIDATA: &str = "wikidata";
+pub const WIKIDATA_LIVE: &str = "wikidata-live";
 pub const WIKIPEDIA: &str = "wikipedia";
 pub const PAGEVIEWS: &str = "pageviews";
 pub const LAKE_FILL: &str = "lake-fill";
@@ -477,6 +480,21 @@ pub fn read(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Sources>
     open(root, manifest)?.context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
 }
 
+/// The environment variable naming the file a Python step reads the sources from (dem/declared.py).
+pub const PYTHON_ENV: &str = "SCENIC_SOURCES";
+
+/// The accepted sources as a Python step reads them (dem/declared.py): each by its role, its `id`,
+/// `url`, `urls`, `version` and `params`, written as `sources.json` in `dir`; the file's path, for
+/// `PYTHON_ENV`.
+pub fn write_for_python(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<std::path::PathBuf> {
+    let s = read(root, manifest)?;
+    let v: BTreeMap<&str, serde_json::Value> = s.all().map(|x| (x.data.role.as_str(), serde_json::json!({ "id": x.id, "url": x.data.url, "urls": x.data.urls, "version": x.data.version, "params": x.data.params }))).collect();
+    std::fs::create_dir_all(dir)?;
+    let p = std::path::absolute(dir.join("sources.json"))?;
+    std::fs::write(&p, serde_json::to_vec_pretty(&v)?)?;
+    Ok(p)
+}
+
 /// Whether the records name an accepted version of the declarations: the steps that read them wait
 /// until they do.
 pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
@@ -485,7 +503,11 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 5] = [
+pub const STAGED: [(&str, &[u8]); 9] = [
+    ("wikidata-qlever.toml", include_bytes!("../../../../producers/sources/wikidata-qlever.toml")),
+    ("wikidata-query-service.toml", include_bytes!("../../../../producers/sources/wikidata-query-service.toml")),
+    ("wikipedia-api.toml", include_bytes!("../../../../producers/sources/wikipedia-api.toml")),
+    ("wikipedia-pageviews.toml", include_bytes!("../../../../producers/sources/wikipedia-pageviews.toml")),
     ("esa-worldcover.toml", include_bytes!("../../../../producers/sources/esa-worldcover.toml")),
     ("meta-canopy.toml", include_bytes!("../../../../producers/sources/meta-canopy.toml")),
     ("canopy-squares.geojson", include_bytes!("../../../../producers/sources/canopy-squares.geojson")),
@@ -567,6 +589,38 @@ mod tests {
         let v = Version { paths: files.keys().map(|s| s.to_string()).collect(), read: &read };
         let checks: Vec<String> = SourcesCheck::default().whole(&v).unwrap().iter().map(|f| f.check().to_string()).collect();
         assert!(checks.contains(&MISSING.to_string()) && checks.contains(&ROLE.to_string()) && checks.contains(&ORPHAN.to_string()), "{checks:?}");
+    }
+
+    /// The declarations staged for the drop box (producers/sources/) pass the input check, file by
+    /// file and whole, one a role.
+    #[test]
+    fn the_staged_declarations_pass_the_check() {
+        let files: BTreeMap<&str, &[u8]> = STAGED.iter().copied().collect();
+        for (p, b) in &files {
+            let c = SourcesCheck::default().file(p, b);
+            assert!(c.findings.is_empty(), "{p}: {:?}", c.findings);
+        }
+        let read = |p: &str| Ok(std::sync::Arc::new(files[p].to_vec()));
+        let v = Version { paths: files.keys().map(|s| s.to_string()).collect(), read: &read };
+        assert_eq!(SourcesCheck::default().whole(&v).unwrap(), Vec::new());
+        let s = staged();
+        assert_eq!(s.all().count(), files.keys().filter(|p| p.ends_with(".toml")).count());
+    }
+
+    /// What a Python step reads (dem/declared.py): each source by its role, the URLs the scripts
+    /// had in code before they were declared.
+    #[test]
+    fn the_python_steps_sources() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = BTreeMap::new();
+        accept_fixture(d.path(), &mut m);
+        let p = write_for_python(d.path(), &m, &d.path().join("job")).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        // (heritagewd.py's WDQS and its Wikipedia API, whsshapes.py's query service, pageviews.py's DUMP.)
+        assert_eq!(v[WIKIDATA]["url"], "https://qlever.dev/api/wikidata");
+        assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
+        assert_eq!(v[WIKIDATA_LIVE]["url"], "https://query.wikidata.org/sparql");
+        assert_eq!(v[PAGEVIEWS]["url"], "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2");
     }
 
     #[test]
