@@ -486,8 +486,9 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
         let Some(r) = reach.get(u).filter(|r| r.builds(cov)) else { continue };
         // (Without the declared elevation datasets, before the switch or while they can't be read,
         // no key: the unit waits.)
-        let elevation = tiles.elevation(m).ok().flatten();
-        units.push((u, unit_terrain(u, r, m, tiles).ok().zip(elevation).map(|(t, e)| unit_key(cov, date, m, u, c, r, &t, &e))));
+        // (Nor without the declared buildings source's release.)
+        let elevation = tiles.elevation(m).ok().flatten().zip(tiles.buildings_release(m));
+        units.push((u, unit_terrain(u, r, m, tiles).ok().zip(elevation).map(|(t, (e, b))| unit_key(cov, date, m, u, c, r, &t, &e, b))));
     }
     units
 }
@@ -495,26 +496,28 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
 /// Unit `u`'s key (its piece `piece`, its reach `r`): what it reads. Its piece and road values, the
 /// coverage as its ways meet it (`Reach::coverage_key`), the location rules where they go
 /// (`crate::rules`) and the `keyed` digests of the declared elevation datasets meeting its ways
-/// (`elevation`: crate::inputs::elevation), the roadside buildings' index, the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
+/// (`elevation`: crate::inputs::elevation), the roadside buildings' index (of the declared release
+/// `buildings`: crate::buildtiles), the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
 /// digest), and the heritage sites' and areas' slices near it, as the manifest has them, which is
 /// what the unit step stages from.
 #[allow(clippy::too_many_arguments)]
-pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)]) -> String {
+pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)], buildings: &str) -> String {
     let ext = r.extent(u);
     let deg = |v: i32| v as f64 * 1e-7;
     let e = format!("elevation {}", crate::dem::declared::meeting(elevation, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(","));
-    unit_key_with(cov, date, m, u, piece, r, terrain, crate::rules::versions_meeting(ext), Some(e))
+    unit_key_with(cov, date, m, u, piece, r, terrain, crate::rules::versions_meeting(ext), Some(e), buildings)
 }
 
 /// `unit_key` of the location rules' versions `rules` and the elevations' line `elevation` (None:
-/// before the declared datasets, when the DEM rules were among the rules: agent::rekey).
+/// before the declared datasets, when the DEM rules were among the rules: agent::rekey), the
+/// roadside buildings of release `buildings`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn unit_key_with(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, rules: String, elevation: Option<String>) -> String {
+pub(crate) fn unit_key_with(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, rules: String, elevation: Option<String>, buildings: &str) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut inputs = vec![format!("unit {UNIT_V}"), piece.to_string(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), r.coverage_key(cov, u), rules];
     inputs.extend(elevation);
     // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
-    inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical())));
+    inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
     // The terrain it reads. Not the analysis grids' packs (grid-class, -canopy, -cover): the units
     // write those where they're missing, so each built unit would change its own key and its
     // neighbours' (built again, over and over); a grid read from its pack or made afresh is the
@@ -1686,7 +1689,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // The units wait for the heritage sites, the pass's reaches (which units the coverage builds)
     // and the release's roadside buildings (a worldwide job, once): the terrain, slope and tree
     // cover meanwhile.
-    let waiting = sites_pending || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) || !m.contains_key(&crate::buildtiles::index_logical());
+    let waiting = sites_pending || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) || tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&crate::buildtiles::index_logical(b)));
     // The trains' and the landmarks' chains: from the start, each step once what it reads is built
     // (`landmarks_work`: none waits for the units but the overlays), listed after the regions'
     // work. A second job beside the regions' takes them first (crate::agent, Two jobs at once), a
@@ -2451,20 +2454,28 @@ fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done
 /// pinned release's files and GHSL's tiles meeting the coverage grown by 20 km.
 pub const BLD_FETCH_V: u32 = 1;
 
-/// bld-fetch's key (network): the release and the whole coverage. Not the footers it reads and
+/// bld-fetch's key (network): the declared release (`inputs` "bld-key": the release while the
+/// declarations name what the code had, crate::bld::sources::declared) and the whole coverage. Not the footers it reads and
 /// writes (`footers.json.gz`): a release's files never change, so the release names them, and a key
 /// on what the job writes would run it a second time for its own sake.
-fn bld_fetch_key(cov: &Coverage) -> String {
-    h(&[&format!("bld-fetch {BLD_FETCH_V}"), crate::buildtiles::RELEASE, &coverage_all(cov)])
+fn bld_fetch_key(cov: &Coverage, inputs: &BTreeMap<String, String>) -> String {
+    h(&[&format!("bld-fetch {BLD_FETCH_V}"), bld_key(inputs), &coverage_all(cov)])
+}
+
+/// What the 3D buildings' keys name of the declared sources (`inputs` "bld-key").
+fn bld_key(inputs: &BTreeMap<String, String>) -> &str {
+    inputs.get("bld-key").map_or("-", String::as_str)
 }
 
 /// Whether the release's sources are here (`inputs` "bld-release", crate::bld::sources::digests:
-/// the release when its indexes read, "" before anything was downloaded); None when they can't be
-/// read now ("?"), or weren't asked about (no entry): no 3D buildings' work then.
+/// the declared release when its indexes read, "" before anything was downloaded); None when they can't be
+/// read now ("?"), or weren't asked about (no entry, or no "bld-key": the sources not declared): no
+/// 3D buildings' work then.
 fn bld_sources(inputs: &BTreeMap<String, String>) -> Option<bool> {
     match inputs.get("bld-release").map(String::as_str) {
         None | Some("?") => None,
-        Some(r) => Some(r == crate::buildtiles::RELEASE),
+        Some(_) if !inputs.contains_key("bld-key") => None,
+        Some(r) => Some(!r.is_empty()),
     }
 }
 
@@ -2498,7 +2509,7 @@ pub fn bld_targets(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeM
     for (x, y, shapes) in bld_tiles(cov).iter() {
         let t = format!("6/{x}/{y}");
         if let Some(d) = inputs.get(&format!("bldprep {t}")).filter(|_| sources) {
-            out.prep.push((t.clone(), h(&[&format!("bldprep {BLDPREP_V}"), crate::buildtiles::RELEASE, d])));
+            out.prep.push((t.clone(), h(&[&format!("bldprep {BLDPREP_V}"), bld_key(inputs), d])));
         }
         if let Some(shapes) = shapes {
             let mut ins = vec![format!("bldtiles {BUILDINGS_V}")];
@@ -2617,7 +2628,7 @@ fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Op
 pub fn bld_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, rank: &dyn Fn(&str) -> BldRank) -> Vec<Work> {
     let Some(sources) = bld_sources(inputs) else { return Vec::new() };
     let mut out = Vec::new();
-    let k = bld_fetch_key(cov);
+    let k = bld_fetch_key(cov, inputs);
     if done.lo.get("bld-fetch") != Some(&k) {
         out.push(Work { step: "bld-fetch".into(), targets: vec![("bld-fetch".into(), k)] });
     }
@@ -2650,7 +2661,7 @@ pub fn bld_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, input
 /// checklist's and the forecast's view): the fetch, every stale `bldprep`, every stale `bldtiles`.
 fn bld_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
     bld_sources(inputs)?;
-    let k = bld_fetch_key(cov);
+    let k = bld_fetch_key(cov, inputs);
     if done.lo.get("bld-fetch") != Some(&k) {
         return Some(Work { step: "bld-fetch".into(), targets: vec![("bld-fetch".into(), k)] });
     }
@@ -3092,7 +3103,7 @@ pub(crate) mod tests {
     pub(crate) fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
         m.insert(crate::inputs::logical(crate::inputs::heritage::UNIT), "sources/inputs/heritage/@index.3434343434343434.json".into());
-        m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
+        m.insert(crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE), format!("{}.6767676767676767.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)));
         elevation_inputs(m);
     }
 
@@ -4095,16 +4106,16 @@ pub(crate) mod tests {
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         heritage_done(&mut m, &mut done, "d", &w[0]);
         // Without the release's buildings (the worldwide job), the units wait for them.
-        let index = m.remove(&crate::buildtiles::index_logical()).unwrap();
+        let index = m.remove(&crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)).unwrap();
         assert!(!plan(&c, "d", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "unit"));
-        m.insert(crate::buildtiles::index_logical(), index);
+        m.insert(crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE), index);
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
         // Buildings made again: every unit again.
         let k = unit_keys(&c, "d", &m)[0].1.clone();
         let mut m2 = m.clone();
-        m2.insert(crate::buildtiles::index_logical(), format!("{}.6868686868686868.json", crate::buildtiles::index_logical()));
+        m2.insert(crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE), format!("{}.6868686868686868.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)));
         assert_ne!(unit_keys(&c, "d", &m2)[0].1, k);
         // A unit's key names the heritage slices near it, and only those.
         let key = |m: &BTreeMap<String, String>| unit_keys(&c, "d", m)[0].1.clone();
@@ -4928,7 +4939,7 @@ pub(crate) mod tests {
     /// The 3D buildings' sources as agent::input_digests has them: every z6 tile within 1 km of
     /// `c` reading something (its digest `d`), and their rows.
     fn bld_inputs(c: &Coverage, d: &str) -> BTreeMap<String, String> {
-        let mut inputs = BTreeMap::from([("bld-release".to_string(), crate::buildtiles::RELEASE.to_string())]);
+        let mut inputs = BTreeMap::from([("bld-release".to_string(), crate::buildtiles::TEST_RELEASE.to_string()), ("bld-key".to_string(), crate::buildtiles::TEST_RELEASE.to_string())]);
         for x in 0..64u32 {
             for y in 0..64u32 {
                 if c.meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 1.0)) {
@@ -4995,7 +5006,7 @@ pub(crate) mod tests {
         assert!(bld_work(&c, &m, &done, &BTreeMap::new(), &by_spatial).is_empty());
         assert!(bld_work(&c, &m, &done, &BTreeMap::from([("bld-release".to_string(), "?".to_string())]), &by_spatial).is_empty());
         // Nothing downloaded yet: the fetch alone.
-        assert_eq!(steps(&bld_work(&c, &m, &done, &BTreeMap::from([("bld-release".to_string(), String::new())]), &by_spatial)), ["bld-fetch"]);
+        assert_eq!(steps(&bld_work(&c, &m, &done, &BTreeMap::from([("bld-release".to_string(), String::new()), ("bld-key".to_string(), crate::buildtiles::TEST_RELEASE.to_string())]), &by_spatial)), ["bld-fetch"]);
         // The sources here: the fetch, and every tile's normalized file beside it; no tile until
         // it and its neighbours are prepared.
         let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
@@ -5052,7 +5063,7 @@ pub(crate) mod tests {
         assert!(!done.bldtiles.contains_key("6/40/20"));
         // (Not the normalized files while the sources aren't here: every tile would seem to read
         // nothing.)
-        let none = BTreeMap::from([("bld-release".to_string(), String::new())]);
+        let none = BTreeMap::from([("bld-release".to_string(), String::new()), ("bld-key".to_string(), crate::buildtiles::TEST_RELEASE.to_string())]);
         assert_eq!(bld_work(&c, &m, &done, &none, &by_spatial).iter().flat_map(|w| w.targets.iter().map(|t| t.0.clone())).filter(|t| t.starts_with("bldprep")).count(), 0);
         // A new fit (BUILDINGS_V) or a neighbour's file made again: its tiles again, nothing else.
         let (t, _) = prep[0].clone();

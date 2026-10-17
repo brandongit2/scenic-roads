@@ -72,17 +72,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+import declared
 from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
-S3 = "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/"
-TYPES = ("building_part", "building")
-GHSL_RELEASE = "R2023A"
-GHSL_PRODUCT = "GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss_V1_0"
-GHSL_URL = ("https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_H_GLOBE_R2023A/"
-            "GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss/V1-0/tiles/")
-# The tiles' grid (R1_C1's corner, read from R1_C8's GeoTIFF): 12,000 × 12,000 cells of 3", 10° a side.
-GHSL_TOP, GHSL_LEFT, GHSL_DEG = 89.09958317764332, -180.00791620856731, 10.0
+# Where the sources are: the declared `buildings` source (its bucket, `url`, and `params.types`)
+# and `building-heights` source (its tiles by its index, its `version` naming its folder here),
+# docs/inputs.md §6.9.
 CTX = ssl.create_default_context()  # certificates and host names verified
 CHUNK = 1 << 20
 # Part sizes S3 uploaders use, for a multipart ETag ("<md5 of the parts' md5s>-<parts>").
@@ -237,7 +233,7 @@ def s3_list(prefix: str) -> list[dict]:
         q = {"list-type": "2", "prefix": prefix}
         if token:
             q["continuation-token"] = token
-        x = ET.fromstring(get_bytes(S3 + "?" + urllib.parse.urlencode(q)))
+        x = ET.fromstring(get_bytes(declared.url("buildings") + "?" + urllib.parse.urlencode(q)))
         for c in x.findall("s:Contents", ns):
             key = c.findtext("s:Key", namespaces=ns)
             if key.endswith(".parquet"):
@@ -328,7 +324,7 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
                 log(f"{cache_path}: unreadable ({e}); reading the footers again")
     with phase("the release's files listed on S3", "net"):
         listed = []
-        for t in TYPES:
+        for t in declared.source("buildings")["params"]["types"]:
             prefix = f"release/{rel}/theme=buildings/type={t}/"
             files = s3_list(prefix)
             if not files and cache:
@@ -347,7 +343,7 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
         done = [0]
 
         def one(f):
-            r = row_groups(S3 + f["key"], f["size"])
+            r = row_groups(declared.url("buildings") + f["key"], f["size"])
             done[0] += 1
             if done[0] % 50 == 0:
                 log(f"footers: {done[0]}/{len(todo)}")
@@ -369,7 +365,7 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
                 continue
             rel_path = f["key"].split(f"release/{rel}/", 1)[1]
             jobs.append({
-                "src": "overture", "url": S3 + f["key"], "dest": base / rel_path, "size": f["size"], "etag": f["etag"],
+                "src": "overture", "url": declared.url("buildings") + f["key"], "dest": base / rel_path, "size": f["size"], "etag": f["etag"],
                 "name": rel_path, "rows": c["rows"], "row_groups": len(c["rgs"]), "rows_near": sum(g[4] for g in hit),
                 "bbox": [min(g[0] for g in c["rgs"]), min(g[1] for g in c["rgs"]), max(g[2] for g in c["rgs"]), max(g[3] for g in c["rgs"])],
             })
@@ -380,23 +376,18 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
 
 def ghsl_jobs(args, cov) -> tuple[list[dict], Path]:
     from shapely.geometry import box
-    base = Path(args.root) / "sources/ghsl" / GHSL_RELEASE
+    src = declared.source("building-heights")
+    base = Path(args.root) / "sources/ghsl" / src["version"]
     base.mkdir(parents=True, exist_ok=True)
-    with phase("the GHSL tiles listed", "net"):
-        page = get_bytes(GHSL_URL).decode("utf-8", "replace")
-    names = sorted(set(re.findall(rf'href="({GHSL_PRODUCT}_R(\d+)_C(\d+)\.zip)"', page)))
-    if not names:
-        raise SystemExit(f"GHSL: no tiles listed at {GHSL_URL}")
+    # (Its tiles and their footprints, by its index: producers/sources/ghsl.py's.)
+    if not src["index"]:
+        raise SystemExit("GHSL: its declaration's index lists no tiles")
     with phase("the files meeting the coverage picked", "compute"):
         jobs = []
-        for name, r, c in names:
-            top = GHSL_TOP - GHSL_DEG * (int(r) - 1)
-            left = GHSL_LEFT + GHSL_DEG * (int(c) - 1)
-            if top - GHSL_DEG < -90 or top > 90.5:
-                continue
-            b = [left, top - GHSL_DEG, left + GHSL_DEG, top]
+        for f in sorted(src["index"], key=lambda f: f["url"]):
+            name, b = f["url"].rsplit("/", 1)[1], f["bbox"]
             if cov.intersects(box(*b)):
-                jobs.append({"src": "ghsl", "url": GHSL_URL + name, "dest": base / name, "size": None, "etag": None, "name": name, "bbox": b})
+                jobs.append({"src": "ghsl", "url": f["url"], "dest": base / name, "size": None, "etag": None, "name": name, "bbox": b})
 
     # Each tile's size (the listing rounds them), so one already here is known whole.
     def head(j):
@@ -636,7 +627,7 @@ def zip_bad(path: Path) -> str | None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", required=True, help="the NAS's project folder")
-    ap.add_argument("--release", default="2026-09-23.1", help="Overture's release")
+    ap.add_argument("--release", required=True, help="the buildings source's release (its declared version)")
     ap.add_argument("--server", default="http://localhost:7311", help="the map's server, for the coverage")
     ap.add_argument("--coverage", help="the coverage as a GeoJSON file instead")
     ap.add_argument("--margin-km", type=float, default=20.0)
@@ -722,7 +713,7 @@ def main() -> None:
                     f = files.get(j["name"], {})
                     files[j["name"]] = {**f, "size": j["size"], "etag": j["etag"], "rows": j["rows"], "row_groups": j["row_groups"],
                                         "rows_near": j["rows_near"], "bbox": j["bbox"], "checked": f.get("checked") or done_meta.get(j["name"], {}).get("checked", "size")}
-            write_json(idx_path, {"fmt": 1, "release": args.release, "source": S3 + f"release/{args.release}/theme=buildings/",
+            write_json(idx_path, {"fmt": 1, "release": args.release, "source": declared.url("buildings") + f"release/{args.release}/theme=buildings/",
                                   "terms": "ODbL 1.0 (the theme; its sources' licences per row in `sources`)",
                                   "coverage": {"regions": what, "margin_km": args.margin_km, "at": at}, "files": dict(sorted(files.items()))})
         if gh_base is not None:
@@ -735,7 +726,8 @@ def main() -> None:
             for j in jobs:
                 if j["src"] == "ghsl" and j["dest"].exists() and j["dest"].stat().st_size == j["size"]:
                     tiles[j["name"]] = {"size": j["size"], "bbox": j["bbox"], "checked": "zip CRC-32"}
-            write_json(idx_path, {"fmt": 1, "product": GHSL_PRODUCT, "source": GHSL_URL,
+            ghsl = declared.source("building-heights")
+            write_json(idx_path, {"fmt": 1, "product": f"{ghsl['id']} {ghsl['version']}", "source": "its declaration's index",
                                   "terms": "© European Union, 1995-2026; CC BY 4.0", "tiles": dict(sorted(tiles.items()))})
 
     def save():

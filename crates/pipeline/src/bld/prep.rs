@@ -710,15 +710,18 @@ impl Prepped {
 
 /// Runs `bldprep T`: bldprep.py (in `dem`, through uv) for tile `t`, its stream read as it comes,
 /// the normalized file written and uploaded as `work/bld/6-x-y` (or, when T has no building, the
-/// one it had dropped). Its counts.
-pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
+/// one it had dropped). Its counts. The release and GHSL's folder are the declared sources'
+/// (crate::inputs::sources, given bldprep.py by `SCENIC_SOURCES`).
+pub fn run(out: &mut Out, t: Unit, dem: &Path) -> Result<Stats> {
+    let release = crate::buildtiles::release_of(out.root(), &out.manifest)?;
+    let declared = crate::inputs::sources::write_for_python(out.root(), &out.manifest, &out.scratch_file("bldprep-sources"))?;
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
     let t0 = std::time::Instant::now();
     use crate::timings::{phase, Class};
     // (bldprep.py reading the sources as this reads its stream: one phase, its own under it.)
     let streamed = phase("bldprep.py, its stream read", Class::Mixed);
     let mut c = store::spawn::command("uv");
-    c.current_dir(dem).args(["run", "python", "bldprep.py", "--root"]).arg(out.root()).args(["--tile", &t.slash(), "--release", release]).stdout(std::process::Stdio::piped());
+    c.current_dir(dem).env(crate::inputs::sources::PYTHON_ENV, &declared).args(["run", "python", "bldprep.py", "--root"]).arg(out.root()).args(["--tile", &t.slash(), "--release", &release]).stdout(std::process::Stdio::piped());
     crate::timings::child(&mut c);
     let mut child = store::spawn::spawn(&mut c).context("run bldprep.py")?;
     // The stream read on its own thread, a few frames ahead, so Python reads on while records are
@@ -787,7 +790,7 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     }
     let local = out.scratch_file(&format!("{logical}.sect"));
     let w = phase("the normalized file written", Class::Disk);
-    let st = p.write(t, release, &local)?;
+    let st = p.write(t, &release, &local)?;
     drop(w);
     let w = phase("uploaded", Class::NasWrite);
     let name = out.put_file(&logical, "sect", &local)?;

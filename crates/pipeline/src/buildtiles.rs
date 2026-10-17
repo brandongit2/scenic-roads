@@ -1,6 +1,6 @@
-//! Roadside buildings (docs/plan.md §6, base(U)): Overture's buildings of one pinned release, as
-//! bounding boxes, in z8 tiles by their centre: `sources/buildings/<release>/8/<x>-<y>.f32` (the
-//! release's dot a dash: logical names have none), f32 `[xmin, ymin, xmax, ymax]` per building,
+//! Roadside buildings (docs/plan.md §6, base(U)): the declared buildings source's release (its
+//! `version`: crate::inputs::sources, the `buildings` role, Overture's), as bounding boxes, in z8
+//! tiles by their centre: `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash: logical names have none), f32 `[xmin, ymin, xmax, ymax]` per building,
 //! degrees, sorted, each once (no file for a tile without any), with their index
 //! `sources/buildings/<release>/index`, written last.
 //!
@@ -18,8 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Overture's release the buildings come from.
-pub const RELEASE: &str = "2026-09-23.1";
+/// The release the tests' records name (the staged declaration's).
+#[cfg(test)]
+pub const TEST_RELEASE: &str = "2026-09-23.1";
 /// The tiles' zoom.
 pub const ZOOM: u8 = 8;
 /// How far past a unit's roads its buildings are read (km): a building counts within 80 m of the
@@ -28,24 +29,30 @@ const MARGIN_KM: f64 = 1.0;
 /// The free space the scan's local parts need (the release's boxes, ~40 GB).
 const PARTS_ROOM: u64 = 45 << 30;
 
-/// The release as the NAS's names have it ("2026-09-23-1").
-fn release_tag() -> String {
-    RELEASE.replace('.', "-")
+/// Release `release` as the NAS's names have it ("2026-09-23-1").
+fn release_tag(release: &str) -> String {
+    release.replace('.', "-")
 }
 
-/// The release's folder on the NAS.
-pub fn dir(root: &Path) -> PathBuf {
-    root.join("sources/buildings").join(release_tag())
+/// Release `release`'s folder on the NAS.
+pub fn dir(root: &Path, release: &str) -> PathBuf {
+    root.join("sources/buildings").join(release_tag(release))
 }
 
-/// The logical name of the release's index (in the build manifest once the tiles are all made).
-pub fn index_logical() -> String {
-    format!("sources/buildings/{}/index", release_tag())
+/// The logical name of release `release`'s index (in the build manifest once the tiles are made).
+pub fn index_logical(release: &str) -> String {
+    format!("sources/buildings/{}/index", release_tag(release))
 }
 
-/// Where tile `t`'s buildings are.
-pub fn tile_path(root: &Path, t: Unit) -> PathBuf {
-    dir(root).join(format!("{}/{}-{}.f32", t.z, t.x, t.y))
+/// Where release `release`'s tile `t` is.
+pub fn tile_path(root: &Path, release: &str, t: Unit) -> PathBuf {
+    dir(root, release).join(format!("{}/{}-{}.f32", t.z, t.x, t.y))
+}
+
+/// The declared buildings source's release (its `version`) in the accepted sources the records `m`
+/// name (crate::inputs::sources), or why there's none.
+pub fn release_of(root: &Path, m: &BTreeMap<String, String>) -> Result<String> {
+    Ok(crate::inputs::sources::read(root, m)?.role(crate::inputs::sources::BUILDINGS)?.version()?.to_string())
 }
 
 /// The tiles made, with their buildings ("8/x/y": count; a tile without any isn't listed).
@@ -62,8 +69,8 @@ pub struct Index {
 
 impl Index {
     /// The release's index as the build manifest has it (None before the buildings job made it).
-    pub fn load(out: &Out) -> Result<Option<Index>> {
-        let Some(c) = out.get(&index_logical()) else { return Ok(None) };
+    pub fn load(out: &Out, release: &str) -> Result<Option<Index>> {
+        let Some(c) = out.get(&index_logical(release)) else { return Ok(None) };
         let p = out.path(c);
         let mut ix: Index = serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{}", p.display()))?).with_context(|| format!("{}", p.display()))?;
         ix.tag = c.rsplit('.').nth(1).unwrap_or("").to_string();
@@ -90,7 +97,7 @@ pub fn local_tile(root: &Path, index: &Index, t: Unit, cache: &Path) -> Result<O
 /// Where tile `t` is on the NAS, where its copy in `cache` goes, and its length (`local_tile`).
 pub fn tile_copy(root: &Path, index: &Index, t: Unit, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
     let want = index.bytes(t)?;
-    Some((tile_path(root, t), cache.join("blobs/buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)), want))
+    Some((tile_path(root, &index.release, t), cache.join("blobs/buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)), want))
 }
 
 /// The copy of `src` at `local`, `want` bytes, made when it isn't there whole, and held.
@@ -184,7 +191,9 @@ fn each_box(path: &Path, mut f: impl FnMut([f32; 4])) -> Result<()> {
 /// merged onto the NAS (a tile already there whole from a run cut short is left), and the index
 /// written last.
 pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Result<()> {
-    let parts = scratch.join(format!("parts-{RELEASE}"));
+    let release = release_of(out.root(), &out.manifest)?;
+    let declared = crate::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
+    let parts = scratch.join(format!("parts-{release}"));
     std::fs::create_dir_all(&parts)?;
     let free = crate::agent::room::disk_free(&parts)?;
     let started = std::fs::read_dir(&parts)?.flatten().filter(|e| e.path().join(".done").exists()).count();
@@ -193,7 +202,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     let t0 = std::time::Instant::now();
     let p = phase("buildings.py", Class::Mixed);
     let mut c = store::spawn::command("uv");
-    c.current_dir(dem).args(["run", "python", "buildings.py", "--world"]).arg(&parts).args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", RELEASE]);
+    c.current_dir(dem).env(crate::inputs::sources::PYTHON_ENV, &declared).args(["run", "python", "buildings.py", "--world"]).arg(&parts).args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", &release]);
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run buildings.py")?;
     anyhow::ensure!(st.success(), "buildings.py: {st}");
@@ -222,7 +231,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     let total = by_tile.len() as u64;
     // (Each tile's parts read and sorted, then written to the NAS and read back: a phase each,
     // over the tiles.)
-    let mut index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: BTreeMap::new(), tag: String::new() };
+    let mut index = Index { fmt: 1, release: release.clone(), zoom: ZOOM, tiles: BTreeMap::new(), tag: String::new() };
     let t1 = std::time::Instant::now();
     for (k, (t, files)) in by_tile.iter().enumerate() {
         let p = phase("each tile's parts read and sorted", Class::Disk);
@@ -234,7 +243,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
         let bytes: &[u8] = bytemuck::cast_slice(&v);
         drop(p);
         let p = phase("tiles written to the NAS and read back", Class::NasWrite);
-        let dest = tile_path(out.root(), *t);
+        let dest = tile_path(out.root(), &release, *t);
         // (Written whole by a run cut short: as it is.)
         if std::fs::metadata(&dest).map(|m| m.len()).ok() != Some(bytes.len() as u64) {
             std::fs::create_dir_all(dest.parent().context("tile folder")?)?;
@@ -256,7 +265,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     let local = scratch.join("index.json");
     std::fs::write(&local, serde_json::to_vec(&index)?)?;
     let p = phase("the index uploaded", Class::NasWrite);
-    out.put_file(&index_logical(), "json", &local)?;
+    out.put_file(&index_logical(&release), "json", &local)?;
     drop(p);
     out.save()?;
     let _p = phase("the scan's parts removed", Class::Disk);
@@ -289,7 +298,7 @@ pub fn stage(root: &Path, index: &Index, u: Unit, reach: Option<&Reach>, dir: &P
         }
         let at = match cache {
             Some(c) => local_tile(root, index, t, c)?.context("a tile the index lists")?,
-            None => tile_path(root, t),
+            None => tile_path(root, &index.release, t),
         };
         crate::sys::symlink(&at, &dir.join(format!("{}.f32", t.dash())))?;
         n += 1;
@@ -354,16 +363,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let u = Unit { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
-        let index = Index { fmt: 1, release: RELEASE.into(), zoom: ZOOM, tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into(), tag: String::new() };
+        let index = Index { fmt: 1, release: TEST_RELEASE.into(), zoom: ZOOM, tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into(), tag: String::new() };
         let staged = d.path().join("staged");
         assert_eq!(stage(d.path(), &index, u, None, &staged, None).unwrap(), 2);
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
-        assert_eq!(link, tile_path(d.path(), near[7]));
+        assert_eq!(link, tile_path(d.path(), TEST_RELEASE, near[7]));
         // With a cache: links to its copies, named by the index's hash, the same bytes.
         let mut index = index;
         index.tag = "0123456789abcdef".into();
         for (t, n) in [(near[0], 5usize), (near[7], 9)] {
-            let p = tile_path(d.path(), t);
+            let p = tile_path(d.path(), TEST_RELEASE, t);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, vec![t.x as u8; 16 * n]).unwrap();
         }
@@ -371,13 +380,13 @@ mod tests {
         assert_eq!(stage(d.path(), &index, u, None, &staged, Some(&cache)).unwrap(), 2);
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
         assert_eq!(link, cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[7].x, near[7].y)));
-        assert_eq!(std::fs::read(&link).unwrap(), std::fs::read(tile_path(d.path(), near[7])).unwrap());
+        assert_eq!(std::fs::read(&link).unwrap(), std::fs::read(tile_path(d.path(), TEST_RELEASE, near[7])).unwrap());
         // A copy cut short (another length than the index's) is made again; a tile on the NAS
         // that isn't the index's length is an error, not a short copy.
         std::fs::write(&link, b"short").unwrap();
         assert_eq!(local_tile(d.path(), &index, near[7], &cache).unwrap().unwrap(), link);
         assert_eq!(std::fs::metadata(&link).unwrap().len(), 16 * 9);
-        std::fs::write(tile_path(d.path(), near[0]), b"cut").unwrap();
+        std::fs::write(tile_path(d.path(), TEST_RELEASE, near[0]), b"cut").unwrap();
         std::fs::remove_file(cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y))).unwrap();
         assert!(local_tile(d.path(), &index, near[0], &cache).is_err());
         assert!(local_tile(d.path(), &index, near[1], &cache).unwrap().is_none());

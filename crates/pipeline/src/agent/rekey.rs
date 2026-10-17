@@ -125,14 +125,15 @@ pub mod v1 {
         store::naming::hash16(format!("trees {TREES_V}|{t}|none").as_bytes())
     }
 
-    /// The units the coverage builds, each with its key as it was (`unit_key`).
-    pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
+    /// The units the coverage builds, each with its key as it was (`unit_key`; the roadside
+    /// buildings of release `buildings`).
+    pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, buildings: &str) -> Vec<(Unit, String)> {
         let mut units: Vec<(Unit, String)> = Vec::new();
         let Some(reach) = reach else { return units };
         for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
             let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
             let Some(r) = reach.get(u).filter(|r| r.builds(cov)) else { continue };
-            units.push((u, unit_key(cov, date, m, u, c, r, digests)));
+            units.push((u, unit_key(cov, date, m, u, c, r, digests, buildings)));
         }
         units
     }
@@ -140,13 +141,13 @@ pub mod v1 {
     /// Unit `u`'s key as it was: its piece and road values, the coverage as its ways meet it, the
     /// location rules where they go, Taiwan's MOI DTM, the roadside buildings' index, and per z6
     /// tile within 30 km the terrain hi pack and the heritage slices.
-    pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, digests: &BTreeMap<String, String>) -> String {
+    pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, digests: &BTreeMap<String, String>, buildings: &str) -> String {
         let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
         let mut inputs = vec![format!("unit {UNIT_V}"), piece.to_string(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), r.coverage_key(cov, u), super::dem_rules_meeting(r.extent(u))];
         if super::meets_taiwan(r.extent(u)) {
             inputs.push(format!("moi-dtm {}", digests.get("moi-dtm").map(String::as_str).unwrap_or("-")));
         }
-        inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical())));
+        inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
             inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
@@ -296,14 +297,16 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
     rekey_trees(keys, cov, m, times, &mut out);
     let older = |x: u32, y: u32| times.hi_older(m, x, y);
     let Some(reach) = reach else { return out };
-    rekey_elevation(keys, cov, date, m, reach, tiles, &mut out);
+    // (The roadside buildings' release, the declared one: none, and the units wait.)
+    let Some(buildings) = tiles.buildings_release(m) else { return out };
+    rekey_elevation(keys, cov, date, m, reach, tiles, buildings, &mut out);
     // (The units recorded, not all the pass's: whether the coverage builds a unit is a test of its
     // ways, seconds for all a pass's reaches.)
     let mut current: Vec<Unit> = Vec::new();
     for (t, k) in &keys.unit {
         let Some(u) = Unit::parse(t) else { continue };
         let (Some(r), Some(piece)) = (reach.get(u).filter(|r| r.builds(cov)), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash()))) else { continue };
-        if v1::unit_key(cov, date, m, u, piece, r, digests) == *k {
+        if v1::unit_key(cov, date, m, u, piece, r, digests, buildings) == *k {
             current.push(u);
         }
     }
@@ -339,7 +342,7 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
             continue;
         };
         if why.is_empty() {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), &elevation));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), &elevation, buildings));
             if !outputs {
                 out.empty.push(t.clone());
             }
@@ -379,8 +382,8 @@ fn meets_taiwan(b: [i32; 4]) -> bool {
 /// Unit `u`'s key as it was before the declared elevation datasets (#143's switch): the DEM rules'
 /// versions where the datasets' digests are now.
 #[allow(clippy::too_many_arguments)]
-pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str) -> String {
-    build::unit_key_with(cov, date, m, u, piece, r, terrain, dem_rules_meeting(r.extent(u)), None)
+pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, buildings: &str) -> String {
+    build::unit_key_with(cov, date, m, u, piece, r, terrain, dem_rules_meeting(r.extent(u)), None, buildings)
 }
 
 /// Re-keys the units' records once the build reads the declared elevation datasets
@@ -389,20 +392,20 @@ pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, S
 /// they were: where one dataset alone has data there's nothing to blend, and that dataset is the
 /// one the DEM rules fell through to (the declared coverages hold every file's footprint). The others are built again.
 #[allow(clippy::too_many_arguments)]
-fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: &Reaches, tiles: &TerrainTiles, out: &mut Rekeyed) {
+fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: &Reaches, tiles: &TerrainTiles, buildings: &str, out: &mut Rekeyed) {
     let Ok(Some(ds)) = tiles.elevation(m) else { return };
     let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
     for (t, k) in units {
         let Some(u) = Unit::parse(&t) else { continue };
         let (Some(r), Some(piece)) = (reach.get(u).filter(|r| r.builds(cov)), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash()))) else { continue };
         let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
-        if pre_elevation_unit_key(cov, date, m, u, piece, r, &terrain) != k {
+        if pre_elevation_unit_key(cov, date, m, u, piece, r, &terrain, buildings) != k {
             continue;
         }
         let e = r.extent(u);
         let deg = |v: i32| v as f64 * 1e-7;
         if crate::dem::declared::meeting(&ds, [deg(e[0]), deg(e[1]), deg(e[2]), deg(e[3])]).len() == 1 {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings));
             out.elevation_moved.push(t);
         }
     }
@@ -563,6 +566,12 @@ pub mod declared_before {
     /// The lake fill's (canvec-lakes.toml): its key named the zips (their pin, `run::source_pin`),
     /// not the layer and values the fill keeps.
     pub const LAKE_FILL: &str = "25eb06ca157bccd7";
+    /// The buildings' (overture-buildings.toml): the roadside buildings' and the 3D buildings' keys
+    /// named the release alone (2026-09-23.1, then in code).
+    pub const BUILDINGS: &str = "c3a4a3fb72797382";
+    /// The building heights' (ghsl-built-h.toml): the bldprep keys named the GHSL tiles it read (by
+    /// name and size), not where they come from.
+    pub const BUILDING_HEIGHTS: &str = "909a01a4faed972e";
 }
 
 /// The digest of a set of 1° cells (south-west corners): "lat lon" a line, sorted.
@@ -884,7 +893,7 @@ mod tests {
             }
         }
         heritage_chain_done(&c, &m, &mut done, "d");
-        for (u, k) in v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new()) {
+        for (u, k) in v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new(), crate::buildtiles::TEST_RELEASE) {
             done.record("unit", &[(u.slash(), k)]);
             m.insert(format!("base/{}", u.dash()), format!("base/{}.6666666666666666.base", u.dash()));
         }
@@ -1020,7 +1029,7 @@ mod tests {
         assert_eq!(again, Rekeyed::default());
         assert!(!again.changed() && done == before);
         // A late record under the old key (a job an older app ran, merged since): re-keyed.
-        let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new()).into_iter().find(|(u, _)| u.slash() == "6/28/16").unwrap().1;
+        let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new(), crate::buildtiles::TEST_RELEASE).into_iter().find(|(u, _)| u.slash() == "6/28/16").unwrap().1;
         done.record("unit", &[("6/28/16".into(), old)]);
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16"]);
         assert_eq!(rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).moved, ["6/28/16"]);
@@ -1045,7 +1054,7 @@ mod tests {
             let unit = Unit::parse(u).unwrap();
             let (r, piece) = (reach.get(unit).unwrap(), &m[&format!("sources/osm/d/pieces/{}", unit.dash())]);
             let terrain = build::unit_terrain(unit, r, &m, &tiles).unwrap();
-            done.record("unit", &[(u.to_string(), pre_elevation_unit_key(&c, "d", &m, unit, piece, r, &terrain))]);
+            done.record("unit", &[(u.to_string(), pre_elevation_unit_key(&c, "d", &m, unit, piece, r, &terrain, crate::buildtiles::TEST_RELEASE))]);
         }
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
         let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
@@ -1083,7 +1092,7 @@ mod tests {
         let mut tiles = tiles_for(&m);
         tiles.hold("layers/terrain/hi/6-27-18.3333333333333333.pack", [(12, 1760, 1180, 1)]);
         // (Its old key names the stale hi pack: recorded so, as it was built.)
-        let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new()).into_iter().find(|(u, _)| u.slash() == "6/28/17").unwrap().1;
+        let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new(), crate::buildtiles::TEST_RELEASE).into_iter().find(|(u, _)| u.slash() == "6/28/17").unwrap().1;
         done.record("unit", &[("6/28/17".into(), old)]);
         let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/17"]);

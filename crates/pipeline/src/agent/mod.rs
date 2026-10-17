@@ -4354,8 +4354,10 @@ impl Agent {
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
                 jobs.push(job("terrain-z8".into(), "Building coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
             }
-            if !manifest.contains_key(&crate::buildtiles::index_logical()) {
-                jobs.push(job(format!("buildings {}", crate::buildtiles::RELEASE), "Collecting the world's roadside buildings (Overture)", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
+            // (Of the declared release: none before the source declarations are accepted.)
+            let release = crate::buildtiles::release_of(root, &manifest).ok();
+            if let Some(release) = release.as_deref().filter(|r| !manifest.contains_key(&crate::buildtiles::index_logical(r))) {
+                jobs.push(job(format!("buildings {release}"), "Collecting the world's roadside buildings", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
             } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
                 // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
@@ -5040,7 +5042,7 @@ impl Agent {
             build::trailends_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
             !manifest.contains_key(&crate::terrain_z8::logical()),
-            !manifest.contains_key(&crate::buildtiles::index_logical()),
+            crate::buildtiles::release_of(root, &manifest).map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
@@ -6369,7 +6371,7 @@ impl Agent {
 }
 
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
-/// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bldprep 6/x/y",
+/// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
 /// "bldprep-rows 6/x/y": crate::bld::sources::digests).
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
@@ -6388,8 +6390,19 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     // then waits).
     inputs.insert("regions".into(), crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()));
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
-    // The 3D buildings' sources: what each z6 tile's bldprep reads, and its rows.
-    inputs.extend(crate::bld::sources::digests(root, crate::buildtiles::RELEASE));
+    // The 3D buildings' sources, of the declared releases (crate::inputs::sources): what each z6
+    // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
+    // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
+    match crate::inputs::sources::open_now(root).and_then(|s| s.map(|s| crate::bld::sources::declared(&s)).transpose()) {
+        Ok(Some((release, ghsl, key))) => {
+            inputs.extend(crate::bld::sources::digests(root, &release, &ghsl));
+            inputs.insert("bld-key".into(), key);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            inputs.insert("bld-release".into(), "?".into());
+        }
+    }
     inputs
 }
 
@@ -8299,7 +8312,7 @@ mod tests {
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
         crate::inputs::heritage::accept_fixture(root, &mut m);
         crate::inputs::elevation::accept_fixture(root, &mut m);
-        m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
+        m.insert(crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE), format!("{}.6767676767676767.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)));
         m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
         let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";
         std::fs::create_dir_all(root.join(lo).parent().unwrap()).unwrap();
@@ -8325,7 +8338,7 @@ mod tests {
         keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys, &input_digests(root)).unwrap().targets);
         keys.record("terrain", &rekey::v1::terrain_slope_targets(&cov, &m).0);
         keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
-        let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root)).pop().unwrap();
+        let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root), crate::buildtiles::TEST_RELEASE).pop().unwrap();
         assert_eq!(old.0.slash(), "6/28/17");
         keys.record("unit", &[("6/28/17".into(), old.1.clone())]);
         // (Under the new keys as recorded, it would be built again.)

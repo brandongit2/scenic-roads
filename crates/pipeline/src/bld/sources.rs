@@ -1,8 +1,8 @@
 //! The 3D buildings' downloaded sources as the agent keys them (docs/buildings3d.md §3.2): which
 //! Overture files and row groups, and which GHSL tiles, `bldprep T` reads for a z6 tile T, from the
 //! indexes `dem/bldfetch.py` writes beside them on the NAS (`sources/overture/<release>/`
-//! `buildings.json` and `footers.json.gz`, `sources/ghsl/R2023A/index.json`). Chosen as
-//! `dem/bldprep.py` chooses them: a file listed as downloaded whose footer has the same ETag; its row
+//! `buildings.json` and `footers.json.gz`, `sources/ghsl/<version>/index.json`: the declared
+//! sources' releases, crate::inputs::sources). Chosen as `dem/bldprep.py` chooses them: a file listed as downloaded whose footer has the same ETag; its row
 //! groups whose box meets T (a parts file's: T grown by `PART_MARGIN_DEG`); the GHSL tiles whose box
 //! meets T (none without an index). A listed file whose footer is missing or another object's is
 //! skipped where its listed box is far from T, and fails bldprep.py where it meets T: there it's
@@ -15,8 +15,27 @@ use std::path::{Path, PathBuf};
 
 /// How far around T a parts file's row groups are read (degrees: dem/bldprep.py's PART_MARGIN_DEG).
 pub const PART_MARGIN_DEG: f64 = 0.02;
-/// GHSL's folder (dem/bldprep.py's GHSL_DIR).
-pub const GHSL_DIR: &str = "sources/ghsl/R2023A";
+/// The declared building-heights source's folder on the NAS, by its `version` (dem/bldfetch.py's
+/// and dem/bldprep.py's).
+pub fn ghsl_dir(version: &str) -> String {
+    format!("sources/ghsl/{version}")
+}
+
+/// The declared buildings and building-heights sources (crate::inputs::sources) as the 3D
+/// buildings read them: the release, GHSL's folder (`ghsl_dir`), and what the bld-fetch and bldprep
+/// keys name of them: the release while the declarations name what the code had
+/// (agent::rekey::declared_before), else their ids and `keyed` digests too (`Source::key_part`).
+pub fn declared(s: &crate::inputs::sources::Sources) -> Result<(String, String, String)> {
+    use crate::agent::rekey::declared_before;
+    use crate::inputs::sources::{BUILDINGS, BUILDING_HEIGHTS};
+    let (b, g) = (s.role(BUILDINGS)?, s.role(BUILDING_HEIGHTS)?);
+    let release = b.version()?.to_string();
+    let mut key = b.key_part((&release, declared_before::BUILDINGS));
+    if let Some(x) = g.key_extra(declared_before::BUILDING_HEIGHTS) {
+        key = format!("{key} {x}");
+    }
+    Ok((release, ghsl_dir(g.version()?), key))
+}
 
 /// The release's folder on the NAS (its dot a dash, as `sources/buildings/` has it).
 pub fn release_dir(release: &str) -> String {
@@ -76,10 +95,10 @@ fn meets(a: [f64; 4], b: [f64; 4]) -> bool {
 }
 
 impl Sources {
-    /// Reads the indexes under `root`: None when the release has no `buildings.json` (nothing
+    /// Reads the indexes under `root` of release `release` and GHSL's folder `ghsl` (`ghsl_dir`): None when the release has no `buildings.json` (nothing
     /// downloaded yet); an error when one is there and can't be read. A listed file whose footer is
     /// missing or of another ETag is `stale` (bldprep.py refuses it where it meets a tile).
-    pub fn read(root: &Path, release: &str) -> Result<Option<Sources>> {
+    pub fn read(root: &Path, release: &str, ghsl: &str) -> Result<Option<Sources>> {
         let base = root.join(release_dir(release));
         let listed = match std::fs::read(base.join("buildings.json")) {
             Ok(b) => b,
@@ -102,7 +121,7 @@ impl Sources {
             let bbox = rgs.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, (g, _)| [b[0].min(g[0]), b[1].min(g[1]), b[2].max(g[2]), b[3].max(g[3])]);
             files.push(File { part: name.contains("type=building_part/"), name, etag: f.etag, rgs, bbox });
         }
-        let ghsl = match std::fs::read(root.join(GHSL_DIR).join("index.json")) {
+        let ghsl = match std::fs::read(root.join(ghsl).join("index.json")) {
             Ok(b) => serde_json::from_slice::<GhslIndex>(&b).context("GHSL's index.json")?.tiles.into_iter().map(|(n, t)| (n, t.size, t.bbox)).collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e).context("GHSL's index.json"),
@@ -161,17 +180,17 @@ pub struct Memo {
 }
 
 impl Memo {
-    pub fn get(&mut self, root: &Path, release: &str) -> Result<Option<std::sync::Arc<Sources>>> {
+    pub fn get(&mut self, root: &Path, release: &str, ghsl: &str) -> Result<Option<std::sync::Arc<Sources>>> {
         let base = root.join(release_dir(release));
-        let stamp: Vec<(u64, u64)> = [base.join("buildings.json"), base.join("footers.json.gz"), root.join(GHSL_DIR).join("index.json")]
+        let stamp: Vec<(u64, u64)> = [base.join("buildings.json"), base.join("footers.json.gz"), root.join(ghsl).join("index.json")]
             .iter()
             .map(|p| std::fs::metadata(p).map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64))).unwrap_or((0, 0)))
             .collect();
-        let key = (root.to_path_buf(), release.to_string(), stamp);
+        let key = (root.to_path_buf(), format!("{release} {ghsl}"), stamp);
         if self.at.as_ref() == Some(&key) {
             return Ok(self.held.clone());
         }
-        let s = Sources::read(root, release)?.map(std::sync::Arc::new);
+        let s = Sources::read(root, release, ghsl)?.map(std::sync::Arc::new);
         self.at = Some(key);
         self.held = s.clone();
         Ok(s)
@@ -182,12 +201,12 @@ impl Memo {
 /// when its indexes read, "?" when they can't be read now, "" before anything was downloaded),
 /// and for each z6 tile that reads anything, "bldprep 6/x/y" (`Sources::read_for`, hashed) and
 /// "bldprep-rows 6/x/y" (`Sources::rows_for`). Worked out again only when an index changes.
-pub fn digests(root: &Path, release: &str) -> BTreeMap<String, String> {
+pub fn digests(root: &Path, release: &str, ghsl: &str) -> BTreeMap<String, String> {
     type Kept = (Memo, Option<(std::sync::Arc<Sources>, BTreeMap<String, String>)>);
     static KEPT: std::sync::Mutex<Option<Kept>> = std::sync::Mutex::new(None);
     let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     let (memo, made) = g.get_or_insert_with(|| (Memo::default(), None));
-    let s = match memo.get(root, release) {
+    let s = match memo.get(root, release, ghsl) {
         Ok(Some(s)) => s,
         Ok(None) => return BTreeMap::from([("bld-release".to_string(), String::new())]),
         Err(e) => {
@@ -241,17 +260,50 @@ pub(crate) mod tests {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         gz.write_all(&serde_json::to_vec(&footers).unwrap()).unwrap();
         std::fs::write(base.join("footers.json.gz"), gz.finish().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join(GHSL_DIR)).unwrap();
+        std::fs::create_dir_all(root.join(ghsl_dir("R2023A"))).unwrap();
         let g = serde_json::json!({"tiles": {"G_R5_C30.zip": {"size": 123, "bbox": [130.0, 30.0, 140.0, 40.0]}, "G_R1_C1.zip": {"size": 9, "bbox": [-180.0, 80.0, -170.0, 90.0]}}});
-        std::fs::write(root.join(GHSL_DIR).join("index.json"), serde_json::to_vec(&g).unwrap()).unwrap();
+        std::fs::write(root.join(ghsl_dir("R2023A")).join("index.json"), serde_json::to_vec(&g).unwrap()).unwrap();
+    }
+
+    /// The declared buildings and building-heights sources (producers/sources/) name what the code
+    /// had before they were declared: Overture's bucket, its types and release 2026-09-23.1, and
+    /// GHSL's tiles (each URL and footprint as dem/bldfetch.py made them from the folder's listing
+    /// by its grid), in its folder `sources/ghsl/R2023A`; so the keys name the release alone, as
+    /// they did (nothing fetched or prepared again).
+    #[test]
+    fn the_declared_sources_are_what_the_code_had() {
+        let s = crate::inputs::sources::staged();
+        assert_eq!(declared(&s).unwrap(), ("2026-09-23.1".to_string(), "sources/ghsl/R2023A".to_string(), "2026-09-23.1".to_string()));
+        let b = s.role(crate::inputs::sources::BUILDINGS).unwrap();
+        assert_eq!(b.url().unwrap(), "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/");
+        assert_eq!(b.param_strs("types").unwrap(), ["building_part", "building"]);
+        assert_eq!((b.param_str("s3").unwrap(), b.param_str("region").unwrap()), ("s3://overturemaps-us-west-2", "us-west-2"));
+        assert_eq!(b.digest(), crate::agent::rekey::declared_before::BUILDINGS);
+        let g = s.role(crate::inputs::sources::BUILDING_HEIGHTS).unwrap();
+        assert_eq!(g.digest(), crate::agent::rekey::declared_before::BUILDING_HEIGHTS);
+        let folder = "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_H_GLOBE_R2023A/GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss/V1-0/tiles/";
+        let (top0, left0, deg) = (89.09958317764332, -180.00791620856731, 10.0);
+        assert_eq!(g.index.len(), 346);
+        for f in &g.index {
+            let name = f.url.strip_prefix(folder).unwrap();
+            let rc = name.strip_prefix("GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss_V1_0_R").and_then(|r| r.strip_suffix(".zip")).unwrap();
+            let (r, c) = rc.split_once("_C").unwrap();
+            let (r, c): (f64, f64) = (r.parse().unwrap(), c.parse().unwrap());
+            let (top, left) = (top0 - deg * (r - 1.0), left0 + deg * (c - 1.0));
+            assert_eq!(f.bbox, [left, top - deg, left + deg, top], "{name}");
+        }
+        // Another release is another key, as a new constant was.
+        let mut other = b.clone();
+        other.data.version = Some("2026-11-18.0".into());
+        assert_eq!(other.key_part(("2026-11-18.0", crate::agent::rekey::declared_before::BUILDINGS)), format!("source overture-buildings {}", b.keyed));
     }
 
     #[test]
     fn what_bldprep_reads_of_a_tile() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(Sources::read(d.path(), "2026-09-23.1").unwrap(), None, "nothing downloaded");
+        assert_eq!(Sources::read(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap(), None, "nothing downloaded");
         write(d.path(), "2026-09-23.1");
-        let s = Sources::read(d.path(), "2026-09-23.1").unwrap().unwrap();
+        let s = Sources::read(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap();
         // (The stale files left out of what's read; the one meeting the tile named in its reads,
         // bldprep.py failing on it there; the far one not.)
         assert_eq!((s.files.len(), s.stale.len()), (2, 2));
@@ -262,9 +314,9 @@ pub(crate) mod tests {
         assert!(s.read_for(10, 10).is_empty());
         // Kept while the indexes stay as they are; read again once one changes.
         let mut m = Memo::default();
-        let a = m.get(d.path(), "2026-09-23.1").unwrap().unwrap();
-        assert!(std::sync::Arc::ptr_eq(&a, &m.get(d.path(), "2026-09-23.1").unwrap().unwrap()));
-        std::fs::write(d.path().join(GHSL_DIR).join("index.json"), br#"{"tiles": {}}"#).unwrap();
-        assert!(m.get(d.path(), "2026-09-23.1").unwrap().unwrap().ghsl.is_empty());
+        let a = m.get(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &m.get(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap()));
+        std::fs::write(d.path().join(ghsl_dir("R2023A")).join("index.json"), br#"{"tiles": {}}"#).unwrap();
+        assert!(m.get(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap().ghsl.is_empty());
     }
 }

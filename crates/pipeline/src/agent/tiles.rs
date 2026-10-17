@@ -59,6 +59,10 @@ pub struct TerrainTiles {
     /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
     /// elevation index's content name, and their pin or why they can't be read.
     terrain: Option<(String, Result<TerrainPin, String>)>,
+    /// The declared buildings source's release (crate::inputs::sources), which the units' keys name
+    /// the roadside buildings' index by: the accepted sources' index content name, and the release
+    /// (None: not declared, or not to be read now).
+    buildings: Option<(String, Option<String>)>,
 }
 
 /// The terrain's sources in tests holding none (`terrain_sources`).
@@ -95,6 +99,7 @@ impl TerrainTiles {
         self.load_water(root, m);
         self.load_elevation(root, m);
         self.load_terrain(root, m);
+        self.load_buildings(root, m);
         let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         self.held.retain(|c, _| want.contains(c.as_str()));
         self.unread.retain(|c, _| want.contains(c.as_str()));
@@ -178,6 +183,34 @@ impl TerrainTiles {
             }
         }
         self.terrain = Some((want.clone(), got));
+    }
+
+    /// Holds the declared buildings source's release of the accepted sources `m` names.
+    fn load_buildings(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
+            self.buildings = None;
+            return;
+        };
+        if self.buildings.as_ref().is_some_and(|(c, r)| c == want && r.is_some()) {
+            return;
+        }
+        let r = crate::buildtiles::release_of(root, m).map_err(|e| eprintln!("agent: the units wait: the declared buildings source in {want} can't be read ({e:#})")).ok();
+        self.buildings = Some((want.clone(), r));
+    }
+
+    /// The declared buildings source's release, of the accepted sources `m` names; None while
+    /// there's none, or it can't be read now (the units' keys wait).
+    pub fn buildings_release(&self, m: &BTreeMap<String, String>) -> Option<&str> {
+        // (Tests holding none: the staged declaration's.)
+        #[cfg(test)]
+        if self.buildings.is_none() {
+            return Some(crate::buildtiles::TEST_RELEASE);
+        }
+        let want = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT))?;
+        match &self.buildings {
+            Some((c, Some(r))) if c == want => Some(r),
+            _ => None,
+        }
     }
 
     /// The terrain's declared sources as its keys name them, of the accepted elevation version `m`

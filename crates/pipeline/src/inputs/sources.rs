@@ -491,6 +491,13 @@ pub fn open(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<S
     Ok(Some(s))
 }
 
+/// The accepted sources as the build's records name them now (`state/build/manifest.json` under
+/// the NAS project folder `root`).
+pub fn open_now(root: &Path) -> Result<Option<Sources>> {
+    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
+    open(root, &m)
+}
+
 /// The accepted sources, or why the step can't read them (none accepted yet: it waits for them).
 pub fn read(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Sources> {
     open(root, manifest)?.context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
@@ -500,11 +507,11 @@ pub fn read(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Sources>
 pub const PYTHON_ENV: &str = "SCENIC_SOURCES";
 
 /// The accepted sources as a Python step reads them (dem/declared.py): each by its role, its `id`,
-/// `url`, `urls`, `version` and `params`, written as `sources.json` in `dir`; the file's path, for
+/// `url`, `urls`, `version`, `params` and `index` (its features' `url` and `bbox`), written as `sources.json` in `dir`; the file's path, for
 /// `PYTHON_ENV`.
 pub fn write_for_python(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<std::path::PathBuf> {
     let s = read(root, manifest)?;
-    let v: BTreeMap<&str, serde_json::Value> = s.all().map(|x| (x.data.role.as_str(), serde_json::json!({ "id": x.id, "url": x.data.url, "urls": x.data.urls, "version": x.data.version, "params": x.data.params }))).collect();
+    let v: BTreeMap<&str, serde_json::Value> = s.all().map(|x| (x.data.role.as_str(), serde_json::json!({ "id": x.id, "url": x.data.url, "urls": x.data.urls, "version": x.data.version, "params": x.data.params, "index": x.index.iter().map(|f| serde_json::json!({ "url": f.url, "bbox": f.bbox })).collect::<Vec<_>>() }))).collect();
     std::fs::create_dir_all(dir)?;
     let p = std::path::absolute(dir.join("sources.json"))?;
     std::fs::write(&p, serde_json::to_vec_pretty(&v)?)?;
@@ -519,7 +526,10 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 10] = [
+pub const STAGED: [(&str, &[u8]); 13] = [
+    ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
+    ("ghsl-built-h.toml", include_bytes!("../../../../producers/sources/ghsl-built-h.toml")),
+    ("ghsl-tiles.geojson", include_bytes!("../../../../producers/sources/ghsl-tiles.geojson")),
     ("canvec-lakes.toml", include_bytes!("../../../../producers/sources/canvec-lakes.toml")),
     ("wikidata-qlever.toml", include_bytes!("../../../../producers/sources/wikidata-qlever.toml")),
     ("wikidata-query-service.toml", include_bytes!("../../../../producers/sources/wikidata-query-service.toml")),

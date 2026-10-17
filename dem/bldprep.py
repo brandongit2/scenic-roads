@@ -8,7 +8,7 @@ Read (from the NAS, never written):
   - sources/overture/<release>/: the downloaded files (buildings.json) and the row groups of each
     whose box meets T (footers.json.gz), buildings and building parts; of their rows, those whose
     box meets T (parts: T grown by PART_MARGIN_DEG, so an outline in T finds its parts);
-  - sources/ghsl/R2023A/: the window under T of each GHSL tile meeting it (index.json).
+  - sources/ghsl/<version>/ (the declared building-heights source's): the window under T of each GHSL tile meeting it (index.json).
 
 Written (stdout, little-endian): b"BLDP1\\n", then frames, each a u8 kind, a u32 header length, the
 header (JSON: its own fields, and "cols": [[name, bytes], ...]), then each column's bytes in order:
@@ -44,13 +44,19 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+import declared
 from timings import phase
 
 MAGIC = b"BLDP1\n"
 K_BUILDINGS, K_PARTS, K_GHSL, K_END = 1, 2, 3, 9
-GHSL_DIR = "sources/ghsl/R2023A"
 # Parts are read this far (degrees) around T: an outline whose centroid is in T has its parts.
 PART_MARGIN_DEG = 0.02
+
+
+def ghsl_dir() -> str:
+    """GHSL's folder on the NAS, by the declared building-heights source's version
+    (pipeline::bld::sources::ghsl_dir)."""
+    return f"sources/ghsl/{declared.source('building-heights')['version']}"
 B_COLS = ["id", "sources", "height", "num_floors", "min_height", "min_floor", "class", "subtype", "roof_shape", "has_parts",
           "is_underground", "geometry", "bbox"]
 P_COLS = ["id", "sources", "height", "num_floors", "min_height", "min_floor", "roof_shape", "is_underground", "geometry",
@@ -126,14 +132,14 @@ def ghsl(root: Path, box: list[float], out: Out) -> list[str]:
     import rasterio
     from rasterio.windows import Window
     # (No index: no GHSL tile downloaded, as the agent's keys take it.)
-    path = root / GHSL_DIR / "index.json"
+    path = root / ghsl_dir() / "index.json"
     index = json.loads(path.read_text())["tiles"] if path.exists() else {}
     used = []
     for name in sorted(index):
         if not meets(index[name]["bbox"], box):
             continue
         stem = name.removesuffix(".zip")
-        with rasterio.open(f"/vsizip/{root / GHSL_DIR / name}/{stem}.tif") as src:
+        with rasterio.open(f"/vsizip/{root / ghsl_dir() / name}/{stem}.tif") as src:
             gt = src.transform.to_gdal()  # (left, pixel width, 0, top, 0, pixel height < 0)
             c0 = max(0, math.floor((box[0] - gt[0]) / gt[1]))
             c1 = min(src.width, math.floor((box[2] - gt[0]) / gt[1]) + 1)
@@ -257,7 +263,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--root", required=True, help="the NAS project folder (read only)")
     ap.add_argument("--tile", required=True, help="the z6 tile, 6/x/y")
-    ap.add_argument("--release", default="2026-09-23.1")
+    ap.add_argument("--release", required=True)
     ap.add_argument("--jobs", type=int, default=4, help="row groups read at once")
     a = ap.parse_args()
     z, x, y = (int(v) for v in a.tile.replace("-", "/").split("/"))

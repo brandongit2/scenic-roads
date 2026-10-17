@@ -4,7 +4,8 @@ and Google footprints merged; ODbL / CDLA Permissive 2.0), bounding boxes only, 
 (crates/pipeline/src/buildtiles.rs). Heights are not used.
 
 usage: buildings.py --world parts --zoom z --workers n --release r
-           release r whole, streamed from Overture's public S3 release with DuckDB (only the bbox
+           release r whole, streamed from the declared buildings source's bucket (SCENIC_SOURCES:
+           dem/declared.py) with DuckDB (only the bbox
            column): every building's box (little-endian float32 [xmin, ymin, xmax, ymax], degrees),
            by the zoom-z tile holding its centre, into parts/<file>/<z>-<x>-<y>.f32, a folder per
            file of the release with `.done` once written (folders done are skipped), and the
@@ -22,6 +23,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 
+import declared
 from timings import phase
 
 def connect(threads: int | None = None):
@@ -29,7 +31,8 @@ def connect(threads: int | None = None):
     if threads:
         config["threads"] = threads
     con = duckdb.connect(config=config)
-    con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2'; SET s3_access_key_id=''; SET s3_secret_access_key=''; SET enable_progress_bar = false;")
+    region = declared.source("buildings")["params"]["region"]
+    con.execute(f"INSTALL httpfs; LOAD httpfs; SET s3_region='{region}'; SET s3_access_key_id=''; SET s3_secret_access_key=''; SET enable_progress_bar = false;")
     return con
 
 
@@ -65,7 +68,7 @@ def _scan(i: int, url: str, parts: str, z: int) -> int:
 
 def world(parts: Path, z: int, workers: int, release: str) -> None:
     parts.mkdir(parents=True, exist_ok=True)
-    src = f"s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*.parquet"
+    src = f"{declared.source('buildings')['params']['s3']}/release/{release}/theme=buildings/type=building/*.parquet"
     with phase("the release's files listed on S3", "net"):
         files = [r[0] for r in connect().execute(f"SELECT file FROM glob('{src}') ORDER BY file").fetchall()]
     # (An empty listing is a release Overture no longer serves, or a failed listing: never an

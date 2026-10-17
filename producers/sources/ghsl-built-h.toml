@@ -1,0 +1,15 @@
+name = "GHS-BUILT-H R2023A, average net building height 2018, 3 arc-seconds"
+what = "Building heights where none are known"
+credit = "GHSL GHS-BUILT-H R2023A (EC JRC), © European Union, 1995-2026"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://human-settlement.emergency.copernicus.eu/ghs_buildH2023.php"
+territory = "world"
+notes = "Its 10° tile zips meeting the coverage, fetched by dem/bldfetch.py into sources/ghsl/<version>/ (with their index.json); the fill's rule 4 (crate::bld). The index is producers/sources/ghsl.py's, from the tiles folder's listing."
+
+[data]
+role = "building-heights"
+format = "zip-geotiff"
+index = "ghsl-tiles.geojson"
+version = "R2023A"
+refresh = "pinned"

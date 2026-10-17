@@ -54,6 +54,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
     ("crates/pipeline/src/heritage.rs", "registers_now", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the heritage registers' accepted version the agent's plan keys heritage-sites on"),
     ("crates/pipeline/src/inputs/regions/read.rs", "source_now", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the regions' accepted version the readers read"),
+    ("crates/pipeline/src/inputs/sources.rs", "open_now", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the source declarations' accepted version the agent's plan keys the 3D buildings on"),
     ("crates/pipeline/src/inputs/served.rs", "RECORDS", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the map server's copy of the translations' and descriptions' accepted versions"),
     ("crates/pipeline/src/agent/room.rs", "heritage_remade", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): room-making's look at the heritage chain"),
     ("crates/pipeline/src/pool/records.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, term 1's first snapshot made from them"),

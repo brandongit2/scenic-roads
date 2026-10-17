@@ -1500,7 +1500,7 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
         println!("  {c}: {why}");
     }
     let t1 = std::time::Instant::now();
-    let old = rekey::v1::unit_keys(&cov, &date, &m, Some(&reach), &digests);
+    let old = rekey::v1::unit_keys(&cov, &date, &m, Some(&reach), &digests, tiles.buildings_release(&m).context("the declared buildings source can't be read")?);
     let t_old = t1.elapsed().as_secs_f64();
     let new: BTreeMap<String, Option<String>> = build::unit_keys(&cov, &date, &m, Some(&reach), &tiles).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     let t_new = t1.elapsed().as_secs_f64() - t_old;
@@ -2878,7 +2878,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     let dir = PathBuf::from(opt(args, "--out").context("--out <dir>")?);
     let (date, cov, _) = pass_and_coverage(out, args)?;
     let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?.context("no reaches for the pass")?;
-    let index = pipeline::buildtiles::Index::load(out)?.context("the roadside buildings aren't made")?;
+    let index = pipeline::buildtiles::Index::load(out, &pipeline::buildtiles::release_of(out.root(), &out.manifest)?)?.context("the roadside buildings aren't made")?;
     let shared = dir.join("shared");
     let kept = shared.join(pipeline::unit::DEM_UNITS);
     std::fs::create_dir_all(&kept)?;
@@ -3007,7 +3007,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // reads (unless a folder of them is given), from the release's (the buildings step).
     let buildings = match tools.buildings {
         Some(_) => None,
-        None => Some(pipeline::buildtiles::Index::load(out)?.context("the roadside buildings aren't made (the buildings step)")?),
+        None => Some(pipeline::buildtiles::Index::load(out, &pipeline::buildtiles::release_of(out.root(), &out.manifest)?)?.context("the roadside buildings aren't made (the buildings step)")?),
     };
     let reach = if units.is_empty() || tools.buildings.is_none() {
         Some(pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?.context("no reaches for the pass (the reach step)")?)
@@ -3588,7 +3588,10 @@ fn bld_fetch_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> 
     std::fs::write(&cover, serde_json::to_vec(&pipeline::rail::coverage_geojson(&cov))?)?;
     let _p = phase("bldfetch.py", Class::Mixed);
     let mut c = store::spawn::command("uv");
-    c.current_dir(&dem).args(["run", "python", "bldfetch.py", "--root"]).arg(out.root()).args(["--release", pipeline::buildtiles::RELEASE, "--coverage"]).arg(&cover);
+    // (The declared sources: the release, Overture's bucket, GHSL's tiles by its index.)
+    let release = pipeline::buildtiles::release_of(out.root(), &out.manifest)?;
+    let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
+    c.current_dir(&dem).env(pipeline::inputs::sources::PYTHON_ENV, &declared).args(["run", "python", "bldfetch.py", "--root"]).arg(out.root()).args(["--release", &release, "--coverage"]).arg(&cover);
     pipeline::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run bldfetch.py")?;
     anyhow::ensure!(st.success(), "bldfetch.py: {st}");
@@ -3607,7 +3610,7 @@ fn bldprep_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point("bldprep");
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("bldprep", &t.slash());
-        let st = pipeline::bld::prep::run(out, t, &dem, pipeline::buildtiles::RELEASE)?;
+        let st = pipeline::bld::prep::run(out, t, &dem)?;
         eprintln!("bldprep {}: {}", t.slash(), serde_json::to_string(&st)?);
         pipeline::control::done("bldprep", &t.slash());
         note_cost("bldprep", &t.slash(), c);

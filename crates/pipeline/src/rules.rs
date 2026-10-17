@@ -302,7 +302,7 @@ mod tests {
         assert!(has("Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries", "© OpenStreetMap contributors, ODbL"));
         assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
         // (The 3D buildings' credit names the release they're built from.)
-        assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::RELEASE)));
+        assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::TEST_RELEASE)));
         assert_eq!(CREDITS.len(), 19);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
