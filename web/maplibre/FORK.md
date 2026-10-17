@@ -168,6 +168,14 @@ Paint properties (`style_spec_extensions.ts`, after Mapbox GL v3's API):
 The app uses these for the water (the raster `water` layer and fills at `sea` 0) and ferry routes
 on a 3D sea floor, with `symbol-height-anchor: sea` for their labels.
 
+### Tiles fetched again by part
+
+- **`Map#refreshTilesWhere(sourceId, changed)`** (`TileManager#refreshTilesWhere`): fetches again
+  the tiles `changed(z, x, y)` picks, drawn from their old data until the new is in (loading and
+  errored tiles too), and drops the picked ones kept out of view. The app's request transform gives
+  each tile's URL its pack's version (`web/src/api.ts` packUrl), so a new catalog refreshes only
+  the tiles of the packs it changed instead of `setTiles` reloading the whole source.
+
 ### Known render-test differences
 
 `test/integration/render/expected/` holds this fork's images where it draws differently on purpose

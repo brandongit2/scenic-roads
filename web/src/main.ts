@@ -6,7 +6,7 @@ import 'maplibre-gl/built/maplibre-gl.css';
 import mlWorkerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
 import './style.css';
 import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
-import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
+import { getProfile, getRoadWays, getWay, keepable, onVersions, packChanged, packUrl, packVersion, peekWay, roadWays, setPacks, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
 import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
@@ -88,6 +88,7 @@ async function main() {
     const [r] = await Promise.all([fetch('/api/meta'), initHosts()]);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     meta = await r.json();
+    setPacks(meta.packs);
     setVersions(meta.versions);
   } catch (e) {
     boot.fail(0, `backend not reachable (${(e as Error).message})`);
@@ -143,6 +144,8 @@ async function main() {
     fadeDuration: 120,
     // The camera does not ride up and down with the terrain under the view centre.
     centerClampedToGround: false,
+    // Each tile's version is its pack's (a new catalog re-requests only the tiles it changed).
+    transformRequest: (url) => ({ url: packUrl(url) }),
     // (Eval mode reads the canvas back, at its own pixel ratio, its reference finer: evalmode.ts.)
     ...(EVAL ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(EVAL.dpr ? { pixelRatio: EVAL.dpr } : {}) } : {}),
     ...(CMP ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(CMP.dpr ? { pixelRatio: CMP.dpr } : {}) } : {}),
@@ -2125,7 +2128,12 @@ async function main() {
   });
   onVersions(versionedTiles().map((t) => t.file), (files) => {
     for (const t of versionedTiles()) {
-      if (files.includes(t.file)) (map.getSource(t.source) as { setTiles?: (tiles: string[]) => void } | undefined)?.setTiles?.([t.url]);
+      if (!files.includes(t.file)) continue;
+      // A layer in packs: only the tiles of the packs that changed are asked for again (their URLs'
+      // versions come from the request transform, packUrl); else every tile, from new URLs.
+      const layer = t.file.replace(/\.tiles$/, '');
+      if (t.file.endsWith('.tiles') && packVersion(layer, 0, 0, 0) !== undefined && map.getSource(t.source)) map.refreshTilesWhere(t.source, (z, x, y) => packChanged(layer, z, x, y));
+      else (map.getSource(t.source) as { setTiles?: (tiles: string[]) => void } | undefined)?.setTiles?.([t.url]);
     }
     if (files.includes('base.pmtiles') || files.includes('water')) switchCoast(map, coastInput());
     if (files.includes('terrain.tiles')) switchContours(map);

@@ -205,7 +205,7 @@ docs/formats.md has the bytes. In brief:
 ### 3.5 Served
 
 - `/tiles/buildings/{z}/{x}/{y}` and `/tiles/buildings-field/{z}/{x}/{y}`: the pack's tile as stored
-  (`?v=` the layer's version in `/api/meta`), 204 where none. The app reads them from a host of
+  (`/tiles/buildings`' `?v=`: its pack's version in `/api/meta` `packs`; the field's carry none), 204 where none. The app reads them from a host of
   their own (`buildings.localhost`).
 - **Mirror:** a copy group of its own after the other hi packs (`store::mirror::groups`); field lo
   packs come with the World download.

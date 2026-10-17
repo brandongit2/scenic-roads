@@ -2,7 +2,7 @@
 // every minute while the page is shown and again when it comes back. A new catalog (its number
 // changes) is switched to in place: its versions (/api/meta) reach every URL built from them
 // (api.ts onVersions), and what can't follow asks for a reload instead (the status bar shows it).
-import { setVersions, type Meta } from './api';
+import { setPacks, setVersions, type Meta } from './api';
 
 /** A data source's credit (pipeline::rules::Credit): what came from it, the source as its terms
  * ask to be named, the terms, and the areas [w, s, e, n] whose data comes from it (none: anywhere). */
@@ -132,6 +132,7 @@ export class CatalogWatch {
     const meta = (await r.json()) as Meta;
     this.n = meta.catalog ?? this.status?.n;
     this.v = this.status?.v;
+    setPacks(meta.packs);
     const changed = setVersions(meta.versions);
     this.onSwitch(meta, changed);
   }

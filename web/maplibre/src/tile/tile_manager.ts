@@ -830,6 +830,19 @@ export class TileManager extends Evented<SourceEventType> {
     /**
      * Reload any currently renderable tiles that are match one of the incoming `tileId` x/y/z
      */
+    /**
+     * Scenic Roads: fetches again the tiles `changed` picks (drawn from their old data until the new
+     * is in), and drops those picked from the tiles kept out of view. Unlike `refreshTiles`, tiles
+     * still loading and errored ones are asked for again too.
+     */
+    refreshTilesWhere(changed: (id: ICanonicalTileID) => boolean): void {
+        for (const id of this._inViewTiles.getAllIds()) {
+            const tile = this._inViewTiles.getTileById(id);
+            if (changed(tile.tileID.canonical)) this._reloadTile(id, tile.state === 'errored' ? 'loading' : 'expired');
+        }
+        this._outOfViewCache.filter(tile => !changed(tile.tileID.canonical));
+    }
+
     refreshTiles(tileIds: ICanonicalTileID[]): void {
         for (const id of this._inViewTiles.getAllIds()) {
             const tile = this._inViewTiles.getTileById(id);

@@ -270,7 +270,8 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 - **In use** means any request in the last ten minutes except the status polls (`/api/catalog`,
   `/api/ping`, `/api/build`, `/api/downloads`) and the search's `poll=1`. It checks for a newer
   catalog every 30 s in use, every 10 minutes otherwise.
-- **URLs and ETags:** data URLs carry a content version (`?v=`); a versioned response is
+- **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
+  `packs`), so a new catalog re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of
   the languages spoken there and the spoken-languages raster (§7). The basemap's come from the
   catalog, so its 304s read nothing.

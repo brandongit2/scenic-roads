@@ -586,7 +586,12 @@ Where they're kept:
   version; tiles the server makes (missing terrain and slope, slope z12) carry none. With `?v=` (the
   app's URLs): `public, max-age=31536000, immutable` while that version is current, else
   `no-cache`. `/api/meta` versions each layer (`buildings.tiles`, `water`: the drawing's, its packs'
-  and the basemap's).
+  and the basemap's) and, under `packs`, each pack of a tiled layer (`{layer: {root, lo: {"3/x/y"},
+  hi: {"6/x/y"}}}`: its content name's hash, 12 hex digits, plus the names version for layers with
+  names). The map's tiles carry their pack's token (root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6
+  tile: `web/src/api.ts` packVersion; MapLibre's sources through the map's request transform), so a
+  catalog re-requests only the tiles of the packs it changed. Every pack token and layer version
+  meta gives out is current.
 - **Ways:** `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=…`, `/api/road/{id}?at=…`: `at` picks
   the hidata of the z6 tile holding it, or a neighbour's whose `here` holds the way.
 - `/api/railfreq`: sorted `(u32 way id, f32 trains a day each way)`; negative: a lower bound.

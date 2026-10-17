@@ -157,11 +157,15 @@ impl AppState {
             }
         }
         let meta = meta_json(self);
-        let t: std::collections::HashSet<String> = meta
-            .get("versions")
-            .and_then(|v| v.as_object())
-            .map(|m| m.values().filter_map(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string()))).collect())
-            .unwrap_or_default();
+        let tok = |v: &serde_json::Value| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string()));
+        let mut t: std::collections::HashSet<String> = meta.get("versions").and_then(|v| v.as_object()).map(|m| m.values().filter_map(tok).collect()).unwrap_or_default();
+        // The packs' tokens (tiles' `?v=`).
+        for l in meta.get("packs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()) {
+            t.extend(l.get("root").and_then(tok));
+            for scope in ["lo", "hi"] {
+                t.extend(l.get(scope).and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()).filter_map(tok));
+            }
+        }
         let t = Arc::new(t);
         *self.tokens.lock().unwrap() = Some((key, t.clone()));
         t
@@ -754,9 +758,31 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     versions.insert("base.pmtiles".into(), named(bmv));
     // The water's tiles: its packs and the basemap they're drawn from deeper.
     versions.insert("water".into(), serde_json::Value::from(water::version(s)));
+    // Each tiled layer's packs' versions (a tile's `?v=` is that of the pack holding it): a new
+    // catalog changes only the tokens of the packs it changed, so a browser asks again only for
+    // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile ("z/x/y").
+    let mut packs = serde_json::Map::new();
+    for (k, l) in &cat.layers {
+        let names = k == "labels" || k == "stations" || k == "ferries" || k.starts_with("ov-");
+        let tok = |logical: &String| {
+            cat.files.get(logical).map(|f| {
+                let v = pack_token(&f.file);
+                if names { named(v) } else { serde_json::Value::from(v) }
+            })
+        };
+        let by = |m: &std::collections::BTreeMap<String, String>| m.iter().filter_map(|(t, p)| tok(p).map(|v| (t.clone(), v))).collect::<serde_json::Map<_, _>>();
+        let mut o = serde_json::Map::new();
+        if let Some(v) = l.root.as_ref().and_then(tok) {
+            o.insert("root".into(), v);
+        }
+        o.insert("lo".into(), serde_json::Value::Object(by(&l.lo)));
+        o.insert("hi".into(), serde_json::Value::Object(by(&l.hi)));
+        packs.insert(k.clone(), serde_json::Value::Object(o));
+    }
     let zooms: serde_json::Map<String, serde_json::Value> = cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!([l.minzoom, l.maxzoom]))).collect();
     if let Some(m) = meta.as_object_mut() {
         m.insert("versions".into(), serde_json::Value::Object(versions));
+        m.insert("packs".into(), serde_json::Value::Object(packs));
         m.insert("layers".into(), serde_json::Value::Object(zooms));
         m.insert("catalog".into(), serde_json::json!(cat.n));
         m.insert("online".into(), serde_json::json!(s.data.online()));
@@ -769,6 +795,11 @@ fn meta_json(s: &AppState) -> serde_json::Value {
 
 async fn meta_h(State(s): State<S>) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(meta_json(&s))).into_response()
+}
+
+/// A pack's version token: its content name's hash, 12 hex digits.
+fn pack_token(content: &str) -> String {
+    blake3::hash(content.as_bytes()).to_hex()[..12].to_string()
 }
 
 /// A fingerprint of every version the app's URLs use: it changes with the catalog and with the
@@ -1136,5 +1167,53 @@ mod tests {
         // Else its own.
         c.credits = serde_json::json!([{"what": "Roads", "source": "OpenStreetMap", "terms": "ODbL"}]);
         assert_eq!(credits_of(&c), c.credits);
+    }
+
+    /// A catalog `n` whose roads have a root, a lo pack (3/1/2) and a hi pack (6/8/16), the hi
+    /// pack's content named after `hi`.
+    fn roads_catalog(n: u64, hi: &str) -> store::catalog::Catalog {
+        let mut c = store::catalog::Catalog::new(n);
+        let mut l = store::catalog::Layer { encoding: "mvt".into(), minzoom: 0, maxzoom: 14, root: Some("layers/roads/root".into()), ..Default::default() };
+        l.lo.insert("3/1/2".into(), "layers/roads/lo-3-1-2".into());
+        l.hi.insert("6/8/16".into(), "layers/roads/hi-6-8-16".into());
+        for (logical, file) in [("layers/roads/root", "layers/roads/root.00000000000000aa.pack".to_string()), ("layers/roads/lo-3-1-2", "layers/roads/lo-3-1-2.00000000000000bb.pack".into()), ("layers/roads/hi-6-8-16", format!("layers/roads/hi-6-8-16.{hi}.pack"))] {
+            c.files.insert(logical.into(), store::catalog::FileRef { file, ..Default::default() });
+        }
+        c.layers.insert("roads".into(), l);
+        c
+    }
+
+    #[tokio::test]
+    async fn only_the_current_packs_tokens_are_cached_for_good() {
+        use tower::ServiceExt;
+        let nas = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        store::catalog::write_copy(&nas.path().join("catalog"), &roads_catalog(1, "00000000000000c1")).unwrap();
+        let s = test_state(home.path(), nas.path());
+        let packs = |s: &S| meta_json(s)["packs"]["roads"].clone();
+        let p1 = packs(&s);
+        let (root, lo, hi1) = (p1["root"].as_str().unwrap().to_string(), p1["lo"]["3/1/2"].as_str().unwrap().to_string(), p1["hi"]["6/8/16"].as_str().unwrap().to_string());
+        assert_eq!(hi1.len(), 12);
+        let cache = |s: &S, v: String| {
+            let app = Router::new().route("/tiles/roads/{z}/{x}/{y}", get(|| async { "tile" })).layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching));
+            async move {
+                let r = app.oneshot(axum::http::Request::builder().uri(format!("/tiles/roads/9/130/260?v={v}")).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+                r.headers()[header::CACHE_CONTROL].to_str().unwrap().to_string()
+            }
+        };
+        const GOOD: &str = "public, max-age=31536000, immutable";
+        assert_eq!(cache(&s, hi1.clone()).await, GOOD);
+        // A catalog that changed the hi pack alone: its old token is no longer cached; the others are.
+        store::catalog::write_copy(&nas.path().join("catalog"), &roads_catalog(2, "00000000000000c2")).unwrap();
+        assert!(s.data.refresh_catalog());
+        let p2 = packs(&s);
+        let hi2 = p2["hi"]["6/8/16"].as_str().unwrap().to_string();
+        assert_ne!(hi1, hi2);
+        assert_eq!((p2["root"].as_str().unwrap(), p2["lo"]["3/1/2"].as_str().unwrap()), (root.as_str(), lo.as_str()));
+        assert_eq!(cache(&s, hi1).await, "no-cache");
+        for v in [hi2, lo, root] {
+            assert_eq!(cache(&s, v).await, GOOD);
+        }
+        assert_eq!(cache(&s, "000000000000".into()).await, "no-cache");
     }
 }

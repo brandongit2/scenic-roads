@@ -66,6 +66,8 @@ export interface Meta {
   built: number;
   /** Version token of each data file, by its file name (the catalog's, under the files' old names). */
   versions?: Record<string, string | number>;
+  /** Each tiled layer's packs' versions (a tile's `?v=`: packVersion). */
+  packs?: Record<string, LayerPacks>;
   /** Whether the labels by importance are served (labels.tiles, /tiles/labels). */
   labelTiles?: boolean;
   /** Whether the water is served as exact coverage (/tiles/water: pipeline::water). */
@@ -106,6 +108,54 @@ export function setVersions(v: Record<string, string | number> | undefined): str
  * of a file's name), with those files. */
 export function onVersions(reads: string[] | ((file: string) => boolean), apply: (changed: string[]) => void) {
   watchers.push({ reads: typeof reads === 'function' ? reads : (f) => reads.includes(f), apply });
+}
+
+/** A tiled layer's packs' versions (meta.packs): the root's (z0–2), the lo packs' (z3–8) by z3
+ * tile and the hi packs' (z9–14) by z6 tile, "z/x/y". */
+export interface LayerPacks {
+  root?: string;
+  lo?: Record<string, string>;
+  hi?: Record<string, string>;
+}
+let packs: Record<string, LayerPacks> | null = null;
+let oldPacks: Record<string, LayerPacks> | null = null;
+
+/** The packs' versions: at start, and for each new catalog, before setVersions (whose watchers ask
+ * packChanged). */
+export function setPacks(p: Record<string, LayerPacks> | undefined) {
+  oldPacks = packs;
+  packs = p ?? null;
+}
+
+function packOf(from: Record<string, LayerPacks> | null, layer: string, z: number, x: number, y: number): string | undefined {
+  const l = from?.[layer];
+  if (!l) return undefined;
+  if (z <= 2) return l.root ?? '';
+  const pz = z <= 8 ? 3 : 6;
+  return (z <= 8 ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';
+}
+
+/** The version token of tile z/x/y of a catalog layer (`roads`, `ov-whs`, …): its pack's, '' when no
+ * pack holds it, or undefined when meta gave no packs for the layer (then its layer version). */
+export const packVersion = (layer: string, z: number, x: number, y: number): string | undefined => packOf(packs, layer, z, x, y);
+
+/** Whether the last catalog changed the pack holding tile z/x/y of `layer` (true when unknown). */
+export function packChanged(layer: string, z: number, x: number, y: number): boolean {
+  const a = packOf(oldPacks, layer, z, x, y);
+  const b = packOf(packs, layer, z, x, y);
+  return a === undefined || b === undefined || a !== b;
+}
+
+/** A tile URL with `?v=` set to its pack's version, for the layer's tiles under `/tiles/` (the map's
+ * request transform): others, and layers without packs, as they are. */
+export function packUrl(url: string): string {
+  const m = /\/tiles\/(roads|rails|labels|slope|terrain|stations|buildings|depth|depth-class|trees\/[a-z]+|ov\/[a-z-]+)\/(\d+)\/(\d+)\/(\d+)(?:\.\w+)?(\?[^#]*)?$/.exec(url);
+  if (!m) return url;
+  const v = packVersion(m[1].replace('/', '-'), +m[2], +m[3], +m[4]);
+  if (v === undefined) return url;
+  const q = (m[5] ?? '').replace(/^\?/, '').split('&').filter((kv) => kv && !kv.startsWith('v='));
+  if (v) q.push(`v=${v}`);
+  return url.slice(0, url.length - (m[5]?.length ?? 0)) + (q.length ? `?${q.join('&')}` : '');
 }
 
 /** `?v=…` for a data file, or '' when its version is unknown. */

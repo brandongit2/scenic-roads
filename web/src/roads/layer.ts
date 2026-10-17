@@ -23,6 +23,7 @@
 import { boundTarget } from '../glstate';
 import { linkLater, type Later } from '../glprog';
 import { hostFor } from '../hosts';
+import { packVersion } from '../api';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
 import {
@@ -1168,9 +1169,9 @@ export class RoadLayer implements CustomLayerInterface {
 
   // ---- tiles ----------------------------------------------------------------------
 
-  /** Where the tiles come from: their version and the data's bounds (meta.bounds). A new version (a
-   * new catalog) fetches every tile again as it is wanted, each drawn from its old data until the
-   * new data is up (swap). */
+  /** Where the tiles come from: the layer's version and the data's bounds (meta.bounds). A new
+   * version (a new catalog) fetches again, as they are wanted, the tiles whose pack's version
+   * changed (tileVersion), each drawn from its old data until the new data is up (swap). */
   setSource(version: string, bounds: [number, number, number, number]) {
     if (version === this.version && bounds.every((v, i) => v === this.bounds[i])) return;
     this.version = version;
@@ -1406,9 +1407,10 @@ export class RoadLayer implements CustomLayerInterface {
   private request(t: RoadTile) {
     const id = this.nextReq++;
     t.reqId = id;
-    t.want = this.version;
+    const v = this.tileVersion(t);
+    t.want = v;
     this.reqs.set(id, t);
-    const url = `${hostFor(this.rail ? 'rails' : 'roads')}/tiles/${this.id}/${t.z}/${t.x}/${t.y}${this.version ? `?v=${this.version}` : ''}`;
+    const url = `${hostFor(this.rail ? 'rails' : 'roads')}/tiles/${this.id}/${t.z}/${t.x}/${t.y}${v ? `?v=${v}` : ''}`;
     this.workers[id % this.workers.length].postMessage({ type: 'load', id, url, z: t.z, x: t.x, y: t.y, lod: this.workerLodFilter() } satisfies WorkerRequest);
   }
 
@@ -1418,9 +1420,15 @@ export class RoadLayer implements CustomLayerInterface {
     this.map.triggerRepaint();
   }
 
+  /** A tile's version: its pack's (meta.packs), so a new catalog fetches again only the tiles of
+   * the packs it changed; the layer's when meta gave no packs. */
+  private tileVersion(t: RoadTile): string {
+    return packVersion(this.id, t.z, t.x, t.y) ?? this.version;
+  }
+
   /** A tile to fetch: never asked for, or not yet for the current version. */
   private due(t: RoadTile) {
-    return t.state === 'loading' ? t.reqId === 0 : t.want !== this.version;
+    return t.state === 'loading' ? t.reqId === 0 : t.want !== this.tileVersion(t);
   }
 
   private onWorker(m: WorkerResponse) {
@@ -2632,7 +2640,7 @@ export class RoadLayer implements CustomLayerInterface {
 
   progress(): LoadProgress {
     // (A tile drawn from an older version counts as loading until its new data is up.)
-    const loaded = this.wanted.filter((t) => t.state !== 'loading' && t.ver === this.version).length;
+    const loaded = this.wanted.filter((t) => t.state !== 'loading' && t.ver === this.tileVersion(t)).length;
     let vertices = 0;
     for (const t of this.drawn) vertices += t.data?.nverts ?? 0;
     return { wanted: this.wanted.length, loaded, inflight: this.reqs.size, gpuBytes: this.gpuBytes, vertices, tilesDrawn: this.drawn.length };
