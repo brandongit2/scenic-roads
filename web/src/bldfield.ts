@@ -795,6 +795,11 @@ export class FieldLayer implements CustomLayerInterface {
   private queue: FTile[] = [];
   private flying = new Set<string>();
   private frame = 0;
+  /** What the last frame wanted (the cover), for the status line (loadTasks): its tiles, the tiles
+   * whose elevations were left for later frames, whether the program was still linking. */
+  private wanted: FTile[] = [];
+  private elevLeft = 0;
+  private linking = false;
   private onIdle = () => {
     const k = this.terrainKey();
     if (k !== this.elevKey) {
@@ -1020,6 +1025,9 @@ export class FieldLayer implements CustomLayerInterface {
     this.tiles.clear();
     this.queue = [];
     this.flying.clear();
+    this.wanted = [];
+    this.elevLeft = 0;
+    this.linking = false;
   }
 
   private freeGl(t: FTile) {
@@ -1049,6 +1057,26 @@ export class FieldLayer implements CustomLayerInterface {
     const t = (this.map as unknown as { terrain?: { tileManager?: { _inViewTiles?: { getAllTiles?: () => { state?: string; tileID: { key: string } }[] } } } | null }).terrain;
     const ids = t?.tileManager?._inViewTiles?.getAllTiles?.()?.map((x) => `${x.tileID.key}${x.state === 'loaded' ? '' : '?'}`).sort().join(',') ?? '';
     return `${!!t}|${ids}|${this.map.getTerrain()?.exaggeration ?? 0}`;
+  }
+
+  /** The field's loading for the status line (tasks.ts), from the last frame's cover: its tiles
+   * arrived (or empty, or failed: asked again later) of those wanted; the roof ground the worker is
+   * still working out for them; elevations left for later frames; the program linking. Nothing while
+   * the field is off or hidden (no frame draws it then: what it last wanted is no longer pending). */
+  loadTasks(): { label: string; done?: number; total?: number; detail: string }[] {
+    if (!this.on || !this.map) return [];
+    if (!this.map.getLayer(this.id) || this.map.getLayoutProperty(this.id, 'visibility') === 'none') return [];
+    const out: { label: string; done?: number; total?: number; detail: string }[] = [];
+    let done = 0, dg = 0;
+    for (const t of this.wanted) {
+      if (t.state === 'ready' || t.state === 'empty' || t.state === 'failed') done++;
+      if (t.state === 'ready' && t.dgAsked && t.dgAsked !== t.dgFor) dg++;
+    }
+    if (done < this.wanted.length) out.push({ label: 'Far buildings', done, total: this.wanted.length, detail: 'field tiles (fetched and decoded in its worker, uploaded)' });
+    if (dg) out.push({ label: 'Far buildings roof ground', detail: `${dg} tiles in its worker` });
+    if (this.elevLeft) out.push({ label: 'Far buildings elevations', detail: `${this.elevLeft} tiles to sample from the terrain` });
+    if (this.linking) out.push({ label: 'Far buildings shader', detail: 'linking' });
+    return out;
   }
 
   /** Tiles still loading (for the comparison harness). */
@@ -1549,13 +1577,17 @@ export class FieldLayer implements CustomLayerInterface {
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     this.drawn = [];
+    this.elevLeft = 0;
+    this.linking = false;
     if (!this.on) {
       // (the still view's cache freed while the field is off)
+      this.wanted = [];
       this.dropCache();
       return;
     }
     this.frame++;
     const tiles = this.cover();
+    this.wanted = tiles;
     this.pump();
     // A tile still loading: its loaded descendants stand in (zooming out: the finer tiles drawn till
     // the coarser one comes), each whole over its own area, down to STANDIN_DEPTH levels; where none
@@ -1641,8 +1673,10 @@ export class FieldLayer implements CustomLayerInterface {
       const due = [...new Set(draw.map((e) => e.t))].filter((t) => t.elevFor !== elevKey);
       due.sort((a, b) => Number(!!a.vao) - Number(!!b.vao) || a.elevFrame - b.elevFrame);
       const elevStart = performance.now();
-      for (const t of due) {
+      for (let i = 0; i < due.length; i++) {
+        const t = due[i];
         if (t.vao && performance.now() - elevStart >= ELEV_BUDGET_MS) {
+          this.elevLeft = due.length - i;
           map.triggerRepaint();
           break;
         }
@@ -1662,7 +1696,10 @@ export class FieldLayer implements CustomLayerInterface {
       this.on = false;
       return;
     }
-    if (!pr) return;
+    if (!pr) {
+      this.linking = true;
+      return;
+    }
     const timed = this.timing && this.timer.ext;
     let q: WebGLQuery | null = null;
     if (timed) {

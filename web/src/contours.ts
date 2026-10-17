@@ -248,11 +248,14 @@ export class ContourLayer implements CustomLayerInterface {
     this.gl = gl;
     this.worker = new Worker(new URL('./contours.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (ev: MessageEvent<ContourResponse>) => this.onDecoded(ev.data);
+    // (a request that threw in the worker has no answer: not counted as under way for ever)
+    this.worker.onerror = () => this.pending.clear();
   }
 
   onRemove() {
     this.worker?.terminate();
     this.worker = null;
+    this.pending.clear();
     for (const e of this.cache.values()) this.free(e);
     this.cache.clear();
   }
@@ -270,6 +273,11 @@ export class ContourLayer implements CustomLayerInterface {
     }
     this.style = next;
     this.map?.triggerRepaint();
+  }
+
+  /** Tiles its worker is still making lines of (the status line: tasks.ts). */
+  decoding(): number {
+    return this.style.on ? this.pending.size : 0;
   }
 
   private onDecoded(r: ContourResponse) {

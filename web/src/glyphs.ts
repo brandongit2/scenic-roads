@@ -9,6 +9,10 @@ const SLICE_MS = 2;
 const OVERDUE_MS = 100;
 
 type Draw = (...args: unknown[]) => Promise<unknown>;
+
+/** Glyphs waiting to be drawn (the status line: maptasks.ts). */
+let waiting = 0;
+export const glyphsWaiting = () => waiting;
 type GlyphManager = { _drawGlyph: Draw; __sliced?: boolean };
 
 export function slicedGlyphs(map: MLMap) {
@@ -22,7 +26,12 @@ export function slicedGlyphs(map: MLMap) {
   let scheduled = false;
   const run = async (left: () => number) => {
     // (Each draw is awaited: its work happens in the promise's continuation.)
-    while (queue.length && left() > 0) await queue.shift()!();
+    while (queue.length && left() > 0) {
+      const d = queue.shift()!;
+      waiting = queue.length;
+      await d();
+    }
+    waiting = queue.length;
     scheduled = false;
     if (queue.length) schedule();
   };
@@ -44,6 +53,7 @@ export function slicedGlyphs(map: MLMap) {
   proto._drawGlyph = function (this: GlyphManager, ...args: unknown[]) {
     return new Promise((resolve, reject) => {
       queue.push(() => draw.apply(this, args).then(resolve, reject));
+      waiting = queue.length;
       schedule();
     });
   };

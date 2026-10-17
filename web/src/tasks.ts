@@ -7,7 +7,13 @@
 // Two sources of tasks: explicit ones (begin / end, or track() around a promise), and pollers that
 // read state the app doesn't get events for (MapLibre's tiles, the road tiles in view). Pollers run
 // every POLL_MS while anything is busy, and again whenever something may have started (kick()), so
-// the status clears as soon as the work does, not at the next camera move.
+// the status clears as soon as the work does, not at the next camera move. Pollers read live state
+// (what the view wants now, and which of it has arrived), so nothing they report can be left behind
+// by an error, an abort, an eviction or a lost context: once the state says so, it's gone.
+//
+// Debug: `__loads()` in the console gives what is under way now, by kind; with `#loaddbg` in the
+// address, every poll's list is logged (console.debug) and kept in `__loadlog` (time since the page
+// loaded, ms, and each kind's done/total or 'busy'), to find what holds the bar up.
 
 export interface Task {
   label: string;
@@ -34,6 +40,17 @@ class TaskBoard {
   private pct: HTMLElement | null = null;
   private what: HTMLElement | null = null;
   private last = '';
+  /** The last poll's tasks (__loads), and the log kept with #loaddbg. */
+  private current: Task[] = [];
+  private log: { t: number; tasks: Record<string, string> }[] | null = null;
+
+  constructor() {
+    // (a worker imports this module too, through what it shares with the page: no window there)
+    if (typeof window === 'undefined') return;
+    const w = window as unknown as { __loads: () => Record<string, string>; __loadlog?: unknown };
+    w.__loads = () => byKind(this.current);
+    if (/(^|[#&])loaddbg\b/.test(location.hash)) w.__loadlog = this.log = [];
+  }
 
   /** The status element (in the bottom bar) to keep up to date. */
   mount(el: HTMLElement) {
@@ -109,6 +126,12 @@ class TaskBoard {
       this.busySince ||= now;
       this.timer = window.setTimeout(this.tick, POLL_MS);
     } else this.busySince = 0;
+    this.current = tasks;
+    if (this.log && (tasks.length || Object.keys(this.log.at(-1)?.tasks ?? {}).length)) {
+      const e = { t: Math.round(now), tasks: byKind(tasks) };
+      this.log.push(e);
+      console.debug('loads', e.t, e.tasks);
+    }
     this.render(tasks.length && now - this.busySince >= SHOW_AFTER_MS ? tasks : []);
   };
 
@@ -132,6 +155,13 @@ class TaskBoard {
     this.what.textContent = shown;
     this.el.title = title;
   }
+}
+
+/** Each task's state in short: done/total, or its detail. */
+function byKind(tasks: Task[]): Record<string, string> {
+  const o: Record<string, string> = {};
+  for (const t of tasks) o[t.label] = t.total ? `${Math.min(t.done ?? 0, t.total)}/${t.total}` : t.detail ?? 'busy';
+  return o;
 }
 
 export const tasks = new TaskBoard();

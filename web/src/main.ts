@@ -1158,6 +1158,13 @@ async function main() {
     return out;
   });
   tasks.poll(() => mapTasks(map));
+  // The far buildings' field (its tiles, roof ground, elevations, shader) and the 3D contours'
+  // lines being made in their worker.
+  tasks.poll(() => field?.loadTasks() ?? []);
+  tasks.poll(() => {
+    const n = contours.decoding();
+    return n ? [{ label: 'Contours 3D', detail: `${n} tiles in its worker` }] : [];
+  });
   for (const ev of ['dataloading', 'sourcedataloading', 'render', 'moveend'] as const) map.on(ev, () => tasks.kick());
 
   const refresh = () => {
