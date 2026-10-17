@@ -55,6 +55,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 ## Docs
 
 - `docs/plan.md`: the design, the build's jobs and keys, and known gaps.
+- `docs/pipeline.md`: every build step as one row of one table (the concepts, the names, the checklist, the build page).
 - `docs/formats.md`: the files.
 - `docs/inputs.md`: the input drop boxes and their checks.
 - `docs/workers.md`: the coordinator and its workers.

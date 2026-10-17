@@ -5,10 +5,11 @@ marked planned; where the code falls short of the design, §10 lists the gap.
 
 - The diagram's source is `docs/diagram/` (`python3 page.py out.html`, then republish `out.html` to
   https://claude.ai/artifact/PrjaaDXLuuXGpGr2xt5Vjg).
-- Companions: `docs/phase5.md` (landmarks, stations, ferries and overlays by view; the landmark
-  jobs; the zoomed-out summaries), `docs/formats.md` (file formats), `docs/inputs.md` (every input
-  through a checked drop box), `docs/pool.md` (the pool), `docs/workers.md` (tasks for any worker),
-  `docs/buildings3d.md` (3D buildings).
+- Companions: `docs/pipeline.md` (every step as one row of one table: the concepts, the names,
+  the checklist and the build page), `docs/phase5.md` (landmarks, stations, ferries and overlays by
+  view; the landmark jobs; the zoomed-out summaries), `docs/formats.md` (file formats),
+  `docs/inputs.md` (every input through a checked drop box), `docs/pool.md` (the pool),
+  `docs/workers.md` (tasks for any worker), `docs/buildings3d.md` (3D buildings).
 
 **The idea in one line:** OpenStreetMap comes from one worldwide download, cut by area, and a region
 is only an outline saying which areas to build. Every step runs per area, per pack near the
@@ -917,8 +918,9 @@ from the first (`edit_held`).
   orphans are stopped at start when provably ours.
 - **The heartbeat:** written locally each loop (~20 s) and to the NAS (`state/status.json`) when it
   changes or every two minutes. It holds the job, its progress (from the job's `progress:` lines)
-  with the time left, and a checklist of every step to the end, each saying what it does, its jobs
-  left in order, and why work isn't this Mac's now. A job of several parts says them (`parts: <i>
+  with the time left, and a checklist of the build to the end: a line per stage with an item per
+  step (docs/pipeline.md §4), its targets done of all in its noun, its jobs left in order, and why
+  work isn't this Mac's now. A job of several parts says them (`parts: <i>
   [names]`) and the status lists them, done, under way and to come. A long part says how far it is;
   osmium's `--progress` counts. A unit job's area counts by its stages, each weighted by its learned
   time (`unit-stages.json`). A part's time left comes from its own pace; a stuck part shows as such.
@@ -962,8 +964,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
   (`LEAD_ONLY`: catalogs, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md
   §7.2) ranks the shared steps (`agent::steps::SHARED`): terrain's and slope's pieces, tree cover's
-  pieces, units, the landmarks' candidates and peaks, bldprep and bldtiles. The status marks shared
-  steps with ⇄.
+  pieces, units, the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
+  any member may take with ⇄ (`agent::steps::place`).
 - **What fits a member:** each target is offered with its expected memory: a unit's from its piece;
   another's what its last run took (sampled four times a second, `SCENIC_COSTS`), else a related
   measure, else a first guess per step (terrain piece 3.3 GB, its assembly 1.2, tree cover piece 1,
@@ -1082,7 +1084,9 @@ available. Until work is done, the map serves the last catalog.
 - **Atomic writes** (§3); **caches are disposable**.
 
 **Status.**
-- `scenic status`, `scenic clean`, `scenic room` (Room on the disk, above).
+- `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
+  `scenic steps` (the steps table: docs/pipeline.md), `scenic clean`, `scenic room` (Room on the
+  disk, above).
 - The app's status bar: the build's state, the NAS, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for six minutes shows as out of touch.

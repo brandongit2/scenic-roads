@@ -173,15 +173,15 @@ No unit's key reads any of them.
   has; every stale `bldprep`; `bldtiles T` once T and its 8 neighbours are prepared and the sources
   are here; `bldfield-lo` once its z3 tile's `bldtiles` are done. Listed after the landmarks', tiles
   in the regions' build order. No "bld-release" (or "?") in the inputs: no buildings work.
-- **Jobs:** the second job takes `bld-fetch` with the network steps, and the buildings steps last.
-  Never two `bldprep` at once (`agent::steps::NAS_READS`), nor beside a job that runs alone
-  (`ALONE`). Fixed batches of tiles (`agent::batch_size`), smaller while the regions' own work is
-  left (`agent::job_size`).
+- **Jobs:** the second job takes `bld-fetch` with the network steps, and the buildings steps last
+  (the steps table's `beside` ranks: docs/pool.md §7.2); a job starts beside another by both jobs'
+  measured memory and disk, never beside a cold start (docs/pool.md §7.7). Fixed batches of tiles
+  (`agent::batch_size`), smaller while the regions' own work is left (`agent::job_size`).
 - **Map updates:** buildings hold no map update and no region's readiness; their packs go out with
   the next catalog. While the chain has work left, a map update for it alone comes at most once per
   the gap (plan.md §8); a map update fixes the packs as it begins (`out::AS_OF_OUTPUTS`).
-- **Status:** the checklist's "Raising the 3D buildings" (`build::BUILDINGS`); labels "Fetching the
-  3D buildings' sources", "Reading the regions' buildings", "Raising the 3D buildings". The forecast
+- **Status:** the checklist's "3D buildings" stage, its steps "Buildings' sources", "Buildings
+  read", "3D buildings", "3D buildings, zoomed out" (docs/pipeline.md §3). The forecast
   chains `bldtiles` after `bldprep` and `bldfield-lo` after `bldtiles` (`forecast::chain_deps`).
 
 ### 3.4 Formats

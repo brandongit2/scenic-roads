@@ -240,8 +240,9 @@ match (plan.md §8, The same app).
 
 ### 7.2 Placement: the steps table
 
-`crate::agent::steps` has a row per step the agent runs as a job; the step sets (`SHARED`,
-`SECOND`, `ANSWERED`) are generated from it at build time.
+`crate::agent::steps` has a row per step the agent runs as a job (docs/pipeline.md: its id, title,
+what it does, kind, scope and stage, and these resources); the step sets (`SHARED`, `SECOND`,
+`ANSWERED`) are generated from it at build time.
 
 | Column | Meaning |
 | --- | --- |
@@ -414,8 +415,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   (`conds`), slots' jobs, tasks, addresses (`broker`), reach (§6.8), term led, `handing_to`,
   `ready_for`, `stood_down`. Written when it changes, at least every two minutes. Listed every two
   minutes; a member missing from listings for twenty minutes is forgotten.
-- **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): checklist,
-  forecast, regions, waits, map-update decision, recent jobs, pause, last catalog, the lead.
+- **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): the
+  checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
+  waits, map-update decision, recent jobs, pause, last catalog, the lead.
   A member writes `helper.json` instead.
 - **Views** (menu bar, map's build panel, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`

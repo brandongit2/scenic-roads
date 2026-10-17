@@ -142,11 +142,13 @@ Common rules:
   on "Help with this tab"; any page may also pause the build and ask about the lead (`/work/lead`,
   docs/pool.md §11). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`): the verdict (going, done
-  when, what needs a look, pause controls); the overview; a card per machine; the pool (who leads,
-  "Make lead", "Take it"); the road to done (each machine's forecast lane, map updates, steps,
-  regions); the activity (last day by the hour, events); folded details (leases, waits, workers).
-  It reads `/work/swarm` every 10 s and `/work/history` incrementally.
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`; docs/pipeline.md §5): the
+  verdict (going, done when, what needs a look, pause controls); the overview; the stages (a card
+  per stage, a row per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the
+  road to done (each machine's forecast lane, map updates); the regions; the activity (last day by
+  the hour, events); folded details (leases, waits, workers, the steps table). It reads
+  `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
+  `/work/history` incrementally.
 - **HTTPS** through `tailscale serve` (docs/pool.md §14) gives the secure context the wake lock
   and PWA need; plain HTTP on the tailnet still works.
 - **The page as an app** (`manifest.webmanifest`, `sw.js`, `icons/`): installable; its service

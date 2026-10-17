@@ -781,7 +781,9 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,
   the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `map_update`
   (agent::build::MapUpdate: `due`, `why`, `gap_s`, `gap_basis`, `since_last_s`, `left_s`, `regions`,
-  `buildings`), the checklist (each step's `done`/`total` or `left`, `next`, `note`), `caches`
+  `buildings`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
+  `unit`, `items` (per step: `step`, `done`, `total`, `left`), `next`, `note`, `shared`:
+  docs/pipeline.md §4), `caches`
   (agent::room::Caches: `clearable`, `each`, `why_not`, `trimmed`, `cleared`, `declined`, `room`),
   `pool`, `lead` (crate::agent::lead::View), `inputs`
   (pipeline::inputs::view::InputView: per unit `version`, `state` ok | checking | held, `checked`,
