@@ -3278,9 +3278,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         // (Its inputs' measures: the piece's bytes beside what the store's readers read, its ways
         // and vertices kept, its elevation tiles and area.)
+        // (Its tail's later steps add theirs as they run: `costin::aside`.)
+        pipeline::costin::set("km2", pipeline::costin::tile_km2(u.z, u.x, u.y));
         let mut sizes = pipeline::costin::take();
         *sizes.entry("bytes".into()).or_default() += std::fs::metadata(&piece).map_or(0, |m| m.len());
-        sizes.extend([("ways".into(), rep.kept_ways as u64), ("vertices".into(), rep.kept_verts as u64), ("piece_ways".into(), rep.piece_ways as u64), ("dem_tiles".into(), rep.dem_cache as u64), ("km2".into(), pipeline::costin::tile_km2(u.z, u.x, u.y))]);
+        sizes.extend([("ways".into(), rep.kept_ways as u64), ("vertices".into(), rep.kept_verts as u64), ("piece_ways".into(), rep.piece_ways as u64), ("dem_tiles".into(), rep.dem_cache as u64)]);
         let b = Built { u, dir: dir.clone(), bdir: bdir.clone(), rep, tools, carry, piece, t, peak: pipeline::unit::take_peak(), group: pipeline::sys::group_peak(), disk: store::cachefile::written().saturating_sub(written_at), anywhere: anywhere.to_vec(), sizes };
         let offering = phase("tails offered to other workers", Class::Net);
         let offered = match &offload {
@@ -3299,7 +3301,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             None => {
                 let mut b = b;
                 if b.rep.kept_ways > 0 {
-                    run_tail(&b.anywhere, &b.dir, &b.tools)?;
+                    let (r, bytes, tiffs) = pipeline::costin::aside(|| run_tail(&b.anywhere, &b.dir, &b.tools));
+                    r?;
+                    pipeline::costin::add_to(&mut b.sizes, bytes, tiffs);
                     b.peak = b.peak.max(pipeline::unit::take_peak());
                 }
                 commit_unit(out, &date, b, "here")?;
@@ -3359,7 +3363,13 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
         // (Its last steps run here, when they're taken back: its stages.)
         areas(|a| a.on(&b.u.slash()));
         let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
-        let mut here = || pipeline::unit::run_tail(&anywhere, &dir, &tools);
+        // (What its steps read here is its own, not the unit under way's: `costin::aside`.)
+        let mut read = (0, 0);
+        let mut here = || {
+            let (r, bytes, tiffs) = pipeline::costin::aside(|| pipeline::unit::run_tail(&anywhere, &dir, &tools));
+            read = (read.0 + bytes, read.1 + tiffs);
+            r
+        };
         // (This Mac's own run of its steps, as its stages have taken here: a worker is waited on
         // only while its pace says it'll be back sooner, and measured against it.)
         let mut here_s = None;
@@ -3369,6 +3379,7 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
             None => i += 1,
             Some(how) => {
                 let (mut b, _) = waiting.remove(i).unwrap();
+                pipeline::costin::add_to(&mut b.sizes, read.0, read.1);
                 b.peak = b.peak.max(pipeline::unit::take_peak());
                 let how = match how {
                     pipeline::offload::Settled::Remote(w) => format!("by {w}"),

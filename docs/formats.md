@@ -745,7 +745,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     map of the target's input measures, absent from lines before it: `bytes` and `threads` always
     (bytes: what the store's readers read for the target, plus a step's own inputs: a unit's piece,
     pack's and lo's base packs, pois' piece); `km2` (the tile's area) and `tiffs` (GeoTIFFs opened)
-    for every tile target; a unit's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`; pack's and
+    for every tile target; a unit's `ways` and `vertices` kept, `piece_ways`, `dem_tiles` (its bytes and tiffs include its tail's steps run here later, after the next unit began); pack's and
     lo's `units` and `ways`; peaks' `peaks`, `z12_tiles`; bldprep's `rows`, `buildings`, `parts`;
     bldtiles' `buildings`, `parts`); `written`, `written-2`
     (`SCENIC_WRITTEN`, bytes added to caches, every 64 MB); `timings.jsonl`.

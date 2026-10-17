@@ -67,6 +67,28 @@ pub fn take() -> BTreeMap<String, u64> {
     m
 }
 
+/// Runs `f` for another target than the one under way (a unit's tail run after the next unit
+/// began): what it reads and the GeoTIFFs it opens are left out of the target under way's
+/// measures and given back as `(bytes, tiffs)`, for the target it's for. (Reads on other threads
+/// meanwhile are counted to it too.)
+pub fn aside<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
+    let (r0, t0) = (store::range::read_bytes(), TIFFS.load(Ordering::Relaxed));
+    let v = f();
+    let (bytes, tiffs) = (store::range::read_bytes().saturating_sub(r0), TIFFS.load(Ordering::Relaxed).saturating_sub(t0));
+    let mut s = state();
+    s.read_at += bytes;
+    s.tiffs_at += tiffs;
+    (v, bytes, tiffs)
+}
+
+/// Adds measures taken `aside` to a target's.
+pub fn add_to(m: &mut BTreeMap<String, u64>, bytes: u64, tiffs: u64) {
+    *m.entry("bytes".into()).or_default() += bytes;
+    if tiffs > 0 || m.contains_key("km2") {
+        *m.entry("tiffs".into()).or_default() += tiffs;
+    }
+}
+
 /// The threads a step's job may use: as the agent sets them (`RAYON_NUM_THREADS`), else the pool's.
 pub fn threads() -> usize {
     std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or_else(rayon::current_num_threads)
@@ -100,6 +122,22 @@ mod tests {
         assert!(m["threads"] >= 1);
         begin();
         assert!(!take().contains_key("ways"));
+    }
+
+    #[test]
+    fn aside_reads_go_to_their_own_target() {
+        begin();
+        set("km2", 1);
+        let ((), bytes, tiffs) = aside(|| {
+            store::range::count_read(1 << 40);
+            tiff_opened();
+        });
+        assert!(bytes >= 1 << 40 && tiffs >= 1);
+        // (Other tests' reads meanwhile are far below 1 TiB.)
+        assert!(take()["bytes"] < 1 << 40);
+        let mut m = BTreeMap::from([("km2".to_string(), 5)]);
+        add_to(&mut m, 7, 2);
+        assert_eq!((m["bytes"], m["tiffs"]), (7, 2));
     }
 
     #[test]
