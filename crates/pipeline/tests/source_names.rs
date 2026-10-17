@@ -6,16 +6,19 @@
 //! What counts as naming one, in a line's code or strings (comments aside):
 //! - a declared source's host, from the declarations staged in `producers/` (each `.toml`'s `source`,
 //!   `url`/`urls`, and its index's files' URLs; a path-style S3 URL's bucket with its host), and its
-//!   `name` and `credit`, whole or up to their first `,`, `(`, `:` or `;` (two words or more);
-//! - any other URL, but those of this machine, the tailnet, the documentation names (`example.*`,
-//!   `.test`, `.invalid`, `192.0.2.*`) and a host of one label; and the allowed links (`LINKS`):
+//!   `name` and `credit`, whole or up to their first `,`, `(`, `:` or `;` (two words or more), the
+//!   name's first two words in any case, and its id (the file's first word) where it's a name;
+//! - any other URL, but those of this machine, the tailnet (100.64.0.0/10), the documentation names
+//!   (`example.*`, `.test`, `.invalid`, `192.0.2.*`) and a host of one label (a templated host judged
+//!   by what follows its template); and the allowed links (`LINKS`):
 //!   OpenStreetMap itself, and Wikidata's and Wikipedia's pages opened from an item. An IRI in angle
 //!   brackets (`<http://…>`, a SPARQL query's vocabulary) is the query language's own term.
 //!
 //! What may: `EXEMPT`, by file, item (a Rust function's or `const`'s, a Python function's or
 //! top-level name's; `-` in other languages) and the line's anchor, each with why. Those kept in
 //! code by §6.9's table cite its row (`KEPT`), which must say so. An exemption matching no line
-//! fails (`every_exemption_matches_a_line`), so the list can't go stale.
+//! fails (`every_exemption_matches_a_line`), so the list can't go stale. A name built at run time
+//! (joined from parts) isn't seen.
 
 mod common;
 
@@ -30,7 +33,7 @@ const SCOPE: &[&str] = &["crates", "dem", "web/src", "tools", "scripts"];
 const SKIP_DIRS: &[&str] = &["tests", "target", "node_modules", ".venv", "__pycache__", "taskboard", "dist", "dist-publish"];
 
 /// The file types read, by extension.
-const EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "mjs", "sh", "zsh", "swift", "c", "h", "css", "html"];
+const EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "toml", "yaml", "yml", "sh", "zsh", "swift", "c", "h", "css", "html"];
 
 /// Links the app may write: the W3C's namespaces (SVG's, a format's), OpenStreetMap (its data and tags are the map's schema; a link opens a
 /// feature or a place there), and Wikidata's and Wikipedia's pages, opened from an item's id or
@@ -48,7 +51,17 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/rules.rs", "CREDITS", "open.canada.ca/en/open-government-licence-canada", "the credits' fallback (§4.8): the licence's own notice"),
     // Content already made, named by its content.
     ("crates/pipeline/src/lakefill/run.rs", "fill", "\"source\": \"CanVec (Natural Resources Canada)", "the lake fill's own metadata, part of its content name: changed, the fill and the water, terrain and catalog reading it would be made again for no change in what they hold"),
-    ("dem/leaftype.py", "europe_square", "\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
+    ("dem/leaftype.py", "north_america_squares", "\"NALCMS 2020 land cover 30 m (CEC)", "a made square's tag, as above"),
+    ("dem/leaftype.py", "complete", ".startswith(\"NALCMS\")", "reads the made squares' tags, as above"),
+    ("crates/pipeline/src/trees/squares.rs", "complete", "starts_with(\"NALCMS\")", "reads the made squares' tags, as dem/leaftype.py's"),
+    ("crates/pipeline/src/trees/mod.rs", "META", "Copernicus HRL DLT 2018; NALCMS 2020", "the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing"),
+    ("dem/trees.py", "z3_main", "Copernicus HRL DLT 2018; NALCMS 2020", "the tree tiles' metadata, as crate::trees::META"),
+    ("dem/leaftype.py", "fetch_nalcms", "NALCMS", "the reader of NALCMS's zip, made for its layout (a member streamed out by the declared offset and size): its messages name what they read"),
+    ("dem/leaftype.py", "north_america_squares", "\"the NALCMS squares resampled\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", "\"the lakes filled from CanVec's zips\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
+    ("dem/bldprep.py", "read_rg", "Overture's columns changed", "the reader of Overture's GeoParquet schema (the `geoparquet` format is its layout): its messages name what they read"),
+    ("dem/bldfetch.py", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
+    ("dem/leaftype.py", "europe_square","\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
     // Allowlists by host.
     ("crates/pipeline/src/coord/mod.rs", "WEB_HOSTS", "pub const WEB_HOSTS", "the coordinator's allowlist of the data servers a worker's task may read through it (docs/workers.md §3), a guard on what a lease may fetch; derived from the declarations' hosts is planned (docs/inputs.md §5.2, §9)"),
     ("crates/pipeline/src/budget/mod.rs", "QUERY_HOSTS", "\"query.wikidata.org\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
@@ -72,6 +85,8 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut tomls = Vec::new();
     files(&root.join("producers"), "toml", &mut tomls);
+    tomls.retain(|t| t.file_name().is_some_and(|n| n != "pyproject.toml"));
+    let data_words = data_words(&tomls);
     for t in tomls {
         if t.file_name().is_some_and(|n| n == "pyproject.toml") {
             continue;
@@ -103,8 +118,64 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
                 }
             }
         }
+        // (A name's first two words, any case: `ci:` (as written when both are plain capitalised words); its declaration's id, its file's first word,
+        // when that's a word of its name, five letters or more and no role's, format's or
+        // encoding's word (a `[data]` value of any declaration): `w:`, as the name writes it, a
+        // whole word.)
+        let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let words: Vec<&str> = name.split(|c: char| !(c.is_alphanumeric() || c == '&' || c == '-')).filter(|w| !w.is_empty()).collect();
+        if words.len() >= 2 && words[0].starts_with(|c: char| c.is_alphabetic()) {
+            // (Two words of plain English capitalised, "Terrain Tiles", are matched as written: in
+            // lower case they're common words.)
+            let plain = |w: &str| w.chars().next().is_some_and(char::is_uppercase) && w.chars().skip(1).all(char::is_lowercase);
+            let pair = format!("{} {}", words[0], words[1]);
+            out.insert(if plain(words[0]) && plain(words[1]) { pair } else { format!("ci:{}", pair.to_lowercase()) }, from.clone());
+        }
+        let id = t.file_stem().unwrap().to_string_lossy().split('-').next().unwrap_or("").to_lowercase();
+        if id.len() >= 5 && !data_words.contains(&id) {
+            if let Some(w) = words.iter().find(|w| w.to_lowercase() == id) {
+                out.insert(format!("w:{w}"), from.clone());
+            }
+        }
     }
     out
+}
+
+/// Every string in the declarations' `[data]` tables, lowercased: the roles', formats' and
+/// encodings' words, never a source's own name.
+fn data_words(tomls: &[PathBuf]) -> std::collections::BTreeSet<String> {
+    fn walk(v: &toml::Value, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            toml::Value::String(s) if !s.contains("://") => {
+                out.insert(s.to_lowercase());
+            }
+            toml::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            toml::Value::Table(t) => t.values().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    for t in tomls {
+        if let Ok(d) = toml::from_str::<toml::Table>(&std::fs::read_to_string(t).unwrap_or_default()) {
+            if let Some(x) = d.get("data") {
+                walk(x, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// Whether line `l` (`lower`, lowercased) names marker `m` (`ci:` any case; `w:` a whole word;
+/// else as written).
+fn names(l: &str, lower: &str, m: &str) -> bool {
+    if let Some(x) = m.strip_prefix("ci:") {
+        return lower.contains(x);
+    }
+    if let Some(w) = m.strip_prefix("w:") {
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        return l.match_indices(w).any(|(k, _)| !word(l[..k].chars().next_back()) && !word(l[k + w.len()..].chars().next()));
+    }
+    l.contains(m)
 }
 
 /// A URL's host as a marker (with its bucket for a path-style S3 URL, whose host is shared).
@@ -119,6 +190,12 @@ fn host_marker(u: &str) -> Option<String> {
     Some(host.to_string())
 }
 
+/// What follows a host's leading template (`${…}`, `{…}`) and its dot: None if it has none.
+fn templated_rest(h: &str) -> Option<&str> {
+    let close = if h.starts_with("${") || h.starts_with('{') { h.find('}')? } else { return None };
+    Some(h[close + 1..].trim_start_matches('.'))
+}
+
 /// Whether a URL's host is one of this machine, the tailnet, the documentation names, or of one
 /// label (a placeholder, a Mac's name): not a source.
 fn local_host(h: &str) -> bool {
@@ -126,13 +203,11 @@ fn local_host(h: &str) -> bool {
     let label = |s: &str| h == s || h.ends_with(&format!(".{s}"));
     !h.contains('.')
         || h.starts_with("127.")
-        || h.starts_with("100.")
+        || h.strip_prefix("100.").and_then(|r| r.split('.').next()?.parse::<u8>().ok()).is_some_and(|o| (64..128).contains(&o))
         || h.starts_with("192.168.")
         || h.starts_with("10.")
         || h.starts_with("192.0.2.")
         || h.starts_with('[')
-        || h.starts_with('$')
-        || h.starts_with('{')
         || ["localhost", "local", "ts.net", "test", "invalid", "example", "nip.io"].iter().any(|s| label(s))
         || h.starts_with("example.")
         || h.split('.').any(|l| l == "example")
@@ -170,9 +245,12 @@ fn without_iris(l: &str) -> String {
 /// What a line names: each hit's marker.
 fn hits(l: &str, marks: &BTreeMap<String, String>) -> Vec<String> {
     let l = without_iris(l);
-    let mut out: Vec<String> = marks.keys().filter(|m| l.contains(m.as_str())).cloned().collect();
+    let lower = l.to_lowercase();
+    let mut out: Vec<String> = marks.keys().filter(|m| names(&l, &lower, m)).cloned().collect();
     for u in urls(&l) {
         let h = u.split("://").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("");
+        // (A host behind a template, `${x}.host`: the host after it.)
+        let h = templated_rest(h).unwrap_or(h);
         if h.is_empty() || local_host(h) || LINKS.iter().any(|a| u.contains(a)) || out.iter().any(|m| u.contains(m.as_str())) {
             continue;
         }
@@ -336,8 +414,8 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
                 }
             }
         }
-        "sh" | "zsh" => code.extend(lines.iter().map(|l| if l.trim_start().starts_with('#') { String::new() } else { cut_comment(l, true, &['"', '\'']) })),
-        "css" | "html" => code.extend(lines.iter().map(|l| l.to_string())),
+        "sh" | "zsh" | "toml" | "yaml" | "yml" => code.extend(lines.iter().map(|l| if l.trim_start().starts_with('#') { String::new() } else { cut_comment(l, true, &['"', '\'']) })),
+        "css" | "html" | "json" => code.extend(lines.iter().map(|l| l.to_string())),
         _ => {
             let mut in_block = false;
             for l in &lines {
@@ -458,6 +536,13 @@ fn the_scanner_finds_sources_by_their_declarations() {
     for ok in ["\"http://127.0.0.1:8080/x\"", "`https://${host}/x`", "\"https://m4.tail1.ts.net/\"", "\"http://x\"", "`https://www.openstreetmap.org/${id}`", "`https://${l}.wikipedia.org/wiki/${t}`", "PREFIX wd: <http://www.wikidata.org/entity/>"] {
         assert!(hits(ok, &marks).is_empty(), "{ok}");
     }
+    let marks: BTreeMap<String, String> = [("ci:overture maps".to_string(), "o.toml".to_string()), ("w:CanVec".into(), "c.toml".into()), ("s3.amazonaws.com/b".into(), "b.toml".into())].into();
+    assert_eq!(hits("source: 'OVERTURE Maps (OSM)'", &marks), ["ci:overture maps"]);
+    assert_eq!(hits("\"CanVec's zips\"", &marks), ["w:CanVec"]);
+    assert!(hits("\"canvec_lakes\", \"MyCanVecX\"", &marks).is_empty());
+    assert_eq!(hits("`https://${r}.s3.amazonaws.com/x`", &marks), ["https://${r}.s3.amazonaws.com/x"]);
+    assert_eq!(hits("\"http://100.1.2.3/x\"", &marks), ["http://100.1.2.3/x"]);
+    assert!(hits("\"http://100.70.85.80:8080/x\"", &marks).is_empty());
     assert_eq!(cut_comment("let u = \"https://a.org\"; // https://b.org", false, &['"']), "let u = \"https://a.org\"; ");
     assert_eq!(cut_comment("const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; // c", false, &['"']), "const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; ");
     assert_eq!(cut_comment("x = \"#a\"  # https://b.org", true, &['"', '\'']), "x = \"#a\"  ");

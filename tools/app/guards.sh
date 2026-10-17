@@ -20,7 +20,7 @@ cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1
 sr=$(mktemp -d)
 trap 'chmod -R u+rwx $sr 2>/dev/null; rm -rf $sr' EXIT
 mkdir -p $sr/dem
-git ls-files dem | while read f; do cp -X "$f" "$sr/$f"; done
+git ls-files dem | while read f; do mkdir -p "$(dirname "$sr/$f")" && cp -X "$f" "$sr/$f"; done
 for d in inputs inputs/sources inputs/elevation translations descriptions; do
   mkdir -p $sr/$d && print x > $sr/$d/x
 done

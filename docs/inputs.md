@@ -1151,16 +1151,23 @@ publishing; the tests' whole output in `~/Library/Logs/scenic/guards-<time>.log`
 ### 7.2 No source names in the app's code
 
 `crates/pipeline/tests/source_names.rs` fails when a data source's address or name is in the code
-(not a comment) of `crates/` (tests aside: `#[cfg(test)]` items, `tests.rs` files, `tests/`),
-`dem/`, `web/src/`, `tools/` (not `tools/taskboard/`) or `scripts/` (Python's `test_…` functions and
-docstrings aside). `producers/` is exempt: the declarations are made and staged there.
+or strings of `crates/` (tests aside: `#[cfg(test)]` items, `tests.rs` files, `tests/`), `dem/`,
+`web/src/`, `tools/` (not `tools/taskboard/`) or `scripts/`: their Rust, Python, TypeScript and
+JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`), shell, Swift, C, CSS, HTML, JSON, TOML and YAML files.
+Comments aren't scanned (nor Python's docstrings and `test_…` functions). `producers/` is exempt: the
+declarations are made and staged there.
 
 - **Markers, derived from the declarations staged in `producers/`** (each `.toml` but
   `pyproject.toml`), so a new declaration adds its own: the hosts of its `source`, `url`/`urls` and
   its staged index's files' URLs (a path-style S3 URL's host with its bucket, the host being
   shared); its `name` and `credit`, whole, and up to their first `,` `(` `:` `;` when that's two
-  words or more. And any other URL, but this machine's, the tailnet's, the documentation names
-  (`example.*`, `.test`, `.invalid`, `192.0.2.*`) and a host of one label.
+  words or more; its name's first two words in any case (as written when both are plain
+  capitalised words, "Terrain Tiles", common in lower case); and its id, the file's first word, as
+  the name writes it and as a whole word, when it's a word of the name, five letters or more and no
+  role's, format's or encoding's word (no `[data]` value of any declaration): today `Overture`,
+  `CanVec`, `NALCMS`. And any other URL, but this machine's, the tailnet's (`100.64.0.0/10`), the
+  documentation names (`example.*`, `.test`, `.invalid`, `192.0.2.*`) and a host of one label; a host
+  behind a template (`${x}.host`) is judged by what follows it.
 - **Allowed:** the W3C's namespaces (a format's); OpenStreetMap (its tags are the map's schema; its
   links open a feature or a place there); Wikidata's and Wikipedia's pages opened from an item;
   IRIs in angle brackets (a SPARQL query's vocabulary, and the sites it names as nodes).
@@ -1170,7 +1177,11 @@ docstrings aside). `producers/` is exempt: the declarations are made and staged 
 |---|---|
 | `rules::CREDITS` (the declared sources' entries, the CanVec licence's notice) | the credits' fallback (§4.8): a declared source's entry is replaced by its declaration's credit once one is accepted, and stands in until then, so a catalog never lacks a licence's notice |
 | `lakefill::run::fill`'s metadata | part of the fill's content name: changed, the fill and the water, terrain and catalog reading it would be made again for nothing |
-| `dem/leaftype.py`'s Europe square tag | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
+| `dem/leaftype.py`'s square tags, and `complete` there and in `trees::squares` | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
+| `trees::META`, `dem/trees.py`'s meta | the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing |
+| `dem/leaftype.py`'s `fetch_nalcms` | the reader of NALCMS's zip, made for its layout; its messages name what they read |
+| `dem/bldprep.py`'s `read_rg`, `dem/bldfetch.py`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
+| timing phases (`scenic-build`'s lake fill, `dem/leaftype.py`'s NALCMS squares) | a phase's name is its key in the timings kept |
 | `coord::WEB_HOSTS` | the coordinator's allowlist of the data servers a worker's task may read through it (docs/workers.md §3); derived from the declarations' hosts is planned (§5.2) |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS`; `dem/budget.py`'s | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `dem/bldfetch.py`'s S3 listing namespace | the protocol's |
@@ -1182,10 +1193,15 @@ docstrings aside). `producers/` is exempt: the declarations are made and staged 
 
 Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`), the geoid grids
 (nothing reads them), `bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) and
-`dem/bldmeasure.py`'s store folders name no host, declared name or credit, so none needs an
-exemption. Short names (`NALCMS`, `Terrarium`, the tree tiles' `source` string) aren't markers:
-they're also the formats' and the stores' words. The scanner's own rules have a test
-(`the_scanner_finds_sources_by_their_declarations`).
+`dem/bldmeasure.py`'s store folders name no marker, so none needs an exemption. The 3D buildings'
+details name their source from the catalog's credits (`web/src/buildings.ts`, `setBuildingsCredit`).
+Short names other than the ids (`Terrarium`, an encoding; `GHSL`, `EEA`) and store folders
+(`sources/overture/`) aren't markers.
+
+**What it can't see:** a name or address built at run time (split and joined, `"transl" +
+"ations"`, or read from a file the code ships), a short name or abbreviation the declarations
+don't give, and anything in a comment. It's a check on what's written, not a proof. The scanner's own
+rules have a test (`the_scanner_finds_sources_by_their_declarations`).
 
 ## 8. How each input is made
 
