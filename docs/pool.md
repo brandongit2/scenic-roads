@@ -46,12 +46,15 @@ The share is SMB 3 on a Synology. The design assumes:
 - **Reads can be stale** for minutes (macOS's SMB caches).
 - **Renaming over a file another SMB session has open fails** (EBUSY) for as long as it's held:
   `crate::whole::rename_over` retries for 5 s. The server can hold a file for hours with no process
-  on either Mac having it open (both Macs' heartbeats were stuck so from 17 Oct 06:50, task #226);
+  on either Mac having it open;
   renaming the held file away, and renaming into its free name, still work, but removing it fails
   until it's let go. So heartbeats (the pool's, `Nas::write_aside`, and `state/status.json`) fall
   back to `crate::whole::rename_or_aside`: the old file renamed to
-  `<name>.<host>.<pid>.<n>.aside.tmp`, the new one renamed into place, the aside removed (one still
-  held is tried again at the next fallback; listings skip it as temporary). A reader may find no
+  `<name>.<host>.<pid>.<n>.aside.tmp`, the new one renamed into place, then asides removed: each
+  fallback removes up to 4 (the oldest first), finds any Mac's or process's asides of that file by
+  listing its folder at most once a minute, and remembers at most 16 not yet removable. Listings
+  skip asides as temporary. When the second rename fails the aside stays (renaming it back could
+  replace a newer file), so the heartbeat is missing until the next write. A reader may find no
   heartbeat between the two renames, never a torn one. The fallback logs
   `whole: rename over <path> busy: …`. Other files keep the plain retry.
 - **No conditional writes or atomic appends** between clients.

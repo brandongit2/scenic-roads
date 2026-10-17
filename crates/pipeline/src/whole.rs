@@ -38,16 +38,64 @@ pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Renames `from` over `to` (`rename_over`); when that stays busy, `to` is renamed aside first
-/// (`aside_name`), `from` renamed into its free name, then the aside removed. On the NAS's SMB
-/// share a rename over a file another session holds open fails as busy for as long as it's held,
-/// and the server may hold one for hours after the process that opened it is gone (task #226); a
-/// rename of the held file away, and a rename into its free name, still go through. Readers may
-/// find no `to` between the two renames, never a torn one. An aside that can't be removed yet (its
-/// handle still held) is tried again at each later fallback, and has a temporary name meanwhile
-/// (`is_tmp`: listings skip it). Some(the aside) when the fallback was used.
+/// (`aside_name`), `from` renamed into its free name, then asides removed (`Asides`). On the NAS's
+/// SMB share a rename over a file another session holds open fails as busy for as long as it's
+/// held, and the server may hold one for hours after the process that opened it is gone; a rename
+/// of the held file away, and a rename into its free name, still go through, while removing it
+/// fails until it's let go. Readers may find no `to` between the two renames, never a torn one.
+/// When the second rename fails, the aside stays where it is (renaming it back could replace a
+/// newer file): `to` is missing until the next write. Some(the aside) when the fallback was used.
 pub fn rename_or_aside(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
-    static STUCK: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-    aside_with(from, to, &rename_over, &|a, b| std::fs::rename(a, b), &|p| std::fs::remove_file(p), &STUCK)
+    static ASIDES: std::sync::Mutex<Asides> = std::sync::Mutex::new(Asides { held: Vec::new(), listed: None });
+    aside_with(from, to, &rename_over, &|a, b| std::fs::rename(a, b), &|p| std::fs::remove_file(p), &ASIDES, std::time::Instant::now())
+}
+
+/// The asides not removed yet, at most this many remembered (the oldest forgotten; a listing finds
+/// them again).
+const ASIDES_KEPT: usize = 16;
+/// At most this many removes a fallback.
+const ASIDES_REMOVED: usize = 4;
+/// A fallback lists the folder for asides (any Mac's, any process's) at most this often.
+const ASIDES_LISTED: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The asides a process knows of and hasn't removed (still held, or not tried yet), and when it last
+/// listed for them.
+pub struct Asides {
+    held: Vec<PathBuf>,
+    listed: Option<std::time::Instant>,
+}
+
+impl Asides {
+    /// Takes in `aside` (just made) and, at most every `ASIDES_LISTED`, the folder's other asides of
+    /// `to`; then removes up to `ASIDES_REMOVED` of them, the oldest first, keeping those that fail.
+    fn sweep(&mut self, to: &Path, aside: &Path, remove: &dyn Fn(&Path) -> std::io::Result<()>, now: std::time::Instant) {
+        if self.listed.is_none_or(|t| now.saturating_duration_since(t) >= ASIDES_LISTED) {
+            self.listed = Some(now);
+            let prefix = format!("{}.", to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            if let Some(Ok(rd)) = to.parent().map(std::fs::read_dir) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    let p = e.path();
+                    if n.starts_with(&prefix) && n.ends_with(".aside.tmp") && p != aside && !self.held.contains(&p) {
+                        self.held.push(p);
+                    }
+                }
+            }
+        }
+        if !self.held.iter().any(|p| p == aside) {
+            self.held.push(aside.to_path_buf());
+        }
+        let mut tried = 0;
+        self.held.retain(|p| {
+            if tried == ASIDES_REMOVED {
+                return true;
+            }
+            tried += 1;
+            remove(p).is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
+        });
+        let over = self.held.len().saturating_sub(ASIDES_KEPT);
+        self.held.drain(..over);
+    }
 }
 
 /// A name to rename `path` aside to: its own, this Mac's and process's, a count, `.aside.tmp`.
@@ -60,24 +108,20 @@ fn aside_name(path: &Path) -> PathBuf {
 
 type Rename<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
 
-/// `rename_or_aside` with its renames (`over`: the one tried again; `raw`: once) and removal given.
-fn aside_with(from: &Path, to: &Path, over: Rename, raw: Rename, remove: &dyn Fn(&Path) -> std::io::Result<()>, stuck: &std::sync::Mutex<Vec<PathBuf>>) -> std::io::Result<Option<PathBuf>> {
+/// `rename_or_aside` with its renames (`over`: the one tried again; `raw`: once), removal, asides
+/// and clock given.
+fn aside_with(from: &Path, to: &Path, over: Rename, raw: Rename, remove: &dyn Fn(&Path) -> std::io::Result<()>, asides: &std::sync::Mutex<Asides>, now: std::time::Instant) -> std::io::Result<Option<PathBuf>> {
     match over(from, to) {
         Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {}
         r => return r.map(|()| None),
     }
     let aside = aside_name(to);
     raw(to, &aside)?;
-    if let Err(e) = over(from, to) {
-        // (Its old bytes put back while the name is still free.)
-        raw(&aside, to).ok();
-        return Err(e);
-    }
-    let mut st = stuck.lock().unwrap();
-    st.push(aside.clone());
-    st.retain(|p| remove(p).is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound));
-    eprintln!("whole: rename over {} busy: the old file renamed aside, the new one put in its place ({} aside still held)", to.display(), st.len());
-    Ok(Some(aside))
+    let r = over(from, to);
+    let mut a = asides.lock().unwrap();
+    a.sweep(to, &aside, remove, now);
+    eprintln!("whole: rename over {} busy: the old file renamed aside{} ({} aside(s) not removed yet)", to.display(), if r.is_ok() { ", the new one put in its place" } else { "; the new one's rename failed too" }, a.held.len());
+    r.map(|()| Some(aside))
 }
 
 /// Writes `b` as `path`, whole.
@@ -321,29 +365,84 @@ mod tests {
             std::fs::rename(f, t)
         };
         let remove = |p: &Path| if held.borrow().iter().any(|h| h == p) { Err(busy()) } else { std::fs::remove_file(p) };
-        let stuck = std::sync::Mutex::new(Vec::new());
+        let asides = std::sync::Mutex::new(Asides { held: Vec::new(), listed: None });
+        let t0 = std::time::Instant::now();
         let tmp = d.path().join("a.tmp");
         std::fs::write(&tmp, b"new").unwrap();
-        let aside = aside_with(&tmp, &to, &over, &raw, &remove, &stuck).unwrap().unwrap();
+        let aside = aside_with(&tmp, &to, &over, &raw, &remove, &asides, t0).unwrap().unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"new");
         assert_eq!(std::fs::read(&aside).unwrap(), b"old", "held, not removed");
         assert!(is_tmp(&aside));
-        assert_eq!(*stuck.lock().unwrap(), [aside.clone()]);
+        assert_eq!(asides.lock().unwrap().held, [aside.clone()]);
         // The next write isn't busy: a plain rename, the aside left for the next fallback.
         std::fs::write(&tmp, b"newer").unwrap();
-        assert_eq!(aside_with(&tmp, &to, &over, &raw, &remove, &stuck).unwrap(), None);
+        assert_eq!(aside_with(&tmp, &to, &over, &raw, &remove, &asides, t0).unwrap(), None);
         assert_eq!(std::fs::read(&to).unwrap(), b"newer");
         // Held again, the first aside let go: the fallback removes it.
         *held.borrow_mut() = vec![to.clone()];
         std::fs::write(&tmp, b"third").unwrap();
-        let aside2 = aside_with(&tmp, &to, &over, &raw, &remove, &stuck).unwrap().unwrap();
+        let aside2 = aside_with(&tmp, &to, &over, &raw, &remove, &asides, t0).unwrap().unwrap();
         assert!(!aside.exists(), "freed aside removed");
-        assert_eq!(*stuck.lock().unwrap(), [aside2]);
+        assert_eq!(asides.lock().unwrap().held, [aside2]);
         assert_eq!(std::fs::read(&to).unwrap(), b"third");
         // Another error isn't busy: no fallback.
         let gone = d.path().join("nope.tmp");
-        assert!(aside_with(&gone, &d.path().join("x.json"), &|f, t| std::fs::rename(f, t), &raw, &remove, &stuck).is_err());
+        assert!(aside_with(&gone, &d.path().join("x.json"), &|f, t| std::fs::rename(f, t), &raw, &remove, &asides, t0).is_err());
         assert!(!d.path().join("x.json").exists());
+    }
+
+    /// The second rename failing leaves the aside where it is (renaming it back could replace a
+    /// newer file someone wrote meanwhile).
+    #[test]
+    fn a_failed_rename_after_the_aside_leaves_it() {
+        let d = tempfile::tempdir().unwrap();
+        let to = d.path().join("m.json");
+        std::fs::write(&to, b"old").unwrap();
+        let tries = std::cell::Cell::new(0);
+        let over = |_: &Path, _: &Path| {
+            tries.set(tries.get() + 1);
+            Err(std::io::Error::from(if tries.get() == 1 { std::io::ErrorKind::ResourceBusy } else { std::io::ErrorKind::PermissionDenied }))
+        };
+        let raw = |f: &Path, t: &Path| {
+            std::fs::rename(f, t)?;
+            std::fs::write(f, b"newer").unwrap(); // (another write lands in between)
+            Ok(())
+        };
+        let asides = std::sync::Mutex::new(Asides { held: Vec::new(), listed: None });
+        let busy = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::ResourceBusy));
+        assert!(aside_with(Path::new("x"), &to, &over, &raw, &busy, &asides, std::time::Instant::now()).is_err());
+        assert_eq!(std::fs::read(&to).unwrap(), b"newer", "not replaced");
+    }
+
+    /// A fallback finds an earlier process's asides of the same file by a listing, at most once a
+    /// minute, removes at most four a time, and remembers at most sixteen.
+    #[test]
+    fn asides_are_swept_bounded() {
+        let d = tempfile::tempdir().unwrap();
+        let to = d.path().join("m.json");
+        for i in 0..30 {
+            std::fs::write(d.path().join(format!("m.json.mac.{i}.0.aside.tmp")), b"x").unwrap();
+        }
+        std::fs::write(d.path().join("n.json.mac.1.0.aside.tmp"), b"x").unwrap();
+        let count = || std::fs::read_dir(d.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("m.json.")).count();
+        let mut a = Asides { held: Vec::new(), listed: None };
+        let t0 = std::time::Instant::now();
+        let mine = d.path().join("m.json.me.1.0.aside.tmp");
+        std::fs::write(&mine, b"x").unwrap();
+        let rm = |p: &Path| std::fs::remove_file(p);
+        a.sweep(&to, &mine, &rm, t0);
+        assert_eq!(count(), 31 - 4, "four removed");
+        assert_eq!(a.held.len(), ASIDES_KEPT, "kept bounded");
+        // Within the minute: no listing, four more of those remembered.
+        a.sweep(&to, &mine, &rm, t0 + std::time::Duration::from_secs(10));
+        assert_eq!(count(), 31 - 8);
+        // A minute on: listed again, the forgotten ones found.
+        for i in 0..10 {
+            a.sweep(&to, &mine, &rm, t0 + std::time::Duration::from_secs(70 * (i + 1)));
+        }
+        assert_eq!(count(), 0, "all removed in the end");
+        assert!(a.held.is_empty());
+        assert!(d.path().join("n.json.mac.1.0.aside.tmp").exists(), "another file's asides left");
     }
 
     #[test]
