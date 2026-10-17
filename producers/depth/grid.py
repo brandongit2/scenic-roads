@@ -231,13 +231,13 @@ def tiles_of(win: Window, piece_z: int):
 
 # ---- polite fetching ------------------------------------------------------------------------------
 
-_robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+_robots: dict[str, urllib.robotparser.RobotFileParser] = {}
 
 
 def robots_allow(url: str) -> bool:
     """Whether the host's robots.txt (read first, once, as a request of its own) lets us fetch `url`.
-    A robots.txt that isn't there (404, 410) allows everything; one refused (401, 403), or that can't
-    be read for another reason, allows nothing (as urllib.robotparser reads them)."""
+    Only a robots.txt that was read can disallow: one that's missing, refused (401, 403) or can't be
+    read at all allows everything (the owner's rule)."""
     p = urlsplit(url)
     host = f"{p.scheme}://{p.netloc}"
     if host not in _robots:
@@ -245,14 +245,13 @@ def robots_allow(url: str) -> bool:
         try:
             with urllib.request.urlopen(urllib.request.Request(host + "/robots.txt", headers={"User-Agent": UA}), timeout=60) as r:
                 rp.parse(r.read().decode("utf-8", "replace").splitlines())
-        except urllib.error.HTTPError as e:
-            rp.parse([] if e.code in (404, 410) else ["User-agent: *", "Disallow: /"])
-        except OSError:
-            rp = None
+            how = "read"
+        except (urllib.error.HTTPError, OSError) as e:
+            rp.parse([])
+            how = f"not readable ({e}): allows everything"
         _robots[host] = rp
-        log(f"robots.txt of {host}: {'read' if rp else 'unreadable: nothing fetched there'}")
-    rp = _robots[host]
-    return bool(rp and rp.can_fetch(UA, url))
+        log(f"robots.txt of {host}: {how}")
+    return _robots[host].can_fetch(UA, url)
 
 
 def fetch(url: str, dest: Path, pause: float = 1.0) -> Path:
