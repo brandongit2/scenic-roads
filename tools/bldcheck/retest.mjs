@@ -10,8 +10,7 @@
 //   Q  the step ordering: the old way (field.dbg 26) against now;
 //   O  the cost cuts compiled in (field.opt bits): 1 the switches as constants, 2 the hits as
 //      shown from their mean colour; none, each, both;
-//   P  what the march's later pieces cost: the sub-cell walk off, and with it the roofs'
-//      correlation off (field.subWalk, field.dbg 24).
+//   P  what the march's later pieces cost: the roofs' correlation off (field.dbg 24).
 // B and S on Manhattan and Kantō at 70° and Tokyo straight down. Variants are switched in the same
 // tab, interleaved, each repetition in a rotated order (A B C, B C A, C A B, …), with the frames
 // without the field measured in every repetition too, so drift and the variants' order cancel; each
@@ -106,7 +105,7 @@ const RUN = (mode, n) => `
   return { med: q(0.5), p90: q(0.9), n: a.length, dtMed: dts[Math.floor(dts.length / 2)], slow: dts.filter((d) => d > 12.5).length };`;
 const SET = (v) => `
   const b = window.__bld, f = b.field;
-  f.blockCells = ${v.blockCells}; f.tmin = ${v.tmin}; f.stepTexel = ${v.stepTexel}; f.subWalk = ${v.subWalk ?? false}; f.dbg = ${v.dbg ?? 0}; f.opt = ${v.opt ?? 3};
+  f.blockCells = ${v.blockCells}; f.tmin = ${v.tmin}; f.stepTexel = ${v.stepTexel}; f.dbg = ${v.dbg ?? 0}; f.opt = ${v.opt ?? 3};
   b.map.triggerRepaint();
   await b.ready();
   await new Promise((r) => { let i = 0; const s = () => (++i < 30 ? requestAnimationFrame(s) : r()); requestAnimationFrame(s); });
@@ -187,8 +186,7 @@ if (PHASES.includes('B')) await phase('B', VAR_VIEWS, [8, 4, 2, 1].map((c) => ({
 if (PHASES.includes('X')) await phase('X', VAR_VIEWS, [1, 2].map((x) => ({ name: `steps${x}`, ...BASE, stepTexel: x })));
 if (PHASES.includes('P')) await phase('P', VAR_VIEWS, [
   { name: 'now', ...BASE },
-  { name: 'noSub', ...BASE, subWalk: false },
-  { name: 'noSubNoCov', ...BASE, subWalk: false, dbg: 24 },
+  { name: 'noCov', ...BASE, dbg: 24 },
 ]);
 if (PHASES.includes('Q')) await phase('Q', VAR_VIEWS, [
   { name: 'now', ...BASE },

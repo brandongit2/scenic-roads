@@ -399,7 +399,10 @@ equator).
 - Each fragment ray-marches its block: walls met at a density rate below each class's roofs, a roof
   met with probability f where the ray comes down through it, events ordered as a descending ray
   meets them, the nearest surface winning; steps of at least 2 texels (`?fstx=`), only the classes a
-  texel's mask holds; empty space skipped by per-cell tops. The scene's depth (the fork's
+  texel's mask holds; empty space skipped by per-cell tops; a step whose reads hold no roof as high
+  as the ray skips the rest (it meets nothing). One loop walks the cells and takes the steps, the
+  classes a step comes down through taken one after another, and a step without a heritage tint
+  takes a copy of the code without it: the same image, ~28 % less GPU (task #222). The scene's depth (the fork's
   `sceneDepth`) stops the march at meshes or terrain on the flat map.
 - A ray below the roofs where the footprints taller than it cover nearly all of a texel (over
   75 %, fully from 97 %) is inside a building, so it met a wall: those classes' walls come at up to
@@ -431,7 +434,8 @@ equator).
   `elevationForLngLatFn`), again when the terrain's tiles in view change, within 3 ms a frame
   (`ELEV_BUDGET_MS`), the longest since sampled first; a tile without a hull yet at once. A tile
   whose grid comes out the same keeps its hull and roof ground.
-- Debug and tuning switches: `?fdbg=`, `?fsub=1` (the sub-cell walk), `?fstx=`, `?fopt=` (default 3).
+- Debug and tuning switches: `?fdbg=` (43: each pixel's steps, cells walked and fragments, added up
+  in the frame), `?fstx=`, `?fopt=` (default 3).
 
 **Quality and cost** (`tools/bldcheck`, against full detail shrunk in linear light, σ 8 px blur):
 within about 1 L* of full detail in a district's tone from z13 to z7, the CN Tower standing as a

@@ -120,6 +120,178 @@ void main() {
   v_fogw = gl_Position.w;
 }`;
 
+/** One step of the march: its reads (the fragment shader's loop, below). */
+const STEP_BODY = `      fine++;
+      float t1 = tB + float(i + 1) * step;
+      float a1 = ac + da * step;
+      float sg = a1 < 0.0 ? clamp(ac / max(ac - a1, 1e-6), 0.0, 1.0) : 1.0;   // the share before the ground
+      vec2 pt = (E.xy + d.xy * (t1 - step * (1.0 - 0.5 * sg))) / mpu;
+      bool inBox = !(pt.x < u_box.x || pt.y < u_box.y || pt.x > u_box.z || pt.y > u_box.w);
+      vec2 uv = pt / ${EXTENT}.0;
+      float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
+      covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
+      // Each class present, read at the pixel's footprint: its share, its roofs' height, its walls'
+      // rate (entered a horizontal metre below its roofs), and fill-extrusion's gradient up a wall at
+      // the height the ray meets it (the colours made from it where they're used: arrays of vectors,
+      // and the raw reads kept beside these, held more registers than the GPU had).
+      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Kc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;   // (Kc: the buildings' own height, which colours them)
+// (a class's roofs level: their height over the ground here is their top over the ground at their
+// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is, the
+// texels' share-weighted roof ground, no higher than the cell's runs start (a coarse read can mix in
+// a neighbour's with more lift); the gradient up a wall, as fill-extrusion's, by the height over that
+// base, its top the building's own height, which also picks its colour: ?fdbg=35 both by the height
+// over the ground here instead; ?fdbg=32 each roof over the ground under its own texel)
+#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; float dg_ = textureLod(u_dg, vec3(uv, float(L_[c])), lod).r / max(sm.r, 1e-5); float Hs_ = u_dbg == 32 ? H0_ : clamp(H0_ + dg_, 0.5, max(topc - 0.25, 0.5)); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
+      float openK = 1.0;   // (the walls' rate over the open ground ÷ over all of it: below)
+      float fUp = 0.0;     // (the share under footprints standing taller than the ray here)
+      float hm = 0.5 * (ac + ae);   // (the ray's mean height over the ground in the step)
+      float herA = 0.0;
+      vec3 herC = vec3(0.0);
+      bool skipS = false;
+      if (inBox && u_dbg != 20) {
+        float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
+        if (u_herOn == 1) { vec4 hz = textureLod(u_her, uv, lod); if (hz.a > 0.004) { herA = hz.a; herC = hz.rgb / hz.a; } }
+        // (only the classes the texel and its neighbours hold, at the level a step coarser than the
+        // read: each level's mask is its texels' and their neighbours')
+        int ml = min(int(lod) + 1, 9);
+        int mk = int(texelFetch(u_cmask, clamp(ivec2(uv * float(512 >> ml)), ivec2(0), ivec2((512 >> ml) - 1)), ml).r) & u_mask;
+        // (and not a class whose tallest possible roof, 8, 20, 40, 100 m, is under the whole step)
+        float mina = (min(ac, a1) - dgc) / u_hk;
+        int cut = int(mina > 8.0) + int(mina > 20.0) + int(mina > 40.0) + int(mina > 100.0);
+        if (u_dbg != 15) mk &= (31 << cut) & 31;
+        if (u_dbg == 19) mk &= 24;
+        if ((mk & 1) != 0) SETC(0, textureLod(u_c0, uv, lod))
+        if ((mk & 2) != 0) SETC(1, textureLod(u_c1, uv, lod))
+        if ((mk & 4) != 0) SETC(2, textureLod(u_c2, uv, lod))
+        if ((mk & 8) != 0) SETC(3, textureLod(u_c3, uv, lod))
+        if ((mk & 16) != 0) SETC(4, textureLod(u_c4, uv, lod))
+        // A ray below the roofs is between the buildings, not anywhere: the footprints standing
+        // taller than it (their share fUp) are solid, so the walls it meets come at the rate of their
+        // length over the open ground alone, w ÷ H ÷ π ÷ (1 − fUp) (the mean free path in the open
+        // ground is π × its area ÷ the walls' length). Over all the ground instead, a building wider
+        // than a texel let 70 % of the rays crossing its edge texel through and none stopped inside
+        // it: the towers seen through near the hand-over. (?fdbg=36: over all the ground)
+        // (A step whose reads hold no roof as high as the ray at either end meets nothing: no walls,
+        // standing below the roofs, and no roof coming down through. The rest of it, and its hits,
+        // skipped: the same image, the rest cost 1.6 ms at Tokyo, zoom 14, 60°, on the M1 Pro.)
+        if (u_dbg != 26 && !(Fc[0] > 0.0 && Hc[0] >= min(ac, ae)) && !(Fc[1] > 0.0 && Hc[1] >= min(ac, ae)) && !(Fc[2] > 0.0 && Hc[2] >= min(ac, ae))
+            && !(Fc[3] > 0.0 && Hc[3] >= min(ac, ae)) && !(Fc[4] > 0.0 && Hc[4] >= min(ac, ae))) skipS = true;
+        if (!skipS) {
+          for (int c = 0; c < 5; c++) if (Hc[c] > hm) fUp += Fc[c];
+          if (u_dbg != 36) {
+            openK = 1.0 / max(1.0 - fUp, 0.02);
+            for (int c = 0; c < 5; c++) Rc[c] *= openK;
+          }
+          // Inside the footprints: where those standing taller than the ray cover (nearly) all of the
+          // texel, the ray is in a building, so it met a wall getting there. The walls are only in the
+          // texels their lines cross, none in the building's inside (its f ~1, its w ~0), and the
+          // facade's own texel, its walls spread over its area, stops only part of the rays crossing
+          // it: the rest went on through the tower and out of its far side, a different share each
+          // pixel column as its ray crosses the texels, the thin vertical streaks of the walls just
+          // beyond the meshes (task #212). So the taller classes' walls come at up to 2 more a metre
+          // there (opaque within a few metres), composited with the rest below. (?fdbg=37: without)
+          if (u_dbg != 37 && fUp > 0.75) {
+            float inK = 2.0 * smoothstep(0.75, 0.97, fUp);
+            for (int c = 0; c < 5; c++) if (Hc[c] > hm) Rc[c] += inK;
+          }
+        }
+      }
+`;
+/** A step's hits. (The loop has two copies: one with the heritage tint, one without it for a step
+ * with none, nearly all of them: a smaller hot loop, 2.4 ms less at Tokyo, zoom 14, 60°.) */
+const STEP_HITS = `      float hlen = hstep * sg;   // horizontal metres of the step, before the ground
+      if (u_dbg != 26 && ae < ac - 1e-4) {
+        // Coming down: what it meets in the order it meets it, front to back: the walls of the classes
+        // whose roofs are above it, down to the next class's roofs; those roofs (if it misses them,
+        // on down, their walls now too); … to the step's end. (Taken together in a step, a building's
+        // walls below its roof took a share of the colour though the roof is met first.)
+        float cur = ac, rateA = 0.0;
+        vec3 wcol = vec3(0.0);
+        for (int c = 4; c >= 0; c--) if (Fc[c] > 0.0 && Hc[c] >= ac) { rateA += Rc[c]; wcol += Rc[c] * WALLC(c); }
+        // (Only the classes whose roofs it comes down through, one after another, the highest class
+        // first: a SIMD group's lanes take as many turns as the most any of them meets, not one a
+        // class any of them holds; 1.2 ms less at Tokyo.)
+        int ev = 0;
+        for (int c = 0; c < 5; c++) if (Fc[c] > 0.0 && Hc[c] < ac && Hc[c] >= ae) ev |= 1 << c;
+        for (int j = 0; j < 5; j++) {
+          if (ev == 0) break;
+          int c = (ev & 16) != 0 ? 4 : (ev & 8) != 0 ? 3 : (ev & 4) != 0 ? 2 : (ev & 2) != 0 ? 1 : 0;
+          ev &= ~(1 << c);
+          float F_ = PICK(Fc, c), H_ = PICK(Hc, c), R_ = PICK(Rc, c), K_ = PICK(Kc, c), G_ = PICK(Gc, c);
+          float tw = rateA * (cur - H_) / (ac - ae) * hlen;
+          if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc);
+#ifndef OPT_PMEAN
+            pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); 
+#endif
+            dWallA += T * a; T *= 1.0 - a; }
+          // (the roofs' share where the ray comes down through them, not at the step's middle: a step
+          // of a steep ray spans the whole layer, its roofs met at their own heights' points)
+          float fRoof = F_;
+          if (u_dbg == 27) {
+            float tc0 = t1 - step + (ac - H_) / max(ac - a1, 1e-6) * step;
+            vec2 pc = (E.xy + d.xy * tc0) / mpu;
+            fRoof = clamp(classF(c, pc / ${EXTENT}.0, log2(max((dist0 + tc0) * u_pixAngle / texel, 1.0))), 0.0, 0.999);
+          }
+          float pr = clamp(fRoof / max(1.0 - covE, 1e-3), 0.0, 0.999);
+          cLin += T * pr * toLin(ROOFCV(H_, K_, G_));
+#ifndef OPT_PMEAN
+          pLin += T * pr * toLin(u_opacity * ROOFCV(H_, K_, G_) + (1.0 - u_opacity) * u_bg);
+#endif
+          dRoofA += T * pr;
+          T *= 1.0 - pr;
+          covE = min(covE + F_, 0.999);
+          // (the footprints' own width, 4 f H ÷ w, from the rate over all the ground: unscaled)
+          covL = clamp(4.0 * F_ / max(R_ / openK * 3.14159265, 1e-6), 2.0, 200.0);
+          rateA += R_;
+          wcol += R_ * WALLCV(H_, K_, G_);
+          cur = H_;
+        }
+        float tw = rateA * (cur - ae) / (ac - ae) * hlen;
+        if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc);
+#ifndef OPT_PMEAN
+            pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); 
+#endif
+            dWallA += T * a; T *= 1.0 - a; }
+      } else {
+        // Level or rising: the walls of the classes above it, over its share of the step below them
+        // (no roof comes down on).
+        float tt = 0.0;
+        vec3 hit = vec3(0.0);
+        for (int c = 0; c < 5; c++) {
+          if (Fc[c] <= 0.0) continue;
+          float below;
+          if (abs(ae - ac) < 1e-4) below = ac < Hc[c] ? sg : 0.0;
+          else below = ac < Hc[c] ? clamp((Hc[c] - ac) / (ae - ac), 0.0, 1.0) * sg : 0.0;
+          float tc = Rc[c] * hstep * below;
+          if (u_dbg == 26) {
+            // (the old way, a test: roofs and walls taken together)
+            float sh = clamp((Hc[c] - ac) / (ae - ac), 0.0, 1.0) * sg;
+            below = abs(ae - ac) < 1e-4 ? (ac < Hc[c] ? sg : 0.0) : (ae < ac ? (ac < Hc[c] ? sg : sg - sh) : (ac < Hc[c] ? sh : 0.0));
+            tc = Rc[c] * hstep * below;
+            float tr = (ac >= Hc[c] && ae < Hc[c]) ? -log(1.0 - clamp(Fc[c] / max(1.0 - covE, 1e-3), 0.0, 0.999)) : 0.0;
+            if (tr > 0.0) { covE = min(covE + Fc[c], 0.999); }
+            tt += tr;
+            hit += tr * ROOFC(c);
+          }
+          tt += tc;
+          hit += tc * WALLC(c);
+        }
+        if (tt > 0.0) {
+          float a = 1.0 - exp(-tt);
+          vec3 hc = hit / tt;
+          cLin += T * a * toLin(hc);
+#ifndef OPT_PMEAN
+          pLin += T * a * toLin(u_opacity * hc + (1.0 - u_opacity) * u_bg);
+#endif
+          T *= 1.0 - a;
+        }
+      }
+`;
+/** The step's end. */
+const STEP_END = `      if (T < u_tmin || a1 < 0.0) { done = true; break; }
+      ac = a1;`;
+
+
 const FS = `#version 300 es
 precision highp float;
 uniform highp sampler2D u_c0;   // each height class present: v, w, f (R11F_G11F_B10F: v, the most
@@ -131,17 +303,14 @@ uniform highp sampler2D u_c4;
 uniform int u_mask;               // the classes present in the tile (bits)
 uniform float u_tmin;
 uniform highp sampler2D u_top32;   // each 1/32 of the tile: r its (and the cells around its) tallest mean top, g its own highest ground, b its texels' (and the texel around them) largest roof ground (m)
-uniform highp sampler2D u_elev;    // the tile's ground, (33 + 2M)² (m), M cells beyond each edge
+uniform highp sampler2D u_elev;   // the tile's ground, (33 + 2M)² (m), M cells beyond each edge: by grid square, its four corners (x, x + 1, then the next row's)
 uniform highp sampler2DArray u_dg;   // each class held (a layer each, in order): share × its texels' roof ground, how much higher the ground at their buildings' centroid is (m; ÷ the share read alike: their share-weighted mean; bldfield.offsets.ts)
 uniform float u_pixAngle;   // radians a device pixel spans
 uniform vec4 u_camTile;
 uniform float u_top;
 uniform float u_gmin;
 uniform float u_gmax;   // the tile's highest ground (m)
-uniform highp sampler2D u_top128;   // the tallest roof over each 4 × 4 texels and the texel around them (m)
-uniform highp sampler2D u_tb;      // each cell's hull column's top (m; −1e9: none)
 uniform float u_stepTexel;        // the steps' least length (texels)
-uniform int u_sub;                // the sub-cell walk (0: the cell's run in one go)
 uniform float u_hk;
 uniform vec4 u_box;
 uniform float u_lightintensity;
@@ -198,12 +367,13 @@ vec3 toSrgb(vec3 c) {
 }
 
 float ground(vec2 p) {
-  // (R32F isn't filtered: bilinear by hand, as the box's vertices interpolate it)
+  // (R32F isn't filtered: bilinear by hand, as the box's vertices interpolate it; each grid square's
+  // four corners in a texel, one read)
   vec2 g = clamp(p / ${EXTENT}.0 * ${G}.0 + ${M}.0, vec2(0.0), vec2(${G + 2 * M}.0 - 0.001));
   ivec2 i = ivec2(floor(g));
   vec2 f = g - vec2(i);
-  float a = texelFetch(u_elev, i, 0).r, b = texelFetch(u_elev, i + ivec2(1, 0), 0).r;
-  float c = texelFetch(u_elev, i + ivec2(0, 1), 0).r, d = texelFetch(u_elev, i + ivec2(1, 1), 0).r;
+  vec4 q = texelFetch(u_elev, i, 0);
+  float a = q.x, b = q.y, c = q.z, d = q.w;
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 // fill-extrusion's directional term, on the globe as it mixes the two (u_trans the hand-off).
@@ -221,11 +391,17 @@ vec3 shadeC(vec3 base, float dd, float g, vec3 lowc) {
   float hiD = max(1.0 - dot(base, vec3(0.2126, 0.7152, 0.0722)) + u_lightintensity, 1.0);
   return clamp((base + 0.03) * mix(1.0 - u_lightintensity, hiD, dd) * g * u_lightcolor, lowc, vec3(1.0));
 }
-#define ROOFC0(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dRoof, 1.0, lowc) : roofC)
-#define WALLC0(c) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? Hc[c] : Kc[c]) / u_hk), dWall, Gc[c], lowc) : clamp(wallC * Gc[c], lowc, vec3(1.0)))
+#define ROOFC0V(H, K, G) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? (H) : (K)) / u_hk), dRoof, 1.0, lowc) : roofC)
+#define WALLC0V(H, K, G) (u_byHeight == 1 ? shadeC(lutBase((u_dbg == 35 ? (H) : (K)) / u_hk), dWall, (G), lowc) : clamp(wallC * (G), lowc, vec3(1.0)))
+#define ROOFC0(c) ROOFC0V(Hc[c], Kc[c], Gc[c])
+#define WALLC0(c) WALLC0V(Hc[c], Kc[c], Gc[c])
 // (a heritage building's texels toward its group's tint, lit alike, by the share of the texel it covers)
-#define ROOFC(c) (herA > 0.0 ? mix(ROOFC0(c), shadeC(herC, dRoof, 1.0, lowc), herA) : ROOFC0(c))
-#define WALLC(c) (herA > 0.0 ? mix(WALLC0(c), shadeC(herC, dWall, Gc[c], lowc), herA) : WALLC0(c))
+#define ROOFCV(H, K, G) (herA > 0.0 ? mix(ROOFC0V(H, K, G), shadeC(herC, dRoof, 1.0, lowc), herA) : ROOFC0V(H, K, G))
+#define WALLCV(H, K, G) (herA > 0.0 ? mix(WALLC0V(H, K, G), shadeC(herC, dWall, (G), lowc), herA) : WALLC0V(H, K, G))
+#define ROOFC(c) ROOFCV(Hc[c], Kc[c], Gc[c])
+#define WALLC(c) WALLCV(Hc[c], Kc[c], Gc[c])
+// (a class's value by a class number known only as the step runs)
+#define PICK(A, c) ((c) == 4 ? A[4] : (c) == 3 ? A[3] : (c) == 2 ? A[2] : (c) == 1 ? A[1] : A[0])
 void main() {
   if (v_clip > 1.0) discard;
   float mpu = u_camTile.w;
@@ -278,6 +454,7 @@ void main() {
     tBoxOut = tb;
   }
   if (u_dbg == 2) { fragColor = vec4(0.0, 0.0, 0.0, 0.01); return; }
+  int walkN = 0;   // (?fdbg=43: the steps, the cells walked and the fragments a pixel, added up in the frame)
   float texel = mpu * ${EXTENT / 512}.0;
   float dist0 = length(E - C);
   float hl = length(d.xy);
@@ -323,235 +500,82 @@ void main() {
   // their light's sum, the more so the more walls: tilted views, and straight down at the edges.)
   vec3 cLin = vec3(0.0), pLin = vec3(0.0);
   float prevBound = 1e9;
-  for (int k = 0; k < 96; k++) {
-    if (done || t >= tmax || t > tBoxOut) break;
-    vec2 p = (E.xy + d.xy * t) / mpu;
-    // (the cell a little ahead: a point on an edge takes the cell it's going into)
-    vec2 ps = p + (length(dT) > 1e-12 ? normalize(dT) * 0.05 : vec2(0.0));
-    ivec2 cell = clamp(ivec2(floor(ps / ${EXTENT / 32}.0)), ivec2(0), ivec2(31));
-    float te = tmax;
-    if (abs(dT.x) > 1e-12) te = min(te, t + ((dT.x > 0.0 ? float(cell.x + 1) : float(cell.x)) * ${EXTENT / 32}.0 - p.x) / dT.x);
-    if (abs(dT.y) > 1e-12) te = min(te, t + ((dT.y > 0.0 ? float(cell.y + 1) : float(cell.y)) * ${EXTENT / 32}.0 - p.y) / dT.y);
-    te = min(max(te, t + 0.01), tmax);
-    vec4 tg = texelFetch(u_top32, cell, 0);
-    // (a little above the cell's tallest roof: a run starting at a roof's height would take it as
-    // already below it, its walls met, its roof never; over the ground here, so as high again as its
-    // texels' largest roof ground, or the roofs on higher ground at their centroids came out hollow:
-    // a roof is clamped under it, so no run starts below one)
-    float dgc = u_dbg == 32 ? 0.0 : tg.b;
-    float topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25) + dgc;
-    // The hull: each cell holding buildings a column from the ground to its highest ground plus its
-    // tallest roof (+ 0.5 m), as the faces are drawn; the ray leaves it going into a column below it
-    // (or a cell without any), or rising out of the one it was in. Each entry's fragment marches only
-    // till then, so a ray meeting the hull twice is counted once a stretch.
-    float bound = texelFetch(u_tb, cell, 0).r;
-    if (k > 0 && E.z + d.z * t >= min(bound, prevBound)) break;
-    prevBound = bound;
-    // (above the cell's highest ground plus its tallest roof, at both ends: no ground to look up)
-    if (min(E.z + d.z * t, E.z + d.z * te) > tg.g + topc + 1.0) {
-      t = te;
-      a0 = -1.0;   // (not known: looked up where it's needed)
-      continue;
+  // One loop, each pass a cell's walk where the ray isn't in a cell's run of steps, and a step: a
+  // SIMD group's lanes step together, not each cell's steps waiting on the slowest lane's while the
+  // others walk (as nested loops had it: 1.9 ms more at Tokyo, zoom 14, 60°).
+  int k = 0, i = 0;
+  bool inRun = false;
+  float n = 0.0, step = 0.0, hstep = 0.0, ac = 0.0, tB = 0.0, da = 0.0, te = 0.0, aEnd = 0.0, dgc = 0.0, topc = 0.0;
+  for (int it = 0; it < 96 + ${STEPS}; it++) {
+    if (!inRun) {
+      if (done || k >= 96 || t >= tmax || t > tBoxOut) break;
+      walkN++;
+      vec2 p = (E.xy + d.xy * t) / mpu;
+      vec2 ps = p + (length(dT) > 1e-12 ? normalize(dT) * 0.05 : vec2(0.0));
+      ivec2 cell = clamp(ivec2(floor(ps / ${EXTENT / 32}.0)), ivec2(0), ivec2(31));
+      te = tmax;
+      if (abs(dT.x) > 1e-12) te = min(te, t + ((dT.x > 0.0 ? float(cell.x + 1) : float(cell.x)) * ${EXTENT / 32}.0 - p.x) / dT.x);
+      if (abs(dT.y) > 1e-12) te = min(te, t + ((dT.y > 0.0 ? float(cell.y + 1) : float(cell.y)) * ${EXTENT / 32}.0 - p.y) / dT.y);
+      te = min(max(te, t + 0.01), tmax);
+      vec4 tg = texelFetch(u_top32, cell, 0);
+      dgc = u_dbg == 32 ? 0.0 : tg.b;
+      topc = tg.r * u_hk + (u_dbg == 28 ? 0.0 : 0.25) + dgc;
+      float bound = tg.a;
+      if (k > 0 && E.z + d.z * t >= min(bound, prevBound)) break;
+      prevBound = bound;
+      k++;
+      if (min(E.z + d.z * t, E.z + d.z * te) > tg.g + topc + 1.0) {
+        t = te;
+        a0 = -1.0;
+        continue;
+      }
+      if (a0 < 0.0 && t > 0.0) { vec3 Pt = E + d * t; a0 = Pt.z - ground(Pt.xy / mpu); }
+      vec3 Pe = E + d * te;
+      aEnd = Pe.z - ground(Pe.xy / mpu);
+      if (min(a0, aEnd) > topc) {
+        t = te;
+        a0 = aEnd;
+        continue;
+      }
+      float seg = te - t;
+      float tIn = a0 > topc ? t + (a0 - topc) / max(a0 - aEnd, 1e-6) * seg : t;
+      float tOut = aEnd < topc ? te : t + (a0 - topc) / min(a0 - aEnd, -1e-6) * seg;
+      tOut = clamp(tOut, tIn, te);
+      da = (aEnd - a0) / seg;
+      float s0 = tIn;
+      float stepMin = u_stepTexel * texel;
+      if (s0 >= tOut - 1e-4) {
+        t = te;
+        a0 = aEnd;
+        continue;
+      }
+      float run = tOut - s0;
+      n = u_dbg == 21 ? 1.0 : clamp(ceil(run * hl / max(max((dist0 + s0) * u_pixAngle, stepMin), 1e-3)), 1.0, 8.0);
+      step = run / n;
+      hstep = step * hl;
+      ac = a0 + da * (s0 - t);
+      tB = s0;
+      i = 0;
+      inRun = true;
     }
-    if (a0 < 0.0 && t > 0.0) { vec3 Pt = E + d * t; a0 = Pt.z - ground(Pt.xy / mpu); }
-    vec3 Pe = E + d * te;
-    float aEnd = Pe.z - ground(Pe.xy / mpu);
-    if (min(a0, aEnd) > topc) {
-      // (above every roof in the cell)
+    if (fine >= ${STEPS}) { done = true; break; }
+${STEP_BODY}
+    if (!skipS) {
+    if (herA > 0.0) {
+${STEP_HITS}
+    } else {
+${STEP_HITS.replaceAll('ROOFC(', 'ROOFC0(').replaceAll('WALLC(', 'WALLC0(').replaceAll('ROOFCV(', 'ROOFC0V(').replaceAll('WALLCV(', 'WALLC0V(')}
+    }
+    }
+${STEP_END}
+    i++;
+    if (float(i) >= n) {
+      inRun = false;
       t = te;
       a0 = aEnd;
-      continue;
     }
-    // The ray's height over the ground taken linear across the cell (its ends sampled): steps only
-    // from where it comes down below the cell's tallest roof, a pixel's footprint each along its run
-    // below it (one or two for a steep ray), at most 8 a cell.
-    float seg = te - t;
-    float tIn = a0 > topc ? t + (a0 - topc) / max(a0 - aEnd, 1e-6) * seg : t;
-    float aIn = a0 + (aEnd - a0) * (tIn - t) / seg;
-    float tOut = aEnd < topc ? te : t + (a0 - topc) / min(a0 - aEnd, -1e-6) * seg;   // (rising out of the roofs)
-    tOut = clamp(tOut, tIn, te);
-    float da = (aEnd - a0) / seg;   // height change a metre along the ray
-    // The run below the cell's tallest roof walked across its 4 × 4 sub-cells (4 × 4 texels each):
-    // one skipped whole where the ray stays above its own tallest roof; in the others the steps.
-    float s0 = tIn;
-    // (a run of one step anyway, a steep ray's: one step, no walk)
-    // (steps a pixel's footprint long, but no shorter than a texel: the field is linear between its
-    // texels, so shorter steps add nothing)
-    float stepMin = u_stepTexel * texel;
-    bool oneStep = (tOut - tIn) * hl <= max((dist0 + tIn) * u_pixAngle, stepMin);
-    for (int jj = 0; jj < 8; jj++) {
-    if (done || s0 >= tOut - 1e-4) break;
-    vec2 q0 = (E.xy + d.xy * s0) / mpu;
-    vec2 qs = q0 + (length(dT) > 1e-12 ? normalize(dT) * 0.02 : vec2(0.0));
-    ivec2 sc = clamp(ivec2(floor(qs / ${EXTENT / 128}.0)), ivec2(0), ivec2(127));
-    float s1 = tOut;
-    if (abs(dT.x) > 1e-12) s1 = min(s1, s0 + ((dT.x > 0.0 ? float(sc.x + 1) : float(sc.x)) * ${EXTENT / 128}.0 - q0.x) / dT.x);
-    if (abs(dT.y) > 1e-12) s1 = min(s1, s0 + ((dT.y > 0.0 ? float(sc.y + 1) : float(sc.y)) * ${EXTENT / 128}.0 - q0.y) / dT.y);
-    s1 = (oneStep || u_sub == 0) ? tOut : min(max(s1, s0 + 0.01), tOut);
-    float as0 = a0 + da * (s0 - t), as1 = a0 + da * (s1 - t);   // its heights over the ground
-    if (u_dbg != 22 && u_sub != 0 && !oneStep && min(as0, as1) > texelFetch(u_top128, sc, 0).r * u_hk + dgc) { covE *= exp(-(s1 - s0) * hl / covL); s0 = s1; continue; }
-    float run = s1 - s0;
-    float n = u_dbg == 21 ? 1.0 : clamp(ceil(run * hl / max(max((dist0 + s0) * u_pixAngle, stepMin), 1e-3)), 1.0, u_sub == 0 ? 8.0 : 4.0);
-    float step = run / n;
-    float hstep = step * hl;
-    float ac = as0;
-    float tB = s0;
-    for (int i = 0; i < 8; i++) {
-      if (float(i) >= n || fine >= ${STEPS}) { done = done || fine >= ${STEPS}; break; }
-      fine++;
-      float t1 = tB + float(i + 1) * step;
-      float a1 = ac + da * step;
-      float sg = a1 < 0.0 ? clamp(ac / max(ac - a1, 1e-6), 0.0, 1.0) : 1.0;   // the share before the ground
-      vec2 pt = (E.xy + d.xy * (t1 - step * (1.0 - 0.5 * sg))) / mpu;
-      bool inBox = !(pt.x < u_box.x || pt.y < u_box.y || pt.x > u_box.z || pt.y > u_box.w);
-      vec2 uv = pt / ${EXTENT}.0;
-      float ae = ac + (a1 - ac) * sg;   // where the step ends (at the ground if it gets there)
-      covE *= u_dbg == 24 ? 0.0 : exp(-hstep * sg / covL);
-      // Each class present, read at the pixel's footprint: its share, its roofs' height, its walls'
-      // rate (entered a horizontal metre below its roofs), and fill-extrusion's gradient up a wall at
-      // the height the ray meets it (the colours made from it where they're used: arrays of vectors,
-      // and the raw reads kept beside these, held more registers than the GPU had).
-      float Fc[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0), Hc[5] = Fc, Kc[5] = Fc, Rc[5] = Fc, Gc[5] = Fc;   // (Kc: the buildings' own height, which colours them)
-// (a class's roofs level: their height over the ground here is their top over the ground at their
-// building's centroid, as fill-extrusion puts a roof, plus how much higher that ground is, the
-// texels' share-weighted roof ground, no higher than the cell's runs start (a coarse read can mix in
-// a neighbour's with more lift); the gradient up a wall, as fill-extrusion's, by the height over that
-// base, its top the building's own height, which also picks its colour: ?fdbg=35 both by the height
-// over the ground here instead; ?fdbg=32 each roof over the ground under its own texel)
-#define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; float dg_ = textureLod(u_dg, vec3(uv, float(L_[c])), lod).r / max(sm.r, 1e-5); float Hs_ = u_dbg == 32 ? H0_ : clamp(H0_ + dg_, 0.5, max(topc - 0.25, 0.5)); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
-      float openK = 1.0;   // (the walls' rate over the open ground ÷ over all of it: below)
-      float fUp = 0.0;     // (the share under footprints standing taller than the ray here)
-      float hm = 0.5 * (ac + ae);   // (the ray's mean height over the ground in the step)
-      float herA = 0.0;
-      vec3 herC = vec3(0.0);
-      if (inBox && u_dbg != 20) {
-        float lod = log2(max((dist0 + t1) * u_pixAngle / texel, 1.0));
-        if (u_herOn == 1) { vec4 hz = textureLod(u_her, uv, lod); if (hz.a > 0.004) { herA = hz.a; herC = hz.rgb / hz.a; } }
-        // (only the classes the texel and its neighbours hold, at the level a step coarser than the
-        // read: each level's mask is its texels' and their neighbours')
-        int ml = min(int(lod) + 1, 9);
-        int mk = int(texelFetch(u_cmask, clamp(ivec2(uv * float(512 >> ml)), ivec2(0), ivec2((512 >> ml) - 1)), ml).r) & u_mask;
-        // (and not a class whose tallest possible roof, 8, 20, 40, 100 m, is under the whole step)
-        float mina = (min(ac, a1) - dgc) / u_hk;
-        int cut = int(mina > 8.0) + int(mina > 20.0) + int(mina > 40.0) + int(mina > 100.0);
-        if (u_dbg != 15) mk &= (31 << cut) & 31;
-        if (u_dbg == 19) mk &= 24;
-        if ((mk & 1) != 0) SETC(0, textureLod(u_c0, uv, lod))
-        if ((mk & 2) != 0) SETC(1, textureLod(u_c1, uv, lod))
-        if ((mk & 4) != 0) SETC(2, textureLod(u_c2, uv, lod))
-        if ((mk & 8) != 0) SETC(3, textureLod(u_c3, uv, lod))
-        if ((mk & 16) != 0) SETC(4, textureLod(u_c4, uv, lod))
-        // A ray below the roofs is between the buildings, not anywhere: the footprints standing
-        // taller than it (their share fUp) are solid, so the walls it meets come at the rate of their
-        // length over the open ground alone, w ÷ H ÷ π ÷ (1 − fUp) (the mean free path in the open
-        // ground is π × its area ÷ the walls' length). Over all the ground instead, a building wider
-        // than a texel let 70 % of the rays crossing its edge texel through and none stopped inside
-        // it: the towers seen through near the hand-over. (?fdbg=36: over all the ground)
-        for (int c = 0; c < 5; c++) if (Hc[c] > hm) fUp += Fc[c];
-        if (u_dbg != 36) {
-          openK = 1.0 / max(1.0 - fUp, 0.02);
-          for (int c = 0; c < 5; c++) Rc[c] *= openK;
-        }
-        // Inside the footprints: where those standing taller than the ray cover (nearly) all of the
-        // texel, the ray is in a building, so it met a wall getting there. The walls are only in the
-        // texels their lines cross, none in the building's inside (its f ~1, its w ~0), and the
-        // facade's own texel, its walls spread over its area, stops only part of the rays crossing
-        // it: the rest went on through the tower and out of its far side, a different share each
-        // pixel column as its ray crosses the texels, the thin vertical streaks of the walls just
-        // beyond the meshes (task #212). So the taller classes' walls come at up to 2 more a metre
-        // there (opaque within a few metres), composited with the rest below. (?fdbg=37: without)
-        if (u_dbg != 37 && fUp > 0.75) {
-          float inK = 2.0 * smoothstep(0.75, 0.97, fUp);
-          for (int c = 0; c < 5; c++) if (Hc[c] > hm) Rc[c] += inK;
-        }
-      }
-      float hlen = hstep * sg;   // horizontal metres of the step, before the ground
-      if (u_dbg != 26 && ae < ac - 1e-4) {
-        // Coming down: what it meets in the order it meets it, front to back: the walls of the classes
-        // whose roofs are above it, down to the next class's roofs; those roofs (if it misses them,
-        // on down, their walls now too); … to the step's end. (Taken together in a step, a building's
-        // walls below its roof took a share of the colour though the roof is met first.)
-        float cur = ac, rateA = 0.0;
-        vec3 wcol = vec3(0.0);
-        for (int c = 4; c >= 0; c--) if (Fc[c] > 0.0 && Hc[c] >= ac) { rateA += Rc[c]; wcol += Rc[c] * WALLC(c); }
-        for (int c = 4; c >= 0; c--) {
-          if (Fc[c] <= 0.0 || Hc[c] >= ac || Hc[c] < ae) continue;
-          float tw = rateA * (cur - Hc[c]) / (ac - ae) * hlen;
-          if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc);
-#ifndef OPT_PMEAN
-            pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); 
-#endif
-            dWallA += T * a; T *= 1.0 - a; }
-          // (the roofs' share where the ray comes down through them, not at the step's middle: a step
-          // of a steep ray spans the whole layer, its roofs met at their own heights' points)
-          float fRoof = Fc[c];
-          if (u_dbg == 27) {
-            float tc0 = t1 - step + (ac - Hc[c]) / max(ac - a1, 1e-6) * step;
-            vec2 pc = (E.xy + d.xy * tc0) / mpu;
-            fRoof = clamp(classF(c, pc / ${EXTENT}.0, log2(max((dist0 + tc0) * u_pixAngle / texel, 1.0))), 0.0, 0.999);
-          }
-          float pr = clamp(fRoof / max(1.0 - covE, 1e-3), 0.0, 0.999);
-          cLin += T * pr * toLin(ROOFC(c));
-#ifndef OPT_PMEAN
-          pLin += T * pr * toLin(u_opacity * ROOFC(c) + (1.0 - u_opacity) * u_bg);
-#endif
-          dRoofA += T * pr;
-          T *= 1.0 - pr;
-          covE = min(covE + Fc[c], 0.999);
-          // (the footprints' own width, 4 f H ÷ w, from the rate over all the ground: unscaled)
-          covL = clamp(4.0 * Fc[c] / max(Rc[c] / openK * 3.14159265, 1e-6), 2.0, 200.0);
-          rateA += Rc[c];
-          wcol += Rc[c] * WALLC(c);
-          cur = Hc[c];
-        }
-        float tw = rateA * (cur - ae) / (ac - ae) * hlen;
-        if (tw > 0.0) { float a = 1.0 - exp(-tw); vec3 wc = wcol / rateA; cLin += T * a * toLin(wc);
-#ifndef OPT_PMEAN
-            pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg); 
-#endif
-            dWallA += T * a; T *= 1.0 - a; }
-      } else {
-        // Level or rising: the walls of the classes above it, over its share of the step below them
-        // (no roof comes down on).
-        float tt = 0.0;
-        vec3 hit = vec3(0.0);
-        for (int c = 0; c < 5; c++) {
-          if (Fc[c] <= 0.0) continue;
-          float below;
-          if (abs(ae - ac) < 1e-4) below = ac < Hc[c] ? sg : 0.0;
-          else below = ac < Hc[c] ? clamp((Hc[c] - ac) / (ae - ac), 0.0, 1.0) * sg : 0.0;
-          float tc = Rc[c] * hstep * below;
-          if (u_dbg == 26) {
-            // (the old way, a test: roofs and walls taken together)
-            float sh = clamp((Hc[c] - ac) / (ae - ac), 0.0, 1.0) * sg;
-            below = abs(ae - ac) < 1e-4 ? (ac < Hc[c] ? sg : 0.0) : (ae < ac ? (ac < Hc[c] ? sg : sg - sh) : (ac < Hc[c] ? sh : 0.0));
-            tc = Rc[c] * hstep * below;
-            float tr = (ac >= Hc[c] && ae < Hc[c]) ? -log(1.0 - clamp(Fc[c] / max(1.0 - covE, 1e-3), 0.0, 0.999)) : 0.0;
-            if (tr > 0.0) { covE = min(covE + Fc[c], 0.999); }
-            tt += tr;
-            hit += tr * ROOFC(c);
-          }
-          tt += tc;
-          hit += tc * WALLC(c);
-        }
-        if (tt > 0.0) {
-          float a = 1.0 - exp(-tt);
-          vec3 hc = hit / tt;
-          cLin += T * a * toLin(hc);
-#ifndef OPT_PMEAN
-          pLin += T * a * toLin(u_opacity * hc + (1.0 - u_opacity) * u_bg);
-#endif
-          T *= 1.0 - a;
-        }
-      }
-      if (T < u_tmin || a1 < 0.0) { done = true; break; }
-      ac = a1;
-    }
-    s0 = s1;
-    }
-    t = te;
-    a0 = aEnd;
   }
+  if (u_dbg == 43) { fragColor = vec4(float(fine) / 255.0, float(walkN) / 255.0, 1.0 / 255.0, 0.0); return; }
   if (u_dbg == 29) { fragColor = vec4(dRoofA, dWallA, 1.0 - T, 1.0); return; }
   if (T > 0.9999) discard;
   // Straight into the frame (premultiplied, over what's there), at the opacity, as MapLibre blends a
@@ -599,19 +623,18 @@ interface FTile {
   top: number;
   /** Its lowest ground (m, as drawn). */
   gmin: number;
+  /** Its ground by grid square, the four corners (RGBA32F). */
   elevTex: WebGLTexture | null;
-  /** The tallest mean top in each 1/32 of the tile and the texel around it (R32F). */
+  /** Each 1/32 of the tile: its (and the texel around it) tallest mean top, its own highest ground,
+   * its texels' largest roof ground and its hull column's figure (RGBA32F). */
   top32: WebGLTexture | null;
   /** The classes each texel and its neighbours hold (R8UI bits, a pyramid). */
   cmask: WebGLTexture | null;
   /** Its hull's faces by cell (indices into its vertex buffer), their order's key, the index count. */
   cells: { k: number; idx: number[] }[] | null;
   ibuf: WebGLBuffer | null;
-  /** Its columns a side, and each cell's column's figure (R32F 32 × 32). */
+  /** Its columns a side. */
   nb: number;
-  tbTex: WebGLTexture | null;
-  /** The tallest roof over each 4 × 4 texels and around them (R32F 128 × 128). */
-  top128: WebGLTexture | null;
   orderKey: string;
   icount: number;
   gmax: number;
@@ -709,14 +732,12 @@ export class FieldLayer implements CustomLayerInterface {
   /** MapLibre's wall normals face inward of the ring as the tiles wind it (checked against the
    * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
   wallSign = -1;
-  /** The march's sub-cell walk (`?fsub=1`; off: it cost 3.3 ms at Manhattan 70° on the quiet Mac for nothing it skipped). */
-  subWalk = urlNum('fsub', 0) === 1;
   /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone;
    * 2 by default: one-texel steps cost 1.2 ms more at Manhattan 70° on the quiet Mac). */
   stepTexel = urlNum('fstx', 2);
   lastTrans = -1;
   /** The march's cost cuts, compiled in (`?fopt=`, bits; both by default): 1 the switches (debug
-   * views, the sub-cell walk, colour by height, linear mixing, the steps' least length) as constants;
+   * views, colour by height, linear mixing, the steps' least length) as constants;
    * 2 the hits as MapLibre shows them, from their mean colour, not summed a hit (−0.76 and −0.30 ms at
    * Manhattan 70° on the quiet Mac, the images within 0.04 L*). */
   opt = urlNum('fopt', 3);
@@ -880,7 +901,7 @@ export class FieldLayer implements CustomLayerInterface {
   private freeGl(t: FTile) {
     const gl = this.gl;
     for (const x of t.tex ?? []) if (x) gl.deleteTexture(x);
-    for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex, t.dgTex, t.herTex]) if (x) gl.deleteTexture(x);
+    for (const x of [t.top32, t.cmask, t.elevTex, t.dgTex, t.herTex]) if (x) gl.deleteTexture(x);
     t.herTex = null;
     t.herFor = t.herAsked = '';
     t.dgTex = null;
@@ -891,7 +912,7 @@ export class FieldLayer implements CustomLayerInterface {
     if (t.ibuf) gl.deleteBuffer(t.ibuf);
     if (t.vao) gl.deleteVertexArray(t.vao);
     t.tex = null;
-    t.top32 = t.cmask = t.tbTex = t.top128 = t.elevTex = null;
+    t.top32 = t.cmask = t.elevTex = null;
     t.elev = t.ibuf = null;
     t.vao = null;
     t.gpu = 0;
@@ -914,7 +935,7 @@ export class FieldLayer implements CustomLayerInterface {
 
   private program(sd: CustomRenderMethodInput['shaderData']): Prog {
     const o = this.opt & 3;
-    const spec = o & 1 ? `|${this.dbg}|${this.subWalk}|${!!this.heightLut}|${this.linear}|${this.stepTexel}` : '';
+    const spec = o & 1 ? `|${this.dbg}|${!!this.heightLut}|${this.linear}|${this.stepTexel}` : '';
     const key = `${sd.variantName}|${o}${spec}`;
     let pr = this.progs.get(key);
     if (pr) return pr;
@@ -923,7 +944,7 @@ export class FieldLayer implements CustomLayerInterface {
     let fs = FS;
     if (o & 1) {
       // (the switches as constants: their other ways compiled out)
-      const c: [string, string][] = [['uniform int u_dbg;', `#define u_dbg ${this.dbg | 0}`], ['uniform int u_sub;', `#define u_sub ${this.subWalk ? 1 : 0}`],
+      const c: [string, string][] = [['uniform int u_dbg;', `#define u_dbg ${this.dbg | 0}`],
         ['uniform int u_byHeight;', `#define u_byHeight ${this.heightLut ? 1 : 0}`], ['uniform int u_linear;', `#define u_linear ${this.linear ? 1 : 0}`],
         ['uniform float u_stepTexel;', `#define u_stepTexel ${Number(this.stepTexel).toFixed(4)}`]];
       for (const [a, b] of c) {
@@ -934,7 +955,7 @@ export class FieldLayer implements CustomLayerInterface {
     if (o & 2) fs = fs.replace('#version 300 es\n', '#version 300 es\n#define OPT_PMEAN\n');
     const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
-    for (const n of ['u_sub', 'u_stepTexel', 'u_top128', 'u_tb', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
+    for (const n of ['u_stepTexel', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
       'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(key, pr);
@@ -1027,7 +1048,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -1192,17 +1213,8 @@ export class FieldLayer implements CustomLayerInterface {
       tex.push(tx);
       gpu += (512 * 512 * 4 * 4) / 3;
     }
-    const r32 = (data: Float32Array, n: number) => {
-      const x = gl.createTexture()!;
-      gl.bindTexture(gl.TEXTURE_2D, x);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, n, n, 0, gl.RED, gl.FLOAT, data);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      return x;
-    };
-    t.top128 = r32(m.top128, 128);
     // (RGBA32F: the cells' tallest top, and, once the elevations are known, their own highest
-    // ground and their texels' largest roof ground)
+    // ground, their texels' largest roof ground and their hull column's figure)
     const rg = new Float32Array(32 * 32 * 4);
     for (let i = 0; i < 32 * 32; i++) rg[i * 4] = m.top32[i];
     const t32 = gl.createTexture()!;
@@ -1228,7 +1240,7 @@ export class FieldLayer implements CustomLayerInterface {
     t.mask = m.mask;
     t.top = Math.min(1000, m.top + 2);
     t.bytes = m.bytes;
-    t.gpu = gpu + 128 * 128 * 4 + 32 * 32 * 16 + 32 * 32 * 8 + (512 * 512 * 4) / 3;
+    t.gpu = gpu + 32 * 32 * 16 + (512 * 512 * 4) / 3;
     t.state = 'ready';
   }
 
@@ -1304,28 +1316,23 @@ export class FieldLayer implements CustomLayerInterface {
     const dgc = t.dgFor === ver && t.dgc ? t.dgc : new Float32Array(32 * 32);
     const own = new Float32Array(32 * 32);
     for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) own[y * 32 + x] = Math.max(ee[(y + M) * GE + x + M], ee[(y + M) * GE + x + M + 1], ee[(y + M + 1) * GE + x + M], ee[(y + M + 1) * GE + x + M + 1]);
-    // Each cell's highest ground (the grid's corners around it: G = 32 cells, one a grid square), with
-    // its tallest top: the march skips a cell from its absolute heights alone.
-    if (t.top32 && t.top32cpu) {
-      const rg = new Float32Array(32 * 32 * 4);
-      for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
-        const k = y * 32 + x;
-        rg[k * 4] = t.top32cpu[k];
-        rg[k * 4 + 1] = own[k];
-        rg[k * 4 + 2] = dgc[k];
+    {
+      // The elevations by grid square, its four corners in a texel: the march's ground in one read.
+      const Q = GE - 1, q = new Float32Array(Q * Q * 4);
+      for (let j = 0; j < Q; j++) for (let i = 0; i < Q; i++) {
+        const k = (j * Q + i) * 4;
+        q[k] = ee[j * GE + i];
+        q[k + 1] = ee[j * GE + i + 1];
+        q[k + 2] = ee[(j + 1) * GE + i];
+        q[k + 3] = ee[(j + 1) * GE + i + 1];
       }
-      gl.bindTexture(gl.TEXTURE_2D, t.top32);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 32, 32, 0, gl.RGBA, gl.FLOAT, rg);
+      if (!t.elevTex) t.elevTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, Q, Q, 0, gl.RGBA, gl.FLOAT, q);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
-    if (!t.elevTex) t.elevTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, t.elevTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, GE, GE, 0, gl.RED, gl.FLOAT, ee);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindTexture(gl.TEXTURE_2D, null);
     // The hull: a column over each 1/32 cell holding buildings, from the ground to its highest ground
     // plus its tallest roof (+ 0.5 m; the march tests the same figure, from the same floats), its top
     // and its sides where the neighbour's column is lower (or none: at the tile's edge too), each
@@ -1345,12 +1352,22 @@ export class FieldLayer implements CustomLayerInterface {
     // (each cell's column's figure, for the march's test: the same floats)
     const tb = new Float32Array(32 * 32);
     for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) tb[y * 32 + x] = bound[Math.floor(y / B) * NB + Math.floor(x / B)];
-    if (!t.tbTex) t.tbTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, t.tbTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 32, 32, 0, gl.RED, gl.FLOAT, tb.map((x) => (x === -Infinity ? -1e9 : x)));
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    // Each cell's highest ground (the grid's corners around it: G = 32 cells, one a grid square), with
+    // its tallest top: the march skips a cell from its absolute heights alone; and its column's
+    // figure (one read a cell).
+    if (t.top32 && t.top32cpu) {
+      const rg = new Float32Array(32 * 32 * 4);
+      for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+        const k = y * 32 + x;
+        rg[k * 4] = t.top32cpu[k];
+        rg[k * 4 + 1] = own[k];
+        rg[k * 4 + 2] = dgc[k];
+        rg[k * 4 + 3] = tb[k] === -Infinity ? -1e9 : tb[k];
+      }
+      gl.bindTexture(gl.TEXTURE_2D, t.top32);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 32, 32, 0, gl.RGBA, gl.FLOAT, rg);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
     const v: number[] = [], cells: { k: number; idx: number[] }[] = [];
     const C = EXTENT / NB;
     const quad = (pts: number[][], face: number, idx: number[]) => {
@@ -1541,7 +1558,6 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1f(u.u_opacity, this.opacity);
     setFogUniforms(gl, u, fogUniforms(map));
     gl.uniform1f(u.u_stepTexel, this.stepTexel);
-    gl.uniform1i(u.u_sub, this.subWalk ? 1 : 0);
     gl.uniform1i(u.u_linear, this.linear ? 1 : 0);
     {
       // (the land colour under the buildings: the background layer's)
@@ -1665,6 +1681,7 @@ export class FieldLayer implements CustomLayerInterface {
       gl.activeTexture(gl.TEXTURE15);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, t.dgTex ?? this.zeroDg());
       gl.uniform1i(u.u_dg, 15);
+
       gl.activeTexture(gl.TEXTURE10);
       gl.bindTexture(gl.TEXTURE_2D, t.top32);
       gl.activeTexture(gl.TEXTURE1);
@@ -1689,19 +1706,14 @@ export class FieldLayer implements CustomLayerInterface {
           t.orderKey = key;
         }
         gl.uniform1f(u.u_gmax, t.gmax);
-        gl.activeTexture(gl.TEXTURE12);
-        gl.bindTexture(gl.TEXTURE_2D, t.tbTex);
-        gl.uniform1i(u.u_tb, 12);
-        gl.activeTexture(gl.TEXTURE13);
-        gl.bindTexture(gl.TEXTURE_2D, t.top128);
-        gl.uniform1i(u.u_top128, 13);
+
         if (!(this.skip & 8) && t.icount) gl.drawElements(gl.TRIANGLES, t.icount, gl.UNSIGNED_INT, 0);
       }
       this.drawn.push(t.key);
     }
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
-    for (const k of [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
+    for (const k of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }

@@ -4,7 +4,7 @@
 // ÷ log2(4097), B the class's mean top in its class's range, × 255; then a block a class: R and G the
 // offset to its buildings' centroid + 128), and, on a level-8 tile, its heritage list after it.
 // Decoded here to linear values (before the GPU's mipmaps: the coding's square root and log would
-// bias them), with what the march reads beside them: each 1/32 and 1/128 of the tile's tallest mean
+// bias them), with what the march reads beside them: each 1/32 of the tile's tallest mean
 // top (with the texel around), the class mask pyramid, and each class texel's share code and offset
 // to its buildings' centroid; and, asked again with the tile's elevation grid, each texel's roof
 // ground (bldfield.offsets.ts).
@@ -45,7 +45,6 @@ export type FieldOut =
       /** The tallest mean top (m). */
       top: number;
       top32: Float32Array;
-      top128: Float32Array;
       /** The class mask pyramid: levels 512 … 1, one after the other. */
       cmask: Uint8Array;
       bytes: number;
@@ -169,7 +168,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), top128: pool(128), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, texels };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, texels };
   } finally {
     inflight.delete(key);
   }
@@ -240,7 +239,7 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
   load(msg.key, msg.url).then(
     (out) => {
       if (out.type === 'done' && !out.empty) {
-        const tr: Transferable[] = [out.top32.buffer, out.top128.buffer, out.cmask.buffer, out.texels.buffer];
+        const tr: Transferable[] = [out.top32.buffer, out.cmask.buffer, out.texels.buffer];
         for (const c of out.classes) if (c) tr.push(c.buffer);
         (self as unknown as Worker).postMessage(out, tr);
       } else (self as unknown as Worker).postMessage(out);
