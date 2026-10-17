@@ -98,7 +98,10 @@ impl ureq::unversioned::transport::Transport for IdleTransport {
     }
 
     fn transmit_output(&mut self, amount: usize, timeout: ureq::unversioned::transport::NextTimeout) -> std::result::Result<(), ureq::Error> {
-        // (A write is at most a buffer: `idle` on it is a stall's limit.)
+        // (A request starts with a write: a pooled connection's idle time before it isn't counted.
+        // A write is at most ureq's output buffer, its progress counted when it's all written:
+        // `idle` on it is a stall's limit.)
+        self.last = (self.files.clock)();
         self.inner.transmit_output(amount, Self::shorter(timeout, self.files.idle))?;
         self.last = (self.files.clock)();
         Ok(())
@@ -260,6 +263,7 @@ impl Client {
     /// `/work/out/`) has no limit on its whole time, only on a stall (`Files`); anything else 15 s
     /// in all, so a lead that doesn't answer (asleep, its agent stopped) holds no worker's loop up
     /// for long.
+    /// (A fresh Agent per request: no connection is pooled between requests.)
     fn agent(&self, path: &str) -> ureq::Agent {
         if Self::is_file(path) {
             let f = &self.files;

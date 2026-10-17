@@ -32,7 +32,8 @@ i_overlay = { version = "=9.0.0", default-features = false }
 # (WebAssembly has no sockets, and ring's C doesn't build for it: there the programs read what they
 # need from their inputs, docs/workers.md.)
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
-ureq = "3"
+# Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).
+ureq = "=3.4.2"
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -44,7 +45,8 @@ socket2 = { version = "0.6", features = ["all"] }
 futures-util = { version = "0.3", default-features = false }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
-ureq = { version = "3", default-features = false }
+# Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).
+ureq = { version = "=3.4.2", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
