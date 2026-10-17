@@ -8453,7 +8453,7 @@ mod tests {
         assert!(st.conditions.nas);
         // (The regions' check of their accepted version comes first, the gate's jobs first of all;
         // the backup after it.)
-        assert!(st.waiting.iter().any(|w| w.what.starts_with("Backing up") || w.what.starts_with("Checking the inputs dropped in regions")), "{:?}", st.waiting);
+        assert!(st.waiting.iter().any(|w| w.what == crate::agent::steps::title("backup") || w.what.starts_with("Checking the inputs dropped in regions")), "{:?}", st.waiting);
         // Once backed up today, it isn't due.
         a.mem.last_ok.insert("backup".into(), now_s());
         let mut w = Vec::new();
