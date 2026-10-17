@@ -60,7 +60,11 @@ const evaluate = async (expr, timeout = 120) => {
   return r.result.value;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// (Node's WebSocket doesn't hold the process open: a long call, e.g. a screenshot of a busy page,
+// otherwise ended it mid-await.)
+const keepAlive = setInterval(() => {}, 1000);
 const close = async () => {
+  clearInterval(keepAlive);
   ws.close();
   await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`).catch(() => {});
 };
@@ -171,12 +175,14 @@ try {
   load.wallMs = Date.now() - tLoad;
   if (heap) load.heapMB = Math.round(heap.usedSize / 1e6);
   const out = { label: args.label ?? '', url: URL.slice(0, 120), viewport: `${W}x${H}@${DPR}`, load, runs: {} };
-  // --shot file.png [--clip x,y,w,h] (CSS px): a screenshot of the loaded view (after --set).
+  // --shot file.png: the map's canvas (device pixels) once the loaded view is idle (after --set).
   if (args.shot) {
     await evaluate(`const map = window.__app.map; await new Promise((r) => { map.once('idle', r); map.triggerRepaint(); setTimeout(r, 20000); }); await new Promise((r) => setTimeout(r, 500));`);
-    const [x, y, w, h] = args.clip ? String(args.clip).split(',').map(Number) : [0, 0, W, H];
-    const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x, y, width: w, height: h, scale: 1 } });
-    fs.writeFileSync(String(args.shot), Buffer.from(shot.data, 'base64'));
+    // (the map's canvas read in its own render event, while its drawing buffer holds the frame:
+    // Page.captureScreenshot never answers in a headless Chrome with the frame rate uncapped)
+    const data = await evaluate(`const map = window.__app.map, c = map.getCanvas();
+      return await new Promise((r) => { map.once('render', () => r(c.toDataURL('image/png'))); map.triggerRepaint(); });`);
+    fs.writeFileSync(String(args.shot), Buffer.from(data.split(',')[1], 'base64'));
   }
 
   // ---- gesture runs --------------------------------------------------------------------------
@@ -265,7 +271,7 @@ try {
       const custom = Object.fromEntries(Object.entries(B.custom).map(([k, v]) => { const s = [...v].sort((a, b) => a - b); return [k, { p50: q(s, 0.5), p95: q(s, 0.95) }]; }));
       return {
         fps: +(fr.length / ((tEnd - B.t0) / 1000)).toFixed(1),
-        frameMs: { p50: q(dts, 0.5), p90: q(dts, 0.9), p99: q(dts, 0.99), max: q(dts, 1) },
+        frameMs: { p50: q(dts, 0.5), p90: q(dts, 0.9), p95: q(dts, 0.95), p99: q(dts, 0.99), max: q(dts, 1) },
         over8ms: dts.filter((d) => d > 8.4).length, over17ms: dts.filter((d) => d > 16.8).length, over50ms: dts.filter((d) => d > 50).length, frames: dts.length,
         renderCpuMs: { p50: q(rd, 0.5), p95: q(rd, 0.95), max: q(rd, 1), n: rd.length },
         gpuMs: { p50: q(gpu, 0.5), p95: q(gpu, 0.95), n: gpu.length },
