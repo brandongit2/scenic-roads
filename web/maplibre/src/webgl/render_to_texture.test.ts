@@ -28,31 +28,36 @@ describe('render to texture', () => {
         id: 'maine-background',
         type: 'background',
         source: 'maine',
-        isHidden: () => false
+        isHidden: () => false,
+        isStateDependent: () => true
     } as any as BackgroundStyleLayer;
     const fillLayer = {
         id: 'maine-fill',
         type: 'fill',
         source: 'maine',
-        isHidden: () => false
+        isHidden: () => false,
+        isStateDependent: () => true
     } as any as FillStyleLayer;
     const rasterLayer = {
         id: 'maine-raster',
         type: 'raster',
         source: 'maine',
-        isHidden: () => false
+        isHidden: () => false,
+        isStateDependent: () => true
     } as any as RasterStyleLayer;
     const hillshadeLayer = {
         id: 'maine-hillshade',
         type: 'line',
         source: 'maine',
-        isHidden: () => false
+        isHidden: () => false,
+        isStateDependent: () => true
     } as any as HillshadeStyleLayer;
     const lineLayer = {
         id: 'maine-line',
         type: 'line',
         source: 'maine',
-        isHidden: () => false
+        isHidden: () => false,
+        isStateDependent: () => true
     } as any as LineStyleLayer;
     const symbolLayer = {
         id: 'maine-symbol',
@@ -277,6 +282,23 @@ describe('render to texture', () => {
         state.revision = 1;
         rtt.prepareForRender(style, 0);
         expect(tile.getRTT(0)).toBeUndefined();
+    });
+
+    test('keeps the tile cache on a source state update when no draped layer of the source reads feature state (Scenic Roads)', () => {
+        const state = {revision: 0};
+        (vi.mocked(style.tileManagers['maine'].getState)).mockReturnValue(state as any);
+        const reads = [backgroundLayer, fillLayer, rasterLayer, hillshadeLayer, lineLayer].map(l => [l, l.isStateDependent] as const);
+        for (const [l] of reads) l.isStateDependent = () => false;
+        try {
+            tile.rttObjects[0] = {texture: {}, size: 512} as unknown as RTTObject;
+            tile.rttFingerprint = {maine: new RTTFingerprint([tile.tileID], 0, 0, visibleLayerIds())};
+            rtt.prepareForRender(style, 0);
+            state.revision = 1;
+            rtt.prepareForRender(style, 0);
+            expect(tile.getRTT(0)).toBeTruthy();
+        } finally {
+            for (const [l, f] of reads) l.isStateDependent = f;
+        }
     });
 
     test('cache miss acquires an rtt object from the painter and stores it on the tile', () => {
@@ -549,7 +571,7 @@ describe('render to texture', () => {
 
     describe('lifted layers and the textures (Scenic Roads)', () => {
         const lifted = {id: 'lifted-line', type: 'line', source: 'lifted', isHidden: () => false, elevationReference: () => 1} as any;
-        const lowered = {id: 'lowered-line', type: 'line', source: 'maine', isHidden: () => false, level: 0, elevationReference() { return this.level; }} as any;
+        const lowered = {id: 'lowered-line', type: 'line', source: 'maine', isHidden: () => false, isStateDependent: () => true, level: 0, elevationReference() { return this.level; }} as any;
 
         beforeEach(() => {
             style._layers['lifted-line'] = lifted;
