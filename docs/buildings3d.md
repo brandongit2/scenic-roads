@@ -428,7 +428,7 @@ equator).
   under a soft target (`GPU_CACHE_TARGET_MB`: 1,024 MB, 512 on a `pointer: coarse` device), least
   recently wanted freed first; rebuilt after a lost context.
 - Loading: at most six fetches in flight, coarsest first, abandoned ones cancelled; a loading
-  tile's ancestor drawn over its area only (a ray that never enters that area discarded at once);
+  tile's nearest loaded ancestor (however many levels up: zooming in fast skips levels never asked for) drawn over its area only (a ray that never enters that area discarded at once);
   failures retried after 2, 4 … 60 s; a 204 means nothing there or below. The worker packs the
   class textures and the roof ground into their GPU formats (`packfloat.ts`, as the browser would
   convert them: `tools/bench/packcheck.mjs`), so an upload is a copy.

@@ -1595,13 +1595,16 @@ export class FieldLayer implements CustomLayerInterface {
         draw.push({ t: c, clip: null });
       }
       if (!missing.length) continue;
-      let d: FTile | undefined = t;
-      while (d && d.state !== 'ready') {
-        if (d.state === 'empty' || d.z <= LEVEL_MIN) {
-          d = undefined;
+      // (up past the levels never asked for: zooming in fast skips some, and the nearest loaded
+      // ancestor may be several levels up)
+      let d: FTile | undefined;
+      for (let z = t.z - 1; z >= LEVEL_MIN; z--) {
+        const a = this.tiles.get(`${z}/${t.x >> (t.z - z)}/${t.y >> (t.z - z)}`);
+        if (a?.state === 'empty') break;
+        if (a?.state === 'ready') {
+          d = a;
           break;
         }
-        d = this.tiles.get(`${d.z - 1}/${d.x >> 1}/${d.y >> 1}`);
       }
       if (!d) continue;
       d.used = this.frame;
