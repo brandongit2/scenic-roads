@@ -934,6 +934,10 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     // (Its phase, the program's own phases under it where it says them.)
     let _p = crate::timings::phase(what, program_class(what));
     crate::timings::child(&mut c);
+    // (What it reads and opens, noted as it exits, counted here: crate::costin::child_reads.)
+    let reads = std::path::PathBuf::from(format!("{}.reads", log.display()));
+    std::fs::remove_file(&reads).ok();
+    c.env(crate::costin::READS_ENV, &reads);
     let t = std::time::Instant::now();
     let mut child = store::spawn::spawn(c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped())).with_context(|| format!("start {what}"))?;
     // Its errors into its log as they come, and how far it says it is passed on as its stage's
@@ -957,6 +961,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     // Waited for with what it used: its (and its programs') peak memory.
     let waited = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"));
     read.join().ok();
+    crate::costin::child_reads(&reads);
     let (st, peak) = waited?;
     PEAK.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
     if !st.success() {
@@ -1314,6 +1319,28 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a unit's spawned program reads (noted as it exits, `costin::READS_ENV`) lands in the
+    /// unit's measures, as its tail's steps run here (task #235).
+    #[test]
+    fn a_spawned_steps_reads_land_on_its_unit() {
+        let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let mut c = store::spawn::command("sh");
+        c.arg("-c").arg("echo '5000000000 7' >> \"$SCENIC_READS\"");
+        crate::costin::begin();
+        crate::costin::set("km2", 1);
+        run(c, "a step", &d.path().join("step.log")).unwrap();
+        let m = crate::costin::take();
+        assert!(m["bytes"] >= 5_000_000_000 && m["tiffs"] >= 7, "{m:?}");
+        assert!(!d.path().join("step.log.reads").exists());
+        // (A tail's, after its unit's measures were taken.)
+        let mut c = store::spawn::command("sh");
+        c.arg("-c").arg("echo '300 2' >> \"$SCENIC_READS\"");
+        let (r, bytes, tiffs) = crate::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
+        r.unwrap();
+        assert!(bytes >= 300 && tiffs >= 2);
+    }
 
     /// Kept samples judged as the seed's: every one made so is valid.
     fn rules() -> DemValidity {

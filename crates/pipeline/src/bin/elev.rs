@@ -14,6 +14,8 @@ use pipeline::fetch::Fetcher;
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
+    // (What it reads, for its unit\'s sizes: pipeline::costin.)
+    pipeline::costin::report_on_exit();
     let mut build: Option<PathBuf> = None;
     let (mut workers, mut cache, mut no_cache) = (48usize, None::<PathBuf>, false);
     let mut args = std::env::args().skip(1);

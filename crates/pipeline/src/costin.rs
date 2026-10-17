@@ -9,6 +9,7 @@
 //! (the target's area: terrain, slope, trees and their assemblies, the units' elevations).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -67,21 +68,54 @@ pub fn take() -> BTreeMap<String, u64> {
     m
 }
 
-/// Runs `f` for another target than the one under way (a unit's tail run after the next unit
-/// began): what it reads and the GeoTIFFs it opens are left out of the target under way's
-/// measures and given back as `(bytes, tiffs)`, for the target it's for. (Reads on other threads
-/// meanwhile are counted to it too.)
-pub fn aside<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
+/// Runs `f` (a unit's tail steps run here after its measures were taken, before the next unit
+/// begins) and gives back what it read and the GeoTIFFs it opened, `(bytes, tiffs)`: its programs'
+/// own (`child_reads`) among them. (Reads on other threads meanwhile are counted too.)
+pub fn measured<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
     let (r0, t0) = (store::range::read_bytes(), TIFFS.load(Ordering::Relaxed));
     let v = f();
-    let (bytes, tiffs) = (store::range::read_bytes().saturating_sub(r0), TIFFS.load(Ordering::Relaxed).saturating_sub(t0));
-    let mut s = state();
-    s.read_at += bytes;
-    s.tiffs_at += tiffs;
-    (v, bytes, tiffs)
+    (v, store::range::read_bytes().saturating_sub(r0), TIFFS.load(Ordering::Relaxed).saturating_sub(t0))
 }
 
-/// Adds measures taken `aside` to a target's.
+/// Where a step's program notes, as it exits, what it read and the GeoTIFFs it opened (`<bytes>
+/// <tiffs>` lines appended: `report_on_exit`), for the process that ran it (`child_reads`).
+pub const READS_ENV: &str = "SCENIC_READS";
+
+/// In a step's program (a unit's: extract, areaflags, landcover, elev, tile, scenic-metrics): when
+/// `READS_ENV` names a file, what this process read and opened is appended to it as it exits.
+pub fn report_on_exit() {
+    if std::env::var_os(READS_ENV).is_some() {
+        // SAFETY: registers a plain function with no arguments, run once at exit.
+        unsafe { libc::atexit(write_reads) };
+    }
+}
+
+extern "C" fn write_reads() {
+    if let Some(p) = std::env::var_os(READS_ENV) {
+        append_reads(Path::new(&p), store::range::read_bytes(), TIFFS.load(Ordering::Relaxed));
+    }
+}
+
+fn append_reads(p: &Path, bytes: u64, tiffs: u64) {
+    let r = std::fs::OpenOptions::new().create(true).append(true).open(p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{bytes} {tiffs}\n").as_bytes()));
+    if let Err(e) = r {
+        eprintln!("{}: noting what was read: {e}", p.display());
+    }
+}
+
+/// What a program run with `READS_ENV` = `p` read and opened, counted as this process's own (so
+/// the target under way, or `measured`, has it); the file removed.
+pub fn child_reads(p: &Path) {
+    let Ok(s) = std::fs::read_to_string(p) else { return };
+    for l in s.lines() {
+        let mut it = l.split(' ').map(|v| v.parse::<u64>().unwrap_or(0));
+        store::range::count_read(it.next().unwrap_or(0));
+        TIFFS.fetch_add(it.next().unwrap_or(0), Ordering::Relaxed);
+    }
+    std::fs::remove_file(p).ok();
+}
+
+/// Adds measures taken by `measured` to a target's.
 pub fn add_to(m: &mut BTreeMap<String, u64>, bytes: u64, tiffs: u64) {
     *m.entry("bytes".into()).or_default() += bytes;
     if tiffs > 0 || m.contains_key("km2") {
@@ -102,12 +136,17 @@ pub fn tile_km2(z: u8, _x: u32, y: u32) -> u64 {
     (r * r * (2.0 * std::f64::consts::PI / n) * (lat(y as f64).sin() - lat(y as f64 + 1.0).sin())).abs().round() as u64
 }
 
+/// The tests that read the measures, one at a time (they share this process's).
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn measures_since_begin() {
+        let _l = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         begin();
         add("ways", 3);
         add("ways", 4);
@@ -124,17 +163,17 @@ mod tests {
         assert!(!take().contains_key("ways"));
     }
 
+    /// A program's reads, noted as it exits, are counted where its runner `measured` them.
     #[test]
-    fn aside_reads_go_to_their_own_target() {
-        begin();
-        set("km2", 1);
-        let ((), bytes, tiffs) = aside(|| {
-            store::range::count_read(1 << 40);
-            tiff_opened();
-        });
-        assert!(bytes >= 1 << 40 && tiffs >= 1);
-        // (Other tests' reads meanwhile are far below 1 TiB.)
-        assert!(take()["bytes"] < 1 << 40);
+    fn child_reads_counted_by_their_runner() {
+        let _l = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("reads");
+        append_reads(&p, 1000, 3);
+        append_reads(&p, 24, 1);
+        let ((), bytes, tiffs) = measured(|| child_reads(&p));
+        assert!(bytes >= 1024 && tiffs >= 4);
+        assert!(!p.exists());
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
         add_to(&mut m, 7, 2);
         assert_eq!((m["bytes"], m["tiffs"]), (7, 2));

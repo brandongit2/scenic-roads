@@ -3278,7 +3278,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         // (Its inputs' measures: the piece's bytes beside what the store's readers read, its ways
         // and vertices kept, its elevation tiles and area.)
-        // (Its tail's later steps add theirs as they run: `costin::aside`.)
+        // (Its tail's later steps run here add theirs: `costin::measured`.)
         pipeline::costin::set("km2", pipeline::costin::tile_km2(u.z, u.x, u.y));
         let mut sizes = pipeline::costin::take();
         *sizes.entry("bytes".into()).or_default() += std::fs::metadata(&piece).map_or(0, |m| m.len());
@@ -3301,7 +3301,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             None => {
                 let mut b = b;
                 if b.rep.kept_ways > 0 {
-                    let (r, bytes, tiffs) = pipeline::costin::aside(|| run_tail(&b.anywhere, &b.dir, &b.tools));
+                    let (r, bytes, tiffs) = pipeline::costin::measured(|| run_tail(&b.anywhere, &b.dir, &b.tools));
                     r?;
                     pipeline::costin::add_to(&mut b.sizes, bytes, tiffs);
                     b.peak = b.peak.max(pipeline::unit::take_peak());
@@ -3363,10 +3363,11 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
         // (Its last steps run here, when they're taken back: its stages.)
         areas(|a| a.on(&b.u.slash()));
         let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
-        // (What its steps read here is its own, not the unit under way's: `costin::aside`.)
+        // (What its steps read when run here is added to its sizes: `costin::measured`. A tail a
+        // worker settled adds none.)
         let mut read = (0, 0);
         let mut here = || {
-            let (r, bytes, tiffs) = pipeline::costin::aside(|| pipeline::unit::run_tail(&anywhere, &dir, &tools));
+            let (r, bytes, tiffs) = pipeline::costin::measured(|| pipeline::unit::run_tail(&anywhere, &dir, &tools));
             read = (read.0 + bytes, read.1 + tiffs);
             r
         };

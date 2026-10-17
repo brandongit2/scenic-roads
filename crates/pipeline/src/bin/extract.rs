@@ -620,6 +620,8 @@ fn route_per_way(scenic: &mut Vec<(i64, String)>) {
 }
 
 fn main() -> Result<()> {
+    // (What it reads, for its unit\'s sizes: pipeline::costin.)
+    pipeline::costin::report_on_exit();
     let mut args: Vec<String> = std::env::args().collect();
     let rail_rels_only = args.iter().any(|a| a == "--rail-rels-only");
     args.retain(|a| a != "--rail-rels-only");

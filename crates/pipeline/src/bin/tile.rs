@@ -9,6 +9,8 @@ use roadcore::{Array, Ways};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
+    // (What it reads, for its unit\'s sizes: pipeline::costin.)
+    pipeline::costin::report_on_exit();
     let args: Vec<String> = std::env::args().collect();
     ensure!(args.len() == 3 && args[2] == "elev", "usage: tile <unit_dir> elev");
     let dir = PathBuf::from(&args[1]);
