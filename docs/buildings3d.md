@@ -434,6 +434,13 @@ equator).
   `elevationForLngLatFn`), again when the terrain's tiles in view change, within 3 ms a frame
   (`ELEV_BUDGET_MS`), the longest since sampled first; a tile without a hull yet at once. A tile
   whose grid comes out the same keeps its hull and roof ground.
+- A still view isn't marched again: once two frames running draw the same tiles with the same
+  camera and settings, the field is drawn into a texture of its own (RGBA16F, its fragments blended
+  there as into the frame, then the texture over the frame: within one level of the frame's 8 bits
+  of drawing straight into it), and later frames draw only that texture, marching again only the
+  pixels whose depth (meshes, terrain) changed since (a tile coming in). Tokyo, zoom 14, 60°, still,
+  M1 Pro: the field ~1 ms a frame instead of ~17 (`?fcache=0`: off). A moving view draws straight
+  into the frame, as before.
 - Debug and tuning switches: `?fdbg=` (43: each pixel's steps, cells walked and fragments, added up
   in the frame), `?fstx=`, `?fopt=` (default 3).
 

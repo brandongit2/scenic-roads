@@ -340,6 +340,8 @@ uniform int u_linear;
 uniform vec3 u_bg;     // the map's land colour (stored values)
 uniform highp sampler2D u_scene;   // the frame's depth so far (the fork's sceneDepth)
 uniform int u_sceneOn;
+uniform int u_update;               // the still view's cache: drawn only where the depth isn't u_was's
+uniform highp sampler2D u_was;
 uniform mat4 u_invProj;   // clip space to the tile's (tile units, tile units, metres): the flat map's
 uniform vec2 u_vp;        // the framebuffer's size (px)
 uniform vec2 u_depthRange;
@@ -403,6 +405,11 @@ vec3 shadeC(vec3 base, float dd, float g, vec3 lowc) {
 // (a class's value by a class number known only as the step runs)
 #define PICK(A, c) ((c) == 4 ? A[4] : (c) == 3 ? A[3] : (c) == 2 ? A[2] : (c) == 1 ? A[1] : A[0])
 void main() {
+  // (the still view's cache: only where the frame's depth changed since it was drawn)
+  if (u_update == 1) {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    if (texelFetch(u_scene, px, 0).r == texelFetch(u_was, px, 0).r) discard;
+  }
   if (v_clip > 1.0) discard;
   float mpu = u_camTile.w;
   // The ray in metres (x east, y south, z up), from where it meets this face.
@@ -607,6 +614,28 @@ ${STEP_END}
   fragColor = vec4(b * al, al);
 }`;
 
+/** A triangle over the whole viewport (no attributes). */
+const FULL_VS = `#version 300 es
+void main() { gl_Position = vec4(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0, 0.0, 1.0); }`;
+/** The still view's check: where the frame's depth differs from the one the field was drawn over,
+ * its cached pixels cleared (the field's fragments march there again, and only there: u_update). */
+const SAME_FS = `#version 300 es
+precision highp float;
+uniform highp sampler2D u_now;
+uniform highp sampler2D u_was;
+out vec4 fragColor;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  if (texelFetch(u_now, p, 0).r == texelFetch(u_was, p, 0).r) discard;
+  fragColor = vec4(0.0);
+}`;
+/** The cached field over the frame (premultiplied). */
+const OVER_FS = `#version 300 es
+precision highp float;
+uniform highp sampler2D u_field;
+out vec4 fragColor;
+void main() { fragColor = texelFetch(u_field, ivec2(gl_FragCoord.xy), 0); }`;
+
 interface FTile {
   z: number;
   x: number;
@@ -677,6 +706,8 @@ interface FTile {
   herAsked: string;
   /** Only fetched ahead, under the meshes (not wanted for drawing this frame): after the wanted. */
   pre: boolean;
+  /** Its GPU data's version (any texture, the hull, the heritage tint: the still view's cache). */
+  rev: number;
 }
 
 type Prog = { p: WebGLProgram; u: Record<string, WebGLUniformLocation | null> };
@@ -713,11 +744,13 @@ export class FieldLayer implements CustomLayerInterface {
    * building h m tall, the lookup made again only when `key` (what it depends on) changes; null: plain. */
   setHeightColour(key: string, colour: ((h: number) => [number, number, number]) | null) {
     if (!colour) {
+      if (this.heightLut) this.lutGen++;
       this.heightLut = null;
       this.heightKey = '';
       return;
     }
     if (key === this.heightKey && this.heightLut) return;
+    this.lutGen++;
     const a = new Uint8Array(LUT_N * 3);
     for (let i = 0; i < LUT_N; i++) a.set(colour((LUT_MAX_M * i) / (LUT_N - 1)), i * 3);
     this.heightLut = a;
@@ -773,6 +806,7 @@ export class FieldLayer implements CustomLayerInterface {
     this.lutTex = null;
     this.lutFor = null;
     this.zeroTex = null;
+    this.cache = null;
   };
   private onRestored = () => this.map.triggerRepaint();
   /** The level-8 tiles' heritage lists (null: none; 'loading': asked for), by tile key. */
@@ -825,6 +859,7 @@ export class FieldLayer implements CustomLayerInterface {
   /** Tile t's heritage tint for version `ver`: the worker's pixels (premultiplied), or none. */
   private setHerTex(t: FTile, ver: string, px: Uint8Array | null) {
     const gl = this.gl;
+    t.rev = ++this.revs;
     if (t.herTex) {
       gl.deleteTexture(t.herTex);
       t.herTex = null;
@@ -847,6 +882,27 @@ export class FieldLayer implements CustomLayerInterface {
   }
   private elevKey = '';
   private failed = false;
+  /** The tiles' GPU data versions so far (FTile.rev). */
+  private revs = 0;
+  /** The colour by height's lookup, its versions so far. */
+  private lutGen = 0;
+  /**
+   * The still view's cache (`?fcache=0`: off). While the view and everything the field reads stays
+   * the same, it doesn't march again: the field is drawn into a texture of its own (RGBA16F, its
+   * fragments blended there as into the frame), then over the frame; a frame whose depth differs
+   * (a mesh or terrain tile come in) marches again only where it differs. While the
+   * view moves the field is drawn straight into the frame, as without it.
+   */
+  cacheOn = urlNum('fcache', 1) !== 0;
+  /** (the cache's frames by kind, for tests) */
+  cacheStats = { direct: 0, fill: 0, update: 0 };
+  private cache: {
+    w: number; h: number; tex: WebGLTexture; fb: WebGLFramebuffer;
+    depth: WebGLTexture; depthFb: WebGLFramebuffer; readFb: WebGLFramebuffer; readTex: WebGLTexture | null;
+    same: Prog; over: Prog; key: string; valid: boolean;
+  } | null = null;
+  /** The last frame's inputs (the still view's cache: the same twice running, the view is still). */
+  private lastKey = '';
   private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
 
   /** `url`: the tiles' template ({z}/{x}/{y}), else the server's. */
@@ -885,6 +941,67 @@ export class FieldLayer implements CustomLayerInterface {
     this.lutFor = null;
     if (this.zeroTex) this.gl.deleteTexture(this.zeroTex);
     this.zeroTex = null;
+    this.dropCache();
+  }
+
+  private dropCache() {
+    const c = this.cache, gl = this.gl;
+    if (!c) return;
+    gl.deleteTexture(c.tex);
+    gl.deleteTexture(c.depth);
+    for (const f of [c.fb, c.depthFb, c.readFb]) gl.deleteFramebuffer(f);
+    gl.deleteProgram(c.same.p);
+    gl.deleteProgram(c.over.p);
+    this.cache = null;
+  }
+
+  /** The still view's cache at the viewport's size (made again when it changes). */
+  private cacheFor(w: number, h: number) {
+    if (this.cache && this.cache.w === w && this.cache.h === h) return this.cache;
+    this.dropCache();
+    const gl = this.gl;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+    const depth = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, depth);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH24_STENCIL8, w, h);
+    for (const x of [tex, depth]) {
+      gl.bindTexture(gl.TEXTURE_2D, x);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    const fb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const depthFb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, depthFb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, depth, 0);
+    const readFb = gl.createFramebuffer()!;
+    const prog = (fs: string, names: string[]): Prog => {
+      const p = link(gl, FULL_VS, fs);
+      const u: Record<string, WebGLUniformLocation | null> = {};
+      for (const n of names) u[n] = gl.getUniformLocation(p, n);
+      return { p, u };
+    };
+    this.cache = { w, h, tex, fb, depth, depthFb, readFb, readTex: null, same: prog(SAME_FS, ['u_now', 'u_was']), over: prog(OVER_FS, ['u_field']), key: '', valid: false };
+    return this.cache;
+  }
+
+  /** What the field drawn this frame depends on but the frame's depth (the still view's cache). */
+  private frameKey(opts: CustomRenderMethodInput, vp: Int32Array, draw: { t: FTile; clip: [number, number, number, number] | null; her: WebGLTexture | null }[]): string {
+    const map = this.map;
+    const style = (map as unknown as { style: { light: { getCartesianPosition(): number[]; properties: { get(k: string): unknown } } } }).style;
+    const bgl = (map as unknown as { style: { getLayer(id: string): { paint?: { get(k: string): unknown } } | undefined } }).style.getLayer('bg');
+    const pd = opts.defaultProjectionData;
+    return JSON.stringify([
+      Array.from(vp), opts.fov, Array.from(opts.modelViewProjectionMatrix), Array.from(pd.mainMatrix as ArrayLike<number>), Array.from(pd.fallbackMatrix as ArrayLike<number>),
+      pd.projectionTransition, Array.from(opts.depthRangeFor3D), opts.shaderData.variantName, map.getBearing(),
+      fogUniforms(map), style.light.getCartesianPosition(), style.light.properties.get('anchor'), style.light.properties.get('intensity'), style.light.properties.get('color'),
+      this.land, bgl?.paint?.get('background-color'), this.colour, this.opacity, this.hk, this.tmin, this.stepTexel, this.linear, this.dbg, this.opt, this.lutGen, this.box,
+      this.skip, this.wallSign, this.nearest, draw.map((e) => [e.t.key, e.clip, e.t.rev, e.t.mask, e.her ? 1 : 0]),
+    ]);
   }
 
   /** Every tile dropped (`free`: its GL objects deleted; a lost context has none to delete). */
@@ -900,6 +1017,7 @@ export class FieldLayer implements CustomLayerInterface {
 
   private freeGl(t: FTile) {
     const gl = this.gl;
+    t.rev = ++this.revs;
     for (const x of t.tex ?? []) if (x) gl.deleteTexture(x);
     for (const x of [t.top32, t.cmask, t.elevTex, t.dgTex, t.herTex]) if (x) gl.deleteTexture(x);
     t.herTex = null;
@@ -956,7 +1074,7 @@ export class FieldLayer implements CustomLayerInterface {
     const p = link(gl, head + VS, fs);
     const u: Record<string, WebGLUniformLocation | null> = {};
     for (const n of ['u_stepTexel', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
-      'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
+      'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_update', 'u_was', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
     pr = { p, u };
     this.progs.set(key, pr);
     return pr;
@@ -1048,7 +1166,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre, rev: 0 };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -1154,6 +1272,7 @@ export class FieldLayer implements CustomLayerInterface {
       return;
     }
     const gl = this.gl;
+    t.rev = ++this.revs;
     if (!t.dgTex) {
       t.dgTex = gl.createTexture()!;
       t.gpu += (512 * 512 * 2 * t.layers * 4) / 3;
@@ -1191,6 +1310,7 @@ export class FieldLayer implements CustomLayerInterface {
 
   private upload(t: FTile, m: Extract<FieldOut, { empty: false }>) {
     const gl = this.gl;
+    t.rev = ++this.revs;
     const tex: (WebGLTexture | null)[] = [];
     let gpu = 0;
     for (const c of m.classes) {
@@ -1300,6 +1420,7 @@ export class FieldLayer implements CustomLayerInterface {
     if (!t.ee || !ee.every((x, i) => x === t.ee![i])) t.eeVer++;
     t.ee = ee;
     t.hullKey = hullKey;
+    t.rev = ++this.revs;
     const e = new Float32Array((G + 1) * (G + 1));
     for (let j = 0; j <= G; j++) for (let i = 0; i <= G; i++) e[j * (G + 1) + i] = ee[(j + M) * GE + i + M];
     t.gmin = e.reduce((m, x) => Math.min(m, x), Infinity);
@@ -1518,6 +1639,56 @@ export class FieldLayer implements CustomLayerInterface {
       gl.beginQuery(this.timer.ext!.TIME_ELAPSED_EXT, q);
     }
     const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
+    // (each tile's heritage tint before anything is drawn: what the frame draws is then known)
+    const tiles2 = draw.map(({ t, clip }) => ({ t, clip, her: this.herTexFor(t) }));
+    // The still view's cache: the same inputs as the last frame's, the view is still; the field then
+    // drawn into the cache (all of it the first time, after that where the frame's depth changed)
+    // and the cache over the frame. Otherwise straight into the frame.
+    let cache: ReturnType<FieldLayer['cacheFor']> | null = null;
+    let update = false;
+    if (this.cacheOn && scene && !timed) {
+      const key = this.frameKey(opts, vp, tiles2);
+      const still = key === this.lastKey;
+      this.lastKey = key;
+      if (still) {
+        cache = this.cacheFor(vp[2], vp[3]);
+        if (cache.readTex !== scene.texture) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, cache.readFb);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.TEXTURE_2D, scene.texture, 0);
+          cache.readTex = scene.texture;
+          cache.valid = false;
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, cache.fb);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.colorMask(true, true, true, true);
+        update = cache.valid && cache.key === key;
+        if (!update) {
+          this.cacheStats.fill++;
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        } else {
+          // (where the depth differs from the cached one's: cleared, to be drawn again)
+          this.cacheStats.update++;
+          gl.useProgram(cache.same.p);
+          gl.activeTexture(gl.TEXTURE14);
+          gl.bindTexture(gl.TEXTURE_2D, scene.texture);
+          gl.activeTexture(gl.TEXTURE13);
+          gl.bindTexture(gl.TEXTURE_2D, cache.depth);
+          gl.uniform1i(cache.same.u.u_now, 14);
+          gl.uniform1i(cache.same.u.u_was, 13);
+          gl.disable(gl.BLEND);
+          gl.disable(gl.DEPTH_TEST);
+          gl.disable(gl.CULL_FACE);
+          gl.disable(gl.STENCIL_TEST);
+          gl.bindVertexArray(null);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
+        cache.key = key;
+      } else {
+        this.cacheStats.direct++;
+        if (this.cache) this.cache.valid = false;
+      }
+    }
     let pr: Prog;
     try {
       pr = this.program(opts.shaderData);
@@ -1552,6 +1723,12 @@ export class FieldLayer implements CustomLayerInterface {
     }
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.STENCIL_TEST);
+    gl.uniform1i(u.u_update, update ? 1 : 0);
+    if (cache) {
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, cache.depth);
+      gl.uniform1i(u.u_was, 3);
+    }
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform1f(u.u_pixAngle, opts.fov / vp[3]);
@@ -1606,7 +1783,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1i(u.u_top32, 10);
     gl.uniform1f(u.u_tmin, this.tmin);
     gl.uniform1i(u.u_elev, 1);
-    for (const { t, clip } of draw) {
+    for (const { t, clip, her } of tiles2) {
       const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
       gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
       const mc = pd.tileMercatorCoords as ArrayLike<number>;
@@ -1672,7 +1849,6 @@ export class FieldLayer implements CustomLayerInterface {
       }
       gl.uniform1i(u.u_mask, t.mask);
       {
-        const her = this.herTexFor(t);
         gl.uniform1i(u.u_herOn, her ? 1 : 0);
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, her);
@@ -1713,6 +1889,19 @@ export class FieldLayer implements CustomLayerInterface {
     }
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
+    if (cache && scene) {
+      // (the depth it's drawn over kept for the next frame's check; the cache over the frame)
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, cache.readFb);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, cache.depthFb);
+      gl.blitFramebuffer(0, 0, cache.w, cache.h, 0, 0, cache.w, cache.h, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, opts.framebuffer);
+      gl.useProgram(cache.over.p);
+      gl.activeTexture(gl.TEXTURE13);
+      gl.bindTexture(gl.TEXTURE_2D, cache.tex);
+      gl.uniform1i(cache.over.u.u_field, 13);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      cache.valid = true;
+    }
     for (const k of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       gl.activeTexture(gl.TEXTURE0 + k);
       gl.bindTexture(gl.TEXTURE_2D, null);
