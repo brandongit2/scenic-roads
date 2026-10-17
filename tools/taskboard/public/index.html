@@ -1375,7 +1375,10 @@
     if (S.dragging || draftTyping() || (why === "data" && pressing)) { S.needRender = true; return; }
     S.needRender = false;
     M = build();
-    if (S.sel && !M.byId.has(S.sel)) { S.sel = null; S.sheet = false; }
+    // (A task just made stays selected through the moment between its write landing and the server's
+    // snapshot showing it; `fresh` is dropped once the selection moves on.)
+    if (S.fresh && S.sel !== S.fresh) S.fresh = null;
+    if (S.sel && !M.byId.has(S.sel) && S.sel !== S.fresh) { S.sel = null; S.sheet = false; }
     const focus = rememberFocus();
     const scrolls = ["tree-scroll", "prio-scroll"].map((id) => $(id).scrollTop);
     renderHeader();
@@ -1705,6 +1708,7 @@
     const host = $("editor");
     const it = S.sel ? M.byId.get(S.sel) : null;
     if (!it) {
+      if (S.sel && S.sel === S.fresh && ED.id === S.sel) return; // (just made, not in the snapshot yet: the details stay as they are)
       if (ED.id !== null || !host.firstChild) { ED.id = null; ED.f = {}; host.replaceChildren(emptyEditor()); }
       return;
     }
@@ -2167,8 +2171,12 @@
     const id = newId("items");
     S.sel = id;
     createWith(id, d.kind, d.parent, text);
-    if (wasFocused) rowEl("tree", id)?.focus({ preventScroll: true });
+    // The new item is selected with its details open, so its description, priority and the rest can be
+    // filled in right away: focus goes to the description (the title is already typed).
+    S.fresh = id;
+    select(id, { open: true });
     rowEl("tree", id)?.scrollIntoView({ block: "nearest" });
+    if (wasFocused) ($("ed-note") && !$("ed-note").readOnly ? $("ed-note") : rowEl("tree", id))?.focus({ preventScroll: true });
   }
   // (A new task's number comes as it's written: its notice says it then.)
   function createWith(id, kind, parent, text) {
