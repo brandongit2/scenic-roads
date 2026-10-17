@@ -28,42 +28,12 @@ pub const SLOPE_V: u32 = 1;
 /// flags rasterised per unit.
 /// 4: the roads' own English (`global/roaden/<u>`); a unit left with no ways drops its outputs.
 pub const UNIT_V: u32 = 4;
-/// 2: hidata with rail lines' identity (`railinfo`) and the zoomed-out summaries (`lsum`).
-pub const PACK_V: u32 = 2;
+/// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
+/// lines, zoomed-out summaries).
+pub const PACK_V: u32 = 3;
 /// lo's own version: lo isn't keyed on pack's, so a change in what they share (hipack's tiling)
 /// bumps both.
 pub const LO_V: u32 = 1;
-
-/// A map tile's key (pack(T)): over the units whose ways come within its 100 km halo (what it
-/// reads), then, after a dot, over its owners alone, the units whose ways come into the tile itself:
-/// its `here` index points into their base packs, way by way. A map update may leave a tile whose halo
-/// changed for later, never one whose owners did (`owners_changed`): its catalog lists the owners'
-/// base packs as they are, which the tile must index.
-fn pack_key(halo: String, owners: String) -> String {
-    format!("{halo}.{owners}")
-}
-
-/// Whether a map tile drawn under `done` is current for `key`. (A key from before tiles had their
-/// owners' part counts by its halo's: a tile whose halo hasn't changed has the same owners.)
-pub fn pack_fresh(done: Option<&str>, key: &str) -> bool {
-    match done {
-        Some(d) if d == key => true,
-        Some(d) => !d.contains('.') && key.split_once('.').is_some_and(|(halo, _)| halo == d),
-        None => false,
-    }
-}
-
-/// Whether a tile drawn under `done` had other owners than `key`'s: one of their base packs changed,
-/// came or went. One never drawn indexes none. (One drawn before keys had their owners' part:
-/// whenever its halo changed.)
-fn owners_changed(done: Option<&str>, key: &str) -> bool {
-    let Some(d) = done else { return false };
-    let owners = |k: &str| k.split_once('.').map(|(_, o)| o.to_string());
-    match owners(d) {
-        Some(o) => owners(key).as_deref() != Some(o.as_str()),
-        None => key.split_once('.').map_or(key, |(halo, _)| halo) != d,
-    }
-}
 
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -1974,8 +1944,8 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         push(&mut work, "trees", trees_now);
         push(&mut work, "trees-lo", lo_now);
         // A map update before the last draws the map tiles that go out with it: those meeting a region
-        // it publishes, those no unit to build when it began is near (their 100 km halo: what they
-        // read), and those whose owners changed (`owners_changed`). The others would be drawn again
+        // it publishes, those whose ways no unit to build when it began reaches (their owners), and
+        // those drawn before (their owners changed). The others would be drawn again
         // as those units are built (a region's border tiles, in every map update); the last map update draws
         // all. (Units to build when it began: those to build now, and those built since.)
         let m_then = crate::out::units_as_of(m, &rd.units);
@@ -1983,8 +1953,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         let each: Vec<&Coverage> = publish.iter().filter_map(|r| updates.each.iter().find(|(id, _)| id == r.id).map(|(_, c)| c)).collect();
         let keep = |x: u32, y: u32| {
             let b = crate::hipack::tile_bounds(6, x, y);
-            let gb = crate::hipack::grow(b, 100.0);
-            last || each.iter().any(|c| c.meets_rect(b)) || !to_build.iter().any(|e| e[0] <= gb[2] && e[2] >= gb[0] && e[1] <= gb[3] && e[3] >= gb[1])
+            last || each.iter().any(|c| c.meets_rect(b)) || !to_build.iter().any(|e| e[0] <= b[2] && e[2] >= b[0] && e[1] <= b[3] && e[3] >= b[1])
         };
         // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for
         // the terrain left (its pieces' mids, its assemblies), slope's for that and the slope left,
@@ -2096,7 +2065,8 @@ fn rail_next(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Ke
 
 /// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
 /// its key, done or not. Both are keyed on what they read, the base packs and road values of the
-/// units whose ways come near: for pack(T) within its 100 km halo, for lo inside its tile. A unit's
+/// units whose ways come into the tile (its owners: pack(T)'s `here` index points into their base
+/// packs, way by way, and its catalog lists them). A unit's
 /// ways lie in its owned extent (`Reach::owned_extent`: long ways such as ferries reach far), or
 /// without a reach within its tile + 20 km. An identical rebuild of a unit (same content names)
 /// reruns neither.
@@ -2115,10 +2085,9 @@ fn pack_lo_targets(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> (Ve
     for (_, _, ext) in &base_units {
         tiles.extend(crate::stage::tiles_in(6, deg(*ext)));
     }
-    // The units whose extent meets a tile's box grown by `km` (pack's halo, what it reads: 100 km;
-    // its owners and lo's: none).
-    let near = |z: u8, x: u32, y: u32, km: f64| -> Vec<String> {
-        let gb = crate::hipack::grow(crate::hipack::tile_bounds(z, x, y), km);
+    // The units whose extent meets a tile's box.
+    let owners = |z: u8, x: u32, y: u32| -> Vec<String> {
+        let gb = crate::hipack::tile_bounds(z, x, y);
         base_units.iter().filter(|(_, _, e)| e[0] <= gb[2] && e[2] >= gb[0] && e[1] <= gb[3] && e[3] >= gb[1]).map(|(_, c, _)| c.clone()).collect()
     };
     let key = |head: String, ins: Vec<String>| {
@@ -2127,9 +2096,9 @@ fn pack_lo_targets(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> (Ve
         let refs: Vec<&str> = all.iter().map(String::as_str).collect();
         h(&refs)
     };
-    let packs: Vec<(String, String)> = tiles.iter().map(|&(x, y)| (format!("6/{x}/{y}"), pack_key(key(format!("pack {PACK_V}"), near(6, x, y, 100.0)), key(format!("pack-owners {PACK_V}"), near(6, x, y, 0.0))))).collect();
+    let packs: Vec<(String, String)> = tiles.iter().map(|&(x, y)| (format!("6/{x}/{y}"), key(format!("pack {PACK_V}"), owners(6, x, y)))).collect();
     let qs: BTreeSet<(u32, u32)> = tiles.iter().map(|&(x, y)| (x >> 3, y >> 3)).collect();
-    let lo = qs.into_iter().map(|(x, y)| (format!("3/{x}/{y}"), key(format!("lo {LO_V}"), near(3, x, y, 0.0)))).collect();
+    let lo = qs.into_iter().map(|(x, y)| (format!("3/{x}/{y}"), key(format!("lo {LO_V}"), owners(3, x, y)))).collect();
     (packs, lo)
 }
 
@@ -2190,7 +2159,7 @@ pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches
 }
 
 /// `roads_chain`, drawing the map tiles (pack(T)) `keep` says, by their z6 tile, and those whose
-/// owners changed (`owners_changed`); the rest wait.
+/// drawn before (whose owners changed); the rest wait.
 #[allow(clippy::too_many_arguments)]
 /// `low` false: the low zooms later (`Publishing::low_later`): no lo packs (the roots are held by
 /// `roots_held`).
@@ -2216,8 +2185,7 @@ fn roads_chain_drawing_low(date: &str, m: &BTreeMap<String, String>, done: &Keys
     let packs: Vec<(String, String)> = packs
         .into_iter()
         .filter(|(t, k)| {
-            let d = done.pack.get(t).map(String::as_str);
-            !pack_fresh(d, k) && (owners_changed(d, k) || Unit::parse(t).is_some_and(|u| keep(u.x, u.y)))
+            stale(&done.pack, t, k) && (done.pack.contains_key(t) || Unit::parse(t).is_some_and(|u| keep(u.x, u.y)))
         })
         .collect();
     if !packs.is_empty() {
@@ -3172,7 +3140,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     out.push(line);
     let (packs, lo) = pack_lo_targets(m, reach);
     let built = m.keys().any(|l| l.starts_with("base/"));
-    let fresh = packs.iter().filter(|(t, k)| pack_fresh(done.pack.get(t).map(String::as_str), k)).count();
+    let fresh = packs.iter().filter(|(t, k)| done.pack.get(t) == Some(k)).count();
     out.push(Item::sized("pack", fresh, built.then_some(packs.len())));
     out.push(sized("lo", &lo, &done.lo, built));
     let roads: Vec<Work> = remaining(done, |d| roads_chain(date, m, d, reach)).into_iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).collect();
@@ -4241,9 +4209,6 @@ pub(crate) mod tests {
         done.record("unit", &[("6/28/16".to_string(), key(&m, "6/28/16"))]);
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
-        let packs = pack_lo_targets(&m, Some(&reach)).0;
-        let now = packs.iter().find(|t| t.0 == "6/29/17").unwrap().1.clone();
-        let (halo, owners) = now.split_once('.').unwrap();
         let drawn = |done: &mut Keys| -> Vec<String> {
             let mut m = m.clone();
             loop {
@@ -4259,22 +4224,11 @@ pub(crate) mod tests {
         };
         // Drawn before with other owners (6/28/16 rebuilt since): drawn again, though a unit to
         // build is near.
-        done.pack.insert("6/29/17".into(), format!("{halo}.0000000000000000"));
+        done.pack.insert("6/29/17".into(), "0000000000000000".into());
         assert!(drawn(&mut done.clone()).contains(&"6/29/17".to_string()));
-        // Its owners as they were, its halo not: it waits.
-        done.pack.insert("6/29/17".into(), format!("0000000000000000.{owners}"));
+        // Never drawn: it waits for the unit to build.
+        done.pack.remove("6/29/17");
         assert!(!drawn(&mut done.clone()).contains(&"6/29/17".to_string()));
-    }
-
-    #[test]
-    fn tile_keys_from_before_owners_count_by_their_halo() {
-        // (Drawn under a key with no owners' part: current while its halo is; owners changed when
-        // it isn't.)
-        assert!(pack_fresh(Some("aaaa.bbbb"), "aaaa.bbbb") && pack_fresh(Some("aaaa"), "aaaa.bbbb"));
-        assert!(!pack_fresh(Some("cccc"), "aaaa.bbbb") && !pack_fresh(Some("aaaa.cccc"), "aaaa.bbbb") && !pack_fresh(None, "aaaa.bbbb"));
-        assert!(!owners_changed(Some("aaaa"), "aaaa.bbbb") && owners_changed(Some("cccc"), "aaaa.bbbb"));
-        assert!(!owners_changed(Some("cccc.bbbb"), "aaaa.bbbb") && owners_changed(Some("aaaa.cccc"), "aaaa.bbbb"));
-        assert!(!owners_changed(None, "aaaa.bbbb"));
     }
 
     #[test]
