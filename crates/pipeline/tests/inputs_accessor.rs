@@ -1,10 +1,11 @@
 //! The drop boxes are read only through their accessor (docs/inputs.md §7.1): `pipeline::inputs`
 //! (`inputs::open`, and the gate's check job, `inputs::gate::run`), and in Python `dem/inputs.py`'s
 //! `arg`. Every item outside `#[cfg(test)]` code whose text names a drop box (`MARKERS`, and each
-//! gate unit's name) calls the accessor, or is listed in `EXEMPT` by name with why: the backups, GC's
-//! never-swept list, the records' names, and the readers each input's task moves behind the
-//! accessor (#135–#145, removing their exemptions; #146 checks none is left). A new reader of a drop box fails here
-//! until it's routed through the accessor; an exemption that no longer matches a line fails too, so
+//! gate unit's name) calls the accessor, or is listed in `EXEMPT` by name with why: no reader, only
+//! the Regions panel's writes, the backups, GC's never-swept list, the controls beside the drop boxes
+//! (`inputs/hold-catalog`, `inputs/keys.env`), and words that aren't paths (the `inputs` step's
+//! name, a task spec's "inputs", log lines). A new reader of a drop box fails here until it's routed
+//! through the accessor; an exemption that no longer matches a line fails too, so
 //! the list can't go stale. At run time the NAS root the steps get refuses a drop-box path asked of
 //! it by content name (`out::Out::path`).
 

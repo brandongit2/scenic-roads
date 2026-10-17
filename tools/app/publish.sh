@@ -87,6 +87,10 @@ if security find-identity -p codesigning 2>/dev/null | grep -q '"Scenic Code Sig
 else
   echo "publish: no \"Scenic Code Signing\" certificate on this Mac: signing ad hoc (a firewall's allow won't outlive this update)"
 fi
+# The guards first (tools/app/guards.sh, docs/inputs.md §7): the drop boxes read only through their
+# accessor, no data source named in the app's code, and the Python steps loaded from the app's dem/
+# in a stand-in NAS root whose drop boxes can't be read (and checked by pyflakes).
+zsh tools/app/guards.sh || exit 1
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 # Room for the files the tests open at once: a session over SSH starts with 256, which the tests
 # run in parallel go past (8 Oct: 15 failed so on the M4, all passing at 8192). Their whole
@@ -100,10 +104,10 @@ tests_ok=0
 # translations' checker.)
 export SCENIC_PUBLISH=1
 cargo test -q -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
-# (And the pipeline's whole-crate checks: every cache read through the accessor, every drop box
-# read through the gate's (docs/inputs.md §7.1), the records written only through Out (docs/pool.md
-# §7.3), every Wikimedia request through the budgets' proxy (§7.7), the Python steps' timer.)
-cargo test -q -p pipeline --test cache_accessor --test inputs_accessor --test write_sets --test budgets --test timings_python >> $tests_log 2>&1 || tests_ok=$?
+# (And the pipeline's whole-crate checks: every cache read through the accessor, the records written
+# only through Out (docs/pool.md §7.3), every Wikimedia request through the budgets' proxy (§7.7),
+# the Python steps' timer. The drop boxes' and the sources' guards ran first.)
+cargo test -q -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python >> $tests_log 2>&1 || tests_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
@@ -140,32 +144,6 @@ for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/road
 done
 [[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }
 kill $pid; wait $pid 2>/dev/null || true
-# The Python steps the build agent runs load from the app's dem/, which has nothing of the
-# repository around it: each must import there.
-pyt=$(mktemp -d)
-mkdir -p $pyt/dem
-git ls-files dem | while read f; do cp -X "$f" "$pyt/$f"; done
-steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
-(cd $pyt/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/"; rm -rf $pyt; exit 1; }
-# (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes, a version
-# kept, reads them and the modules of dem/ they import.)
-read_too=(${(f)"$(cd $pyt/dem && python3 -c '
-import ast, sys
-from pathlib import Path
-todo, seen = sys.argv[1:], set()
-while todo:
-    m = todo.pop()
-    if m in seen or not Path(m + ".py").exists():
-        continue
-    seen.add(m)
-    for n in ast.walk(ast.parse(Path(m + ".py").read_text())):
-        if isinstance(n, ast.Import):
-            todo += [a.name.split(".")[0] for a in n.names]
-        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
-            todo.append(n.module.split(".")[0])
-print("\n".join(sorted(seen)))' $steps)"})
-(cd $pyt/dem && uvx --quiet --from 'pyflakes==4.0.2' pyflakes ${read_too/%/.py}) || { echo "pyflakes finds a mistake in a Python step or what it imports"; rm -rf $pyt; exit 1; }
-rm -rf $pyt
 # (The tree as it was built: a change or a commit made meanwhile would name a version it isn't.)
 [[ -z $(unclean) ]] || { echo "the tree changed while publishing: publish again"; unclean | head -20; exit 1; }
 [[ $(git rev-parse --short HEAD) == $head ]] || { echo "a commit was made while publishing ($head, now $(git rev-parse --short HEAD)): publish again"; exit 1; }

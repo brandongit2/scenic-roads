@@ -17,8 +17,7 @@ a **unit** of the input check. (In the code the mechanism keeps the older word "
 
 Built: the input check and its units for regions, languages, translations, descriptions, heritage
 registers and matches, timetable feeds and static GTFS, elevation datasets (the roads' and the 3D
-terrain's), the remaining sources (§6.9); the accessor guard (§7.1). Planned: the source-name guard
-(§7.2). Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md`
+terrain's), the remaining sources (§6.9); the guards (§7). Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md`
 (files), `docs/pool.md` (lead, jobs, journal), `docs/phase5.md` (the heritage chain).
 
 ## 1. Constraints
@@ -1123,8 +1122,9 @@ get declarations once a step reads them.
 
 Built on the pattern of `crates/pipeline/tests/cache_accessor.rs`: one accessor the code must go
 through, a test that finds every way around it, and an exemption list (item, anchor, reason) whose
-every entry must match a line (`every_exemption_matches_a_line`). Run before every publish
-(`tools/app/publish.sh` runs the pipeline's tests; a failure stops publishing).
+every entry must match a line (`every_exemption_matches_a_line`). Both run before every publish,
+first, before the build (`tools/app/guards.sh`, which `tools/app/publish.sh` runs; a failure stops
+publishing; the tests' whole output in `~/Library/Logs/scenic/guards-<time>.log`).
 
 ### 7.1 Drop boxes only through the accessor
 
@@ -1135,22 +1135,57 @@ every entry must match a line (`every_exemption_matches_a_line`). Run before eve
   function by its block, a `const` or `static`, or the file's top level) whose code names a drop box
   (`"inputs`, `join("inputs")`, `/inputs/`, `"translations`, `}/translations`, `"descriptions`,
   `}/descriptions`, each unit's name; `sources/inputs` aside) must call an accessor (`inputs::open(`,
-  `inputs::gate::run(`) or be exempt by item name and line anchor with a reason (the backups, GC's
-  never-swept list, the records' names, `keys.env`). The scanner's own rules have a test.
+  `inputs::gate::run(`) or be exempt by item name and line anchor with a reason. No reader is
+  exempt: only the Regions panel's writes, the backups, GC's never-swept list, the controls
+  (`inputs/hold-catalog`, `inputs/keys.env`) and words that aren't paths (the `inputs` step's name, a
+  task spec's "inputs", log lines). The scanner's own rules have a test.
 - **Python:** steps receive input paths on their command line. `dem/inputs.py`'s `arg(path)` refuses
   a path not under `sources/inputs/`, `sources/fetched/` or the job's scratch, and the same test
   scans `dem/**/*.py` (functions by indentation) by the same rules.
-- Planned: `publish.sh`'s Python load check run with a stand-in NAS root whose drop boxes are
-  unreadable.
+- **The stand-in root:** `tools/app/guards.sh` loads every Python step the agent runs from the
+  app's `dem/` (its tracked files alone) placed in a stand-in NAS root whose drop boxes
+  (`inputs/`, `inputs/sources/`, `inputs/elevation/`, `translations/`, `descriptions/`) hold a file
+  each and can't be read, then checks them with pyflakes: a step that reads a drop box as it loads,
+  by a path the scanner doesn't see, fails there.
 
-### 7.2 No source names in the app's code (planned, #146)
+### 7.2 No source names in the app's code
 
-A test failing when a data source's name or URL appears in `crates/` (outside tests), `dem/`,
-`web/src/`, `tools/` (not `tools/taskboard/`) or `scripts/`; `producers/` is exempt. Markers: URLs
-other than localhost, tailnet and documentation hosts and spec links in comments; the hosts and names
-of every declared source. Allowed: formats and protocols, OSM itself (its tags are the map's schema),
-links that open a place in another viewer, and Wikipedia and Wikidata links built from an item.
-Every hit fixed or exempted with its reason. Until then §9 lists what's left.
+`crates/pipeline/tests/source_names.rs` fails when a data source's address or name is in the code
+(not a comment) of `crates/` (tests aside: `#[cfg(test)]` items, `tests.rs` files, `tests/`),
+`dem/`, `web/src/`, `tools/` (not `tools/taskboard/`) or `scripts/` (Python's `test_…` functions and
+docstrings aside). `producers/` is exempt: the declarations are made and staged there.
+
+- **Markers, derived from the declarations staged in `producers/`** (each `.toml` but
+  `pyproject.toml`), so a new declaration adds its own: the hosts of its `source`, `url`/`urls` and
+  its staged index's files' URLs (a path-style S3 URL's host with its bucket, the host being
+  shared); its `name` and `credit`, whole, and up to their first `,` `(` `:` `;` when that's two
+  words or more. And any other URL, but this machine's, the tailnet's, the documentation names
+  (`example.*`, `.test`, `.invalid`, `192.0.2.*`) and a host of one label.
+- **Allowed:** the W3C's namespaces (a format's); OpenStreetMap (its tags are the map's schema; its
+  links open a feature or a place there); Wikidata's and Wikipedia's pages opened from an item;
+  IRIs in angle brackets (a SPARQL query's vocabulary, and the sites it names as nodes).
+- **Exempt**, by file, item and anchor, with why (`EXEMPT`):
+
+| Where | Why |
+|---|---|
+| `rules::CREDITS` (the declared sources' entries, the CanVec licence's notice) | the credits' fallback (§4.8): a declared source's entry is replaced by its declaration's credit once one is accepted, and stands in until then, so a catalog never lacks a licence's notice |
+| `lakefill::run::fill`'s metadata | part of the fill's content name: changed, the fill and the water, terrain and catalog reading it would be made again for nothing |
+| `dem/leaftype.py`'s Europe square tag | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
+| `coord::WEB_HOSTS` | the coordinator's allowlist of the data servers a worker's task may read through it (docs/workers.md §3); derived from the declarations' hosts is planned (§5.2) |
+| `budget::QUERY_HOSTS`, `QUERY_DOMAINS`; `dem/budget.py`'s | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
+| `dem/bldfetch.py`'s S3 listing namespace | the protocol's |
+| `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
+| `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
+| `tools/nas/fetch-planet.sh`'s mirrors | kept in code (§6.9, OSM planet): the test checks the row says so (`KEPT`) |
+| `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
+| `tools/app/install.sh`'s uv link | documentation, in a message |
+
+Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`), the geoid grids
+(nothing reads them), `bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) and
+`dem/bldmeasure.py`'s store folders name no host, declared name or credit, so none needs an
+exemption. Short names (`NALCMS`, `Terrarium`, the tree tiles' `source` string) aren't markers:
+they're also the formats' and the stores' words. The scanner's own rules have a test
+(`the_scanner_finds_sources_by_their_declarations`).
 
 ## 8. How each input is made
 
@@ -1167,7 +1202,8 @@ Every hit fixed or exempted with its reason. Until then §9 lists what's left.
 
 ## 9. What still names a source in code
 
-What the planned work (§6.9, §7.2) still has to move out. **D:** becomes a declaration
+What could still move out of the code: names the guard (§7.2) doesn't take for a source's (short
+names, store paths, help text) or exempts. **D:** becomes a declaration
 field. **P:** moves to a producer. Configuration and generic code (formats, protocols, road network
 rules, storey heights per country, OSM name heuristics, the Wikidata properties asked for, the user
 agent) stay.
@@ -1176,7 +1212,7 @@ agent) stay.
   derived), and the server's `credits_of` fallback; `roadcore::DemSource`'s labels (D, the datasets'
   names); the tree tiles' meta source string (D); source lines in web/src's layer help and popups
   (trees.ts, buildings.ts, ui/buildings.ts, ferries.ts, overlays.ts, details.ts: D, from the
-  catalog's credits); `web/src/basemap.ts`'s unused MapLibre attribution strings (to delete).
+  catalog's credits).
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
   credit in `rules::CREDITS` the base's declaration takes over once accepted; the densification
   boxes in `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).
@@ -1186,6 +1222,6 @@ agent) stay.
   folders and estimates (P: a measuring tool run by hand, not a build step). `rules::CREDITS`'
   Overture and GHSL entries, which their declarations' credits replace once accepted (§4.8). `bld/fill.rs`'s `ESTIMATES` stays
   the fill's rule (§6.9).
-- **Others:** `dem/budget.py`'s and `budget`'s metered hosts (the polite-use budget, by host).
-- **Kept by design:** `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not
+- **Kept by design:** `dem/budget.py`'s and `budget`'s metered hosts (the polite-use budget, by
+  host: §7.2); `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not
   change, docs/phase5.md, Ids); `pipeline::legacy` (a name for live code).
