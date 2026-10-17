@@ -6,7 +6,8 @@ import { TwoFingers, type Pt } from './twofinger';
  * Trackpad-first navigation, anchored at the cursor:
  *   two-finger drag            → pan         (wheel events without modifiers; the ground at the
  *                                              view centre moves with the fingers)
- *   click-drag                 → pan         (the grabbed ground stays under the pointer)
+ *   click-drag                 → pan         (the grabbed ground stays under the pointer; it glides
+ *                                              on after a quick release, GLIDE_TAU_MS)
  *   pinch                      → zoom        (wheel + ctrlKey in Chromium/Firefox, GestureEvent in Safari),
  *                                              carrying on briefly after the fingers stop (PINCH_TAU_MS)
  *   ⌘ Cmd + two-finger drag    → zoom        (vertical)
@@ -29,6 +30,17 @@ const PINCH_TAU_MS = 110;
 const PINCH_SAMPLE_MS = 70;
 const PINCH_END_MS = 45;
 const PINCH_MAX_DZ = 0.9;
+/** Drag glide: a left-drag's (or one finger's) pan carries on after release at the pointer's speed
+ * over its last GLIDE_SAMPLE_MS, decaying exponentially with time constant GLIDE_TAU_MS (it
+ * travels v·τ more, never overshooting); none if the pointer was held still for GLIDE_HELD_MS
+ * before release or left slower than GLIDE_MIN_SPEED (px/s); the speed is capped at
+ * GLIDE_MAX_SPEED; the glide ends below GLIDE_END_SPEED. */
+const GLIDE_TAU_MS = 280;
+const GLIDE_SAMPLE_MS = 60;
+const GLIDE_HELD_MS = 50;
+const GLIDE_MIN_SPEED = 120;
+const GLIDE_MAX_SPEED = 3500;
+const GLIDE_END_SPEED = 15;
 /** Zoom levels per pixel of a ⌘ two-finger scroll (the trackpad's own momentum carries it on). */
 const CMD_ZOOM_PER_PX = 0.0045;
 /** Firefox on macOS reports a mouse wheel notch as this many pixels (as MapLibre's scroll zoom). */
@@ -170,6 +182,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   const stopInertia = () => {
     cancelAnimationFrame(inertia);
     inertia = 0;
+    stopGlide();
   };
   /** A pinch's zoom step (a trackpad's: released when no step comes for PINCH_END_MS; a touch
    * screen's, `timed` false: when the fingers lift). */
@@ -213,6 +226,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     'wheel',
     (e: WheelEvent) => {
       e.preventDefault();
+      stopGlide(); // a scroll takes over from a drag's glide
       const now = performance.now();
       const rect = el.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
@@ -265,7 +279,10 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   // after a drag here its click would still fire: the click that ends a drag is dropped before
   // MapLibre sees it (capture on the container, which holds the canvas).
   let dragged = false;
-  el.addEventListener('pointerdown', () => (dragged = false), true);
+  el.addEventListener('pointerdown', () => {
+    dragged = false;
+    stopGlide(); // a new touch or click stops a drag's glide
+  }, true);
   el.addEventListener('click', (e) => {
     if (!dragged) return;
     dragged = false;
@@ -332,7 +349,73 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   // stops the mouse events.
   // A press soon after a tap, near it (tap then drag): dragging zooms about the tapped point.
   type TapDrag = { a: Anchor | null; x: number; y: number; lastY: number };
-  let hold: { id: number; a: Anchor; own: boolean; moved: boolean; x0: number; y0: number; tapDrag?: TapDrag } | null = null;
+  let hold: { id: number; a: Anchor; own: boolean; moved: boolean; x0: number; y0: number; tapDrag?: TapDrag; trail: [number, number, number][] } | null = null;
+  /** The drag's pan step: the ground `a` seen at (x, y). */
+  const dragTo = (a: Anchor, own: boolean, x: number, y: number) => {
+    if (!own || !panTo(map, a, x, y)) setLocationAt(map, a.ll, x, y);
+  };
+
+  // ---- drag glide ----
+  // After a drag's release the grabbed ground carries on along the pointer's path, as if the
+  // pointer kept moving at its release speed, decaying (GLIDE_TAU_MS). Each frame is the same pan
+  // step as the drag's. It stops on any new pointer, wheel or pinch (stopInertia), and when
+  // anything else moves the camera (a fly-to, the self-benchmark's scripted views) or the map's
+  // limits hold it still. Finer terrain under the grabbed point re-picks it where it is seen.
+  let glide = 0;
+  let glideCam: string | null = null;
+  const camKey = () => {
+    const c = map.getCenter();
+    return `${c.lng},${c.lat},${map.getZoom()},${map.getBearing()},${map.getPitch()}`;
+  };
+  function stopGlide() {
+    cancelAnimationFrame(glide);
+    glide = 0;
+    glideCam = null;
+  }
+  const startGlide = (a: Anchor, own: boolean, trail: [number, number, number][], tUp: number) => {
+    stopGlide();
+    const last = trail[trail.length - 1];
+    if (!last || tUp - last[0] > GLIDE_HELD_MS) return; // held still before release
+    const recent = trail.filter(([t]) => last[0] - t <= GLIDE_SAMPLE_MS);
+    const first = recent[0];
+    const span = last[0] - first[0];
+    if (span < 8) return;
+    let vx = (last[1] - first[1]) / span, vy = (last[2] - first[2]) / span; // px per ms
+    const sp = Math.hypot(vx, vy) * 1000;
+    if (sp < GLIDE_MIN_SPEED) return;
+    if (sp > GLIDE_MAX_SPEED) {
+      vx *= GLIDE_MAX_SPEED / sp;
+      vy *= GLIDE_MAX_SPEED / sp;
+    }
+    const rect = el.getBoundingClientRect();
+    let x = last[1] - rect.left, y = last[2] - rect.top;
+    let t0 = performance.now();
+    glideCam = camKey();
+    const tick = (now: number) => {
+      glide = 0;
+      if (glideCam !== camKey()) return stopGlide(); // something else moved the camera
+      const dt = Math.min(48, now - t0);
+      t0 = now;
+      const k = Math.exp(-dt / GLIDE_TAU_MS);
+      const f = GLIDE_TAU_MS * (1 - k); // ∫ of the decaying speed over dt
+      // (The grabbed point off the ground where it is seen now: picked again there.)
+      if (offGround(a, x, y)) {
+        const b = anchorAt(map, x, y);
+        if (!b) return stopGlide();
+        a = b;
+      }
+      x += vx * f;
+      y += vy * f;
+      vx *= k;
+      vy *= k;
+      dragTo(a, own, x, y);
+      const key = camKey();
+      if (key === glideCam || Math.hypot(vx, vy) * 1000 < GLIDE_END_SPEED) return stopGlide(); // a limit, or settled
+      glideCam = key;
+      glide = requestAnimationFrame(tick);
+    };
+    glide = requestAnimationFrame(tick);
+  };
   el.addEventListener('pointerdown', (e: PointerEvent) => {
     if (e.pointerType === 'touch') {
       downs++;
@@ -352,7 +435,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     const rect = el.getBoundingClientRect();
     const a = anchorAt(map, e.clientX - rect.left, e.clientY - rect.top);
     if (!a) return; // sky
-    hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY };
+    hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY, trail: [] };
     if (e.pointerType === 'touch' && lastTap && performance.now() - lastTap.t < DOUBLE_MS) {
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       if (Math.hypot(px - lastTap.x, py - lastTap.y) < 30) hold.tapDrag = { a: anchorAt(map, lastTap.x, lastTap.y), x: lastTap.x, y: lastTap.y, lastY: py };
@@ -391,6 +474,9 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     }
     const rect = el.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const now = performance.now();
+    hold.trail.push([now, e.clientX, e.clientY]);
+    while (hold.trail.length > 2 && now - hold.trail[0][0] > GLIDE_SAMPLE_MS + GLIDE_HELD_MS) hold.trail.shift();
     const td = hold.tapDrag;
     if (td) {
       // Tap then drag: down zooms in, up out (MapLibre's rate, a level per 128 px), about the
@@ -400,7 +486,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
       td.lastY = y;
       return;
     }
-    if (!hold.own || !panTo(map, hold.a, x, y)) setLocationAt(map, hold.a.ll, x, y);
+    dragTo(hold.a, hold.own, x, y);
   });
   const release = (e: PointerEvent) => {
     touches.delete(e.pointerId);
@@ -423,6 +509,9 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
         tapUp = now;
       }
     }
+    // A drag (not a tap-drag zoom) released while moving glides on; a second finger's landing
+    // (letGo, no pointerup) doesn't.
+    if (e.type === 'pointerup' && hold.moved && !hold.tapDrag) startGlide(hold.a, hold.own, hold.trail, performance.now());
     letGo();
   };
   el.addEventListener('pointerup', release);
