@@ -2701,6 +2701,12 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Item {
     pub step: String,
+    /// Its step's title and the noun its targets are counted in (crate::agent::steps), filled as
+    /// the lines are folded: readers without the table (the menu bar) say it so.
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub noun: String,
     #[serde(default)]
     pub done: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2711,11 +2717,11 @@ pub struct Item {
 
 impl Item {
     fn sized(step: &str, done: usize, total: Option<usize>) -> Item {
-        Item { step: step.into(), done, total, left: total.map(|t| t.saturating_sub(done)) }
+        Item { step: step.into(), done, total, left: total.map(|t| t.saturating_sub(done)), ..Default::default() }
     }
 
     fn left(step: &str, left: Option<usize>) -> Item {
-        Item { step: step.into(), done: 0, total: None, left }
+        Item { step: step.into(), left, ..Default::default() }
     }
 
     /// Whether it's sized: its targets known.
@@ -2729,8 +2735,9 @@ impl Item {
 }
 
 /// One stage's line of the build's checklist (the status, the menu bar, the build page): its steps'
-/// items, summed. `done` and `total` count the sized items' targets, `left` every item's left; all
-/// three None (but `done`) while an item of it isn't sized yet.
+/// items, summed. `done` and `total` count the targets of the items sharing the line's noun
+/// (`unit`: the first sized item's; the other nouns' items are said apart, `counts`), `left` every
+/// item's targets left; `total` and `left` None while an item of it isn't sized yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Line {
     /// The stage's id (crate::agent::steps::STAGES).
@@ -2771,6 +2778,41 @@ impl Line {
     pub fn finished(&self) -> bool {
         self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
     }
+
+    /// Its counts in words, a noun at a time in its items' order: "398 of 398 tiles", "18 of 18
+    /// areas", "2 runs left"; "done" when nothing is left, "to come" while it isn't sized. (The
+    /// line's own `done`/`total` are the first noun's: what readers of the line alone show.)
+    pub fn counts(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut nouns: Vec<&str> = Vec::new();
+        for i in &self.items {
+            let noun = super::steps::noun(&i.step);
+            if nouns.contains(&noun) {
+                continue;
+            }
+            nouns.push(noun);
+            let of: Vec<&Item> = self.items.iter().filter(|j| super::steps::noun(&j.step) == noun).collect();
+            if of.iter().any(|j| j.total.is_some()) {
+                if of.iter().all(|j| j.total.is_some()) {
+                    let (d, t): (usize, usize) = (of.iter().map(|j| j.done).sum(), of.iter().map(|j| j.total.unwrap_or(0)).sum());
+                    out.push(format!("{d} of {t} {noun}s"));
+                } else {
+                    out.push(format!("{noun}s to come"));
+                }
+            } else if of.iter().all(|j| j.left.is_some()) {
+                let l: usize = of.iter().map(|j| j.left.unwrap_or(0)).sum();
+                if l > 0 {
+                    out.push(format!("{l} {noun}{} left", if l == 1 { "" } else { "s" }));
+                }
+            } else {
+                out.push(format!("{noun}s to come"));
+            }
+        }
+        if out.is_empty() {
+            out.push(if self.finished() { "done".into() } else { "to come".into() });
+        }
+        out
+    }
 }
 
 /// The checklist's lines from its items: a line per stage with an item, in the stages' order
@@ -2787,9 +2829,15 @@ pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap
         if its.is_empty() {
             continue;
         }
+        for i in its.iter_mut() {
+            i.title = steps::title(&i.step).into_owned();
+            i.noun = steps::noun(&i.step).into();
+        }
         let known = its.iter().all(Item::known);
-        let sized: Vec<&Item> = its.iter().filter(|i| i.total.is_some()).collect();
-        let unit = its.iter().find(|i| i.total.is_some()).or(its.first()).map(|i| format!("{}s", steps::noun(&i.step))).unwrap_or_default();
+        // (The line's noun: the first sized item's, else the first item's; its count the items of
+        // that noun, so tiles and areas are never summed as one.)
+        let noun = its.iter().find(|i| i.total.is_some()).or(its.first()).map(|i| steps::noun(&i.step)).unwrap_or("run");
+        let sized: Vec<&Item> = its.iter().filter(|i| i.total.is_some() && steps::noun(&i.step) == noun).collect();
         out.push(Line {
             id: st.id.into(),
             what: st.title.into(),
@@ -2797,7 +2845,7 @@ pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap
             done: sized.iter().map(|i| i.done).sum(),
             total: (known && !sized.is_empty()).then(|| sized.iter().map(|i| i.total.unwrap_or(0)).sum()),
             left: known.then(|| its.iter().map(|i| i.left.unwrap_or(0)).sum()),
-            unit: if its.iter().all(|i| steps::row(&i.step).is_some_and(|r| r.scope == Scope::World)) { "runs".into() } else { unit },
+            unit: if its.iter().all(|i| steps::row(&i.step).is_some_and(|r| r.scope == Scope::World)) { "runs".into() } else { format!("{noun}s") },
             items: its,
             next: next.get(st.id).cloned().unwrap_or_default(),
             note: notes.get(st.id).cloned(),
@@ -4367,12 +4415,13 @@ pub(crate) mod tests {
         assert_eq!(line(&l, "buildings").total, None, "no sources asked about: not known");
         assert_eq!(line(&l, "trains").left, None, "no rail sources: not known");
         let pieces = coverage_tiles(&c).into_values().flatten().count();
-        assert_eq!((line(&l, "terrain").done, line(&l, "terrain").total), (0, Some(pieces + 1)), "its pieces and their assembly");
+        assert_eq!((line(&l, "terrain").done, line(&l, "terrain").total, line(&l, "terrain").left), (0, Some(pieces), Some(pieces + 1)), "its pieces counted as the line's, its assembly apart; everything left");
         assert_eq!((item(&l, "terrain").total, item(&l, "terrain-lo").total), (Some(pieces), Some(1)), "each step its own line");
+        assert_eq!(line(&l, "terrain").counts(), [format!("0 of {pieces} tiles"), "0 of 1 areas".to_string()], "a noun at a time");
         assert_eq!((line(&l, "roads").done, line(&l, "roads").total, line(&l, "roads").unit.as_str()), (0, Some(1), "tiles"));
         assert_eq!(line(&l, "tiles").total, None, "no tiles built: the map tiles aren't known yet");
         assert_eq!(line(&l, "sites").left, Some(1));
-        assert_eq!((line(&l, "trees").done, line(&l, "trees").total), (0, Some(3)), "two pieces and their assembly");
+        assert_eq!((line(&l, "trees").done, line(&l, "trees").total, line(&l, "trees").left), (0, Some(2), Some(3)), "two pieces, their assembly apart");
         // Every line names every step of its stage, its items in the table's order.
         assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain", "terrain-lo"]);
         assert_eq!(line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(), ["terrain", "terrain-lo"]);
@@ -4400,6 +4449,8 @@ pub(crate) mod tests {
         assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
         assert!(roads.next.iter().all(|n| !n.is_empty() && n != "Catalog"), "{:?}", roads.next);
         assert_eq!(roads.unit, "runs");
+        assert_eq!(roads.counts(), [format!("{} runs left", roads.left.unwrap())]);
+        assert_eq!(line(&l, "terrain").counts(), [format!("{pieces} of {pieces} tiles"), "1 of 1 areas".to_string()], "a done stage still says its counts");
         assert_eq!(line(&l, "publish").left, Some(1));
         // Held for review: publishing is the held catalog.
         let k = catalog_key(&m, &BTreeMap::new(), &["r".to_string()]);
@@ -5136,8 +5187,9 @@ pub(crate) mod tests {
         let cl = checklist(&c, date, &m, &done, &inputs, false);
         let b = cl.iter().find(|x| x.id == "buildings").unwrap();
         let tt = bld_targets(&c, &m, &inputs);
-        assert_eq!((b.done, b.total), (0, Some(tt.prep.len() + tt.tiles.len() + tt.lo.len())));
+        assert_eq!((b.done, b.total, b.unit.as_str()), (0, Some(tt.prep.len() + tt.tiles.len()), "tiles"), "its tiles the line's, its areas and the fetch's run apart");
         assert_eq!(b.left, Some(1 + tt.prep.len() + tt.tiles.len() + tt.lo.len()), "the fetch's run too");
+        assert_eq!(b.counts(), ["1 run left".to_string(), format!("0 of {} tiles", tt.prep.len() + tt.tiles.len()), format!("0 of {} areas", tt.lo.len())]);
         assert_eq!(b.next[0], "Buildings' sources");
         assert!(b.next[1].starts_with("Buildings read: "));
         // Its steps' targets go by tile in the jobs' names.
@@ -5145,6 +5197,7 @@ pub(crate) mod tests {
         let st = fold(&checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(st.iter().find(|x| x.id == "buildings").unwrap().shared.as_deref(), Some("Buildings read and 3D buildings"));
         assert!(st.iter().all(|x| x.left.is_none() && x.total.is_none() && !x.finished()), "to come: not sized");
+        assert_eq!(st.iter().find(|x| x.id == "roads").unwrap().counts(), ["tiles to come"]);
     }
 
     #[test]

@@ -119,17 +119,21 @@ stage's colour): not a step.
 ## 4. The checklist
 
 The agent's status carries the build to the end as a line per stage (`agent::build::Line`), each
-with an item per step counted (`agent::build::Item`): the step's targets `done` of `total`, or
-`left` (a worldwide step's run: 1 or 0; a chain step's: the targets of its works to come), or
-neither while it can't be sized yet ("to come"). A line sums its items (`done`, `total`, `left`;
-none while an item isn't sized), names every step of its stage (`steps`), the noun its targets are
-counted in (`unit`), its jobs to come in order (`next`), why it waits or which Mac is on it
-(`note`), and which of its steps any member may take (`shared`). `agent::build::fold` makes the
-lines from the items; the planet's and its worldwide steps' items are the agent's own
-(`Agent::checklist`), the regions' `build::checklist`'s.
+with an item per step counted (`agent::build::Item`: its step, title and noun, and its targets
+`done` of `total`, or `left` (a worldwide step's run: 1 or 0; a chain step's: the targets of its
+works to come), or neither while it can't be sized yet, "to come"). A line names every step of its
+stage (`steps`); its own `done` and `total` count the items of one noun (`unit`: the first sized
+item's), never tiles and areas as one, and its `left` every item's targets left (none while an item
+isn't sized); its counts in words are a noun at a time ("398 of 398 tiles · 18 of 18 areas", "2
+runs left": `Line::counts`, said the same by the page and the menu bar); then its jobs to come in
+order (`next`), why it waits or which Mac is on it (`note`), and which of its steps any member may
+take (`shared`). `agent::build::fold` makes the lines from the items; the planet's and its
+worldwide steps' items are the agent's own (`Agent::checklist`), the regions' `build::checklist`'s.
 
-The same lines are shown three ways, each the same shape: the build page's stage cards, the menu
-bar's panel (which is the page) and its menu, and `scenic status`'s "To the end".
+The same lines are shown three ways, each the same shape: the build page's stage cards (§5), the
+menu bar's menu (`tools/status`: "To the end", a line per stage with its counts, under it a line
+per step with its count, then its jobs to come; its panel is the page itself), and `scenic status`'s
+"To the end" (the same lines, a step's place marked ⇄).
 
 ## 5. The build page
 

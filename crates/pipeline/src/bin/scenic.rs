@@ -449,7 +449,7 @@ fn status(args: &[String]) -> Result<()> {
         for l in &st.checklist {
             let running = now.iter().any(|n| l.steps.contains(n));
             let mark = if l.finished() { "✓" } else if running { "▸" } else { "○" };
-            println!("  {mark} {}: {}{}", l.what, count_line(l.done, l.total, l.left, &l.unit), l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default());
+            println!("  {mark} {}: {}{}", l.what, l.counts().join(" · "), l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default());
             if l.finished() {
                 continue;
             }
@@ -554,12 +554,12 @@ fn steps(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// A checklist line's count: "12 of 480 tiles", "3 runs left", "done", or "to come" (not sized yet).
+/// A step's line's count: "12 of 480 tiles", "3 runs left", "done", or "to come" (not sized yet).
 fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str) -> String {
     match (total, left) {
-        (Some(t), _) if t > 0 => format!("{done} of {t} {noun}").trim_end().to_string(),
+        (Some(t), _) if t > 0 => format!("{done} of {t} {noun}"),
         (_, Some(0)) => "done".into(),
-        (_, Some(l)) => format!("{l} {} left", if l == 1 { noun.trim_end_matches('s') } else { noun }).replace("  ", " "),
+        (_, Some(l)) => format!("{l} {} left", if l == 1 { noun.trim_end_matches('s') } else { noun }),
         _ => "to come".into(),
     }
 }

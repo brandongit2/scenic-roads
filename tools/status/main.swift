@@ -92,7 +92,7 @@ struct Status: Decodable {
     let built: [String: Built]?
     /// The build to the end (agents from 2026-10-03 on).
     let checklist: [Step]?
-    /// Other Macs helping, building units (agents from 2026-10-04 on).
+    /// Other Macs helping, building tiles (agents from 2026-10-04 on).
     let helpers: [Helper]?
     /// Every worker the coordinator heard from lately: helpers and web pages (agents from 2026-10-05 on).
     let workers: [Worker]?
@@ -445,9 +445,10 @@ struct Helper: Decodable {
     let here: Bool?
 }
 
-/// A step of the build to the end: done of total (total unknown until an earlier step makes it), or
-/// for a group of single jobs how many are left; its jobs left by name (`next`, the first the one
-/// under way), and why it waits or which Mac is on it (`note`).
+/// A stage of the build to the end (docs/pipeline.md §4; agents before it: a group of steps): its
+/// targets done of total (total unknown until an earlier step makes it) in its noun (`unit`), or
+/// how many are left; its steps' lines (`items`, agents from 2026-10-17 on); its jobs left by name
+/// (`next`, the first the one under way), and why it waits or which Mac is on it (`note`).
 struct Step: Decodable {
     let what: String
     let steps: [String]
@@ -455,6 +456,7 @@ struct Step: Decodable {
     let total: Int?
     let left: Int?
     let unit: String?
+    let items: [Item]?
     let next: [String]?
     let note: String?
     /// Which of its jobs a helper may do: "all", or the parts by name.
@@ -464,6 +466,55 @@ struct Step: Decodable {
         if let l = left { return l == 0 }
         if let t = total, let d = done { return d >= t }
         return false
+    }
+
+    /// Its counts in words, a noun at a time in its items' order ("398 of 398 tiles", "18 of 18
+    /// areas", "2 runs left"), as the build page and `scenic status` say them; an agent's before
+    /// items: its own count.
+    var counts: [String] {
+        guard let items, !items.isEmpty else {
+            if let t = total, let d = done, t > 0 { return ["\(grouped(Double(d))) of \(grouped(Double(t))) \(unit ?? "")"] }
+            if let l = left, l > 0 { return ["\(l) left"] }
+            return [finished ? "done" : "to come"]
+        }
+        var out: [String] = []
+        var nouns: [String] = []
+        for i in items {
+            if nouns.contains(i.noun) { continue }
+            nouns.append(i.noun)
+            let of = items.filter { $0.noun == i.noun }
+            if of.contains(where: { $0.total != nil }) {
+                if of.allSatisfy({ $0.total != nil }) {
+                    out.append("\(grouped(Double(of.reduce(0) { $0 + ($1.done ?? 0) }))) of \(grouped(Double(of.reduce(0) { $0 + ($1.total ?? 0) }))) \(i.noun)s")
+                } else {
+                    out.append("\(i.noun)s to come")
+                }
+            } else if of.allSatisfy({ $0.left != nil }) {
+                let l = of.reduce(0) { $0 + ($1.left ?? 0) }
+                if l > 0 { out.append("\(l) \(i.noun)\(l == 1 ? "" : "s") left") }
+            } else {
+                out.append("\(i.noun)s to come")
+            }
+        }
+        return out.isEmpty ? [finished ? "done" : "to come"] : out
+    }
+}
+
+/// A step's line of a stage (docs/pipeline.md §4): its targets done of total, or left.
+struct Item: Decodable {
+    let step: String
+    /// Its step's title and the noun its targets are counted in, from the steps table.
+    let title: String
+    let noun: String
+    let done: Int?
+    let total: Int?
+    let left: Int?
+
+    var finished: Bool { left == 0 }
+    var count: String {
+        if let t = total, let d = done, t > 0 { return "\(grouped(Double(d))) of \(grouped(Double(t))) \(noun)s" }
+        if let l = left { return l == 0 ? "done" : "\(l) \(noun)\(l == 1 ? "" : "s") left" }
+        return "to come"
     }
 }
 
@@ -742,24 +793,24 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         let now = [s.job, s.beside].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
         let finished = steps.filter(\.finished).count
         out.append(Line(text: "", style: .separator))
-        let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ helpers can take part" : ""
-        out.append(Line(text: "To the end: \(finished) of \(steps.count) steps done\(legend)", style: .header))
+        let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ any Mac can take part" : ""
+        out.append(Line(text: "To the end: \(finished) of \(steps.count) stages done\(legend)", style: .header))
         for st in steps {
             if st.finished {
                 out.append(Line(text: "✓ \(st.what)", style: .stepDone))
                 continue
             }
-            var count = ""
-            if let t = st.total, let d = st.done {
-                count = ": \(grouped(Double(d))) of \(grouped(Double(t))) \(st.unit ?? "")"
-            } else if let l = st.left, l > 0 {
-                count = ": \(l) left"
-            }
+            let count = ": " + st.counts.joined(separator: " · ")
             let running = now.contains { st.steps.contains($0) }
             let mark = st.shared != nil ? "  ⇄" : ""
             out.append(Line(text: "\(running ? "▸" : "○") \(st.what)\(count)\(mark)", style: running ? .stepNow : .stepToDo))
+            // Its steps, each the same: done, under way or to come, its count in its noun.
+            for it in st.items ?? [] {
+                let here = now.contains(it.step)
+                out.append(Line(text: "      \(it.finished ? "✓" : here ? "▸" : "○") \(it.title): \(it.count)", style: .small))
+            }
             // (Only some of its jobs: which.)
-            if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ helpers can take its \(sh)", style: .small)) }
+            if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ any Mac can take its \(sh)", style: .small)) }
             // Which Mac is on it or why it waits; then its jobs left, in order, by name.
             if let n = st.note { out.append(Line(text: "      \(n)", style: .small)) }
             let next = st.next ?? []

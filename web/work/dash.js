@@ -73,6 +73,28 @@ function countOf(x, noun) {
   return "to come";
 }
 const finished = (x) => (x.left != null ? x.left === 0 : x.total != null && x.done >= x.total && x.total > 0);
+// A stage's counts, a noun at a time in its items' order (build::Line::counts): "398 of 398 tiles ·
+// 18 of 18 areas", "2 runs left"; "done" or "to come" with no item to count (an older lead's line:
+// its own count).
+function countsOf(l) {
+  const out = [];
+  const nouns = [];
+  for (const i of l.items || []) {
+    const noun = S.noun(i.step);
+    if (nouns.includes(noun)) continue;
+    nouns.push(noun);
+    const of = l.items.filter((j) => S.noun(j.step) === noun);
+    if (of.some((j) => j.total != null)) {
+      if (of.every((j) => j.total != null)) out.push(`${n(of.reduce((t, j) => t + j.done, 0))} of ${n(of.reduce((t, j) => t + j.total, 0))} ${noun}s`);
+      else out.push(`${noun}s to come`);
+    } else if (of.every((j) => j.left != null)) {
+      const left = of.reduce((t, j) => t + j.left, 0);
+      if (left) out.push(`${plural(left, noun)} left`);
+    } else out.push(`${noun}s to come`);
+  }
+  if (!out.length) out.push(l.items?.length ? (finished(l) ? "done" : "to come") : countOf(l, l.unit || "targets"));
+  return out.join(" · ");
+}
 const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
 // Machines' colours, the lead first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
@@ -248,7 +270,7 @@ function overview(m) {
   // The stages as a strip, each its colour, the one under way outlined.
   const strip = h("div", "strip", lines.map((l) => {
     const done = finished(l), running = (l.steps || []).some((s) => m.running.has(s));
-    const i = h("i", { class: `${done ? "done" : ""} ${running ? "now" : ""}`, title: `${l.what}: ${countOf(l, l.unit || "targets")}` });
+    const i = h("i", { class: `${done ? "done" : ""} ${running ? "now" : ""}`, title: `${l.what}: ${countsOf(l)}` });
     i.style.background = done ? S.colour(l.steps?.[0]) : "";
     if (!done && l.total) { const b = h("b"); b.style.width = `${Math.round((l.done / l.total) * 100)}%`; b.style.background = S.colour(l.steps?.[0]); i.append(b); }
     return i;
@@ -282,7 +304,7 @@ function stageCard(m, l) {
   const fcOf = (step) => fc?.steps.find((s) => s.step === step);
   const colour = S.colour(l.steps?.[0]);
   const card = h("div", { class: `stage ${done ? "done" : ""} ${running ? "now" : ""}`, style: { borderLeft: `3px solid ${colour}` } });
-  card.append(h("div", "row head", mark(done, running), h("span", "title", l.what), h("span", "n", countOf(l, l.unit || "targets"))));
+  card.append(h("div", "row head", mark(done, running), h("span", "title", l.what), h("span", "n", countsOf(l))));
   if (!done && l.total) card.append(pbar(l.done / l.total, running ? "" : "dimbar", colour));
   for (const it of l.items || []) {
     const itDone = finished(it), itRun = m.running.has(it.step);
