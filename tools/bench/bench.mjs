@@ -227,9 +227,40 @@ try {
     if (args['profile-out']) fs.writeFileSync(String(args['profile-out']).replace(/(\.cpuprofile)?$/, '-load.cpuprofile'), JSON.stringify(profile));
   }
   load.clearance = await evaluate('return window.__clearance()');
+  // The map's covered regions (the server's /api/coverage): outside them it draws little, so a view
+  // whose centre is outside, at the start or along a run, measures nothing (--anywhere: measured
+  // anyway). Even-odd over every ring of every region.
+  await evaluate(`const fc = await (await fetch('/api/coverage')).json();
+    const rings = [];
+    for (const f of fc.features) for (const poly of (f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates)) for (const r of poly) {
+      let w = 180, e = -180, so = 90, n = -90;
+      for (const [x, y] of r) { w = Math.min(w, x); e = Math.max(e, x); so = Math.min(so, y); n = Math.max(n, y); }
+      rings.push({ r, box: [w, so, e, n] });
+    }
+    window.__covered = (lng, lat) => {
+      let inside = false;
+      for (const { r, box } of rings) {
+        if (lng < box[0] || lng > box[2] || lat < box[1] || lat > box[3]) continue;
+        for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+          const [xi, yi] = r[i], [xj, yj] = r[j];
+          if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+      }
+      return inside;
+    };
+    const c0 = __clearance; window.__clearance = () => { const c = c0() ?? {}; const m = __app.map.getCenter(); c.covered = __covered(m.lng, m.lat); return c; };`, 120);
+  load.clearance = await evaluate('return window.__clearance()');
+  const outside = (c, where) => {
+    if (!c || args.anywhere || c.covered !== false) return;
+    console.error(`view's centre outside the map's coverage ${where}: move the view into a covered region`);
+    console.log(JSON.stringify({ outsideCoverage: where }));
+    process.exitCode = 5;
+    throw new Error('outside coverage');
+  };
+  outside(load.clearance, 'at the start');
   // (--any-camera: measured wherever the camera is)
   const lowCamera = (c, where) => {
-    if (!c || args['any-camera'] || (c.under >= CLEAR_M && c.over >= CLEAR_M)) return;
+    if (!c || args['any-camera'] || c.under === undefined || (c.under >= CLEAR_M && c.over >= CLEAR_M)) return;
     console.error(`camera too low ${where}: ${c.under} m over the ground under it, ${c.over} m over the highest ground in view (at least ${CLEAR_M} m each): raise the view`);
     console.log(JSON.stringify({ lowCamera: where, clearance: c }));
     process.exitCode = 4;
@@ -349,7 +380,7 @@ try {
         topFrames: B.loaf.filter(([s]) => s >= B.t0 && s <= tEnd).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([, d, , sc]) => [Math.round(d), ...sc]),
         settleMs: Math.round(settleMs),
         // The least clearance along the run (sampled every 15th frame): under the camera, sight lines.
-        clearance: B.clear.length ? { under: Math.min(...B.clear.map((c) => c.under)), over: Math.min(...B.clear.map((c) => c.over)), n: B.clear.length } : null,
+        clearance: B.clear.length ? { under: Math.min(...B.clear.map((c) => c.under ?? Infinity)), over: Math.min(...B.clear.map((c) => c.over ?? Infinity)), covered: B.clear.every((c) => c.covered !== false), n: B.clear.length } : null,
       };
     `, 120);
     if (args.profile) {
@@ -370,6 +401,7 @@ try {
     }
     out.runs[name] = r;
     lowCamera(r.clearance, `along ${name}`);
+    outside(r.clearance, `along ${name}`);
     // Let the view settle between runs.
     await sleep(500);
   }
