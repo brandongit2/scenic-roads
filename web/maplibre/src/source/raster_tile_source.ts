@@ -1,6 +1,4 @@
-import {arrayBufferToImageBitmap, ensureError, extend, isSafari, pick} from '../util/util.ts';
-import {getArrayBuffer, type GetResourceResponse} from '../util/ajax.ts';
-import {throwIfAborted} from '../util/abort_error.ts';
+import {ensureError, extend, isSafari, pick} from '../util/util.ts';
 import {pngToRGBA} from '../util/png_rgba.ts';
 import {ImageRequest} from '../util/image_request.ts';
 import {ResourceType} from '../util/request_manager.ts';
@@ -208,18 +206,6 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
         return !this.tileBounds || this.tileBounds.contains(tileID.canonical);
     }
 
-    /** Scenic Roads: a tile's image as bytes (png_rgba.ts), else as the browser decodes it. */
-    async _loadBytes(url: string, abortController: AbortController, premultiply: boolean, imageBitmapOptions?: ImageBitmapOptions): Promise<GetResourceResponse<RGBAImage | ImageBitmap | HTMLImageElement | null>> {
-        const params = await this.map._requestManager.transformRequest(url, ResourceType.Tile);
-        throwIfAborted(abortController.signal);
-        params.headers ||= {};
-        params.headers.accept = 'image/webp,*/*';
-        const r = await getArrayBuffer(params, abortController);
-        if (!r.data || r.data.byteLength === 0) return {data: null, cacheControl: r.cacheControl, expires: r.expires};
-        const img = await pngToRGBA(r.data, premultiply) ?? await arrayBufferToImageBitmap(r.data, imageBitmapOptions);
-        return {data: img, cacheControl: r.cacheControl, expires: r.expires};
-    }
-
     async loadTile(tile: Tile): Promise<void> {
         const url = tile.tileID.canonical.url(this.tiles, this.map.getPixelRatio(), this.scheme);
         const premultiply = this._premultiplyAlpha;
@@ -228,16 +214,17 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
         try {
             // Scenic Roads: in Safari the tile's bytes, decoded on a worker when it's a plain PNG
             // (png_rgba.ts), the bitmap only otherwise (`?pngdec=0` in the page's address: always).
-            const response = BYTES_IN_SAFARI && isSafari(globalThis) && this.type === 'raster' ?
-                await this._loadBytes(url, tile.abortController, premultiply, imageBitmapOptions) :
-                await ImageRequest.transformAndGetImage(
-                    this.map._requestManager,
-                    url,
-                    ResourceType.Tile,
-                    tile.abortController,
-                    this.map._refreshExpiredTiles,
-                    imageBitmapOptions
-                );
+            const decode = BYTES_IN_SAFARI && isSafari(globalThis) && this.type === 'raster' ?
+                (data: ArrayBuffer) => pngToRGBA(data, premultiply) : undefined;
+            const response = await ImageRequest.transformAndGetImage(
+                this.map._requestManager,
+                url,
+                ResourceType.Tile,
+                tile.abortController,
+                this.map._refreshExpiredTiles,
+                imageBitmapOptions,
+                decode
+            );
             delete tile.abortController;
             if (tile.aborted) {
                 tile.state = 'unloaded';

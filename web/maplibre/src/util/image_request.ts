@@ -5,17 +5,23 @@ import {AbortError, throwIfAborted} from './abort_error.ts';
 import {getProtocol} from '../source/protocol_crud.ts';
 
 import type {RequestManager, ResourceType} from './request_manager.ts';
+import type {RGBAImage} from './image.ts';
 
 type ImageQueueThrottleControlCallback = () => boolean;
+
+/** Scenic Roads: an image's bytes decoded by the caller, or null to leave them to the browser. */
+export type RawDecoder = (data: ArrayBuffer) => Promise<RGBAImage | null>;
 
 export type ImageRequestQueueItem  = {
     requestParameters: RequestParameters;
     supportImageRefresh: boolean;
     imageBitmapOptions?: ImageBitmapOptions;
+    /** Scenic Roads: the fetched bytes decoded by the caller (png_rgba.ts), null for the usual decoder. */
+    decode?: RawDecoder;
     state: 'queued' | 'running' | 'completed';
     abortController: AbortController;
     onError: (error: Error) => void;
-    onSuccess: (response: GetResourceResponse<HTMLImageElement | ImageBitmap | null>) => void;
+    onSuccess: (response: GetResourceResponse<HTMLImageElement | ImageBitmap | RGBAImage | null>) => void;
 };
 
 type ImageQueueThrottleCallbackDictionary = {
@@ -112,17 +118,18 @@ export namespace ImageRequest {
      * whose pixels hold data rather than color, such as raster-DEM tiles, so the browser does not color manage them.
      * @returns - A promise resolved when the image is loaded.
      */
-    export async function transformAndGetImage(
+    export async function transformAndGetImage<D = never>(
         requestManager: RequestManager,
         url: string,
         resourceType: ResourceType,
         abortController: AbortController,
         supportImageRefresh: boolean = true,
-        imageBitmapOptions?: ImageBitmapOptions
-    ): Promise<GetResourceResponse<HTMLImageElement | ImageBitmap | null>> {
+        imageBitmapOptions?: ImageBitmapOptions,
+        decode?: (data: ArrayBuffer) => Promise<D | null>
+    ): Promise<GetResourceResponse<HTMLImageElement | ImageBitmap | D | null>> {
         const requestParameters = await requestManager.transformRequest(url, resourceType);
         throwIfAborted(abortController.signal);
-        return ImageRequest.getImage(requestParameters, abortController, supportImageRefresh, imageBitmapOptions);
+        return ImageRequest.getImage(requestParameters, abortController, supportImageRefresh, imageBitmapOptions, decode);
     }
 
     /**
@@ -134,13 +141,14 @@ export namespace ImageRequest {
      * whose pixels hold data rather than color, such as raster-DEM tiles, so the browser does not color manage them.
      * @returns - A promise resolved when the image is loaded.
      */
-    export const getImage = (
+    export const getImage = <D = never>(
         requestParameters: RequestParameters,
         abortController: AbortController,
         supportImageRefresh: boolean = true,
-        imageBitmapOptions?: ImageBitmapOptions
-    ): Promise<GetResourceResponse<HTMLImageElement | ImageBitmap | null>> => {
-        return new Promise<GetResourceResponse<HTMLImageElement | ImageBitmap | null>>((resolve, reject) => {
+        imageBitmapOptions?: ImageBitmapOptions,
+        decode?: (data: ArrayBuffer) => Promise<D | null>
+    ): Promise<GetResourceResponse<HTMLImageElement | ImageBitmap | D | null>> => {
+        return new Promise<GetResourceResponse<HTMLImageElement | ImageBitmap | D | null>>((resolve, reject) => {
             requestParameters.headers ||= {};
             requestParameters.headers.accept = 'image/webp,*/*';
             extend(requestParameters, {type: 'image'});
@@ -149,12 +157,14 @@ export namespace ImageRequest {
                 requestParameters,
                 supportImageRefresh,
                 imageBitmapOptions,
+                decode: decode as RawDecoder | undefined,
                 state: 'queued',
                 onError: (error: Error) => {
                     reject(error);
                 },
                 onSuccess: (response) => {
-                    resolve(response);
+                    // (an RGBAImage only from `decode`, so a D)
+                    resolve(response as GetResourceResponse<HTMLImageElement | ImageBitmap | D | null>);
                 }
             };
 
@@ -181,7 +191,7 @@ export namespace ImageRequest {
      */
     const doImageRequest = async (itemInQueue: ImageRequestQueueItem) => {
         itemInQueue.state = 'running';
-        const {requestParameters, supportImageRefresh, imageBitmapOptions, onError, onSuccess, abortController} = itemInQueue;
+        const {requestParameters, supportImageRefresh, imageBitmapOptions, decode, onError, onSuccess, abortController} = itemInQueue;
         // - If refreshExpiredTiles is false, then we can use HTMLImageElement to download raster images.
         // - Fetch/XHR (via MakeRequest API) will be used to download images for following scenarios:
         //      1. Style image sprite will had a issue with HTMLImageElement as described
@@ -193,6 +203,7 @@ export namespace ImageRequest {
         // - HtmlImageElement request automatically adds accept header for all the browser supported images
         const canUseHTMLImageElement = supportImageRefresh === false &&
             !imageBitmapOptions &&
+            !decode &&
             !isWorker(self) &&
             !getProtocol(requestParameters.url) &&
             (!requestParameters.headers ||
@@ -215,7 +226,7 @@ export namespace ImageRequest {
             } else if (!response.data || response.data.byteLength === 0) {
                 onSuccess({data: null, cacheControl: response.cacheControl, expires: response.expires});
             } else {
-                const img = await arrayBufferToCanvasImageSource(response.data, imageBitmapOptions);
+                const img = (decode && await decode(response.data)) || await arrayBufferToCanvasImageSource(response.data, imageBitmapOptions);
                 onSuccess({data: img, cacheControl: response.cacheControl, expires: response.expires});
             }
         } catch (err) {

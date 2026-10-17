@@ -69,8 +69,10 @@ The app compiles this source with its own code; there is no separate build or `d
 - **Raster tiles in Safari as bytes** (`raster_tile_source.ts`, `util/png_rgba.ts`): Safari reads an
   ImageBitmap back on the main thread to upload it (~2.8 ms a 512 px tile on an M1 Pro), so there a
   `raster` source's plain PNGs (8-bit RGB or RGBA, untagged) are decoded on two workers and uploaded
-  as bytes, the same pixels; other images, and other browsers, as before. `?pngdec=0`: always as
-  bitmaps.
+  as bytes, the same pixels (premultiplied rounding up, as Safari's own upload). They're fetched
+  through the image request queue (`ImageRequest.getImage`'s `decode`), so its limits and expiry
+  apply. Other images, a worker that fails or takes over 10 s, and other browsers: as before.
+  `?pngdec=0`: always as bitmaps.
 
 ### Tile covers over 3D terrain
 

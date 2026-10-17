@@ -1,11 +1,32 @@
 // Scenic Roads: a PNG's pixels as bytes, decoded on a worker without the browser's image decoder
 // (png_rgba.ts). Only the plain kind: 8 bits a channel, RGB or RGBA, not interlaced, and no colour
-// profile, gamma or transparency chunk (whose colours the browser would change); anything else
-// answers null and is decoded the usual way.
+// profile, gamma, colour-space, HDR or transparency chunk (whose colours the browser would change);
+// anything else, a bad filter byte or a stream that inflates past the image's size answers null and
+// is decoded the usual way.
 const paeth = (a: number, b: number, c: number): number => {
     const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
     return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 };
+
+const COLOUR_CHUNKS: Set<string> = new Set(['iCCP', 'gAMA', 'cHRM', 'sRGB', 'cICP', 'mDCV', 'cLLI', 'tRNS', 'PLTE']);
+
+/** The zlib stream inflated, or null past `max` bytes (read in chunks, stopped there). */
+async function inflate(parts: Uint8Array[], max: number): Promise<Uint8Array | null> {
+    const reader = new Blob(parts as BlobPart[]).stream().pipeThrough(new DecompressionStream('deflate')).getReader();
+    const out = new Uint8Array(max);
+    let n = 0;
+    for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (n + value.length > max) {
+            await reader.cancel();
+            return null;
+        }
+        out.set(value, n);
+        n += value.length;
+    }
+    return n === max ? out : null;
+}
 
 async function decode(buf: ArrayBuffer, premultiply: boolean): Promise<{width: number; height: number; data: Uint8Array} | null> {
     const b = new Uint8Array(buf), v = new DataView(buf);
@@ -22,18 +43,20 @@ async function decode(buf: ArrayBuffer, premultiply: boolean): Promise<{width: n
             if (depth !== 8 || interlace !== 0 || (colour !== 6 && colour !== 2)) return null;
             ch = colour === 6 ? 4 : 3;
         } else if (type === 'IDAT') idat.push(body);
-        else if (type === 'iCCP' || type === 'gAMA' || type === 'cHRM' || type === 'sRGB' || type === 'tRNS' || type === 'PLTE') return null;
+        else if (COLOUR_CHUNKS.has(type)) return null;
         else if (type === 'IEND') break;
         i += 12 + n;
     }
     if (!width || !idat.length) return null;
-    const raw = new Uint8Array(await new Response(new Blob(idat as BlobPart[]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
     const stride = width * ch;
-    if (raw.length < (stride + 1) * height) return null;
+    const raw = await inflate(idat, (stride + 1) * height);
+    if (!raw) return null;
     const out = new Uint8Array(width * height * 4);
     let prev = new Uint8Array(stride), cur = new Uint8Array(stride);
     for (let y = 0; y < height; y++) {
-        const f = raw[y * (stride + 1)], row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+        const f = raw[y * (stride + 1)];
+        if (f > 4) return null;
+        const row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
         for (let x = 0; x < stride; x++) {
             const a = x >= ch ? cur[x - ch] : 0, up = prev[x], c = x >= ch ? prev[x - ch] : 0;
             const r = row[x];
@@ -46,10 +69,12 @@ async function decode(buf: ArrayBuffer, premultiply: boolean): Promise<{width: n
                 for (let x = o; x < o + width * 4; x += 4) {
                     const al = out[x + 3];
                     if (al === 255) continue;
-                    // (as the browser premultiplies an upload: rounded to the nearest)
-                    out[x] = Math.round((out[x] * al) / 255);
-                    out[x + 1] = Math.round((out[x + 1] * al) / 255);
-                    out[x + 2] = Math.round((out[x + 2] * al) / 255);
+                    // (as Safari premultiplies an upload: rounded up; the same bytes as its own upload
+                    // on three water tiles, 8179 semi-transparent pixels, where rounding to the nearest
+                    // differed by 1 in 1484 channels)
+                    out[x] = Math.ceil((out[x] * al) / 255);
+                    out[x + 1] = Math.ceil((out[x + 1] * al) / 255);
+                    out[x + 2] = Math.ceil((out[x + 2] * al) / 255);
                 }
             }
         } else {

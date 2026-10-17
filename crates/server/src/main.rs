@@ -801,12 +801,10 @@ async fn build_h(State(s): State<S>) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
-/// The whole build paused (`{"mode": "drain"}`: every Mac's job at its next safe point; `"freeze"`:
-/// frozen at once) or going on (`{"mode": null}`), from the map: an ask to this Mac's agent, which
-/// passes it on to the lead (pipeline::control).
 /// A result of the in-page self-benchmark (web/src/selfbench.ts): its JSON saved as
 /// `<home>/bench/<name>.json` (`?name=`, letters, digits, `-` and `_` alone), for analysis
-/// (tools/bench/inpage.mjs). At most 2 MB (axum's body limit).
+/// (tools/bench/inpage.mjs). At most 2 MB each (axum's body limit), and the folder at most
+/// BENCH_MAX_FILES results and BENCH_MAX_BYTES (save_bench).
 async fn bench_h(State(s): State<S>, RawQuery(q): RawQuery, b: axum::body::Bytes) -> Response {
     let name = q
         .as_deref()
@@ -817,12 +815,52 @@ async fn bench_h(State(s): State<S>, RawQuery(q): RawQuery, b: axum::body::Bytes
         return (StatusCode::BAD_REQUEST, "a JSON body").into_response();
     }
     let dir = s.home.join("bench");
-    match tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(format!("{name}.json")), &b))).await {
+    match tokio::task::spawn_blocking(move || save_bench(&dir, &name, &b)).await {
         Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
+        Ok(Err(BenchSave::Full(why))) => (StatusCode::INSUFFICIENT_STORAGE, why).into_response(),
+        Ok(Err(BenchSave::Io(e))) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
+/// The most benchmark results `<home>/bench/` keeps, and their most bytes: past either, a new
+/// result is refused (a result saved again under its own name replaces it).
+const BENCH_MAX_FILES: usize = 500;
+const BENCH_MAX_BYTES: u64 = 200 << 20;
+
+#[derive(Debug)]
+enum BenchSave {
+    Full(String),
+    Io(std::io::Error),
+}
+
+/// Saves one result as `<dir>/<name>.json`, unless the folder would then hold more than
+/// BENCH_MAX_FILES results or BENCH_MAX_BYTES.
+fn save_bench(dir: &std::path::Path, name: &str, body: &[u8]) -> std::result::Result<(), BenchSave> {
+    std::fs::create_dir_all(dir).map_err(BenchSave::Io)?;
+    let file = format!("{name}.json");
+    let (mut files, mut bytes) = (0usize, 0u64);
+    for e in std::fs::read_dir(dir).map_err(BenchSave::Io)?.flatten() {
+        if e.file_name().to_str() == Some(file.as_str()) {
+            continue;
+        }
+        files += 1;
+        bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+    }
+    if files + 1 > BENCH_MAX_FILES || bytes + body.len() as u64 > BENCH_MAX_BYTES {
+        return Err(BenchSave::Full(format!(
+            "{} holds {files} results, {} MB: at most {BENCH_MAX_FILES} and {} MB; move old results away first",
+            dir.display(),
+            bytes >> 20,
+            BENCH_MAX_BYTES >> 20
+        )));
+    }
+    std::fs::write(dir.join(file), body).map_err(BenchSave::Io)
+}
+
+/// The whole build paused (`{"mode": "drain"}`: every Mac's job at its next safe point; `"freeze"`:
+/// frozen at once) or going on (`{"mode": null}`), from the map: an ask to this Mac's agent, which
+/// passes it on to the lead (pipeline::control).
 async fn build_pause_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
     use pipeline::control::{Mode, Pause};
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
@@ -1033,6 +1071,25 @@ impl Region {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bench_results_are_capped() {
+        let dir = std::env::temp_dir().join(format!("bench-cap-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        for i in 0..BENCH_MAX_FILES {
+            save_bench(&dir, &format!("r{i}"), b"{}").unwrap();
+        }
+        // full: a new one refused, one saved again under its own name still replaced
+        assert!(matches!(save_bench(&dir, "new", b"{}"), Err(BenchSave::Full(w)) if w.contains("at most 500")));
+        save_bench(&dir, "r0", b"{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read(dir.join("r0.json")).unwrap(), b"{\"a\":1}");
+        std::fs::remove_dir_all(&dir).ok();
+        // bytes: past BENCH_MAX_BYTES refused
+        let big = vec![b' '; (BENCH_MAX_BYTES / 2 + 1) as usize];
+        save_bench(&dir, "a", &big).unwrap();
+        assert!(matches!(save_bench(&dir, "b", &big), Err(BenchSave::Full(_))));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn the_default_port_is_not_8080() {
