@@ -1,8 +1,9 @@
 //! Terrain tiles for 3D terrain / hillshade, and the z11 terrain analysis grid.
 //!
-//! usage: terrain <build_dir>
+//! usage: terrain <build_dir> [--root <project folder>]
 //!
-//! Downloads Terrarium-encoded DEM tiles (AWS Terrain Tiles: USGS 3DEP in the US, NRCan
+//! Downloads Terrarium-encoded DEM tiles from the terrain's declared base (`--root`'s records name
+//! it: pipeline::terrain_sources; AWS Terrain Tiles: USGS 3DEP in the US, NRCan
 //! CDEM in Canada, ~27 m at z12) for z0–8 over the region and z9–12 within one tile of a
 //! road. Voids, towers and pits are repaired (roadcore::grid::repair_terrain: README "Terrain
 //! repair"), then below-sea-level values (ocean bathymetry) clamped to 0 so the sea stays flat in
@@ -97,7 +98,11 @@ fn main() -> Result<()> {
     }
     eprintln!("terrain: {} tiles wanted ({} for the z11 grid)", want.len(), grid_tiles.len());
 
-    // Download (reusing a previous archive).
+    // Download (reusing a previous archive), by the terrain's declared base (`--root`: the project
+    // folder whose records name it, crate::terrain_sources).
+    let args: Vec<String> = std::env::args().collect();
+    let root = args.iter().position(|a| a == "--root").and_then(|i| args.get(i + 1)).map_or_else(|| PathBuf::from("/Volumes/personal/projects/scenic-roads"), PathBuf::from);
+    let base = pipeline::terrain_sources::read(&pipeline::out::Out::unbound(&root, &dir.join("scratch"))?)?.base;
     let archive_path = dir.join("terrain.tiles");
     let old = Archive::open(&archive_path).ok();
     let aw = Mutex::new(ArchiveWriter::create(&roadcore::tmp(&dir, "terrain.tiles"), r#"{"format":"png","encoding":"terrarium"}"#)?);
@@ -126,7 +131,7 @@ fn main() -> Result<()> {
                     reused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     Some(b.to_vec())
                 } else {
-                    fetch(&agent, zl, x, y)
+                    fetch(&agent, &base, zl, x, y)
                 };
                 match blob {
                     Some(b) => {
@@ -196,7 +201,7 @@ fn main() -> Result<()> {
 ///                metres; v2 the new repair alone, fixed the terrain made: GLO-30, the water)
 ///   summary.txt  the counts per zoom
 /// The new repair's terrain is made as the terrain job makes it (terrain_pack::prepare and
-/// finish: GLO-30 north of 60°N from the NAS's `sources/copernicus-dem/`, the latest pass's
+/// finish: the declared northern dataset north of 60°N from its store, the latest pass's
 /// basemap's water, AWS's z9 tiles for the walled patches; `--bare`: AWS's tiles alone), and its
 /// second pass is over that terrain as stored. `--fixed-out <dir>` writes that terrain there too,
 /// as the terrain job's packs (a project folder of its own: its manifest, `layers/terrain/…`).
@@ -229,15 +234,13 @@ fn scan() -> Result<()> {
         None => None,
     };
     // (The sources, as the terrain job opens them, from the NAS read only: nothing fetched.)
+    let base = pipeline::terrain_sources::read(&pipeline::out::Out::unbound(&root, &cache.join("scratch"))?)?.base;
     let opened = if args.iter().any(|a| a == "--bare") {
         None
     } else {
         let o = pipeline::out::Out::unbound(&root, &cache.join("scratch"))?;
         Some(pipeline::terrain_pack::SourceFiles::open(&o, false)?)
     };
-    if let Some(o) = &opened {
-        eprintln!("scan: sources {}", o.sources(None).pin());
-    }
     let mut fixed = match opt("--fixed-out") {
         Some(d) => Some(pipeline::out::Out::unbound(Path::new(&d), &cache.join("fixed-scratch"))?),
         None => None,
@@ -265,7 +268,7 @@ fn scan() -> Result<()> {
     let t0 = std::time::Instant::now();
     if let Some(f) = opt("--tiles") {
         // (Tiles alone, each from its raw tile only, with their views: for a look.)
-        let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store);
+        let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
         let list: Vec<(u8, u32, u32)> = std::fs::read_to_string(f)?.lines().filter_map(|l| {
             let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
             (v.len() == 3).then(|| (v[0] as u8, v[1], v[2]))
@@ -283,7 +286,7 @@ fn scan() -> Result<()> {
         return Ok(());
     }
     if args.iter().any(|a| a == "--world-z8") {
-        let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store);
+        let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
         let n = 1u32 << 8;
         let tiles: Vec<(u32, u32)> = (0..n).flat_map(|x| (0..n).map(move |y| (x, y))).collect();
         let pb = count_bar(tiles.len() as u64, "world z8");
@@ -314,7 +317,7 @@ fn scan() -> Result<()> {
             let mut n = 0usize;
             // (A reader of the raw tiles per z6 tile, and one for q's levels: each area's archives
             // are copied here when read, and deleted once it's done, so the cache holds one area.)
-            let fresh = || pipeline::terrain_pack::RawTiles::with_store(&cache, &store);
+            let fresh = || pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
             let done_with = |raw: pipeline::terrain_pack::RawTiles| {
                 drop(raw);
                 std::fs::remove_dir_all(cache.join("packs")).ok();
@@ -409,7 +412,7 @@ fn scan() -> Result<()> {
         }
         // The root (z0–2), from the z3 tiles made here, else AWS's.
         if only.is_none() {
-            let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store);
+            let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
             let mut b = Levels::default();
             for x in 0..8u32 {
                 for y in 0..8u32 {

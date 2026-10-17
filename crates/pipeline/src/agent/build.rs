@@ -890,8 +890,8 @@ pub const SLOPE_LO_V: u32 = 2;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
     /// Terrain's pieces ("6/x/y"): keyed on the terrain's version, the coverage within 20 km of the
-    /// tile (which decides its tiles), GLO-30 and the water it reads (`water_key`); `UNKNOWN` while
-    /// that isn't worked out.
+    /// tile (which decides its tiles), the terrain's declared sources and the water it reads
+    /// (`water_key`); `UNKNOWN` while either isn't worked out.
     pub terrain: Vec<(String, String)>,
     /// Its assemblies ("3/x/y"): keyed on their pieces' mids by content ("-" for one without: it
     /// can't be assembled until each has one) and the water it reads (`water_key`); `UNKNOWN`
@@ -934,14 +934,14 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
     // and the mids by content, the basemap. A plan works them out again only when one changes; not
     // kept while a slope piece's key can't be told.)
     let named = |prefix: &str| m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
-    let from = h(&[&coverage_all(cov), &named("layers/terrain/"), &named("layers/slope/"), &named("work/terrain-mid/"), &named("work/slope-mid/"), &named(crate::terrain_water::IDX_PREFIX), &crate::terrain_pack::water_source_pin(m).unwrap_or_default()]);
+    let from = h(&[&coverage_all(cov), &named("layers/terrain/"), &named("layers/slope/"), &named("work/terrain-mid/"), &named("work/slope-mid/"), &named(crate::terrain_water::IDX_PREFIX), &crate::terrain_pack::water_source_pin(m).unwrap_or_default(), tiles.terrain_sources(m).map_or("-", |p| p.pin.as_str())]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
         let t = terrain_slope_targets_made(cov, m, tiles);
         let whole = t.slope.iter().all(|(_, k)| k.is_some()) && !t.terrain.iter().chain(&t.terrain_lo).any(|(_, k)| k == UNKNOWN);
         let json = serde_json::to_string(&t).unwrap_or_default();
         *made.borrow_mut() = Some(t);
-        if whole { Ok(json) } else { Err(Unread("a slope piece's key, or the water a terrain target reads".into())) }
+        if whole { Ok(json) } else { Err(Unread("a slope piece's key, or the water or declared sources a terrain target reads".into())) }
     });
     match (made.into_inner(), kept) {
         (Some(t), _) => t,
@@ -957,6 +957,8 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
     let pin = crate::terrain_pack::water_source_pin(m);
     let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
     let water = |t: &str, from: &str| water_key(pin.as_deref(), idx, t, from);
+    // (The terrain's declared sources: its pieces wait while there are none.)
+    let sources = tiles.terrain_sources(m).map(|p| p.pin.as_str());
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
     for (q, ts) in &near {
@@ -966,7 +968,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
             let t = format!("6/{x}/{y}");
             let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
             let hi = crate::terrain_pack::makes_hi(cov, (x, y));
-            out.terrain.push((t.clone(), water(&t, &fp).map_or_else(|| UNKNOWN.to_string(), |w| piece_key_made((x, y), &fp, &w, hi))));
+            out.terrain.push((t.clone(), water(&t, &fp).zip(sources).map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, s, &w, hi))));
             out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
             tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
             smids.push(format!("{t}={}", get(&crate::slope_pack::mid_logical(x, y))));
@@ -1014,8 +1016,8 @@ pub fn none_piece_key(step: &str, t: &str) -> String {
 /// A terrain piece's key as the targets have it: `terrain_piece_key`, and for a piece that makes no
 /// hi tile (`hi` false: crate::terrain_pack::makes_hi) "no hi tiles" after it, its run dropping any
 /// hi pack an earlier run left (so a record from before that drop isn't current).
-pub fn piece_key_made(t: (u32, u32), fp: &str, water: &str, hi: bool) -> String {
-    let k = terrain_piece_key(t, fp, water);
+pub fn piece_key_made(t: (u32, u32), fp: &str, sources: &str, water: &str, hi: bool) -> String {
+    let k = terrain_piece_key(t, fp, sources, water);
     if hi { k } else { h(&[&k, "no hi tiles"]) }
 }
 
@@ -1041,9 +1043,10 @@ pub fn water_key(pin: Option<&str>, idx: Option<&crate::terrain_water::WaterIdx>
 }
 
 /// Terrain piece `t`'s key (z6 tile (x, y)): the version, the coverage within 20 km (`fp`: which
-/// decides its tiles), GLO-30 and the water it reads (`water_key`).
-pub fn terrain_piece_key(t: (u32, u32), fp: &str, water: &str) -> String {
-    h(&[&format!("terrain {TERRAIN_V}"), &format!("6/{}/{}", t.0, t.1), fp, crate::terrain_pack::NORTH_PIN, water])
+/// decides its tiles), the terrain's declared sources (`sources`: crate::terrain_sources::pin) and
+/// the water it reads (`water_key`).
+pub fn terrain_piece_key(t: (u32, u32), fp: &str, sources: &str, water: &str) -> String {
+    h(&[&format!("terrain {TERRAIN_V}"), &format!("6/{}/{}", t.0, t.1), fp, sources, water])
 }
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
@@ -3254,10 +3257,10 @@ pub(crate) mod tests {
         let tt = terrain_slope_targets(&near, &BTreeMap::new(), &TerrainTiles::new(None));
         let fp = near.fingerprint(grown_e7(6, 21, 18, 20.0));
         let k = tt.terrain.iter().find(|(t, _)| t == "6/21/18").unwrap().1.clone();
-        assert_eq!(k, piece_key_made((21, 18), &fp, "-", false));
-        assert_ne!(k, terrain_piece_key((21, 18), &fp, "-"), "a record from before its hi pack was dropped isn't current");
+        assert_eq!(k, piece_key_made((21, 18), &fp, super::super::tiles::TEST_SOURCES, "-", false));
+        assert_ne!(k, terrain_piece_key((21, 18), &fp, super::super::tiles::TEST_SOURCES, "-"), "a record from before its hi pack was dropped isn't current");
         let fp = near.fingerprint(grown_e7(6, 22, 18, 20.0));
-        assert_eq!(tt.terrain.iter().find(|(t, _)| t == "6/22/18").unwrap().1, terrain_piece_key((22, 18), &fp, "-"), "one making hi tiles: keyed as before");
+        assert_eq!(tt.terrain.iter().find(|(t, _)| t == "6/22/18").unwrap().1, terrain_piece_key((22, 18), &fp, super::super::tiles::TEST_SOURCES, "-"), "one making hi tiles: keyed as before");
     }
 
     /// Every step of the plan done as its job does it (`did`, `terrain_did`), a unit's candidates in
@@ -4105,7 +4108,7 @@ pub(crate) mod tests {
 
     /// A declared elevation dataset for the keys: its id, `keyed` digest and cover.
     pub(crate) fn dataset(id: &str, keyed: &str, cover: Option<Vec<[f64; 4]>>) -> (crate::dem::declared::Accepted, crate::dem::declared::Cover) {
-        let declaration = crate::dem::declared::Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 1, data: crate::dem::declared::Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
+        let declaration = crate::dem::declared::Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 1, terrain: false, data: crate::dem::declared::Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
         let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
         (crate::dem::declared::Accepted { id: id.into(), path: format!("{id}.toml"), declaration, measured, keyed: keyed.into() }, crate::dem::declared::Cover::of(cover.as_deref()))
     }

@@ -1,5 +1,5 @@
-//! The terrain north of 60°N from Copernicus DEM GLO-30 (docs/plan.md §6, Terrain; the NAS's
-//! `sources/copernicus-dem/NOTES.md`). AWS's Terrain Tiles mix sources there: one with ellipsoidal
+//! The terrain north of 60°N from the dataset declared for it, Copernicus DEM GLO-30 (docs/plan.md
+//! §6, Terrain; docs/inputs.md §6.8; crate::terrain_sources). AWS's Terrain Tiles mix sources there: one with ellipsoidal
 //! heights (ArcticDEM's, most likely) beside sea-level ones, so lakes and patches stand the geoid's
 //! height (10–50 m) above or below the land around them in steps ("Minecraft" terraces, plateaus),
 //! and water missing from the detailed source is filled from a coarse one that blurs the hills into
@@ -23,7 +23,7 @@
 
 use anyhow::{Context, Result};
 use det::Det;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -90,69 +90,50 @@ pub enum Got {
 /// GLO-30's 1° tiles by their south-west corner (latitude, longitude, whole degrees).
 pub trait Cells: Sync {
     fn cell(&self, lat0: i32, lon0: i32) -> Got;
-    /// What pins the source (for the terrain's key): its name and version.
-    fn pin(&self) -> String;
 }
 
-/// A tile name's stem, as the bucket names it: `Copernicus_DSM_COG_10_N64_00_W148_00`.
-pub fn stem(lat0: i32, lon0: i32) -> String {
-    format!("Copernicus_DSM_COG_10_{}{:02}_00_{}{:03}_00", if lat0 >= 0 { 'N' } else { 'S' }, lat0.abs(), if lon0 >= 0 { 'E' } else { 'W' }, lon0.abs())
-}
-
-pub const BUCKET: &str = "https://copernicus-dem-30m.s3.amazonaws.com";
-
-/// GLO-30's tiles in a folder (the NAS's `sources/copernicus-dem/`: `<stem>_DEM.tif`,
-/// `<stem>_FLM.tif`, and `tileList.txt`, the bucket's list), decoded when first wanted and the
-/// most recent `keep` of them kept. With `fetch`, a tile the list has and the folder hasn't is
-/// downloaded into it first (written beside its name, then renamed).
+/// The northern dataset's 1° tiles as declared (crate::terrain_sources::North: each tile's file and
+/// fill mask by URL), kept in a folder (`sources/fetched/<id>/`, each file by its URL's last part),
+/// decoded when first wanted and the most recent `keep` of them kept. With `fetch`, a tile the
+/// index has and the folder hasn't is downloaded into it first (written beside its name, then
+/// renamed). A cell the index doesn't list is the open sea.
 pub struct GloStore {
     dir: PathBuf,
-    listed: HashSet<(i32, i32)>,
+    listed: HashMap<(i32, i32), (String, Option<String>)>,
     fetch: bool,
     keep: usize,
     cells: Mutex<(u64, HashMap<(i32, i32), (u64, Arc<OnceLock<Got>>)>)>,
 }
 
+/// A URL's last part: the name its file is kept by.
+fn file_name(url: &str) -> &str {
+    url.rsplit('/').next().unwrap_or(url)
+}
+
 impl GloStore {
-    pub fn open(dir: &Path, fetch: bool) -> Result<GloStore> {
-        let list = std::fs::read_to_string(dir.join("tileList.txt")).with_context(|| format!("{}: GLO-30's tile list", dir.display()))?;
-        let mut listed = HashSet::new();
-        for l in list.lines() {
-            // Copernicus_DSM_COG_10_N64_00_W148_00_DEM
-            let p: Vec<&str> = l.trim().split('_').collect();
-            if p.len() < 9 {
-                continue;
-            }
-            let num = |s: &str| s[1..].parse::<i32>().ok().map(|v| if s.starts_with('S') || s.starts_with('W') { -v } else { v });
-            if let (Some(la), Some(lo)) = (num(p[4]), num(p[6])) {
-                listed.insert((la, lo));
-            }
-        }
-        anyhow::ensure!(listed.len() > 20_000, "{}: GLO-30's tile list has {} tiles", dir.display(), listed.len());
-        Ok(GloStore { dir: dir.to_path_buf(), listed, fetch, keep: 48, cells: Mutex::new((0, HashMap::new())) })
+    pub fn open(dir: &Path, north: &crate::terrain_sources::North, fetch: bool) -> GloStore {
+        GloStore { dir: dir.to_path_buf(), listed: north.cells.clone(), fetch, keep: 48, cells: Mutex::new((0, HashMap::new())) }
     }
 
     fn load(&self, la: i32, lo: i32) -> Got {
-        if !self.listed.contains(&(la, lo)) {
-            return Got::Sea;
-        }
-        let s = stem(la, lo);
-        let (dem, flm) = (self.dir.join(format!("{s}_DEM.tif")), self.dir.join(format!("{s}_FLM.tif")));
-        if self.fetch && !(dem.exists() && flm.exists()) {
-            for (key, to) in [(format!("{s}_DEM/{s}_DEM.tif"), &dem), (format!("{s}_DEM/AUXFILES/{s}_FLM.tif"), &flm)] {
+        let Some((dem_url, mask_url)) = self.listed.get(&(la, lo)) else { return Got::Sea };
+        let dem = self.dir.join(file_name(dem_url));
+        let flm = mask_url.as_deref().map(|m| self.dir.join(file_name(m)));
+        if self.fetch {
+            for (url, to) in std::iter::once((dem_url, &dem)).chain(mask_url.iter().zip(flm.iter())) {
                 if !to.exists() {
-                    if let Err(e) = download(&format!("{BUCKET}/{key}"), to) {
-                        eprintln!("terrain: GLO-30 {s}: {e:#}");
+                    if let Err(e) = download(url, to) {
+                        eprintln!("terrain: {}: {e:#}", file_name(url));
                         return Got::Missing;
                     }
                 }
             }
         }
-        match read_cell(&dem, &flm) {
+        match read_cell(&dem, flm.as_deref()) {
             Ok(c) => Got::Cell(Arc::new(c)),
             Err(e) => {
                 if dem.exists() {
-                    eprintln!("terrain: GLO-30 {s}: {e:#}");
+                    eprintln!("terrain: {}: {e:#}", file_name(dem_url));
                 }
                 Got::Missing
             }
@@ -183,10 +164,6 @@ impl Cells for GloStore {
         };
         slot.get_or_init(|| self.load(la, lo)).clone()
     }
-
-    fn pin(&self) -> String {
-        crate::terrain_pack::NORTH_PIN.into()
-    }
 }
 
 /// Downloads `url` to `to` (beside it first, then renamed), as the map's other sources are.
@@ -201,20 +178,21 @@ fn download(url: &str, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A tile's heights and its filling mask, decoded whole.
-pub fn read_cell(dem: &Path, flm: &Path) -> Result<Cell> {
+/// A tile's heights and its fill mask (values 3 and up: filled from another source), decoded whole;
+/// without a mask, none filled.
+pub fn read_cell(dem: &Path, flm: Option<&Path>) -> Result<Cell> {
     let open = |p: &Path| -> Result<crate::geotiff::Tiff> { crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(p).with_context(|| p.display().to_string())?)) };
     let t = open(dem)?;
     let img = t.level(0)?;
     let (w, h) = (img.width as usize, img.height as usize);
     anyhow::ensure!(h == ROWS && w >= 360, "{}: {w}×{h}", dem.display());
     let e = t.read_window(0, 0, 0, w as u32, h as u32)?;
-    let filled = match open(flm) {
-        Ok(f) => {
+    let filled = match flm.map(open).transpose().ok().flatten() {
+        Some(f) => {
             let m = f.read_window(0, 0, 0, w as u32, h as u32)?;
             m.iter().map(|&v| v >= 3.0).collect()
         }
-        Err(_) => vec![false; w * h],
+        None => vec![false; w * h],
     };
     Ok(Cell::whole(w, e, filled))
 }
@@ -452,9 +430,6 @@ pub mod tests {
                 Arc::new(Cell::whole(w, e, filled))
             });
             Got::Cell(c.clone())
-        }
-        fn pin(&self) -> String {
-            "test".into()
         }
     }
 

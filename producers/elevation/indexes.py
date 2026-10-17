@@ -11,12 +11,16 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
   fabdem  FABDEM v1-2: every tile inside Bristol's 10° zips (each zip's central directory read by
           range requests), as <zip URL>#<member>, its footprint the 1° square it's named by (its
           south-west corner).
+  glo30   Copernicus DEM GLO-30 (the 3D terrain's north of 60°N): every tile in the bucket's
+          tileList.txt (or --tiles, a copy of it), its DEM by `url` and its fill mask (FLM, in its
+          AUXFILES/) by `mask`, its footprint the 1° square it's named by (its south-west corner).
 
 Drop the index beside its declaration in inputs/elevation/; the input check reads it.
 
 usage: indexes.py hrdem [--tiles <listing.txt>] --squares <index.geojson> --out <file>
        indexes.py 3dep --out <file>
        indexes.py fabdem --out <file>
+       indexes.py glo30 [--tiles <tileList.txt>] --out <file>
 """
 import argparse
 import json
@@ -30,6 +34,7 @@ NRCAN = "https://canelevation-dem.s3.ca-central-1.amazonaws.com"
 USGS = "https://prd-tnm.s3.amazonaws.com"
 USGS_PREFIX = "StagedProducts/Elevation/13/TIFF/current/"
 BRISTOL = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
+GLO30 = "https://copernicus-dem-30m.s3.amazonaws.com"
 UA = {"User-Agent": "scenic-roads producers (elevation indexes)"}
 
 
@@ -135,14 +140,31 @@ def fabdem(a):
     return {"type": "FeatureCollection", "features": feats}
 
 
+def glo30(a):
+    text = open(a.tiles).read() if a.tiles else get(GLO30 + "/tileList.txt").decode()
+    feats = []
+    for line in text.split():
+        m = re.fullmatch(r"(Copernicus_DSM_COG_10_([NS])(\d\d)_00_([EW])(\d\d\d)_00)_DEM", line)
+        if not m:
+            continue
+        stem = m.group(1)
+        s = int(m.group(3)) * (1 if m.group(2) == "N" else -1)
+        w = int(m.group(5)) * (1 if m.group(4) == "E" else -1)
+        f = feature(f"{GLO30}/{stem}_DEM/{stem}_DEM.tif", square(w, s, w + 1, s + 1))
+        f["properties"]["mask"] = f"{GLO30}/{stem}_DEM/AUXFILES/{stem}_FLM.tif"
+        feats.append(f)
+    feats.sort(key=lambda f: f["properties"]["url"])
+    return {"type": "FeatureCollection", "features": feats}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=["hrdem", "3dep", "fabdem"])
+    ap.add_argument("source", choices=["hrdem", "3dep", "fabdem", "glo30"])
     ap.add_argument("--tiles")
     ap.add_argument("--squares")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    doc = {"hrdem": hrdem, "3dep": usgs, "fabdem": fabdem}[a.source](a)
+    doc = {"hrdem": hrdem, "3dep": usgs, "fabdem": fabdem, "glo30": glo30}[a.source](a)
     with open(a.out, "w") as f:
         json.dump(doc, f, separators=(",", ":"))
         f.write("\n")

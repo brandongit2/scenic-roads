@@ -382,7 +382,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 eprintln!("terrain-z8: already made ({})", pipeline::terrain_z8::logical());
             } else {
                 let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-                let raw = raw_tiles(&out, &raw_dir);
+                let raw = raw_tiles(&out, &raw_dir)?;
                 let parts = Parts(&["Fetching and repairing the world's z8 terrain", "Packing the new raw tiles onto the NAS"]);
                 parts.start(0);
                 let (n, none) = pipeline::terrain_z8::build(&mut out, &raw)?;
@@ -627,7 +627,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let dir = PathBuf::from(opt(&args, "--out").context("--out dir")?);
             let only = opt(&args, "--group").map(|g| pipeline::terrain_task::parse_subtrees(&g)).transpose()?.and_then(|v| v.first().copied());
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-            let raw = raw_tiles(&out, &raw_dir);
+            let raw = raw_tiles(&out, &raw_dir)?;
             let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
             let coarse = pipeline::terrain_pack::Coarse::new(&raw);
             let src = opened.sources(Some(&coarse));
@@ -680,7 +680,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-            let raw = raw_tiles(&out, &raw_dir);
+            let raw = raw_tiles(&out, &raw_dir)?;
             let opened = pipeline::terrain_pack::SourceFiles::open(&out, true)?;
             let n = pipeline::terrain_pack::build_root(&mut out, &raw, &opened.sources(None))?;
             eprintln!("terrain root: {n} tiles");
@@ -1421,10 +1421,12 @@ fn pack_raw_with(out: &Out, dir: &Path, progress: pipeline::rawpack::Progress) {
     }
 }
 
-/// AWS's raw terrain tiles: the local cache `dir`, where each is downloaded once, filled from the
-/// NAS's archives (`sources/aws-terrarium/packs/`) when it lacks one.
-fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
-    pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"))
+/// The terrain's raw tiles: the local cache `dir`, where each is downloaded once (from the declared
+/// base, pipeline::terrain_sources), filled from the NAS's archives (`sources/aws-terrarium/packs/`)
+/// when it lacks one.
+fn raw_tiles(out: &Out, dir: &Path) -> Result<pipeline::terrain_pack::RawTiles> {
+    let base = pipeline::terrain_sources::read(out)?.base;
+    Ok(pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"), &base))
 }
 
 
@@ -1849,10 +1851,11 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
         let unknown = tt.terrain.iter().chain(&tt.terrain_lo).filter(|(_, k)| k == build::UNKNOWN).count();
         println!("{what}:");
         println!(
-            "  derived: {} z3 tiles as their pieces and assembly ({} from an earlier basemap), {} pieces and assemblies of the keys that named the basemap; stale under the old scheme: {}; kept, their water unknown: {}; deriving {:.0} ms the first time, {:.0} ms again",
+            "  derived: {} z3 tiles as their pieces and assembly ({} from an earlier basemap), {} pieces and assemblies of the keys that named the basemap, {} pieces of the keys that named their sources in code; stale under the old scheme: {}; kept, their water unknown: {}; deriving {:.0} ms the first time, {:.0} ms again",
             d.terrain.len(),
             d.older.len(),
             d.water.len(),
+            d.sources.len(),
             d.stale.len(),
             d.unknown.len(),
             first.as_secs_f64() * 1e3,
@@ -2167,7 +2170,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned()));
-    let raw = raw_tiles(out, &raw_dir);
+    let raw = raw_tiles(out, &raw_dir)?;
     let coarse_threads: usize = opt(args, "--coarse-threads").map(|s| s.parse()).transpose()?.unwrap_or(4);
     let p = phase("the summits copied here and read", Class::NasRead);
     let summits = pipeline::summits::read(&local_copy(out, &format!("work/summits/{date}"), &cache)?)?;
@@ -3812,7 +3815,7 @@ fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Cove
     }
     let ts = &ts[..];
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-    let raw = raw_tiles(out, &raw_dir);
+    let raw = raw_tiles(out, &raw_dir)?;
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
     let coarse = pipeline::terrain_pack::Coarse::new(&raw);
     let src = opened.sources(Some(&coarse));
@@ -3892,7 +3895,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         return Ok(());
     }
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-    let raw = raw_tiles(out, &raw_dir);
+    let raw = raw_tiles(out, &raw_dir)?;
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
     let src = opened.sources(None);
     let mut names: Vec<String> = qs.iter().map(|(q, _)| format!("Assembling {}'s zoomed-out terrain", q.slash())).collect();
@@ -3964,7 +3967,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     eprintln!("terrain: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
     // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-    let raw = raw_tiles(out, &raw_dir);
+    let raw = raw_tiles(out, &raw_dir)?;
     // GLO-30 north of 60°N and the pass's basemap's water (docs/plan.md §6, Terrain), and AWS's z9
     // tiles for the walled patches.
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;

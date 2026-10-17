@@ -42,8 +42,11 @@ pub struct Declaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<i64>,
     /// The source byte its heights carry in the units' outputs (`src.u8`, which the map's server
-    /// labels: roadcore::DemSource), 1–255.
+    /// labels: roadcore::DemSource), 1–255; 0 for the terrain's (`terrain`).
     pub code: u8,
+    /// Read by the 3D terrain (crate::terrain_sources), never by the roads' elevations.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terrain: bool,
     pub data: Data,
 }
 
@@ -87,19 +90,26 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let mut why = Vec::new();
     const DESCRIPTION: [&str; 10] = ["name", "what", "credit", "licence", "licence_url", "source", "retrieved", "territory", "redistribute", "notes"];
     for k in v.keys() {
-        if !DESCRIPTION.contains(&k.as_str()) && !["surface", "heights", "rank", "code", "data"].contains(&k.as_str()) {
+        if !DESCRIPTION.contains(&k.as_str()) && !["surface", "heights", "rank", "code", "terrain", "data"].contains(&k.as_str()) {
             why.push(format!("`{k}` isn't a field of an elevation declaration (docs/inputs.md §6.8)"));
         }
     }
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let terrain = match v.get("terrain") {
+        None => false,
+        Some(x) => x.as_bool().unwrap_or_else(|| {
+            why.push("`terrain` isn't true or false".into());
+            false
+        }),
+    };
     let surface = s("surface").unwrap_or_default();
     if surface != "ground" && surface != "surface" {
         why.push(format!("`surface` is \"{surface}\": ground (bare earth) or surface (with trees and buildings)"));
     }
     let heights = s("heights").unwrap_or_default();
-    if heights == "mixed" {
-        why.push("`heights` is \"mixed\": allowed for the terrain alone, never for the roads' elevations".into());
-    } else if !HEIGHTS.contains(&heights.as_str()) {
+    if heights == "mixed" && !terrain {
+        why.push("`heights` is \"mixed\": allowed for the terrain alone (`terrain = true`), never for the roads' elevations".into());
+    } else if heights != "mixed" && !HEIGHTS.contains(&heights.as_str()) {
         why.push(format!("`heights` is \"{heights}\", a height reference the app doesn't know ({})", HEIGHTS.join(", ")));
     }
     let rank = match v.get("rank") {
@@ -113,6 +123,12 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
         },
     };
     let code = match v.get("code").and_then(|x| x.as_integer()) {
+        _ if terrain => {
+            if v.contains_key("code") {
+                why.push("`code` is the roads' source byte: a terrain dataset has none".into());
+            }
+            0
+        }
         Some(c) if (1..=255).contains(&c) => c as u8,
         _ => {
             why.push("`code` is required, an integer 1–255: the source byte its heights carry".into());
@@ -209,7 +225,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     if !why.is_empty() {
         return Err(why);
     }
-    Ok(Declaration { surface, heights, rank, code, data })
+    Ok(Declaration { surface, heights, rank, code, terrain, data })
 }
 
 // ---- What's measured from the data ---------------------------------------------------------------
@@ -378,12 +394,15 @@ pub fn geographic_cells(boxes: &[[f64; 4]]) -> BTreeSet<(i32, i32)> {
 
 /// A tile index (GeoJSON, docs/inputs.md §6.8): a feature per file, its `url` (or `file`, in
 /// `<dataset>/`) and its footprint (its geometry's box) in the index's CRS (`crs`, as GDAL writes
-/// it: `urn:ogc:def:crs:EPSG::3979`; WGS 84 when there's none).
+/// it: `urn:ogc:def:crs:EPSG::3979`; WGS 84 when there's none). A feature may name its file's fill
+/// mask (`mask`, a URL: which pixels the source filled from another, the terrain's to read).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileIndex {
     pub crs: u16,
     /// (url or file, footprint box: min x, min y, max x, max y), in the index's order.
     pub files: Vec<(Where, [f64; 4])>,
+    /// Each file's fill mask's URL, in the same order.
+    pub masks: Vec<Option<String>>,
 }
 
 /// Where a file is.
@@ -413,6 +432,7 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<TileIndex, String> {
     };
     let feats = v["features"].as_array().ok_or("has no features")?;
     let mut files = Vec::with_capacity(feats.len());
+    let mut masks = Vec::with_capacity(feats.len());
     let mut seen = HashSet::new();
     for (i, f) in feats.iter().enumerate() {
         let p = &f["properties"];
@@ -448,12 +468,19 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<TileIndex, String> {
         if !ok || !(b[0] < b[2] && b[1] < b[3]) {
             return Err(format!("feature {} hasn't a polygon footprint", i + 1));
         }
+        masks.push(match &p["mask"] {
+            serde_json::Value::Null => None,
+            m => match m.as_str() {
+                Some(u) if u.starts_with("https://") || u.starts_with("http://") => Some(u.to_string()),
+                _ => return Err(format!("feature {}'s `mask` isn't an http(s) URL", i + 1)),
+            },
+        });
         files.push((w, b));
     }
     if files.is_empty() {
         return Err("has no features".into());
     }
-    Ok(TileIndex { crs, files })
+    Ok(TileIndex { crs, files, masks })
 }
 
 // ---- The plan a unit samples from -----------------------------------------------------------
@@ -520,8 +547,19 @@ pub struct Accepted {
     pub keyed: String,
 }
 
-/// The declarations of an accepted version (`<id>.toml` entries with their facts), in their order.
+/// The roads' declarations of an accepted version (`<id>.toml` entries with their facts, the
+/// terrain's left out), in their order.
 pub fn accepted(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
+    Ok(accepted_all(a)?.into_iter().filter(|d| !d.declaration.terrain).collect())
+}
+
+/// The terrain's declarations of an accepted version (`terrain = true`), in their order.
+pub fn accepted_terrain(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
+    Ok(accepted_all(a)?.into_iter().filter(|d| d.declaration.terrain).collect())
+}
+
+/// Every declaration of an accepted version, in their order.
+fn accepted_all(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
     let mut out = Vec::new();
     for (p, f) in &a.index.files {
         let Some(id) = p.strip_suffix(".toml").filter(|s| !s.contains('/')) else { continue };
@@ -684,6 +722,37 @@ encoding = "lerc"
         }
         let mixed = String::from_utf8(ok.to_vec()).unwrap().replace("CGVD2013", "mixed");
         assert!(parse(mixed.as_bytes()).unwrap_err()[0].contains("terrain alone"));
+        // The terrain's: "mixed" heights allowed, no code (the roads' source byte).
+        let terrain = br#"
+name = "t"
+credit = "c"
+licence = "CC0-1.0"
+surface = "surface"
+heights = "mixed"
+terrain = true
+[data]
+format = "tiles"
+url = "https://example.org/{z}/{x}/{y}.png"
+zoom = 12
+encoding = "terrarium"
+"#;
+        let d = parse(terrain).unwrap();
+        assert!(d.terrain && d.code == 0 && d.heights == "mixed");
+        let coded = String::from_utf8(terrain.to_vec()).unwrap().replace("terrain = true", "terrain = true\ncode = 3");
+        assert!(parse(coded.as_bytes()).unwrap_err()[0].contains("source byte"));
+        // A roads' declaration's `keyed` fields are what they were (no `terrain` among them).
+        assert!(!serde_json::to_string(&parse(ok).unwrap()).unwrap().contains("terrain"));
+    }
+
+    #[test]
+    fn an_index_names_each_files_fill_mask() {
+        let ix = br#"{"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"url": "https://e.org/a.tif", "mask": "https://e.org/a_m.tif"}, "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}},
+            {"type": "Feature", "properties": {"url": "https://e.org/b.tif"}, "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 1], [1, 0]]]}}]}"#;
+        let t = parse_index(ix).unwrap();
+        assert_eq!(t.masks, [Some("https://e.org/a_m.tif".to_string()), None]);
+        let bad = String::from_utf8(ix.to_vec()).unwrap().replace("https://e.org/a_m.tif", "a_m.tif");
+        assert!(parse_index(bad.as_bytes()).unwrap_err().contains("`mask`"));
     }
 
     #[test]

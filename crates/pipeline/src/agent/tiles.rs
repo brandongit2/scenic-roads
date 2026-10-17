@@ -56,6 +56,21 @@ pub struct TerrainTiles {
     /// (crate::inputs::elevation): the accepted index's content name, and each dataset with where
     /// it has data.
     elevation: Option<(String, std::sync::Arc<Elevation>)>,
+    /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
+    /// elevation index's content name, and their pin or why they can't be read.
+    terrain: Option<(String, Result<TerrainPin, String>)>,
+}
+
+/// The terrain's sources in tests holding none (`terrain_sources`).
+#[cfg(test)]
+pub const TEST_SOURCES: &str = "terrain-sources test";
+
+/// The terrain's declared sources as its keys name them (crate::terrain_sources::pin), and whether
+/// they're what the keys named before they were declared (rekey::named_before).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerrainPin {
+    pub pin: String,
+    pub as_before: bool,
 }
 
 /// The declared elevation datasets as the units' keys name them: each with its coverage.
@@ -79,6 +94,7 @@ impl TerrainTiles {
         use rayon::prelude::*;
         self.load_water(root, m);
         self.load_elevation(root, m);
+        self.load_terrain(root, m);
         let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         self.held.retain(|c, _| want.contains(c.as_str()));
         self.unread.retain(|c, _| want.contains(c.as_str()));
@@ -138,6 +154,52 @@ impl TerrainTiles {
                 self.unread.insert(want.clone(), format!("{e:#}"));
             }
         }
+    }
+
+    /// Holds the terrain's declared sources of the accepted elevation version `m` names (none: its
+    /// keys wait; one that can't be read now: tried again with the next load).
+    fn load_terrain(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+        use crate::inputs::elevation;
+        let Some(want) = m.get(&crate::inputs::logical(elevation::UNIT)) else {
+            self.terrain = None;
+            return;
+        };
+        if self.terrain.as_ref().is_some_and(|(c, r)| c == want && r.is_ok()) {
+            return;
+        }
+        let got = crate::inputs::open(root, m, elevation::UNIT)
+            .and_then(|a| crate::terrain_sources::of(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?))
+            .map(|d| TerrainPin { as_before: super::rekey::named_before(&d), pin: d.pin })
+            .map_err(|e| format!("{e:#}"));
+        // (Said once a reason: the terrain's keys wait meanwhile.)
+        if let Err(why) = &got {
+            if !self.terrain.as_ref().is_some_and(|(c, r)| c == want && r.as_ref().err() == Some(why)) {
+                eprintln!("agent: the terrain waits: its declared sources in {want} can't be read ({why})");
+            }
+        }
+        self.terrain = Some((want.clone(), got));
+    }
+
+    /// The terrain's declared sources as its keys name them, of the accepted elevation version `m`
+    /// names; None while there's none, or it can't be read now (the terrain's keys wait).
+    pub fn terrain_sources(&self, m: &BTreeMap<String, String>) -> Option<&TerrainPin> {
+        // (Tests holding none: `TEST_SOURCES`.)
+        #[cfg(test)]
+        if self.terrain.is_none() {
+            static TEST: std::sync::OnceLock<TerrainPin> = std::sync::OnceLock::new();
+            return Some(TEST.get_or_init(|| TerrainPin { pin: TEST_SOURCES.into(), as_before: true }));
+        }
+        let want = m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT))?;
+        match &self.terrain {
+            Some((c, Ok(p))) if c == want => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Holds the terrain's declared sources of accepted elevation index `content` (as `load` reads
+    /// them; tests).
+    pub fn hold_terrain(&mut self, content: &str, p: TerrainPin) {
+        self.terrain = Some((content.to_string(), Ok(p)));
     }
 
     /// The declared elevation datasets the units' keys name: None before the build reads them; an

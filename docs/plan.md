@@ -96,7 +96,7 @@ inputs/        the drop boxes (docs/inputs.md): regions/, translations/, descrip
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass),
                basemap/ (Planetiler's jar and data), items/<date>/ (facts, pageviews, answers),
                pageviews/, dem-cache/ (per-vertex DEM seed), fetched/fabdem/, buildings/<release>/,
-               trees/, canopy/, aws-terrarium/, rail/, canvec/, copernicus-dem/, terrain-z8-v3,
+               trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/, terrain-z8-v3,
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
 base/          base packs, one per unit
 hidata/        per z6 tile: ways-here index, query parts, climbs, rail lines, zoomed-out summaries
@@ -417,9 +417,12 @@ offset. Where coverage ends, roads end.
   - Together they make the same packs, byte for byte, as the area's whole run (`build_q_with`,
     `scenic-build terrain 3/x/y`; `terrain_pack` tests).
   - **The root (z0–2)** is made from the lo packs once no terrain work is left.
-  - **Sources:** AWS's raw tiles (fetched once, packed onto the NAS: §4); north of 60°N, Copernicus
-    GLO-30 (`sources/copernicus-dem/`); the water of the latest pass's basemap. Each is pinned in
-    the key (`TERRAIN_V`, `terrain_pack::NORTH_PIN`, the digest of the water the target reads), so
+  - **Sources:** declared in `inputs/elevation/` (`terrain = true`, docs/inputs.md §6.8,
+    crate::terrain_sources): the base's raw tiles (AWS's Terrarium tiles, fetched once by the
+    declared template, packed onto the NAS: §4); north of 60°N, Copernicus GLO-30 by its declared
+    index (kept in `sources/fetched/glo30/`); and the water of the latest pass's basemap. Each is
+    pinned in the key (`TERRAIN_V`, the declarations' `keyed` digests, the digest of the water the
+    target reads), so
     a rebuild with the same key gives identical packs. The digests are worked out once a basemap by
     the `terrain-water` job, so a new pass remakes only pieces whose water changed.
   - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass taking what is
@@ -667,7 +670,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   when a target's digest is missing. The digest (`terrain_water::tiles_digest`) is over the
   polygons as the terrain reads them, so only a change the terrain could see changes it. Until a
   target's digest exists its key is unknown and its area waits.
-- **terrain (a piece):** the coverage within 20 km of its tile, GLO-30 (`NORTH_PIN`), the digest of
+- **terrain (a piece):** the coverage within 20 km of its tile, the terrain's declarations
+  (crate::terrain_sources::pin: their ids and `keyed` digests; until they're accepted its key is
+  unknown and it waits), the digest of
   its water (`agent::build::water_key`), and "no hi tiles" for a piece making none
   (`piece_key_made`). A "none" piece is keyed on the version and the tile (`none_piece_key`).
 - **terrain-lo (an assembly):** its pieces' mids by content ("-" for a piece without one) and the
@@ -827,7 +832,8 @@ from the first (`edit_held`).
   every input the new key names is pinned by the old key's; else it's built again. Every reader
   re-keys records as it reads them (`agent::rekey::as_read`: the plan, the status, the checklist,
   the regions' state, `--expect-same`, `scenic-build p5-check`), deriving in memory
-  (`rekey::derive`), a record a job saved always winning. The old schemes (`rekey::v1`, `v2`) are
+  (`rekey::derive`), a record a job saved always winning. The old schemes (`rekey::v1`, `v2`, and
+  the terrain pieces' keys naming their sources as code had them, `rekey::SOURCES_BEFORE`) are
   kept for late records. `scenic-build rekey-check`, `scenic-build p5-check terrain`, `scenic-build p5-check trees` and `scenic-build water-key-check`
   say what they'd do, reading only. Pieces current only by derivation have no mid: it's made in idle
   time, expected the same (Order).

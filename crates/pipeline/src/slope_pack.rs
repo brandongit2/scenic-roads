@@ -1159,7 +1159,7 @@ mod tests {
                 std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
             }
         }
-        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_sources::TEST_BASE);
         let terrain = d.path().join("terrain");
         for (&q, ts) in &by_q {
             crate::terrain_pack::build_q(&mut Out::unbound(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
@@ -1267,7 +1267,7 @@ mod tests {
             }
             std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
         }
-        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_sources::TEST_BASE);
         let terrain = d.path().join("terrain");
         crate::terrain_pack::build_q(&mut Out::unbound(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
         // Its slope, both ways, each over a copy of the terrain's root: the area's first, then again

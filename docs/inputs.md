@@ -16,9 +16,9 @@ a **unit** of the input check. (In the code the mechanism keeps the older word "
 `gate_work`, `_gate-test`.)
 
 Built: the input check and its units for regions, languages, translations, descriptions, heritage
-registers and matches, timetable feeds and static GTFS, elevation datasets; the accessor guard
-(§7.1). Planned: the 3D terrain's declarations (§6.8, #144), the remaining sources (§6.9), the
-source-name guard (§7.2). Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md`
+registers and matches, timetable feeds and static GTFS, elevation datasets (the roads' and the 3D
+terrain's); the accessor guard (§7.1). Planned: the remaining sources (§6.9), the source-name guard
+(§7.2). Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md`
 (files), `docs/pool.md` (lead, jobs, journal), `docs/phase5.md` (the heritage chain).
 
 ## 1. Constraints
@@ -910,20 +910,22 @@ reported).
 **Kind:** source declarations, one per dataset; a small dataset's files may lie beside it. **Drop
 box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
-(the sampler and blend), crate::dem::encoding, crate::dem::kept (the store). Built for the roads'
-elevations (#143 step 1); steps 2 and 3 and the terrain (#144) are planned.
+(the sampler and blend), crate::dem::encoding, crate::dem::kept (the store), crate::terrain_sources
+(the terrain's). Built for the roads' elevations (#143 step 1) and the 3D terrain (#144); steps 2
+and 3 are planned.
 
 **Shape:** a description (§5.1) and:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
-| `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference (recorded; conversion planned); `mixed` refused |
+| `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference (recorded; conversion planned); `mixed` allowed for the terrain's alone |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
-| `code` | 1–255 | the source byte in the units' outputs (`src.u8`), labelled by the server (`roadcore::DemSource`) |
+| `code` | 1–255 | the source byte in the units' outputs (`src.u8`), labelled by the server (`roadcore::DemSource`); none for the terrain's |
+| `terrain` | bool, default false | read by the 3D terrain, never by the roads' elevations (below) |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world (FABDEM) |
 | `[data] format` | `geotiff` or `tiles` | |
-| `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL (`<zip URL>#<member>` reads a zip member in place), a tile index (GeoJSON footprints with each file's `url` or `file`, made by `producers/elevation/indexes.py`), or dropped files by glob |
+| `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL (`<zip URL>#<member>` reads a zip member in place), a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
 | `[data] store` | bool | each file downloaded once, kept compressed in `sources/fetched/<dataset>/` |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
 | `[data] read_resolution` | metres | read a finer dataset at its nearest overview (HRDEM's 2 m at 8 m) |
@@ -986,6 +988,30 @@ territory.
   valid only where a single dataset covers the vertex and the sample carries its code.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
 
+**The 3D terrain's datasets** (`terrain = true`; crate::terrain_sources): left out of the roads'
+order, keys, plan, cache and ties. Two are read: a tile pyramid in the `terrarium` encoding, the
+terrain's base (AWS's Terrarium tiles, `heights = "mixed"`: its sources mix references), fetched
+raw by its template and packed onto the NAS (`sources/aws-terrarium/`, plan.md §4); and at most one
+GeoTIFF dataset of 1° tiles by an index in EPSG:4326, each tile with its fill mask (`mask`),
+blended in north of 60°N (Copernicus GLO-30: the index from the bucket's tile list,
+`indexes.py glo30`), its files kept in `sources/fetched/<id>/` by their URLs' names. The repair,
+the water's flattening, the blend by latitude and the mask's reading (3 and up: filled from another
+source) are the terrain's code. The declarations themselves are kept in
+`producers/elevation/terrain/` (`terrarium.toml`, `glo30.toml`).
+- **Keys:** a terrain piece names the terrain's declarations by their ids and `keyed` digests
+  (`terrain_sources::pin`, in `agent::build::terrain_piece_key`); with none accepted (or one that
+  can't be read) its key is unknown and the terrain waits. The roads' keys and plan don't change
+  when a terrain declaration does.
+- **Re-keyed** (`agent::rekey::derive_sources`): a piece recorded under the key that named its
+  sources as code had them (`rekey::SOURCES_BEFORE`) is read under its key now when the declarations
+  name the same: the base's template and the northern tiles' and masks' origin match what the code
+  fetched (`rekey::named_before`, by digests). The packs are then the same bytes
+  (`terrain_pack::tests::the_declared_sources_make_the_same_terrain_and_slope_packs`), and slope,
+  keyed on the terrain packs' contents, is unchanged with them. Other sources: every piece made again.
+- **The rollout:** the northern dataset's files move from `sources/copernicus-dem/` to
+  `sources/fetched/glo30/` (the same names), and the two declarations and `glo30-tiles.geojson` are
+  dropped into `inputs/elevation/`; until they're accepted the terrain waits.
+
 **Planned:**
 - **Step 2, densification from the data:** today 8 m in North America and Japan, 15 m elsewhere, by
   boxes (bin/extract.rs, reach.rs); to become 8 m where a dataset of 10 m or finer meets the way.
@@ -999,10 +1025,6 @@ territory.
   meet the vertex, so a finer dataset added restales only those vertices; the source byte becoming
   the dataset's position in that list.
 - `[data] valid` (a GeoJSON of where a dataset is trusted) and ETag pins for `range` sources (§5.2).
-- **#144, the 3D terrain:** AWS's Terrarium tiles (`terrain_pack::URL`) and GLO-30 north of 60°N
-  (`terrain_north::BUCKET`, `NORTH_PIN`) declared (AWS's with `heights = "mixed"`, allowed only for
-  the terrain), the terrain's key naming the declarations. The repair, water flattening and blend
-  stay the terrain's code. Proof: the terrain and slope packs unchanged.
 
 ### 6.9 The remaining sources (planned)
 
@@ -1075,7 +1097,7 @@ Every hit fixed or exempted with its reason. Until then §9 lists what's left.
 
 ## 9. What still names a source in code
 
-What the planned work (§6.8 #144, §6.9, §7.2) still has to move out. **D:** becomes a declaration
+What the planned work (§6.9, §7.2) still has to move out. **D:** becomes a declaration
 field. **P:** moves to a producer. Configuration and generic code (formats, protocols, road network
 rules, storey heights per country, OSM name heuristics, the Wikidata properties asked for, the user
 agent) stay.
@@ -1085,9 +1107,9 @@ agent) stay.
   names); the tree tiles' meta source string (D); source lines in web/src's layer help and popups
   (trees.ts, buildings.ts, ui/buildings.ts, ferries.ts, overlays.ts, details.ts: D, from the
   catalog's credits); `web/src/basemap.ts`'s unused MapLibre attribution strings (to delete).
-- **Terrain** (#144): `terrain_pack.rs`'s `URL`, template, `NORTH_PIN` and stores' paths;
-  `terrain_north.rs`'s `BUCKET`, naming and tile list (D); the densification boxes in
-  `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).
+- **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
+  credit in `rules::CREDITS` the base's declaration takes over once accepted; the densification
+  boxes in `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).
 - **Trees and land cover:** `landcover.rs`'s URL and tile naming (D); `trees/mod.rs`'s `CHM10_URL`,
   its naming (the `lat=-0.0` quirk) and resolutions (D, read from data); `dem/leaftype.py`'s sources
   (P and D); `dem/trees.py`'s Python fallback (D, or deleted with it).

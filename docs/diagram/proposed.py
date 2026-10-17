@@ -148,9 +148,9 @@ def build(check=False):
     # ---- 4. terrain: per z3 pack near the coverage -----------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12;', 'kept raw, never edited'],
+    s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12;', 'declared; kept raw, never edited'],
                   kept=['sources/aws-terrarium/', 'an area’s tiles packed'])
-    s_glo = d.src('terr', s_aws.b + 8, 'Copernicus GLO-30', ['30 m, north of 59.5° N, where', 'AWS mixes datums'], kept=['sources/copernicus-dem/'])
+    s_glo = d.src('terr', s_aws.b + 8, 'Copernicus GLO-30', ['30 m, north of 59.5° N, where', 'AWS mixes datums; declared'], kept=['sources/fetched/glo30/'])
     s_bw = d.src('base', s_glo.b + 8, 'The basemap’s water', ['lakes to their shore’s level,', 'the sea to 0 m'])
     n_terr = d.card('terr', 'd1', cy, 'terrain', 'Rust', ['z9–12 within 20 km of the', 'coverage, z3–8 per pack;', 'repaired; GLO-30 north of', '60° N; lakes and sea flattened'],
                     [(['layers/terrain/'], 'packs · Terrarium PNG')], scope='pack', shared=True)

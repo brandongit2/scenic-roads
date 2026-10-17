@@ -421,9 +421,6 @@ impl Cells for Inputs {
         // (One the job didn't ask for is one no sample reads: north_tile asks for a ring more.)
         self.cells.get(&(la, lo)).cloned().unwrap_or(Got::Missing)
     }
-    fn pin(&self) -> String {
-        crate::terrain_pack::NORTH_PIN.into()
-    }
 }
 
 /// Writes a group's tiles (`hi`, sorted) to `path`: a sectioned file, meta `{"fmt": 1, "step":
@@ -726,7 +723,7 @@ mod tests {
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.contains(&(34, 14)), "{ts:?}");
         crate::terrain_pack::tests::synthetic_raw(&d.join("local"), &cov, q, &[(34, 14)]);
-        ((34, 14), cov, RawTiles::with_store(&d.join("local"), &d.join("store")))
+        ((34, 14), cov, RawTiles::with_store(&d.join("local"), &d.join("store"), crate::terrain_sources::TEST_BASE))
     }
 
     fn cells() -> FnCells {
@@ -978,8 +975,8 @@ mod tests {
         let port: u16 = env("TT_PORT").parse().unwrap();
         let mut out = Out::unbound(&root, &scratch.join("job")).unwrap();
         let cov = live_coverage(&out);
-        let raw = RawTiles::with_store(&PathBuf::from(env("TT_RAW")), &root.join("sources/aws-terrarium"));
         let opened = crate::terrain_pack::SourceFiles::open(&out, false).unwrap();
+        let raw = RawTiles::with_store(&PathBuf::from(env("TT_RAW")), &root.join("sources/aws-terrarium"), &opened.declared.base);
         let coarse = Coarse::new(&raw);
         let src = opened.sources(Some(&coarse));
         let c = crate::coord::Coordinator::start(&scratch.join("coord"), Some(PathBuf::from(env("TT_WASM"))), port, "m4", "").unwrap();

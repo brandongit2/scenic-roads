@@ -404,7 +404,7 @@ impl Checks for Elevation {
         // Two datasets of one rank and resolution meeting: their order would fall to their ids.
         for (i, (a, da, ma)) in measured.iter().enumerate() {
             for (b, db, mb) in &measured[i + 1..] {
-                let same = da.rank.unwrap_or(0) == db.rank.unwrap_or(0) && (ma.resolution - mb.resolution).abs() < 0.5 && da.surface == db.surface;
+                let same = da.rank.unwrap_or(0) == db.rank.unwrap_or(0) && (ma.resolution - mb.resolution).abs() < 0.5 && da.surface == db.surface && da.terrain == db.terrain;
                 let (ca, cb) = (declared::Cover::of(ma.cover.as_deref()), declared::Cover::of(mb.cover.as_deref()));
                 let meet = ca.world || cb.world || ca.cells.iter().any(|c| cb.cells.contains(c));
                 if same && meet {
@@ -554,13 +554,27 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
 /// switch recorded (the units' tests: they're built only from the declared datasets).
 #[cfg(test)]
 pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
-    let d = Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 4, data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
+    let d = Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 4, terrain: false, data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
     let measured = Measured { crs: None, resolution: 150.0, cover: None };
-    let mut facts = serde_json::Map::new();
-    facts.insert("declaration".into(), serde_json::to_value(&d).unwrap());
-    facts.insert("measured".into(), serde_json::to_value(&measured).unwrap());
-    let file = format!("{}/world.0000000000000000.toml", super::store_dir(UNIT));
-    let files = BTreeMap::from([("world.toml".to_string(), super::FileEntry { file, size: 0, keyed: "w".into(), facts })]);
+    let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
+        let mut facts = serde_json::Map::new();
+        facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
+        facts.insert("measured".into(), serde_json::to_value(&measured).unwrap());
+        (format!("{id}.toml"), super::FileEntry { file: format!("{}/{id}.0000000000000000.toml", super::store_dir(UNIT)), size: 0, keyed: keyed.into(), facts })
+    };
+    let mut files = BTreeMap::from([entry("world", &d, measured, "w")]);
+    // (The terrain's: its base and its northern dataset, by an index of two 1° tiles, both where the
+    // code fetched them before they were declared, so its records from then are re-keyed.)
+    let base = Declaration { surface: "surface".into(), heights: "mixed".into(), rank: None, code: 0, terrain: true, data: Data::Tiles { url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(), zoom: 12, encoding: "terrarium".into() } };
+    files.extend([entry("terrarium", &base, Measured { crs: None, resolution: 38.0, cover: None }, "t")]);
+    let north = Declaration { surface: "surface".into(), heights: "EGM2008".into(), rank: None, code: 0, terrain: true, data: Data::Geotiff { urls: vec![], index: Some("glo30.geojson".into()), files: vec![], read_resolution: None, store: false } };
+    files.extend([entry("glo30", &north, Measured { crs: Some(4326), resolution: 30.0, cover: None }, "g")]);
+    let feature = |la: i32, lo: i32| serde_json::json!({ "type": "Feature", "properties": { "url": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_DEM.tif", -lo), "mask": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_FLM.tif", -lo) }, "geometry": { "type": "Polygon", "coordinates": [[[lo, la], [lo + 1, la], [lo + 1, la + 1], [lo, la + 1], [lo, la]]] } });
+    let index = serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": [feature(64, -148), feature(65, -148)] })).unwrap();
+    let ifile = format!("{}/glo30.0000000000000000.geojson", super::store_dir(UNIT));
+    std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
+    std::fs::write(root.join(&ifile), &index).unwrap();
+    files.insert("glo30.geojson".into(), super::FileEntry { file: ifile, size: index.len() as u64, keyed: "i".into(), facts: Default::default() });
     let index = super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
