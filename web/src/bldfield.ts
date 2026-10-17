@@ -74,6 +74,9 @@ const STANDIN_DEPTH = 3;
 const PREFETCH_LEVEL = 12;
 /** Elevations sampled again a frame for this long at most (ms; a tile without a hull yet has them at once). */
 const ELEV_BUDGET_MS = 3;
+/** The still view's cache freed after the view has moved for this many frames running (half a second
+ * at 120 Hz: a pause in a gesture keeps it, a pan away frees it). */
+const CACHE_FREE_FRAMES = 60;
 /** Fetches in flight at most. */
 const FETCHES = 6;
 /** The off-screen cache's target (MB): the tiles not wanted in the frame are freed, least recently
@@ -903,6 +906,8 @@ export class FieldLayer implements CustomLayerInterface {
   } | null = null;
   /** The last frame's inputs (the still view's cache: the same twice running, the view is still). */
   private lastKey = '';
+  /** Frames the view has moved for running (the still view's cache is freed after CACHE_FREE_FRAMES). */
+  private moving = 0;
   private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
 
   /** `url`: the tiles' template ({z}/{x}/{y}), else the server's. */
@@ -1540,7 +1545,11 @@ export class FieldLayer implements CustomLayerInterface {
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     this.drawn = [];
-    if (!this.on) return;
+    if (!this.on) {
+      // (the still view's cache freed while the field is off)
+      this.dropCache();
+      return;
+    }
     this.frame++;
     const tiles = this.cover();
     this.pump();
@@ -1599,7 +1608,10 @@ export class FieldLayer implements CustomLayerInterface {
       }
     }
     this.trim();
-    if (!draw.length) return;
+    if (!draw.length) {
+      this.dropCache();
+      return;
+    }
     const map = this.map;
     const tr = trOf(map);
     const camM = MercatorCoordinate.fromLngLat(tr.getCameraLngLat());
@@ -1687,8 +1699,11 @@ export class FieldLayer implements CustomLayerInterface {
       } else {
         this.cacheStats.direct++;
         if (this.cache) this.cache.valid = false;
+        // (freed once the view has kept moving a while: ~56 MB at 2880 × 1626)
+        if (++this.moving >= CACHE_FREE_FRAMES) this.dropCache();
       }
-    }
+      if (still) this.moving = 0;
+    } else this.dropCache();
     let pr: Prog;
     try {
       pr = this.program(opts.shaderData);
@@ -1890,7 +1905,9 @@ export class FieldLayer implements CustomLayerInterface {
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
     if (cache && scene) {
-      // (the depth it's drawn over kept for the next frame's check; the cache over the frame)
+      // (the depth it's drawn over kept for the next frame's check; the cache over the frame. Both, and
+      // the cache's own size, take the viewport to start at (0, 0) and fill the framebuffer, as
+      // MapLibre's does: gl_FragCoord addresses the cache and the depth alike.)
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, cache.readFb);
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, cache.depthFb);
       gl.blitFramebuffer(0, 0, cache.w, cache.h, 0, 0, cache.w, cache.h, gl.DEPTH_BUFFER_BIT, gl.NEAREST);

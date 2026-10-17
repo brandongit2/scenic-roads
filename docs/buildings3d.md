@@ -440,7 +440,8 @@ equator).
   of drawing straight into it), and later frames draw only that texture, marching again only the
   pixels whose depth (meshes, terrain) changed since (a tile coming in). Tokyo, zoom 14, 60°, still,
   M1 Pro: the field ~1 ms a frame instead of ~17 (`?fcache=0`: off). A moving view draws straight
-  into the frame, as before.
+  into the frame, as before. The cache (~56 MB at 2880 × 1626) is freed when the field is off or
+  draws nothing, without the frame's depth, and after the view has moved for 60 frames running.
 - Debug and tuning switches: `?fdbg=` (43: each pixel's steps, cells walked and fragments, added up
   in the frame), `?fstx=`, `?fopt=` (default 3).
 
