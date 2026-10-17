@@ -372,11 +372,14 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     glide = 0;
     glideCam = null;
   }
+  map.on('remove', stopGlide); // a pending glide frame never touches a removed map
   const startGlide = (a: Anchor, own: boolean, trail: [number, number, number][], tUp: number) => {
     stopGlide();
     const last = trail[trail.length - 1];
+    // (The trail holds real movements only: a pointer held still has an old last sample.)
     if (!last || tUp - last[0] > GLIDE_HELD_MS) return; // held still before release
-    const recent = trail.filter(([t]) => last[0] - t <= GLIDE_SAMPLE_MS);
+    // The last GLIDE_SAMPLE_MS, and at least the last two samples (a slow frame rate's).
+    const recent = trail.filter(([t], i) => last[0] - t <= GLIDE_SAMPLE_MS || i === trail.length - 2);
     const first = recent[0];
     const span = last[0] - first[0];
     if (span < 8) return;
@@ -475,7 +478,14 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     const rect = el.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     const now = performance.now();
-    hold.trail.push([now, e.clientX, e.clientY]);
+    // Each real movement (a pointer held still adds nothing), with the browser's coalesced
+    // samples between frames where it has them.
+    const samples = (e.getCoalescedEvents?.() ?? []).filter((c) => c.pointerId === e.pointerId);
+    for (const c of samples.length ? samples : [e]) {
+      const prev = hold.trail[hold.trail.length - 1];
+      if (prev && prev[1] === c.clientX && prev[2] === c.clientY) continue;
+      hold.trail.push([Math.min(now, c.timeStamp || now), c.clientX, c.clientY]);
+    }
     while (hold.trail.length > 2 && now - hold.trail[0][0] > GLIDE_SAMPLE_MS + GLIDE_HELD_MS) hold.trail.shift();
     const td = hold.tapDrag;
     if (td) {
