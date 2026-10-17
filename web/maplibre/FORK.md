@@ -61,6 +61,11 @@ The app compiles this source with its own code; there is no separate build or `d
 - **Trilinear mipmaps** (`draw_raster.ts`): a raster source with `"scenic:mipmap": "linear"`
   minifies between mipmap levels (the app's water).
 
+- **Local glyphs drawn in slices** (`glyph_manager.ts`, `GLYPH_SLICE_MS`): glyphs drawn with
+  TinySDF (CJK, clusters, `font-faces`) run at most 4 ms of the main thread at a time, the rest in
+  later tasks; a city's CJK labels drew 300–600 ms of glyphs in one task. The labels come a frame or
+  two later.
+
 ### Tile covers over 3D terrain
 
 - **Covers redone when elevations arrive** (`bounding_volume_cache.ts`, `TileManager.demVersion`,

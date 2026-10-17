@@ -59,6 +59,54 @@ const defaultGenericFontFamily = 'sans-serif';
 const textureScale = 2;
 
 /**
+ * Scenic Roads: glyphs drawn here (TinySDF, ~0.5 ms each) run in slices of the main thread at most
+ * this long, the rest after the page's other work: a city's CJK labels drew 300–600 ms of glyphs in
+ * one task, a frozen frame while tiles loaded. The glyphs are the same; the labels come a frame or
+ * two later.
+ */
+const GLYPH_SLICE_MS = 4;
+const glyphQueue: Array<() => void> = [];
+let glyphDraining = false;
+
+/** The next task, without setTimeout's 4 ms clamp once nested. */
+function nextTask(): Promise<void> {
+    return new Promise((resolve) => {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => {
+            ch.port1.close();
+            resolve();
+        };
+        ch.port2.postMessage(0);
+    });
+}
+
+async function drainGlyphs(): Promise<void> {
+    while (glyphQueue.length) {
+        const t0 = performance.now();
+        while (glyphQueue.length && performance.now() - t0 < GLYPH_SLICE_MS) glyphQueue.shift()();
+        if (glyphQueue.length) await nextTask();
+    }
+    glyphDraining = false;
+}
+
+/** `f` run in the glyphs' next slice. */
+function inGlyphSlice<T>(f: () => T): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        glyphQueue.push(() => {
+            try {
+                resolve(f());
+            } catch (e) {
+                reject(e);
+            }
+        });
+        if (!glyphDraining) {
+            glyphDraining = true;
+            void drainGlyphs();
+        }
+    });
+}
+
+/**
  * The rasterizer, as it really is. TinySDF carries the `buffer` it was built with, which its type
  * declaration leaves out and which the canvas has to be widened through.
  */
@@ -278,7 +326,7 @@ export class GlyphManager {
      */
     async _drawGlyph(entry: Entry, stack: string, id: string, fontFaceFamily?: string): Promise<StyleGlyph> {
         const tinySDF = await this._getTinySDF(entry, stack, id, fontFaceFamily);
-        const char = tinySDF.draw(id);
+        const char = await inGlyphSlice(() => tinySDF.draw(id));
 
         /**
          * TinySDF's "top" is the distance from the alphabetic baseline to the top of the glyph.
