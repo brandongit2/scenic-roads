@@ -19,7 +19,7 @@ contract is docs/inputs.md in the repository.
 | `elevation/` | source declarations | `<dataset>.toml`, its tile index `.geojson` |
 | `sources/` | source declarations | `<id>.toml`, its index `.geojson` (land cover, canopy, leaf type, buildings, Wikidata, Wikipedia, lake fill, depth) |
 
-Not inputs: `keys.env` (secrets), `hold-catalog` (a control).
+Not inputs: `keys.env` (secrets), `hold-catalog` (a control), `ferries/` (not a drop box: nothing reads it; its research answers are kept in `timetables/gtfs/how/research/`, and the folder can be deleted).
 
 ## The three kinds
 

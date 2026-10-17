@@ -20,4 +20,3 @@ researched where the article was thin (`RESEARCH.md`). They wrote from the herit
 Wikipedia extracts. The rule that chose those targets and the checks run on them weren't kept; the
 set can be written again from `todo/` with today's brief.
 
-(`README-2026-10.md` is an earlier note on the answers' shape; this file replaces it.)

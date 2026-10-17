@@ -14,7 +14,7 @@ For reference: how the batch translators were launched in the original project, 
 ## The prompt for a batch
 
 ```text
-You give English names for place names on a personal offline map. Project root: /Users/brandontsang/projets/road-elevations.
+You give English names for place names on a personal offline map. Project root: <project root>.
 
 Read data/names/tr/TRANSLATORS.md first and follow it exactly. Your batch: data/names/tr/<batch>.jsonl → write data/names/tr/<batch>.out.jsonl.
 
