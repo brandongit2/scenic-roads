@@ -382,7 +382,7 @@ never correctness, politeness or work.
 | Need | How |
 | --- | --- |
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
-| input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, and the counts a step has: ways and vertices, buildings, peaks); recorded only, not yet read by placement |
+| input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the reserve (30 GB), the fastest-growing job is frozen, room is made from caches no job holds (`room::toward`), and it goes on or is given back. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
 | two jobs on one Mac | a job starts beside another only if both jobs' measured memory and disk fit; a cold start runs alone |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |
@@ -391,9 +391,20 @@ never correctness, politeness or work.
 | write-set | `agent::steps::writes`, enforced by `Out` and the merge (§7.3). Raw archives, answers and `bld-fetch`'s sources are outside the manifest, each written whole under its module's names |
 | batch | a member's: as many targets as fit a quarter hour of measured time; the lead's own: the table's |
 
+**One model per step** (`pipeline::needs::Book::need(step, target, threads, guess)`): a target's
+memory, disk and time are its own run's when measured the way its step runs now
+(`coord::cost_version`; memory never below its floor); else base + k × size fitted over the step's
+measured runs (least squares raised to cover every run, × 1.1; threads a term when the runs differ in
+them), on whichever size fits best (a `sizes` measure the target has from an earlier run, or its
+tile's area); else the step's measured largest; else the caller's first guess (the steps table's,
+or the size the plan offered). A fit is judged on runs held out of it (5 folds) and not used when it
+predicts under on more than 5% of them, is off by more than 50% on the median one, or has fewer than
+10 runs. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `peak`), its floors
+and the forecast all read it. `scenic pool needs --fit` prints each step's fits and their held-out
+errors (memory, wall time, disk) beside the step's largest's, and lists the steps that don't fit.
+
 **A cold start** (no target of its step measured) runs alone on the Mac with the most room; after
-one run, the step's other targets are offered by the 90th percentile of its measured targets
-(`crate::coord::Coordinator::measured`). A floor never stalls the build: the first slot starts once
+one run, the step's other targets are offered by its model (above). A floor never stalls the build: the first slot starts once
 room-making has done what it can, the disk guard as backstop.
 
 Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather

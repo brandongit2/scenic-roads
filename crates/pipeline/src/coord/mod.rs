@@ -142,10 +142,6 @@ pub fn cost_key(step: &str, target: &str) -> String {
     if step == "unit" { target.to_string() } else { format!("{step} {target}") }
 }
 
-/// The memory a job of `step` for `target` is predicted to take (MB): a unit's by `unit_peak` (`size`
-/// its piece's bytes); candidates' what they took last time, else the unit's (they read the same
-/// piece, with one of the unit's programs: `size` its bytes too); another step's what it took last
-/// time, else `size`, the estimate it was offered with.
 /// How long `target` of `step` is predicted to take `worker`: its last run's time (twice another
 /// worker's: the members run at about half the lead's pace); None when it hasn't run the way
 /// the step runs now.
@@ -154,13 +150,20 @@ pub fn job_secs(costs: &BTreeMap<String, Cost>, step: &str, target: &str, worker
     Some(if c.worker.as_deref() == Some(worker) { c.secs } else { c.secs * 2 })
 }
 
+/// The memory a job of `step` for `target` is predicted to take (MB), by its step's model
+/// (crate::needs, its costs alone; `size` sizes its first guess, `first_guess`).
 pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
-    // (Only what was measured the way the step runs now.)
-    match (step, costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step))) {
-        ("unit", _) => unit_peak(costs, target, size),
-        (_, Some(c)) => c.peak_mb,
-        ("pois", None) => unit_peak(costs, target, size),
-        (_, None) => size,
+    crate::needs::Book::new(costs).need(step, target, 0, first_guess(costs, step, target, size)).mem_mb
+}
+
+/// The memory a job of `step` for `target` is guessed to take (MB) when none of its step has been
+/// measured (crate::needs' last resort): a unit's by `unit_peak` (`size` its piece's bytes);
+/// candidates' as the unit's (they read the same piece, with one of the unit's programs: `size` its
+/// bytes too); another step's `size`, the estimate it was offered with.
+pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
+    match step {
+        "unit" | "pois" => unit_peak(costs, target, size),
+        _ => size,
     }
 }
 
@@ -403,8 +406,13 @@ impl Shared {
     /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from
     /// its costs and `size`, and never below its floor (one of an older way of its step too: the best
     /// estimate there is until it runs again).
-    fn peak_of(&self, step: &str, target: &str, size: u64) -> u64 {
-        job_peak(&self.costs, step, target, size).max(self.floors.get(&cost_key(step, target)).map_or(0, |f| f.mb))
+    fn peak_of(&self, step: &str, target: &str, size: u64, threads: u32) -> u64 {
+        self.book().need(step, target, threads, first_guess(&self.costs, step, target, size)).mem_mb
+    }
+
+    /// The measures crate::needs reads: the costs, the floors and the disk floors.
+    fn book(&self) -> crate::needs::Book<'_> {
+        crate::needs::Book { costs: &self.costs, floors: Some(&self.floors), disks: Some(&self.disks) }
     }
 
     /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
@@ -431,14 +439,14 @@ impl Shared {
             // (A floor past a worker's limit keeps the target from it: its predicted memory is never
             // below it. The lead tries a target whose floor past its own limit was a batch's in a job
             // of its own, crate::agent's `guard_holds`; one under a worker's runs batched.)
-            return take(open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size) <= a.mem_mb).take(n).collect());
+            return take(open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb).take(n).collect());
         }
         let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return Vec::new() };
         // Its owner away: a job that fits the more it spares then, as long as it ends in time.
         let mut left = max;
         take(
             open.into_iter()
-                .filter(|(t, _, size)| self.peak_of(&o.step, t, *size) <= more && job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| s <= max))
+                .filter(|(t, _, size)| self.peak_of(&o.step, t, *size, a.cores) <= more && job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| s <= max))
                 .take_while(|(t, _, _)| match job_secs(&self.costs, &o.step, t, &a.worker) {
                     Some(s) if s <= left => {
                         left -= s;
@@ -451,25 +459,18 @@ impl Shared {
         )
     }
 
-    /// `Coordinator::measured`, under its lock.
+    /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk;
+    /// None while nothing of its step was measured (its memory would be the table's guess).
     fn measured(&self, step: &str, target: &str) -> Option<Measured> {
-        let v = cost_version(step);
-        let key = cost_key(step, target);
-        let mem_of = |k: &str| self.costs.get(k).filter(|c| c.v >= v).map(|c| c.peak_mb).into_iter().chain(self.floors.get(k).filter(|f| f.v >= v).map(|f| f.mb)).max();
-        let of_step = |k: &String| crate::agent::memguard::step_of_key(k) == step;
-        let own_mem = mem_of(&key);
-        let keys: BTreeSet<&String> = self.costs.keys().chain(self.floors.keys()).filter(|k| of_step(k)).collect();
-        let prior_mem = high(keys.into_iter().filter_map(|k| mem_of(k)).collect());
-        let mem = own_mem.or(prior_mem)?;
-        let disk = self.disks.get(&key).copied().or_else(|| high(self.disks.iter().filter(|(k, _)| of_step(k)).map(|(_, d)| *d).collect())).unwrap_or(0);
-        Some(Measured { mem_mb: mem, disk_mb: disk, own: own_mem.is_some() })
+        let n = self.book().need(step, target, 0, 0);
+        (n.mem_from != crate::needs::From::Table).then_some(Measured { mem_mb: n.mem_mb, disk_mb: n.disk_mb.unwrap_or(0), own: n.mem_from == crate::needs::From::Measured })
     }
 
     /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
-    /// its step's other targets' (the 90th percentile, a prior learned as the memory's is); None when
+    /// its step's model's (crate::needs: its fit, else the most a target of its step took); None when
     /// none of its step's has run the way it runs now.
     fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
-        job_secs(&self.costs, step, target, worker).or_else(|| high(self.costs.iter().filter(|(k, c)| crate::agent::memguard::step_of_key(k) == step && c.v >= cost_version(step)).map(|(_, c)| c.secs).collect()))
+        job_secs(&self.costs, step, target, worker).or_else(|| self.book().need(step, target, 0, 0).secs)
     }
 
     /// The worker that takes a cold start of `step` now (docs/pool.md §7.7): of the agents around
@@ -633,8 +634,8 @@ impl Shared {
                         _ if held.contains(t) => h += 1,
                         _ if self.done.get(&(o.step.clone(), t.clone())) == Some(k) => d += 1,
                         _ if backoff => b += 1,
-                        _ if self.peak_of(&o.step, t, *size) <= a.mem_mb => fits += 1,
-                        _ if a.more_mb.is_none_or(|m| self.peak_of(&o.step, t, *size) > m) => big += 1,
+                        _ if self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb => fits += 1,
+                        _ if a.more_mb.is_none_or(|m| self.peak_of(&o.step, t, *size, a.cores) > m) => big += 1,
                         _ if !job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| Some(s) <= a.max_secs) => long += 1,
                         _ => fits += 1,
                     }
@@ -1412,17 +1413,17 @@ impl Coordinator {
             .max_by_key(|(_, l)| *l)
     }
 
-    /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: as its
-    /// last run measured (the way the step runs now), else by what the plan offered it with (a
-    /// unit's piece, another step's guess); None when it's neither (a step not offered).
+    /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: its
+    /// step's model's (crate::needs), its first guess what the plan offered it with (a unit's piece,
+    /// another step's guess); None when nothing of its step was measured and it isn't offered.
     pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
         let s = self.shared.lock().unwrap();
-        let measured = s.costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step)).map(|c| c.peak_mb);
-        let offered = s.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)).map(|t| s.peak_of(step, target, t.2));
-        let floor = s.floors.get(&cost_key(step, target)).map(|f| f.mb);
-        match (measured.or(offered), floor) {
-            (Some(p), f) => Some(p.max(f.unwrap_or(0))),
-            (None, f) => f,
+        match s.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)) {
+            Some(t) => Some(s.peak_of(step, target, t.2, 0)),
+            None => {
+                let n = s.book().need(step, target, 0, 0);
+                (n.mem_from != crate::needs::From::Table || n.mem_mb > 0).then_some(n.mem_mb)
+            }
         }
     }
 
@@ -1627,17 +1628,6 @@ impl Coordinator {
         let now = s.now();
         s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).map(|(n, w)| (n.clone(), w.clone())).collect()
     }
-}
-
-/// A step's prior from its targets' measures: a high one, not the most (one outlier, a target
-/// unlike the rest, can't hold every other target of its step to its figure): the 90th percentile,
-/// nearest rank; None with none.
-fn high(mut v: Vec<u64>) -> Option<u64> {
-    if v.is_empty() {
-        return None;
-    }
-    v.sort_unstable();
-    Some(v[(v.len() * 9).div_ceil(10).saturating_sub(1)])
 }
 
 /// What a target is measured to take (`Coordinator::measured`): memory and disk (MB), and whether
@@ -3355,7 +3345,10 @@ mod tests {
         let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two areas (the third too big), hands one back.
-        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() });
+        // (Each measured: a unit not measured would take its step's largest, crate::needs.)
+        for (u, mb) in [("6/1/1", 9000), ("6/1/2", 3000), ("6/1/3", 3000)] {
+            c.shared.lock().unwrap().costs.insert(u.into(), Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() });
+        }
         let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
@@ -3526,14 +3519,14 @@ mod tests {
         assert_eq!(c.measured("peaks", "6/1/1"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: true }));
         assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
         assert_eq!(c.measured("pois", "6/2/2"), None);
-        // A target measured at 0 keeps its 0, not its step's prior; one outlier doesn't make the
-        // step's prior (its 90th percentile, not its most).
+        // A target measured at 0 keeps its 0, not its step's prior; the prior is the step's most
+        // (crate::needs: no fit over these, they have no sizes).
         c.add_disks(&[(cost_key("peaks", "6/3/3"), 0)]);
         assert_eq!(c.measured("peaks", "6/3/3").map(|m| m.disk_mb), Some(0));
         let many: Vec<(String, u64)> = (10..30).map(|i| (cost_key("peaks", &format!("6/{i}/1")), 1000)).collect();
         c.add_disks(&many);
         c.add_disks(&[(cost_key("peaks", "6/30/1"), 50_000)]);
-        assert_eq!(c.measured("peaks", "6/99/1").map(|m| m.disk_mb), Some(1000));
+        assert_eq!(c.measured("peaks", "6/99/1").map(|m| m.disk_mb), Some(50_000));
         // A batch: its targets' disks summed, or the most a job of the step took, the larger.
         assert_eq!(c.measured_batch("peaks", &["6/1/1".into(), "6/10/1".into()]).map(|m| m.disk_mb), Some(8000));
         c.add_job_disk("peaks", 20_000);

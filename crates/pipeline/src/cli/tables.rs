@@ -26,6 +26,7 @@ pub const SCENIC: Table = Table {
         c("pool status", "[--root <dir>]", "how the pool stands", &[], R, 0),
         c("pool release", "<member> \"<job>\" [--root <dir>]", "a job's progress on a member's Mac given up: the lead runs it wherever it fits", &[], R, 2),
         c("pool floors", "[--clear [<step> [<target>]]] [--root <dir>]", "the targets' memory floors the lead's coordinator keeps; --clear clears them (all, a step's or one target's)", &["--clear"], R, 2),
+        c("pool needs", "--fit [--costs <costs.json | costs.jsonl>] [--root <dir>]", "each step's model of what its jobs need (pipeline::needs): its fits' errors on held-out runs (memory, time, disk) and the steps that don't fit; read only, this Mac's coordinator's costs unless --costs", &["--fit"], &["--costs", "--root"], 0),
         c("run-task", "--spec <file> --lease <id> --dir <folder> --result <file> [--root <dir>]", "a task a member's agent leased, run here (the agent's)", &[], &["--spec", "--lease", "--dir", "--result", "--root"], 0),
         c("lead", "[--home <dir>]", "who leads the build, its term, since when, a handover under way, each member and whether it can lead (docs/pool.md §11)", &[], HR, 0),
         c("lead status", "[--home <dir>]", "the same", &[], HR, 0),

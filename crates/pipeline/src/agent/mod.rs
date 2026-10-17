@@ -4944,11 +4944,14 @@ impl Agent {
                 (None, None) => first_secs(step),
             }
         };
+        // (Its memory by its step's model, crate::needs: its own measure the way the step runs now,
+        // else its step's fit or largest, else `peak`'s first guess.)
+        let book = crate::needs::Book::new(&costs);
+        let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                // (Its memory only when measured the way the step runs now: crate::coord::cost_version.)
-                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: if c.v >= crate::coord::cost_version(step) { c.peak_mb } else { peak(step, t) } },
-                None => Cost { secs: per(step), known: false, peak_mb: peak(step, t) },
+                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: need_mb(step, t) },
+                None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
             }
         };
         // The lead's own steps: what a target took here lately (measured), else a first guess.

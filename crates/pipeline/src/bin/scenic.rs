@@ -810,6 +810,19 @@ fn main() -> Result<()> {
                     let (Some(m), Some(job)) = (args.get(3), args.get(4)) else { anyhow::bail!("scenic pool release <member> \"<job>\" (e.g. \"osm-pass 2026-10-01\")") };
                     println!("{}", agent::resume::release(&r, m, job)?);
                 }
+                Some("needs") => {
+                    // Each step's model of what its jobs need (pipeline::needs): `--fit` prints its
+                    // fits' errors on held-out runs and the steps that don't fit. Read only: the
+                    // coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this Mac's
+                    // agent's), its disk floors beside them.
+                    anyhow::ensure!(flag(&args, "--fit"), "scenic pool needs --fit [--costs <costs.json | costs.jsonl>]");
+                    let p = opt(&args, "--costs").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
+                    let (costs, mut disks) = pipeline::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
+                    let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                    disks.extend(kept);
+                    println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
+                    print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book { costs: &costs, floors: None, disks: Some(&disks) }));
+                }
                 Some("floors") => {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
