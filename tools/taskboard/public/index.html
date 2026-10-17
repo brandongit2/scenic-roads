@@ -1376,9 +1376,10 @@
     S.needRender = false;
     M = build();
     // (A task just made stays selected through the moment between its write landing and the server's
-    // snapshot showing it; `fresh` is dropped once the selection moves on.)
-    if (S.fresh && S.sel !== S.fresh) S.fresh = null;
-    if (S.sel && !M.byId.has(S.sel) && S.sel !== S.fresh) { S.sel = null; S.sheet = false; }
+    // snapshot showing it; `fresh` holds for 2 s at most, then a still-missing item is deselected.)
+    const holding = !!S.fresh && S.fresh.id === S.sel && Date.now() < S.fresh.until;
+    if (S.fresh && !holding) S.fresh = null;
+    if (S.sel && !M.byId.has(S.sel) && !holding) { S.sel = null; S.sheet = false; }
     const focus = rememberFocus();
     const scrolls = ["tree-scroll", "prio-scroll"].map((id) => $(id).scrollTop);
     renderHeader();
@@ -1708,7 +1709,7 @@
     const host = $("editor");
     const it = S.sel ? M.byId.get(S.sel) : null;
     if (!it) {
-      if (S.sel && S.sel === S.fresh && ED.id === S.sel) return; // (just made, not in the snapshot yet: the details stay as they are)
+      if (S.fresh && S.sel === S.fresh.id && Date.now() < S.fresh.until && ED.id === S.sel) return; // (just made, not in the snapshot yet: the details stay as they are)
       if (ED.id !== null || !host.firstChild) { ED.id = null; ED.f = {}; host.replaceChildren(emptyEditor()); }
       return;
     }
@@ -2169,11 +2170,11 @@
     if (S.draft === d) S.draft = null;
     if (!text) { render(); return; }
     const id = newId("items");
-    S.sel = id;
     createWith(id, d.kind, d.parent, text);
     // The new item is selected with its details open, so its description, priority and the rest can be
     // filled in right away: focus goes to the description (the title is already typed).
-    S.fresh = id;
+    S.fresh = { id, until: Date.now() + 2000 };
+    setTimeout(() => render(), 2100); // (a still-missing item is then deselected)
     select(id, { open: true });
     rowEl("tree", id)?.scrollIntoView({ block: "nearest" });
     if (wasFocused) ($("ed-note") && !$("ed-note").readOnly ? $("ed-note") : rowEl("tree", id))?.focus({ preventScroll: true });
