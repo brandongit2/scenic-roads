@@ -1,0 +1,26 @@
+name = "ESA WorldCover 10 m 2021 v200"
+what = "Land cover"
+credit = "ESA WorldCover 2021"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://esa-worldcover.org/"
+territory = "world"
+notes = "Read at its 1/4 overview (~40 m) where the land-cover packs lack a grid tile (crate::landcover)."
+
+[data]
+role = "land-cover"
+format = "geotiff"
+# 3° tiles, `{tile}` their south-west corner (N45W069).
+url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
+version = "v200 (2021)"
+refresh = "pinned"
+
+# WorldCover's classes, by the grid's (roadcore::grid::class); any other is no data.
+[data.params.legend]
+trees = [10, 95]           # tree cover, mangroves
+shrub = [20]
+open = [30, 40, 60, 100]   # grassland, cropland, bare, moss and lichen
+built = [50]
+water = [80]
+wetland = [90]             # herbaceous wetland
+snow = [70]

@@ -38,6 +38,7 @@ pub mod languages;
 pub mod lint;
 pub mod regions;
 pub mod served;
+pub mod sources;
 pub mod translations;
 pub mod view;
 pub mod watch;
@@ -46,7 +47,7 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 9] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT, gtfs::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT];
+pub const UNITS: [&str; 10] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT, gtfs::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -92,6 +93,7 @@ static REGIONS: std::sync::LazyLock<regions::Regions> = std::sync::LazyLock::new
 static HERITAGE: std::sync::LazyLock<heritage::Heritage> = std::sync::LazyLock::new(heritage::Heritage::default);
 static MATCHES: std::sync::LazyLock<heritage_matches::Matches> = std::sync::LazyLock::new(heritage_matches::Matches::default);
 static ELEVATION: std::sync::LazyLock<elevation::Elevation> = std::sync::LazyLock::new(elevation::Elevation::default);
+static SOURCES: std::sync::LazyLock<sources::SourcesCheck> = std::sync::LazyLock::new(sources::SourcesCheck::default);
 
 /// The checks of unit `unit`; None for a unit this app doesn't know.
 pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
@@ -107,6 +109,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
         heritage::UNIT => Some(&*HERITAGE),
         heritage_matches::UNIT => Some(&*MATCHES),
         elevation::UNIT => Some(&*ELEVATION),
+        sources::UNIT => Some(&*SOURCES),
         _ => None,
     }
 }

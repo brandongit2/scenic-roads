@@ -580,6 +580,30 @@ pub fn owns(tb: [i32; 4], p: [i32; 2]) -> bool {
     p[0] >= tb[0] && p[0] < tb[2] && p[1] >= tb[1] && p[1] < tb[3]
 }
 
+/// What a unit's programs read of the declared sources (crate::inputs::sources), in its folder
+/// (`UnitSources::FILE`), written as the folder is prepared (`prepare_folder`).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UnitSources {
+    /// The land-cover source (`landcover`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land_cover: Option<crate::landcover::Cover>,
+}
+
+impl UnitSources {
+    pub const FILE: &'static str = "sources.json";
+
+    /// What the unit's programs read of `s`.
+    pub fn of(s: &crate::inputs::sources::Sources) -> Result<UnitSources> {
+        Ok(UnitSources { land_cover: Some(crate::landcover::Cover::of(s.role(crate::inputs::sources::LAND_COVER)?)?) })
+    }
+
+    /// Folder `dir`'s.
+    pub fn read(dir: &Path) -> Result<UnitSources> {
+        let p = dir.join(Self::FILE);
+        serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{} (the unit job writes it from the declared sources)", p.display()))?).with_context(|| p.display().to_string())
+    }
+}
+
 /// Where a unit's steps find their programs and caches.
 #[derive(Clone)]
 pub struct Tools {
@@ -612,6 +636,10 @@ pub struct Tools {
     /// The declared elevation datasets' accepted version (crate::inputs::elevation): a unit's
     /// folder is prepared only with one (None: a task's worker, which runs the tail alone).
     pub elevation: Option<crate::inputs::Accepted>,
+    /// The declared sources' accepted version (crate::inputs::sources): what a unit's programs read
+    /// of them is written into its folder (`UnitSources`); a folder is prepared only with them (None:
+    /// a task's worker, which runs the tail alone).
+    pub declared: Option<crate::inputs::sources::Sources>,
     /// Where to keep a copy of the folder before and after each of the steps' programs, with the
     /// command that ran it (`<n> <step> before|after` and `….cmd`): `scenic-build unit-snap`, for
     /// running the steps again elsewhere (natively at other thread counts, as WebAssembly) and
@@ -1031,6 +1059,9 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
     let e7 = |v: i32| v as f64 * 1e-7;
     let plan = crate::dem::declared::plan(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])])?;
+    // (And what its programs read of the other declared sources.)
+    let declared = tools.declared.as_ref().context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
+    std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     std::fs::write(dir.join(crate::dem::declared::PLAN_FILE), serde_json::to_vec_pretty(&plan)?)?;
     rep.dem_cache = dem_cache_slice_with(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &DemValidity::of(&plan))?;
     s.end();
@@ -1047,8 +1078,8 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     let mut c = store::spawn::command(tools.bin.join("areaflags"));
     c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
     run_in(c, "area flags (areaflags)", &log, dir, tools)?;
-    // Land cover the packs lack (new coverage): ESA WorldCover for those grid tiles only; the
-    // rest stays as staged.
+    // Land cover the packs lack (new coverage): the declared land-cover source for those grid tiles
+    // only; the rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
         let mut c = store::spawn::command(tools.bin.join("landcover"));
         c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));

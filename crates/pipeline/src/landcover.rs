@@ -1,8 +1,9 @@
-//! Land cover on the z11 analysis grid (`grid.idx`) from ESA WorldCover 2021 (10 m): the
-//! `landcover` program. WorldCover's 1/4 overview (~40 m) is read over each grid tile
-//! and sampled at the cells' centres (the pixel they fall in); its classes collapse to
-//! `roadcore::grid::class`: 1 trees (and mangroves), 2 shrub, 3 open (grass, crop, bare,
-//! moss/lichen), 4 built-up, 5 water, 6 herbaceous wetland, 7 snow/ice, 0 no data.
+//! Land cover on the z11 analysis grid (`grid.idx`) from the land-cover source the owner declares
+//! (docs/inputs.md §6.9: ESA WorldCover 2021, 10 m): the `landcover` program. The source's 1/4
+//! overview (~40 m) is read over each grid tile and sampled at the cells' centres (the pixel they
+//! fall in); its classes collapse to `roadcore::grid::class` by its declaration's legend
+//! (`params.legend`): 1 trees, 2 shrub, 3 open, 4 built-up, 5 water, 6 herbaceous wetland, 7
+//! snow/ice; 0 no data and any class the legend doesn't list.
 //!
 //! With `only` (a unit's build): just the grid slots listed (grid.idx order: the tiles the packs
 //! lack), the rest of grid.class.u8 kept as staged. Without: every tile, those of the last run
@@ -14,50 +15,69 @@ use anyhow::{bail, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{CELLS, TS, WORLD};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub fn url(tile: &str) -> String {
-    format!("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{tile}_Map.tif")
+/// The land-cover source as the program reads it: its tiles' URL template (`{tile}`: `tile_name`)
+/// and its classes to the grid's (256 entries, from its legend).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cover {
+    pub url: String,
+    pub classes: Vec<u8>,
 }
 
-/// WorldCover's classes to the grid's.
-const LUT: [u8; 256] = {
-    let mut l = [0u8; 256];
-    let pairs = [(10, 1), (95, 1), (20, 2), (30, 3), (40, 3), (60, 3), (100, 3), (50, 4), (80, 5), (90, 6), (70, 7)];
-    let mut i = 0;
-    while i < pairs.len() {
-        l[pairs[i].0] = pairs[i].1;
-        i += 1;
-    }
-    l
-};
+/// The grid's classes by the names a legend gives them (`roadcore::grid::class`).
+const GRID_CLASSES: [(&str, u8); 7] = [("trees", 1), ("shrub", 2), ("open", 3), ("built", 4), ("water", 5), ("wetland", 6), ("snow", 7)];
 
-/// A WorldCover tile's name (3° squares, by their south-west corner).
+impl Cover {
+    /// The declared land-cover source's (crate::inputs::sources: its `url`, and `params.legend`,
+    /// each grid class's source classes).
+    pub fn of(s: &crate::inputs::sources::Source) -> Result<Cover> {
+        let legend = s.param("legend")?.as_object().with_context(|| format!("{}: `params.legend` isn't a table", s.id))?;
+        let mut classes = vec![0u8; 256];
+        for (name, codes) in legend {
+            let &(_, c) = GRID_CLASSES.iter().find(|g| g.0 == name).with_context(|| format!("{}: `params.legend.{name}` isn't a grid class ({})", s.id, GRID_CLASSES.map(|g| g.0).join(", ")))?;
+            for v in codes.as_array().with_context(|| format!("{}: `params.legend.{name}` isn't a list", s.id))? {
+                let v = v.as_u64().filter(|v| *v < 256).with_context(|| format!("{}: `params.legend.{name}` holds {v}, not a class of 0–255", s.id))?;
+                classes[v as usize] = c;
+            }
+        }
+        Ok(Cover { url: s.url()?.to_string(), classes })
+    }
+
+    /// Tile `tile`'s URL.
+    pub fn url(&self, tile: &str) -> String {
+        self.url.replace("{tile}", tile)
+    }
+}
+
+/// A 3° tile's name (by its south-west corner): what the template's `{tile}` takes.
 pub fn tile_name(lat0: i64, lon0: i64) -> String {
     format!("{}{:02}{}{:03}", if lat0 >= 0 { 'N' } else { 'S' }, lat0.abs(), if lon0 >= 0 { 'E' } else { 'W' }, lon0.abs())
 }
 
-/// WorldCover's tiles, opened as they're needed (None: the open sea, where there's none).
+/// The source's tiles, opened as they're needed (None: the open sea, where there's none).
 pub struct WorldCover<'a> {
     fetch: &'a dyn Fetch,
+    cover: &'a Cover,
     open: Mutex<BTreeMap<String, Option<Arc<Tiff>>>>,
 }
 
-/// Decoded overview tiles kept for the grid tiles beside them, per WorldCover tile.
+/// Decoded overview tiles kept for the grid tiles beside them, per source tile.
 const TILE_CACHE: usize = 24 << 20;
 
 impl<'a> WorldCover<'a> {
-    pub fn new(fetch: &'a dyn Fetch) -> Self {
-        WorldCover { fetch, open: Mutex::new(BTreeMap::new()) }
+    pub fn new(fetch: &'a dyn Fetch, cover: &'a Cover) -> Self {
+        WorldCover { fetch, cover, open: Mutex::new(BTreeMap::new()) }
     }
 
     fn tile(&self, name: &str) -> Result<Option<Arc<Tiff>>> {
         if let Some(t) = self.open.lock().unwrap().get(name) {
             return Ok(t.clone());
         }
-        let u = url(name);
+        let u = self.cover.url(name);
         let t = match self.fetch.open(&u)? {
             None => None,
             Some(src) => {
@@ -108,7 +128,7 @@ impl<'a> WorldCover<'a> {
                     let rr = (r - r0).clamp(0, h - 1);
                     for (&j, &c) in cols_in.iter().zip(&cols) {
                         let cc = (c - c0).clamp(0, w - 1);
-                        out[i * TS + j] = LUT[a[(rr * w + cc) as usize] as u8 as usize];
+                        out[i * TS + j] = self.cover.classes[a[(rr * w + cc) as usize] as u8 as usize];
                     }
                 }
             }
@@ -141,7 +161,7 @@ fn read_tiles(b: &Path) -> Result<Vec<[u32; 2]>> {
 
 /// Classifies `slots` (grid.idx order) into a copy of the staged grid.class.u8, with `workers`
 /// threads; the classes of those slots.
-pub fn only(b: &Path, slots: &[u32], fetch: &dyn Fetch, workers: usize) -> Result<Counts> {
+pub fn only(b: &Path, slots: &[u32], cover: &Cover, fetch: &dyn Fetch, workers: usize) -> Result<Counts> {
     let tiles = read_tiles(b)?;
     let mut out = std::fs::read(b.join("grid.class.u8")).context("grid.class.u8")?;
     if out.len() != tiles.len() * CELLS {
@@ -153,7 +173,7 @@ pub fn only(b: &Path, slots: &[u32], fetch: &dyn Fetch, workers: usize) -> Resul
         }
     }
     println!("land cover: {} grid tiles, {} from the packs, {} to classify", tiles.len(), tiles.len() as i64 - slots.len() as i64, slots.len());
-    classify(&WorldCover::new(fetch), &tiles, slots, &mut out, workers)?;
+    classify(&WorldCover::new(fetch, cover), &tiles, slots, &mut out, workers)?;
     let tmp = b.join("grid.class.u8.tmp");
     std::fs::write(&tmp, &out)?;
     std::fs::rename(&tmp, b.join("grid.class.u8"))?;
@@ -167,7 +187,7 @@ pub fn only(b: &Path, slots: &[u32], fetch: &dyn Fetch, workers: usize) -> Resul
 
 /// Every grid tile's classes (the last run's tiles copied from its grid.class.u8), with
 /// `workers` threads; the classes of them all.
-pub fn full(b: &Path, fetch: &dyn Fetch, workers: usize) -> Result<Counts> {
+pub fn full(b: &Path, cover: &Cover, fetch: &dyn Fetch, workers: usize) -> Result<Counts> {
     let tiles = read_tiles(b)?;
     let mut out = vec![0u8; tiles.len() * CELLS];
     let cache = b.parent().unwrap_or(Path::new(".")).join("cache").join("steps").join("landcover.tiles");
@@ -187,7 +207,7 @@ pub fn full(b: &Path, fetch: &dyn Fetch, workers: usize) -> Result<Counts> {
         }
     }
     println!("land cover: {} grid tiles, {} from the last run, {} to classify", tiles.len(), tiles.len() - todo.len(), todo.len());
-    classify(&WorldCover::new(fetch), &tiles, &todo, &mut out, workers)?;
+    classify(&WorldCover::new(fetch, cover), &tiles, &todo, &mut out, workers)?;
     let tmp = b.join("grid.class.u8.tmp");
     std::fs::write(&tmp, &out)?;
     std::fs::rename(&tmp, b.join("grid.class.u8"))?;
@@ -216,8 +236,31 @@ mod tests {
     use crate::fetch::MapFetch;
     use crate::geotiff::testtiff::{make_images, Opts};
 
+    fn cover() -> Cover {
+        Cover::of(crate::inputs::sources::staged().role(crate::inputs::sources::LAND_COVER).unwrap()).unwrap()
+    }
+
+    /// The declared source (producers/sources/esa-worldcover.toml) names the tiles the code named
+    /// before it was declared, and its legend is the code's class table: the grid's land cover is
+    /// the same.
+    #[test]
+    fn the_declared_source_is_what_the_code_read() {
+        let c = cover();
+        for (la, lo) in [(45, -69), (-3, 0), (0, -3), (-90, 177), (78, 15)] {
+            let t = tile_name(la, lo);
+            assert_eq!(c.url(&t), format!("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{t}_Map.tif"));
+        }
+        let mut lut = [0u8; 256];
+        for (v, g) in [(10, 1), (95, 1), (20, 2), (30, 3), (40, 3), (60, 3), (100, 3), (50, 4), (80, 5), (90, 6), (70, 7)] {
+            lut[v] = g;
+        }
+        assert_eq!(c.classes, lut);
+    }
+
     #[test]
     fn classes_from_worldcover_tiles() {
+        let cover = cover();
+        let url = |t: &str| cover.url(t);
         // A WorldCover tile N45W069 (3°; here 1/400° pixels, so overview level 1 has 1/100°): 10
         // (trees) west of 67.6° W, 80 (water) east.
         let gt = [-69.0, 0.0025, 0.0, 48.0, 0.0, -0.0025];
@@ -229,7 +272,7 @@ mod tests {
         });
         let mut m = MapFetch::default();
         m.0.insert(url("N45W069"), Some(b));
-        let wc = WorldCover::new(&m);
+        let wc = WorldCover::new(&m, &cover);
         // z11 tile 639, 724: 67.68° to 67.5° W, around 46.5° N.
         let (tx, ty) = (639, 724);
         let c = wc.classes(tx, ty).unwrap();
@@ -244,21 +287,21 @@ mod tests {
         // Over the open sea: no data.
         let mut sea = MapFetch::default();
         sea.0.insert(url("N45W069"), None);
-        assert!(WorldCover::new(&sea).classes(tx, ty).unwrap().iter().all(|&c| c == 0));
+        assert!(WorldCover::new(&sea, &cover).classes(tx, ty).unwrap().iter().all(|&c| c == 0));
 
         // A unit's grid: the slots listed classified, the rest as staged.
         let d = tempfile::tempdir().unwrap();
         let tiles: [[u32; 2]; 3] = [[639, 724], [640, 724], [639, 725]];
         std::fs::write(d.path().join("grid.idx"), bytemuck::cast_slice(&tiles)).unwrap();
         std::fs::write(d.path().join("grid.class.u8"), vec![9u8; 3 * CELLS]).unwrap();
-        let counts = only(d.path(), &[2, 0], &m, 2).unwrap();
+        let counts = only(d.path(), &[2, 0], &cover, &m, 2).unwrap();
         assert_eq!(counts.iter().sum::<u64>(), 2 * CELLS as u64);
         let g = std::fs::read(d.path().join("grid.class.u8")).unwrap();
         assert_eq!(&g[..CELLS], &c[..]);
         assert!(g[CELLS..2 * CELLS].iter().all(|&v| v == 9));
         assert!(g[2 * CELLS..].iter().all(|&v| v == 1 || v == 5));
-        assert!(only(d.path(), &[3], &m, 2).unwrap_err().to_string().contains("beyond the 3 grid tiles"));
+        assert!(only(d.path(), &[3], &cover, &m, 2).unwrap_err().to_string().contains("beyond the 3 grid tiles"));
         std::fs::write(d.path().join("grid.class.u8"), vec![9u8; CELLS]).unwrap();
-        assert!(only(d.path(), &[0], &m, 2).unwrap_err().to_string().contains("cells for 3 grid tiles"));
+        assert!(only(d.path(), &[0], &cover, &m, 2).unwrap_err().to_string().contains("cells for 3 grid tiles"));
     }
 }

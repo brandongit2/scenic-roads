@@ -2906,6 +2906,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         spacing_m: 8,
         snap: Some(dir.join("snap")),
         elevation: elevation_of(out)?,
+        declared: Some(pipeline::inputs::sources::read(out.root(), &out.manifest)?),
     };
     let piece = out.path(out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).context("no piece")?);
     let local = dir.join(format!("piece-{}.osm.pbf", u.dash()));
@@ -2968,6 +2969,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         spacing_m: 8,
         snap: None,
         elevation: elevation_of(out)?,
+        declared: Some(pipeline::inputs::sources::read(out.root(), &out.manifest)?),
     };
     drop(setup);
     // The DEM cache's seed, where the units' elevations start from (once per Mac).

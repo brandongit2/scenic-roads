@@ -441,6 +441,12 @@ pub fn water_waits_for_lakefill(lakefill: bool, failures: u32) -> bool {
     lakefill && failures < LAKEFILL_HOLDS
 }
 
+/// The steps that read the declared sources (crate::inputs::sources), which wait for their first
+/// accepted version (agent's `hold_for_sources`): the units (their land cover).
+pub fn reads_sources(step: &str) -> bool {
+    matches!(step, "unit")
+}
+
 /// The steps that read the pass's lake fill, which wait for it (agent's `hold_for_lakefill`).
 pub fn reads_lakefill(step: &str) -> bool {
     matches!(step, "water" | "terrain-water" | "catalog" | "catalog-held")

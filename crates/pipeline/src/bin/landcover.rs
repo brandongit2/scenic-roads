@@ -1,5 +1,6 @@
-//! Land cover on the z11 analysis grid from ESA WorldCover (`pipeline::landcover`):
-//! its command line and output (grid.class.u8).
+//! Land cover on the z11 analysis grid from the declared land-cover source (`pipeline::landcover`):
+//! its command line and output (grid.class.u8). The source is the unit job's, from its folder
+//! (`sources.json`: pipeline::unit::UnitSources).
 //!
 //! usage: landcover <build_dir> [--workers N] [--only <slots.u32>]
 //!
@@ -30,14 +31,15 @@ fn main() -> Result<()> {
     }
     let build = build.context("usage: landcover <build_dir> [--workers N] [--only <slots.u32>]")?;
     let fetch = Fetcher::from_env();
+    let cover = pipeline::unit::UnitSources::read(&build)?.land_cover.context("the unit's sources.json names no land-cover source")?;
     match only {
         Some(p) => {
             let raw = std::fs::read(&p).with_context(|| p.display().to_string())?;
             let slots: Vec<u32> = bytemuck::pod_collect_to_vec(&raw[..raw.len() / 4 * 4]);
-            landcover::only(&build, &slots, &fetch, workers)?;
+            landcover::only(&build, &slots, &cover, &fetch, workers)?;
         }
         None => {
-            landcover::full(&build, &fetch, workers)?;
+            landcover::full(&build, &cover, &fetch, workers)?;
         }
     }
     Ok(())

@@ -1039,7 +1039,7 @@ unchanged:
 |---|---|---|
 | OSM planet | `tools/nas/fetch-planet.sh` (mirrors) | `format = "planet-pbf"`, mirrors as `urls` |
 | Planetiler and its data | `sources/basemap/`, `water::PLANETILER_VERSION` | `jar`, Natural Earth, water polygons, lake centrelines, pinned |
-| ESA WorldCover | `landcover.rs` | `geotiff`, URL template, version; its class table is the format's legend |
+| ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role (crate::inputs::sources) | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
 | Meta & WRI canopy height | `trees/mod.rs` (`CHM10_URL`) | `geotiff` with an index from the bucket's listing |
 | Leaf type (EEA HRL, NALCMS) | `dem/leaftype.py` | a producer makes the squares; declared as files |
 | Overture buildings | `buildtiles::RELEASE`, `dem/buildings.py`, `dem/bldfetch.py` | `geoparquet`, version, bucket prefix; `estimated_sources` replacing `bld/fill.rs`'s `ESTIMATES` |

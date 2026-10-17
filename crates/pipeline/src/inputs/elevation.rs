@@ -156,24 +156,7 @@ impl Elevation {
                     return Err("a tile pyramid needs its `territory` (its coverage can't be read from a header)".into());
                 }
                 let o = self.outlines.as_ref().ok_or("the pass's outlines can't be read now, and a tile pyramid's coverage is its territory's")?;
-                let mut boxes = Vec::new();
-                // (Each of its polygons' boxes: an island group's outline's own box would hold its
-                // neighbours.)
-                for r in o.recs.iter().filter(|r| o.code_of(r).is_some_and(|c| territory.contains(&c))) {
-                    for poly in o.simple_polygons(r).map_err(|e| format!("the pass's outlines: {e:#}"))? {
-                        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-                        for p in poly.iter().flatten() {
-                            let (x, y) = (p[0] as f64 * 1e-7, p[1] as f64 * 1e-7);
-                            b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
-                        }
-                        if b[0] <= b[2] {
-                            boxes.push(b);
-                        }
-                    }
-                }
-                if boxes.is_empty() {
-                    return Err(format!("the pass's outlines have none of {}", territory.join(", ")));
-                }
+                let boxes = territory_boxes(o, territory)?;
                 self.tile_size(url, *zoom, encoding, &boxes)?;
                 let cells = declared::geographic_cells(&boxes);
                 let mid = cells.iter().map(|c| c.1 as f64 + 0.5).sum::<f64>() / cells.len() as f64;
@@ -477,6 +460,29 @@ impl Checks for Elevation {
         }
         Ok(Some(Box::new(Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines))))
     }
+}
+
+/// The boxes of territory `territory`'s polygons (ISO codes) in the pass's outlines `o`: each
+/// polygon's own box (an island group's outline's own box would hold its neighbours). An error when
+/// the outlines have none of them.
+pub fn territory_boxes(o: &Outlines, territory: &[String]) -> std::result::Result<Vec<[f64; 4]>, String> {
+    let mut boxes = Vec::new();
+    for r in o.recs.iter().filter(|r| o.code_of(r).is_some_and(|c| territory.contains(&c))) {
+        for poly in o.simple_polygons(r).map_err(|e| format!("the pass's outlines: {e:#}"))? {
+            let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            for p in poly.iter().flatten() {
+                let (x, y) = (p[0] as f64 * 1e-7, p[1] as f64 * 1e-7);
+                b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+            }
+            if b[0] <= b[2] {
+                boxes.push(b);
+            }
+        }
+    }
+    if boxes.is_empty() {
+        return Err(format!("the pass's outlines have none of {}", territory.join(", ")));
+    }
+    Ok(boxes)
 }
 
 /// Where a GeoTIFF has valid data: its coarsest overview's pixels that hold data (`valid` by row

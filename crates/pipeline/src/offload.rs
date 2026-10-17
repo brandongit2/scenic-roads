@@ -503,7 +503,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             _ => Ok(None),
         }
     };
-    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, stores_read_only: true, spacing_m: 8, snap: None, elevation: None };
+    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, stores_read_only: true, spacing_m: 8, snap: None, elevation: None, declared: None };
     crate::unit::take_peak();
     let t = std::time::Instant::now();
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
@@ -715,7 +715,7 @@ mod tests {
         let mut ran = false;
         let mut here = || {
             ran = true;
-            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None, elevation: None })
+            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None, elevation: None, declared: None })
         };
         let s = o.settle(&t, &dir, false, Patience { here_s: None }, &mut here).unwrap().unwrap();
         assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));
@@ -853,7 +853,7 @@ mod tests {
         let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
         let here = |dir: &Path| {
             clock.advance(Duration::from_millis(100));
-            crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None, elevation: None })
+            crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None, elevation: None, declared: None })
         };
         let p = Patience { here_s: Some(30.0) };
         let status = |t: &Offered| o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1;

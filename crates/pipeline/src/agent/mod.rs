@@ -4260,14 +4260,16 @@ impl Agent {
     /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
     /// waiting out a failure, so one failing job doesn't hold up the others.
     fn region_work(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
-        let mut held = false;
+        let mut held = Holds::default();
         let jobs = self.region_jobs(root, pass, newer, waiting, &mut held);
-        hold_for_lakefill(jobs, held, waiting)
+        let jobs = hold_for_sources(jobs, held.sources, waiting);
+        hold_for_lakefill(jobs, held.lakefill, waiting)
     }
 
-    /// `region_work`'s jobs before the lake fill's hold; `held` set when the pass's lake fill holds
-    /// the jobs that read it (`hold_for_lakefill`).
-    fn region_jobs(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>, held: &mut bool) -> Vec<JobSpec> {
+    /// `region_work`'s jobs before the holds: `held.lakefill` set when the pass's lake fill holds
+    /// the jobs that read it (`hold_for_lakefill`), `held.sources` while no version of the source
+    /// declarations is accepted (`hold_for_sources`).
+    fn region_jobs(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>, held: &mut Holds) -> Vec<JobSpec> {
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
             Ok(r) => r,
@@ -4298,6 +4300,7 @@ impl Agent {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let build_bin = s(&self.o.bin.join("scenic-build"));
         let mut jobs: Vec<JobSpec> = self.gate_work(root, &manifest, &keys, waiting);
+        held.sources = !crate::inputs::sources::accepted(&manifest);
         let job = |id: String, what: &str, step: &str, extra: Vec<String>, record: Option<build::Work>| {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
@@ -4383,13 +4386,13 @@ impl Agent {
             // can't be read, they wait too.)
             match crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)) {
                 Err(e) => {
-                    *held = true;
+                    held.lakefill = true;
                     waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("its source's folder can't be read now ({e})") });
                 }
                 Ok(source) => {
                     let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
                     let failures = self.mem.retry.get(&format!("lakefill {date}")).map_or(0, |r| r.0);
-                    *held = build::water_waits_for_lakefill(lakefill.is_some(), failures);
+                    held.lakefill = build::water_waits_for_lakefill(lakefill.is_some(), failures);
                     if let Some(w) = lakefill {
                         if failures >= build::LAKEFILL_HOLDS {
                             waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
@@ -6501,6 +6504,29 @@ fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// What holds the region work's jobs that read an input (`Agent::region_jobs`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Holds {
+    /// The pass's lake fill (`hold_for_lakefill`).
+    lakefill: bool,
+    /// No accepted version of the source declarations (`hold_for_sources`).
+    sources: bool,
+}
+
+/// The jobs that read the declared sources (crate::inputs::sources, build::reads_sources) taken
+/// out of `jobs` while no version of them is accepted (`held`), each said in `waiting`: they wait
+/// for the input check to take the declarations in, rather than fail.
+fn hold_for_sources(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    if !held {
+        return jobs;
+    }
+    let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) = jobs.into_iter().partition(|j| !build::reads_sources(&step_of(&j.id).unwrap_or_default()));
+    for j in out {
+        waiting.push(Waiting { step: step_of(&j.id), what: j.what, why: "the source declarations' first accepted version (the input check takes inputs/sources/ in)".into() });
+    }
+    kept
+}
+
 /// The jobs that read the pass's lake fill (crate::lakefill: the water, which draws it; the terrain's
 /// water digests, whose pin names it; the catalogs, which name it to the server), taken out of
 /// `jobs` while it `held`s them (the lakefill job has work and hasn't failed
@@ -8402,7 +8428,7 @@ mod tests {
         put(&root.join(&name), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#);
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&BTreeMap::from([(sw.clone(), name)])).unwrap());
         let a = agent(&root, &home);
-        let (mut w, mut held) = (Vec::new(), false);
+        let (mut w, mut held) = (Vec::new(), Holds::default());
         assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
         assert!(w.iter().any(|x| x.why.contains("older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on")), "{w:?}");
         // Its file unreadable: unknown, so nothing either.
@@ -8763,6 +8789,22 @@ mod tests {
         assert!(waiting.is_empty());
         // What holds: the lakefill job's work, until its failures reach LAKEFILL_HOLDS.
         assert!(build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS - 1) && !build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS));
+    }
+
+    /// Before the source declarations' first accepted version, the jobs that read them wait, said in
+    /// the checklist; the rest go on.
+    #[test]
+    fn the_jobs_reading_the_declared_sources_wait_for_them() {
+        let spec = |id: &str| JobSpec { id: id.into(), what: format!("doing {id}"), cmd: Vec::new(), needs: Needs { nas: true }, restart_after_sleep: true, record: None };
+        let jobs = || ["labels 2026-09-28", "unit 6/1/2", "terrain 6/18/20"].map(spec).to_vec();
+        let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
+        let mut waiting = Vec::new();
+        assert_eq!(ids(&hold_for_sources(jobs(), true, &mut waiting)), ["labels 2026-09-28", "terrain 6/18/20"]);
+        assert_eq!(waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(), ["unit"]);
+        assert!(waiting.iter().all(|w| w.why.contains("inputs/sources/")));
+        let mut waiting = Vec::new();
+        assert_eq!(ids(&hold_for_sources(jobs(), false, &mut waiting)), ids(&jobs()));
+        assert!(waiting.is_empty());
     }
 
     #[test]
