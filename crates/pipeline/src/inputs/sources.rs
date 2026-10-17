@@ -485,7 +485,13 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 1] = [("esa-worldcover.toml", include_bytes!("../../../../producers/sources/esa-worldcover.toml"))];
+pub const STAGED: [(&str, &[u8]); 5] = [
+    ("esa-worldcover.toml", include_bytes!("../../../../producers/sources/esa-worldcover.toml")),
+    ("meta-canopy.toml", include_bytes!("../../../../producers/sources/meta-canopy.toml")),
+    ("canopy-squares.geojson", include_bytes!("../../../../producers/sources/canopy-squares.geojson")),
+    ("eea-leaf-type.toml", include_bytes!("../../../../producers/sources/eea-leaf-type.toml")),
+    ("nalcms.toml", include_bytes!("../../../../producers/sources/nalcms.toml")),
+];
 
 /// An accepted version of the staged declarations (`STAGED`), its index named in records `m`: the
 /// steps' tests read them as the build does.

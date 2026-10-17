@@ -2,11 +2,13 @@
 //! outputs and progress lines; a z6 tile's run and a z3 tile's assembly from them, as the build makes
 //! the layers; and the same work a block at a time, for workers.
 //!
-//! usage: trees --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir
+//! usage: trees --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir
 //!              [--workers n] [--dem dir]
 //!            z3 tile x,y: its canopy squares made ready in `chm` (from the NAS's `chm-store`), its
 //!            leaf-type squares in `leaf` (made by `dem`'s leaftype.py where missing: the current
-//!            folder unless said), out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles
+//!            folder unless said), out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
+//!            `sources.json`: where the declared canopy and leaf-type sources are
+//!            (pipeline::trees::RunSources, written by the trees job)
 //!        trees --z6 x,y (the same options)
 //!            z6 tile x,y alone: out/trees-*.tiles holding its zoom 9–12 tiles, and out/trees-mid.sect
 //!            its mid (its blocks' zoom-8 tiles and values)
@@ -33,8 +35,8 @@ use pipeline::trees::{self, mask::Shapes, Inputs, Source};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: trees --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
-       trees --z6 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
+const USAGE: &str = "usage: trees --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
+       trees --z6 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
        trees --assemble-lo --out dir [--workers n] <mid>…
        trees --block 8/x/y --coverage cov.json --chm dir|url --leaf dir|url --out dir [--record dir]
        trees --blocks 8/x/y,… --coverage cov.json --chm dir|url --leaf dir|url --out dir [--squares top,left;…] [--record dir] [--workers n]
@@ -60,7 +62,7 @@ fn run() -> Result<()> {
                 Some((k, v)) => (k.to_string(), v.to_string()),
                 None => (f.to_string(), args.next().with_context(|| format!("--{f} needs a value\n{USAGE}"))?),
             };
-            if !["z3", "z6", "block", "blocks", "squares", "coverage", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
+            if !["z3", "z6", "block", "blocks", "squares", "coverage", "sources", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
                 bail!("unknown option --{k}\n{USAGE}");
             }
             opts.insert(k, v);
@@ -101,6 +103,7 @@ fn run() -> Result<()> {
             coverage: PathBuf::from(get("coverage")?),
             chm: PathBuf::from(get("chm")?),
             chm_store: PathBuf::from(get("chm-store")?),
+            sources: PathBuf::from(get("sources")?),
             leaf: PathBuf::from(get("leaf")?),
             out,
             dem: opts.get("dem").map_or_else(|| PathBuf::from("."), PathBuf::from),

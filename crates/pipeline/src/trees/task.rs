@@ -384,7 +384,7 @@ mod tests {
     /// Piece 6/33/22's run in `dir/out`, with `offload`.
     fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
         std::fs::write(d.join("cov.json"), COV).unwrap();
-        let a = Run { tile: (6, 33, 22), coverage: d.join("cov.json"), chm: sq.into(), chm_store: d.join("store"), leaf: sq.into(), out: d.join(out), dem: d.into() };
+        let a = Run { tile: (6, 33, 22), coverage: d.join("cov.json"), chm: sq.into(), chm_store: d.join("store"), sources: crate::trees::tests::sources_file(d), leaf: sq.into(), out: d.join(out), dem: d.into() };
         rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap().install(|| super::super::z6_with(&a, offload)).unwrap();
     }
 

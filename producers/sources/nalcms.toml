@@ -1,0 +1,22 @@
+name = "2020 Land Cover of North America (NALCMS), 30 m, v2"
+what = "Forest leaf type, North America"
+credit = "2020 Land Cover of North America (NALCMS): Commission for Environmental Cooperation; NRCan/CCRS, USGS, INEGI, CONAFOR"
+licence = "CEC terms of use (attribution)"
+source = "http://www.cec.org/north-american-environmental-atlas/land-cover-30m-2020/"
+territory = ["CA", "US", "MX"]
+notes = "One GeoTIFF in CEC's 3.9 GB zip, streamed out by range once (its size and CRC checked against the zip's) and kept as sources/trees/nalcms-2020.tif; its forest classes are leaf types (dem/leaftype.py)."
+
+[data]
+role = "leaf-type-north-america"
+format = "zip-geotiff"
+url = "https://www.cec.org/files/atlas_layers/1_terrestrial_ecosystems/1_01_0_land_cover_2020_30m/land_cover_2020v2_30m_tif.zip"
+version = "2020 v2"
+refresh = "pinned"
+
+[data.params]
+# The GeoTIFF's zip member (…/data/NA_NALCMS_landcover_2020v2_30m.tif): its local header's offset
+# and its compressed size, read by range.
+member_offset = 38952
+member_size = 2668629085
+# Where it has data (w, s, e, n); where the European source's box meets it, that one is read.
+box = [-180, 14, -50, 84]

@@ -50,8 +50,6 @@ pub const BS: usize = TS << (ZMAX - ZBLOCK);
 pub const LAYERS: [&str; 3] = ["cover", "height", "leaf"];
 /// The archives' metadata, trees.py's.
 pub const META: &str = r#"{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}"#;
-/// Where Meta keeps the canopy squares.
-pub const CHM10_URL: &str = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg";
 /// A block's zoom-8 values beside its archives (`block`).
 pub const TOPS: &str = "trees-tops.bin";
 /// Web Mercator's sphere.
@@ -113,18 +111,59 @@ pub fn chm_name(top: i32, left: i32, kind: &str) -> String {
     format!("meta_chm_lat={top}.0_lon={left}.0_{kind}.tif")
 }
 
-/// Where Meta keeps a canopy square's file (named as `chm_name` names it, which is how it's kept
-/// here): its URL, and in the equator's row (top 0) its other spelling after it. Meta names most of
-/// that row's files `lat=-0.0` (25 of its 29 squares; at lon −100, 0, 70 and 90 some or all of a
-/// square's files are `lat=0.0`, the kinds of one square split between the two at −100 and 0), so a
-/// file is asked for under one name, then the other: none there only when both say so. (An empty
-/// file kept from before, Meta's "none" under the one name, still says none: docs/plan.md §10.)
-pub fn chm_urls(name: &str) -> Vec<String> {
-    let mut urls = vec![format!("{CHM10_URL}/{name}")];
-    if let Some(rest) = name.strip_prefix("meta_chm_lat=0.0_") {
-        urls.push(format!("{CHM10_URL}/meta_chm_lat=-0.0_{rest}"));
+/// Where the declared canopy source (crate::inputs::sources, the `canopy` role) has each file, by
+/// its name here (`chm_name`): its index's features, each a file's `url`, its `kind` and its 10°
+/// square (its north-west corner the name's). A file the index doesn't list is none there. (The
+/// source's own naming, the equator row's `lat=-0.0`, is its index producer's:
+/// producers/sources/canopy.py.)
+pub fn canopy_urls(s: &crate::inputs::sources::Source) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for f in &s.index {
+        let kind = f.props.get("kind").and_then(|k| k.as_str()).with_context(|| format!("{}: {} has no `kind`", s.id, f.url))?;
+        let [w, south, e, n] = f.bbox;
+        ensure!((e - w - 10.0).abs() < 1e-9 && (n - south - 10.0).abs() < 1e-9 && w.fract() == 0.0 && n.fract() == 0.0, "{}: {}'s footprint isn't a 10° square on whole degrees", s.id, f.url);
+        out.insert(chm_name(n as i32, w as i32, kind), f.url.clone());
     }
-    urls
+    Ok(out)
+}
+
+/// The leaf-type sources as dem/leaftype.py reads them (crate::inputs::sources, the
+/// `leaf-type-europe` and `leaf-type-north-america` roles): Europe's image service and the box it
+/// covers; North America's GeoTIFF in a zip (its member's local header and compressed size, read by
+/// range) and its box. A square outside both boxes has no leaf type.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LeafSources {
+    pub europe: String,
+    pub europe_box: [f64; 4],
+    pub north_america: String,
+    pub north_america_member: [u64; 2],
+    pub north_america_box: [f64; 4],
+}
+
+impl LeafSources {
+    pub fn of(s: &crate::inputs::sources::Sources) -> Result<LeafSources> {
+        use crate::inputs::sources::{LEAF_EUROPE, LEAF_NORTH_AMERICA};
+        let bx = |src: &crate::inputs::sources::Source| -> Result<[f64; 4]> {
+            let v: Vec<f64> = src.param("box")?.as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+            <[f64; 4]>::try_from(v).map_err(|_| anyhow::anyhow!("{}: `params.box` isn't four numbers (w, s, e, n)", src.id))
+        };
+        let (eu, na) = (s.role(LEAF_EUROPE)?, s.role(LEAF_NORTH_AMERICA)?);
+        Ok(LeafSources { europe: eu.url()?.into(), europe_box: bx(eu)?, north_america: na.url()?.into(), north_america_member: [na.param_u64("member_offset")?, na.param_u64("member_size")?], north_america_box: bx(na)? })
+    }
+}
+
+/// What a tree cover run reads of the declared sources (`sources.json` beside its coverage, written
+/// by crate::treepacks): the canopy files' URLs (`canopy_urls`) and the leaf-type sources.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RunSources {
+    pub canopy: BTreeMap<String, String>,
+    pub leaf: LeafSources,
+}
+
+impl RunSources {
+    pub fn of(s: &crate::inputs::sources::Sources) -> Result<RunSources> {
+        Ok(RunSources { canopy: canopy_urls(s.role(crate::inputs::sources::CANOPY)?)?, leaf: LeafSources::of(s)? })
+    }
 }
 
 /// A leaf-type square's file.
@@ -640,6 +679,9 @@ pub struct Run {
     /// The canopy squares' cache (the units read it too), filled from `chm_store` (the NAS's).
     pub chm: PathBuf,
     pub chm_store: PathBuf,
+    /// The declared sources as the run reads them (`RunSources`, a JSON file: crate::treepacks writes
+    /// it beside the coverage).
+    pub sources: PathBuf,
     /// The leaf-type squares (the NAS's), made where missing by `dem`'s leaftype.py.
     pub leaf: PathBuf,
     pub out: PathBuf,
@@ -658,6 +700,7 @@ fn begin(a: &Run) -> Result<Begun> {
     for d in [&a.chm, &a.leaf, &a.out] {
         std::fs::create_dir_all(d).with_context(|| d.display().to_string())?;
     }
+    let sources: RunSources = serde_json::from_slice(&std::fs::read(&a.sources).with_context(|| a.sources.display().to_string())?).with_context(|| a.sources.display().to_string())?;
     let text = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
     let shapes = mask::Shapes::parse(&text).with_context(|| a.coverage.display().to_string())?;
     let (z, x, y) = a.tile;
@@ -673,14 +716,14 @@ fn begin(a: &Run) -> Result<Begun> {
         crate::agent::jobs::report(i as u64, want.len() as u64, "canopy squares");
         // (And within the square, as its files come.)
         let said = |f: f64| crate::agent::jobs::report_f(i as f64 + f, want.len() as u64, "canopy squares");
-        if squares::canopy(&a.chm, &a.chm_store, top, left, &said)? {
+        if squares::canopy(&a.chm, &a.chm_store, top, left, &said, &sources.canopy)? {
             sqs.push((top, left));
         }
     }
     crate::agent::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
     drop(p);
     let p = phase("leaf-type squares made", Class::Mixed);
-    squares::leaf_types(&sqs, &a.leaf, &a.dem)?;
+    squares::leaf_types(&sqs, &a.leaf, &a.dem, &sources.leaf, &a.sources)?;
     drop(p);
     eprintln!("trees z{z} {x},{y}: {} zoom-8 blocks, {} canopy squares ({:.0} s)", blocks.len(), sqs.len(), t0.elapsed().as_secs_f64());
     Ok((shapes, blocks, sqs))

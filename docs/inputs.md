@@ -1040,8 +1040,8 @@ unchanged:
 | OSM planet | `tools/nas/fetch-planet.sh` (mirrors) | `format = "planet-pbf"`, mirrors as `urls` |
 | Planetiler and its data | `sources/basemap/`, `water::PLANETILER_VERSION` | `jar`, Natural Earth, water polygons, lake centrelines, pinned |
 | ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role (crate::inputs::sources) | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
-| Meta & WRI canopy height | `trees/mod.rs` (`CHM10_URL`) | `geotiff` with an index from the bucket's listing |
-| Leaf type (EEA HRL, NALCMS) | `dem/leaftype.py` | a producer makes the squares; declared as files |
+| Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator's `lat=-0.0` read there) | `geotiff` with an index: a file's `url`, `kind` and 10° square |
+| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`dem/leaftype.py`, given the sources) | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
 | Overture buildings | `buildtiles::RELEASE`, `dem/buildings.py`, `dem/bldfetch.py` | `geoparquet`, version, bucket prefix; `estimated_sources` replacing `bld/fill.rs`'s `ESTIMATES` |
 | GHSL building heights | `bld/sources.rs`, `dem/bldfetch.py` | `geotiff`, its grid as an index |
 | Wikidata, Wikipedia's API | `dem/heritagewd.py` | endpoints |

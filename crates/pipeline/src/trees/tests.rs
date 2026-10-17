@@ -3,6 +3,50 @@ use super::pyramid::{class, lower, Rows, Tile, Tops};
 use super::*;
 use std::io::Write;
 
+/// The staged declarations' sources as a run reads them (crate::inputs::sources::staged).
+pub(crate) fn run_sources() -> RunSources {
+    RunSources::of(&crate::inputs::sources::staged()).unwrap()
+}
+
+/// `run_sources` written into `dir` (`sources.json`), for a `Run`.
+pub(crate) fn sources_file(dir: &Path) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let p = dir.join("sources.json");
+    std::fs::write(&p, serde_json::to_vec(&run_sources()).unwrap()).unwrap();
+    p
+}
+
+/// The declared canopy source's index (producers/sources/canopy.py's, from the bucket's listing)
+/// names, for each file the map reads, a URL the code asked for before the source was declared: the
+/// file's own name, or in the equator's row its `lat=-0.0` spelling (asked second). And the
+/// leaf-type sources are where leaftype.py read them, with the boxes it had: the squares are the
+/// same.
+#[test]
+fn the_declared_squares_are_where_the_code_read_them() {
+    let s = run_sources();
+    let prefix = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg";
+    let before = |name: &str| {
+        let mut urls = vec![format!("{prefix}/{name}")];
+        if let Some(rest) = name.strip_prefix("meta_chm_lat=0.0_") {
+            urls.push(format!("{prefix}/meta_chm_lat=-0.0_{rest}"));
+        }
+        urls
+    };
+    assert_eq!(s.canopy.len(), 1095, "every kind of every square the bucket has");
+    for (name, url) in &s.canopy {
+        assert!(before(name).contains(url), "{name}: {url}");
+    }
+    // (The equator's row: 29 squares, most under `lat=-0.0`.)
+    let equator: Vec<&String> = s.canopy.iter().filter(|(n, _)| n.starts_with("meta_chm_lat=0.0_")).map(|(_, u)| u).collect();
+    assert_eq!(equator.len(), 29 * 3);
+    assert!(equator.iter().filter(|u| u.contains("lat=-0.0")).count() > 60);
+    assert_eq!(s.canopy[&chm_name(50, 0, "p95")], format!("{prefix}/meta_chm_lat=50.0_lon=0.0_p95.tif"));
+    let l = &s.leaf;
+    assert_eq!(l.europe, "https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/HRL_DominantLeafType2018/ImageServer/exportImage");
+    assert_eq!(l.north_america, "https://www.cec.org/files/atlas_layers/1_terrestrial_ecosystems/1_01_0_land_cover_2020_30m/land_cover_2020v2_30m_tif.zip");
+    assert_eq!((l.north_america_member, l.europe_box, l.north_america_box), ([38952, 2668629085], [-40.0, 20.0, 40.0, 75.0], [-180.0, 14.0, -50.0, 84.0]));
+}
+
 /// An `n` × `n` one-band TIFF of `bits`-bit unsigned samples in 512-pixel tiles, Deflate: tile
 /// (tx, ty)'s samples (row by row, little-endian) as `tile` gives them, or none (sparse: read as 0);
 /// identical tiles stored once. With `meta`, GDAL's metadata items.
@@ -156,10 +200,6 @@ fn geometry_as_trees_py() {
     assert_eq!(squares_of(tile_bounds(8, 130, 86)), [(60, 0), (50, 0)]);
     assert_eq!(squares_of([-0.5, 9.5, 0.5, 10.5]), [(20, -10), (20, 0), (10, -10), (10, 0)]);
     assert_eq!((chm_name(50, -10, "p95"), leaf_name(50, -10)), ("meta_chm_lat=50.0_lon=-10.0_p95.tif".to_string(), "lat50_lon-10.tif".to_string()));
-    // Meta's names: the file's own, and in the equator's row its `lat=-0.0` spelling after it.
-    assert_eq!(chm_urls(&chm_name(10, 30, "p95")), [format!("{CHM10_URL}/meta_chm_lat=10.0_lon=30.0_p95.tif")]);
-    assert_eq!(chm_urls(&chm_name(0, 30, "cover5m")), [format!("{CHM10_URL}/meta_chm_lat=0.0_lon=30.0_cover5m.tif"), format!("{CHM10_URL}/meta_chm_lat=-0.0_lon=30.0_cover5m.tif")]);
-    assert_eq!(chm_urls(&chm_name(-10, 30, "p95")).len(), 1);
     // A square's pixel for a latitude and longitude, none outside it.
     let p = indices(50, 0, CHM_RES, &[-0.0001, 0.0, 9.99999, 10.0], &[49.9999, 40.0001, 40.0, 50.0]);
     assert_eq!(p.n, 40000);
@@ -316,7 +356,7 @@ fn the_z3_run_and_its_blocks_alike() {
     const COV: &str = r#"{"shapes": [[[[5.66, 48.2], [7.2, 48.2], [7.2, 48.91], [5.66, 48.91]]]]}"#;
     std::fs::write(o.path().join("cov.json"), COV).unwrap();
     let run = |threads: usize, out: &str| {
-        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), sources: sources_file(o.path()), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
         rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| z3(&a)).unwrap()
     };
     let n1 = run(1, "one");
@@ -360,7 +400,7 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     // tile 3/4/2, the squares' data in each.
     const COV: &str = r#"{"shapes": [[[[5.5, 48.85], [9.5, 48.85], [9.5, 48.95], [5.5, 48.95]]]]}"#;
     std::fs::write(o.path().join("cov.json"), COV).unwrap();
-    let run = |tile: (u8, u32, u32), out: &str| Run { tile, coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+    let run = |tile: (u8, u32, u32), out: &str| Run { tile, coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), sources: sources_file(o.path()), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
     let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
     let n3 = pool(4).install(|| z3(&run((3, 4, 2), "z3"))).unwrap();
     let shapes = Shapes::parse(COV).unwrap();
@@ -549,7 +589,8 @@ fn leaf_type_squares_complete() {
     assert_eq!((c("a.tif"), c("b.tif"), c("c.tif"), c("d.tif"), c("e.tif")), (true, true, false, false, false));
     // None to make (outside both sources' boxes, or complete): leaftype.py isn't run.
     std::fs::write(d.path().join(leaf_name(50, 0)), small(&[("complete", "1")])).unwrap();
-    squares::leaf_types(&[(50, 0), (40, 120)], d.path(), Path::new("/nonexistent")).unwrap();
+    let s = run_sources();
+    squares::leaf_types(&[(50, 0), (40, 120)], d.path(), Path::new("/nonexistent"), &s.leaf, Path::new("/nonexistent/sources.json")).unwrap();
 }
 
 #[test]
@@ -564,15 +605,15 @@ fn canopy_squares_from_the_store() {
         std::fs::write(store.join(chm_name(40, 0, k)), b"").unwrap();
     }
     let said = std::sync::Mutex::new(Vec::new());
-    assert!(squares::canopy(&chm, &store, 50, 0, &|f| said.lock().unwrap().push(f)).unwrap());
+    assert!(squares::canopy(&chm, &store, 50, 0, &|f| said.lock().unwrap().push(f), &BTreeMap::new()).unwrap());
     assert_eq!(said.into_inner().unwrap(), [0.5, 1.0]);
     assert_eq!(std::fs::read(chm.join(chm_name(50, 0, "p95"))).unwrap(), t);
     // Meta's "none": empty files, the square not there.
-    assert!(!squares::canopy(&chm, &store, 40, 0, &|_| {}).unwrap());
+    assert!(!squares::canopy(&chm, &store, 40, 0, &|_| {}, &BTreeMap::new()).unwrap());
     assert_eq!(std::fs::metadata(chm.join(chm_name(40, 0, "cover5m"))).unwrap().len(), 0);
     // A copy cut short is taken again.
     std::fs::write(chm.join(chm_name(50, 0, "cover5m")), &t[..50]).unwrap();
-    assert!(squares::canopy(&chm, &store, 50, 0, &|_| {}).unwrap());
+    assert!(squares::canopy(&chm, &store, 50, 0, &|_| {}, &BTreeMap::new()).unwrap());
     assert_eq!(std::fs::read(chm.join(chm_name(50, 0, "cover5m"))).unwrap(), t);
 }
 
@@ -598,7 +639,7 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
         std::fs::copy(d.path().join(chm_name(50, 0, k)), store.join(chm_name(50, 0, k))).unwrap();
     }
     let run = |out: &str| {
-        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: chm.clone(), chm_store: store.clone(), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: chm.clone(), chm_store: store.clone(), sources: sources_file(o.path()), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
         let n = z3(&a).unwrap();
         // (This process's holds let go, as the job's end would.)
         for k in ["cover5m", "p95"] {

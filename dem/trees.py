@@ -16,10 +16,12 @@ Zoom 12 samples the sources (nearest); coarser zooms average (leaf type: each cl
 averaged, and a pixel shows the commonest leaf type where forest is at least half of it). Tiles with
 nothing to show are left out.
 
-usage: trees.py --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n]
+usage: trees.py --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir [--workers n]
            its canopy squares in `chm` (the units' cache, the same names), filled from the NAS's
            `chm-store`, where each is downloaded once, and its leaf-type squares made in `leaf`
            where it lacks them whole (leaftype.py); out/trees-*.tiles hold its zoom 4–12 tiles.
+           sources.json: the declared sources as the trees program reads them (crates/pipeline/
+           src/trees, RunSources: each canopy file's URL by its name, the leaf-type sources).
            cov.json: {"shapes": [[ring, …], …]}, each shape's rings in degrees, inside by even–odd
            (crates/pipeline/src/coverage.rs).
 """
@@ -243,7 +245,6 @@ def lower_zooms(tops: dict, want, writers: dict, said=None) -> None:
 
 # ---- the build agent's: one z3 tile of the coverage ----------------------------------------
 
-CHM10_URL = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg"
 UA = "scenic-roads/0.1 (personal offline map)"
 
 
@@ -254,23 +255,12 @@ def progress(done: float, total: int, unit: str) -> None:
     print(f"progress: {str(d).removesuffix('.0')}/{total} {unit}", file=sys.stderr, flush=True)
 
 
-def chm_urls(name: str) -> list[str]:
-    """Where Meta keeps a canopy square's file (kept here as `name`): its URL, and in the equator's
-    row (top 0) its other spelling after it. Meta names most of that row's files `lat=-0.0` (the
-    kinds of one square split between the two spellings at lon −100 and 0), so a file is asked for
-    under one name, then the other: none there only when both say so (pipeline::trees::chm_urls)."""
-    urls = [f"{CHM10_URL}/{name}"]
-    if name.startswith("meta_chm_lat=0.0_"):
-        urls.append(f"{CHM10_URL}/meta_chm_lat=-0.0_{name.removeprefix('meta_chm_lat=0.0_')}")
-    return urls
-
-
-def download(urls: list[str], path: Path, said=None) -> None:
-    """The file at `urls` (its spellings, `chm_urls`: each asked in turn) into `path` (by a
-    temporary name, flushed), whole: a body shorter than its Content-Length (a connection cut), or
-    not a whole TIFF, is tried again. An empty file when the server has none (404, or S3's 403 for a
-    key that isn't there, under every spelling), so it says twice, a moment apart (it's remembered
-    for good), as scenic-metrics marks it. Anything else is retried, then fails. `said`, when given,
+def download(url: str | None, path: Path, said=None) -> None:
+    """The file at `url` (the canopy source's index's) into `path` (by a temporary name, flushed),
+    whole: a body shorter than its Content-Length (a connection cut), or not a whole TIFF, is tried
+    again. An empty file when the index lists none (`url` None), or the server has none (404, or
+    S3's 403 for a key that isn't there), so it says twice, a moment apart (it's remembered for
+    good), as scenic-metrics marks it. Anything else is retried, then fails. `said`, when given,
     is told how much of it has come (0–1), at most once a second."""
     import os
     import urllib.error
@@ -278,21 +268,15 @@ def download(urls: list[str], path: Path, said=None) -> None:
 
     import whole
 
-    def first(urls: list[str]):
-        # The first spelling the server has; its 403 or 404 only when it's the last.
-        for k, u in enumerate(urls):
-            try:
-                return urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": UA}), timeout=600)
-            except urllib.error.HTTPError as e:
-                if e.code not in (403, 404) or k == len(urls) - 1:
-                    raise
-
+    if url is None:
+        path.write_bytes(b"")
+        return
     tmp = whole.tmp_name(path)
     last: Exception | None = None
     missing = 0
     for attempt in range(6):
         try:
-            with first(urls) as r, tmp.open("wb") as f:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600) as r, tmp.open("wb") as f:
                 want = int(r.headers.get("Content-Length", "-1"))
                 n, at = 0, time.monotonic()
                 while b := r.read(16 << 20):
@@ -321,12 +305,12 @@ def download(urls: list[str], path: Path, said=None) -> None:
             last = e
         tmp.unlink(missing_ok=True)
         time.sleep(5 if missing else 2 ** attempt)
-    raise RuntimeError(f"download failed: {' or '.join(urls)}: {last}")
+    raise RuntimeError(f"download failed: {url}: {last}")
 
 
-def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> bool:
+def canopy_square(chm: Path, store: Path, top: int, left: int, urls: dict, said=None) -> bool:
     """The canopy square's cover and height files in `chm`: copied from the NAS's `store`, or
-    downloaded into it first (once); False when Meta has none there. A copy that isn't whole (cut
+    downloaded into it first (once, from its URL in `urls`, by name); False when Meta has none there. A copy that isn't whole (cut
     short) is deleted and taken again from the next source (crates/pipeline/src/whole.rs). `said`,
     when given, is told how much of the square is done (0–1): each file half of it, a download's
     share as it comes."""
@@ -376,7 +360,7 @@ def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> boo
             os.close(fd)
             try:
                 with phase("the canopy squares downloaded to the NAS", "net"):
-                    download(chm_urls(kept.name), kept, coming)
+                    download(urls.get(kept.name), kept, coming)
             finally:
                 lock.unlink(missing_ok=True)
 
@@ -473,6 +457,7 @@ def z3_main(args: dict) -> None:
     t0 = time.time()
     qx, qy = (int(v) for v in args["--z3"].split(","))
     chm, store, leaf_dir, out = Path(args["--chm"]), Path(args["--chm-store"]), Path(args["--leaf"]), Path(args["--out"])
+    sources = json.loads(Path(args["--sources"]).read_text())
     for d in (chm, leaf_dir, out):
         d.mkdir(parents=True, exist_ok=True)
     workers = int(args.get("--workers", "6"))
@@ -499,11 +484,11 @@ def z3_main(args: dict) -> None:
         for i, (top, left) in enumerate(sorted(want)):
             print(f"progress: {i}/{len(want)} canopy squares", file=sys.stderr, flush=True)
             # (And within the square, as its files come.)
-            if canopy_square(chm, store, top, left, lambda f, i=i: progress(i + f, len(want), "canopy squares")):
+            if canopy_square(chm, store, top, left, sources["canopy"], lambda f, i=i: progress(i + f, len(want), "canopy squares")):
                 sqs.append((top, left))
         print(f"progress: {len(want)}/{len(want)} canopy squares", file=sys.stderr, flush=True)
     with phase("the leaf-type squares made", "mixed"):
-        leaftype.make(sqs, leaf_dir, leaf_dir.parent, lambda done, total: progress(done, total, "leaf-type squares"))
+        leaftype.make(sqs, leaf_dir, leaf_dir.parent, sources["leaf"], lambda done, total: progress(done, total, "leaf-type squares"))
     print(f"trees z3 {qx},{qy}: {len(blocks)} zoom-8 blocks, {len(sqs)} canopy squares ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
     meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
     with phase("the zoom-8 blocks made", "compute"):

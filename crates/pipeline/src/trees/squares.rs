@@ -9,7 +9,7 @@
 //!   by dem/leaftype.py (`--make`), which fetches the EEA's chunks or reprojects NALCMS, and says
 //!   how far it is; with none to make, nothing is run.
 
-use super::{chm_name, chm_urls, leaf_name};
+use super::{chm_name, leaf_name, LeafSources};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
@@ -28,7 +28,7 @@ fn kept_whole(f: &Path) -> bool {
 /// Canopy square (`top`, `left`)'s cover and height files in `chm`: copied from the NAS's `store`,
 /// or downloaded into it first (once); false when Meta has none there. `said` is told how much of
 /// the square is done (0–1): each file half of it, a download's share as it comes.
-pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64)) -> Result<bool> {
+pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64), urls: &std::collections::BTreeMap<String, String>) -> Result<bool> {
     let mut there = true;
     for (j, kind) in ["cover5m", "p95"].into_iter().enumerate() {
         let name = chm_name(top, left, kind);
@@ -47,7 +47,7 @@ pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64))
                 store::cachefile::discard(&p);
             }
             let kept = store.join(&name);
-            fetch_once(store, &kept, &|f| said((j as f64 + f) / 2.0))?;
+            fetch_once(store, &kept, urls.get(&name).map(String::as_str), &|f| said((j as f64 + f) / 2.0))?;
             store::cachefile::create(&p, &mut |t| {
                 let (n, want) = (store::sys::copy_data(&kept, t)?, std::fs::metadata(&kept)?.len());
                 if n != want {
@@ -68,7 +68,7 @@ pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64))
 
 /// The NAS's copy `kept`, whole; else the right to download it there (`<file>.lock`), or the copy
 /// the holder downloads, waited for. `coming` is told how much of this job's download has come.
-fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
+fn fetch_once(store: &Path, kept: &Path, url: Option<&str>, coming: &dyn Fn(f64)) -> Result<()> {
     std::fs::create_dir_all(store).with_context(|| store.display().to_string())?;
     let lock = kept.with_file_name(format!("{}.lock", kept.file_name().unwrap_or_default().to_string_lossy()));
     let mut waiting = false;
@@ -78,8 +78,7 @@ fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                 use std::io::Write;
                 f.write_all(format!("{} {}", crate::agent::cond::host(), std::process::id()).as_bytes()).ok();
                 drop(f);
-                let name = kept.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                let r = download(&chm_urls(&name), kept, coming);
+                let r = download(url, kept, coming);
                 std::fs::remove_file(&lock).ok();
                 r?;
             }
@@ -110,15 +109,19 @@ fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     Ok(())
 }
 
-/// The file at `urls` (its spellings at Meta's, `chm_urls`: each asked in turn) into `path` (by a
+/// The file at `url` (the canopy source's index's: `super::canopy_urls`) into `path` (by a
 /// temporary name, flushed), whole: a body shorter than its Content-Length, or not a whole TIFF, is
-/// tried again. An empty file when Meta has none (404, or S3's 403 for a key that isn't there, under
-/// every spelling), so it says twice, a moment apart. Anything else (writing the file on the NAS
-/// too) is tried six times, then fails. `coming` is told how much has come (0–1), at most once a
-/// second.
+/// tried again. An empty file when the index lists none (`url` None), or Meta has none (404, or
+/// S3's 403 for a key that isn't there), so it says twice, a moment apart. Anything else (writing
+/// the file on the NAS too) is tried six times, then fails. `coming` is told how much has come
+/// (0–1), at most once a second.
 #[cfg(not(target_os = "wasi"))]
-fn download(urls: &[String], path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
+fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     use std::io::{Read, Write};
+    let Some(url) = url else {
+        std::fs::write(path, b"").with_context(|| path.display().to_string())?;
+        return Ok(());
+    };
     // (A square is up to 2 GB: two hours for it, so it comes at 0.3 MB/s too.)
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(7200)))
@@ -132,19 +135,12 @@ fn download(urls: &[String], path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     let mut last = String::new();
     for attempt in 0..6u32 {
         let got = (|| -> Result<Option<String>> {
-            // (The first spelling Meta has; none there only when each says so.)
-            let mut found = None;
-            for url in urls {
-                crate::fetch::online(url)?;
-                match agent.get(url).call() {
-                    Ok(r) if matches!(r.status().as_u16(), 403 | 404) => {}
-                    Ok(r) => {
-                        found = Some(r);
-                        break;
-                    }
-                    Err(e) => return Ok(Some(e.to_string())),
-                }
-            }
+            crate::fetch::online(url)?;
+            let found = match agent.get(url).call() {
+                Ok(r) if matches!(r.status().as_u16(), 403 | 404) => None,
+                Ok(r) => Some(r),
+                Err(e) => return Ok(Some(e.to_string())),
+            };
             let Some(mut r) = found else {
                 missing += 1;
                 if missing == 2 {
@@ -213,17 +209,16 @@ fn download(urls: &[String], path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
         std::fs::remove_file(&tmp).ok();
         std::thread::sleep(std::time::Duration::from_secs(if missing > 0 { 5 } else { 1 << attempt }));
     }
-    bail!("download failed: {}: {last}", urls.join(" or "))
+    bail!("download failed: {url}: {last}")
 }
 
 #[cfg(target_os = "wasi")]
-fn download(urls: &[String], _path: &Path, _coming: &dyn Fn(f64)) -> Result<()> {
-    bail!("{}: not in the cache, and there's no network here", urls.join(" or "))
+fn download(url: Option<&str>, path: &Path, _coming: &dyn Fn(f64)) -> Result<()> {
+    match url {
+        None => std::fs::write(path, b"").with_context(|| path.display().to_string()),
+        Some(u) => bail!("{u}: not in the cache, and there's no network here"),
+    }
 }
-
-/// The leaf-type sources' boxes (west, south, east, north): a square outside both has none.
-const EEA_BOX: [f64; 4] = [-40.0, 20.0, 40.0, 75.0];
-const NALCMS_BOX: [f64; 4] = [-180.0, 14.0, -50.0, 84.0];
 
 /// Whether leaf-type square `p` was made whole (tagged so; NALCMS's always are), not only over some
 /// regions, and is whole on the disk (leaftype.py's `complete`).
@@ -236,16 +231,17 @@ pub fn complete(p: &Path) -> bool {
 }
 
 /// The leaf-type squares among `sqs` (top, left) that `dir` lacks whole, made by `dem`'s leaftype.py
-/// (`--make`, its NALCMS GeoTIFF kept in `dir`'s parent), which says how far it is: inside the EEA's
-/// box from the EEA, inside NALCMS's from NALCMS, none elsewhere (no source).
-pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, dem: &Path) -> Result<()> {
+/// (`--make`, its NALCMS GeoTIFF kept in `dir`'s parent; the run's sources file `file`, of which
+/// `leaf` is the leaf-type sources), which says how far it is: inside the European source's box from
+/// it, inside the North American's from it, none elsewhere (no source).
+pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, dem: &Path, leaf: &LeafSources, file: &Path) -> Result<()> {
     let meets = |b: [f64; 4], top: i32, left: i32| (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1];
-    let to_make = sqs.iter().filter(|&&(t, l)| (meets(EEA_BOX, t, l) || meets(NALCMS_BOX, t, l)) && !complete(&dir.join(leaf_name(t, l)))).count();
+    let to_make = sqs.iter().filter(|&&(t, l)| (meets(leaf.europe_box, t, l) || meets(leaf.north_america_box, t, l)) && !complete(&dir.join(leaf_name(t, l)))).count();
     if to_make == 0 {
         return Ok(());
     }
     let mut c = store::spawn::command("uv");
-    c.current_dir(dem).args(["run", "python", "leaftype.py", "--make"]).arg(dir).args(sqs.iter().map(|(t, l)| format!("{t},{l}")));
+    c.current_dir(dem).args(["run", "python", "leaftype.py", "--make"]).arg(dir).arg("--sources").arg(std::path::absolute(file)?).args(sqs.iter().map(|(t, l)| format!("{t},{l}")));
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run leaftype.py")?;
     anyhow::ensure!(st.success(), "leaftype.py: {st}");

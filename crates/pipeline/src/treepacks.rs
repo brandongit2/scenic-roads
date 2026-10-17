@@ -195,15 +195,19 @@ fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()
 }
 
 /// A run's arguments for the trees program: tile `t` (`--z3` or `--z6`), its coverage in `dir`, the
-/// squares (`chm`: this Mac's cache; the NAS's store and leaf types), its archives into `dir`.
-fn run_args(out: &Out, t: Unit, dir: &Path, chm: &Path, workers: usize) -> Vec<std::ffi::OsString> {
-    let mut a: Vec<std::ffi::OsString> = vec![format!("--z{}", t.z).into(), format!("{},{}", t.x, t.y).into(), "--coverage".into(), dir.join("coverage.json").into()];
+/// declared sources as it reads them (`sources.json`, written into `dir` from the accepted
+/// declarations: crate::trees::RunSources), the squares (`chm`: this Mac's cache; the NAS's store and
+/// leaf types), its archives into `dir`.
+fn run_args(out: &Out, t: Unit, dir: &Path, chm: &Path, workers: usize) -> Result<Vec<std::ffi::OsString>> {
+    let sources = dir.join("sources.json");
+    std::fs::write(&sources, serde_json::to_vec(&crate::trees::RunSources::of(&crate::inputs::sources::read(out.root(), &out.manifest)?)?)?)?;
+    let mut a: Vec<std::ffi::OsString> = vec![format!("--z{}", t.z).into(), format!("{},{}", t.x, t.y).into(), "--coverage".into(), dir.join("coverage.json").into(), "--sources".into(), sources.into()];
     for (k, v) in [("--chm", chm.to_path_buf()), ("--chm-store", out.root().join("sources/canopy")), ("--leaf", leaf_dir(out.root())), ("--out", dir.to_path_buf())] {
         a.push(k.into());
         a.push(v.into());
     }
     a.extend(["--workers".into(), workers.to_string().into()]);
-    a
+    Ok(a)
 }
 
 /// Makes z3 tile `q`'s tree layers in one run and uploads them, dropping its packs it no longer makes
@@ -220,7 +224,7 @@ pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path
         drop_packs(out, q, &crate::layers::LayerOut::default())?;
         return Ok(());
     };
-    run_trees(dem, by_python(), &run_args(out, q, &dir, chm, workers)).with_context(|| format!("z3 tile {}", q.slash()))?;
+    run_trees(dem, by_python(), &run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
     writing();
     put_area(out, q, &dir)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -289,7 +293,7 @@ pub fn build_piece(out: &mut Out, cov: &Coverage, t: Unit, dem: &Path, chm: &Pat
         return Ok(());
     }
     let dir = fresh(cov, t, scratch, true)?.context("a piece's scratch folder")?;
-    run_trees(dem, false, &run_args(out, t, &dir, chm, workers)).with_context(|| format!("z6 tile {}", t.slash()))?;
+    run_trees(dem, false, &run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
     writing();
     put_piece(out, t, &dir, expect_same)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -525,7 +529,7 @@ mod tests {
         let run = |t: Unit, dir: &Path| {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&coverage_json(&c, t)).unwrap()).unwrap();
-            let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: sq.path().into(), chm_store: d.path().join("store"), leaf: sq.path().into(), out: dir.into(), dem: d.path().into() };
+            let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: sq.path().into(), chm_store: d.path().join("store"), sources: crate::trees::tests::sources_file(dir), leaf: sq.path().into(), out: dir.into(), dem: d.path().into() };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
         let out = |name: &str| Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
@@ -637,7 +641,7 @@ mod tests {
         let run = |t: Unit, dir: &Path| {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&coverage_json(&cov, t)).unwrap()).unwrap();
-            let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: chm.clone(), chm_store: data.join("store"), leaf: leaf_dir(&root), out: dir.into(), dem: data.clone() };
+            let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: chm.clone(), chm_store: data.join("store"), sources: { let p = dir.join("sources.json"); std::fs::write(&p, serde_json::to_vec(&crate::trees::RunSources::of(&crate::inputs::sources::read(&root, &m).unwrap()).unwrap()).unwrap()).unwrap(); p }, leaf: leaf_dir(&root), out: dir.into(), dem: data.clone() };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
         for q in areas {

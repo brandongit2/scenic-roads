@@ -14,7 +14,13 @@ Sources:
                  sources/trees/), so it's downloaded once.
   Hong Kong      none (no data).
 
-usage: leaftype.py --make <dir> <top>,<left>…
+usage: leaftype.py --make <dir> --sources <sources.json> <top>,<left>…
+
+Where each source is, and the box it covers, are its declaration's (docs/inputs.md §6.9: the
+leaf-type-europe and leaf-type-north-america roles), in --sources as the trees run has them
+(crates/pipeline/src/trees, RunSources' `leaf`: `europe`, `europe_box`, `north_america`,
+`north_america_member` (its zip member's local header offset and compressed size),
+`north_america_box`).
 
 The build agent's trees job has it make the squares its z3 tile needs (the trees program,
 crates/pipeline/src/trees; dem/trees.py --z3 calls it too): whole squares, tagged complete (a square
@@ -24,6 +30,7 @@ for what it lacks.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import struct
@@ -45,11 +52,8 @@ UA = "scenic-roads/0.1 (personal offline map)"
 RES = 0.0005
 N = int(round(10 / RES))
 
-EEA = "https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/HRL_DominantLeafType2018/ImageServer/exportImage"
+# The image service's largest image.
 MAX_W, MAX_H = 7500, 4100
-NALCMS_ZIP = "https://www.cec.org/files/atlas_layers/1_terrestrial_ecosystems/1_01_0_land_cover_2020_30m/land_cover_2020v2_30m_tif.zip"
-NALCMS_MEMBER_OFFSET = 38952  # local header of …/data/NA_NALCMS_landcover_2020v2_30m.tif
-NALCMS_COMPRESSED = 2668629085
 # NALCMS classes → ours.
 NA_MAP = np.zeros(256, np.uint8)
 NA_MAP[[1, 2]] = 2
@@ -57,10 +61,9 @@ NA_MAP[[3, 4, 5]] = 1
 NA_MAP[6] = 3
 NA_MAP[[0, 127, 255]] = 255
 
-
-# The sources' extents (w, s, e, n): a square outside both has no leaf type.
-EEA_BOX = (-40, 20, 40, 75)
-NALCMS_BOX = (-180, 14, -50, 84)
+# The declared sources (`make`'s `sources`): where each is and its extent (w, s, e, n); a square
+# outside both boxes has no leaf type.
+SRC: dict = {}
 
 
 def complete(path: Path) -> bool:
@@ -124,7 +127,7 @@ def eea_chunk(w, s, e, n, width, height) -> np.ndarray | None:
 
 
 def eea_request(w, s, e, n, width, height) -> np.ndarray | None:
-    url = (f"{EEA}?bbox={w},{s},{e},{n}&bboxSR=4326&imageSR=4326&size={width},{height}&format=tiff&pixelType=U8"
+    url = (f"{SRC['europe']}?bbox={w},{s},{e},{n}&bboxSR=4326&imageSR=4326&size={width},{height}&format=tiff&pixelType=U8"
            f"&interpolation=RSP_NearestNeighbor&f=image")
     for attempt in range(3):
         r = subprocess.run(["curl", "-sS", "--fail", "-m", "240", "-A", UA, url], capture_output=True)
@@ -150,7 +153,7 @@ def europe_square(top: int, left: int, out: Path, progress=None) -> None:
         for c0 in range(0, N, MAX_W):
             h, w = min(MAX_H, N - r0), min(MAX_W, N - c0)
             bb = (left + c0 * RES, top - (r0 + h) * RES, left + (c0 + w) * RES, top - r0 * RES)
-            if bb[0] < EEA_BOX[2] and bb[2] > EEA_BOX[0] and bb[1] < EEA_BOX[3] and bb[3] > EEA_BOX[1]:
+            if meets_box(SRC["europe_box"], bb):
                 jobs.append((r0, c0, h, w, bb))
 
     # The chunks, kept on the NAS as they come (a chunk: its array, or `.none` where the
@@ -242,6 +245,8 @@ def fetch_nalcms(tif: Path):
 
     if tif.exists():
         return
+    NALCMS_ZIP = SRC["north_america"]
+    NALCMS_MEMBER_OFFSET, NALCMS_COMPRESSED = SRC["north_america_member"]
     with phase("NALCMS's GeoTIFF downloaded", "net"):
         tif.parent.mkdir(parents=True, exist_ok=True)
         head = subprocess.run(["curl", "-sS", "--fail", "-A", UA, "-r", f"{NALCMS_MEMBER_OFFSET}-{NALCMS_MEMBER_OFFSET + 511}", NALCMS_ZIP],
@@ -306,18 +311,27 @@ def north_america_squares(todo: list, out: Path, tif: Path, progress=None) -> No
                 progress(k + 1)
 
 
-def make(sqs: list, out: Path, store: Path, progress=None) -> None:
-    """The leaf-type squares among `sqs` ((top, left)) that `out` lacks whole: inside the EEA's box
-    from the EEA, inside NALCMS's from NALCMS (its GeoTIFF kept in `store`, downloaded once); none
-    elsewhere (no source). `progress`, when given, is told how many of the squares to make are done,
-    and of how many (an EEA square counted by its chunks as they come)."""
+def meets_box(box, bb) -> bool:
+    """Whether boxes `box` and `bb` (w, s, e, n) meet."""
+    return bb[0] < box[2] and bb[2] > box[0] and bb[1] < box[3] and bb[3] > box[1]
+
+
+def make(sqs: list, out: Path, store: Path, sources: dict, progress=None) -> None:
+    """The leaf-type squares among `sqs` ((top, left)) that `out` lacks whole: inside the European
+    source's box from it, inside the North American's from it (its GeoTIFF kept in `store`,
+    downloaded once); none elsewhere (no source). `sources`: the declared sources (SRC).
+    `progress`, when given, is told how many of the squares to make are done, and of how many (an
+    EEA square counted by its chunks as they come)."""
+    SRC.clear()
+    SRC.update(sources)
+
     def meets(box, top, left):
-        return left < box[2] and left + 10 > box[0] and top - 10 < box[3] and top > box[1]
+        return meets_box(box, (left, top - 10, left + 10, top))
 
     with phase("the squares made checked", "nas-read"):
         missing = [(t, l) for t, l in sqs if not ((out / f"lat{t}_lon{l}.tif").exists() and complete(out / f"lat{t}_lon{l}.tif"))]
-    eea = [(t, l) for t, l in missing if meets(EEA_BOX, t, l)]
-    na = [(t, l) for t, l in missing if meets(NALCMS_BOX, t, l) and not meets(EEA_BOX, t, l)]
+    eea = [(t, l) for t, l in missing if meets(SRC["europe_box"], t, l)]
+    na = [(t, l) for t, l in missing if meets(SRC["north_america_box"], t, l) and not meets(SRC["europe_box"], t, l)]
 
     def said(done: float) -> None:
         # (Nothing when there's none to make.)
@@ -340,12 +354,13 @@ def progress(done: float, total: int, unit: str) -> None:
 
 
 def main():
-    # --make <dir> <top>,<left>…: the trees job's (crates/pipeline/src/trees/squares.rs).
-    if sys.argv[1:2] != ["--make"] or len(sys.argv) < 3:
-        raise SystemExit("usage: leaftype.py --make <dir> <top>,<left>…")
+    # --make <dir> --sources <file> <top>,<left>…: the trees job's (crates/pipeline/src/trees/squares.rs).
+    if sys.argv[1:2] != ["--make"] or sys.argv[3:4] != ["--sources"] or len(sys.argv) < 5:
+        raise SystemExit("usage: leaftype.py --make <dir> --sources <sources.json> <top>,<left>…")
     out = Path(sys.argv[2])
-    sqs = [tuple(int(v) for v in a.split(",")) for a in sys.argv[3:]]
-    make(sqs, out, out.parent, lambda done, total: progress(done, total, "leaf-type squares"))
+    sources = json.loads(Path(sys.argv[4]).read_text())["leaf"]
+    sqs = [tuple(int(v) for v in a.split(",")) for a in sys.argv[5:]]
+    make(sqs, out, out.parent, sources, lambda done, total: progress(done, total, "leaf-type squares"))
 
 
 if __name__ == "__main__":

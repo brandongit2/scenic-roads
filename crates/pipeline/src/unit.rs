@@ -587,6 +587,9 @@ pub struct UnitSources {
     /// The land-cover source (`landcover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub land_cover: Option<crate::landcover::Cover>,
+    /// Each canopy file's URL by its name (scenic-metrics' canopy step: crate::trees::canopy_urls).
+    #[serde(default)]
+    pub canopy: BTreeMap<String, String>,
 }
 
 impl UnitSources {
@@ -594,7 +597,8 @@ impl UnitSources {
 
     /// What the unit's programs read of `s`.
     pub fn of(s: &crate::inputs::sources::Sources) -> Result<UnitSources> {
-        Ok(UnitSources { land_cover: Some(crate::landcover::Cover::of(s.role(crate::inputs::sources::LAND_COVER)?)?) })
+        use crate::inputs::sources::{CANOPY, LAND_COVER};
+        Ok(UnitSources { land_cover: Some(crate::landcover::Cover::of(s.role(LAND_COVER)?)?), canopy: crate::trees::canopy_urls(s.role(CANOPY)?)? })
     }
 
     /// Folder `dir`'s.
