@@ -547,6 +547,21 @@ const BASE_BEFORE: &str = "fd2de15d34da9ee7";
 /// The digest of the origin (`https://host`) the code fetched GLO-30's tiles and fill masks from.
 const NORTH_BEFORE: &str = "81c289cf40bc1fc2";
 
+/// The digest of GLO-30's 1° cells the code read (`cells_digest` of its tile list's), so an index
+/// of more or fewer cells re-keys nothing. (In tests: `inputs::elevation::accept_fixture`'s two.)
+#[cfg(not(test))]
+const NORTH_CELLS_BEFORE: &str = "bc9f2dd40c4e2736";
+#[cfg(test)]
+const NORTH_CELLS_BEFORE: &str = "a1b550d6992e52bc";
+
+/// The digest of a set of 1° cells (south-west corners): "lat lon" a line, sorted.
+pub fn cells_digest<'a>(cells: impl Iterator<Item = &'a (i32, i32)>) -> String {
+    let mut v: Vec<&(i32, i32)> = cells.collect();
+    v.sort();
+    let lines: Vec<String> = v.iter().map(|(la, lo)| format!("{la} {lo}")).collect();
+    store::naming::hash16(lines.join("\n").as_bytes())
+}
+
 /// A URL's origin: its scheme and host.
 fn origin(url: &str) -> &str {
     let rest = url.find("://").map_or(0, |i| i + 3);
@@ -555,12 +570,16 @@ fn origin(url: &str) -> &str {
 
 /// Whether the terrain's declared sources `d` are what `SOURCES_BEFORE` named: the base by the URL
 /// template the code had, and every 1° tile and fill mask of the northern dataset from the origin
-/// it had (digests, so no source is named in code). A key naming the sources as they were is then
-/// the same build as one naming their declarations.
+/// it had, its cells the set the code read (digests, so no source is named in code). A key naming
+/// the sources as they were is then the same build as one naming their declarations.
 pub fn named_before(d: &crate::terrain_sources::Declared) -> bool {
+    named_before_with(d, NORTH_CELLS_BEFORE)
+}
+
+fn named_before_with(d: &crate::terrain_sources::Declared, cells: &str) -> bool {
     let h = |s: &str| store::naming::hash16(s.as_bytes());
     let north_ok = |u: &str| h(origin(u)) == NORTH_BEFORE;
-    h(&d.base) == BASE_BEFORE && d.north.as_ref().is_some_and(|n| !n.cells.is_empty() && n.cells.values().all(|(u, m)| north_ok(u) && m.as_deref().is_some_and(north_ok)))
+    h(&d.base) == BASE_BEFORE && d.north.as_ref().is_some_and(|n| !n.cells.is_empty() && cells_digest(n.cells.keys()) == cells && n.cells.values().all(|(u, m)| north_ok(u) && m.as_deref().is_some_and(north_ok)))
 }
 
 /// The records as every reader reads them (the plan, the checklist, the regions' state, the jobs'
@@ -1521,6 +1540,31 @@ mod tests {
         let mut no_mask = declared(base, Some(north));
         no_mask.north.as_mut().unwrap().cells.values_mut().next().unwrap().1 = None;
         assert!(!named_before(&no_mask), "a tile without its fill mask");
+        assert_eq!(cells_digest(declared(base, Some(north)).north.unwrap().cells.keys()), NORTH_CELLS_BEFORE, "the fixture's cells");
+        let mut more = declared(base, Some(north));
+        let n = more.north.as_mut().unwrap();
+        let one = n.cells[&(64, -148)].clone();
+        n.cells.insert((66, -148), one.clone());
+        assert!(!named_before(&more), "a cell more");
+        let mut other = declared(base, Some(north));
+        let n = other.north.as_mut().unwrap();
+        n.cells.remove(&(65, -148));
+        n.cells.insert((65, -147), one);
+        assert!(!named_before(&other), "one cell other");
+    }
+
+    /// Not a test: the `cells_digest` of a GLO-30 tile list (`GLO30_TILE_LIST`, a tileList.txt), the
+    /// value of `NORTH_CELLS_BEFORE`.
+    #[test]
+    #[ignore]
+    fn glo30_cells_digest() {
+        let text = std::fs::read_to_string(std::env::var("GLO30_TILE_LIST").expect("GLO30_TILE_LIST")).unwrap();
+        let num = |s: &str| s[1..].parse::<i32>().ok().map(|v| if s.starts_with('S') || s.starts_with('W') { -v } else { v });
+        let cells: Vec<(i32, i32)> = text.lines().filter_map(|l| {
+            let p: Vec<&str> = l.trim().split('_').collect();
+            (p.len() >= 9).then(|| Some((num(p[4])?, num(p[6])?))).flatten()
+        }).collect();
+        println!("{} cells, digest {}", cells.len(), cells_digest(cells.iter()));
     }
 
     #[test]

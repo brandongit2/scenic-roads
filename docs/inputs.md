@@ -1004,13 +1004,16 @@ source) are the terrain's code. The declarations themselves are kept in
   when a terrain declaration does.
 - **Re-keyed** (`agent::rekey::derive_sources`): a piece recorded under the key that named its
   sources as code had them (`rekey::SOURCES_BEFORE`) is read under its key now when the declarations
-  name the same: the base's template and the northern tiles' and masks' origin match what the code
-  fetched (`rekey::named_before`, by digests). The packs are then the same bytes
+  name the same: the base's template, the northern tiles' and masks' origin and the set of 1° cells
+  match what the code read (`rekey::named_before`, by digests; the cells' is `rekey::cells_digest`
+  of the tile list it read, `NORTH_CELLS_BEFORE`). The packs are then the same bytes
   (`terrain_pack::tests::the_declared_sources_make_the_same_terrain_and_slope_packs`), and slope,
   keyed on the terrain packs' contents, is unchanged with them. Other sources: every piece made again.
-- **The rollout:** the northern dataset's files move from `sources/copernicus-dem/` to
-  `sources/fetched/glo30/` (the same names), and the two declarations and `glo30-tiles.geojson` are
-  dropped into `inputs/elevation/`; until they're accepted the terrain waits.
+- **The rollout:** first both Macs run the app that reads the declarations; then the northern
+  dataset's files are copied (not moved) from `sources/copernicus-dem/` to `sources/fetched/glo30/`
+  (the same names), so an older app mid-build still reads the old folder, which is deleted later;
+  then the two declarations and `glo30-tiles.geojson` are dropped into `inputs/elevation/`. Until
+  they're accepted the terrain waits.
 
 **Planned:**
 - **Step 2, densification from the data:** today 8 m in North America and Japan, 15 m elsewhere, by
