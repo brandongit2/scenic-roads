@@ -131,10 +131,18 @@ export class RenderToTexture {
         // (Scenic Roads: the sources of the layers draped, drapes(): a source used only by lifted
         // layers has no fingerprint, else every texture would be drawn again every frame.)
         const rttSourceIds = new Set<string>();
+        // (Scenic Roads: and those whose draped layers read feature state: only their state's
+        // revision is part of a texture's fingerprint. A source's state changes for any of its
+        // layers, e.g. the ferry terminals' colours while the ferry lines are draped, and every
+        // texture holding the source was drawn again for it: ~100 ms of GPU a time over the Sierra.)
+        const stateSourceIds = new Set<string>();
         for (const layerId of this._renderableLayerIds) {
             const layer = style._layers[layerId];
             const source = layer.source;
-            if (source && drapes(layer)) rttSourceIds.add(source);
+            if (source && drapes(layer)) {
+                rttSourceIds.add(source);
+                if (layer.isStateDependent()) stateSourceIds.add(source);
+            }
         }
 
         this._coordsAscending = {};
@@ -157,7 +165,7 @@ export class RenderToTexture {
 
             this._rttFingerprints[sourceId] = {};
             const fingerprints = this._rttFingerprints[sourceId];
-            const revision = tileManager.getState().revision;
+            const revision = stateSourceIds.has(sourceId) ? tileManager.getState().revision : 0;
             for (const key in coordsAscending)
                 fingerprints[key] = new RTTFingerprint(coordsAscending[key], revision, zoom, visibleLayerIds);
         }

@@ -96,6 +96,11 @@ The app compiles this source with its own code; there is no separate build or `d
   source with nothing draped no longer drops the terrain's textures; while the camera moves at most
   `movingRedraws` existing textures are redrawn a frame. At rest, as upstream.
 
+- **Feature state redraws only the drapes that read it** (`render_to_texture.ts`): a source's state
+  revision is part of a terrain texture's fingerprint only when one of its draped layers reads
+  feature state. The ferry terminals' colours (feature state on `ferries`, whose lines are draped
+  and don't read it) redrew every terrain texture each time, ~100 ms of GPU a time while orbiting.
+
 ### Custom layers: passes and the frame's depth
 
 | Pass | Hook | When, and into what |
