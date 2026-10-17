@@ -16,7 +16,11 @@ pub enum Kept {
     InPlace(Arc<dyn RangeRead>),
 }
 
-/// Held while a file is read from its source into the store: one at a time in a process.
+/// Held while a file is read from its source (opened and read whole): one at a time in a process,
+/// a zip's members coming from one server, asked politely. Held around the network alone, never
+/// across the decoding and writing, which run rayon jobs: a thread waiting on a job of its own
+/// runs other jobs meanwhile, and one of those may come here again, so the lock must not be held
+/// then (it would be asked for again on the thread that holds it).
 static DOWNLOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Whether `e` says the store can't be written here.
@@ -51,30 +55,44 @@ pub fn kept(dir: &Path, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn R
         Err(e) if unwritable(&e) => return in_place(),
         r => r?,
     }
-    let Some(src) = remote()? else {
-        match std::fs::write(dir.join(format!("{name}.none")), b"") {
-            Err(e) if unwritable(&e) => {}
-            r => r?,
-        }
-        return Ok(None);
-    };
     let host = store::sys::hostname().unwrap_or_else(|| "unknown".into());
     let tmp = dir.join(format!("{name}.{host}.{}.tmp", store::sys::pid()));
-    // (The temporary file first: a store this worker can't write is known before the file is read.)
-    let mut w = match std::fs::File::create(&tmp) {
-        Err(e) if unwritable(&e) => return Ok(Some(Kept::InPlace(src))),
-        r => r?,
+    // The source, opened and read whole, one file at a time (`DOWNLOADING`); the lock let go before
+    // the bytes are decoded and written.
+    let (bytes, mut w) = {
+        let _one = DOWNLOADING.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(src) = remote()? else {
+            match std::fs::write(dir.join(format!("{name}.none")), b"") {
+                Err(e) if unwritable(&e) => {}
+                r => r?,
+            }
+            return Ok(None);
+        };
+        // (The temporary file first: a store this worker can't write is known before the file is
+        // read.)
+        let w = match std::fs::File::create(&tmp) {
+            Err(e) if unwritable(&e) => return Ok(Some(Kept::InPlace(src))),
+            r => r?,
+        };
+        let r = (|| -> Result<Vec<u8>> {
+            let len = src.len()?;
+            let mut bytes = Vec::with_capacity(len as usize);
+            while (bytes.len() as u64) < len {
+                let n = (len - bytes.len() as u64).min(8 << 20) as usize;
+                bytes.extend(src.read_at(bytes.len() as u64, n)?);
+            }
+            Ok(bytes)
+        })();
+        match r {
+            Ok(b) => (b, w),
+            Err(e) => {
+                drop(w);
+                std::fs::remove_file(&tmp).ok();
+                return Err(e);
+            }
+        }
     };
     let r = (|| -> Result<()> {
-        // (One file read from its source at a time in this process: a zip's members come from one
-        // server, asked politely.)
-        let _one = DOWNLOADING.lock().unwrap_or_else(|e| e.into_inner());
-        let len = src.len()?;
-        let mut bytes = Vec::with_capacity(len as usize);
-        while (bytes.len() as u64) < len {
-            let n = (len - bytes.len() as u64).min(8 << 20) as usize;
-            bytes.extend(src.read_at(bytes.len() as u64, n)?);
-        }
         let t = Tiff::open(Arc::new(bytes)).with_context(|| name.to_string())?;
         let img = t.level(0)?.clone();
         let data = t.read_window(0, 0, 0, img.width, img.height)?;
@@ -104,4 +122,51 @@ pub fn kept(dir: &Path, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn R
     }
     r?;
     Ok(Some(Kept::Stored(f)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Copies made inside rayon jobs, several files at once (as elev's distance scan opens files
+    /// from its pool's threads): the decoding and writing run rayon jobs of their own, and a thread
+    /// waiting on one runs other jobs meanwhile, among them another file's copy. With the source
+    /// lock held across that, the thread would ask for the lock it holds; it's held around the
+    /// read alone, so every copy finishes.
+    #[test]
+    fn copies_made_inside_rayon_jobs_dont_hang() {
+        use rayon::prelude::*;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("fabdem");
+        let (w, h) = (1536u32, 1536u32);
+        let files: Vec<(String, Arc<Vec<u8>>)> = (0..8)
+            .map(|k| {
+                let data: Vec<f32> = (0..w * h).map(|i| (i % 977) as f32 + k as f32).collect();
+                (format!("f{k}.tif"), Arc::new(write_f32(w, h, &data, 512, [k as f64, 0.001, 0.0, 10.0, 0.0, -0.001], 4326, Some(-9999.0)).unwrap()))
+            })
+            .collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = dir.clone();
+        std::thread::spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+            let r: Result<Vec<Option<Kept>>> = pool.install(|| {
+                files
+                    .par_iter()
+                    .map(|(name, bytes)| {
+                        let b = bytes.clone();
+                        let remote = move || -> Result<Option<Arc<dyn RangeRead>>> { Ok(Some(Arc::new(b.as_ref().clone()))) };
+                        kept(&at, name, &remote, false, false)
+                    })
+                    .collect()
+            });
+            tx.send(r.map(|v| v.len())).ok();
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+            Ok(r) => assert_eq!(r.unwrap(), 8),
+            Err(_) => panic!("the copies didn't finish in two minutes: a copy waits on the lock it holds"),
+        }
+        for k in 0..8 {
+            assert!(crate::whole::tiff_file_whole(&dir.join(format!("f{k}.tif"))), "f{k}");
+        }
+    }
 }
