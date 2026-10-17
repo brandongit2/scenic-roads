@@ -124,8 +124,7 @@ fn write_map_update(home: &Path, r: &build::MapUpdate) -> Result<()> {
 }
 
 
-/// The pass's worldwide jobs, as the checklist says them.
-const WORLDWIDE: &str = "Preparing the worldwide data: sets, outlines, route ends, roads' reach, buildings, summits, labels, Canada's missing lakes, water";
+/// The pass's worldwide steps the checklist counts, after the planet's own.
 const WORLDWIDE_STEPS: [&str; 10] = ["pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water"];
 
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
@@ -446,7 +445,7 @@ pub struct Status {
     pub built: BTreeMap<String, build::RegionState>,
     /// The build to the end, step by step: the pass's steps, then the regions'.
     #[serde(default)]
-    pub checklist: Vec<build::Step>,
+    pub checklist: Vec<build::Line>,
     /// The workers the coordinator heard from in the last two minutes (helpers, web pages).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers: Vec<WorkerView>,
@@ -859,7 +858,7 @@ pub struct Agent {
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
     /// How far each region is built, and when that was worked out.
-    progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Step>)>,
+    progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Line>)>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
     /// The terrain packs' indexes, which the units' keys read (`tiles`, kept in `pack-idx/`): those
@@ -1427,7 +1426,7 @@ impl Agent {
                 }
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("{} ({n} {}{}, for the lead)", build::label(&step), if matches!(step.as_str(), "trees" | "terrain" | "slope") { "tile" } else { "area" }, if n == 1 { "" } else { "s" });
+                let what = format!("{}, for the lead", steps::said(&step, n, None));
                 self.slots[0].lease = Some(match pooled {
                     Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                     None => Held::Leased { lease, dir },
@@ -2682,7 +2681,7 @@ impl Agent {
         }
         let r = self.slots[1].running.as_ref()?;
         let (s, b) = (step_of(&spec.id).unwrap_or_default(), step_of(&r.spec.id).unwrap_or_default());
-        let beside = build::label(&b);
+        let beside = steps::title(&b);
         if self.clashes(&s, &b) {
             return Some(format!("waits for the job beside it ({beside}) to end: they don't run together"));
         }
@@ -2928,7 +2927,7 @@ impl Agent {
         let first = self.slots[0].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone(), crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20), self.spec_peak(&r.spec)));
         if self.slots[0].running.as_ref().is_some_and(|r| self.runs_alone(&r.spec)) {
             let f = first.unwrap().0;
-            let what = self.slots[0].running.as_ref().map_or_else(|| build::label(&f).to_string(), |r| r.spec.what.clone());
+            let what = self.slots[0].running.as_ref().map_or_else(|| steps::title(&f).to_string(), |r| r.spec.what.clone());
             self.beside_why = Some(format!("{what} is a cold start (no run of its step measured yet): it runs alone"));
             return;
         }
@@ -2953,7 +2952,7 @@ impl Agent {
             }
             // (Both jobs' measured memory and disk within what the Mac has left.)
             if let Some(w) = self.fits_beside(spec, 0) {
-                why.get_or_insert_with(|| format!("{}: {w}", build::label(&step)));
+                why.get_or_insert_with(|| format!("{}: {w}", steps::title(&step)));
                 continue;
             }
             self.beside_why = None;
@@ -3311,7 +3310,7 @@ impl Agent {
     /// what it has taken so far).
     fn fits_beside(&self, spec: &JobSpec, other: usize) -> Option<String> {
         let r = self.slots[other].running.as_ref()?;
-        let beside = build::label(&step_of(&r.spec.id).unwrap_or_default()).to_string();
+        let beside = steps::title(&step_of(&r.spec.id).unwrap_or_default()).to_string();
         let Some(mine) = self.measured_job(spec) else { return Some(format!("a cold start (no run of its step measured yet): it runs alone, once {beside} ends")) };
         let Some(theirs) = self.measured_job(&r.spec) else { return Some(format!("{beside} beside it is a cold start, which runs alone")) };
         let limit = memguard::limit_mb(self.total_mb());
@@ -3396,11 +3395,11 @@ impl Agent {
                     Some((m, l)) => format!("{m}'s limit is {:.1} GB: hand it the lead (`scenic lead give {m}`), or fix the step's memory", gb(l)),
                     None => "no member's limit fits it: a step whose memory grows with its target, for the owner to see to".to_string(),
                 };
-                h.why.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
             } else if n_all > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
             } else if n_here > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
             }
         }
         h
@@ -4233,7 +4232,7 @@ impl Agent {
         if self.due("backup", Duration::from_secs(86400)) {
             out.push(JobSpec {
                 id: "backup".into(),
-                what: "Backing up translations, descriptions, inputs and the acceptances".into(),
+                what: steps::title("backup").into(),
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
@@ -4245,7 +4244,7 @@ impl Agent {
         if self.due("gc", Duration::from_secs(86400)) && self.map_update.borrow().as_ref().is_none_or(|r| r.over) {
             out.push(JobSpec {
                 id: "gc".into(),
-                what: "Removing replaced files from the NAS".into(),
+                what: steps::title("gc").into(),
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
@@ -4301,13 +4300,16 @@ impl Agent {
         let build_bin = s(&self.o.bin.join("scenic-build"));
         let mut jobs: Vec<JobSpec> = self.gate_work(root, &manifest, &keys, waiting);
         held.sources = !crate::inputs::sources::accepted(&manifest);
-        let job = |id: String, what: &str, step: &str, extra: Vec<String>, record: Option<build::Work>| {
+        // (A job's name is its step's title, from the steps table: `step` is the scenic-build
+        // command, the step by its id's.)
+        let job = |id: String, step: &str, extra: Vec<String>, record: Option<build::Work>| {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
+            let what = steps::title(step_of(&id).as_deref().unwrap_or(step)).to_string();
             // (Every job needs the NAS; none waits for power or home, the owner's choice: the pass's
             // whole-planet reads go over Tailscale when away, slowly.)
-            JobSpec { id, what: what.into(), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record }
+            JobSpec { id, what, cmd, needs: Needs { nas: true }, restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
@@ -4315,7 +4317,7 @@ impl Agent {
         if let Some(date) = pass {
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
-                jobs.push(job(format!("pass-sets {date}"), "Cutting the OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
+                jobs.push(job(format!("pass-sets {date}"), "pass-sets", p.clone(), None));
             }
             // The pass's outlines (their own step: made again when their assembly changes, not at
             // the next pass). While they have work, nothing else is planned (the regions' coverage,
@@ -4326,38 +4328,38 @@ impl Agent {
             if let Some(w) = build::outlines_work(date, &manifest, &keys) {
                 let failures = self.mem.retry.get(&format!("outlines {date}")).map_or(0, |r| r.0);
                 let made = manifest.contains_key(&format!("sources/osm/{date}/outlines"));
-                jobs.push(job(format!("outlines {date}"), "Assembling the countries' and regions' outlines", "outlines", p.clone(), Some(w)));
+                jobs.push(job(format!("outlines {date}"), "outlines", p.clone(), Some(w)));
                 if build::outlines_hold(made, failures) {
                     waiting.push(Waiting { step: None, what: "Building".into(), why: "waits for the pass's outlines to be assembled (the outlines job)".into() });
                     return jobs;
                 }
-                waiting.push(Waiting { step: Some("outlines".into()), what: "Assembling the countries' and regions' outlines".into(), why: format!("failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile") });
+                waiting.push(Waiting { step: Some("outlines".into()), what: steps::title("outlines").into(), why: format!("failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile") });
             }
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
-                jobs.push(job(format!("trailends {date}"), "Finding the ends of the world's hiking routes", "trailends", p.clone(), Some(w)));
+                jobs.push(job(format!("trailends {date}"), "trailends", p.clone(), Some(w)));
             }
-            let reach_job = |w: build::Work| job(format!("reach {date}"), "Working out how far each area's roads reach, worldwide", "reach", p.clone(), Some(w));
+            let reach_job = |w: build::Work| job(format!("reach {date}"), "reach", p.clone(), Some(w));
             if let Some(w) = build::reach_work(date, &manifest, &keys) {
                 jobs.push(reach_job(w));
             } else if let Err(why) = self.current_reach(root, &manifest, &keys, date) {
                 match why {
                     // Made, but it doesn't decode: made again.
                     crate::reach::LoadError::Bad(e) => {
-                        waiting.push(Waiting { step: None, what: "Building the areas".into(), why: format!("the pass's reaches don't read ({e}); making them again") });
+                        waiting.push(Waiting { step: None, what: steps::stage_title("roads").into(), why: format!("the pass's reaches don't read ({e}); making them again") });
                         if let Some(k) = build::reach_key(date, &manifest) {
                             jobs.push(reach_job(build::Work { step: "reach".into(), targets: vec![("reach".into(), k)] }));
                         }
                     }
-                    crate::reach::LoadError::Io(e) => waiting.push(Waiting { step: None, what: "Building the areas".into(), why: format!("the pass's reaches can't be read now: {e}") }),
+                    crate::reach::LoadError::Io(e) => waiting.push(Waiting { step: None, what: steps::stage_title("roads").into(), why: format!("the pass's reaches can't be read now: {e}") }),
                 }
             }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
-                jobs.push(job("terrain-z8".into(), "Building coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
+                jobs.push(job("terrain-z8".into(), "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
             }
             // (Of the declared release: none before the source declarations are accepted.)
             let release = crate::buildtiles::release_of(root, &manifest).ok();
             if let Some(release) = release.as_deref().filter(|r| !manifest.contains_key(&crate::buildtiles::index_logical(r))) {
-                jobs.push(job(format!("buildings {release}"), "Collecting the world's roadside buildings", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
+                jobs.push(job(format!("buildings {release}"), "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
             } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
                 // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
@@ -4365,20 +4367,20 @@ impl Agent {
                 }
             }
             if let Some(w) = build::summits_work(date, &manifest, &keys) {
-                jobs.push(job(format!("summits {date}"), "Finding the world's summits", "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
+                jobs.push(job(format!("summits {date}"), "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
             }
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
-                jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
+                jobs.push(job(format!("labels {date}"), "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
             let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
             if let (Some(w), Some(table)) = (build::spoken_work(date, &manifest, &keys), table) {
                 // (The languages' accepted version the key names.)
-                jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat(), Some(w)));
+                jobs.push(job(format!("spoken {date}"), "spoken", [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat(), Some(w)));
             } else if table.is_none() && manifest.contains_key(&format!("sources/osm/{date}/outlines")) {
-                waiting.push(Waiting { step: Some("spoken".into()), what: "Mapping the languages spoken where, for names".into(), why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into() });
+                waiting.push(Waiting { step: Some("spoken".into()), what: steps::title("spoken").into(), why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into() });
             }
             if !manifest.contains_key(&crate::inputs::logical(crate::inputs::heritage::UNIT)) {
-                waiting.push(Waiting { step: Some("heritage-sites".into()), what: build::label("heritage-sites").into(), why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)".into() });
+                waiting.push(Waiting { step: Some("heritage-sites".into()), what: steps::title("heritage-sites").into(), why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)".into() });
             }
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
@@ -4389,7 +4391,7 @@ impl Agent {
             match crate::lakefill::run::planned_source(root, &manifest) {
                 Err(e) => {
                     held.lakefill = true;
-                    waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: e });
+                    waiting.push(Waiting { step: Some("lakefill".into()), what: steps::title("lakefill").into(), why: e });
                 }
                 Ok(source) => {
                     let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
@@ -4397,14 +4399,14 @@ impl Agent {
                     held.lakefill = build::water_waits_for_lakefill(lakefill.is_some(), failures);
                     if let Some(w) = lakefill {
                         if failures >= build::LAKEFILL_HOLDS {
-                            waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
+                            waiting.push(Waiting { step: Some("lakefill".into()), what: steps::title("lakefill").into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
                         }
-                        jobs.push(job(format!("lakefill {date}"), "Filling in Canada's lakes missing from OpenStreetMap", "lakefill", p.clone(), Some(w)));
+                        jobs.push(job(format!("lakefill {date}"), "lakefill", p.clone(), Some(w)));
                     }
                 }
             }
             if let Some(w) = build::water_work(date, &manifest, &keys) {
-                jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
+                jobs.push(job(format!("water {date}"), "water", p.clone(), Some(w)));
             }
         }
         // After each catalog the map serves: the names to translate and descriptions to write.
@@ -4417,9 +4419,9 @@ impl Agent {
             for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
                 args.extend([format!("--{unit}-index"), manifest.get(&crate::inputs::logical(unit)).cloned().unwrap_or_default()]);
             }
-            jobs.push(job(format!("names-todo {n}"), "Listing the names to translate and the descriptions to write", "names-todo", args, Some(w)));
+            jobs.push(job(format!("names-todo {n}"), "names-todo", args, Some(w)));
         } else if served.is_some() && [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT].iter().any(|u| !manifest.contains_key(&crate::inputs::logical(u))) {
-            waiting.push(Waiting { step: Some("names-todo".into()), what: "Listing the names to translate and the descriptions to write".into(), why: "the translations' or the descriptions' first accepted version (the input check takes them in)".into() });
+            waiting.push(Waiting { step: Some("names-todo".into()), what: steps::title("names-todo").into(), why: "the translations' or the descriptions' first accepted version (the input check takes them in)".into() });
         }
         if recipes.is_empty() {
             return jobs;
@@ -4441,7 +4443,7 @@ impl Agent {
         // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
         // writes into the static timetables' drop box's todo/, never read as an input).
         if let Some(w) = build::timetables_todo_work(cov, &manifest, &keys) {
-            jobs.push(job("timetables-todo".into(), "Listing the lines with no timetable", "timetables-todo", vec!["--pass".to_string(), date.to_string()], Some(w)));
+            jobs.push(job("timetables-todo".into(), "timetables-todo", vec!["--pass".to_string(), date.to_string()], Some(w)));
         }
         self.note_timetables(root, &manifest);
         let mut done = keys;
@@ -4467,29 +4469,29 @@ impl Agent {
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
+            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
+            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "inputs/keys.env can't be read now".into() });
         } else if inputs.get("feed-keys").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the timetable feeds' accepted declarations can't be read now".into() });
+            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "the timetable feeds' accepted declarations can't be read now".into() });
         }
         // (The ferries count the ferry feeds: without their list, rail-feeds' to make, they wait.)
         if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) && !manifest.contains_key(crate::rail::FERRY_FEEDS) {
-            waiting.push(Waiting { step: Some("ferries".into()), what: "Mapping the world's ferries".into(), why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)".into() });
+            waiting.push(Waiting { step: Some("ferries".into()), what: steps::title("ferries").into(), why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)".into() });
         }
         // (The trains and the ferries count the static files too: without their accepted version,
         // they wait, rather than be counted without them.)
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::gtfs::UNIT)) {
             let why = "the static timetables' first accepted version (inputs/timetables/gtfs/: the input check takes them in)";
             if manifest.contains_key(crate::rail::FEEDS) {
-                waiting.push(Waiting { step: Some("rail".into()), what: build::TRAINS.into(), why: why.into() });
+                waiting.push(Waiting { step: Some("rail".into()), what: steps::stage_title("trains").into(), why: why.into() });
             }
             if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) {
-                waiting.push(Waiting { step: Some("ferries".into()), what: "Mapping the world's ferries".into(), why: why.into() });
+                waiting.push(Waiting { step: Some("ferries".into()), what: steps::title("ferries").into(), why: why.into() });
             }
         }
         if inputs.get("bld-release").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: build::BUILDINGS.into(), why: "the 3D buildings' sources' indexes on the NAS can't be read now".into() });
+            waiting.push(Waiting { step: None, what: steps::stage_title("buildings").into(), why: "the 3D buildings' sources' indexes on the NAS can't be read now".into() });
         }
         // The regions the map's catalog has (or the held one's, when catalogs are held for review)
         // and how long ago it went out: what the plan publishes regions by.
@@ -4525,7 +4527,7 @@ impl Agent {
         };
         // The units held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
-            waiting.push(Waiting { step: Some("heritage-sites".into()), what: build::SITES.into(), why: format!("the regions' units wait: {why}") });
+            waiting.push(Waiting { step: Some("heritage-sites".into()), what: steps::stage_title("sites").into(), why: format!("the regions' units wait: {why}") });
         }
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
@@ -4539,7 +4541,7 @@ impl Agent {
                     format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len())
                 }
             };
-            waiting.push(Waiting { step: Some("unit".into()), what: "Building the areas".into(), why });
+            waiting.push(Waiting { step: Some("unit".into()), what: steps::stage_title("roads").into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
@@ -4564,7 +4566,7 @@ impl Agent {
                 planned.update.why = format!("{} (but it {why})", planned.update.why);
             }
             if let Some(why) = not_now {
-                waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("the next map update {why}") });
+                waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("the next map update {why}") });
                 planned.work.retain(|w| !build::AS_OF_STEPS.contains(&w.step.as_str()) && w.step != "prune");
             }
         }
@@ -4582,7 +4584,7 @@ impl Agent {
         }).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
         if let Some(why) = credits_unread.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
-            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("the inputs' descriptions (their credits) can't be read now: {why}") });
+            waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("the inputs' descriptions (their credits) can't be read now: {why}") });
             plan.retain(|w| w.step != "catalog");
         }
         // Just edited: the regions' work waits a while for more edits (each would build again what
@@ -4602,10 +4604,10 @@ impl Agent {
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
             let who = if mine { "this Mac's job" } else { "another worker" };
-            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("waits for {who} building the {} of {t}", if st.starts_with("slope") { "slope" } else { "tree cover" }) });
+            waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("waits for {who} building the {} of {t}", if st.starts_with("slope") { "slope" } else { "tree cover" }) });
             plan.retain(|w| w.step != "catalog");
         } else if unmerged && plan.iter().any(|w| w.step == "catalog") {
-            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: "waits for a helper's work to be merged".into() });
+            waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: "waits for a helper's work to be merged".into() });
             plan.retain(|w| w.step != "catalog");
         }
         // (What room-making lets go last: `hints`.)
@@ -4652,7 +4654,7 @@ impl Agent {
         // step to every member: a cold start runs alone in the pool).
         if let (Some(c), true) = (&self.coord, every_on) {
             for w in plan.iter_mut().filter(|w| !w.targets.is_empty() && c.cold_under_way(&w.step)) {
-                waiting.push(Waiting { step: Some(w.step.clone()), what: build::label(&w.step).to_string(), why: "its first job, never measured, runs on another member now: its others wait for its measure".into() });
+                waiting.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).to_string(), why: "its first job, never measured, runs on another member now: its others wait for its measure".into() });
                 w.targets.clear();
             }
         }
@@ -4721,7 +4723,7 @@ impl Agent {
                 s => first_peak(s),
             };
             let mut before = before;
-            before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "", "heritage-sites", Vec::new(), Some(w.clone()))));
+            before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))));
             let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref());
             // (A fault in it costs the status its forecast, never the agent.)
             let under_way = self.map_update.borrow().as_ref().filter(|r| !r.over).map(|r| (r.regions.clone(), r.last, update_left.clone()));
@@ -4748,12 +4750,12 @@ impl Agent {
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalog_held.as_deref() == Some(k.as_str()) {
-                    waiting.push(Waiting { step: None, what: build::PUBLISH.into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                    waiting.push(Waiting { step: None, what: steps::stage_title("publish").into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
                     // (Its map update's done: the held catalog is its.)
                     self.end_update();
                     continue;
                 }
-                let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
+                let mut j = job("catalog-held".into(), "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
                 j.needs = Needs { nas: true };
                 jobs.push(j);
                 continue;
@@ -4792,21 +4794,17 @@ impl Agent {
                 }
             }
             let n = w.targets.len();
-            // "3 areas", or "8 of 480 areas" for a batch.
-            let areas = if n == total { format!("{n} area{}", if n == 1 { "" } else { "s" }) } else { format!("{n} of {total} areas") };
-            // (The checklist names the steps alike: build::label.)
-            let base = build::label(&w.step);
-            let what = match w.step.as_str() {
-                "unit" | "pois" | "peaks" | "pack" | "trees-lo" | "terrain-lo" | "slope-lo" => format!("{base} ({areas})"),
-                "trees" if same.len() == n => format!("Making the tree cover's mids, checking it the same ({})", areas.replace("area", "tile")),
-                "terrain" if same.len() == n => format!("Making the terrain's mids, checking it the same ({})", areas.replace("area", "tile")),
-                "slope" if same.len() == n => format!("Making the slope's mids, checking it the same ({})", areas.replace("area", "tile")),
-                "trees" | "terrain" | "slope" | "bldprep" | "bldtiles" => format!("{base} ({})", areas.replace("area", "tile")),
-                _ => base.to_string(),
-            };
+            // "Terrain: 3 tiles", or "Terrain: 8 of 480 tiles" for a batch (the checklist names the
+            // steps alike: crate::agent::steps::said); the pieces made again for their mids say so.
+            let mut what = steps::said(&w.step, n, Some(total));
+            if same.len() == n && matches!(w.step.as_str(), "trees" | "terrain" | "slope") {
+                what += ", their mids made and checked the same";
+            }
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
             let step = w.step.clone();
-            jobs.push(job(id, &what, &step, extra, Some(w)));
+            let mut j = job(id, &step, extra, Some(w));
+            j.what = what;
+            jobs.push(j);
         }
         jobs
     }
@@ -5002,27 +5000,22 @@ impl Agent {
         f
     }
 
-    /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
-    /// scratch folder keeps), the pass's worldwide jobs, then the regions' steps (build::checklist).
-    fn checklist(&self, root: &Path, regions: &[recipes::Recipe]) -> Vec<build::Step> {
-        let mut out = Vec::new();
+    /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
+    /// with an item per step counted: the OSM pass (the planet, read when a newer one is on the
+    /// NAS, and its worldwide steps), then the regions' steps (build::checklist).
+    fn checklist(&self, root: &Path, regions: &[recipes::Recipe]) -> Vec<build::Line> {
+        let mut items = Vec::new();
+        let mut next: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut notes: BTreeMap<&str, String> = BTreeMap::new();
         let have = self.latest_pass(root);
-        // The pass: a newer planet's under way (or waiting), else done.
-        let pass_stages = ["filter", "sets", "basemap", "cut", "roads"];
-        let mut pass = build::Step { what: "Reading the newest OpenStreetMap planet".into(), steps: vec!["osm-pass".into()], total: Some(pass_stages.len()), unit: "stages".into(), ..Default::default() };
-        match crate::osmpass::newer_planet(root, have.as_deref()) {
-            Ok(Some((_, date))) => {
-                let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
-                pass.done = pass_stages.iter().filter(|s| scratch.join(format!("{s}.done")).exists()).count();
-            }
-            _ => pass.done = if have.is_some() { pass_stages.len() } else { 0 },
-        }
-        out.push(pass);
+        // The planet: a newer one's under way (or waiting), else done.
+        let newer = matches!(crate::osmpass::newer_planet(root, have.as_deref()), Ok(Some(_)));
+        items.push(build::Item { step: "osm-pass".into(), left: Some((newer || have.is_none()) as usize), ..Default::default() });
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            out.push(build::Step { what: WORLDWIDE.into(), steps: WORLDWIDE_STEPS.iter().map(|s| s.to_string()).collect(), ..Default::default() });
-            out.extend(build::checklist_to_come());
-            return out;
+            items.extend(WORLDWIDE_STEPS.iter().map(|s| build::Item { step: s.to_string(), ..Default::default() }));
+            items.extend(build::checklist_to_come());
+            return build::fold(&items, &next, &notes);
         };
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let keys = build::Keys::load(root);
@@ -5031,11 +5024,11 @@ impl Agent {
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
             if let Ok(stale) = crate::outlines::Outlines::stale_in(&root.join(c)) {
                 if !stale.is_empty() {
-                    out[0].note = Some(format!("Outlines kept from an earlier pass (broken in this planet's OpenStreetMap): {}", stale.iter().map(|(id, from)| format!("relation {id} (the {from} pass's)")).collect::<Vec<_>>().join(", ")));
+                    notes.insert("pass", format!("Outlines kept from an earlier pass (broken in this planet's OpenStreetMap): {}", stale.iter().map(|(id, from)| format!("relation {id} (the {from} pass's)")).collect::<Vec<_>>().join(", ")));
                 }
             }
         }
-        // The pass's worldwide jobs.
+        // The pass's worldwide steps, each one run left or none.
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
             build::outlines_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("sources/osm/{date}/outlines")),
@@ -5048,20 +5041,13 @@ impl Agent {
             // (A source folder that can't be read: held, left, as the jobs see it.)
             crate::lakefill::run::planned_source(root, &manifest).map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
             build::water_work(&date, &manifest, &keys).is_some(),
-        ]
-        .iter()
-        .filter(|&&l| l)
-        .count();
-        out.push(build::Step {
-            what: WORLDWIDE.into(),
-            steps: WORLDWIDE_STEPS.iter().map(|s| s.to_string()).collect(),
-            left: Some(left),
-            ..Default::default()
-        });
+        ];
+        items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| build::Item { step: s.to_string(), left: Some(l as usize), ..Default::default() }));
+        next.insert("pass", WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| steps::title(s).to_string()).collect());
         if regions.is_empty() {
-            return out;
+            return build::fold(&items, &next, &notes);
         }
-        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return out };
+        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return build::fold(&items, &next, &notes) };
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
@@ -5070,8 +5056,10 @@ impl Agent {
         let mut keys = keys;
         let times = rekey::FileTimes::new(root);
         rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-        out.extend(build::checklist(cov, &date, &manifest, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles));
-        out
+        let (more, more_next) = build::checklist(cov, &date, &manifest, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles);
+        items.extend(more);
+        next.extend(more_next);
+        build::fold(&items, &next, &notes)
     }
 
     /// Per region, how many of its areas are built (none before the first pass makes the outlines).
@@ -6560,12 +6548,11 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
 /// out a failure). Publishing, while a step above has work left, goes out as each region is done (at
 /// most hourly) and once they all are: it's done only then.
-fn annotate(list: &mut [build::Step], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
-    build::mark_shared(list);
-    let busy = |s: &build::Step| now.iter().any(|n| s.steps.iter().any(|x| x == n));
+fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
+    let busy = |s: &build::Line| now.iter().any(|n| s.steps.iter().any(|x| x == n));
     // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
     // holds nothing up.)
-    let known_left = |s: &build::Step| s.left.is_some_and(|l| l > 0) || s.total.is_some_and(|t| s.done < t);
+    let known_left = |s: &build::Line| s.left.is_some_and(|l| l > 0) || s.total.is_some_and(|t| s.done < t);
     let before_left = list.iter().rev().skip(1).any(known_left);
     for s in list.iter_mut() {
         if s.finished() || busy(s) {
@@ -8421,16 +8408,15 @@ mod tests {
 
     #[test]
     fn the_checklist_says_which_steps_helpers_take() {
-        let mut steps = build::checklist_to_come();
-        build::mark_shared(&mut steps);
-        let shared = |what: &str| steps.iter().find(|s| s.what == what).and_then(|s| s.shared.clone());
-        assert_eq!(shared(build::TERRAIN).as_deref(), Some("tiles"), "the pieces, not the assemblies");
-        assert_eq!(shared(build::SLOPE).as_deref(), Some("tiles"));
-        assert_eq!(shared(build::UNITS).as_deref(), Some("all"));
-        assert_eq!(shared(build::LANDMARKS).as_deref(), Some("candidates and peaks"));
-        assert_eq!(shared(build::TREES).as_deref(), Some("tiles"), "the pieces, not the assemblies");
-        assert_eq!(shared(build::TILES), None);
-        assert_eq!(shared(build::PUBLISH), None);
+        let steps = build::fold(&build::checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
+        let shared = |id: &str| steps.iter().find(|s| s.id == id).and_then(|s| s.shared.clone());
+        assert_eq!(shared("terrain").as_deref(), Some("Terrain"), "the pieces, not the assemblies");
+        assert_eq!(shared("slope").as_deref(), Some("Slope"));
+        assert_eq!(shared("roads").as_deref(), Some("all"));
+        assert_eq!(shared("landmarks").as_deref(), Some("Landmark candidates and Peaks"));
+        assert_eq!(shared("trees").as_deref(), Some("Tree cover"), "the pieces, not the assemblies");
+        assert_eq!(shared("tiles"), None);
+        assert_eq!(shared("publish"), None);
     }
 
     #[test]
@@ -8823,8 +8809,8 @@ mod tests {
 
     #[test]
     fn the_checklist_says_why_a_step_waits() {
-        let step = |what: &str, steps: &[&str], left: usize| build::Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
-        let list = || vec![step("Worldwide sets", &["pass-sets", "reach"], 1), step("Roads, elevations and scenery", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing the new map data", &["catalog", "catalog-held"], 0)];
+        let step = |what: &str, steps: &[&str], left: usize| build::Line { id: what.to_lowercase(), what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
+        let list = || vec![step("Pass", &["pass-sets", "reach"], 1), step("Roads", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing", &["catalog", "catalog-held"], 0)];
         let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None, mem_mb: None, threads: None, waiting: None }), ..Default::default() };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
         let mut l = list();
@@ -8835,7 +8821,7 @@ mod tests {
         // Publishing waits for the steps above, though its catalog is current.
         assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each region is done")));
         // All above done: done.
-        let mut l: Vec<build::Step> = list().into_iter().map(|mut s| {
+        let mut l: Vec<build::Line> = list().into_iter().map(|mut s| {
             s.left = Some(0);
             s
         }).collect();

@@ -2695,13 +2695,50 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
     }
 }
 
-/// One line of the build's checklist (the status, the menu bar): a step to the end, with how much of
-/// it is done: targets done of all (`total` None until an earlier step makes them known), or for a
-/// group of single jobs how many are left (`left`).
+/// One step's line of the build's checklist: its targets done of all (`total` None until an earlier
+/// step makes them known), or how many are left (a worldwide step's: 1 or 0; a chain's: the targets
+/// of its works to come). Neither: to come, not sized yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Step {
+pub struct Item {
+    pub step: String,
+    #[serde(default)]
+    pub done: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<usize>,
+}
+
+impl Item {
+    fn sized(step: &str, done: usize, total: Option<usize>) -> Item {
+        Item { step: step.into(), done, total, left: total.map(|t| t.saturating_sub(done)) }
+    }
+
+    fn left(step: &str, left: Option<usize>) -> Item {
+        Item { step: step.into(), done: 0, total: None, left }
+    }
+
+    /// Whether it's sized: its targets known.
+    pub fn known(&self) -> bool {
+        self.left.is_some()
+    }
+
+    pub fn finished(&self) -> bool {
+        self.left == Some(0)
+    }
+}
+
+/// One stage's line of the build's checklist (the status, the menu bar, the build page): its steps'
+/// items, summed. `done` and `total` count the sized items' targets, `left` every item's left; all
+/// three None (but `done`) while an item of it isn't sized yet.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Line {
+    /// The stage's id (crate::agent::steps::STAGES).
+    #[serde(default)]
+    pub id: String,
+    /// The stage's title.
     pub what: String,
-    /// The agent's steps it covers (a job's id starts with one: "unit 6/31/20").
+    /// The stage's steps (a job's id starts with one: "unit 6/31/20").
     pub steps: Vec<String>,
     #[serde(default)]
     pub done: usize,
@@ -2709,10 +2746,14 @@ pub struct Step {
     pub total: Option<usize>,
     #[serde(default)]
     pub left: Option<usize>,
+    /// The noun its targets are counted in, plural ("tiles").
     #[serde(default)]
     pub unit: String,
-    /// The jobs still to do, by name, in the order they'll run (a step's areas counted together:
-    /// "Measuring the peaks' prominence and isolation: 178 areas"); the first is the one under way.
+    /// Its steps' lines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<Item>,
+    /// The jobs still to do, by name, in the order they'll run (a step's runs together, its targets
+    /// counted: "Peaks: 178 tiles"); the first is the one under way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
     /// While it has work left and isn't this Mac's job now: why (another Mac is on it, it waits
@@ -2720,72 +2761,54 @@ pub struct Step {
     /// kept as the previous pass's outlines, done or not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// Which of its jobs a helper may do (crate::agent::steps::SHARED, `mark_shared`): "all", or
-    /// the parts by name ("candidates and peaks"); none, the lead's alone.
+    /// Which of its steps a helper may do (crate::agent::steps::SHARED, `mark_shared`): "all", or
+    /// the parts by their targets' noun ("candidates and peaks"); none, the lead's alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
 }
 
-impl Step {
+impl Line {
     pub fn finished(&self) -> bool {
         self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
     }
 }
 
-/// A step's name, as its jobs are titled, saying what it's doing (the agent adds a job's areas:
-/// "Drawing the map tiles (3 areas)").
-pub fn label(step: &str) -> &'static str {
-    match step {
-        "terrain" => "Building the regions' terrain",
-        "terrain-lo" => "Assembling the regions' zoomed-out terrain",
-        "terrain-water" => "Reading the water under the regions' terrain",
-        "slope" => "Working out the regions' slope",
-        "slope-lo" => "Assembling the regions' zoomed-out slope",
-        "trees" => "Mapping the tree cover",
-        "trees-lo" => "Assembling the zoomed-out tree cover",
-        "unit" => "Building the roads, their elevations and scenery",
-        "pack" => "Drawing the map tiles",
-        "lo" => "Drawing the zoomed-out map tiles",
-        "pois" => "Finding the landmark candidates",
-        "peaks" => "Measuring the peaks' prominence and isolation",
-        "items" => "Fetching the landmarks' Wikidata facts and Wikipedia pageviews",
-        "heritage-sites" => "Finding the regions' heritage sites and designated areas",
-        "heritage" => "Adding details, fame and outlines to the heritage sites",
-        "marks" => "Ranking the landmarks and drawing them on the map",
-        "overlays" => "Drawing the area overlays",
-        "roadunits" => "Working out which areas each road crosses",
-        "stations" => "Placing the rail stops near the regions",
-        "ferries" => "Mapping the world's ferries",
-        "rail-feeds" => "Fetching the regions' rail timetables",
-        "rail" => "Counting trains a day on the regions' rail",
-        "bld-fetch" => "Fetching the 3D buildings' sources",
-        "bldprep" => "Reading the regions' buildings",
-        "bldtiles" => "Raising the 3D buildings",
-        "bldfield-lo" => "Assembling the zoomed-out buildings",
-        "terrain-root" | "slope-root" => "Building the world-level terrain and slope",
-        "prune" => "Removing what the regions no longer cover",
-        "inputs" => "Checking the inputs dropped",
-        // (The worldwide jobs and the daily ones, as their jobs say them: crate::agent's plan.)
-        "osm-pass" => "Reading the newest OpenStreetMap planet",
-        "pass-sets" => "Cutting the OpenStreetMap sets the newest pass lacks",
-        "outlines" => "Assembling the countries' and regions' outlines",
-        "trailends" => "Finding the ends of the world's hiking routes",
-        "reach" => "Working out how far each area's roads reach, worldwide",
-        "terrain-z8" => "Building coarse terrain for the whole world",
-        "buildings" => "Collecting the world's roadside buildings",
-        "summits" => "Finding the world's summits",
-        "labels" => "Ranking the world's place labels",
-        "spoken" => "Mapping the languages spoken where, for names",
-        "regions-extract" => "Extracting the regions' OSM relations and ways",
-        "lakefill" => "Filling in Canada's lakes missing from OpenStreetMap",
-        "water" => "Drawing the world's water at every zoom",
-        "backup" => "Backing up translations, descriptions, inputs and the acceptances",
-        "gc" => "Removing replaced files from the NAS",
-        _ => "Publishing the new map data",
+/// The checklist's lines from its items: a line per stage with an item, in the stages' order
+/// (crate::agent::steps::STAGES), its steps every one of the stage's, its items in the table's
+/// order, and its jobs to come (`next`, by stage) and the notes (`note`, by stage).
+pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap<&str, String>) -> Vec<Line> {
+    use super::steps::{self, Scope, STAGES, TABLE};
+    let mut out = Vec::new();
+    for st in STAGES {
+        let steps: Vec<&str> = TABLE.iter().filter(|s| s.stage == st.id).map(|s| s.name).collect();
+        let mut its: Vec<Item> = steps.iter().filter_map(|s| items.iter().find(|i| i.step == *s)).cloned().collect();
+        // (An item of a step the table doesn't place: left out.)
+        its.extend(items.iter().filter(|i| steps::row(&i.step).is_none() && steps::stage_of(&i.step).is_some_and(|g| g.id == st.id)).cloned());
+        if its.is_empty() {
+            continue;
+        }
+        let known = its.iter().all(Item::known);
+        let sized: Vec<&Item> = its.iter().filter(|i| i.total.is_some()).collect();
+        let unit = its.iter().find(|i| i.total.is_some()).or(its.first()).map(|i| format!("{}s", steps::noun(&i.step))).unwrap_or_default();
+        out.push(Line {
+            id: st.id.into(),
+            what: st.title.into(),
+            steps: steps.iter().map(|s| s.to_string()).collect(),
+            done: sized.iter().map(|i| i.done).sum(),
+            total: (known && !sized.is_empty()).then(|| sized.iter().map(|i| i.total.unwrap_or(0)).sum()),
+            left: known.then(|| its.iter().map(|i| i.left.unwrap_or(0)).sum()),
+            unit: if its.iter().all(|i| steps::row(&i.step).is_some_and(|r| r.scope == Scope::World)) { "runs".into() } else { unit },
+            items: its,
+            next: next.get(st.id).cloned().unwrap_or_default(),
+            note: notes.get(st.id).cloned(),
+            shared: None,
+        });
     }
+    mark_shared(&mut out);
+    out
 }
 
-/// The jobs `works` would run, by name, a step's runs together, its areas counted.
+/// The jobs `works` would run, by name, a step's runs together, its targets counted.
 fn next_of(works: &[Work]) -> Vec<String> {
     let mut runs: Vec<(&str, usize)> = Vec::new();
     for w in works {
@@ -2794,69 +2817,60 @@ fn next_of(works: &[Work]) -> Vec<String> {
             _ => runs.push((&w.step, w.targets.len())),
         }
     }
-    runs.into_iter()
-        .map(|(s, n)| match s {
-            "pois" | "peaks" | "unit" | "pack" | "trees-lo" | "terrain-lo" | "slope-lo" | "bldfield-lo" if n > 1 => format!("{}: {n} areas", label(s)),
-            "trees" | "terrain" | "slope" | "bldprep" | "bldtiles" if n > 1 => format!("{}: {n} tiles", label(s)),
-            _ => label(s).to_string(),
-        })
-        .collect()
+    runs.into_iter().map(|(s, n)| super::steps::said(s, n, None)).collect()
 }
 
-// The checklist's lines, saying what each does.
-pub const SITES: &str = "Finding the heritage sites and designated areas";
-pub const TERRAIN: &str = "Building the terrain";
-pub const SLOPE: &str = "Working out the slope";
-pub const TREES: &str = "Mapping the tree cover";
-pub const UNITS: &str = "Building the roads, elevations and scenery";
-pub const TILES: &str = "Drawing the map tiles";
-pub const ROADS: &str = "Indexing the roads; placing rail stops and ferries; building world terrain";
-pub const TRAINS: &str = "Counting trains a day";
-pub const LANDMARKS: &str = "Choosing and drawing the landmarks";
-pub const BUILDINGS: &str = "Raising the 3D buildings";
-pub const PUBLISH: &str = "Publishing the new map data";
-
-/// Marks each step whose jobs a helper may do: all of them, or which.
-pub fn mark_shared(steps: &mut [Step]) {
-    fn noun(s: &str) -> &str {
-        match s {
-            "pois" => "candidates",
-            "unit" => "areas",
-            // (Tree cover's, terrain's and slope's pieces, not their assemblies.)
-            "trees" | "terrain" | "slope" => "tiles",
-            "bldprep" => "sources read",
-            "bldtiles" => "tiles",
-            other => other,
-        }
-    }
-    for st in steps {
-        let shared: Vec<&str> = st.steps.iter().map(String::as_str).filter(|s| super::steps::SHARED.contains(s)).collect();
-        st.shared = match shared.len() {
+/// Marks each line whose steps a helper may do: all of them, or which (by their targets' noun, a
+/// step's title where the noun says nothing).
+pub fn mark_shared(lines: &mut [Line]) {
+    for l in lines {
+        let shared: Vec<&str> = l.steps.iter().map(String::as_str).filter(|s| super::steps::SHARED.contains(s)).collect();
+        l.shared = match shared.len() {
             0 => None,
-            n if n == st.steps.len() => Some("all".into()),
-            _ => Some(shared.iter().map(|s| noun(s)).collect::<Vec<_>>().join(" and ")),
+            n if n == l.steps.len() => Some("all".into()),
+            _ => Some(shared.iter().map(|s| super::steps::title(s)).collect::<Vec<_>>().join(" and ")),
         };
     }
 }
 
-/// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
-pub fn checklist_to_come() -> Vec<Step> {
-    [
-        (SITES, &["heritage-sites"][..]),
-        (TERRAIN, &["terrain-water", "terrain", "terrain-lo"]),
-        (SLOPE, &["slope", "slope-lo"]),
-        (TREES, &["trees", "trees-lo"]),
-        (UNITS, &["unit"]),
-        (TILES, &["pack", "lo"]),
-        (ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
-        (TRAINS, &["rail-feeds", "rail"]),
-        (LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"]),
-        (BUILDINGS, &["bld-fetch", "bldprep", "bldtiles", "bldfield-lo"]),
-        (PUBLISH, &["catalog", "catalog-held"]),
-    ]
-    .iter()
-    .map(|(what, steps)| Step { what: what.to_string(), steps: steps.iter().map(|s| s.to_string()).collect(), ..Default::default() })
-    .collect()
+/// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
+/// agent's, before them).
+pub const COUNTED: [&str; 30] = [
+    "heritage-sites",
+    "terrain",
+    "terrain-lo",
+    "slope",
+    "slope-lo",
+    "trees",
+    "trees-lo",
+    "unit",
+    "pack",
+    "lo",
+    "prune",
+    "roadunits",
+    "stations",
+    "ferries",
+    "terrain-root",
+    "slope-root",
+    "rail-feeds",
+    "rail",
+    "pois",
+    "peaks",
+    "items",
+    "heritage",
+    "marks",
+    "overlays",
+    "bld-fetch",
+    "bldprep",
+    "bldtiles",
+    "bldfield-lo",
+    "catalog",
+    "catalog-held",
+];
+
+/// The regions' steps' items, unsized, for before there's a pass to size them by.
+pub fn checklist_to_come() -> Vec<Item> {
+    COUNTED.iter().filter(|s| **s != "catalog-held").map(|s| Item::left(s, None)).collect()
 }
 
 /// The works a chain would still run, one after another, as if each succeeded (its targets recorded
@@ -2888,95 +2902,91 @@ pub fn chains_left(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     ]
 }
 
-/// The regions' build to the end, step by step (the pass's own steps are the agent's): the
-/// heritage sites, terrain, slope, tree cover, the areas, the map tiles, the road index, rail stops
-/// and ferries, trains a day, the landmarks, the 3D buildings, publishing.
+/// A chain's items: a step's targets left (its works' to come), for each of `steps`; None while
+/// the chain can't be told (`known` false).
+fn chain_items(works: &[Work], steps: &[&str], known: bool) -> Vec<Item> {
+    steps.iter().map(|s| Item::left(s, known.then(|| works.iter().filter(|w| w.step == *s).map(|w| w.targets.len()).sum()))).collect()
+}
+
+/// The checklist's items and each stage's jobs to come (`next`): the regions' build to the end,
+/// step by step (the pass's own steps are the agent's): the heritage sites, terrain, slope, tree
+/// cover, the roads, the map tiles, the map's finishing, trains a day, the landmarks, the 3D
+/// buildings, publishing.
 /// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
 /// `ready`: the regions a catalog would record as built now (`Plan::ready`).
 #[allow(clippy::too_many_arguments)]
-pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>, ready: &[String], tiles: &TerrainTiles) -> Vec<Step> {
+pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>, ready: &[String], tiles: &TerrainTiles) -> (Vec<Item>, BTreeMap<&'static str, Vec<String>>) {
     let count = |all: &[(String, String)], map: &BTreeMap<String, String>| all.iter().filter(|(t, k)| map.get(t) == Some(k)).count();
-    let per = |what: &str, steps: &[&str], all: &[(String, String)], map: &BTreeMap<String, String>, unit: &str, known: bool| Step {
-        what: what.into(),
-        steps: steps.iter().map(|s| s.to_string()).collect(),
-        done: count(all, map),
-        total: known.then_some(all.len()),
-        unit: unit.into(),
-        ..Default::default()
-    };
-    let group = |what: &str, steps: &[&str], left: Option<usize>| Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left, ..Default::default() };
+    let sized = |step: &str, all: &[(String, String)], map: &BTreeMap<String, String>, known: bool| Item::sized(step, count(all, map), known.then_some(all.len()));
     let mut out = Vec::new();
+    let mut next: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
     let ts = terrain_slope_targets(cov, m, tiles);
     let sites_left = heritage_sites_work(cov, date, m, done, inputs).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
-    let mut sites = group(SITES, &["heritage-sites"], Some(sites_left as usize));
+    out.push(Item::left("heritage-sites", Some(sites_left as usize)));
     if sites_left {
-        sites.next = vec![label("heritage-sites").into()];
+        next.insert("sites", vec![super::steps::title("heritage-sites").into()]);
     }
-    out.push(sites);
-    // (Terrain's and slope's pieces and assemblies together, as tree cover's; a slope piece whose
-    // key can't be told now isn't done.)
-    let mut terrain = per(TERRAIN, &["terrain-water", "terrain", "terrain-lo"], &ts.terrain, &done.terrain, "tiles", true);
-    terrain.done += count(&ts.terrain_lo, &done.terrain_lo);
-    terrain.total = terrain.total.map(|t| t + ts.terrain_lo.len());
-    out.push(terrain);
+    // (A slope piece whose key can't be told now isn't done.)
+    out.push(sized("terrain", &ts.terrain, &done.terrain, true));
+    out.push(sized("terrain-lo", &ts.terrain_lo, &done.terrain_lo, true));
     let known: Vec<(String, String)> = ts.slope.iter().filter_map(|(t, k)| Some((t.clone(), k.clone()?))).collect();
-    let mut slope = per(SLOPE, &["slope", "slope-lo"], &known, &done.slope, "tiles", true);
-    slope.done += count(&ts.slope_lo, &done.slope_lo);
-    slope.total = Some(ts.slope.len() + ts.slope_lo.len());
+    let mut slope = sized("slope", &known, &done.slope, true);
+    slope.total = Some(ts.slope.len());
+    slope.left = Some(ts.slope.len() - slope.done);
     out.push(slope);
-    // (Tree cover's pieces and assemblies together, as the map tiles' line counts its two steps.)
+    out.push(sized("slope-lo", &ts.slope_lo, &done.slope_lo, true));
     let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
     let pieces: Vec<(String, String)> = tt.pieces.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
     let assemblies: Vec<(String, String)> = tt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect();
-    let mut trees = per(TREES, &["trees", "trees-lo"], &pieces, &done.trees, "tiles", true);
-    trees.done += count(&assemblies, &done.trees_lo);
-    trees.total = trees.total.map(|t| t + assemblies.len());
-    out.push(trees);
+    out.push(sized("trees", &pieces, &done.trees, true));
+    out.push(sized("trees-lo", &assemblies, &done.trees_lo, true));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(cov, date, m, reach, tiles);
     // (One whose key can't be worked out now isn't done.)
     let known: Vec<(String, String)> = units.iter().filter_map(|(u, k)| Some((u.slash(), k.clone()?))).collect();
-    let mut line = per(UNITS, &["unit"], &known, &done.unit, "areas", pieces && reach.is_some());
-    line.total = line.total.map(|_| units.len());
+    let mut line = sized("unit", &known, &done.unit, pieces && reach.is_some());
+    if line.total.is_some() {
+        line.total = Some(units.len());
+        line.left = Some(units.len() - line.done);
+    }
     out.push(line);
     let (packs, lo) = pack_lo_targets(m, reach);
     let built = m.keys().any(|l| l.starts_with("base/"));
-    let mut tiles = per(TILES, &["pack", "lo"], &packs, &done.pack, "tiles", built);
-    tiles.done = packs.iter().filter(|(t, k)| pack_fresh(done.pack.get(t).map(String::as_str), k)).count() + count(&lo, &done.lo);
-    tiles.total = tiles.total.map(|t| t + lo.len());
-    out.push(tiles);
+    let fresh = packs.iter().filter(|(t, k)| pack_fresh(done.pack.get(t).map(String::as_str), k)).count();
+    out.push(Item::sized("pack", fresh, built.then_some(packs.len())));
+    out.push(sized("lo", &lo, &done.lo, built));
     let roads: Vec<Work> = remaining(done, |d| roads_chain(date, m, d, reach)).into_iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).collect();
-    let mut road_steps = group(ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads.len()));
-    road_steps.next = next_of(&roads);
-    out.push(road_steps);
+    out.extend(chain_items(&roads, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"], built));
+    next.insert("finish", next_of(&roads));
     // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown while the
     // chain can't go on: before the rail sources are seeded, while inputs/keys.env can't be read,
     // without the feeds' list or the pass's rail set.)
     let rail = rail_next(cov, date, m, done, inputs);
-    let mut trains = group(TRAINS, &["rail-feeds", "rail"], rail.as_ref().map(|w| w.as_ref().map_or(0, |w| if w.step == "rail-feeds" { 2 } else { 1 })));
-    if let Some(Some(w)) = &rail {
-        trains.next = if w.step == "rail-feeds" { vec![label("rail-feeds").into(), label("rail").into()] } else { vec![label("rail").into()] };
-    }
-    out.push(trains);
+    let trains: Vec<Work> = match &rail {
+        Some(Some(w)) if w.step == "rail-feeds" => vec![w.clone(), Work { step: "rail".into(), targets: vec![("rail".into(), String::new())] }],
+        Some(Some(w)) => vec![w.clone()],
+        _ => Vec::new(),
+    };
+    out.extend(chain_items(&trains, &["rail-feeds", "rail"], rail.is_some()));
+    next.insert("trains", next_of(&trains));
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d, inputs));
-    // (Steps left, each named in `next` with its areas: not a peaks batch counted as 12 jobs.)
-    let mut marks = group(LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(landmarks.len()));
-    marks.next = next_of(&landmarks);
-    out.push(marks);
+    out.extend(chain_items(&landmarks, &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces));
+    next.insert("landmarks", next_of(&landmarks));
     // (Its tiles' normalized files and tiles together; known once the sources' indexes read.)
     let bt = bld_targets(cov, m, inputs);
-    let mut bld = per(BUILDINGS, &["bld-fetch", "bldprep", "bldtiles", "bldfield-lo"], &bt.prep, &done.bldprep, "tiles", bld_sources(inputs) == Some(true));
-    bld.done += count(&bt.tiles, &done.bldtiles);
+    let bld_known = bld_sources(inputs) == Some(true);
+    let bld = remaining(done, |d| bld_next(cov, m, d, inputs));
+    out.extend(chain_items(&bld, &["bld-fetch"], bld_known));
+    out.push(sized("bldprep", &bt.prep, &done.bldprep, bld_known));
+    out.push(sized("bldtiles", &bt.tiles, &done.bldtiles, bld_known));
     let lo: Vec<(String, String)> = bt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect();
-    bld.done += count(&lo, &done.bldfield_lo);
-    bld.total = bld.total.map(|t| t + bt.tiles.len() + lo.len());
-    bld.next = next_of(&remaining(done, |d| bld_next(cov, m, d, inputs)));
-    out.push(bld);
+    out.push(sized("bldfield-lo", &lo, &done.bldfield_lo, bld_known));
+    next.insert("buildings", next_of(&bld));
     let key = catalog_key(m, inputs, ready);
     let publish_left = if held { done.catalog_held.as_deref() != Some(key.as_str()) } else { done.catalog.as_deref() != Some(key.as_str()) } as usize;
     // (Its one job is the line itself: no `next`.)
-    out.push(group(PUBLISH, &["catalog", "catalog-held"], built.then_some(publish_left)));
-    out
+    out.push(Item::left(if held { "catalog-held" } else { "catalog" }, built.then_some(publish_left)));
+    (out, next)
 }
 
 /// A catalog when what it would list or record has changed since the last one (not while the
@@ -3045,9 +3055,11 @@ pub(crate) mod tests {
     fn unit_keys(c: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
         ukeys(c, date, m, Some(&reach()))
     }
-    fn checklist(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool) -> Vec<Step> {
+    /// The checklist's lines, folded by stage (as the agent's status has them).
+    fn checklist(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool) -> Vec<Line> {
         let ready = plan_with(c, date, m, done, inputs, &BTreeMap::new(), None).ready;
-        super::checklist(c, date, m, done, inputs, held, Some(&reach()), &ready, &tiles_for(m))
+        let (items, next) = super::checklist(c, date, m, done, inputs, held, Some(&reach()), &ready, &tiles_for(m));
+        fold(&items, &next, &BTreeMap::new())
     }
 
     /// The indexes of the terrain packs `m` names, each a whole pyramid (a hi pack's z9–12 under
@@ -4337,8 +4349,8 @@ pub(crate) mod tests {
     #[test]
     fn a_steps_runs_are_named_together_with_their_areas() {
         let w = |step: &str, n: usize| Work { step: step.into(), targets: (0..n).map(|i| (format!("6/{i}/1"), "k".into())).collect() };
-        assert_eq!(next_of(&[w("peaks", 12), w("peaks", 166), w("items", 1), w("heritage", 1)]), [format!("{}: 178 areas", label("peaks")).as_str(), label("items"), label("heritage")]);
-        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), [label("pois"), label("marks")]);
+        assert_eq!(next_of(&[w("peaks", 12), w("peaks", 166), w("items", 1), w("heritage", 1)]), ["Peaks: 178 tiles", "Wikidata facts", "Heritage details"]);
+        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["Landmark candidates: 1 tile", "Landmarks"]);
     }
 
     #[test]
@@ -4346,19 +4358,24 @@ pub(crate) mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
-        let line = |l: &[Step], what: &str| l.iter().find(|s| s.what.starts_with(what)).cloned().unwrap();
+        let line = |l: &[Line], id: &str| l.iter().find(|s| s.id == id).cloned().unwrap();
+        let item = |l: &[Line], step: &str| l.iter().flat_map(|s| s.items.iter()).find(|i| i.step == step).cloned().unwrap();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
-        assert_eq!(l.len(), 11);
-        assert_eq!(line(&l, BUILDINGS).total, None, "no sources asked about: not known");
-        assert_eq!(line(&l, TRAINS).left, None, "no rail sources: not known");
+        assert_eq!(l.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["sites", "terrain", "slope", "trees", "roads", "tiles", "finish", "trains", "landmarks", "buildings", "publish"]);
+        assert_eq!(line(&l, "buildings").total, None, "no sources asked about: not known");
+        assert_eq!(line(&l, "trains").left, None, "no rail sources: not known");
         let pieces = coverage_tiles(&c).into_values().flatten().count();
-        assert_eq!((line(&l, TERRAIN).done, line(&l, TERRAIN).total), (0, Some(pieces + 1)), "its pieces and their assembly");
-        assert_eq!((line(&l, UNITS).done, line(&l, UNITS).total), (0, Some(1)));
-        assert_eq!(line(&l, TILES).total, None, "no areas built: the tiles aren't known yet");
-        assert_eq!(line(&l, SITES).left, Some(1));
-        assert_eq!((line(&l, TREES).done, line(&l, TREES).total), (0, Some(3)), "two pieces and their assembly");
+        assert_eq!((line(&l, "terrain").done, line(&l, "terrain").total), (0, Some(pieces + 1)), "its pieces and their assembly");
+        assert_eq!((item(&l, "terrain").total, item(&l, "terrain-lo").total), (Some(pieces), Some(1)), "each step its own line");
+        assert_eq!((line(&l, "roads").done, line(&l, "roads").total, line(&l, "roads").unit.as_str()), (0, Some(1), "tiles"));
+        assert_eq!(line(&l, "tiles").total, None, "no tiles built: the map tiles aren't known yet");
+        assert_eq!(line(&l, "sites").left, Some(1));
+        assert_eq!((line(&l, "trees").done, line(&l, "trees").total), (0, Some(3)), "two pieces and their assembly");
+        // Every line names every step of its stage, its items in the table's order.
+        assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain", "terrain-lo"]);
+        assert_eq!(line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(), ["terrain", "terrain-lo"]);
         // Terrain, slope, the heritage sites and the area done.
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
@@ -4372,25 +4389,26 @@ pub(crate) mod tests {
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
         let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
-        for what in [TERRAIN, SLOPE, SITES, UNITS, TREES] {
+        for what in ["terrain", "slope", "sites", "roads", "trees"] {
             assert!(line(&l, what).finished(), "{what} done");
         }
-        let tiles = line(&l, TILES);
+        let tiles = line(&l, "tiles");
         assert!(tiles.total.is_some_and(|t| t > 1) && tiles.done == 0 && !tiles.finished());
-        assert!(line(&l, ROADS).left.is_some_and(|n| n >= 1));
-        // Each group's jobs left, by name, in their order.
-        let roads = line(&l, ROADS);
+        assert!(line(&l, "finish").left.is_some_and(|n| n >= 1));
+        // Each stage's jobs left, by name, in their order (a worldwide step's run one each).
+        let roads = line(&l, "finish");
         assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
-        assert!(roads.next.iter().all(|n| !n.is_empty() && n != label("catalog")), "{:?}", roads.next);
-        assert_eq!(line(&l, PUBLISH).left, Some(1));
+        assert!(roads.next.iter().all(|n| !n.is_empty() && n != "Catalog"), "{:?}", roads.next);
+        assert_eq!(roads.unit, "runs");
+        assert_eq!(line(&l, "publish").left, Some(1));
         // Held for review: publishing is the held catalog.
         let k = catalog_key(&m, &BTreeMap::new(), &["r".to_string()]);
         // The descriptions' credits in it once there are any: an edit gets a new catalog.
         let with = |d: &str| catalog_key(&m, &[("credits".to_string(), d.to_string())].into(), &["r".to_string()]);
         assert!(with("a") != k && with("a") != with("b"));
         done.catalog_held = Some(k);
-        assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), PUBLISH).finished());
-        assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), PUBLISH).finished());
+        assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), "publish").finished());
+        assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), "publish").finished());
     }
 
     #[test]
@@ -4700,7 +4718,7 @@ pub(crate) mod tests {
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(steps(&w), vec!["roadunits", "rail-feeds"]);
         // The checklist: two jobs left, then one.
-        let line = |m: &BTreeMap<String, String>, done: &Keys| checklist(&c, "d", m, done, &BTreeMap::new(), false).into_iter().find(|s| s.what == TRAINS).unwrap();
+        let line = |m: &BTreeMap<String, String>, done: &Keys| checklist(&c, "d", m, done, &BTreeMap::new(), false).into_iter().find(|s| s.id == "trains").unwrap();
         assert_eq!(line(&m, &done).left, Some(2));
         done.record("rail-feeds", &w[1].targets);
         m.insert(crate::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
@@ -4717,7 +4735,7 @@ pub(crate) mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
         let lta: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
-        let line = |m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>| checklist(&c, "d", m, done, inputs, false).into_iter().find(|s| s.what == TRAINS).unwrap();
+        let line = |m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>| checklist(&c, "d", m, done, inputs, false).into_iter().find(|s| s.id == "trains").unwrap();
         assert_eq!(line(&m, &done, &lta).left, None, "no accepted declarations");
         m.insert(crate::inputs::logical(crate::inputs::feeds::UNIT), "sources/inputs/timetables/feeds/@index.1111111111111111.json".into());
         let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
@@ -5116,16 +5134,17 @@ pub(crate) mod tests {
         assert_eq!(s[0], "heritage-sites");
         // The checklist's line: its tiles' files and tiles, none done; what's next.
         let cl = checklist(&c, date, &m, &done, &inputs, false);
-        let b = cl.iter().find(|x| x.what == BUILDINGS).unwrap();
+        let b = cl.iter().find(|x| x.id == "buildings").unwrap();
         let tt = bld_targets(&c, &m, &inputs);
         assert_eq!((b.done, b.total), (0, Some(tt.prep.len() + tt.tiles.len() + tt.lo.len())));
-        assert_eq!(b.next[0], label("bld-fetch"));
-        assert!(b.next[1].starts_with(label("bldprep")));
+        assert_eq!(b.left, Some(1 + tt.prep.len() + tt.tiles.len() + tt.lo.len()), "the fetch's run too");
+        assert_eq!(b.next[0], "Buildings' sources");
+        assert!(b.next[1].starts_with("Buildings read: "));
         // Its steps' targets go by tile in the jobs' names.
-        assert_eq!(next_of(&[Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())] }]), ["Raising the 3D buildings: 2 tiles"]);
-        let mut st = checklist_to_come();
-        mark_shared(&mut st);
-        assert_eq!(st.iter().find(|x| x.what == BUILDINGS).unwrap().shared.as_deref(), Some("sources read and tiles"));
+        assert_eq!(next_of(&[Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())] }]), ["3D buildings: 2 tiles"]);
+        let st = fold(&checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(st.iter().find(|x| x.id == "buildings").unwrap().shared.as_deref(), Some("Buildings read and 3D buildings"));
+        assert!(st.iter().all(|x| x.left.is_none() && x.total.is_none() && !x.finished()), "to come: not sized");
     }
 
     #[test]

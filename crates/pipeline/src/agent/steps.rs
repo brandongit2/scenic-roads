@@ -1,10 +1,27 @@
-//! The steps table (docs/pool.md §7.2): a row per step the agent runs as a job, saying what a job of
-//! it is first guessed to take in memory until a target's own run says, whether other members take
-//! it (the shared steps, and their ranks), whether it's the lead's alone (a run alone of the whole
-//! build, or one that keeps the pass's answers: not offered to members, crate::agent::every), the
-//! second slot's ranks the forecast reckons with, how many targets go in a job of the lead's own,
-//! and what it may write (its write-set: the logical names its jobs may add, change or remove in the
-//! build's manifest).
+//! The steps table (docs/pipeline.md): one row per step the agent runs as a job, every row the
+//! same fields, so the whole pipeline is read with a few concepts:
+//!
+//! - **id** (`name`): the step's stored name, in the records, the journal, the leases, the timings
+//!   and the floors; never shown as such, never changed (a rename would re-key what's built).
+//! - **title**: the name people see; **does**: one sentence of what it makes from what.
+//! - **kind**: where its output goes (`Kind`: a fetch from outside, a derived work file, a pack the
+//!   map serves, a publish, upkeep).
+//! - **scope**: what one target is (`Scope`: the world, an area (a z3 tile), a tile (a z6 tile), an
+//!   input's drop box); its noun counts a job's targets everywhere ("8 tiles").
+//! - **stage**: where it sits in the build's order (`STAGES`): the checklist's lines, the page's
+//!   groups and colours.
+//! - **place**: which Mac runs it (`Place`: the lead alone, or any member), derived from the pool's
+//!   rules (crate::agent::every), never kept by hand.
+//! - **resources**: the memory a job of it is first guessed to take until a target's own run says,
+//!   whether members take it and at what rank (the shared steps), whether it's the lead's alone (a
+//!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), the
+//!   second slot's rank in the forecast, how many targets go in a job of the lead's own, and what
+//!   it may write (its write-set: the logical names its jobs may add, change or remove in the
+//!   build's manifest).
+//!
+//! Every human text about a step is templated from its row (`title`, `said`, `counted`): the jobs'
+//! names, the checklist, the build page, `scenic status`. The tasks a job offers (`TASKS`) are
+//! described alike.
 //!
 //! What it held besides went (docs/pool.md §7.7, §12 phase 4's thirteenth batch): the disk a job
 //! starts with (the reserve and the job's measured disk instead, the disk guard behind it), the
@@ -24,11 +41,102 @@
 //! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
 use crate::legacy::Unit;
+use serde::{Deserialize, Serialize};
+
+/// Where a step's output goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// Brings sources in from outside (`sources/`).
+    Fetch,
+    /// Makes work files other steps read (`work/`, `global/`, `sources/osm/<date>/`).
+    Derive,
+    /// Makes what the map serves (`layers/`, `base/`, `hidata/`, …).
+    Pack,
+    /// Makes a catalog: the map's new data goes out.
+    Publish,
+    /// Keeps the build in order: checks, lists, removals, backups; nothing the map reads.
+    Keep,
+}
+
+/// What one target of a step is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    /// Everything at once: one target, the step's own name (or a pass's date).
+    World,
+    /// A z3 tile ("3/x/y"): 8 × 8 tiles.
+    Area,
+    /// A z6 tile ("6/x/y").
+    Tile,
+    /// An input's drop box (docs/inputs.md §4.3).
+    Input,
+    /// A task's piece of a job (`TASKS`).
+    Task,
+}
+
+impl Scope {
+    /// The noun a target is counted in.
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Scope::World => "run",
+            Scope::Area => "area",
+            Scope::Tile => "tile",
+            Scope::Input => "input",
+            Scope::Task => "task",
+        }
+    }
+}
+
+/// Which Mac runs a step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Place {
+    /// The lead alone.
+    Lead,
+    /// Any member whose measured room fits (crate::agent::every).
+    Any,
+}
+
+/// A stage of the build: a group of steps in the order they run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Stage {
+    pub id: &'static str,
+    pub title: &'static str,
+    /// What the stage makes, in a sentence.
+    pub does: &'static str,
+}
+
+/// The stages, in the build's order (docs/pipeline.md §2).
+pub const STAGES: [Stage; 13] = [
+    Stage { id: "pass", title: "OpenStreetMap pass", does: "The newest planet read once for the whole world: its sets, outlines, pieces and road values, the basemap, the water, and what the regions' steps read." },
+    Stage { id: "sites", title: "Heritage sites", does: "The heritage sites and designated areas the regions' tiles read." },
+    Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by area." },
+    Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by area." },
+    Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by area." },
+    Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
+    Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by area." },
+    Stage { id: "finish", title: "Map finishing", does: "What each map update adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
+    Stage { id: "trains", title: "Trains", does: "Trains a day on the regions' rail, from timetables." },
+    Stage { id: "landmarks", title: "Landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
+    Stage { id: "buildings", title: "3D buildings", does: "Every building in the coverage, raised in 3D, a tile at a time." },
+    Stage { id: "publish", title: "Publishing", does: "A catalog: the map's new data goes out." },
+    Stage { id: "upkeep", title: "Upkeep", does: "Checks, to-do lists, removals and backups; nothing the map reads." },
+];
 
 /// A step's row.
 #[derive(Clone, Copy, Debug)]
 pub struct Step {
+    /// Its id: the stored name.
     pub name: &'static str,
+    /// The name people see.
+    pub title: &'static str,
+    /// What it makes from what, in a sentence.
+    pub does: &'static str,
+    pub kind: Kind,
+    pub scope: Scope,
+    /// Its stage's id (`STAGES`).
+    pub stage: &'static str,
     /// The memory a job of it is expected to take (MB) before a target's own run has said
     /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and reckoned so beside
     /// another job. (Units and candidates are offered by their piece's size, terrain by its area's,
@@ -53,93 +161,225 @@ pub struct Step {
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets, every target in one
 /// job.
-const fn base(name: &'static str, writes: fn(&str, bool) -> bool) -> Step {
-    Step { name, mem_mb: 1500, shared: None, beside: None, alone: false, answered: false, batch: usize::MAX, writes }
+const fn step(stage: &'static str, kind: Kind, scope: Scope, name: &'static str, title: &'static str, does: &'static str, writes: fn(&str, bool) -> bool) -> Step {
+    Step { name, title, does, kind, scope, stage, mem_mb: 1500, shared: None, beside: None, alone: false, answered: false, batch: usize::MAX, writes }
 }
 
-/// The table, in no order of its own (the ranks order what's ranked).
+use Kind::{Derive, Fetch, Keep, Pack, Publish};
+use Scope::{Area, Input, Tile, World};
+
+/// The table, by stage (the ranks order what's ranked).
 pub const TABLE: [Step; 49] = [
-    // The OSM pass: the planet filtered, its sets, pieces and road values.
-    Step { alone: true, ..base("osm-pass", w_osm_pass) },
-    Step { alone: true, ..base("pass-sets", w_pass_sets) },
+    // The OSM pass: the planet filtered, its sets, pieces and road values; then its worldwide steps.
+    Step { alone: true, ..step("pass", Derive, World, "osm-pass", "Planet", "Filters the newest planet, cuts its sets and z6 pieces, makes the basemap and the road values.", w_osm_pass) },
+    Step { alone: true, ..step("pass", Derive, World, "pass-sets", "Pass sets", "Cuts the sets a finished pass lacks in their current filters.", w_pass_sets) },
     // (osmium's export of the outline set and the assembly: 8.3 GB at most measured, the
     // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15.)
-    Step { mem_mb: 9216, alone: true, ..base("outlines", w_outlines) },
-    Step { alone: true, ..base("trailends", w_trailends) },
-    Step { alone: true, ..base("reach", w_reach) },
-    Step { alone: true, ..base("terrain-z8", w_terrain_z8) },
-    Step { alone: true, ..base("buildings", w_buildings) },
-    Step { alone: true, ..base("summits", w_summits) },
-    Step { alone: true, ..base("labels", w_labels) },
+    Step { mem_mb: 9216, alone: true, ..step("pass", Derive, World, "outlines", "Outlines", "Assembles the countries' and regions' outlines from the pass's outline set.", w_outlines) },
+    Step { alone: true, ..step("pass", Derive, World, "trailends", "Route ends", "Finds the ends of the world's hiking routes.", w_trailends) },
+    Step { alone: true, ..step("pass", Derive, World, "reach", "Road reach", "Works out how far each tile's roads reach.", w_reach) },
+    Step { alone: true, ..step("pass", Derive, World, "terrain-z8", "World terrain, z8", "Repairs every z8 terrain tile of the world, once.", w_terrain_z8) },
+    Step { alone: true, ..step("pass", Fetch, World, "buildings", "Roadside buildings", "Collects the world's roadside building boxes from the Overture release.", w_buildings) },
+    Step { alone: true, ..step("pass", Derive, World, "summits", "Summits", "Finds the world's summits.", w_summits) },
+    Step { alone: true, ..step("pass", Pack, World, "labels", "Place labels", "Ranks the world's place labels and packs them.", w_labels) },
     // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
     // merged fill's, 10.4 GB at most measured, 2026-10-15.)
-    Step { mem_mb: 12288, alone: true, ..base("lakefill", w_lakefill) },
+    Step { mem_mb: 12288, alone: true, ..step("pass", Derive, World, "lakefill", "Lake fill", "Fills in Canada's lakes missing from OpenStreetMap.", w_lakefill) },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
     // 2026-10-08.)
-    Step { mem_mb: 8192, alone: true, ..base("water", w_water) },
-    Step { alone: true, answered: true, ..base("heritage-sites", w_heritage_sites) },
-    Step { alone: true, ..base("gc", w_none) },
-    Step { ..base("backup", w_none) },
-    Step { ..base("spoken", w_spoken) },
+    Step { mem_mb: 8192, alone: true, ..step("pass", Pack, World, "water", "Water", "Draws the world's water at every zoom.", w_water) },
+    Step { ..step("pass", Derive, World, "spoken", "Spoken languages", "Maps the languages spoken where, for names.", w_spoken) },
+    // The regions' extract (crate::inputs::regions::extract): the pass's planet read three times,
+    // a heavy NAS reader.
+    Step { alone: true, ..step("pass", Derive, World, "regions-extract", "Regions' extract", "Extracts the regions' OSM relations and ways.", w_regions_extract) },
+    Step { alone: true, answered: true, ..step("sites", Derive, World, "heritage-sites", "Heritage sites", "Finds the regions' heritage sites and designated areas.", w_heritage_sites) },
+    // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
+    // before pieces).
+    Step { ..step("terrain", Derive, World, "terrain-water", "Terrain water", "Reads the water the terrain flattens, for the terrain's keys.", w_terrain_water) },
+    Step { shared: Some(0), batch: 8, ..step("terrain", Pack, Tile, "terrain", "Terrain", "Builds a tile's terrain packs, repaired and its water flattened.", w_terrain) },
+    // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its pieces' z9 means, up to 4 MB a
+    // piece, and half a GB besides.)
+    Step { mem_mb: 1200, batch: 4, ..step("terrain", Pack, Area, "terrain-lo", "Terrain, zoomed out", "Assembles an area's zoomed-out terrain from its tiles.", w_terrain_lo) },
+    // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the area's lo tiles.)
+    Step { mem_mb: 1500, shared: Some(1), beside: Some(11), batch: 8, ..step("slope", Pack, Tile, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope) },
+    Step { mem_mb: 1000, batch: 4, ..step("slope", Pack, Area, "slope-lo", "Slope, zoomed out", "Assembles an area's zoomed-out slope from its tiles.", w_slope_lo) },
+    // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
+    // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a piece has 16
+    // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed.)
+    Step { mem_mb: 1000, shared: Some(2), batch: 4, ..step("trees", Pack, Tile, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees) },
+    Step { mem_mb: 500, batch: 4, ..step("trees", Pack, Area, "trees-lo", "Tree cover, zoomed out", "Assembles an area's zoomed-out tree cover from its tiles.", w_trees_lo) },
+    // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
+    Step { mem_mb: 8600, shared: Some(3), beside: Some(10), batch: 6, ..step("roads", Pack, Tile, "unit", "Roads", "Builds a tile's roads, their elevations and scenery: its base pack and road values.", w_unit) },
+    Step { batch: 16, ..step("tiles", Pack, Tile, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack) },
+    Step { batch: 2, ..step("tiles", Pack, Area, "lo", "Map tiles, zoomed out", "Draws an area's zoomed-out road and rail map tiles.", w_lo) },
+    Step { ..step("finish", Keep, World, "prune", "Prune", "Removes what the regions no longer cover.", w_prune) },
+    Step { ..step("finish", Derive, World, "roadunits", "Road index", "Works out which tiles each road crosses.", w_roadunits) },
+    Step { ..step("finish", Pack, World, "stations", "Rail stops", "Places the rail stops near the regions.", w_stations) },
+    Step { ..step("finish", Pack, World, "ferries", "Ferries", "Maps the world's ferries.", w_ferries) },
+    Step { ..step("finish", Pack, World, "terrain-root", "Terrain, world level", "Builds the world-level terrain from the areas' zoomed-out packs.", w_terrain_root) },
+    Step { ..step("finish", Pack, World, "slope-root", "Slope, world level", "Builds the world-level slope from the areas' zoomed-out packs.", w_slope_root) },
+    Step { mem_mb: 1024, beside: Some(3), ..step("trains", Fetch, World, "rail-feeds", "Rail timetables", "Fetches the regions' rail and ferry timetables.", w_rail_feeds) },
+    Step { mem_mb: 6144, beside: Some(4), ..step("trains", Derive, World, "rail", "Trains a day", "Counts trains a day on the regions' rail.", w_rail) },
+    Step { mem_mb: 2048, shared: Some(4), beside: Some(8), batch: 24, ..step("landmarks", Derive, Tile, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois) },
+    Step { mem_mb: 2500, shared: Some(5), beside: Some(9), batch: 12, ..step("landmarks", Derive, Tile, "peaks", "Peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks) },
+    Step { mem_mb: 3072, beside: Some(2), answered: true, ..step("landmarks", Fetch, World, "items", "Wikidata facts", "Fetches the landmarks' Wikidata facts and Wikipedia pageviews.", w_items) },
+    Step { mem_mb: 6144, beside: Some(1), answered: true, ..step("landmarks", Derive, World, "heritage", "Heritage details", "Adds details, fame and outlines to the heritage sites.", w_heritage) },
+    Step { mem_mb: 4096, beside: Some(6), ..step("landmarks", Pack, World, "marks", "Landmarks", "Ranks the landmarks and draws them on the map.", w_marks) },
+    Step { mem_mb: 4096, beside: Some(7), ..step("landmarks", Pack, World, "overlays", "Area overlays", "Draws the area overlays.", w_overlays) },
+    Step { mem_mb: 1024, beside: Some(5), ..step("buildings", Fetch, World, "bld-fetch", "Buildings' sources", "Fetches the 3D buildings' sources.", w_none) },
+    // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
+    // 5.1 GB to read its 30.3 M rows; to raise its tiles and field, the model of B5's pilot for those
+    // rows. Offered by the rows they read.)
+    Step { mem_mb: 5200, shared: Some(6), beside: Some(12), batch: 8, ..step("buildings", Derive, Tile, "bldprep", "Buildings read", "Reads a tile's buildings from the sources into normalized files.", w_bldprep) },
+    Step { mem_mb: super::bldtiles_peak(30_300_000), shared: Some(7), beside: Some(13), batch: 16, ..step("buildings", Pack, Tile, "bldtiles", "3D buildings", "Raises a tile's 3D buildings and its far buildings' field.", w_bldtiles) },
+    // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
+    Step { mem_mb: crate::bld::field::LO_PEAK_MB, batch: 4, ..step("buildings", Pack, Area, "bldfield-lo", "3D buildings, zoomed out", "Assembles an area's zoomed-out buildings' field from its tiles.", w_bldfield_lo) },
+    Step { ..step("publish", Publish, World, "catalog", "Catalog", "Makes the catalog the map serves: the new data goes out.", w_none) },
+    Step { ..step("publish", Publish, World, "catalog-held", "Catalog, held", "Makes a catalog held for review (inputs/hold-catalog).", w_none) },
     // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest, and the
     // second job's first choice (so one doesn't wait behind a long first job, a step running alone
     // aside); reading the drop boxes and the accepted copies on the NAS, never beside another of
     // the heavy NAS readers.
-    Step { beside: Some(0), ..base("inputs", w_inputs) },
-    // The regions' extract (crate::inputs::regions::extract): the pass's planet read three times,
-    // a heavy NAS reader.
-    Step { alone: true, ..base("regions-extract", w_regions_extract) },
-    Step { ..base("names-todo", w_none) },
-    Step { ..base("timetables-todo", w_timetables_todo) },
-    // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
-    // before pieces).
-    Step { shared: Some(0), batch: 8, ..base("terrain", w_terrain) },
-    // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its pieces' z9 means, up to 4 MB a
-    // piece, and half a GB besides.)
-    Step { mem_mb: 1200, batch: 4, ..base("terrain-lo", w_terrain_lo) },
-    Step { ..base("terrain-water", w_terrain_water) },
-    Step { ..base("terrain-root", w_terrain_root) },
-    // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the area's lo tiles.)
-    Step { mem_mb: 1500, shared: Some(1), beside: Some(11), batch: 8, ..base("slope", w_slope) },
-    Step { mem_mb: 1000, batch: 4, ..base("slope-lo", w_slope_lo) },
-    Step { ..base("slope-root", w_slope_root) },
-    // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
-    // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a piece has 16
-    // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed.)
-    Step { mem_mb: 1000, shared: Some(2), batch: 4, ..base("trees", w_trees) },
-    Step { mem_mb: 500, batch: 4, ..base("trees-lo", w_trees_lo) },
-    // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
-    Step { mem_mb: 8600, shared: Some(3), beside: Some(10), batch: 6, ..base("unit", w_unit) },
-    Step { mem_mb: 2048, shared: Some(4), beside: Some(8), batch: 24, ..base("pois", w_pois) },
-    Step { mem_mb: 2500, shared: Some(5), beside: Some(9), batch: 12, ..base("peaks", w_peaks) },
-    Step { batch: 16, ..base("pack", w_pack) },
-    Step { batch: 2, ..base("lo", w_lo) },
-    Step { mem_mb: 3072, beside: Some(2), answered: true, ..base("items", w_items) },
-    Step { mem_mb: 6144, beside: Some(1), answered: true, ..base("heritage", w_heritage) },
-    Step { mem_mb: 4096, beside: Some(6), ..base("marks", w_marks) },
-    Step { mem_mb: 4096, beside: Some(7), ..base("overlays", w_overlays) },
-    Step { ..base("roadunits", w_roadunits) },
-    Step { ..base("stations", w_stations) },
-    Step { ..base("ferries", w_ferries) },
-    Step { mem_mb: 1024, beside: Some(3), ..base("rail-feeds", w_rail_feeds) },
-    Step { mem_mb: 6144, beside: Some(4), ..base("rail", w_rail) },
-    Step { mem_mb: 1024, beside: Some(5), ..base("bld-fetch", w_none) },
-    // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
-    // 5.1 GB to read its 30.3 M rows; to raise its tiles and field, the model of B5's pilot for those
-    // rows. Offered by the rows they read.)
-    Step { mem_mb: 5200, shared: Some(6), beside: Some(12), batch: 8, ..base("bldprep", w_bldprep) },
-    Step { mem_mb: super::bldtiles_peak(30_300_000), shared: Some(7), beside: Some(13), batch: 16, ..base("bldtiles", w_bldtiles) },
-    // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
-    Step { mem_mb: crate::bld::field::LO_PEAK_MB, batch: 4, ..base("bldfield-lo", w_bldfield_lo) },
-    Step { ..base("catalog", w_none) },
-    Step { ..base("catalog-held", w_none) },
-    Step { ..base("prune", w_prune) },
+    Step { beside: Some(0), ..step("upkeep", Keep, Input, "inputs", "Input check", "Checks an input's dropped files and takes them in.", w_inputs) },
+    Step { ..step("upkeep", Keep, World, "names-todo", "Names to do", "Lists the names to translate and the descriptions to write.", w_none) },
+    Step { ..step("upkeep", Keep, World, "timetables-todo", "Timetables to do", "Lists the lines with no timetable.", w_timetables_todo) },
+    Step { alone: true, ..step("upkeep", Keep, World, "gc", "Clean-up", "Removes replaced files from the NAS.", w_none) },
+    Step { ..step("upkeep", Keep, World, "backup", "Backup", "Backs up translations, descriptions, inputs and the acceptances.", w_none) },
 ];
+
+/// A task a running job offers to any worker (docs/workers.md §3), described as a step is.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Task {
+    /// Its kind: the stored name.
+    pub name: &'static str,
+    pub title: &'static str,
+    pub does: &'static str,
+    /// The step whose jobs offer it.
+    pub step: &'static str,
+}
+
+pub const TASKS: [Task; 4] = [
+    Task { name: "tail", title: "Roads' last steps", does: "A tile's last steps (its scenic metrics), offered as the lead builds its roads.", step: "unit" },
+    Task { name: crate::terrain_task::KIND, title: "Terrain's subtrees", does: "A group of a terrain tile's z8 subtrees.", step: "terrain" },
+    Task { name: crate::trees::task::KIND, title: "Tree cover's blocks", does: "A row of a tree cover tile's blocks.", step: "trees" },
+    Task { name: crate::bld::task::KIND, title: "3D buildings' areas", does: "A z8 area of a 3D buildings tile.", step: "bldtiles" },
+];
+
+/// The forecast's lane for a map update as a whole (crate::agent::forecast::Lane): not a step.
+pub const MAP_UPDATE: &str = "map-update";
 
 /// The row of `step`; None for one the table doesn't know (a task's kind, or a step of a newer
 /// app's).
 pub fn row(step: &str) -> Option<&'static Step> {
     TABLE.iter().find(|s| s.name == step)
+}
+
+/// The task of kind `kind`.
+pub fn task(kind: &str) -> Option<&'static Task> {
+    TASKS.iter().find(|t| t.name == kind)
+}
+
+/// The stage `id` names.
+pub fn stage(id: &str) -> Option<&'static Stage> {
+    STAGES.iter().find(|s| s.id == id)
+}
+
+/// The title of stage `id` (its id for one the table doesn't know).
+pub fn stage_title(id: &str) -> &'static str {
+    stage(id).map_or_else(|| Box::leak(id.to_string().into_boxed_str()) as &str, |s| s.title)
+}
+
+/// The stage of `step` (a task's its step's; a map update's publishing).
+pub fn stage_of(step: &str) -> Option<&'static Stage> {
+    let id = match row(step) {
+        Some(s) => s.stage,
+        None if step == MAP_UPDATE => "publish",
+        None => task(step).and_then(|t| row(t.step)).map(|s| s.stage)?,
+    };
+    stage(id)
+}
+
+/// The name people see for `step` (a step's, a task's, a map update's; an unknown's its id).
+pub fn title(step: &str) -> &'static str {
+    if let Some(s) = row(step) {
+        return s.title;
+    }
+    if let Some(t) = task(step) {
+        return t.title;
+    }
+    if step == MAP_UPDATE {
+        return "Map update";
+    }
+    // (A step of a newer app's: its id, leaked to a `&'static` the once.)
+    Box::leak(step.to_string().into_boxed_str())
+}
+
+/// What one target of `step` is called ("tile", "area", "run", "input"; a task's "task"; an
+/// unknown step's "target").
+pub fn noun(step: &str) -> &'static str {
+    match row(step) {
+        Some(s) => s.scope.noun(),
+        None if task(step).is_some() => Scope::Task.noun(),
+        None => "target",
+    }
+}
+
+/// `n` targets of `step`, counted in its noun: "8 tiles", "1 area".
+pub fn counted(step: &str, n: usize) -> String {
+    format!("{n} {}{}", noun(step), if n == 1 { "" } else { "s" })
+}
+
+/// A job of `step` over `n` targets, said: "Terrain: 8 tiles", "Terrain: 8 of 480 tiles" (`of`,
+/// the batch's whole), "Outlines" (a worldwide step's one run).
+pub fn said(step: &str, n: usize, of: Option<usize>) -> String {
+    let t = title(step);
+    if row(step).is_some_and(|s| s.scope == World) || n == 0 {
+        return t.to_string();
+    }
+    match of {
+        Some(total) if total != n => format!("{t}: {n} of {total} {}s", noun(step)),
+        _ => format!("{t}: {}", counted(step, n)),
+    }
+}
+
+/// Which Mac runs `step`: any member the lead offers it to (crate::agent::every), else the lead.
+pub fn place(step: &str) -> Place {
+    if super::every::offered(step) {
+        Place::Any
+    } else {
+        Place::Lead
+    }
+}
+
+/// A step's row as the build page and `scenic status` read it (`/work/steps`): everything but the
+/// write-set.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Info {
+    pub id: String,
+    pub title: String,
+    pub does: String,
+    pub kind: Kind,
+    pub scope: Scope,
+    pub noun: String,
+    pub stage: String,
+    pub place: Place,
+    /// Its targets per job of the lead's own (None: all of them).
+    pub batch: Option<usize>,
+    /// The memory a job of it is first guessed to take (MB).
+    pub mem_mb: u64,
+    /// A task's: the step whose jobs offer it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<String>,
+}
+
+/// Every step's row, in the table's order, then every task's (`of` its step).
+pub fn table() -> Vec<Info> {
+    let steps = TABLE.iter().map(|s| Info { id: s.name.into(), title: s.title.into(), does: s.does.into(), kind: s.kind, scope: s.scope, noun: s.scope.noun().into(), stage: s.stage.into(), place: place(s.name), batch: (s.batch != usize::MAX).then_some(s.batch), mem_mb: s.mem_mb, of: None });
+    let tasks = TASKS.iter().map(|t| {
+        let s = row(t.step).expect("a task's step has a row");
+        Info { id: t.name.into(), title: t.title.into(), does: t.does.into(), kind: s.kind, scope: Scope::Task, noun: Scope::Task.noun().into(), stage: s.stage.into(), place: Place::Any, batch: None, mem_mb: 0, of: Some(t.step.into()) }
+    });
+    steps.chain(tasks).collect()
 }
 
 /// The memory a job of `step` is expected to take before its own run has said (MB; 1.5 GB for a
@@ -640,7 +880,7 @@ mod tests {
     fn every_step_the_agent_runs_has_a_row() {
         // The steps the agent makes jobs of, as its source names them: the planner's work
         // (`Work { step: "…"`), the jobs it titles (`job(format!("…`, `id: "…"`), the steps the
-        // checklist labels (build::label's arms), and those whose names it puts together.
+        // checklist counts (build::COUNTED), and those whose names it puts together.
         let (agent, build) = (include_str!("mod.rs"), include_str!("build.rs"));
         let mut named = std::collections::BTreeSet::<String>::new();
         let mut take = |src: &str, pat: &str| {
@@ -656,14 +896,8 @@ mod tests {
         take(agent, "job(format!(\"");
         take(agent, "id: \"");
         take(agent, "id: format!(\"");
-        let label = &build[build.find("pub fn label(").unwrap()..];
-        let label = &label[..label.find("\n}\n").unwrap()];
-        for arm in label.lines().filter_map(|l| l.trim().strip_prefix('"')) {
-            for alt in arm.split(" | ") {
-                take(&format!("\"{alt}"), "\"");
-            }
-        }
-        named.extend(["stations", "ferries", "terrain-lo", "slope-lo", "terrain-root", "slope-root", "unit", "terrain-z8"].map(String::from));
+        named.extend(super::super::build::COUNTED.iter().map(|s| s.to_string()));
+        named.extend(["stations", "ferries", "terrain-lo", "slope-lo", "terrain-root", "slope-root", "unit", "terrain-z8", "osm-pass", "regions-extract"].map(String::from));
         // (Not steps: a task's lease.)
         named.remove("task");
         assert!(named.len() >= 40, "{named:?}");
@@ -672,6 +906,66 @@ mod tests {
         // And no row for a step the agent never runs.
         let unused: Vec<&str> = TABLE.iter().map(|s| s.name).filter(|s| !named.contains(*s)).collect();
         assert!(unused.is_empty(), "rows of no step the agent runs: {unused:?}");
+    }
+
+    #[test]
+    fn every_row_is_described_alike() {
+        // A title and a sentence each, titles unique, every stage known and used, every task's step
+        // a row; the nouns by scope; a worldwide step is one run.
+        let mut titles = std::collections::BTreeSet::new();
+        for s in TABLE.iter() {
+            assert!(!s.title.is_empty() && s.title.len() <= 28 && !s.title.ends_with('.'), "{}: {:?}", s.name, s.title);
+            assert!(s.does.ends_with('.') && s.does.len() > 20, "{}: {:?}", s.name, s.does);
+            assert!(titles.insert(s.title), "{}: title {:?} twice", s.name, s.title);
+            assert!(stage(s.stage).is_some(), "{}: stage {}", s.name, s.stage);
+            if !super::super::every::names_target(s.name) {
+                assert_eq!(s.scope, World, "{}: a step whose target isn't named is worldwide", s.name);
+            }
+        }
+        for st in STAGES {
+            assert!(TABLE.iter().any(|s| s.stage == st.id), "stage {} has no step", st.id);
+        }
+        for t in TASKS {
+            assert!(row(t.step).is_some(), "{}: step {}", t.name, t.step);
+            assert_eq!(stage_of(t.name).map(|g| g.id), Some(row(t.step).unwrap().stage));
+        }
+        assert_eq!((noun("unit"), noun("terrain-lo"), noun("outlines"), noun("inputs"), noun("tail"), noun("a newer step")), ("tile", "area", "run", "input", "task", "target"));
+        assert_eq!(said("terrain", 8, Some(480)), "Terrain: 8 of 480 tiles");
+        assert_eq!(said("terrain", 8, Some(8)), "Terrain: 8 tiles");
+        assert_eq!(said("terrain-lo", 1, None), "Terrain, zoomed out: 1 area");
+        assert_eq!(said("outlines", 1, None), "Outlines");
+        assert_eq!((title("map-update"), title("tail"), title("a-newer-step")), ("Map update", "Roads' last steps", "a-newer-step"));
+        assert_eq!(stage_of("map-update").map(|g| g.id), Some("publish"));
+        assert_eq!((stage_title("trains"), stage_title("x")), ("Trains", "x"));
+        // The place, from the pool's rules: the shared steps and the map tiles any member's, the
+        // lead's own and the worldwide steps the lead's.
+        for s in ["terrain", "unit", "pack", "lo", "bldprep"] {
+            assert_eq!(place(s), Place::Any, "{s}");
+        }
+        for s in ["catalog", "osm-pass", "items", "marks", "rail", "terrain-root", "gc", "inputs"] {
+            assert_eq!(place(s), Place::Lead, "{s}");
+        }
+        // The view: a row per step then per task, serializable, the task's step named.
+        let v = table();
+        assert_eq!(v.len(), TABLE.len() + TASKS.len());
+        let j = serde_json::to_value(&v).unwrap();
+        assert_eq!(j[0]["id"], "osm-pass");
+        assert_eq!(j[0]["scope"], "world");
+        assert_eq!(j[0]["place"], "lead");
+        let tail = v.iter().find(|i| i.id == "tail").unwrap();
+        assert_eq!((tail.of.as_deref(), tail.stage.as_str(), tail.noun.as_str()), (Some("unit"), "roads", "task"));
+    }
+
+    #[test]
+    fn the_ids_are_the_stored_names() {
+        // The ids are what the records, journal, timings, leases and floors hold (docs/pipeline.md
+        // §3): a change here would call every target stale, so none is made. The table's, in its
+        // order, and the tasks'.
+        let ids: Vec<&str> = TABLE.iter().map(|s| s.name).collect();
+        assert_eq!(ids, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "spoken", "regions-extract", "heritage-sites", "terrain-water", "terrain", "terrain-lo", "slope", "slope-lo", "trees", "trees-lo", "unit", "pack", "lo", "prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "rail-feeds", "rail", "pois", "peaks", "items", "heritage", "marks", "overlays", "bld-fetch", "bldprep", "bldtiles", "bldfield-lo", "catalog", "catalog-held", "inputs", "names-todo", "timetables-todo", "gc", "backup"]);
+        assert_eq!(TASKS.map(|t| t.name), ["tail", "terrainsub", "treeblock", "bldtile"]);
+        let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&'static str>>();
+        assert_eq!(set(&TASKS.map(|t| t.name)), set(&crate::coord::PAGE_TASKS), "the page's tasks are the tasks");
     }
 
     fn entry(step: &str, changes: &[(&str, bool)]) -> Entry {
