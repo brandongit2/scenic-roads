@@ -79,6 +79,24 @@ impl DemValidity {
     fn made(&self) -> [u32; 4] {
         self.made
     }
+
+    /// Whether a sample made under the DEM rules (the seed's) could be valid anywhere in box `b`
+    /// (w, s, e, n, E7): only where a single dataset covers a point. A dataset's cover is by 1°
+    /// cell, and a point on a cell's edge is covered by the datasets of every cell it touches, so
+    /// when every cell the box meets is covered by two datasets or more, no point of the box is
+    /// covered by one alone, and the seed has nothing for the unit: neither copied nor read.
+    pub fn seed_serves(&self, b: [i32; 4]) -> bool {
+        let cell = |v: i32| (v as f64 * 1e-7).floor() as i32;
+        for x in cell(b[0])..=cell(b[2]) {
+            for y in cell(b[1])..=cell(b[3]) {
+                let (lon, lat) = (x as f64 + 0.5, y as f64 + 0.5);
+                if self.codes.iter().filter(|(_, c)| c.contains(lon, lat)).count() < 2 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Keeps a unit's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
@@ -422,7 +440,8 @@ pub fn dem_cache_slice_with(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &P
     let p = sub("the seed's samples", Class::Disk);
     let mut all: Vec<(u64, f32, u8)> = Vec::new();
     let open = |n: &str| roadcore::mmap(&cache.join(format!("dem-cache.{n}")));
-    if let (Ok(km), Ok(em), Ok(sm)) = (open("keys.u64"), open("elev.f32"), open("src.u8")) {
+    // (The seed only where one of its samples could be valid: `DemValidity::seed_serves`.)
+    if let (true, Ok(km), Ok(em), Ok(sm)) = (v.seed_serves(b), open("keys.u64"), open("elev.f32"), open("src.u8")) {
         let (keys, elev): (&[u64], &[f32]) = (bytemuck::cast_slice(&km[..]), bytemuck::cast_slice(&em[..]));
         ensure!(keys.len() == elev.len() && keys.len() == sm.len(), "DEM cache files out of step");
         dem_valid_in_box(keys, elev, &sm[..], b, SEED_MADE, &mut all, v);
@@ -1054,20 +1073,27 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     };
     s.end();
     let s = stage("DEM cache slice", Class::NasRead);
-    // (The seed held for this unit, copied again if room-making took it: store::cachefile.)
-    if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
-        dem_seed(root, &tools.cache)?;
-    }
     // (From the declared elevation datasets: their plan for this unit, which elev reads, and by which
     // the kept samples are judged.)
     let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
     let e7 = |v: i32| v as f64 * 1e-7;
     let plan = crate::dem::declared::plan(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])])?;
+    let validity = DemValidity::of(&plan);
+    // (The seed held for this unit, copied again if room-making took it: store::cachefile. Not
+    // where two datasets cover every point of the unit: no sample of it is valid there.)
+    if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
+        if validity.seed_serves(slice) {
+            let _p = crate::timings::sub("DEM cache seeded here (once a Mac)", Class::NasRead);
+            dem_seed(root, &tools.cache)?;
+        } else {
+            eprintln!("unit {}: the DEM cache's seed has nothing for it (two datasets or more cover every point); not copied", u.slash());
+        }
+    }
     // (And what its programs read of the other declared sources.)
     let declared = tools.declared.as_ref().context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     std::fs::write(dir.join(crate::dem::declared::PLAN_FILE), serde_json::to_vec_pretty(&plan)?)?;
-    rep.dem_cache = dem_cache_slice_with(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &DemValidity::of(&plan))?;
+    rep.dem_cache = dem_cache_slice_with(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &validity)?;
     s.end();
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("layers staged from the packs", Class::NasRead);
@@ -1292,6 +1318,33 @@ mod tests {
     /// Kept samples judged as the seed's: every one made so is valid.
     fn rules() -> DemValidity {
         DemValidity { made: SEED_MADE, codes: Vec::new() }
+    }
+
+    #[test]
+    fn the_seed_serves_only_where_one_dataset_covers_alone() {
+        use crate::dem::declared::{Dataset, Plan, Source};
+        let plan = |covers: &[Option<[f64; 4]>]| {
+            let ds = covers.iter().enumerate().map(|(k, c)| Dataset { id: format!("d{k}"), code: k as u8 + 1, resolution: 10.0, cover: c.map(|b| vec![b]), source: Source::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } }).collect();
+            Plan { fmt: 1, version: "t".into(), tag: "0000000000000001".into(), datasets: ds }
+        };
+        let e7 = |lon: f64, lat: f64| [(lon * 1e7).round() as i32, (lat * 1e7).round() as i32];
+        let b = |w: f64, s: f64, e: f64, n: f64| {
+            let (a, c) = (e7(w, s), e7(e, n));
+            [a[0], a[1], c[0], c[1]]
+        };
+        // A worldwide dataset under a regional one: a box inside the region has two covers
+        // everywhere; one reaching past it has cells the worldwide one covers alone.
+        let v = DemValidity::of(&plan(&[Some([-80.0, 40.0, -70.0, 45.0]), None]));
+        assert!(!v.seed_serves(b(-75.5, 41.2, -72.1, 43.9)));
+        assert!(v.seed_serves(b(-75.5, 41.2, -69.9, 43.9)));
+        // A box's edge on a cell's edge: the cell past it counts (a point there is on that cell's
+        // edge too), so a box ending exactly at the region's east edge still serves.
+        assert!(v.seed_serves(b(-75.5, 41.2, -70.0, 43.9)));
+        assert!(!v.seed_serves(b(-75.5, 41.2, -70.0 - 1e-7, 43.9)));
+        // One dataset only, or none: the seed may serve.
+        assert!(DemValidity::of(&plan(&[None])).seed_serves(b(0.1, 0.1, 0.2, 0.2)));
+        assert!(DemValidity::of(&plan(&[])).seed_serves(b(0.1, 0.1, 0.2, 0.2)));
+        assert!(rules().seed_serves(b(0.1, 0.1, 0.2, 0.2)));
     }
 
     #[test]

@@ -562,8 +562,8 @@ The unit job runs the unit's programs on a unit folder, wiped at each run:
    are kept by type.
 2. **Elevations:** `elev` (`pipeline::dem`), the declared elevation datasets (docs/inputs.md §6.8) by
    their plan for U (`elevation.json`) through one sampler, blended at their edges, on U's slice of
-   the per-vertex DEM cache (the seed and the units' kept samples). U's samples are kept for later
-   runs and its neighbours'.
+   the per-vertex DEM cache (the seed, where one of its samples could be valid, and the units' kept
+   samples). U's samples are kept for later runs and its neighbours'.
 3. **Heritage:** the heritage-sites job's slices within U + 30 km; `areaflags` rasterises the areas
    onto U's grid.
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs the manifest names.
@@ -1166,6 +1166,25 @@ pieces ~58 GB; basemap 28.6 GB (Planetiler needs ~6× its 16.3 GB input while it
 
 The NAS holds about two passes' sources at most (a retired pass's go 14 days after the next
 completes).
+
+**Time, measured** (`scenic timings`, both Macs' jobs 2026-10-09 → 17, 653 runs; a step's share of
+the jobs' wall time, and where a run's time went):
+
+| step | share | a run | CPU/wall | where the time went |
+|---|---|---|---|---|
+| unit | 34 % | 10 min (19 in a rebuild of every unit's elevations) | 0.4 | `elev` 55–78 %: the blends' distance scan 34–48 %, 3DEP read over the network 18–27 %; the DEM seed copied 5 %; the base pack uploaded 5 % |
+| bldtiles | 22 % | 14 min | 4.0 | the areas' tiles made (compute) 88 % |
+| terrain | 10 % | 5 min | 1.5 | tiles prepared 58 %, uploaded 15 % |
+| names-todo | 6 % | 11 min | 0.1 | every base pack's names read from the NAS, after each catalog |
+| pack | 6 % | 12 min | 0.1 | the halo's base packs copied here 91 % (18 GB a run) |
+| slope | 5 % | 2 min | 0.4 | its terrain pack copied 29 %, uploaded 45 % |
+| heritage | 4 % | 81 min | 1.0 | the filtered planet clipped (osmium, once a pass) 86 % |
+| peaks | 3 % | 3 min | 1.1 | z12 tiles read one by one from the packs on the NAS (25,000 files a run) 75 % |
+
+A tail task on the other Mac fetches 0.65–1 GB at 2–6 MB/s (the Macs reach each other over Wi-Fi at
+about 4 MB/s; the NAS at 25–55 MB/s), so a tail is worth offering only to a Mac that would otherwise
+idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' decoded blocks
+(docs/inputs.md §6.8: one 512 MB cache).
 
 ## 10. Phases and status
 

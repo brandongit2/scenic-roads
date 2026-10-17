@@ -968,7 +968,12 @@ territory.
   max x, min y < y ≤ max y), sampled by crate::dem::sample.
 - **Blended at edges:** where the next dataset with valid data (B) lies beneath the first (A), within
   a band of four of the coarser dataset's pixels of A's invalid area, h = B + (A − B)·s(d / band),
-  s(t) = t²(3 − 2t). Past the band, A's height to the bit; the source byte is A's either way.
+  s(t) = t²(3 − 2t). Past the band, A's height to the bit; the source byte is A's either way. The
+  distance is looked for pixel by pixel only where one can be found: each block (or tile) read for
+  sampling is noted clean when every pixel of it holds data (crate::dem::sample::Clean), and a
+  point whose band lies in clean blocks inside its file is at the band's full distance, no pixel
+  read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
+  so a unit opening tens of files holds that much, not a cache's worth per file.
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
 - **Keys:** a unit names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`); a dataset's `keyed` includes its index's content and dropped files, so
@@ -984,7 +989,10 @@ territory.
   natively or as WebAssembly; without one `elev` refuses to run.
 - **The DEM cache** (`sources/dem-cache/`, `cache/dem-units/`, `unit::DemValidity`): a samples file
   made from the declarations records their digest and is valid while it holds. Older samples are
-  valid only where a single dataset covers the vertex and the sample carries its code.
+  valid only where a single dataset covers the vertex and the sample carries its code. The seed
+  (`sources/dem-cache/`, made under the DEM rules) is neither copied to a Mac nor read for a unit
+  when two datasets or more cover every 1° cell its vertices meet (`DemValidity::seed_serves`):
+  none of its samples could be valid there. It's copied, once a Mac, by the first unit it can serve.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
 
 **The 3D terrain's datasets** (`terrain = true`; crate::terrain_sources): left out of the roads'

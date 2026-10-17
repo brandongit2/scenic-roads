@@ -2980,10 +2980,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         declared: Some(pipeline::inputs::sources::read(out.root(), &out.manifest)?),
     };
     drop(setup);
-    // The DEM cache's seed, where the units' elevations start from (once per Mac).
-    let p = phase("DEM cache seeded here (once a Mac)", Class::NasRead);
-    pipeline::unit::dem_seed(out.root(), &tools.cache)?;
-    drop(p);
+    // (The DEM cache's seed, where the units' elevations start from, is copied here once a Mac by
+    // the first unit that it can serve: unit::prepare_folder.)
     // What units kept in this Mac's own cache: moved to the shared one (both Macs' units read it).
     let _p = phase("kept results moved to the shared cache", Class::NasWrite);
     if let Some(shared) = &tools.shared {
