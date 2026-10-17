@@ -24,7 +24,8 @@ header (JSON: its own fields, and "cols": [[name, bytes], ...]), then each colum
      bytes a row: building_id);
   9  the end: "release", "tile", "files" ([name, etag, [row groups]]), "ghsl" (tile names), "rows".
 
-usage: bldprep.py --root <NAS project folder> --tile 6/x/y [--release 2026-09-23.1] [--jobs 4]
+usage: bldprep.py --root <NAS project folder> --tile 6/x/y --release <release> [--jobs 4]
+       (SCENIC_SOURCES: the declared sources, dem/declared.py, as scenic-build bldprep gives them)
 """
 from __future__ import annotations
 

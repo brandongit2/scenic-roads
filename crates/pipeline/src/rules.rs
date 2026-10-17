@@ -195,6 +195,8 @@ pub const CREDITS: &[Credit] = &[
         terms: "ODbL · CDLA Permissive 2.0",
         areas: WORLD,
     },
+    // (Until the source declarations are accepted: the buildings source's description, its release
+    // named, replaces it then, as the same `what`: crate::inputs::credits.)
     Credit {
         what: "3D buildings",
         source: "Overture Maps Foundation buildings, release 2026-09-23.1 (© OpenStreetMap contributors, Microsoft, Esri Community Maps, USGS, IGN España, Google and others; each building's sources in the release)",
@@ -301,8 +303,11 @@ mod tests {
         let has = |what: &str, terms: &str| CREDITS.iter().any(|c| c.what == what && c.terms.contains(terms));
         assert!(has("Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries", "© OpenStreetMap contributors, ODbL"));
         assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
-        // (The 3D buildings' credit names the release they're built from.)
-        assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::TEST_RELEASE)));
+        // (The 3D buildings' credit names the release they're built from: the staged declaration's,
+        // whose own credit replaces it once accepted.)
+        let s = crate::inputs::sources::staged();
+        let release = s.role(crate::inputs::sources::BUILDINGS).unwrap().version().unwrap().to_string();
+        assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(&release)));
         assert_eq!(CREDITS.len(), 19);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();

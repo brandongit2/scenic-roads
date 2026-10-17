@@ -39,7 +39,9 @@ asks; TLS certificates are always verified; nothing needs an account or a key.
 Progress goes to stdout, a line a file and a summary each minute ("progress: d/t files"); run it with
 its output appended to the NAS's state/logs/bldfetch.log.
 
-usage: bldfetch.py --root <NAS project folder> [--release 2026-09-23.1] [--server URL | --coverage f]
+usage: bldfetch.py --root <NAS project folder> --release <release> [--server URL | --coverage f]
+       (SCENIC_SOURCES: the declared sources, dem/declared.py; the release their buildings source's
+       version, as scenic-build bld-fetch gives both)
                    [--margin-km 20] [--jobs 2] [--max-mb-s 3] [--only overture|ghsl] [--limit n]
                    [--nas-wait-h 6] [--dry-run]
        --limit n: only the n smallest files of each source (a test)

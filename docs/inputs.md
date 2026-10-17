@@ -1182,8 +1182,9 @@ agent) stay.
   boxes in `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).
 - **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data);
   `coord::WEB_HOSTS`' land-cover host (derived from the declarations, §5.2).
-- **Buildings:** `bld/prep.rs`'s `ghsl` meta (D); `dem/bldmeasure.py`'s own GHSL folder and
-  estimates (P: a measuring tool run by hand, not a build step). `bld/fill.rs`'s `ESTIMATES` stays
+- **Buildings:** `bld/prep.rs`'s `ghsl` meta (D); `dem/bldmeasure.py`'s own Overture and GHSL
+  folders and estimates (P: a measuring tool run by hand, not a build step). `rules::CREDITS`'
+  Overture and GHSL entries, which their declarations' credits replace once accepted (§4.8). `bld/fill.rs`'s `ESTIMATES` stays
   the fill's rule (§6.9).
 - **Others:** `dem/budget.py`'s and `budget`'s metered hosts (the polite-use budget, by host).
 - **Kept by design:** `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not

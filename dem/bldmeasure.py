@@ -67,6 +67,8 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import shapely
 
+# (A measuring tool run by hand, not a build step: its own copies of the declared sources' folders
+# (docs/inputs.md §6.9, §9), the release's and GHSL's as staged.)
 OVERTURE = "sources/overture/2026-09-23-1"
 GHSL_DIR = "sources/ghsl/R2023A"
 GHSL_PRODUCT = "GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss_V1_0"

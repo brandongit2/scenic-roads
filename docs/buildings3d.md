@@ -48,7 +48,7 @@ Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md` (bytes), `
 
 | Source | Use |
 |---|---|
-| **Overture Maps buildings**, release 2026-09-23.1 (`pipeline::buildtiles::RELEASE`), ODbL 1.0 | Every footprint and attribute: `height`, `num_floors`, `min_height`, `min_floor`, class, subtype, roof shape; building parts. Conflates OSM, Microsoft ML Buildings (heights estimated), USGS lidar, Esri, IGN España, Google and others |
+| **Overture Maps buildings**, release 2026-09-23.1 (the buildings source's declared `version`, docs/inputs.md §6.9), ODbL 1.0 | Every footprint and attribute: `height`, `num_floors`, `min_height`, `min_floor`, class, subtype, roof shape; building parts. Conflates OSM, Microsoft ML Buildings (heights estimated), USGS lidar, Esri, IGN España, Google and others |
 | **GHSL GHS-BUILT-H R2023A, ANBH** (EC JRC), CC BY 4.0 | Average building height per 3″ cell: the fill in high-rise cores (§2.3) |
 | France's IGN BD TOPO, Japan's PLATEAU | Planned (§5): measured heights where they replace estimates |
 
@@ -211,8 +211,10 @@ docs/formats.md has the bytes. In brief:
   packs come with the World download.
 - **Devices:** the service worker keeps building tiles in a cache of their own (`bld`), so they
   don't crowd out roads and terrain.
-- **Credits** (`pipeline::rules::CREDITS`, everywhere): Overture (ODbL 1.0, the release named; a
-  test ties it to `buildtiles::RELEASE`) and GHSL (CC BY 4.0).
+- **Credits** (`pipeline::rules::CREDITS`, everywhere): Overture (ODbL 1.0, the release named) and
+  GHSL (CC BY 4.0), as their declarations' descriptions credit them once accepted (docs/inputs.md
+  §4.8, §6.9); `CREDITS`' entries stand until then, a test tying Overture's to the staged
+  declaration's release.
 - Nothing is published or redistributed (plan.md §3).
 
 ### 3.6 Sharing the work
