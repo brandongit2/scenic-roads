@@ -630,6 +630,9 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     assert!(mtl.iter().any(|c| c["what"] == "Land cover" && c["source"] == d.credit.as_str() && c.get("register").is_none()));
     let tokyo = credits::catalog_credits(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(qc))]);
     assert!(!tokyo.iter().any(|c| c["source"] == "Ministere"));
+    // One the catalog's depth holds is listed wherever it is (the depth reaches past the coverage).
+    let depth = credits::catalog_credits_with(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(credits::Extent::Box([-79.8, 45.0, -57.1, 62.6])))], &[("heritage".into(), "qc.toml".into())]);
+    assert!(depth.iter().any(|c| c["source"] == "Ministere"));
     // A source for the whole world: anywhere; one whose extent isn't known yet: nowhere.
     let world = credits::catalog_credits(&[], &[], &[credits::Described { description: credits::Description { what: "New world source".into(), ..d.clone() }, ..mk("W", Some(credits::Extent::World("world".into()))) }]);
     assert!(world.iter().any(|c| c["what"] == "New world source" && c.get("areas").is_none()));

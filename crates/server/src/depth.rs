@@ -58,6 +58,9 @@ pub fn served(s: &crate::AppState, layer: &'static str, z: u8, x: u32, y: u32) -
 
 async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String>, headers: HeaderMap) -> Response {
     let v = crate::tiles::versioned(q.as_deref());
+    if !fall::in_layer(z, x, y) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let got = tokio::task::spawn_blocking(move || {
         if !s.data.catalog().layers.contains_key(layer) {
             return None;

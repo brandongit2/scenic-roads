@@ -236,8 +236,8 @@ _robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
 
 def robots_allow(url: str) -> bool:
     """Whether the host's robots.txt (read first, once, as a request of its own) lets us fetch `url`.
-    A robots.txt that can't be had (404, 403) allows everything; one that can't be read for another
-    reason allows nothing."""
+    A robots.txt that isn't there (404, 410) allows everything; one refused (401, 403), or that can't
+    be read for another reason, allows nothing (as urllib.robotparser reads them)."""
     p = urlsplit(url)
     host = f"{p.scheme}://{p.netloc}"
     if host not in _robots:
@@ -246,7 +246,7 @@ def robots_allow(url: str) -> bool:
             with urllib.request.urlopen(urllib.request.Request(host + "/robots.txt", headers={"User-Agent": UA}), timeout=60) as r:
                 rp.parse(r.read().decode("utf-8", "replace").splitlines())
         except urllib.error.HTTPError as e:
-            rp.parse([] if e.code in (401, 403, 404, 410) else ["User-agent: *", "Disallow: /"])
+            rp.parse([] if e.code in (404, 410) else ["User-agent: *", "Disallow: /"])
         except OSError:
             rp = None
         _robots[host] = rp

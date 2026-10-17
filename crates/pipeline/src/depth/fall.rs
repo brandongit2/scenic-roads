@@ -137,6 +137,10 @@ pub type Stored = Option<std::sync::Arc<Grid>>;
 /// (`upsample`, with that ancestor's neighbours for depth), else None (no ancestor: outside the
 /// layer). With the stored tile it says so (`true`).
 pub fn served(get: &dyn Fn(u8, u32, u32) -> Result<Stored>, kind: Kind, z: u8, x: u32, y: u32) -> Result<Option<(Grid, bool)>> {
+    // (No such tile: past the layer's zooms, or off the world.)
+    if !in_layer(z, x, y) {
+        return Ok(None);
+    }
     if let Some(g) = get(z, x, y)? {
         return Ok(Some(((*g).clone(), true)));
     }
@@ -153,6 +157,11 @@ pub fn served(get: &dyn Fn(u8, u32, u32) -> Result<Stored>, kind: Kind, z: u8, x
         return Ok(Some((upsample(k, x, y, &anc, nb), false)));
     }
     Ok(None)
+}
+
+/// Whether z/x/y is a tile of the depth layers' zooms (`super::ZOOMS`'s deepest and coarser).
+pub fn in_layer(z: u8, x: u32, y: u32) -> bool {
+    z <= super::ZOOMS.1 && u64::from(x) < 1u64 << z && u64::from(y) < 1u64 << z
 }
 
 /// Four corner values and their bilinear weights: no data where the nearest corner has none,
@@ -212,6 +221,15 @@ mod tests {
 
     fn tile(f: impl Fn(usize, usize) -> f32) -> Grid {
         Grid::F((0..TILE * TILE).map(|i| f(i / TILE, i % TILE)).collect())
+    }
+
+    #[test]
+    fn no_tile_past_the_layer_or_off_the_world() {
+        let get = |_: u8, _: u32, _: u32| -> Result<Stored> { Ok(Some(std::sync::Arc::new(Grid::F(vec![-1.0; TILE * TILE])))) };
+        assert!(served(&get, Kind::Terrarium, 16, 0, 0).unwrap().is_some());
+        for (z, x, y) in [(17, 0, 0), (40, 0, 0), (3, 8, 0), (3, 0, 8), (255, u32::MAX, 0)] {
+            assert!(served(&get, Kind::Terrarium, z, x, y).unwrap().is_none(), "{z}/{x}/{y}");
+        }
     }
 
     #[test]

@@ -200,7 +200,14 @@ pub fn digest(described: &[Described]) -> Option<String> {
 /// description in place of the entry of its `what`, then the other descriptions in unit and path
 /// order.
 pub fn catalog_credits(regions: &[crate::coverage::DrawnRegion], extents: &[[i32; 4]], described: &[Described]) -> Vec<serde_json::Value> {
-    let listed: Vec<&Described> = described.iter().filter(|d| d.areas().is_some_and(|a| crate::rules::listed(&a, regions, extents))).collect();
+    catalog_credits_with(regions, extents, described, &[])
+}
+
+/// `catalog_credits`, the descriptions `also` names (unit, path) listed wherever they are: the depth
+/// sources whose data the catalog's depth holds, which reaches 200 nautical miles past the coverage
+/// (crate::depth), so a source's territory beside the coverage isn't enough to tell.
+pub fn catalog_credits_with(regions: &[crate::coverage::DrawnRegion], extents: &[[i32; 4]], described: &[Described], also: &[(String, String)]) -> Vec<serde_json::Value> {
+    let listed: Vec<&Described> = described.iter().filter(|d| also.iter().any(|(u, p)| *u == d.unit && *p == d.path) || d.areas().is_some_and(|a| crate::rules::listed(&a, regions, extents))).collect();
     let what = |d: &Described| if d.description.what.is_empty() { d.description.name.clone() } else { d.description.what.clone() };
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut used = vec![false; listed.len()];

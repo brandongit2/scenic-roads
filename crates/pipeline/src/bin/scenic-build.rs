@@ -1227,7 +1227,22 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     // one that can't be read now fails the catalog, as the agent's plan waits then, rather than
     // publish credits without it.)
     let described = pipeline::inputs::credits::described(out.root(), &out.manifest)?;
-    let credits = pipeline::inputs::credits::catalog_credits(&regions, &unit_extents(out, &base), &described);
+    // (The depth's sources whose grids meet the depth's packs: credited wherever they are.)
+    let depth_credited: Vec<(String, String)> = if layers.contains_key(pipeline::depth::LAYER) {
+        let packs: Vec<[f64; 4]> = out.manifest.keys().filter_map(|l| l.strip_prefix(&format!("layers/{}/lo/", pipeline::depth::LAYER))).filter_map(Unit::parse).map(|u| {
+                let b = pipeline::hipack::tile_bounds(u.z, u.x, u.y);
+                [f64::from(b[0]) * 1e-7, f64::from(b[1]) * 1e-7, f64::from(b[2]) * 1e-7, f64::from(b[3]) * 1e-7]
+            })
+            .collect();
+        pipeline::depth::grids::declared(out.root(), &out.manifest)?
+            .iter()
+            .filter(|s| packs.iter().any(|b| s.meeting(*b).next().is_some()))
+            .map(|s| (pipeline::inputs::sources::UNIT.to_string(), format!("{}.toml", s.id)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let credits = pipeline::inputs::credits::catalog_credits_with(&regions, &unit_extents(out, &base), &described, &depth_credited);
     eprintln!("catalog: {} regions, {} credits (of the table's {} and {} description{})", regions.len(), credits.len(), pipeline::rules::CREDITS.len(), described.len(), if described.len() == 1 { "" } else { "s" });
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
     // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.
@@ -3934,9 +3949,13 @@ fn water_idx_of(out: &Out, cov: &pipeline::coverage::Coverage, src: &dyn pipelin
         Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&std::fs::read(out.path(c))?)?),
         None => None,
     };
-    // (The depth's targets' too, once its sources are declared: pipeline::depth.)
+    // (The depth's targets' too, once its sources are declared: pipeline::depth. Declarations that
+    // can't be read now leave the depth out, never the terrain's digests.)
     let mut reads = pipeline::agent::build::water_reads(cov);
-    let depth = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
+    let depth = pipeline::depth::grids::declared(out.root(), &out.manifest).unwrap_or_else(|e| {
+        eprintln!("terrain-water: the depth's targets left out: its declarations can't be read ({e:#})");
+        Vec::new()
+    });
     for r in pipeline::agent::build::depth_water_reads(cov, &depth) {
         if !reads.iter().any(|x| x.0 == r.0 && x.1 == r.1) {
             reads.push(r);

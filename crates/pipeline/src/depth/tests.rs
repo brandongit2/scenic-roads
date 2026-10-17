@@ -1,5 +1,5 @@
 //! The depth steps on fixtures: a z6 tile of sea and land with a lake, a coarse sea source over it
-//! all, a finer one over a strip of the sea, and a lake survey.
+//! all, a finer one over a patch of the sea, and a lake survey.
 
 use super::build::{build_hi, build_lo, hi_logical, lo_logical, square};
 use super::fall::{self, Grid, Kind};
@@ -71,8 +71,8 @@ fn sources(dir: &Path) -> Vec<Source> {
     vec![
         // The whole tile, deep (z8).
         mk(1, false, 8, 0.0, 0.0, 1.0, 1.0, &|_, _| -50.0),
-        // A strip of the sea, shallower (z10).
-        mk(2, false, 10, 0.1, 0.1, 0.3, 0.9, &|_, _| -10.0),
+        // A patch of the sea, shallower (z10), inside one block of z10's.
+        mk(2, false, 10, 0.1, 0.3, 0.25, 0.45, &|_, _| -10.0),
         // The lake's survey (z11), deeper to the east.
         mk(3, true, 11, 0.69, 0.19, 0.81, 0.31, &|c, _| -2.0 - (c % 100) as f32 * 0.01),
     ]
@@ -114,7 +114,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let lo = (3, q.0, q.1);
     let hi = (6, T.0, T.1);
 
-    // z8: the open sea deep (the coarse source), the strip a mix at most, the land no data.
+    // z8: the open sea deep (the coarse source), the patch a mix at most, the land no data.
     let (x, y, px, py) = where_(8, 0.45, 0.5);
     let t8 = tile(&out, LAYER, "lo", lo, 8, x, y).expect("a z8 sea tile");
     assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
@@ -124,10 +124,10 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let land = tile(&out, LAYER, "lo", lo, 8, x, y);
     assert!(land.is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN), "the land has no depth");
 
-    // z10: the strip's own detail stored, at its value; the deep sea beyond the strip isn't
+    // z10: the patch's own detail stored, at its value; the deep sea beyond the strip isn't
     // (the coarse source has no detail of z10 there).
-    let (x, y, px, py) = where_(10, 0.2, 0.5);
-    let t10 = tile(&out, LAYER, "hi", hi, 10, x, y).expect("the strip's z10 tile");
+    let (x, y, px, py) = where_(10, 0.2, 0.4);
+    let t10 = tile(&out, LAYER, "hi", hi, 10, x, y).expect("the patch's z10 tile");
     assert!((depth_at(&t10, px, py) + 10.0).abs() < 0.11, "{}", depth_at(&t10, px, py));
     let c10 = tile(&out, CLASS_LAYER, "hi", hi, 10, x, y).unwrap();
     assert_eq!(class_at(&c10, px, py) >> 4, 2);
@@ -146,28 +146,19 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         assert!(tile(&out, LAYER, "hi", hi, z, x, y).is_none(), "z{z}");
     }
 
-    // The same again, byte for byte.
-    let mut again = Out::unbound(&d.path().join("root2"), &d.path().join("scratch2")).unwrap();
-    build_lo(&mut again, &srcs, &Fixture, q).unwrap();
-    build_hi(&mut again, &srcs, &Fixture, T).unwrap();
-    for l in [lo_logical(LAYER, q.0, q.1), lo_logical(CLASS_LAYER, q.0, q.1), hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)] {
-        assert_eq!(out.get(&l), again.get(&l), "{l}");
-    }
-}
-
-/// A tile the layer lacks, made from its stored ancestor, is what the composition scaled up there:
-/// the open sea at z9 is the z8 tile's quadrant.
-#[test]
-fn a_missing_tile_is_its_ancestor_scaled_up() {
-    let d = tempfile::tempdir().unwrap();
-    let srcs = sources(d.path());
-    let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
-    let q = (T.0 >> 3, T.1 >> 3);
-    build_lo(&mut out, &srcs, &Fixture, q).unwrap();
-    let get = |z: u8, x: u32, y: u32| -> anyhow::Result<fall::Stored> { Ok(tile(&out, LAYER, "lo", (3, q.0, q.1), z, x, y).map(|b| std::sync::Arc::new(fall::decode(Kind::Terrarium, &b).unwrap()))) };
+    // A tile the layer lacks, made from its stored ancestor, is what the composition scaled up
+    // there: the open sea at z9 is the z8 tile's quadrant.
+    let get = |z: u8, x: u32, y: u32| -> anyhow::Result<fall::Stored> { Ok(tile(&out, LAYER, "lo", lo, z, x, y).map(|b| std::sync::Arc::new(fall::decode(Kind::Terrarium, &b).unwrap()))) };
     let (x, y, px, py) = where_(9, 0.45, 0.6);
     let (g, stored) = fall::served(&get, Kind::Terrarium, 9, x, y).unwrap().unwrap();
     assert!(!stored);
     let Grid::F(v) = g else { panic!() };
     assert!((v[py * 256 + px] + 50.0).abs() < 0.6, "{}", v[py * 256 + px]);
+
+    // The same again, byte for byte: the piece made again from the same lo packs keeps its
+    // content names.
+    let names: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)].iter().map(|l| out.get(l).map(str::to_string)).collect();
+    build_hi(&mut out, &srcs, &Fixture, T).unwrap();
+    let again: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)].iter().map(|l| out.get(l).map(str::to_string)).collect();
+    assert_eq!(names, again);
 }

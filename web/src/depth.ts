@@ -16,6 +16,7 @@ import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
 import { hostFor } from './hosts';
+import { attribution } from './depthattrib';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import { h } from './ui/dom';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
@@ -47,7 +48,10 @@ export class Depth {
   private fit: [number, number] = [1, 100];
   private viewTimer = 0;
   /** The sources with depth in view (their codes). */
-  private inView = new Set<number>();
+  /** The sources with depth in view (their codes); null while that isn't known (moving, before
+   * the first sample, too many tiles to sample): then every source counts, so no notice a
+   * licence asks for is ever missing while its depths could show. */
+  private inView: Set<number> | null = null;
   private hoverAt: maplibregl.LngLat | null = null;
   private hoverBusy = false;
   /** The cursor's readout and the on-map attribution while a depth layer is on. */
@@ -76,6 +80,7 @@ export class Depth {
   setCatalog(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
     const has = !!layers && 'depth' in layers && 'depth-class' in layers;
     this.sources = depth?.sources ?? [];
+    this.inView = null;
     if (has !== this.has) {
       this.has = has;
       this.apply(this.s);
@@ -279,6 +284,8 @@ export class Depth {
 
   private scheduleView() {
     if (!this.has || !(this.s.on || this.s.contours)) return;
+    this.inView = null;
+    this.renderAttrib();
     clearTimeout(this.viewTimer);
     this.viewTimer = window.setTimeout(() => void this.view(), 250);
   }
@@ -304,6 +311,7 @@ export class Depth {
   private async view() {
     if (!this.workers.length) return;
     const tiles = this.viewTiles();
+    // (Too many to sample: every source counts, `inView` left unknown.)
     if (!tiles.length) return;
     const halves = this.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
     const rs = await Promise.all(halves.map((ts, i) => (ts.length ? this.ask({ type: 'hist', id: 0, tiles: ts }, undefined, this.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0), codes: [] } as DepthReply))));
@@ -335,8 +343,7 @@ export class Depth {
     const on = this.has && (this.s.on || this.s.contours);
     this.attrib.hidden = !on;
     if (!on) return;
-    const here = this.sources.filter((s) => this.inView.has(s.code));
-    const notices = [...new Set(here.map((s) => s.notice).filter((n): n is string => !!n))];
+    const { here, notices } = attribution(this.sources, this.inView);
     this.attrib.replaceChildren(
       h('div', { class: 'depth-at-src' }, h('b', {}, 'Depth: '), here.map((s) => s.label).join(' · ') || '—', '. Not for navigation.'),
       ...notices.map((n) => h('div', { class: 'depth-at-notice' }, n)));
