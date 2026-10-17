@@ -88,10 +88,45 @@ export const buildingTiles = (): string => {
 /** By height: the colour at height v (m) on the scale, faded toward the plain colour at its low
  * end (the low-end fade: extrusions have no per-building opacity), as an rgb() string. */
 export function heightColour(v: number, sc: ScaleFields, look: HeightLook): string {
+  return `rgb(${heightRgb(v, sc, look).join(',')})`;
+}
+function heightRgb(v: number, sc: ScaleFields, look: HeightLook): [number, number, number] {
   const u = scaleU(v, look.range, look.cdf);
   const a = fadeAlpha(u, sc.lowFade, sc.lowSpan);
   const c = paletteFn(sc.palette)(u);
-  return `rgb(${c.map((x, i) => Math.round(Math.max(0, Math.min(1, PLAIN_RGB[i] + (x - PLAIN_RGB[i]) * a)) * 255)).join(',')})`;
+  return c.map((x, i) => Math.round(Math.max(0, Math.min(1, PLAIN_RGB[i] + (x - PLAIN_RGB[i]) * a)) * 255)) as [number, number, number];
+}
+
+/** By height, for the far field (bldfield.ts): the colour the meshes give a building h m tall (sRGB
+ * 0–255), as colourOf's expression works it out (its 33 stops, linear between them in stored values,
+ * held at the ends; the threshold's misses plain), with a key of what it depends on; null unless
+ * coloured by height. */
+export function heightColourFn(b: BuildingState, look: HeightLook): { key: string; colour: (h: number) => [number, number, number] } | null {
+  if (b.colour !== 'height') return null;
+  const sc = b.height;
+  const [lo, hi] = look.range;
+  const stops: [number, [number, number, number]][] = [];
+  for (let i = 0; i <= 32; i++) {
+    const v = lo + ((hi - lo) * i) / 32;
+    stops.push([v, heightRgb(v, sc, look)]);
+  }
+  const t = sc.threshold;
+  const plain = PLAIN_RGB.map((x) => Math.round(x * 255)) as [number, number, number];
+  const colour = (h: number): [number, number, number] => {
+    if (t.on && !(t.dir === 'below' ? h <= t.value : h >= (t.dir === 'low' ? lo : t.value))) return plain;
+    if (!(h > stops[0][0])) return stops[0][1];
+    for (let i = 1; i < stops.length; i++) {
+      const [v1, c1] = stops[i];
+      if (h <= v1) {
+        const [v0, c0] = stops[i - 1];
+        const f = v1 > v0 ? (h - v0) / (v1 - v0) : 1;
+        return c0.map((x, k) => Math.round(x + (c1[k] - x) * f)) as [number, number, number];
+      }
+    }
+    return stops[stops.length - 1][1];
+  };
+  const key = JSON.stringify([stops, t.on, t.dir, t.value]);
+  return { key, colour };
 }
 
 /** The colour expression of a mode. By height: the scale's colours at 33 heights across its

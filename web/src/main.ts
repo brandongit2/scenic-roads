@@ -31,7 +31,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { addBuildings, applyBuildings, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -1912,6 +1912,11 @@ async function main() {
       field.hk = b.scale > 0 ? b.scale : Math.max(1, s.terrain.on ? s.terrain.exaggeration : 0);
       field.on = b.on && !b.flat && s.terrain.on;
       if (CMP) field.colour = [1, 3, 5].map((i) => parseInt(CMP!.colour.slice(i, i + 2), 16) / 255) as [number, number, number];
+      // By height: the meshes' colours (the field plain when coloured by source: the owner's call).
+      else {
+        const hc = heightColourFn(b, bldLook);
+        field.setHeightColour(hc?.key ?? '', hc?.colour ?? null);
+      }
     }
     layers.buildings.updateHeights(bldDist, bldLook);
   };
