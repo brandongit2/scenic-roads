@@ -39,8 +39,8 @@
 //!   there from here.
 //!
 //! - A file the jobs queued and running read (`Hints`: a terrain run's own area's archive copies;
-//!   the pageview months, for an items or heritage job; a unit's canopy squares and packs) goes
-//!   last.
+//!   the pageview months, for an items or heritage job; a unit's canopy squares and packs; the
+//!   base packs copied here for a map update's map tiles) goes last.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
 //! no work, no map update under way), jobs running here or not, the agent empties those caches by the same
@@ -673,6 +673,9 @@ pub struct Hints {
     pub squares: BTreeSet<String>,
     /// Units ("6-x-y"): the copies of their packs (`blobs/…/<unit>.<hash>.…`).
     pub units: BTreeSet<String>,
+    /// A map update's map tiles (`pack`, `lo`): the base packs and road values copied here for them
+    /// (`base/`), which the next such job copies again when they're gone.
+    pub packs: bool,
 }
 
 impl Hints {
@@ -706,6 +709,7 @@ impl Hints {
             "terrain" => self.terrain.extend(targets.iter().map(|t| format!("terrain {t}"))),
             "terrain-lo" => self.terrain.extend(targets.iter().map(|t| format!("terrain-lo {t}"))),
             "items" | "heritage" => self.months = true,
+            "pack" | "lo" => self.packs = true,
             _ => {}
         }
     }
@@ -714,6 +718,7 @@ impl Hints {
     pub fn has(&self, cache: &Path, p: &Path) -> bool {
         let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
         (self.months && p.starts_with(cache.join(MONTHS)))
+            || (self.packs && p.starts_with(cache.join("base")))
             || self.terrain.iter().any(|id| super::terrain_reads(id, p))
             || (p.starts_with(cache.join("chm10")) && self.squares.contains(name.as_ref()))
             || (p.starts_with(cache.join("blobs")) && name.split('.').next().is_some_and(|u| self.units.contains(u)))
@@ -1262,6 +1267,10 @@ mod tests {
         assert!(h.has(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base")) && !h.has(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base")));
         assert!(h.squares.iter().all(|n| n.starts_with("meta_chm_lat=")) && !h.squares.is_empty());
         assert!(h.has(c, &c.join(MONTHS).join("2026-08.tsv.zst")));
+        // A map update's map tiles: the base packs copied here for them.
+        assert!(!h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")));
+        h.add("pack", &["6/1/1".to_string()]);
+        assert!(h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")) && h.has(c, &c.join("base/global/roads/6-2-2.0000000000000002.roads")));
     }
 
     #[test]
