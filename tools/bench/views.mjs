@@ -1,5 +1,8 @@
 // Heavy views, each timed still and while panning and orbiting (bench.mjs per view), as one table.
 //
+// Each view's camera looks over the landscape: bench.mjs fails a view whose camera is under 200 m
+// over the ground under it or over the highest ground in view, at the start or along a run.
+//
 //   node tools/bench/views.mjs [--base http://localhost:5173/] [--only tokyo,alps] [--runs static,pan,orbit]
 //                              [--secs 5] [--query bldfield=off] [--out results.json] [--port 9333]
 //                              [--set "js run in the page first, as bench.mjs's"] [--cold] [--timeout 240] [--native]
@@ -26,8 +29,11 @@ export const VIEWS = [
   ['tokyo', '14/35.68120/139.76710/0/60', 'dense 3D city, tilted: meshes and field'],
   ['manhattan', '13.5/40.75800/-73.98500/30/60', 'dense 3D city, tilted, far field to the horizon'],
   ['hongkong', '14/22.28500/114.16000/320/65', 'towers on steep terrain by the water'],
-  ['alps', '12/45.97600/7.70000/200/70', 'high mountains: terrain, hill-shading, trees'],
-  ['yosemite', '12.5/37.73000/-119.60000/80/70', 'valley terrain with trees'],
+  // (The mountains from higher up than at first: at the terrain's 3× exaggeration the Alps' camera
+  // at 12/…/70 was 2.3 km under the ground, Yosemite's at 12.5/…/70 90 m over the valley floor with
+  // its walls 3 km over it. bench.mjs checks each view's camera, still and along its runs.)
+  ['alps', '11/45.97600/7.70000/200/55', 'high mountains: terrain, hill-shading, trees'],
+  ['yosemite', '11.5/37.73000/-119.60000/80/60', 'valley terrain with trees'],
   ['wide', '8/46.50000/9.00000/0/75', 'wide tilted view to the horizon'],
   ['fjord', '11/60.85000/7.10000/90/70', 'coast and fjord: water shading on terrain'],
   ['sfbay', '11.5/37.80000/-122.40000/300/65', 'city by the bay: water, buildings, roads'],

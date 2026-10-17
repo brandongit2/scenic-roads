@@ -31,6 +31,8 @@ const PORT = Number(args.port ?? 9333);
 const W = Number(args.w ?? 1512), H = Number(args.h ?? 900), DPR = Number(args.dpr ?? 2);
 const SECS = Number(args.secs ?? 5);
 const RUNS = String(args.runs ?? 'pan,pinch,orbit,hover').split(',');
+/** The camera's least height over the ground under it and over the highest ground in view (m, as drawn). */
+const CLEAR_M = Number(args['clear-m'] ?? 200);
 const URL = String(args.url ?? 'http://localhost:7311/');
 
 // ---- CDP plumbing --------------------------------------------------------------------------
@@ -121,6 +123,32 @@ try {
     await sleep(250);
   }
   if (args.set) await evaluate(String(args.set));
+  // The camera over the landscape (the terrain exaggerated as drawn, queryTerrainElevation's): its
+  // height over the ground under it (under), and over the highest ground in front of it (over: five
+  // lines across the view out to the centre's distance, 48 points each: a valley's walls, a ridge).
+  // A view under the ground or walled in measures nothing useful (CLEAR_M below).
+  await evaluate(`window.__clearance = () => {
+    const map = __app.map, tr = map._camera?.transform ?? map.transform;
+    if (!map.getTerrain()) return null;
+    const cam = tr.getCameraLngLat(), alt = tr.getCameraAltitude();
+    const q = (lng, lat) => map.queryTerrainElevation([lng, lat]) ?? 0;
+    const under = alt - q(cam.lng, cam.lat);
+    const c = map.getCenter();
+    const mPerDegLat = 111320, mPerDegLng = 111320 * Math.cos(cam.lat * Math.PI / 180);
+    const dx = (c.lng - cam.lng) * mPerDegLng, dy = (c.lat - cam.lat) * mPerDegLat;
+    const dist = Math.hypot(dx, dy), az = Math.atan2(dx, dy);
+    const hfov = 2 * Math.atan(Math.tan((tr.fov ?? 36.87) * Math.PI / 360) * innerWidth / innerHeight);
+    let top = -Infinity, at = null;
+    for (const f of [-0.45, -0.22, 0, 0.22, 0.45]) {
+      const a = az + f * hfov, tx = cam.lng + Math.sin(a) * dist / mPerDegLng, ty = cam.lat + Math.cos(a) * dist / mPerDegLat;
+      for (let i = 1; i <= 48; i++) {
+        const s = i / 48, lng = cam.lng + (tx - cam.lng) * s, lat = cam.lat + (ty - cam.lat) * s;
+        const g = q(lng, lat);
+        if (g > top) { top = g; at = [+lng.toFixed(4), +lat.toFixed(4)]; }
+      }
+    }
+    return { under: Math.round(under), over: Math.round(alt - top), highest: at, camAlt: Math.round(alt), dist: Math.round(dist) };
+  };`);
   // Instrument: frames, long tasks, MapLibre's render (CPU), GPU time per frame.
   const load = await evaluate(`
     const app = window.__app, map = app.map;
@@ -198,6 +226,16 @@ try {
     load.profile = topFunctions(profile, 25);
     if (args['profile-out']) fs.writeFileSync(String(args['profile-out']).replace(/(\.cpuprofile)?$/, '-load.cpuprofile'), JSON.stringify(profile));
   }
+  load.clearance = await evaluate('return window.__clearance()');
+  // (--any-camera: measured wherever the camera is)
+  const lowCamera = (c, where) => {
+    if (!c || args['any-camera'] || (c.under >= CLEAR_M && c.over >= CLEAR_M)) return;
+    console.error(`camera too low ${where}: ${c.under} m over the ground under it, ${c.over} m over the highest ground in view (at least ${CLEAR_M} m each): raise the view`);
+    console.log(JSON.stringify({ lowCamera: where, clearance: c }));
+    process.exitCode = 4;
+    throw new Error('camera too low');
+  };
+  lowCamera(load.clearance, 'at the start');
   const heap = await send('Runtime.getHeapUsage').catch(() => null);
   load.wallMs = Date.now() - tLoad;
   if (heap) load.heapMB = Math.round(heap.usedSize / 1e6);
@@ -258,7 +296,7 @@ try {
     // A digit suffix repeats a run (pan2: the pan again, e.g. with its tiles and shaders warm).
     const g = gestures[name.replace(/\d+$/, '')];
     if (!(name.replace(/\d+$/, '') in gestures)) continue;
-    await evaluate(`const B = window.__bench; B.lt.length = 0; B.loaf.length = 0; B.renders.length = 0; B.gpu.length = 0; B.gpuMoved.length = 0; B.frames.length = 0; for (const k in B.custom) B.custom[k].length = 0; B.t0 = performance.now();`);
+    await evaluate(`const B = window.__bench; B.lt.length = 0; B.loaf.length = 0; B.clear = []; B.nr = 0; if (!B.clearOn) { B.clearOn = true; window.__app.map.on('render', () => { if (B.clear && ++B.nr % 15 === 0) { const c = window.__clearance(); if (c) B.clear.push(c); } }); } B.renders.length = 0; B.gpu.length = 0; B.gpuMoved.length = 0; B.frames.length = 0; for (const k in B.custom) B.custom[k].length = 0; B.t0 = performance.now();`);
     if (args.profile) {
       await send('Profiler.enable');
       await send('Profiler.setSamplingInterval', { interval: 200 });
@@ -310,6 +348,8 @@ try {
         // The longest animation frames during the run, each with its longest scripts.
         topFrames: B.loaf.filter(([s]) => s >= B.t0 && s <= tEnd).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([, d, , sc]) => [Math.round(d), ...sc]),
         settleMs: Math.round(settleMs),
+        // The least clearance along the run (sampled every 15th frame): under the camera, sight lines.
+        clearance: B.clear.length ? { under: Math.min(...B.clear.map((c) => c.under)), over: Math.min(...B.clear.map((c) => c.over)), n: B.clear.length } : null,
       };
     `, 120);
     if (args.profile) {
@@ -329,6 +369,7 @@ try {
       fs.appendFileSync(file, ']}');
     }
     out.runs[name] = r;
+    lowCamera(r.clearance, `along ${name}`);
     // Let the view settle between runs.
     await sleep(500);
   }
