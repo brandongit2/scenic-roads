@@ -303,8 +303,10 @@ no longer fit.
 
 - A thread samples each job's processes' footprint every 5 s, per target under way (from
   `started` lines in `SCENIC_COSTS`, else `SCENIC_DONE`), and writes `memory.json` for the status.
-- Every child is started without macOS malloc's cache of freed large blocks (`MallocLargeCache=0`,
-  `store::spawn::NO_LARGE_CACHE`; their children inherit it): with it, freed blocks stay in a
+- Every child started through `store::spawn` (the agent's jobs, their programs) is started without
+  macOS malloc's cache of freed large blocks (`MallocLargeCache=0`, an undocumented libmalloc
+  setting, `store::spawn::NO_LARGE_CACHE`; their children inherit it; the agent and server, started
+  by launchd, keep it): with it, freed blocks stay in a
   process's footprint, and a dense unit's scenic-build held 6–7 GB of them while its programs ran.
 - **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the job beside the largest
   stops at its next safe point; the largest alone past the limit stops at once only while the Mac

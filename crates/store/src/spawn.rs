@@ -66,18 +66,20 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 }
 
 /// `command`, the name looked up in `path` (a PATH): for a child given that PATH. Every child is
-/// started without macOS malloc's cache of freed large blocks (`NO_LARGE_CACHE`).
+/// started through here is started without macOS malloc's cache of freed large blocks
+/// (`NO_LARGE_CACHE`).
 pub fn command_in(program: impl AsRef<OsStr>, path: &OsStr) -> Command {
     let mut c = Command::new(find(program.as_ref(), path));
     c.env(NO_LARGE_CACHE.0, NO_LARGE_CACHE.1);
     c
 }
 
-/// The environment setting that turns off macOS malloc's cache of freed large blocks: with it on, a
+/// The environment setting (libmalloc's, undocumented: `man malloc` doesn't name it) that turns off
+/// macOS malloc's cache of freed large blocks: with it on, a
 /// process's memory never comes down from its most (freed blocks stay in its footprint, which the
 /// memory guard, the jobs' measured peaks and macOS's own pressure count), so a unit job's
 /// scenic-build, after its DEM cache slice and staging, held 6–7 GB of freed blocks while its
-/// programs ran (measured on 6/17/24, task #262). Its children inherit it.
+/// programs ran (measured on unit 6/17/24 and four other dense units). Its children inherit it.
 pub const NO_LARGE_CACHE: (&str, &str) = ("MallocLargeCache", "0");
 
 /// `program`'s path: a name without a folder, the first executable file of that name in `path`'s

@@ -111,8 +111,9 @@ pub fn cost_version(step: &str) -> u32 {
         "terrain" | "slope" => 3,
         "trees" => 2,
         // (A unit's measure its job's processes together, as the memory guard measures a job; 0
-        // was its programs' most, one at a time.)
-        "unit" => 1,
+        // was its programs' most, one at a time; 2: its processes started without malloc's large
+        // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks.)
+        "unit" => 2,
         "trees-lo" | "terrain-lo" | "slope-lo" => 1,
         _ => 0,
     }
