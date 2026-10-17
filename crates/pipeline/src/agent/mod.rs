@@ -2985,7 +2985,8 @@ impl Agent {
 
     /// This Mac's whole capacity now (crate::coord::Capacity), for its asks and, leading, its own
     /// coordinator: the memory guard's limit less each running job's predicted need (the larger of
-    /// what it holds and its targets' measured peak: `spec_peak`), the cores the load leaves, the
+    /// what it holds and `spec_peak`: its targets' measured peak on the lead,
+    /// the step's first guess on a member), the cores the load leaves, the
     /// disk's free space less the reserve and the owner's room target (no reservations yet), the
     /// owner's use, power and the NAS as `c` says, and its jobs' leases.
     fn capacity(&self, c: &Conditions) -> crate::coord::Capacity {

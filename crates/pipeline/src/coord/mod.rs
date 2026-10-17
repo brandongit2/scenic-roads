@@ -773,6 +773,9 @@ pub struct Ask {
     pub cap: Option<Capacity>,
 }
 
+/// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
+pub const CAP_FRESH_S: u64 = 120;
+
 /// A Mac's capacity as its agent measured it (docs/pool.md §7.1): its whole Mac's, where an ask's
 /// `mem_mb`, `cores` and `disk_mb` are one job's. Carried by each ask (a member's) and set each
 /// loop by the lead for its own Mac (`Coordinator::set_capacity`); the coordinator keeps the last
@@ -787,7 +790,8 @@ pub struct Capacity {
     /// What its running jobs hold now, as the guard's sampler last saw them (MB).
     pub held_mb: u64,
     /// The memory free under the limit less each running job's predicted need (the larger of
-    /// what it holds and its targets' measured peak) (MB).
+    /// what it holds and its predicted peak: its targets' measured peak on the lead, the
+    /// step's first guess on a member, which has no coordinator's measures) (MB).
     pub mem_mb: u64,
     /// Its cores, and those free by the last minute's load average.
     pub cores: u32,
@@ -1167,8 +1171,10 @@ impl Coordinator {
     pub fn capacities(&self) -> Vec<(String, Capacity)> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        let own = s.own_cap.clone().map(|c| (self.me.clone(), c));
-        let others = s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
+        // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
+        let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
+        let own = s.own_cap.clone().filter(fresh).map(|c| (self.me.clone(), c));
+        let others = s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
         own.into_iter().chain(others).collect()
     }
 
@@ -3300,8 +3306,8 @@ mod tests {
         let (_d, c, w) = start();
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         // The lead's own, then a member's from its ask; an older member's ask says none.
-        c.set_capacity(Some(Capacity { limit_mb: 36_000, cores: 10, ac: true, ..Default::default() }));
-        let cap = Capacity { at: 7, limit_mb: 12_288, mem_mb: 9000, cores: 8, cores_free: 7, disk_mb: 40_000, nas: true, home: true, leases: vec![], ..Default::default() };
+        c.set_capacity(Some(Capacity { at: unix_now(), limit_mb: 36_000, cores: 10, ac: true, ..Default::default() }));
+        let cap = Capacity { at: unix_now(), limit_mb: 12_288, mem_mb: 9000, cores: 8, cores_free: 7, disk_mb: 40_000, nas: true, home: true, leases: vec![], ..Default::default() };
         w.ask(&Ask { cap: Some(cap.clone()), ..ask(4096) }).unwrap();
         let old = client::Client::at(w.urls(), c.contact.token.clone(), "old");
         old.ask(&ask(4096)).unwrap();
@@ -3309,9 +3315,12 @@ mod tests {
         assert_eq!(caps.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["m4", "m1"], "the lead's first; the older member's none");
         assert_eq!(caps[0].1.limit_mb, 36_000);
         assert_eq!(caps[1].1, cap);
+        // A capacity past CAP_FRESH_S (a busy member's last ask) left out, though its worker is around.
+        c.shared.lock().unwrap().workers.get_mut("m1").unwrap().cap.as_mut().unwrap().at = unix_now() - CAP_FRESH_S;
+        assert_eq!(c.capacities().len(), 1);
         // Shown by the swarm, for the build page.
         let s = c.shared.lock().unwrap();
-        assert_eq!(s.workers["m1"].cap.as_ref().map(|c| c.mem_mb), Some(9000));
+        assert_eq!(s.workers["m1"].cap.as_ref().map(|c| c.mem_mb), Some(9000), "kept, though stale");
         assert!(s.workers["old"].cap.is_none());
     }
 

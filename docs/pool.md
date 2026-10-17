@@ -240,11 +240,13 @@ match (plan.md §8, The same app).
 
 An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optional `cap`): the
 memory guard's limit and what the running jobs hold, the memory free under the limit less each
-running job's predicted need (the larger of what it holds and its targets' measured peak), its
+running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
+lead, the step's first guess on a member), its
 cores and those the last minute's load leaves free, the disk free less the reserve and the owner's
 room target (`reserved_mb`, for reservations, is 0: none are made yet), in use, mains or battery,
 the NAS's reach, the guard's switch and its running leases. The lead sets its own each loop
-(its jobs ask nothing). The coordinator keeps the last per member (`Coordinator::capacities`):
+(its jobs ask nothing). The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than
+two minutes, `CAP_FRESH_S`: a busy member asks nothing, so its figures go stale):
 `scenic status` prints a line per member, and the worker page's details a table. Placement doesn't
 read it yet. It rides the ask, not the heartbeat: the coordinator places at ask time, and the
 ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
