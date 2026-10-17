@@ -720,6 +720,10 @@ pub fn table(r: &RunRec) -> String {
         }
         if p.bytes > 0 {
             extra.push(bytes(p.bytes));
+            // (A transfer's rate over its phase's time.)
+            if p.class == Class::Net && p.wall_s > 0.0 {
+                extra.push(format!("{}/s", bytes((p.bytes as f64 / p.wall_s) as u64)));
+            }
         }
         if p.files > 0 {
             extra.push(format!("{} files", p.files));
@@ -1131,6 +1135,9 @@ mod tests {
         assert_eq!(back, r);
         assert!((r.untimed_s - (r.wall_s - r.timed_s()).max(0.0)).abs() < 1e-9);
         assert!(table(&r).contains("(untimed)"));
+        // A transfer's rate beside its bytes.
+        let net = RunRec { wall_s: 4.0, phases: vec![PhaseRec { name: "its files fetched from the coordinator".into(), class: Class::Net, wall_s: 4.0, n: 1, bytes: 8_000_000, files: 2, ..Default::default() }], ..Default::default() };
+        assert!(table(&net).contains("8.0 MB, 2.0 MB/s, 2 files"), "{}", table(&net));
         finish(true);
         drop(held);
         assert!(!on());

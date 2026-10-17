@@ -66,6 +66,13 @@ Common rules:
   redirect, serves at most 8 MB a request, and answers 503, never "not there", for what it can't
   read now. A native worker reads its own mount, read-only (`Tools::stores_read_only`,
   `SCENIC_STORES_READ_ONLY`).
+- **A native worker's transfers** (`coord::client::Files`): a task's files (`/work/in/`,
+  `/work/out/`) have no limit on their whole time, so a big file on a slow link goes on while it
+  moves. Connecting has 5 s; after that a transfer fails once no byte has moved either way for
+  60 s (from the connection made, each byte sent and each read: the wait for the answer's first
+  byte included). The task's log says each fetched file's size, time and rate; its timings give
+  the fetch phase's bytes and rate. Its other requests have 15 s in all. A failed fetch isn't
+  resumed: the task fails and its job runs it itself.
 - **What comes back:** only files the steps changed (hashes of the inputs tell).
 - **Memory:** predicted from the files (a tail: three times over, at least 300 MB; each kind has
   its own floor) until a worker's run measures it; then that, plus a tenth.

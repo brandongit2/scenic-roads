@@ -481,7 +481,10 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     let fetching = crate::timings::phase("its files fetched from the coordinator", crate::timings::Class::Net);
     for (p, n) in &inputs {
         let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
+        let t = std::time::Instant::now();
         let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
+        let secs = t.elapsed().as_secs_f64();
+        eprintln!("fetched {p}: {} in {} ({}/s)", crate::timings::bytes(b.len() as u64), crate::timings::secs(secs), crate::timings::bytes((b.len() as f64 / secs.max(1e-3)) as u64));
         anyhow::ensure!(b.len() as u64 == *n, "{p}: {} bytes, not {n}", b.len());
         sent.insert(p.clone(), store::naming::hash16(&b));
         let f = dir.join(rel);
