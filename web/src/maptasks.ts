@@ -23,12 +23,14 @@ interface ManagerLike {
   _inViewTiles?: { getAllTiles?: () => TileLike[] };
 }
 
-/** Sources not counted: the regions panel's own (downloads), and the viewshed's image (its search
- * is a task of its own). */
-const SKIP = new Set(['coverage', 'region-hover', 'regions', 'viewshed']);
+/** Sources not counted: the regions panel's own (downloads); the viewshed's image (its search is a
+ * task of its own); the app's own GeoJSON it fills itself (the selection, the climb, the drives and
+ * their highlight, the marks); the shoreline check's (evalmode.ts, eval-…). Any other id shows by
+ * itself: a loader new since. */
+const SKIP = new Set(['coverage', 'region-hover', 'regions', 'viewshed', 'selection', 'climb', 'drives', 'drive-hl', 'marks']);
 
 function labelOf(id: string): string | null {
-  if (SKIP.has(id)) return null;
+  if (SKIP.has(id) || id.startsWith('eval-')) return null;
   if (id === 'base') return 'Basemap';
   if (id === 'bld') return '3D buildings';
   if (id === 'coast') return 'Coast';
@@ -56,11 +58,12 @@ export function mapTasks(map: MLMap): Task[] {
     if (!label) continue;
     const a = by.get(label) ?? { done: 0, total: 0, processing: false };
     if (tm._source?.type === 'geojson' && tm._sourceLoaded === false) a.processing = true;
-    // ('reloading': a loaded tile parsed again, its old data drawn meanwhile; 'unloaded': dropped)
+    // ('reloading': a loaded tile parsed again, its old data drawn meanwhile, counted as arrived: a
+    // live layer's refresh or an expired tile's refetch doesn't show; 'unloaded': dropped)
     for (const t of tm._inViewTiles?.getAllTiles?.() ?? []) {
       if (t.state === 'unloaded') continue;
       a.total++;
-      if (t.state === 'loaded' || t.state === 'errored' || t.state === 'expired') a.done++;
+      if (t.state === 'loaded' || t.state === 'reloading' || t.state === 'errored' || t.state === 'expired') a.done++;
     }
     by.set(label, a);
   }

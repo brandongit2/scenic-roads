@@ -1697,7 +1697,10 @@ export class FieldLayer implements CustomLayerInterface {
       return;
     }
     if (!pr) {
+      // (the map draws again while a link is pending, Context.pendingPrograms; asked here too, so
+      // the frame after the link clears `linking` whatever MapLibre's own programs do)
       this.linking = true;
+      map.triggerRepaint();
       return;
     }
     const timed = this.timing && this.timer.ext;
