@@ -25,20 +25,12 @@ const args = Object.fromEntries(
   }, []),
 );
 
-/** name, map= (zoom/lat/lng/bearing/pitch), what makes it heavy. */
-export const VIEWS = [
-  ['tokyo', '14/35.68120/139.76710/0/60', 'dense 3D city, tilted: meshes and field'],
-  ['manhattan', '13.5/40.75800/-73.98500/30/60', 'dense 3D city, tilted, far field to the horizon'],
-  ['hongkong', '14/22.28500/114.16000/320/65', 'towers on steep terrain by the water'],
-  // (Every view in the map's coverage, its camera over the landscape: bench.mjs checks both, still and
-  // along the runs. At the terrain's 3× exaggeration Yosemite's first camera, 12.5/…/70, was 90 m
-  // over the valley floor with its walls 3 km over it.)
-  ['japanalps', '11/36.30000/137.64000/20/55', 'high mountains: terrain, hill-shading, trees'],
-  ['yosemite', '11.5/37.73000/-119.60000/80/60', 'valley terrain with trees'],
-  ['pyrenees', '8/42.70000/0.50000/0/75', 'wide tilted view to the horizon'],
-  ['lochs', '11/56.70000/-5.25000/45/65', 'coast and sea lochs: water shading on terrain'],
-  ['sfbay', '11.5/37.80000/-122.40000/300/65', 'city by the bay: water, buildings, roads'],
-];
+/** name, map= (zoom/lat/lng/bearing/pitch), what makes it heavy: web/src/data/benchviews.json, which
+ * the in-page benchmark (`#bench`, web/src/selfbench.ts) flies too. Each in the map's coverage, its
+ * camera over the landscape (bench.mjs checks both, still and along the runs; at the terrain's 3×
+ * exaggeration Yosemite's first camera, 12.5/…/70, was 90 m over the valley floor with its walls 3 km
+ * over it). */
+export const VIEWS = JSON.parse(fs.readFileSync(new URL('../../web/src/data/benchviews.json', import.meta.url), 'utf8'));
 
 const PORT = String(args.port ?? 9333);
 const base = String(args.base ?? 'http://localhost:5173/');

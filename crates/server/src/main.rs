@@ -541,6 +541,7 @@ async fn main() -> Result<()> {
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
         .route("/api/build/pause", axum::routing::post(build_pause_h))
+        .route("/api/bench", axum::routing::post(bench_h))
         .route("/api/build/lead", axum::routing::post(build_lead_h))
         .route("/api/build/inputs", axum::routing::post(build_inputs_h))
         .nest_service(
@@ -803,6 +804,25 @@ async fn build_h(State(s): State<S>) -> Response {
 /// The whole build paused (`{"mode": "drain"}`: every Mac's job at its next safe point; `"freeze"`:
 /// frozen at once) or going on (`{"mode": null}`), from the map: an ask to this Mac's agent, which
 /// passes it on to the lead (pipeline::control).
+/// A result of the in-page self-benchmark (web/src/selfbench.ts): its JSON saved as
+/// `<home>/bench/<name>.json` (`?name=`, letters, digits, `-` and `_` alone), for analysis
+/// (tools/bench/inpage.mjs). At most 2 MB (axum's body limit).
+async fn bench_h(State(s): State<S>, RawQuery(q): RawQuery, b: axum::body::Bytes) -> Response {
+    let name = q
+        .as_deref()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("name=")))
+        .filter(|n| !n.is_empty() && n.len() <= 120 && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
+    let Some(name) = name.map(str::to_owned) else { return (StatusCode::BAD_REQUEST, "?name= (letters, digits, - and _)").into_response() };
+    if serde_json::from_slice::<serde_json::Value>(&b).is_err() {
+        return (StatusCode::BAD_REQUEST, "a JSON body").into_response();
+    }
+    let dir = s.home.join("bench");
+    match tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(format!("{name}.json")), &b))).await {
+        Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 async fn build_pause_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
     use pipeline::control::{Mode, Pause};
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();

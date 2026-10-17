@@ -67,6 +67,7 @@ import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 import { EVAL, evalState, installEval } from './evalmode';
 import { CMP, cmpState, installCmp } from './bldcmp';
+import { BENCH, benchHash, runBench } from './selfbench';
 import type { FieldLayer } from './bldfield';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
@@ -103,7 +104,8 @@ async function main() {
     history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
   }
   const saved = fromSaved(prefs.load('state', null));
-  const linked = location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
+  const linked = BENCH ? fromHash(benchHash(), hasBuildings) : location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
   history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
@@ -2254,6 +2256,7 @@ async function main() {
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
   (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours, regions, catalog: () => watch };
+  if (BENCH) void runBench((window as any).__app);
 }
 
 /**
