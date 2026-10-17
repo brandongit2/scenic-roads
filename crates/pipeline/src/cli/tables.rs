@@ -120,6 +120,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("verify", "", "check every unverified upload on the NAS (SHA-256 over SSH)", &[], &[], 0),
         c("catalog", "[--held] [--ready <ids>] [--delta] [--whole]", "publish a catalog of the build manifest (--held: into catalog-held/)", &["--held", "--delta", "--whole"], &["--ready"], 0),
         c("rekey-check", "[--pass d]", "what re-keying the records for the units' new keys would do now. Reads only", &[], PASS, 0),
+        c("fabdem-fetch", "--mirror <HF dataset URL> --work <local dir> [--first <square>,…]", "every FABDEM tile the store (sources/fetched/fabdem/) lacks, from the mirror, one at a time, the 10° squares named first; restartable", &[], &["--mirror", "--work", "--first"], 0),
         c("p5-check", "terrain|trees [--pass d] [--costs f]", "what switching terrain and slope, or tree cover, to pieces and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
     ],
 };

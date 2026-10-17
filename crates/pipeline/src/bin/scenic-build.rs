@@ -246,6 +246,25 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         println!("regions-fixture: {name}");
         return Ok(());
     }
+    if step == "fabdem-fetch" {
+        // fabdem-fetch --root <nas project folder> --mirror <HF dataset URL> --work <local folder>
+        // [--first <square>,…]: every FABDEM tile the store (sources/fetched/fabdem/) lacks, from the
+        // mirror (docs/inputs.md §6.8 names it), one at a time, the squares named first
+        // (pipeline::dem::fabdem_fetch). Restartable; writes nothing else.
+        use pipeline::dem::fabdem_fetch as ff;
+        let work = PathBuf::from(opt(&args, "--work").context("--work <local folder for partial downloads>")?);
+        let first: Vec<String> = opt(&args, "--first").map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_default();
+        let mirror = opt(&args, "--mirror").context("--mirror <the Hugging Face dataset's URL>")?;
+        let net = ff::Net::new();
+        let tiles = ff::tiles(&ff::listing(&net, &mirror)?, &first)?;
+        let done = ff::run(&net, &mirror, &tiles, &root.join("sources/fetched/fabdem"), &work, 12, &std::thread::sleep, &mut |l| eprintln!("{l}"))?;
+        eprintln!("fabdem-fetch: stored {} ({:.1} GiB), {} already there, {} failed", done.stored, done.bytes as f64 / (1u64 << 30) as f64, done.skipped, done.failed.len());
+        for (n, why) in &done.failed {
+            eprintln!("  failed: {n}: {why}");
+        }
+        anyhow::ensure!(done.failed.is_empty(), "{} tiles failed: run it again", done.failed.len());
+        return Ok(());
+    }
     if step == "p5-check" {
         return p5_check(&root, &args);
     }

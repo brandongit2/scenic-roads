@@ -12,6 +12,7 @@
 pub mod declared;
 pub mod encoding;
 pub mod generic;
+pub mod fabdem_fetch;
 pub mod kept;
 pub mod proj;
 pub mod sample;
@@ -36,12 +37,9 @@ pub struct Config {
     /// Where the last run's per-vertex cache is (`dem-cache.*`), and this run's goes.
     pub cache: PathBuf,
     pub no_cache: bool,
-    /// The stores' folder (`sources/fetched/`) for datasets declared `store`: each file downloaded
-    /// once (None: read in place).
+    /// The stores' folder (`sources/fetched/`) for datasets declared `store`: their files read
+    /// there alone, never fetched (crate::dem::generic::stored).
     pub store: Option<PathBuf>,
-    /// The store only read (a task's worker: docs/workers.md §2): a file it hasn't, or hasn't
-    /// whole, is read in place, and nothing there is written or removed.
-    pub read_only: bool,
 }
 
 /// `n` with thousands separators.

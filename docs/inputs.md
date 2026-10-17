@@ -302,11 +302,10 @@ A declaration adds, under `[data]`:
 | `[data.fetch]` | `method`: `get` (default), `get-key-header` (`header`, `key` naming a key in `inputs/keys.env`), `get-key-json-link` (also `link`, the JSON path of the download link) |
 
 Fetch methods are protocols, generic code used by any declaration, through `pipeline::fetch`, which
-asks before any internet request. A range read (a GeoTIFF's tiles, a zip's member) is streamed,
-and one that breaks off goes on from the bytes received with a new range request (`fetch::net`:
-only a request that moves nothing counts against the retries), so a member of tens of MB from a
-server that drops connections is never fetched again from its start. A process puts one file at a
-time into a store (`dem::kept`). Fetched data is content-named
+asks before any internet request. A range read (a GeoTIFF's tiles) is streamed, and one that breaks
+off goes on from the bytes received with a new range request (`fetch::net`: only a request that
+moves nothing counts against the retries). A dataset kept in a store (`[data] store`, §6.8) is
+filled once by its own tool and only read by builds. Fetched data is content-named
 and pinned in the records by the job that fetched it; a refresh is a new pin. Planned: an `s3-list` method; `range` sources (cloud
 GeoTIFFs read in place, never whole) pinned by the server's ETag (else Last-Modified and length),
 checked with `If-Match` on every read so a file changed mid-build fails rather than mixing versions;
@@ -913,7 +912,7 @@ reported).
 **Kind:** source declarations, one per dataset; a small dataset's files may lie beside it. **Drop
 box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
-(the sampler and blend), crate::dem::encoding, crate::dem::kept (the store), crate::terrain_sources
+(the sampler and blend), crate::dem::encoding, crate::dem::kept and crate::dem::fabdem_fetch (the store), crate::terrain_sources
 (the terrain's). Built for the roads' elevations (#143 step 1) and the 3D terrain (#144); steps 2
 and 3 are planned.
 
@@ -928,8 +927,8 @@ and 3 are planned.
 | `terrain` | bool, default false | read by the 3D terrain, never by the roads' elevations (below) |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world (FABDEM) |
 | `[data] format` | `geotiff` or `tiles` | |
-| `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL (`<zip URL>#<member>` reads a zip member in place), a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
-| `[data] store` | bool | each file downloaded once, kept compressed in `sources/fetched/<dataset>/` |
+| `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
+| `[data] store` | bool | the files read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
 | `[data] read_resolution` | metres | read a finer dataset at its nearest overview (HRDEM's 2 m at 8 m) |
 
@@ -979,6 +978,19 @@ territory.
   read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
   so a unit opening tens of files holds that much, not a cache's worth per file.
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
+  It's `store = true`: all of FABDEM V1-2 (19,011 tiles, about 297 GiB) is kept once in
+  `sources/fetched/fabdem/`, and area builds only read it. Its index still names each tile by its
+  Bristol zip member (`<zip URL>#<tile>.tif`): the URL names the tile and its stored file, and the
+  index is unchanged so no unit's key changes. The store is filled by `scenic-build fabdem-fetch
+  --root <nas> --mirror https://huggingface.co/datasets/pavelzaitsau/fabdem-v12 --work <local dir>
+  [--first <square>,…]` (crate::dem::fabdem_fetch), from that Hugging Face mirror (the same pixels,
+  two tiles compared; Bristol's server resets our requests):
+  every tile of the mirror's listing the store lacks, one at a time, the 10° squares named first;
+  each downloaded into the local work folder (resumed by range, retried with backoff), its size
+  checked against the listing, decoded and written as every stored tile is (`dem::kept::store`:
+  rewritten, read back and compared under a temporary name, then renamed). It skips stored tiles,
+  so a stopped run is started again as it is. The input check measures a stored dataset's sampled
+  files from the store too.
 - **Keys:** a unit names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`); a dataset's `keyed` includes its index's content and dropped files, so
   adding a tile reruns the units it meets. `agent::rekey` keeps what keys made before the

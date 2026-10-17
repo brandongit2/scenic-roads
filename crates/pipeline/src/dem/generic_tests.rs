@@ -52,7 +52,7 @@ fn tiles_blend_across_their_edges() {
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     f.0.insert("https://b.org/10/513/511.png".into(), Some(flat(50.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None, read_only: true, pool: None };
+    let o = Opts { fetch: &fetch, store: None, pool: None };
     let w = 360.0 / 1024.0;
     // Its middle, 100 m inside its east edge, at the edge itself, and past it.
     let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w - 1e-9, w + 0.01];
@@ -87,7 +87,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://e.org/3/1/1.png".into(), Some(png(256)));
     f.0.insert("https://e.org/3/2/1.png".into(), Some(png(512)));
-    let o = Opts { fetch: &f, store: None, read_only: true, pool: None };
+    let o = Opts { fetch: &f, store: None, pool: None };
     let t = TileSet { url: "https://e.org/{z}/{x}/{y}.png", zoom: 3, encoding: "terrarium", o: &o, clean: Mutex::new(HashMap::new()) };
     assert_eq!(t.tile(1, 1).unwrap().unwrap().0, 256);
     assert!(t.tile(2, 1).unwrap_err().to_string().contains("512 × 512"));
@@ -123,7 +123,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://a.org/fine.tif".into(), Some(fine));
     f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
-    let o = Opts { fetch: &f, store: None, read_only: true, pool: None };
+    let o = Opts { fetch: &f, store: None, pool: None };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
     let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset { id: id.into(), code, resolution: res, cover: None, source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), Some(b))] } };
     let (rf, rc) = (PX * M_PER_DEG, 3.0 * PX * M_PER_DEG);

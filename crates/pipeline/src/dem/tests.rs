@@ -4,7 +4,7 @@
 //! the cache reused, and an interrupted run done again.
 
 use super::*;
-use crate::fetch::{testzip::zip, Fetch, MapFetch};
+use crate::fetch::{Fetch, MapFetch};
 use crate::geotiff::key;
 use anyhow::bail;
 use roadcore::DemSource;
@@ -168,8 +168,9 @@ impl Fixture {
             want.push((if lidar { DemSource::Gsi5a } else { DemSource::Gsi10 } as u8, value));
         }
 
-        // FABDEM: Taiwan from the store; Paris downloaded from its zip; the open sea, whose tiles
-        // the index doesn't list.
+        // FABDEM, read from the store alone: Taiwan; Paris, stored from a tile as Bristol's are
+        // (crate::dem::kept::store, as scenic-build fabdem-fetch stores it); the open sea, whose
+        // tiles the index doesn't list.
         let store = dir.path().join("fetched/fabdem");
         std::fs::create_dir_all(&store).unwrap();
         let fgt = [121.48, PX, 0.0, 24.22, 0.0, -PX];
@@ -187,7 +188,9 @@ impl Fixture {
         let tie = [PARIS.0 - 60.0 * PX + 0.5 * PX, PX, 0.0, PARIS.1 + 60.0 * PX - 0.5 * PX, 0.0, -PX];
         let (paris, _) = make_images(&[(120, 120)], Opts { tile: Some(64), compression: 8, predictor: 2, keys: POINT_4326, ..Opts::default() }, tie, Some("-9999"), &|_, x, y, _| pf.at(x as f64, y as f64));
         let pgt = crate::geotiff::Tiff::open(Arc::new(paris.clone())).unwrap().transform(0).unwrap();
-        fetch.0.insert(format!("{BRISTOL}/N40E000-N50E010_FABDEM_V1-2.zip"), Some(zip(&[("N48E002_FABDEM_V1-2.tif", &paris, false)])));
+        let dl = dir.path().join("downloaded.tif");
+        std::fs::write(&dl, &paris).unwrap();
+        crate::dem::kept::store(&store, "N48E002_FABDEM_V1-2.tif", &dl).unwrap();
         for v in grid(PARIS.0, PARIS.1, 1, (0.01, 0.01)) {
             let (lon, lat) = ll(v);
             let (cf, rf) = pixel(pgt, lon, lat);
@@ -214,7 +217,7 @@ impl Fixture {
     }
 
     fn config(&self) -> Config {
-        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, store: Some(self.dir.path().join("fetched")), read_only: false }
+        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, store: Some(self.dir.path().join("fetched")) }
     }
 
     fn outputs(&self) -> (Vec<f32>, Vec<u8>) {
@@ -292,7 +295,7 @@ fn run_fixture(f: &Fixture, cfg: &Config, fetch: &dyn Fetch) -> Result<(generic:
     let stats = generic::run(cfg, &plan, &Lenient(fetch))?;
     let lon: Vec<f64> = f.verts.iter().map(|v| v[0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = f.verts.iter().map(|v| v[1] as f64 * 1e-7).collect();
-    let o = generic::Opts { fetch: &Lenient(fetch), store: cfg.store.clone(), read_only: true, pool: None };
+    let o = generic::Opts { fetch: &Lenient(fetch), store: cfg.store.clone(), pool: None };
     let s = generic::sample(&plan, &lon, &lat, &o, &|_| {})?;
     Ok((stats, s.blended))
 }
@@ -326,10 +329,9 @@ fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
     let count = |c: DemSource| f.want.iter().filter(|w| w.0 == c as u8).count();
     assert!(count(DemSource::Hrdem) > 10 && count(DemSource::Mrdem) > 0 && count(DemSource::Gsi5a) > 0 && count(DemSource::Gsi10) > 0, "the fixture exercises each fall-through");
     assert_eq!((stats.datasets["hrdem"], stats.datasets["mrdem"], stats.datasets["usgs-3dep"], stats.datasets["fabdem"], stats.missing), (count(DemSource::Hrdem), count(DemSource::Mrdem), 25, 10, 3));
-    // The store: Paris's tile downloaded (whole, as it reads).
+    // The store: only read (its two tiles, nothing written or left).
     let store = f.dir.path().join("fetched/fabdem");
-    assert!(crate::whole::tiff_file_whole(&store.join("N48E002_FABDEM_V1-2.tif")));
-    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2, "no temporary files left");
+    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2);
     // The cache: every vertex by key.
     let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&std::fs::read(f.dir.path().join("cache/dem-cache.keys.u64")).unwrap());
     assert_eq!(keys.len(), f.verts.len());
@@ -348,57 +350,29 @@ fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
     assert!(counting.asked.lock().unwrap().is_empty());
 }
 
+/// Area builds never download FABDEM: a tile the index names and the store lacks is an error
+/// naming it, nothing asked of any server for it (the index's Bristol URLs only name the tiles).
 #[test]
-fn a_store_this_worker_cant_write_gives_what_it_has_and_the_rest_is_read_in_place() {
-    use std::os::unix::fs::PermissionsExt;
+fn a_tile_the_store_lacks_is_an_error_naming_it_and_never_fetched() {
     let f = Fixture::new();
-    let store = f.dir.path().join("fetched/fabdem");
-    let listed = || {
-        let mut v: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        v.sort();
-        v
-    };
-    let before = listed();
-    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let stats = run_fixture(&f, &f.config(), &f.fetch);
-    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let stats = stats.unwrap().0;
-    // The same elevations as a run that stores Paris's tile, and nothing written to the store.
-    assert_eq!(listed(), before);
-    let ro = f.outputs();
-    let whole = Fixture::new();
-    let whole_stats = run_fixture(&whole, &whole.config(), &whole.fetch).unwrap().0;
-    assert_eq!((stats.datasets["fabdem"], stats.missing), (whole_stats.datasets["fabdem"], whole_stats.missing));
-    assert_eq!(ro.1, whole.outputs().1);
-    assert!(ro.0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
-}
-
-#[test]
-fn a_store_only_read_is_neither_written_nor_pruned() {
-    let f = Fixture::new();
-    let store = f.dir.path().join("fetched/fabdem");
-    // A stored copy cut short: a writer would take it again; a reader reads the tile in place.
-    std::fs::write(store.join("N48E002_FABDEM_V1-2.tif"), b"II*\0short").unwrap();
-    let listed = || {
-        let mut v: Vec<(String, u64)> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap()).map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len())).collect();
-        v.sort();
-        v
-    };
-    let before = listed();
-    let stats = run_fixture(&f, &Config { read_only: true, ..f.config() }, &f.fetch).unwrap().0;
-    assert_eq!(listed(), before, "nothing written or removed");
-    let whole = Fixture::new();
-    let whole_stats = run_fixture(&whole, &whole.config(), &whole.fetch).unwrap().0;
-    assert_eq!((stats.datasets["fabdem"], stats.missing), (whole_stats.datasets["fabdem"], whole_stats.missing));
-    assert_eq!(f.outputs().1, whole.outputs().1);
-    assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    std::fs::remove_file(f.dir.path().join("fetched/fabdem/N48E002_FABDEM_V1-2.tif")).unwrap();
+    let counting = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
+    let e = format!("{:#}", generic::run(&f.config(), &declared_plan(), &Lenient(&counting)).unwrap_err());
+    assert!(e.contains("fabdem: tile N48E002_FABDEM_V1-2.tif isn't in the store") && e.contains("scenic-build fabdem-fetch"), "{e}");
+    assert!(counting.asked.lock().unwrap().iter().all(|u| !u.contains("FABDEM")), "nothing of FABDEM asked for");
+    // (One cut short is an error too, not a download.)
+    std::fs::write(f.dir.path().join("fetched/fabdem/N48E002_FABDEM_V1-2.tif"), b"II*\0short").unwrap();
+    let e = format!("{:#}", generic::run(&f.config(), &declared_plan(), &Lenient(&counting)).unwrap_err());
+    assert!(e.contains("tile N48E002_FABDEM_V1-2.tif in the store") && e.contains("isn't whole"), "{e}");
+    // A store-kept dataset with no store given is refused, not read from its index's URLs.
+    let e = format!("{:#}", generic::run(&Config { store: None, ..f.config() }, &declared_plan(), &Lenient(&f.fetch)).unwrap_err());
+    assert!(e.contains("fabdem: its files are read from the store, and no store is given"), "{e}");
 }
 
 #[test]
 fn an_interrupted_run_is_done_again() {
     let f = Fixture::new();
-    let paris = format!("{BRISTOL}/N40E000-N50E010_FABDEM_V1-2.zip");
-    let failing = Counting { inner: &f.fetch, asked: Mutex::default(), fail: Some(paris) };
+    let failing = Counting { inner: &f.fetch, asked: Mutex::default(), fail: Some(USGS_URL.into()) };
     assert!(generic::run(&f.config(), &declared_plan(), &Lenient(&failing)).is_err());
     let progress: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f.build().join("dem-progress.json")).unwrap()).unwrap();
     assert_eq!(progress["done"], serde_json::json!(["cache"]));

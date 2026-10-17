@@ -15,7 +15,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use store::range::{RangeRead, Slice};
+use store::range::RangeRead;
 use store::sys::PosIo;
 use store::IoError;
 
@@ -360,75 +360,6 @@ impl Fetch for MapFetch {
             None => bail!("{url}: not supplied"),
         }
     }
-}
-
-/// The member `name` of the zip that `src` holds, for range reads (a stored member is read in
-/// place; a compressed one whole); None when the zip doesn't list it. Errors when its directory
-/// can't be read whole.
-pub fn zip_member(src: Arc<dyn RangeRead>, name: &str) -> Result<Option<Arc<dyn RangeRead>>> {
-    let le16 = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as u64;
-    let le32 = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as u64;
-    let le64 = |b: &[u8], i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
-    let len = src.len()?;
-    let tail_len = len.min(65558);
-    let tail = src.read_at(len - tail_len, tail_len as usize)?;
-    let i = tail.windows(4).rposition(|w| w == b"PK\x05\x06").context("no end of central directory")?;
-    ensure!(tail.len() >= i + 22, "the end of central directory is cut");
-    let (mut n, mut cd_size, mut cd_off) = (le16(&tail, i + 10), le32(&tail, i + 12), le32(&tail, i + 16));
-    if n == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_off == 0xFFFF_FFFF {
-        let j = tail[..i].windows(4).rposition(|w| w == b"PK\x06\x07").context("no zip64 end locator")?;
-        ensure!(i >= j + 16, "the zip64 end locator is cut");
-        let rec = src.read_at(le64(&tail, j + 8), 56)?;
-        ensure!(&rec[..4] == b"PK\x06\x06", "no zip64 end record");
-        (n, cd_size, cd_off) = (le64(&rec, 32), le64(&rec, 40), le64(&rec, 48));
-    }
-    ensure!(cd_size <= 256 << 20, "a central directory of {cd_size} bytes");
-    let cd = src.read_at(cd_off, cd_size as usize).context("central directory")?;
-    let mut p = 0usize;
-    for _ in 0..n {
-        ensure!(cd.len() >= p + 46 && &cd[p..p + 4] == b"PK\x01\x02", "a damaged central directory");
-        let method = le16(&cd, p + 10);
-        let (mut csize, mut usize_, mut off) = (le32(&cd, p + 20), le32(&cd, p + 24), le32(&cd, p + 42));
-        let (nlen, xlen, clen) = (le16(&cd, p + 28) as usize, le16(&cd, p + 30) as usize, le16(&cd, p + 32) as usize);
-        ensure!(cd.len() >= p + 46 + nlen + xlen, "a damaged central directory");
-        let member = String::from_utf8_lossy(&cd[p + 46..p + 46 + nlen]);
-        if member == name {
-            // Zip64 sizes and offset, in the extra field.
-            let mut x = &cd[p + 46 + nlen..p + 46 + nlen + xlen];
-            while x.len() >= 4 {
-                let (id, sz) = (le16(x, 0), le16(x, 2) as usize);
-                let body = &x[4..(4 + sz).min(x.len())];
-                if id == 1 {
-                    let mut k = 0;
-                    for v in [&mut usize_, &mut csize, &mut off] {
-                        if *v == 0xFFFF_FFFF && body.len() >= k + 8 {
-                            *v = le64(body, k);
-                            k += 8;
-                        }
-                    }
-                }
-                x = &x[(4 + sz).min(x.len())..];
-            }
-            let lh = src.read_at(off, 30)?;
-            ensure!(&lh[..4] == b"PK\x03\x04", "{name}: no local header");
-            let data = off + 30 + le16(&lh, 26) + le16(&lh, 28);
-            return Ok(Some(match method {
-                0 => Arc::new(Slice::new(src, data, csize)?),
-                8 => {
-                    ensure!(csize <= 1 << 30 && usize_ <= 1 << 31, "{name}: {csize} bytes compressed");
-                    let raw = src.read_at(data, csize as usize)?;
-                    let mut d = flate2::Decompress::new(false);
-                    let mut out = Vec::with_capacity(usize_ as usize);
-                    d.decompress_vec(&raw, &mut out, flate2::FlushDecompress::Finish).with_context(|| format!("{name}: inflate"))?;
-                    ensure!(out.len() as u64 == usize_, "{name}: inflates to {} of {usize_} bytes", out.len());
-                    Arc::new(out)
-                }
-                m => bail!("{name}: zip method {m}"),
-            }));
-        }
-        p += 46 + nlen + xlen + clen;
-    }
-    Ok(None)
 }
 
 /// The bytes this process has fetched over the network so far (none in WebAssembly, where a page
@@ -894,75 +825,9 @@ mod net {
 }
 
 #[cfg(test)]
-pub(crate) mod testzip {
-    use std::io::Write;
-
-    /// A zip of `members` (name, bytes, deflated or stored), for tests.
-    pub fn zip(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut cd = Vec::new();
-        for (name, data, deflate) in members {
-            let body = if *deflate {
-                let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-                z.write_all(data).unwrap();
-                z.finish().unwrap()
-            } else {
-                data.to_vec()
-            };
-            let off = out.len() as u32;
-            let method: u16 = if *deflate { 8 } else { 0 };
-            out.extend_from_slice(b"PK\x03\x04");
-            out.extend_from_slice(&[20, 0, 0, 0]);
-            out.extend_from_slice(&method.to_le_bytes());
-            out.extend_from_slice(&[0; 8]);
-            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            out.extend_from_slice(&3u16.to_le_bytes());
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(b"xyz");
-            out.extend_from_slice(&body);
-            cd.extend_from_slice(b"PK\x01\x02");
-            cd.extend_from_slice(&[20, 0, 20, 0, 0, 0]);
-            cd.extend_from_slice(&method.to_le_bytes());
-            cd.extend_from_slice(&[0; 8]);
-            cd.extend_from_slice(&(body.len() as u32).to_le_bytes());
-            cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            cd.extend_from_slice(&[0; 12]);
-            cd.extend_from_slice(&off.to_le_bytes());
-            cd.extend_from_slice(name.as_bytes());
-        }
-        let cd_off = out.len() as u32;
-        out.extend_from_slice(&cd);
-        out.extend_from_slice(b"PK\x05\x06");
-        out.extend_from_slice(&[0; 4]);
-        out.extend_from_slice(&(members.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(members.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(cd.len() as u32).to_le_bytes());
-        out.extend_from_slice(&cd_off.to_le_bytes());
-        out.extend_from_slice(&[0; 2]);
-        out
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::net::{content_range, Recorder};
-    use super::testzip::zip;
     use super::*;
-
-    #[test]
-    fn zip_members_in_place() {
-        let z = zip(&[("a.tif", b"stored bytes", false), ("b.tif", b"deflated bytes, deflated bytes", true)]);
-        let src: Arc<dyn RangeRead> = Arc::new(z);
-        let a = zip_member(src.clone(), "a.tif").unwrap().unwrap();
-        assert_eq!(a.read_at(0, a.len().unwrap() as usize).unwrap(), b"stored bytes");
-        let b = zip_member(src.clone(), "b.tif").unwrap().unwrap();
-        assert_eq!(b.read_at(0, b.len().unwrap() as usize).unwrap(), b"deflated bytes, deflated bytes");
-        assert!(zip_member(src.clone(), "c.tif").unwrap().is_none());
-        assert!(zip_member(Arc::new(b"not a zip".to_vec()), "a.tif").is_err());
-    }
 
     #[test]
     fn mirrors_and_their_ranges() {

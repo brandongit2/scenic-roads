@@ -4,9 +4,8 @@
 //!
 //! usage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]
 //!
-//!   SCENIC_STORE         the stores' folder (sources/fetched/): a dataset declared `store` keeps
-//!                        each file there, downloaded once (else read in place)
-//!   SCENIC_STORES_READ_ONLY  the store only read (a task's worker): what it lacks read in place
+//!   SCENIC_STORE         the stores' folder (sources/fetched/): a dataset declared `store` is
+//!                        read there alone (a file it lacks is an error naming it)
 //!   SCENIC_FETCH_*       mirror folders, recording, no network (`pipeline::fetch`)
 
 use anyhow::{bail, Context, Result};
@@ -36,8 +35,7 @@ fn main() -> Result<()> {
     let build = build.context("usage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]")?;
     let cache = cache.unwrap_or_else(|| build.parent().unwrap_or(&build).join("cache"));
     let env_dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    let read_only = std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
-    let cfg = Config { build, workers, cache, no_cache, store: env_dir("SCENIC_STORE"), read_only };
+    let cfg = Config { build, workers, cache, no_cache, store: env_dir("SCENIC_STORE") };
     let plan = dem::declared::read_plan(&cfg.build)?.with_context(|| format!("{}: no {} (the unit job writes the declared elevation datasets' plan there)", cfg.build.display(), dem::declared::PLAN_FILE))?;
     // (Its phases, for the unit job's phase that runs it: pipeline::timings.)
     pipeline::timings::job("elev", || dem::generic::run(&cfg, &plan, &Fetcher::from_env()).map(|_| ()))?;

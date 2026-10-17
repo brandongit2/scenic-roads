@@ -10,7 +10,10 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
           (listed), its footprint the 1° square it's named by (its upper-left corner).
   fabdem  FABDEM v1-2: every tile inside Bristol's 10° zips (each zip's central directory read by
           range requests), as <zip URL>#<member>, its footprint the 1° square it's named by (its
-          south-west corner).
+          south-west corner). The URL only names the tile: FABDEM is read from the store
+          (sources/fetched/fabdem/), which `scenic-build fabdem-fetch` fills from Hugging Face's
+          mirror (docs/inputs.md §6.8); builds never download it. Bristol's server now resets
+          requests, so this listing may not run again; the accepted index stands.
   glo30   Copernicus DEM GLO-30 (the 3D terrain's north of 60°N): every tile in the bucket's
           tileList.txt (or --tiles, a copy of it), its DEM by `url` and its fill mask (FLM, in its
           AUXFILES/) by `mask`, its footprint the 1° square it's named by (its south-west corner).

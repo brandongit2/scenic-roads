@@ -22,9 +22,9 @@
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, Atlas};
 use super::sample::{bilinear, sample_raster_noting, window_clean, within, Clean, NODATA_BELOW};
-use crate::fetch::{zip_member, Fetch};
+use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,11 +34,9 @@ use store::range::{PlainFile, RangeRead};
 /// How the files are read.
 pub struct Opts<'a> {
     pub fetch: &'a dyn Fetch,
-    /// The stores' folder (`sources/fetched/`): a dataset declared `store` keeps its files in
-    /// `<it>/<dataset>/`. None: read in place.
+    /// The stores' folder (`sources/fetched/`): a dataset declared `store` is read from
+    /// `<it>/<dataset>/` alone (`stored`).
     pub store: Option<PathBuf>,
-    /// The store only read (a task's worker).
-    pub read_only: bool,
     pub pool: Option<&'a rayon::ThreadPool>,
 }
 
@@ -106,25 +104,35 @@ pub(crate) fn valid(v: f32, nodata: Option<f64>) -> bool {
     v.is_finite() && v >= NODATA_BELOW && nodata.is_none_or(|nd| v as f64 != nd)
 }
 
-/// Opens a file: a URL (`<zip URL>#<member>` for a zip's member), or a local path; None when the
-/// server has none.
+/// Opens a file: a URL, or a local path; None when the server has none.
 pub fn open_url(fetch: &dyn Fetch, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
     if url.starts_with('/') {
         return Ok(Some(Arc::new(PlainFile::open(std::path::Path::new(url))?)));
     }
-    match url.split_once('#') {
-        Some((zip, member)) => match fetch.open(zip)? {
-            None => Ok(None),
-            Some(z) => zip_member(z, member).with_context(|| format!("{zip}: its file list can't be read")),
-        },
-        None => fetch.open(url),
-    }
+    fetch.open(url)
 }
 
-/// A file's name in a store: a zip member's, else the URL's last part.
-fn stored_name(url: &str) -> String {
+/// A file's name in a store: the index's URL's last part (after a `#`, a zip's member's name).
+pub fn stored_name(url: &str) -> String {
     let u = url.rsplit_once('#').map_or(url, |(_, m)| m);
     u.rsplit('/').next().unwrap_or(u).to_string()
+}
+
+/// File `url` of dataset `id`, kept in store `dir` (`[data] store = true`): its stored copy, read
+/// where it lies; None for one the store notes the source doesn't have (`<name>.none`). Never
+/// fetched here: a file the store lacks, or holds cut short, is an error naming it (FABDEM's are
+/// fetched once, by `scenic-build fabdem-fetch`: crate::dem::fabdem_fetch).
+pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+    let name = stored_name(url);
+    let f = dir.join(&name);
+    if !f.exists() {
+        if dir.join(format!("{name}.none")).exists() {
+            return Ok(None);
+        }
+        bail!("{id}: tile {name} isn't in the store ({}): area builds don't download it; fetch it into the store first (scenic-build fabdem-fetch, docs/inputs.md §6.8)", dir.display());
+    }
+    ensure!(crate::whole::tiff_file_whole(&f), "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build fabdem-fetch)", dir.display());
+    Ok(Some(Arc::new(PlainFile::open(&f)?)))
 }
 
 /// One GeoTIFF dataset's files as they're read.
@@ -149,22 +157,13 @@ fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
 }
 
 impl GeoSet<'_> {
-    fn open(&self, k: usize, again: bool) -> Result<Option<(Arc<Tiff>, usize)>> {
-        if !again {
-            if let Some(t) = self.opened.lock().unwrap().get(&k) {
-                return Ok(t.clone());
-            }
+    fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
+        if let Some(t) = self.opened.lock().unwrap().get(&k) {
+            return Ok(t.clone());
         }
         let url = &self.files[k].0;
         let src: Option<Arc<dyn RangeRead>> = match &self.store {
-            Some(dir) if !url.starts_with('/') => {
-                let remote = || open_url(self.o.fetch, url);
-                match super::kept::kept(dir, &stored_name(url), &remote, again, self.o.read_only)? {
-                    None => None,
-                    Some(super::kept::Kept::Stored(p)) => Some(Arc::new(PlainFile::open(&p)?)),
-                    Some(super::kept::Kept::InPlace(s)) => Some(s),
-                }
-            }
+            Some(dir) if !url.starts_with('/') => stored(self.id, dir, url)?,
             _ => open_url(self.o.fetch, url)?,
         };
         let t = match src {
@@ -201,16 +200,8 @@ impl GeoSet<'_> {
                 continue;
             }
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
-            let Some((t, level)) = self.open(k, false)? else { continue };
-            let v = match sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k])) {
-                Ok(v) => v,
-                // A stored copy that won't read: taken again (once).
-                Err(_) if self.store.is_some() => {
-                    let (t, level) = self.open(k, true)?.context("gone from the server")?;
-                    sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k])).with_context(|| self.files[k].0.clone())?
-                }
-                Err(e) => return Err(e.context(self.files[k].0.clone())),
-            };
+            let Some((t, level)) = self.open(k)? else { continue };
+            let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k])).with_context(|| self.files[k].0.clone())?;
             for (&j, v) in mine.iter().zip(v) {
                 if v.is_finite() {
                     out[j] = (v, k as u32);
@@ -229,7 +220,7 @@ impl GeoSet<'_> {
     /// has it (its nearest pixel); None when none does.
     fn value_at(&self, x: f64, y: f64, skip: usize) -> Result<Option<f32>> {
         for k in self.holding(x, y).filter(|&k| k != skip) {
-            let Some((t, level)) = self.open(k, false)? else { continue };
+            let Some((t, level)) = self.open(k)? else { continue };
             let gt = t.transform(level)?;
             let img = t.level(level)?;
             let (c, r) = (((x - gt[0]) / gt[1]).floor(), ((y - gt[3]) / gt[5]).floor());
@@ -247,7 +238,7 @@ impl GeoSet<'_> {
         let one = |j: usize| -> Result<f64> {
             let i = sel[j] as usize;
             let k = file[j] as usize;
-            let (t, level) = self.open(k, false)?.context("an open file")?;
+            let (t, level) = self.open(k)?.context("an open file")?;
             let gt = t.transform(level)?;
             let img = t.level(level)?;
             let (w, h) = (img.width as i64, img.height as i64);
@@ -459,7 +450,12 @@ impl<'a> Reader<'a> {
         Ok(match &ds.source {
             Source::Tiles { url, zoom, encoding } => Reader::Tiles(TileSet { url, zoom: *zoom, encoding, o, clean: Mutex::new(HashMap::new()) }),
             Source::Geotiff { crs, read_resolution, store, files } => {
-                let set = GeoSet { id: &ds.id, crs: *crs, files, read_resolution: *read_resolution, store: if *store { o.store.as_ref().map(|s| s.join(&ds.id)) } else { None }, o, opened: Mutex::new(HashMap::new()), clean: (0..files.len()).map(|_| Clean::default()).collect(), cache: cache.clone() };
+                let store = match (*store, &o.store) {
+                    (false, _) => None,
+                    (true, Some(s)) => Some(s.join(&ds.id)),
+                    (true, None) => bail!("{}: its files are read from the store, and no store is given (SCENIC_STORE)", ds.id),
+                };
+                let set = GeoSet { id: &ds.id, crs: *crs, files, read_resolution: *read_resolution, store, o, opened: Mutex::new(HashMap::new()), clean: (0..files.len()).map(|_| Clean::default()).collect(), cache: cache.clone() };
                 // (Native coordinates of the points it covers; NaN for the others.)
                 let (x, y) = match crs {
                     4326 | 4269 => (lon.to_vec(), lat.to_vec()),
@@ -640,7 +636,7 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
     let lon: Vec<f64> = miss.iter().map(|&i| verts[i as usize][0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = miss.iter().map(|&i| verts[i as usize][1] as f64 * 1e-7).collect();
     let pool = super::pool(cfg.workers);
-    let o = Opts { fetch, store: cfg.store.clone(), read_only: cfg.read_only, pool: pool.as_ref() };
+    let o = Opts { fetch, store: cfg.store.clone(), pool: pool.as_ref() };
     let s = sample(plan, &lon, &lat, &o, &|k| super::said(k, miss.len()))?;
     drop(o);
     drop(pool);

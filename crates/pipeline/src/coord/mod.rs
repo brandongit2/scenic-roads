@@ -713,9 +713,9 @@ impl Drop for Coordinator {
 }
 
 /// The data servers whose files a task may read through the coordinator (`/work/net/…/web/…`): the
-/// elevations' (crate::dem) and land cover's (crate::landcover). Nothing else is fetched for a
-/// worker.
-pub const WEB_HOSTS: [&str; 5] = ["data.bris.ac.uk", "cyberjapandata.gsi.go.jp", "canelevation-dem.s3.ca-central-1.amazonaws.com", "prd-tnm.s3.amazonaws.com", "esa-worldcover.s3.eu-central-1.amazonaws.com"];
+/// elevations' (crate::dem; FABDEM is read from the store, never fetched) and land cover's
+/// (crate::landcover). Nothing else is fetched for a worker.
+pub const WEB_HOSTS: [&str; 4] = ["cyberjapandata.gsi.go.jp", "canelevation-dem.s3.ca-central-1.amazonaws.com", "prd-tnm.s3.amazonaws.com", "esa-worldcover.s3.eu-central-1.amazonaws.com"];
 
 /// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
 /// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain).

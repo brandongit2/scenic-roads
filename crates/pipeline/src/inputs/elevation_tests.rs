@@ -38,6 +38,8 @@ fn index(files: &[(&str, [f64; 4])]) -> Vec<u8> {
 struct Fixture {
     files: BTreeMap<String, Arc<Vec<u8>>>,
     checks: Elevation,
+    /// The stores' folder: `tiled/`'s two tiles (a dataset declared `store` is measured there).
+    store: tempfile::TempDir,
 }
 
 /// The data the fixtures' declarations name, served by URL.
@@ -67,7 +69,12 @@ fn fetch() -> MapFetch {
 impl Fixture {
     fn new(files: Vec<(&str, Vec<u8>)>) -> Fixture {
         let f = fetch();
-        Fixture { files: files.into_iter().map(|(p, b)| (p.to_string(), Arc::new(b))).collect(), checks: Elevation::new(Arc::new(f), None) }
+        let store = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(store.path().join("tiled")).unwrap();
+        std::fs::write(store.path().join("tiled/N48E002.tif"), tile(2.0, 48.0)).unwrap();
+        std::fs::write(store.path().join("tiled/N49E002.tif"), tile(2.0, 49.0)).unwrap();
+        let checks = Elevation { store: Some(store.path().to_path_buf()), ..Elevation::new(Arc::new(f), None) };
+        Fixture { files: files.into_iter().map(|(p, b)| (p.to_string(), Arc::new(b))).collect(), checks, store }
     }
 
     fn whole(&self) -> Vec<Finding> {
@@ -156,6 +163,54 @@ fn what_the_checks_refuse_and_warn_of() {
     let tie = f.whole().into_iter().find(|x| x.check() == TIE).unwrap();
     assert_eq!(tie.files, vec!["bad.toml".to_string(), "twin.toml".to_string()]);
     assert_eq!(tie.id, f.whole().into_iter().find(|x| x.check() == TIE).unwrap().id);
+}
+
+/// A dataset declared `store` is measured from its stored files, its index's URLs only naming them:
+/// nothing fetched (the URLs aren't served here), and a sampled file the store lacks is an error
+/// naming it.
+#[test]
+fn a_stored_dataset_is_measured_from_the_store_alone() {
+    let decl_ = decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"\nstore = true");
+    let ix = index(&[("https://gone.example/z.zip#N48E002.tif", [2.0, 48.0, 3.0, 49.0]), ("https://gone.example/z.zip#N49E002.tif", [2.0, 49.0, 3.0, 50.0])]);
+    let f = Fixture::new(vec![("tiled.toml", decl_.clone()), ("tiled.geojson", ix.clone())]);
+    assert!(f.checks().is_empty(), "{:?}", f.whole());
+    let m: Measured = serde_json::from_value(f.derive().facts["tiled.toml"].0["measured"].clone()).unwrap();
+    assert_eq!(m.crs, Some(4326));
+    std::fs::remove_file(f.store.path().join("tiled/N49E002.tif")).unwrap();
+    let g = Fixture { files: f.files.clone(), checks: Elevation { store: Some(f.store.path().to_path_buf()), ..Elevation::new(Arc::new(fetch()), None) }, store: tempfile::tempdir().unwrap() };
+    let why: Vec<String> = g.whole().iter().map(|x| format!("{x:?}")).collect();
+    assert!(why.iter().any(|w| w.contains("tile N49E002.tif isn't in the store")), "{why:?}");
+}
+
+/// FABDEM's declaration as accepted (inputs/elevation/fabdem.toml, its bytes) with its index's
+/// content (fabdem-tiles.geojson, content name 2b71fb6f44a2ccff): the keyed digest the units' keys
+/// name is the one the accepted index records (9cd774557ca47aa0), so no unit with stored tiles is
+/// re-keyed or rebuilt by #229 (the store only read, the declaration and index untouched).
+#[test]
+fn fabdems_keyed_digest_is_the_accepted_ones() {
+    const FABDEM_TOML: &str = r#"name = "FABDEM v1-2, 30 m"
+what = "Road elevation, Europe, Hong Kong, Singapore, Taiwan"
+credit = "FABDEM v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022). FABDEM is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved."
+licence = "CC-BY-NC-SA-4.0"
+licence_url = "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+source = "https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn"
+retrieved = "2026-10-16"
+territory = "world"
+surface = "ground"
+heights = "EGM2008"
+rank = 1
+code = 4
+notes = "The worldwide fallback: the coarsest rank. Copernicus DEM with forests and buildings removed. The index lists every tile inside Bristol's 10° zips (producers/elevation/indexes.py fabdem); each downloaded once into the store."
+
+[data]
+format = "geotiff"
+index = "fabdem-tiles.geojson"
+store = true
+"#;
+    let (Some(_), _, dk) = super::super::credits::parse_description("fabdem.toml", FABDEM_TOML.as_bytes()) else { panic!("its description") };
+    let d = declared::parse(FABDEM_TOML.as_bytes()).unwrap();
+    let data = store::naming::hash16(b"index 2b71fb6f44a2ccff");
+    assert_eq!(keyed_with_data(&keyed(&dk, &d), &data), "9cd774557ca47aa0");
 }
 
 #[test]

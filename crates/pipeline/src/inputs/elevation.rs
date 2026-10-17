@@ -50,11 +50,14 @@ pub struct Elevation {
     memo: Mutex<HashMap<String, std::result::Result<Measured, String>>>,
     /// The app the switch records; None: this program's (`agent::app_version`).
     pub app: Option<String>,
+    /// The stores' folder (`sources/fetched/`): a dataset declared `store` is measured from its
+    /// stored files there (crate::dem::generic::stored), never fetched.
+    pub store: Option<std::path::PathBuf>,
 }
 
 impl Elevation {
     pub fn new(fetch: Arc<dyn Fetch>, outlines: Option<Outlines>) -> Elevation {
-        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default(), app: None }
+        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default(), app: None, store: None }
     }
 }
 
@@ -162,7 +165,7 @@ impl Elevation {
                 let mid = cells.iter().map(|c| c.1 as f64 + 0.5).sum::<f64>() / cells.len() as f64;
                 Ok(Measured { crs: None, resolution: crate::dem::generic::tile_resolution(*zoom, mid), cover: Some(declared::cells_to_boxes(&cells)) })
             }
-            Data::Geotiff { urls, index, files, read_resolution, .. } => {
+            Data::Geotiff { urls, index, files, read_resolution, store } => {
                 let fetch = self.fetch.as_ref().ok_or("nothing reads the data here")?;
                 // (Where each file is, and its footprint when the index gives one.)
                 let mut list: Vec<(String, Option<[f64; 4]>)> = urls.iter().map(|u| (u.clone(), None)).collect();
@@ -199,7 +202,10 @@ impl Elevation {
                 let mut masks: Vec<Mask> = Vec::new();
                 for k in picks {
                     let (w, footprint) = &list[k];
-                    let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") {
+                    let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") && *store {
+                        let dir = self.store.as_ref().ok_or("its files are read from the store, and no store is given here")?.join(id);
+                        crate::dem::generic::stored(id, &dir, w).map_err(|e| format!("{e:#}"))?.ok_or_else(|| format!("{w}: the store notes the source has no such file"))?
+                    } else if w.starts_with("http") {
                         crate::dem::generic::open_url(&**fetch, w).map_err(|e| format!("{w}: {e:#}"))?.ok_or_else(|| format!("{w}: the server has no such file"))?
                     } else {
                         Arc::new((v.read)(w).map_err(|e| format!("{w}: {e:#}"))?.as_ref().clone())
@@ -456,9 +462,9 @@ impl Checks for Elevation {
         };
         #[cfg(test)]
         if let Some((fetch, app)) = TEST_PREPARED.with(|t| t.borrow().clone()) {
-            return Ok(Some(Box::new(Elevation { app: Some(app), ..Elevation::new(fetch, outlines) })));
+            return Ok(Some(Box::new(Elevation { app: Some(app), store: Some(root.join("sources/fetched")), ..Elevation::new(fetch, outlines) })));
         }
-        Ok(Some(Box::new(Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines))))
+        Ok(Some(Box::new(Elevation { store: Some(root.join("sources/fetched")), ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines) })))
     }
 }
 
