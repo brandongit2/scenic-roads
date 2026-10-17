@@ -139,7 +139,7 @@
 
 use anyhow::{bail, Context, Result};
 use pipeline::basepack::BasePack;
-use pipeline::hipack::{self, b, grow, meets, tile_bounds};
+use pipeline::hipack::{self, b, meets, tile_bounds};
 use pipeline::layers::{self, LayerOut};
 use pipeline::legacy::{self, Legacy, Unit};
 use pipeline::out::Out;
@@ -899,12 +899,10 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         let c = cost_start("pack", &t.slash());
         at(k, 0.0);
         let tb = tile_bounds(t.z, t.x, t.y);
-        let halo_b = grow(tb, 100.0);
         // (Each stage of a tile's: one phase over the tiles.)
         let p = phase("ways gathered from the base packs", Class::Compute);
-        let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, halo_b)).collect();
-        let halo = hipack::ways_in(&near, halo_b)?;
-        let in_t: Vec<hipack::Staged> = halo.iter().copied().filter(|s| meets(s.bbox, tb)).collect();
+        let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, tb)).collect();
+        let in_t = hipack::ways_in(&near, tb)?;
         drop(p);
         // (Its inputs' measures: the base packs it meets, their bytes, its ways.)
         pipeline::costin::set("units", near.len() as u64);
@@ -936,7 +934,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         drop(p);
         at(k, 0.75);
         let p = phase("hidata made", Class::Compute);
-        let hd = hipack::hidata(*t, &near, &in_t, &halo)?;
+        let hd = hipack::hidata(*t, &near, &in_t)?;
         // The zoomed-out summaries (docs/phase5.md), from the same parts.
         let ls = roadcore::lsum::build(&hd.parts, &hd.psamples, &hd.pch, &hd.here, &hd.railinfo);
         drop(p);
@@ -944,15 +942,13 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         put_sect(
             out,
             &format!("hidata/{}", t.dash()),
-            serde_json::json!({"fmt": 1, "tile": t.slash(), "here": hd.here.len(), "parts": hd.parts.len(), "climbs": hd.climbs.len(), "lsum": roadcore::lsum::LSUM_V}),
+            serde_json::json!({"fmt": 1, "tile": t.slash(), "here": hd.here.len(), "parts": hd.parts.len(), "lsum": roadcore::lsum::LSUM_V}),
             &[
                 ("here", b(&hd.here)),
                 ("ends", b(&hd.ends)),
                 ("parts", b(&hd.parts)),
                 ("psamples", b(&hd.psamples)),
                 ("pch", b(&hd.pch)),
-                ("climbs", b(&hd.climbs)),
-                ("climbgeom", b(&hd.climbgeom)),
                 ("railinfo", b(&hd.railinfo)),
                 ("railstr", &hd.railstr),
                 ("lparts", b(&ls.lparts)),
@@ -965,7 +961,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         out.save()?;
         note_cost("pack", &t.slash(), c);
         pipeline::control::done("pack", &t.slash());
-        eprintln!("pack {} ({}/{}): {} ways, {} road tiles, {} parts, {} climbs ({:.0?})", t.slash(), k + 1, ts.len(), in_t.len(), roads.len(), hd.parts.len(), hd.climbs.len(), t0.elapsed());
+        eprintln!("pack {} ({}/{}): {} ways, {} road tiles, {} parts ({:.0?})", t.slash(), k + 1, ts.len(), in_t.len(), roads.len(), hd.parts.len(), t0.elapsed());
     }
     pipeline::agent::jobs::report(n, n, "map tiles");
     Ok(())

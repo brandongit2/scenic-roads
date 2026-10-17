@@ -7,7 +7,7 @@ use anyhow::{bail, ensure, Context, Result};
 use bytemuck::Pod;
 use memmap2::Mmap;
 use roadcore::elev::Elevs;
-use roadcore::packs::{Climb, Here, LBin, LPart, PSample, Part, RailInfo, RailRel, RoadRec};
+use roadcore::packs::{Here, LBin, LPart, PSample, Part, RailInfo, RailRel, RoadRec};
 use roadcore::scenic::ch;
 use roadcore::WayRec;
 use std::borrow::Cow;
@@ -582,8 +582,6 @@ pub struct HiView {
     pub parts: Sect<Part>,
     pub psamples: Sect<PSample>,
     pub pch: Sect<[u8; ch::N]>,
-    pub climbs: Sect<Climb>,
-    pub climbgeom: Sect<[i32; 2]>,
     /// The rail ways' lines (pack(T) since 2026-10-03; empty in older hidata).
     pub railinfo: Sect<RailInfo>,
     railstr: SectView,
@@ -605,8 +603,6 @@ impl HiView {
             parts: s.sect("parts")?,
             psamples: s.sect("psamples")?,
             pch: s.sect("pch")?,
-            climbs: s.sect("climbs")?,
-            climbgeom: s.sect("climbgeom")?,
             railinfo: s.sect("railinfo")?,
             lsum: s.meta.get("lsum").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             lparts: s.sect("lparts")?,

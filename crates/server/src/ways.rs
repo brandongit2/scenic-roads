@@ -1,4 +1,4 @@
-//! Ways and whole roads: hover info, the road highlight, elevation profiles, climbs.
+//! Ways and whole roads: hover info, the road highlight, elevation profiles.
 //!
 //! A way is asked for by its OSM id plus a point near it (`?at=lon,lat`): the z6 tile holding the
 //! point says which hidata lists it ("ways here" → its owner unit and index), and the owner's base
@@ -7,7 +7,7 @@
 //! by their offsets along the road.
 
 use crate::views::{BaseView, Gathered, HiView};
-use crate::{AppState, Region, S};
+use crate::{AppState, S};
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
@@ -460,65 +460,11 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
     }))
 }
 
-// ---- climbs -------------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-pub struct ClimbQuery {
-    bbox: String,
-    #[serde(default)]
-    poly: Option<String>,
-    #[serde(default)]
-    sort: Option<String>,
-    #[serde(default)]
-    limit: Option<usize>,
-    #[serde(default)]
-    classes: Option<u32>,
-    #[serde(default)]
-    surface: Option<u8>,
-    #[serde(default)]
-    toll: Option<u8>,
-    #[serde(default)]
-    unnamed: Option<u32>,
-    #[serde(default)]
-    lmin: Option<f32>,
-    #[serde(default)]
-    lmax: Option<f32>,
-}
-
 /// The road-length filter: [lmin, lmax] metres, 0 = no limit (tiles carry whole metres).
 pub fn len_ok(road_len: f32, lmin: Option<f32>, lmax: Option<f32>) -> bool {
     let (lo, hi) = (lmin.unwrap_or(0.0), lmax.filter(|&v| v > 0.0).unwrap_or(f32::INFINITY));
     let r = road_len.round();
     r >= lo && r <= hi
-}
-
-#[derive(Serialize)]
-struct ClimbOut {
-    way: u64,
-    /// A point on the climb's first way (for `?at=`).
-    at: [f64; 2],
-    name: String,
-    main: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sub: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    name_en: String,
-    r#ref: String,
-    class: &'static str,
-    gain_m: f32,
-    length_m: f32,
-    avg_grade: f32,
-    max_grade: f32,
-    start_elev: f32,
-    top_elev: f32,
-    unpaved: bool,
-    geom: Vec<[f64; 2]>,
-}
-
-#[derive(Serialize)]
-struct ClimbList {
-    total: usize,
-    climbs: Vec<ClimbOut>,
 }
 
 /// The z6 tiles a region's box touches.
@@ -532,83 +478,4 @@ pub fn tiles_in(bb: [i32; 4]) -> Vec<(u32, u32)> {
         }
     }
     out
-}
-
-pub async fn climbs_h(State(s): State<S>, Query(q): Query<ClimbQuery>) -> Response {
-    let Some(region) = Region::parse(&q.bbox, q.poly.as_deref()) else { return StatusCode::BAD_REQUEST.into_response() };
-    let s2 = s.clone();
-    let out = tokio::task::spawn_blocking(move || climbs(&s2, &q, &region)).await;
-    match out {
-        Ok(Ok(l)) => Json(l).into_response(),
-        Ok(Err(e)) => {
-            eprintln!("climbs: {e:#}");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-/// The best climbs in a region; an error when a tile couldn't be read (a list over part of the
-/// region would look complete).
-fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> anyhow::Result<ClimbList> {
-    let classes = q.classes.unwrap_or(u32::MAX);
-    let surface = q.surface.unwrap_or(3);
-    let toll = q.toll.unwrap_or(3);
-    let unnamed = q.unnamed.unwrap_or(0);
-    let mut hits: Vec<(f32, Arc<HiView>, roadcore::packs::Climb)> = Vec::new();
-    for (x, y) in tiles_in(region.bb) {
-        let Some(hv) = s.data.hidata(&format!("6/{x}/{y}"))? else { continue };
-        let all = hv.climbs.all()?;
-        for c in all.cast::<roadcore::packs::Climb>() {
-            let ok = region.contains(c.mid[0], c.mid[1])
-                && (classes >> c.class) & 1 == 1
-                && (surface >> (c.unpaved & 1)) & 1 == 1
-                && (toll >> (c.flags & 1)) & 1 == 1
-                && !((unnamed >> c.class) & 1 == 1 && c.flags & 2 != 0)
-                && len_ok(c.road_len, q.lmin, q.lmax);
-            if !ok {
-                continue;
-            }
-            let avg = c.gain_m / c.length_m.max(1.0);
-            let key = match q.sort.as_deref() {
-                Some("grade") => avg,
-                Some("score") => c.gain_m * c.gain_m / c.length_m.max(1.0),
-                _ => c.gain_m,
-            };
-            hits.push((key, hv.clone(), *c));
-        }
-    }
-    let total = hits.len();
-    let limit = q.limit.unwrap_or(25).min(100);
-    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
-    hits.truncate(limit);
-    let climbs = hits
-        .into_iter()
-        .map(|(_, hv, c)| -> anyhow::Result<ClimbOut> {
-            let geom: Vec<[f64; 2]> = hv.climbgeom.range(c.geom_start as usize..(c.geom_start + c.geom_count) as usize)?.iter().map(|p| [p[0] as f64 * E7, p[1] as f64 * E7]).collect();
-            let mid = [c.mid[0] as f64 * E7, c.mid[1] as f64 * E7];
-            let (name, rf) = find_way(s, c.label, mid)?.map(|f| (f.base.string(f.rec().name).to_string(), f.base.string(f.rec().ref_).to_string())).unwrap_or_default();
-            let name_en = s.road_en(c.label);
-            let d = s.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], mid[0], mid[1]);
-            Ok(ClimbOut {
-                way: c.way,
-                at: geom.first().copied().unwrap_or(mid),
-                name,
-                main: d.main,
-                sub: d.sub,
-                name_en,
-                r#ref: rf,
-                class: class::NAMES[c.class as usize],
-                gain_m: c.gain_m,
-                length_m: c.length_m,
-                avg_grade: c.gain_m / c.length_m.max(1.0) * 100.0,
-                max_grade: c.max_grade,
-                start_elev: c.start_elev,
-                top_elev: c.top_elev,
-                unpaved: c.unpaved != 0,
-                geom,
-            })
-        })
-        .collect::<anyhow::Result<_>>()?;
-    Ok(ClimbList { total, climbs })
 }

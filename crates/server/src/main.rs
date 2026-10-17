@@ -522,7 +522,6 @@ async fn main() -> Result<()> {
         .route("/api/way/{id}", get(ways::way_h))
         .route("/api/profile/{id}", get(ways::profile_h))
         .route("/api/road/{id}", get(ways::road_h))
-        .route("/api/climbs", get(ways::climbs_h))
         .route("/api/viewshed", get(viewshed::viewshed))
         .route("/api/drives", get(query::drives))
         .route("/api/rides", get(query::rides))

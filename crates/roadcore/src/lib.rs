@@ -10,11 +10,9 @@
 //!                folders: final.i16, signed)
 //!   grade.u8     |grade| per vertex, 0.5 % units                     — tile stage
 //!   roads.tiles  tile archive, see `archive`
-//!   climbs.bin   `climb::ClimbRec` records; climbs.geom: [i32; 2] polylines they index into
 
 use det::Det;
 pub mod archive;
-pub mod climb;
 pub mod elev;
 pub mod grid;
 pub mod packs;

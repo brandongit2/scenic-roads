@@ -1,18 +1,17 @@
 //! Per-area packs from base packs (docs/plan.md §6): pack(T) for a z6 tile T (road and rail tiles
-//! z9–14, and hidata: the ways drawn here, query parts, climbs) and lo packs for a z3 tile (road and
-//! rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the area (plus a
-//! 100 km halo for climbs), never anything per region.
+//! z9–14, and hidata: the ways drawn here, query parts, rail lines) and lo packs for a z3 tile (road
+//! and rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the area,
+//! never anything per region.
 
 use det::Det;
 use crate::basepack::BasePack;
-use crate::climbs;
 use crate::legacy::Unit;
 use crate::tiling::{self, Encoded, WayIn};
 use anyhow::Result;
 use rayon::prelude::*;
 use roadcore::scenic::{ch, Sample};
 use roadcore::tile::TileLine;
-use roadcore::{class, dist_m, flag, WayRec, E7};
+use roadcore::{class, dist_m, flag, E7};
 
 /// [west, south, east, north] in E7 degrees.
 pub type Bounds = [i32; 4];
@@ -110,7 +109,7 @@ pub fn tiles(ways: &[WayIn], zr: u8, xr: u32, yr: u32, zs: std::ops::RangeInclus
     (roads, rails)
 }
 
-pub use roadcore::packs::{here_extra as extra, point_key, Climb, End, Here, PSample, Part, RailInfo};
+pub use roadcore::packs::{here_extra as extra, point_key, End, Here, PSample, Part, RailInfo};
 
 /// hidata sections of a z6 tile.
 pub struct HiData {
@@ -119,8 +118,6 @@ pub struct HiData {
     pub parts: Vec<Part>,
     pub psamples: Vec<PSample>,
     pub pch: Vec<[u8; ch::N]>,
-    pub climbs: Vec<Climb>,
-    pub climbgeom: Vec<[i32; 2]>,
     /// The rail ways' lines, and their strings (newline-separated; 0 is "").
     pub railinfo: Vec<RailInfo>,
     pub railstr: Vec<u8>,
@@ -130,8 +127,8 @@ fn way_len(v: &[[i32; 2]]) -> f64 {
     v.windows(2).map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7)).sum()
 }
 
-/// The hidata of z6 tile `t`: `in_t` are the ways meeting T, `halo` the ways meeting T + 100 km.
-pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged], halo: &[Staged]) -> Result<HiData> {
+/// The hidata of z6 tile `t`: `in_t` are the ways meeting T.
+pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged]) -> Result<HiData> {
     let tb = tile_bounds(t.z, t.x, t.y);
     // here: sorted by OSM id.
     let mut here: Vec<Here> = in_t
@@ -229,8 +226,6 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged], halo: &[Staged]) ->
         psamples.push(PSample { way: q.here, offset: q.off, lon: q.s.lon, lat: q.s.lat, eye: q.s.eye, flags: q.s.flags, _pad: [0; 3] });
         pch.push(q.c);
     }
-    // Climbs along roads through the halo, kept when they start in T.
-    let (climbs, climbgeom) = climbs_in(t, packs, halo)?;
     // The rail ways' lines (name, route, colour, relation, services), by their place in `here`.
     let mut strings: Vec<String> = vec![String::new()];
     let mut index: std::collections::HashMap<String, u32> = std::collections::HashMap::from([(String::new(), 0)]);
@@ -250,7 +245,7 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged], halo: &[Staged]) ->
             continue;
         }
         let Ok(hi) = here.binary_search_by_key(&(w.id as u64), |h| h.id) else { continue };
-        // (A way in several packs' halos: the one `here` keeps.)
+        // (A way in several packs: the one `here` keeps.)
         if here[hi].owner != bp.unit.key() || here[hi].index != s.way {
             continue;
         }
@@ -268,77 +263,7 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged], halo: &[Staged]) ->
     railinfo.sort_unstable_by_key(|r| r.here);
     railinfo.dedup_by_key(|r| r.here);
     let railstr = strings.join("\n").into_bytes();
-    Ok(HiData { here, ends, parts, psamples, pch, climbs, climbgeom, railinfo, railstr })
-}
-
-/// Climbs starting in T, found along the roads of the halo's ways (in order by road offset).
-fn climbs_in(t: Unit, packs: &[&BasePack], halo: &[Staged]) -> Result<(Vec<Climb>, Vec<[i32; 2]>)> {
-    let tb = tile_bounds(t.z, t.x, t.y);
-    // Staging arrays: the halo's road ways, copied into one set of arrays.
-    let mut ways: Vec<WayRec> = Vec::new();
-    let mut verts: Vec<[i32; 2]> = Vec::new();
-    let mut elev: Vec<f32> = Vec::new();
-    let mut ids: Vec<u64> = Vec::new();
-    // Per staging way: the road's length and the climb flags (toll, unnamed).
-    let mut info: Vec<(f32, u8)> = Vec::new();
-    let mut keyed: Vec<(u64, f32, u32, bool, f32)> = Vec::new(); // road, offset, staging idx, reversed, length
-    for s in halo {
-        let bp = packs[s.pack];
-        let w = bp.ways()?[s.way as usize];
-        if w.class == class::FERRY || class::is_rail(w.class) || w.vcount < 2 {
-            continue;
-        }
-        let r = bp.range(&w);
-        let v = &bp.verts()?[r.clone()];
-        let mut nw = w;
-        nw.vstart = verts.len() as u64;
-        verts.extend_from_slice(v);
-        let e = bp.elev()?.slice(r);
-        elev.extend((0..e.len()).map(|i| e.m(i)));
-        let rv = bp.road_vals()?[s.way as usize];
-        keyed.push((rv.road, rv.offset, ways.len() as u32, rv.dir == 1, way_len(v) as f32));
-        ids.push(w.id as u64);
-        info.push((rv.len, (w.flags & flag::TOLL != 0) as u8 | ((w.name == 0 && w.ref_ == 0) as u8) << 1));
-        ways.push(nw);
-    }
-    keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
-    // Strokes: runs of a road's ways that follow each other without a gap.
-    let mut strokes: Vec<Vec<climbs::OWay>> = Vec::new();
-    for (i, k) in keyed.iter().enumerate() {
-        let contiguous = i > 0 && keyed[i - 1].0 == k.0 && (k.1 - (keyed[i - 1].1 + keyed[i - 1].4)).abs() < 1.0;
-        if !contiguous {
-            strokes.push(Vec::new());
-        }
-        strokes.last_mut().unwrap().push((k.2, k.3));
-    }
-    let cl = climbs::find_on(&ways, &verts, &elev, strokes);
-    let mut out = Vec::new();
-    let mut geom = Vec::new();
-    for c in &cl.recs {
-        let g = &cl.geom[c.geom_start as usize..(c.geom_start + c.geom_count) as usize];
-        if g.is_empty() || !inside(g[0], tb) {
-            continue;
-        }
-        out.push(Climb {
-            way: ids[c.way as usize],
-            label: ids[c.label_way as usize],
-            gain_m: c.gain_m,
-            length_m: c.length_m,
-            start_elev: c.start_elev,
-            top_elev: c.top_elev,
-            max_grade: c.max_grade,
-            road_len: info[c.label_way as usize].0,
-            mid: c.mid,
-            geom_start: geom.len() as u32,
-            geom_count: g.len() as u32,
-            class: c.class,
-            unpaved: c.unpaved,
-            flags: info[c.label_way as usize].1,
-            _pad: [0; 5],
-        });
-        geom.extend_from_slice(g);
-    }
-    Ok((out, geom))
+    Ok(HiData { here, ends, parts, psamples, pch, railinfo, railstr })
 }
 
 /// Bytes of a slice of records.

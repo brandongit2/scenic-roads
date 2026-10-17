@@ -180,34 +180,6 @@ pub struct PSample {
     pub _pad: [u8; 3],
 }
 
-/// hidata `climbs`: a climb starting in the tile.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Climb {
-    /// OSM id of the way at the start (opens its road profile).
-    pub way: u64,
-    /// OSM id of the way at the middle (its name and ref label the climb).
-    pub label: u64,
-    pub gain_m: f32,
-    pub length_m: f32,
-    pub start_elev: f32,
-    pub top_elev: f32,
-    /// Steepest 100 m, percent.
-    pub max_grade: f32,
-    /// The whole road's length (of the middle way), metres: the length filter.
-    pub road_len: f32,
-    /// Midpoint, E7.
-    pub mid: [i32; 2],
-    /// Its polyline in `climbgeom`.
-    pub geom_start: u32,
-    pub geom_count: u32,
-    pub class: u8,
-    pub unpaved: u8,
-    /// Of the middle way: bit 0 toll, bit 1 no name and no ref.
-    pub flags: u8,
-    pub _pad: [u8; 5],
-}
-
 const _: () = assert!(std::mem::size_of::<Sub9>() == 16);
 const _: () = assert!(std::mem::size_of::<RailRel>() == 16);
 const _: () = assert!(std::mem::size_of::<RoadRec>() == 24);
@@ -215,4 +187,3 @@ const _: () = assert!(std::mem::size_of::<Here>() == 40);
 const _: () = assert!(std::mem::size_of::<End>() == 16);
 const _: () = assert!(std::mem::size_of::<Part>() == 32);
 const _: () = assert!(std::mem::size_of::<PSample>() == 24);
-const _: () = assert!(std::mem::size_of::<Climb>() == 64);
