@@ -12,6 +12,7 @@ pub mod cli;
 pub mod climbs;
 pub mod control;
 pub mod coord;
+pub mod costin;
 #[cfg(not(target_os = "wasi"))]
 pub mod net;
 pub mod coverage;

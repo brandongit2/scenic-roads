@@ -290,6 +290,7 @@ pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
             Some(mut f) => {
                 let mut b = Vec::new();
                 f.read_to_end(&mut b)?;
+                crate::range::count_read(b.len() as u64);
                 return Ok(Some(b));
             }
             None if !path.exists() => return Ok(None),

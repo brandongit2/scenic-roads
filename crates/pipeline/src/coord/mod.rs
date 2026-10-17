@@ -78,7 +78,8 @@ pub fn contact_path(root: &Path) -> PathBuf {
 
 /// What a job's target cost last time (a unit's, another shared step's, a task's): its peak memory
 /// (MB) and its wall time, the worker it was measured on (None: the lead, or not said), and
-/// the way its step was run then (`cost_version`).
+/// the way its step was run then (`cost_version`), and its inputs' measures then (crate::costin;
+/// none from a job before them, and a reader before them ignores them).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     pub peak_mb: u64,
@@ -87,6 +88,8 @@ pub struct Cost {
     pub worker: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub v: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sizes: BTreeMap<String, u64>,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -2213,7 +2216,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     }
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
-                        s.costs.insert(task_cost_key(&kind, u), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0 });
+                        s.costs.insert(task_cost_key(&kind, u), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0, ..Default::default() });
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
@@ -3334,14 +3337,14 @@ mod tests {
         // Terrain measured holding its whole area (before it wrote a z6 tile at a time): its
         // estimate instead; measured since: what it took.
         let mut costs = BTreeMap::new();
-        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0 });
+        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0, ..Default::default() });
         assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2400);
-        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain") });
+        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain"), ..Default::default() });
         assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2100);
         // Slope likewise (written a z6 tile at a time too); other steps' measures stand.
-        costs.insert(cost_key("slope", "3/0/2"), Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0 });
+        costs.insert(cost_key("slope", "3/0/2"), Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0, ..Default::default() });
         assert_eq!(job_peak(&costs, "slope", "3/0/2", 2000), 2000);
-        costs.insert(cost_key("peaks", "6/1/1"), Cost { peak_mb: 5000, secs: 300, worker: None, v: 0 });
+        costs.insert(cost_key("peaks", "6/1/1"), Cost { peak_mb: 5000, secs: 300, worker: None, v: 0, ..Default::default() });
         assert_eq!(job_peak(&costs, "peaks", "6/1/1", 2500), 5000);
     }
 
@@ -3351,7 +3354,7 @@ mod tests {
         let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two areas (the third too big), hands one back.
-        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None, v: cost_version("unit") });
+        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() });
         let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
@@ -3450,7 +3453,7 @@ mod tests {
 
     #[test]
     fn candidates_are_expected_to_take_what_their_unit_did() {
-        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: 2 };
+        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: 2, ..Default::default() };
         let mut costs = BTreeMap::new();
         // Before either ran: as a unit on its piece would (ten times it, at least 3.7 GB).
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);
@@ -3518,7 +3521,7 @@ mod tests {
         assert_eq!(c.pool_state().disks.get(&cost_key("peaks", "6/1/1")), Some(&7000));
         // Measured once: its own memory and disk; another target of its step, the step's largest
         // (a prior learned), until its own run says.
-        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0 })]);
+        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() })]);
         assert_eq!(c.measured("peaks", "6/1/1"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: true }));
         assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
         assert_eq!(c.measured("pois", "6/2/2"), None);
@@ -3562,7 +3565,7 @@ mod tests {
         assert_eq!(c.floor("peaks", "6/1/1").map(|f| f.mb), Some(9000));
         assert_eq!(c.pool_state().floors.get(&cost_key("peaks", "6/1/1")).map(|f| f.mb), Some(9000));
         // A run's measure takes its place.
-        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0 })]);
+        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() })]);
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
         let g = w.ask(&can(4096)).unwrap().unwrap();
         // A member's done carries its floors (of the lease's targets alone).
@@ -3615,7 +3618,7 @@ mod tests {
         let f = |mb: u64| Floor { mb, alone: true, v: 0 };
         c.add_floors(&[(cost_key("peaks", "6/1/1"), f(9000)), (cost_key("peaks", "6/1/2"), f(9000))]);
         // The other lead measured 6/1/1 (its floor gone there), and saw a higher floor for 6/1/3.
-        let p = PoolState { costs: [(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0 })].into(), floors: [(cost_key("peaks", "6/1/3"), f(7000))].into(), leases: serde_json::json!({ "next": 1, "leases": [] }), ..Default::default() };
+        let p = PoolState { costs: [(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() })].into(), floors: [(cost_key("peaks", "6/1/3"), f(7000))].into(), leases: serde_json::json!({ "next": 1, "leases": [] }), ..Default::default() };
         c.load_pool_state(&p).unwrap();
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
         assert_eq!((c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)), (Some(9000), Some(7000)));
@@ -3665,7 +3668,7 @@ mod tests {
         for (t, m) in ts {
             if let Some((mem, disk, secs)) = m {
                 // (Measured on m1: its own pace; another worker's run counts twice its time, job_secs.)
-                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: *mem, secs: *secs, worker: None, v: cost_version(step) })], "m1");
+                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: *mem, secs: *secs, worker: None, v: cost_version(step), ..Default::default() })], "m1");
                 c.add_disks(&[(cost_key(step, t), *disk)]);
             }
         }
@@ -3746,7 +3749,7 @@ mod tests {
         c.set_every(Some(Every { own: Some((16_000, 200_000)) }));
         assert!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)).is_empty());
         // Once a target of the step has run, the others are offered by its measures, batched.
-        c.add_costs(&[(cost_key("lo", "3/1/1"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo") })]);
+        c.add_costs(&[(cost_key("lo", "3/1/1"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() })]);
         assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2", "3/1/3"]);
     }
 
@@ -3798,7 +3801,7 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         for (step, ts) in [("pack", vec![("6/1/1", 60)]), ("slope", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])] {
             for (t, secs) in ts {
-                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: 500, secs, worker: None, v: cost_version(step) })], "m1");
+                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: 500, secs, worker: None, v: cost_version(step), ..Default::default() })], "m1");
                 c.add_disks(&[(cost_key(step, t), 10)]);
             }
         }
@@ -3832,7 +3835,7 @@ mod tests {
         let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
         let ts: Vec<String> = (0..400).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
         for t in &ts {
-            c.add_costs_by(&[(cost_key("pack", t), Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack") })], "m1");
+            c.add_costs_by(&[(cost_key("pack", t), Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() })], "m1");
             c.add_disks(&[(cost_key("pack", t), 10)]);
         }
         // (Both asking lately: nothing offered yet.)
@@ -3952,7 +3955,7 @@ mod tests {
         c.finish(own, &[]);
         let _ = w.ask(&every_ask("m1", "lo", 4096, 10_000)).unwrap().unwrap();
         assert!(c.cold_under_way("lo"));
-        c.add_costs(&[(cost_key("lo", "3/1/9"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo") })]);
+        c.add_costs(&[(cost_key("lo", "3/1/9"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() })]);
         assert!(!c.cold_under_way("lo"), "measured: not a cold start");
         // Switched off: a step not shared, offered before, isn't granted.
         c.set_every(None);
@@ -4008,7 +4011,7 @@ mod tests {
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
         // Terrain once a run said it fits.
-        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None, v: 3 })]);
+        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None, v: 3, ..Default::default() })]);
         assert_eq!(next(&["terrain"]), "terrain 3/1/2");
         // A worker that can't do a step gets none of it.
         c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
@@ -4030,7 +4033,7 @@ mod tests {
         // Slope's three areas: one needs 5 GB, measured at 10 minutes for this helper; one 8 GB,
         // an hour; one 5 GB, never run the way slope runs now.
         c.offer("p", vec![o("slope", &[("3/1/1", 5000), ("3/1/2", 8000), ("3/1/3", 5000)], 3)]);
-        c.add_costs_by(&[(cost_key("slope", "3/1/1"), Cost { peak_mb: 5000, secs: 600, worker: None, v: 3 }), (cost_key("slope", "3/1/2"), Cost { peak_mb: 8000, secs: 3600, worker: None, v: 3 })], "m1");
+        c.add_costs_by(&[(cost_key("slope", "3/1/1"), Cost { peak_mb: 5000, secs: 600, worker: None, v: 3, ..Default::default() }), (cost_key("slope", "3/1/2"), Cost { peak_mb: 8000, secs: 3600, worker: None, v: 3, ..Default::default() })], "m1");
         // At its desk: none fits its 4 GB.
         assert_eq!(next(&can(&["slope"], 4096)), "none");
         // Away, sparing 10 GB for twenty minutes: the short one alone (the hour-long one, and the
@@ -4043,7 +4046,7 @@ mod tests {
         // What fits its usual memory comes first, whatever its time and its step (the agent offers
         // slope before the candidates).
         c.offer("p", vec![o("slope", &[("3/2/1", 5000)], 3), o("pois", &[("6/1/1", 1500)], 12)]);
-        c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 3 })], "m1");
+        c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 3, ..Default::default() })], "m1");
         let both = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope", "pois"], 4096) };
         assert_eq!(next(&both), "pois 6/1/1");
     }
@@ -4126,7 +4129,7 @@ mod tests {
         assert!(kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN) && kept[0].1.done.is_none() && kept[0].1.changes.is_empty());
         assert_eq!(kept[0].1.raw.iter().map(|r| r.1.name.as_str()).collect::<Vec<_>>(), ["6-1-1.0123456789abcdef.tiles"]);
         std::fs::remove_file(&kept[0].0).unwrap();
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300, worker: None, v: 0 })], ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300, worker: None, v: 0, ..Default::default() })], ..Default::default() }).unwrap(), client::Handed::Taken);
         let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));

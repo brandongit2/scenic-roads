@@ -10,6 +10,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// The bytes this process has read through these sources so far: a mapped file's whole length as it
+/// is mapped, a pooled or plain file's reads (and `cachefile::read`'s). A build step's done line
+/// notes what its target added (pipeline::costin: its `bytes` input measure).
+static READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The bytes read through these sources so far (`READ`).
+pub fn read_bytes() -> u64 {
+    READ.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts `n` bytes read (`READ`).
+pub fn count_read(n: u64) {
+    READ.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Random access to an immutable file's bytes.
 pub trait RangeRead: Send + Sync {
     /// The length in bytes: an error when it can't be learnt (a NAS file whose share is away).
@@ -52,6 +67,7 @@ impl MmapFile {
         // SAFETY: the files mapped here are content-named and never modified once written, and
         // the mirror evicts by unlinking (never truncating), so the mapping stays valid.
         let map = unsafe { Mmap::map(&f) }.with_context(|| format!("map {}", path.display()))?;
+        count_read(map.len() as u64);
         Ok(Self { map, path: path.to_owned() })
     }
 
@@ -141,7 +157,9 @@ impl RangeRead for PooledFile {
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         check_range(self.len, off, len)?;
-        self.pool.read_at(&self.file, off, len)
+        let b = self.pool.read_at(&self.file, off, len)?;
+        count_read(len as u64);
+        Ok(b)
     }
 }
 
@@ -170,6 +188,7 @@ impl RangeRead for PlainFile {
         check_range(self.len, off, len)?;
         let mut b = vec![0u8; len];
         self.file.read_exact_at(&mut b, off).map_err(IoError::Io)?;
+        count_read(len as u64);
         Ok(b)
     }
 }

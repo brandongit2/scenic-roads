@@ -906,6 +906,10 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         let halo = hipack::ways_in(&near, halo_b)?;
         let in_t: Vec<hipack::Staged> = halo.iter().copied().filter(|s| meets(s.bbox, tb)).collect();
         drop(p);
+        // (Its inputs' measures: the base packs it meets, their bytes, its ways.)
+        pipeline::costin::set("units", near.len() as u64);
+        pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
+        pipeline::costin::set("ways", in_t.len() as u64);
         if in_t.is_empty() {
             // No ways here (any more): what an earlier build made for the tile goes.
             drop_entries(out, &[format!("hidata/{}", t.dash()), format!("layers/roads/hi/{}", t.dash()), format!("layers/rails/hi/{}", t.dash())])?;
@@ -1003,6 +1007,9 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, qb)).collect();
         let staged = hipack::ways_in(&near, qb)?;
         drop(p);
+        pipeline::costin::set("units", near.len() as u64);
+        pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
+        pipeline::costin::set("ways", staged.len() as u64);
         if staged.is_empty() {
             drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
             note_cost("lo", &q.slash(), c);
@@ -1416,6 +1423,10 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
 fn cost_start(step: &str, target: &str) -> std::time::Instant {
     pipeline::sys::reset_group_peak();
     note_started(&pipeline::coord::cost_key(step, target));
+    // (A tile's area, among its inputs' measures: pipeline::costin.)
+    if let Some(u) = Unit::parse(target) {
+        pipeline::costin::set("km2", pipeline::costin::tile_km2(u.z, u.x, u.y));
+    }
     std::time::Instant::now()
 }
 
@@ -1432,6 +1443,7 @@ fn disk_since_start() -> u64 {
 /// Notes that the target whose cost key is `key` begins (`SCENIC_COSTS`).
 fn note_started(key: &str) {
     WRITTEN_AT_START.store(store::cachefile::written(), std::sync::atomic::Ordering::Relaxed);
+    pipeline::costin::begin();
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
@@ -1443,14 +1455,20 @@ fn note_started(key: &str) {
 /// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
 /// processes held together meanwhile (sampled: a pool's workers summed, an earlier target's peak
 /// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
-/// work that fits its memory (crate::coord::job_peak).
+/// work that fits its memory (crate::coord::job_peak); with its inputs' measures (pipeline::costin).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
+    let line = done_line(step, target, t0);
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::coord::cost_version(step), "disk_mb": disk_since_start() });
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
     if let Err(e) = r {
         eprintln!("{step} {target}: noting what it cost: {e}");
     }
+}
+
+/// `note_cost`'s line (its inputs' measures taken: pipeline::costin).
+fn done_line(step: &str, target: &str, t0: std::time::Instant) -> serde_json::Value {
+    let sizes = pipeline::costin::take();
+    serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::coord::cost_version(step), "disk_mb": disk_since_start(), "sizes": sizes })
 }
 
 /// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
@@ -2096,7 +2114,10 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         let p = phase("pieces copied from the NAS", Class::NasRead);
-        p.count(store::sys::copy_data(&piece, &local).with_context(|| format!("copy {}", piece.display()))?, 1);
+        let n = store::sys::copy_data(&piece, &local).with_context(|| format!("copy {}", piece.display()))?;
+        p.count(n, 1);
+        // (Its input's measure: the piece's bytes.)
+        pipeline::costin::add("bytes", n);
         drop(p);
         let dir = scratch.join(format!("pois-{}", u.dash()));
         let p = phase("candidates extracted (extract)", Class::Compute);
@@ -2275,6 +2296,9 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::control::done("peaks", &u.slash());
         std::fs::remove_file(&file).ok();
         eprintln!("peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})", u.slash(), res.len(), z12.from.0, z12.from.1, z12.from.2, t.elapsed());
+        // (Its inputs' measures: the peaks, the z12 tiles read.)
+        pipeline::costin::set("peaks", peaks.len() as u64);
+        pipeline::costin::set("z12_tiles", (z12.from.0 + z12.from.1) as u64);
         note_cost("peaks", &u.slash(), t);
     }
     pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas");
@@ -3252,7 +3276,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if rep.kept_ways > 0 {
             run_tail(here, &dir, &tools)?;
         }
-        let b = Built { u, dir: dir.clone(), bdir: bdir.clone(), rep, tools, carry, piece, t, peak: pipeline::unit::take_peak(), group: pipeline::sys::group_peak(), disk: store::cachefile::written().saturating_sub(written_at), anywhere: anywhere.to_vec() };
+        // (Its inputs' measures: the piece's bytes beside what the store's readers read, its ways
+        // and vertices kept, its elevation tiles and area.)
+        let mut sizes = pipeline::costin::take();
+        *sizes.entry("bytes".into()).or_default() += std::fs::metadata(&piece).map_or(0, |m| m.len());
+        sizes.extend([("ways".into(), rep.kept_ways as u64), ("vertices".into(), rep.kept_verts as u64), ("piece_ways".into(), rep.piece_ways as u64), ("dem_tiles".into(), rep.dem_cache as u64), ("km2".into(), pipeline::costin::tile_km2(u.z, u.x, u.y))]);
+        let b = Built { u, dir: dir.clone(), bdir: bdir.clone(), rep, tools, carry, piece, t, peak: pipeline::unit::take_peak(), group: pipeline::sys::group_peak(), disk: store::cachefile::written().saturating_sub(written_at), anywhere: anywhere.to_vec(), sizes };
         let offering = phase("tails offered to other workers", Class::Net);
         let offered = match &offload {
             Some(o) if b.rep.kept_ways > 0 && out_now.len() < o.depth() => match o.offer(u, &b.dir, b.tools.buildings.as_deref(), &b.anywhere) {
@@ -3312,6 +3341,8 @@ struct Built {
     disk: u64,
     /// Its tail's steps any worker may run.
     anywhere: Vec<pipeline::unit::Run>,
+    /// Its inputs' measures (pipeline::costin), for its cost line.
+    sizes: BTreeMap<String, u64>,
 }
 
 /// A tail's time on the lead until it has timed its stages (seconds).
@@ -3357,7 +3388,7 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
 /// it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, .. } = b;
+    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, sizes, .. } = b;
     use pipeline::timings::Class;
     use pipeline::unit::{owns, stage as unit_stage};
     areas(|a| a.on(&u.slash()));
@@ -3478,7 +3509,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let peak = peak.max(pipeline::unit::take_peak());
     eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), peak as f64 / 1e9);
     if let Some(p) = std::env::var_os("SCENIC_COSTS") {
-        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::coord::cost_version("unit"), "disk_mb": disk >> 20 });
+        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": group.max(peak) >> 20, "secs": t.elapsed().as_secs(), "v": pipeline::coord::cost_version("unit"), "disk_mb": disk >> 20, "sizes": sizes });
         let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
         if let Err(e) = r {
             eprintln!("unit {}: noting what it cost: {e}", u.slash());
@@ -3660,6 +3691,10 @@ fn bldprep_step(out: &mut Out, args: &[String]) -> Result<()> {
         let c = cost_start("bldprep", &t.slash());
         let st = pipeline::bld::prep::run(out, t, &dem)?;
         eprintln!("bldprep {}: {}", t.slash(), serde_json::to_string(&st)?);
+        // (Its inputs' measures: the rows read, the buildings and parts among them.)
+        pipeline::costin::set("rows", st.rows);
+        pipeline::costin::set("buildings", st.buildings);
+        pipeline::costin::set("parts", st.parts);
         pipeline::control::done("bldprep", &t.slash());
         note_cost("bldprep", &t.slash(), c);
     }
@@ -3682,6 +3717,9 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         let c = cost_start("bldtiles", &t.slash());
         let sum = pipeline::bld::job::build(out, &cov, t, offload.as_ref())?;
         eprintln!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
+        // (Its inputs' measures: the buildings and parts read, drawn or not.)
+        pipeline::costin::set("buildings", sum.buildings + sum.outside);
+        pipeline::costin::set("parts", sum.parts);
         pipeline::control::done("bldtiles", &t.slash());
         note_cost("bldtiles", &t.slash(), c);
     }
@@ -4587,6 +4625,28 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A target's done line carries its inputs' measures (task #235): its tile's area, the store's
+    /// reads and what the step noted since its start, the threads, and as Cost reads them back.
+    #[test]
+    fn done_line_carries_sizes() {
+        let t = super::cost_start("terrain", "6/33/22");
+        store::range::count_read(4096);
+        pipeline::costin::set("ways", 12);
+        let l = super::done_line("terrain", "6/33/22", t);
+        assert_eq!(l["unit"], "terrain 6/33/22");
+        let i = &l["sizes"];
+        assert_eq!(i["km2"], pipeline::costin::tile_km2(6, 33, 22));
+        assert!(i["bytes"].as_u64().unwrap() >= 4096);
+        assert_eq!(i["ways"], 12);
+        assert!(i["threads"].as_u64().unwrap() >= 1);
+        assert!(i["tiffs"].is_u64());
+        let c: pipeline::coord::Cost = serde_json::from_value(l).unwrap();
+        assert_eq!(c.sizes["ways"], 12);
+        // (The next target starts again.)
+        let t = super::cost_start("pois", "8/1/2");
+        assert!(super::done_line("pois", "8/1/2", t)["sizes"].get("ways").is_none());
+    }
+
     /// The tests' catalogs' moment: fixed, so two runs make the same catalog whenever they run.
     const NOW: u64 = 1_790_000_000;
 

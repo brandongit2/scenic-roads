@@ -323,6 +323,7 @@ impl Tiff {
     /// Opens the TIFF that `src` holds: its directories (each image's, the overviews' among them),
     /// georeferencing and nodata. Tiles are read as they're needed.
     pub fn open(src: Arc<dyn RangeRead>) -> Result<Tiff> {
+        crate::costin::tiff_opened();
         let len = src.len()?;
         ensure!(len >= 8, "not a TIFF ({len} bytes)");
         let head = src.read_at(0, len.min(16) as usize)?;

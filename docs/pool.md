@@ -377,6 +377,7 @@ never correctness, politeness or work.
 | Need | How |
 | --- | --- |
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
+| input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, and the counts a step has: ways and vertices, buildings, peaks); recorded only, not yet read by placement |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the reserve (30 GB), the fastest-growing job is frozen, room is made from caches no job holds (`room::toward`), and it goes on or is given back. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
 | two jobs on one Mac | a job starts beside another only if both jobs' measured memory and disk fit; a cold start runs alone |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |

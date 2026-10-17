@@ -734,14 +734,20 @@ class, id) within a tile. The client sends the id with the clicked point.
     lead's agent runs (`page`: the build page over HTTPS when `tailscale serve` proxies it).
   - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `leases.json`
     (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
-    secs}}`; keys: a unit, `"<step> <target>"`, or `"<kind> <unit>"` for tasks: `tail 6/x/y`,
+    secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a unit, `"<step> <target>"`, or `"<kind> <unit>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
     v}}`, crate::agent::memguard::Floor; `scenic pool floors` lists and clears them);
     `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks.json`
     (`{<step>: MB}`); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
     at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` as a target
-    begins, `{unit, peak_mb, secs, v, disk_mb}` as it ends); `written`, `written-2`
+    begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `pipeline::costin`, a
+    map of the target's input measures, absent from lines before it: `bytes` and `threads` always
+    (bytes: what the store's readers read for the target, plus a step's own inputs: a unit's piece,
+    pack's and lo's base packs, pois' piece); `km2` (the tile's area) and `tiffs` (GeoTIFFs opened)
+    for every tile target; a unit's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`; pack's and
+    lo's `units` and `ways`; peaks' `peaks`, `z12_tiles`; bldprep's `rows`, `buildings`, `parts`;
+    bldtiles' `buildings`, `parts`); `written`, `written-2`
     (`SCENIC_WRITTEN`, bytes added to caches, every 64 MB); `timings.jsonl`.
   - On a member, `agent/outbox/<lease>/`: a leased task's files, `costs.jsonl`, `timings.json`,
     `spec.json`, `task.json` (`scenic run-task`'s result), `result.json` (`{ok, done: [step,

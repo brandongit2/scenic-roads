@@ -407,7 +407,9 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
     s.lines()
         .filter_map(|l| {
             let v: serde_json::Value = serde_json::from_str(l).ok()?;
-            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0), worker: None, v: v["v"].as_u64().unwrap_or(0) as u32 }))
+            // (`sizes`: a line from a job before them has none.)
+            let sizes = v["sizes"].as_object().map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect()).unwrap_or_default();
+            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0), worker: None, v: v["v"].as_u64().unwrap_or(0) as u32, sizes }))
         })
         .collect()
 }
@@ -6927,6 +6929,42 @@ fn test_agent(o: Options) -> Result<Agent> {
 mod tests {
     use super::*;
 
+    /// A costs file's done lines read with their inputs' measures (task #235); a line before them
+    /// has none, a `started` line is no cost, and the measures go on to the coordinator's record
+    /// as Cost's `sizes` (absent there when empty, so an older reader sees what it knew).
+    #[test]
+    fn costs_lines_with_and_without_sizes() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("costs.jsonl");
+        std::fs::write(
+            &p,
+            concat!(
+                "{\"unit\":\"terrain 6/1/2\",\"started\":1}\n",
+                "{\"unit\":\"terrain 6/1/2\",\"peak_mb\":900,\"secs\":40,\"v\":3,\"disk_mb\":2,\"sizes\":{\"bytes\":5000,\"km2\":380000,\"threads\":8,\"tiffs\":12}}\n",
+                "{\"unit\":\"8/1/2\",\"peak_mb\":3000,\"secs\":60,\"v\":1}\n",
+            ),
+        )
+        .unwrap();
+        let c = read_costs(&p);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].0, "terrain 6/1/2");
+        assert_eq!(c[0].1.sizes, [("bytes".to_string(), 5000), ("km2".into(), 380000), ("threads".into(), 8), ("tiffs".into(), 12)].into());
+        assert_eq!((c[0].1.peak_mb, c[0].1.secs, c[0].1.v), (900, 40, 3));
+        assert!(c[1].1.sizes.is_empty());
+        let j = serde_json::to_value(&c[1].1).unwrap();
+        assert!(j.get("sizes").is_none());
+        let back: crate::coord::Cost = serde_json::from_value(serde_json::to_value(&c[0].1).unwrap()).unwrap();
+        assert_eq!(back, c[0].1);
+        // (An older reader's Cost: no `sizes`, unknown fields ignored.)
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Old {
+            peak_mb: u64,
+            secs: u64,
+        }
+        let _: Old = serde_json::from_value(serde_json::to_value(&c[0].1).unwrap()).unwrap();
+    }
+
     /// An idle agent plans again only when what its plan depends on changed, a start was held by
     /// something on a short timer, a timed wait ended, or its fallback is due (task #154); a job
     /// ended, or none planned yet, always; a busy one every `every`. (Times passed in: no clock.)
@@ -7456,7 +7494,7 @@ mod tests {
         };
         // Beside the map tiles, the heritage chain, not a unit (too large beside them, by their
         // measures).
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
         a.coord.as_ref().unwrap().add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), cost("pack", 1024)), (crate::coord::cost_key("heritage", "heritage"), cost("heritage", 2048)), (crate::coord::cost_key("unit", "6/1/1"), cost("unit", 15 << 10))]);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
@@ -7516,7 +7554,7 @@ mod tests {
         // Measured: terrain 4 GB and 10 GB of disk; labels (a step the table runs alone) 6 GB; peaks
         // (a raw-tile reader, as terrain) 5 GB; a unit 9 GB.
         let c = a.coord.as_ref().unwrap();
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
         c.add_costs(&[(crate::coord::cost_key("terrain", "6/1/1"), cost("terrain", 4096)), (crate::coord::cost_key("labels", "labels"), cost("labels", 6144)), (crate::coord::cost_key("peaks", "6/2/2"), cost("peaks", 5120)), (crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216))]);
         c.add_disks(&[(crate::coord::cost_key("terrain", "6/1/1"), 10 << 10), (crate::coord::cost_key("peaks", "6/2/2"), 25 << 10)]);
         // Beside terrain: labels starts, though the table runs it alone and it isn't of the second
@@ -7558,7 +7596,7 @@ mod tests {
         let job = |step: &str, t: &str| JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let c = a.coord.as_ref().unwrap();
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
         c.add_costs(&[(crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216)), (crate::coord::cost_key("labels", "labels"), cost("labels", 6144))]);
         assert!(a.try_start(0, job("unit", "6/3/3"), &cond, Some(&root), &mut Vec::new()));
         let tick = |a: &mut Agent, held: Vec<Option<u64>>| {
@@ -7759,7 +7797,7 @@ mod tests {
         // 40 map tiles of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
         let tiles: Vec<String> = (0..40).map(|i| format!("6/{i}/0")).collect();
         let c = a.coord.as_ref().unwrap();
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step) };
+        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
         c.add_costs(&[(crate::coord::cost_key("pack", "6/0/0"), cost("pack", 1000)), (crate::coord::cost_key("unit", "6/9/9"), cost("unit", 4000))]);
         let mut disks: Vec<(String, u64)> = tiles.iter().map(|t| (crate::coord::cost_key("pack", t), 1024)).collect();
         disks[39].1 = 3072;
@@ -9205,7 +9243,7 @@ mod pool_tests {
         lead.pooled().unwrap().side.know(&im);
         // `pack` of 6/1/1 measured (a run of it said what it took), offered.
         let c = lead.coord.as_ref().unwrap();
-        c.add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("pack") })]);
+        c.add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("pack"), ..Default::default() })]);
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "kp".into(), 100)], batch: 16 }]);
         let asked = |l: &Agent| l.coord.as_ref().unwrap().workers().into_iter().find(|(_, w)| w.kind == "native").map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)));
         // The lead's coordinator told (with its own room, and its map update under way: `pack` is a
@@ -9276,7 +9314,7 @@ mod pool_tests {
         assert_eq!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope")), Some(0));
         // `slope` of 3/2/2 measured, offered: the member alone asking, drawn to it.
         let c = lead.coord.as_ref().unwrap();
-        c.add_costs(&[(crate::coord::cost_key("slope", "3/2/2"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("slope") })]);
+        c.add_costs(&[(crate::coord::cost_key("slope", "3/2/2"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("slope"), ..Default::default() })]);
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }]);
         // (Read once its job has ended: the fake job's `env >` makes the file before it writes it,
         // so the file's being there says nothing of its lines. Only the member's job runs slope:

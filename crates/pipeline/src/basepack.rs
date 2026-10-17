@@ -82,6 +82,12 @@ impl BasePack {
         Ok(bp)
     }
 
+    /// Its files' bytes (the base pack and its road values), a measure of a target's input
+    /// (crate::costin).
+    pub fn bytes(&self) -> u64 {
+        (self.sect.map.len() + self.roads.map.len()) as u64
+    }
+
     pub fn ways(&self) -> Result<&[WayRec]> {
         self.sect.slice("ways")
     }
