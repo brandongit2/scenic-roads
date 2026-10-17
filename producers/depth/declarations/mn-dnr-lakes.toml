@@ -1,0 +1,21 @@
+name = "Minnesota DNR lake bathymetric DEM (5 m)"
+what = "Depth of Minnesota's surveyed lakes"
+credit = "Minnesota DNR, Fisheries (Division of Fish and Wildlife), Minnesota Geospatial Commons"
+licence = "Minnesota DNR GIS Data License"
+source = "https://gisdata.mn.gov/dataset/water-lake-bathymetry"
+territory = ["US"]
+redistribute = false
+notes = "The statewide zip's DEM (feet below the lake's surface at survey), raster.py at z15. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "mn-dnr-lakes-grids.geojson"
+version = "2025"
+refresh = "pinned"
+
+[data.params]
+code = 10
+water = "lake"
+label = "Minnesota DNR lake survey"
+datum = "the lake's surface"

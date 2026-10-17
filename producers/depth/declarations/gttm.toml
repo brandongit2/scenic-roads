@@ -1,0 +1,22 @@
+name = "GtTM Whole Japan 2 arc-seconds (NIED)"
+what = "Depth of Japan's seas"
+credit = "NIED, GtTM Whole Japan 2″ (Chikasada 2020), doi:10.17598/NIED.0021"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://kiyuu.bosai.go.jp/GtTM/"
+territory = ["JP"]
+notes = "Windows of its HDF5 grid (raster.py: depths positive down; T.P. to MSL by JMA's stations); kept only where the Cabinet Office's fine meshes went in, the coarse meshes capped at z9. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "gttm-grids.geojson"
+version = "2020"
+refresh = "pinned"
+
+[data.params]
+code = 8
+water = "sea"
+label = "GtTM, 2″"
+datum = "mean sea level (from T.P. by JMA's stations)"
+band_m = 165

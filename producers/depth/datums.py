@@ -1,0 +1,144 @@
+"""Vertical datum surfaces for the depth producers: an offset between two water levels (mean sea
+level and a chart's datum, a survey's datum and MSL), from tide stations, over the water.
+
+The surface is harmonic between the stations (each water cell the mean of its water neighbours,
+the stations fixed; land a barrier, so a narrow bay's tide doesn't leak across a peninsula: the
+Atlantic coast of Nova Scotia, about 1 m, stays out of the Minas Basin, 7.5 m), solved on a
+lon/lat grid over the water bodies that hold a station, and the nearest solved value beyond. A
+station table is a CSV with `lon`, `lat` and the value's column.
+"""
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+import numpy as np
+
+from grid import Window, log, warp_onto
+
+
+def stations(path: Path, column: str, skip=frozenset(), id_column: str | None = None) -> list[tuple[float, float, float]]:
+    """(lon, lat, value) of each row with a value (rows whose `id_column` is in `skip` left out)."""
+    out = []
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            if id_column and r.get(id_column) in skip:
+                continue
+            v = (r.get(column) or "").strip()
+            if v:
+                out.append((float(r["lon"]), float(r["lat"]), float(v)))
+    return out
+
+
+class Surface:
+    """An offset (m) on a lon/lat grid (`a`, its west, north and cell size)."""
+
+    def __init__(self, a: np.ndarray, west: float, north: float, res: float):
+        self.a, self.west, self.north, self.res = a.astype("float32"), west, north, res
+
+    @classmethod
+    def constant(cls, v: float) -> "Surface":
+        return cls(np.full((2, 2), v, "float32"), -180.0, 90.0, 180.0)
+
+    @classmethod
+    def harmonic(cls, pts, water: np.ndarray, west: float, north: float, res: float) -> "Surface":
+        """Solved over `water` (a bool lon/lat grid from `west`, `north`, cells of `res` degrees)."""
+        from scipy.ndimage import distance_transform_edt, label
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.linalg import spsolve
+
+        H, W = water.shape
+        if not water.any() or not pts:
+            raise SystemExit("a datum surface needs water and stations")
+        _, (iy, ix) = distance_transform_edt(~water, return_indices=True)
+        fixed: dict = {}
+        for lon, lat, v in pts:
+            c, r = int((lon - west) / res), int((north - lat) / res)
+            if 0 <= r < H and 0 <= c < W:
+                fixed.setdefault((int(iy[r, c]), int(ix[r, c])), []).append(v)
+        lab, _ = label(water)
+        solve = water & np.isin(lab, list({lab[k] for k in fixed}))
+        idx = -np.ones((H, W), np.int64)
+        cells = np.argwhere(solve)
+        idx[solve] = np.arange(len(cells))
+        rows, cols, vals = [], [], []
+        b = np.zeros(len(cells))
+        for k, (r, c) in enumerate(cells):
+            if (r, c) in fixed:
+                rows.append(k), cols.append(k), vals.append(1.0)
+                b[k] = float(np.mean(fixed[(r, c)]))
+                continue
+            nb = [(r + dr, c + dc) for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)) if 0 <= r + dr < H and 0 <= c + dc < W and solve[r + dr, c + dc]]
+            rows.append(k), cols.append(k), vals.append(float(len(nb) or 1))
+            for rr, cc in nb:
+                rows.append(k), cols.append(int(idx[rr, cc])), vals.append(-1.0)
+        A = coo_matrix((vals, (rows, cols)), shape=(len(cells), len(cells))).tocsr()
+        x = spsolve(A, b)
+        out = np.full((H, W), np.nan, "float32")
+        out[solve] = x
+        _, (iy2, ix2) = distance_transform_edt(~solve, return_indices=True)
+        log(f"datum surface: {len(pts)} stations on {len(fixed)} cells, {len(cells)} water cells, {x.min():.2f}–{x.max():.2f} m")
+        out = out[iy2, ix2]
+        return cls(out, west, north, res)
+
+    def on(self, win: Window) -> np.ndarray:
+        """The surface on a depth grid's window (bilinear)."""
+        from rasterio.transform import from_origin
+
+        return warp_onto((self.a, from_origin(self.west, self.north, self.res, self.res), "EPSG:4326"), 1, win, "bilinear")
+
+
+def from_table(table, rasters, res: float = 0.005) -> Surface | None:
+    """A station table's surface (`table`: path, column, ids left out, the id column) over the
+    water the `rasters` (a source's files, any CRS) have data on: a constant when every station
+    says the same; None without a table."""
+    if table is None:
+        return None
+    path, column, skip, id_column = table
+    pts = stations(Path(path), column, skip, id_column)
+    if not pts:
+        raise SystemExit(f"{path}: no station has {column}")
+    if len({round(p[2], 3) for p in pts}) == 1:
+        return Surface.constant(pts[0][2])
+    water, w, n, r = water_of(rasters, res)
+    return Surface.harmonic(pts, water, w, n, r)
+
+
+def water_of(rasters, res: float) -> tuple[np.ndarray, float, float, float]:
+    """A lon/lat grid (cells of `res`°) of where any of `rasters` has data, over their bounds."""
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.transform import from_origin
+    from rasterio.warp import reproject, transform_bounds
+
+    boxes = []
+    for p in rasters:
+        with rasterio.open(p) as d:
+            boxes.append(transform_bounds(d.crs, "EPSG:4326", *d.bounds))
+    w, s = min(b[0] for b in boxes) - 4 * res, min(b[1] for b in boxes) - 4 * res
+    e, n = max(b[2] for b in boxes) + 4 * res, max(b[3] for b in boxes) + 4 * res
+    W, H = int(np.ceil((e - w) / res)), int(np.ceil((n - s) / res))
+    out = np.zeros((H, W), bool)
+    for p in rasters:
+        with rasterio.open(p) as d:
+            a = np.full((H, W), np.nan, "float32")
+            reproject(rasterio.band(d, 1), a, dst_transform=from_origin(w, n, res, res), dst_crs="EPSG:4326", dst_nodata=np.nan, resampling=Resampling.max)
+            out |= np.isfinite(a)
+    return out, w, n, res
+
+
+def water_from(win: Window, *depths: np.ndarray, res: float = 0.01) -> tuple[np.ndarray, float, float, float]:
+    """A lon/lat water grid (cells of `res`°) over the window: where any of `depths` (on the window)
+    has data."""
+    from rasterio.transform import from_origin
+    from rasterio.warp import Resampling, reproject
+
+    w, s, e, n = win.bounds_lonlat()
+    W, H = max(2, int(np.ceil((e - w) / res))), max(2, int(np.ceil((n - s) / res)))
+    out = np.zeros((H, W), bool)
+    for d in depths:
+        a = np.full((H, W), np.nan, "float32")
+        reproject(np.where(np.isfinite(d), 1.0, np.nan).astype("float32"), a, src_transform=win.transform(), src_crs="EPSG:3857", src_nodata=np.nan,
+                  dst_transform=from_origin(w, n, res, res), dst_crs="EPSG:4326", dst_nodata=np.nan, resampling=Resampling.max)
+        out |= np.isfinite(a)
+    return out, w, n, res

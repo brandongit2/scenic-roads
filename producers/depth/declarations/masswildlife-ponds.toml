@@ -1,0 +1,20 @@
+name = "MassWildlife inland pond bathymetry (1 m depth rasters)"
+what = "Depth of Massachusetts' surveyed ponds"
+credit = "MassWildlife (Division of Fisheries and Wildlife), via MassGIS"
+licence = "Public domain (MassGIS)"
+source = "https://www.mass.gov/info-details/massgis-data-massdfw-pond-and-lake-bathymetry"
+territory = ["US"]
+notes = "Its depth rasters (raster.py, feet or metres as each pond says), at z16, below the pond's surface."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "masswildlife-ponds-grids.geojson"
+version = "2024-11"
+refresh = "pinned"
+
+[data.params]
+code = 9
+water = "lake"
+label = "MassWildlife pond survey"
+datum = "the pond's surface"

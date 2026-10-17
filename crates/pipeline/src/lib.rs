@@ -16,6 +16,7 @@ pub mod coord;
 pub mod net;
 pub mod coverage;
 pub mod dem;
+pub mod depth;
 pub mod elev;
 pub mod fetch;
 pub mod geotiff;

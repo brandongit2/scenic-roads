@@ -1,0 +1,23 @@
+name = "SHOM HOMONIM coastal topo-bathymetric DEMs, 0.0002°, MSL (NM) versions"
+what = "Depth of France's coasts"
+credit = "© SHOM, MNT topo-bathymétriques côtiers (Projet Homonim)"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/datasets/mnt-topo-bathymetrique-cotier-dune-partie-du-golfe-normand-breton-1"
+territory = ["FR"]
+notes = "As the façade DEMs, at 20 m. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "shom-homonim-20-grids.geojson"
+version = "2020"
+refresh = "pinned"
+
+[data.params]
+code = 7
+water = "sea"
+label = "SHOM HOMONIM, 20 m"
+datum = "mean sea level (NM)"
+band_m = 60
+intertidal = true

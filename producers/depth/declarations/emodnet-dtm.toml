@@ -1,0 +1,23 @@
+name = "EMODnet Digital Bathymetry (DTM 2024), MSL version, 1/16 arc-minute"
+what = "Depth of Europe's seas"
+credit = "EMODnet Bathymetry Consortium (2024): EMODnet Digital Bathymetry (DTM 2024), doi:10.12770/cf51df64-56f9-4a99-b1aa-36b8d7b743a1"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://emodnet.ec.europa.eu/en/bathymetry"
+territory = "world"
+notes = "Whole tiles from the downloads host: its MSL ASCII grids, and the netCDF tiles for interpolation_flag (cells it sets capped at z9); raster.py. Its MSL sits a median 0.46 m off SHOM's at Saint-Malo, so it fills gaps only (datum_exact = false). Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "emodnet-dtm-grids.geojson"
+version = "2024"
+refresh = "pinned"
+
+[data.params]
+code = 5
+water = "sea"
+label = "EMODnet DTM 2024"
+datum = "mean sea level (EMODnet's own LAT to MSL shift)"
+band_m = 0
+datum_exact = false

@@ -38,7 +38,7 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 11] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 12] = [
     // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -61,7 +61,13 @@ pub const ROLES: [(&str, &[&str], &[&str]); 11] = [
     (PAGEVIEWS, &["pageviews-dump"], &["{y}", "{m}"]),
     // (Lakes missing from OSM, Canada: crate::lakefill. Shapefile zips, its files kept by hand.)
     (LAKE_FILL, &["zip-shapefile"], &[]),
+    // (Depth under the water: crate::depth. Many sources, each a set of depth grids by an index,
+    // made by a producer (producers/depth/) and kept in `sources/fetched/<id>/`: `MANY`.)
+    (DEPTH, &["depth-grid"], &[]),
 ];
+
+/// The roles any number of sources take (each read with the others, by its own `params.code`).
+pub const MANY: [&str; 1] = [DEPTH];
 
 pub const LAND_COVER: &str = "land-cover";
 pub const CANOPY: &str = "canopy";
@@ -74,6 +80,7 @@ pub const WIKIDATA_LIVE: &str = "wikidata-live";
 pub const WIKIPEDIA: &str = "wikipedia";
 pub const PAGEVIEWS: &str = "pageviews";
 pub const LAKE_FILL: &str = "lake-fill";
+pub const DEPTH: &str = "depth";
 
 /// A source's `[data]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -154,6 +161,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                     why.push(format!("`index` {i} isn't a `<name>.geojson` beside the declaration"));
                 }
             }
+            if data.role == DEPTH {
+                why.extend(depth_params(&data));
+            }
         }
     }
     if !["pinned", "live"].contains(&data.refresh.as_str()) {
@@ -164,6 +174,75 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     } else {
         Err(why)
     }
+}
+
+/// The fields of a depth source's `params` (docs/inputs.md §6.10, crate::depth::sources).
+pub const DEPTH_PARAMS: [&str; 8] = ["code", "water", "label", "datum", "band_m", "intertidal", "datum_exact", "notice"];
+
+/// What's wrong with a depth source's `[data]` (docs/inputs.md §6.10): an index (its depth grids),
+/// and its params: `code` (1–15, the source byte the class tiles carry), `water` (`sea` or `lake`:
+/// where it's drawn), `label` (a short name for the map's popup), `datum` (what its depths are
+/// below, in words), and optionally `band_m` (the ground metres it's feathered in over, ≥ 0),
+/// `intertidal` (its positive values are drying heights), `datum_exact` (false: its datum isn't
+/// corrected to the others', so it fills gaps only, hard-edged) and `notice` (a notice its licence
+/// asks every map showing it to carry).
+fn depth_params(d: &Data) -> Vec<String> {
+    let mut why = Vec::new();
+    let p = &d.params;
+    if d.index.is_none() {
+        why.push("a depth source names its grids by an `index`".into());
+    }
+    if !matches!(p.get("code").and_then(|v| v.as_u64()), Some(1..=15)) {
+        why.push("`params.code` isn't a whole number 1–15 (the source byte the depth's class tiles carry)".into());
+    }
+    if !matches!(p.get("water").and_then(|v| v.as_str()), Some("sea" | "lake")) {
+        why.push("`params.water` isn't \"sea\" or \"lake\"".into());
+    }
+    for k in ["label", "datum"] {
+        if !p.get(k).is_some_and(|v| v.as_str().is_some_and(|s| !s.trim().is_empty())) {
+            why.push(format!("`params.{k}` isn't a text"));
+        }
+    }
+    if p.get("band_m").is_some_and(|v| !v.as_f64().is_some_and(|b| b >= 0.0)) {
+        why.push("`params.band_m` isn't a number ≥ 0".into());
+    }
+    for k in ["intertidal", "datum_exact"] {
+        if p.get(k).is_some_and(|v| !v.is_boolean()) {
+            why.push(format!("`params.{k}` isn't true or false"));
+        }
+    }
+    if p.get("notice").is_some_and(|v| !v.is_string()) {
+        why.push("`params.notice` isn't a text".into());
+    }
+    for k in p.keys().filter(|k| !DEPTH_PARAMS.contains(&k.as_str())) {
+        why.push(format!("`params.{k}` isn't a depth source's field"));
+    }
+    why
+}
+
+/// What's wrong with a depth source's index features: each grid's `file` (its name in
+/// `sources/fetched/<id>/`) and `zoom` (the Web Mercator zoom whose pixels it's on), and its
+/// optional `zoom_file` and `low_file` (crate::depth::grid).
+pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
+    let mut why = Vec::new();
+    for (i, x) in f.iter().enumerate() {
+        let name_ok = |k: &str| x.props.get(k).and_then(|v| v.as_str()).is_some_and(|n| !n.is_empty() && !n.contains("..") && !n.starts_with('/') && n.ends_with(".tif"));
+        if !name_ok("file") {
+            why.push(format!("feature {} names no `file` (a .tif in the source's folder)", i + 1));
+        }
+        for k in ["zoom_file", "low_file"] {
+            if x.props.contains_key(k) && !name_ok(k) {
+                why.push(format!("feature {}: `{k}` isn't a .tif in the source's folder", i + 1));
+            }
+        }
+        if !x.props.get("zoom").and_then(|v| v.as_u64()).is_some_and(|z| z <= 18) {
+            why.push(format!("feature {} names no `zoom` 0–18", i + 1));
+        }
+        if why.len() > 20 {
+            break;
+        }
+    }
+    why
 }
 
 /// An index's file: its footprint (w, s, e, n, degrees) and properties (its `url`, and what the
@@ -313,7 +392,23 @@ impl Checks for SourcesCheck {
                 }
             }
         }
-        for (role, paths) in roles.iter().filter(|(_, p)| p.len() > 1) {
+        let mut codes: BTreeMap<u64, Vec<&str>> = BTreeMap::new();
+        for (path, _, _, d) in decls.iter().filter(|x| x.3.data.role == DEPTH) {
+            if let Some(c) = d.data.params.get("code").and_then(|v| v.as_u64()) {
+                codes.entry(c).or_default().push(path);
+            }
+            if let Some(i) = d.data.index.as_ref().filter(|i| v.paths.contains(i.as_str())) {
+                let why = parse_index(&(v.read)(i)?).map(|f| depth_index_problems(&f)).unwrap_or_default();
+                if !why.is_empty() {
+                    let refs: Vec<&str> = why.iter().map(String::as_str).collect();
+                    out.push(Finding::new(INDEX, Level::Error, &[path, i], &refs, vec![i.clone()], format!("{i} (the depth grids of {path}): {}", why.join("; "))));
+                }
+            }
+        }
+        for (c, paths) in codes.iter().filter(|(_, p)| p.len() > 1) {
+            out.push(Finding::new(ROLE, Level::Error, paths, &[&c.to_string()], paths.iter().map(|p| p.to_string()).collect(), format!("{} each take the depth source code {c}: one a source", paths.join(", "))));
+        }
+        for (role, paths) in roles.iter().filter(|(r, p)| p.len() > 1 && !MANY.contains(r)) {
             out.push(Finding::new(ROLE, Level::Error, paths, &[role], paths.iter().map(|p| p.to_string()).collect(), format!("{} each declare the {role} role: the app reads one source a role", paths.join(", "))));
         }
         for p in &v.paths {
@@ -443,6 +538,8 @@ impl Source {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sources {
     by_role: BTreeMap<String, Source>,
+    /// The sources of the roles any number take (`MANY`), by role, in id order.
+    many: BTreeMap<String, Vec<Source>>,
 }
 
 impl Sources {
@@ -453,13 +550,19 @@ impl Sources {
 
     /// Every source, by role.
     pub fn all(&self) -> impl Iterator<Item = &Source> {
-        self.by_role.values()
+        self.by_role.values().chain(self.many.values().flatten())
+    }
+
+    /// The sources of a role any number take (`MANY`), in id order: none when none is declared.
+    pub fn many(&self, role: &str) -> &[Source] {
+        self.many.get(role).map_or(&[], Vec::as_slice)
     }
 }
 
 /// The sources in accepted version `a` (each index read).
 pub fn of(a: &super::Accepted) -> Result<Sources> {
     let mut by_role = BTreeMap::new();
+    let mut many: BTreeMap<String, Vec<Source>> = BTreeMap::new();
     for (path, f) in &a.index.files {
         let Some(id) = path.strip_suffix(".toml") else { continue };
         let d: Declaration = serde_json::from_value(f.facts.get("declaration").cloned().with_context(|| format!("{path}: no declaration in the index"))?).with_context(|| format!("{path}: its declaration"))?;
@@ -468,9 +571,14 @@ pub fn of(a: &super::Accepted) -> Result<Sources> {
             None => Vec::new(),
         };
         let role = d.data.role.clone();
-        by_role.insert(role, Source { id: id.to_string(), data: d.data, keyed: f.keyed.clone(), index });
+        let src = Source { id: id.to_string(), data: d.data, keyed: f.keyed.clone(), index };
+        if MANY.contains(&role.as_str()) {
+            many.entry(role).or_default().push(src);
+        } else {
+            by_role.insert(role, src);
+        }
     }
-    Ok(Sources { by_role })
+    Ok(Sources { by_role, many })
 }
 
 /// The last accepted version read, by its index's content name (which names its content: the agent
@@ -533,7 +641,8 @@ pub const PYTHON_ENV: &str = "SCENIC_SOURCES";
 /// `PYTHON_ENV`.
 pub fn write_for_python(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<std::path::PathBuf> {
     let s = read(root, manifest)?;
-    let v: BTreeMap<&str, serde_json::Value> = s.all().map(|x| (x.data.role.as_str(), serde_json::json!({ "id": x.id, "url": x.data.url, "urls": x.data.urls, "version": x.data.version, "params": x.data.params, "index": x.index.iter().map(|f| serde_json::json!({ "url": f.url, "bbox": f.bbox })).collect::<Vec<_>>() }))).collect();
+    // (The roles any number take aren't read by a Python step: crate::depth reads the depth's.)
+    let v: BTreeMap<&str, serde_json::Value> = s.by_role.values().map(|x| (x.data.role.as_str(), serde_json::json!({ "id": x.id, "url": x.data.url, "urls": x.data.urls, "version": x.data.version, "params": x.data.params, "index": x.index.iter().map(|f| serde_json::json!({ "url": f.url, "bbox": f.bbox })).collect::<Vec<_>>() }))).collect();
     std::fs::create_dir_all(dir)?;
     let p = std::path::absolute(dir.join("sources.json"))?;
     std::fs::write(&p, serde_json::to_vec_pretty(&v)?)?;

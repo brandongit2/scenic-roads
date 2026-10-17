@@ -1,0 +1,23 @@
+name = "SHOM HOMONIM façade DEMs, 0.001°, MSL (NM) versions"
+what = "Depth of France's seas"
+credit = "© SHOM, MNT bathymétriques de façade (Projet Homonim)"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/datasets/mnt-bathymetrique-de-facade-atlantique-projet-homonim-1"
+territory = ["FR"]
+notes = "The NM archives' .asc taken out of their 7z (by hand today), raster.py; the low water is SHOM's own separation (the PBMA version minus the NM); EMODnet's interpolation flag caps interpolated cells at z9. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "shom-homonim-100-grids.geojson"
+version = "2015"
+refresh = "pinned"
+
+[data.params]
+code = 6
+water = "sea"
+label = "SHOM HOMONIM, 100 m"
+datum = "mean sea level (NM)"
+band_m = 300
+intertidal = true

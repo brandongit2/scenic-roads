@@ -1,0 +1,23 @@
+name = "BlueTopo (NOAA Office of Coast Survey), 4–16 m"
+what = "Depth of the US coasts"
+credit = "NOAA Office of Coast Survey, BlueTopo"
+licence = "CC0-1.0"
+licence_url = "https://nauticalcharts.noaa.gov/data/bluetopo.html"
+source = "https://nauticalcharts.noaa.gov/data/bluetopo.html"
+territory = ["US"]
+notes = "producers/depth/bluetopo.py fetches the tiles meeting each US region's 200 nm from the public bucket by the tile scheme (checksums checked), brings NAVD88 to MSL by NOAA's tide stations (stations.py noaa) and keeps MLLW as the low water; cells its attribute tables call interpolated are capped at z12. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "bluetopo-grids.geojson"
+version = "2026-10"
+refresh = "pinned"
+
+[data.params]
+code = 2
+water = "sea"
+label = "BlueTopo, 4–16 m"
+datum = "mean sea level (from NAVD88 by NOAA's tide stations)"
+band_m = 120
+intertidal = true

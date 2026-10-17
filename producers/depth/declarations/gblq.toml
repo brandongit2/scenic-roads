@@ -1,0 +1,21 @@
+name = "Géobase des bathymétries de lac du Québec (GBLQ), 2 m DEMs"
+what = "Depth of Québec's surveyed lakes"
+credit = "MELCCFP, 2025. Géobase des bathymétries de lac du Québec (GBLQ)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.donneesquebec.ca/recherche/dataset/bathymetries-lacs"
+territory = ["CA"]
+notes = "Each lake's DEM (metres, positive down), raster.py at z16. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "gblq-grids.geojson"
+version = "2025"
+refresh = "pinned"
+
+[data.params]
+code = 11
+water = "lake"
+label = "GBLQ lake survey"
+datum = "the lake's surface"
