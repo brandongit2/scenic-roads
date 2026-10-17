@@ -77,6 +77,14 @@ The app compiles this source with its own code; there is no separate build or `d
   fits its full texture (`texelParity`), and a tile deeper than the view's zoom gets a texture of
   the power of two at or above its footprint, 128² to 1024² (`Tile.rttTargetSize`; one FBO per size,
   `Painter._rttFbos`). A low camera over Chamonix holds ~500 MB of drapes instead of 3.9 GB.
+- **Elevations looked up without a cover a point** (`Terrain.elevationForLngLatFn`, `_coverZoom`,
+  `coverKey`): where no rendered tile holds a point, upstream's `getElevationForLngLat` worked out
+  the camera's whole tile cover for every point; the cover's zoom is now worked out once a batch
+  (`elevationForLngLatFn(transform)`, for callers sampling many points) and kept while the camera's
+  matrix, the DEM tiles loaded and the exaggeration stay the same, so single lookups share it too.
+  The coverage index looks tiles up by number (`samplerByNumber`) rather than by a string a zoom.
+  The app's far buildings sample 2,401 points a tile: a wide tilted view (Yosemite, the Alps) took
+  minutes of main thread before.
 - **Elevation ranges of parts of a DEM tile** (`dem_data.ts`, `Terrain.getMinMaxElevation`): each
   DEM tile keeps min/max on a 32 × 32 grid and coarser levels, so deeper tiles get tight ranges.
 - **Draped textures at a steady pace** (`pacedDrapes`, default true; `movingRedraws`, 2): a tile of a

@@ -69,6 +69,9 @@ export type TerrainSample = {
 export type TerrainCoverageIndex = {
     zooms: number[];
     samplerPerTile: Map<string, TerrainElevationSampler | null>;
+    /** Scenic Roads: the same by {@link coverKey}'s number (for tiles it can number): a lookup
+     * without making a string, for callers sampling thousands of points a frame. */
+    samplerByNumber?: Map<number, TerrainElevationSampler | null>;
     minElevation: number;
     maxElevation: number;
 };
@@ -244,20 +247,61 @@ export class Terrain {
      * @returns the elevation
      */
     getElevationForLngLat(lnglat: LngLat, transform: IReadonlyTransform): number {
+        return this.elevationForLngLatFn(transform)(lnglat);
+    }
+
+    /**
+     * Scenic Roads: {@link getElevationForLngLat} for many points under one camera. Where no rendered
+     * tile holds a point's DEM, the zoom it is looked up at comes from the camera's tile cover, which
+     * is worked out here once for the whole batch rather than once a point: a cover of a wide tilted
+     * view costs milliseconds, and a caller sampling thousands of points (the app's far buildings,
+     * 2,401 a tile) otherwise stalled the page for minutes.
+     * @param transform - the camera the points are sampled for
+     * @returns a function giving each point's elevation, as getElevationForLngLat would, while the
+     * camera and the terrain's tiles stay as they are (use it within one task)
+     */
+    elevationForLngLatFn(transform: IReadonlyTransform): (lnglat: LngLat) => number {
         const index = this.getCoverageIndex();
-        if (index) {
-            const mercator = MercatorCoordinate.fromLngLat(lnglat);
-            const sample = sampleAt(index, this.exaggeration, mercator.x, mercator.y);
-            if (sample.demLoaded) return sample.elevation;
-        }
-        const terrainCoveringTiles = coveringTiles(transform, {maxzoom: this.tileManager.maxzoom, minzoom: this.tileManager.minzoom, tileSize: 512, terrain: this});
+        let zoom = -1;
+        const ids = new Map<number, OverscaledTileID>();
+        return (lnglat: LngLat): number => {
+            if (index) {
+                const mercator = MercatorCoordinate.fromLngLat(lnglat);
+                const sample = sampleAt(index, this.exaggeration, mercator.x, mercator.y);
+                if (sample.demLoaded) return sample.elevation;
+            }
+            if (zoom < 0) zoom = this._coverZoom(transform);
+            // (getElevationForLngLatZoom, its tile's id made once a tile, not once a point)
+            if (!isInBoundsForZoomLngLat(zoom, lnglat.wrap())) return 0;
+            const mercatorCoordinate = MercatorCoordinate.fromLngLat(lnglat.wrap());
+            const worldSize = (1 << zoom) * EXTENT;
+            const mercatorX = mercatorCoordinate.x * worldSize;
+            const mercatorY = mercatorCoordinate.y * worldSize;
+            const tileX = Math.floor(mercatorX / EXTENT), tileY = Math.floor(mercatorY / EXTENT);
+            const k = tileY * 2 ** zoom + tileX;
+            let tileID = ids.get(k);
+            if (!tileID) ids.set(k, tileID = new OverscaledTileID(zoom, 0, zoom, tileX, tileY));
+            return this.getElevation(tileID, mercatorX % EXTENT, mercatorY % EXTENT, EXTENT);
+        };
+    }
+
+    /** Scenic Roads: the cover's finest zoom, kept while the camera (its matrix, made anew whenever it
+     * moves), the DEM tiles loaded and the exaggeration stay the same: the app's single lookups (the
+     * camera's ground, labels' and rails' ground) each made a cover where no rendered tile held the point. */
+    _coverZoomCache: {transform: IReadonlyTransform; matrix: mat4; dem: number; exaggeration: number; zoom: number} | null = null;
+    private _coverZoom(transform: IReadonlyTransform): number {
+        const c = this._coverZoomCache;
+        const matrix = transform.modelViewProjectionMatrix, dem = this.demVersion;
+        if (c && c.transform === transform && c.matrix === matrix && c.dem === dem && c.exaggeration === this.exaggeration) return c.zoom;
         let zoom = 0;
+        const terrainCoveringTiles = coveringTiles(transform, {maxzoom: this.tileManager.maxzoom, minzoom: this.tileManager.minzoom, tileSize: 512, terrain: this});
         for (const tile of terrainCoveringTiles) {
             if (tile.canonical.z > zoom) {
                 zoom = Math.min(tile.canonical.z, this.tileManager.maxzoom);
             }
         }
-        return this.getElevationForLngLatZoom(lnglat, zoom);
+        this._coverZoomCache = {transform, matrix, dem, exaggeration: this.exaggeration, zoom};
+        return zoom;
     }
 
     /**
@@ -279,6 +323,7 @@ export class Terrain {
     resetElevationCache(): void {
         this._elevationSamplerCache.clear();
         this._coverageIndex = undefined;
+        this._coverZoomCache = null;
     }
 
     /**
@@ -296,6 +341,7 @@ export class Terrain {
     private _buildCoverageIndex(): TerrainCoverageIndex | null {
         const zooms: number[] = [];
         const samplerPerTile = new Map<string, TerrainElevationSampler | null>();
+        const samplerByNumber = new Map<number, TerrainElevationSampler | null>();
         let minElevation = 0;
         let maxElevation = 0;
 
@@ -305,6 +351,8 @@ export class Terrain {
             if (!zooms.includes(canonical.z)) zooms.push(canonical.z);
             const sampler = this.getElevationSampler(tile.tileID);
             samplerPerTile.set(`${wrap}/${canonical.z}/${canonical.x}/${canonical.y}`, sampler);
+            const n = coverKey(wrap, canonical.z, canonical.x, canonical.y);
+            if (n >= 0) samplerByNumber.set(n, sampler);
             const {minElevation: tileMin, maxElevation: tileMax} = this.getMinMaxElevation(tile.tileID);
             minElevation = Math.min(minElevation, tileMin ?? 0);
             maxElevation = Math.max(maxElevation, tileMax ?? 0);
@@ -312,7 +360,7 @@ export class Terrain {
 
         if (samplerPerTile.size === 0) return null;
         zooms.sort((a, b) => b - a);
-        return {zooms, samplerPerTile, minElevation: minElevation - BRACKET_PADDING_M, maxElevation: maxElevation + BRACKET_PADDING_M};
+        return {zooms, samplerPerTile, samplerByNumber, minElevation: minElevation - BRACKET_PADDING_M, maxElevation: maxElevation + BRACKET_PADDING_M};
     }
 
     /**
@@ -600,6 +648,16 @@ export class Terrain {
 const NOT_COVERED: TerrainSample = {covered: false, demLoaded: false, elevation: 0};
 
 /**
+ * Scenic Roads: a tile of the coverage index as one number (exact below 2^53): zoom 0–20, world
+ * copies −16 to 15; −1 for any other tile (looked up by its string then).
+ */
+export function coverKey(wrap: number, z: number, x: number, y: number): number {
+    if (z > 20 || wrap < -16 || wrap > 15) return -1;
+    const s = 2 ** z;
+    return ((z * 32 + wrap + 16) * s + y) * s + x;
+}
+
+/**
  * Elevation of the rendered terrain surface at a mercator position, and whether it is covered at all.
  * A covered tile whose DEM has not loaded yet is flat at zero, which is what the terrain mesh renders.
  */
@@ -614,9 +672,16 @@ export function sampleAt(index: TerrainCoverageIndex, exaggeration: number, merc
         const scaledY = mercatorY * scale;
         const tileX = Math.floor(scaledX);
         const tileY = Math.floor(scaledY);
-        const key = `${wrap}/${z}/${tileX}/${tileY}`;
-        if (!index.samplerPerTile.has(key)) continue;
-        const sampler = index.samplerPerTile.get(key);
+        const n = index.samplerByNumber ? coverKey(wrap, z, tileX, tileY) : -1;
+        let sampler: TerrainElevationSampler | null | undefined;
+        if (n >= 0) {
+            sampler = index.samplerByNumber.get(n);
+            if (sampler === undefined) continue;
+        } else {
+            const key = `${wrap}/${z}/${tileX}/${tileY}`;
+            if (!index.samplerPerTile.has(key)) continue;
+            sampler = index.samplerPerTile.get(key);
+        }
         if (!sampler) return {covered: true, demLoaded: false, elevation: 0};
         const x = Math.min((scaledX - tileX) * EXTENT, MAX_TILE_COORD);
         const y = Math.min((scaledY - tileY) * EXTENT, MAX_TILE_COORD);
