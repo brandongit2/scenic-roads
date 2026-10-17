@@ -32,6 +32,11 @@ type Entry = {
      * to fit in than a single codepoint does.
      */
     clusterTinySDFs?: Record<string, Promise<Rasterizer>>;
+    /**
+     * Scenic Roads: the glyphs being drawn (queued for a slice, `GLYPH_SLICE_MS`), by font file and
+     * cluster, so requests for one while it waits share its draw.
+     */
+    drawing?: Map<string, Promise<StyleGlyph>>;
 };
 
 /** A requested glyph with its lookup keys; `null` means unavailable. */
@@ -323,8 +328,23 @@ export class GlyphManager {
      * is what lets the browser's text engine place a letter's marks on it.
      *
      * @param fontFaceFamily - the CSS family of the `font-faces` file covering this codepoint, if any
+     * (Scenic Roads: one draw for concurrent requests of a glyph, `Entry.drawing`.)
      */
-    async _drawGlyph(entry: Entry, stack: string, id: string, fontFaceFamily?: string): Promise<StyleGlyph> {
+    _drawGlyph(entry: Entry, stack: string, id: string, fontFaceFamily?: string): Promise<StyleGlyph> {
+        const key = `${fontFaceFamily ?? ''}\u0000${id}`;
+        entry.drawing ??= new Map();
+        let p = entry.drawing.get(key);
+        if (!p) {
+            p = this._drawGlyphNow(entry, stack, id, fontFaceFamily);
+            entry.drawing.set(key, p);
+            const done = () => entry.drawing.delete(key);
+            p.then(done, done);
+        }
+        return p;
+    }
+
+    /** The draw itself, in the glyphs' next slice. */
+    async _drawGlyphNow(entry: Entry, stack: string, id: string, fontFaceFamily?: string): Promise<StyleGlyph> {
         const tinySDF = await this._getTinySDF(entry, stack, id, fontFaceFamily);
         const char = await inGlyphSlice(() => tinySDF.draw(id));
 

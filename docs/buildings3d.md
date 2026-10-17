@@ -429,8 +429,8 @@ equator).
   convert them: `tools/bench/packcheck.mjs`), so an upload is a copy.
 - Elevations: each tile's grid sampled from the terrain as drawn (the fork's
   `elevationForLngLatFn`), again when the terrain's tiles in view change, within 3 ms a frame
-  (`ELEV_BUDGET_MS`; a tile without any at once); a tile whose grid comes out the same keeps its
-  hull and roof ground.
+  (`ELEV_BUDGET_MS`), the longest since sampled first; a tile without a hull yet at once. A tile
+  whose grid comes out the same keeps its hull and roof ground.
 - Debug and tuning switches: `?fdbg=`, `?fsub=1` (the sub-cell walk), `?fstx=`, `?fopt=` (default 3).
 
 **Quality and cost** (`tools/bldcheck`, against full detail shrunk in linear light, σ 8 px blur):

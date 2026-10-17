@@ -72,7 +72,7 @@ const LEVEL_MIN = 4;
 const STANDIN_DEPTH = 3;
 /** The level fetched ahead under the meshes (a z12 tile holds 16 of their z14 tiles). */
 const PREFETCH_LEVEL = 12;
-/** Elevations sampled again a frame for this long at most (ms; tiles without any have them at once). */
+/** Elevations sampled again a frame for this long at most (ms; a tile without a hull yet has them at once). */
 const ELEV_BUDGET_MS = 3;
 /** Fetches in flight at most. */
 const FETCHES = 6;
@@ -628,6 +628,8 @@ interface FTile {
    * they do, so the roof ground asked for them stays good while the terrain's tiles change elsewhere. */
   ee: Float32Array | null;
   eeVer: number;
+  /** The frame its elevations were last sampled in (the stalest are sampled again first). */
+  elevFrame: number;
   /** The height scale and blocks the hull was made for ('': to be made again, e.g. with the roof
    * ground's lift once it comes). */
   hullKey: string;
@@ -1025,7 +1027,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -1087,7 +1089,10 @@ export class FieldLayer implements CustomLayerInterface {
       // (the texels kept: asked again when the elevations next change; meanwhile the roofs over the
       // ground under each texel)
       const t = this.tiles.get(m.key);
-      if (t && t.state === 'ready') t.texels = m.texels;
+      if (t && t.state === 'ready') {
+        t.texels = m.texels;
+        t.dgAsked = '';
+      }
       console.warn(`bldfield: ${m.key}: roof ground: ${m.error}`);
       return;
     }
@@ -1273,8 +1278,10 @@ export class FieldLayer implements CustomLayerInterface {
     }
     // The same elevations as last time (the terrain's tiles changed elsewhere), the same height scale
     // and blocks: the hull, its textures and the roof ground stand as they are.
+    // (Unless the roof ground for them is still to be asked for: it failed last time.)
     const hullKey = this.hk + '|' + this.blockCells;
-    if (t.ee && t.hullKey === hullKey && t.vao && ee.every((x, i) => x === t.ee![i])) {
+    t.elevFrame = this.frame;
+    if (t.ee && t.hullKey === hullKey && t.vao && ee.every((x, i) => x === t.ee![i]) && !(t.texels && t.dgAsked !== t.eeVer + '|' + this.hk)) {
       t.elevFor = key;
       return;
     }
@@ -1466,6 +1473,26 @@ export class FieldLayer implements CustomLayerInterface {
       return Math.hypot((e.t.x + cx) / n - camM.x, (e.t.y + cy) / n - camM.y);
     };
     draw.sort((a, b) => dist(b) - dist(a));
+    // Elevations sampled again (the terrain's tiles changed) within a few milliseconds a frame, the
+    // rest kept as they were till the next frames: after a pan every tile in view is due at once, and
+    // all of them in one frame took a quarter of a second. A tile without a hull yet has them at once;
+    // the others the longest since sampled first, so a stream of new DEM tiles can't keep some stale.
+    {
+      const terrain = (map as unknown as { terrain?: { elevationForLngLatFn(tr: unknown): (ll: LngLat) => number } | null }).terrain;
+      let elevAt: ((ll: LngLat) => number) | null | undefined;
+      const elevKey = this.elevKey + '|' + this.hk + '|' + this.blockCells;
+      const due = [...new Set(draw.map((e) => e.t))].filter((t) => t.elevFor !== elevKey);
+      due.sort((a, b) => Number(!!a.vao) - Number(!!b.vao) || a.elevFrame - b.elevFrame);
+      const elevStart = performance.now();
+      for (const t of due) {
+        if (t.vao && performance.now() - elevStart >= ELEV_BUDGET_MS) {
+          map.triggerRepaint();
+          break;
+        }
+        if (elevAt === undefined) elevAt = terrain ? terrain.elevationForLngLatFn(tr) : null;
+        this.elevations(t, elevAt);
+      }
+    }
     const scene = opts.sceneDepth;
     const timed = this.timing && this.timer.ext;
     let q: WebGLQuery | null = null;
@@ -1563,21 +1590,7 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1i(u.u_top32, 10);
     gl.uniform1f(u.u_tmin, this.tmin);
     gl.uniform1i(u.u_elev, 1);
-    // Elevations sampled again (the terrain's tiles changed) within a few milliseconds a frame, the
-    // rest kept as they were till the next frames: after a pan every tile in view is due at once, and
-    // all of them in one frame took a quarter of a second. A tile without any yet has them at once.
-    const terrain = (map as unknown as { terrain?: { elevationForLngLatFn(tr: unknown): (ll: LngLat) => number } | null }).terrain;
-    let elevAt: ((ll: LngLat) => number) | null | undefined;
-    const elevKey = this.elevKey + '|' + this.hk + '|' + this.blockCells;
-    const elevStart = performance.now();
-    let elevLeft = false;
     for (const { t, clip } of draw) {
-      if (t.elevFor !== elevKey) {
-        if (!t.vao || performance.now() - elevStart < ELEV_BUDGET_MS) {
-          if (elevAt === undefined) elevAt = terrain ? terrain.elevationForLngLatFn(tr) : null;
-          this.elevations(t, elevAt);
-        } else elevLeft = true;
-      }
       const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
       gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
       const mc = pd.tileMercatorCoords as ArrayLike<number>;
@@ -1687,7 +1700,6 @@ export class FieldLayer implements CustomLayerInterface {
       this.drawn.push(t.key);
     }
     gl.bindVertexArray(null);
-    if (elevLeft) map.triggerRepaint();
     gl.disable(gl.POLYGON_OFFSET_FILL);
     for (const k of [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       gl.activeTexture(gl.TEXTURE0 + k);

@@ -256,6 +256,20 @@ describe('GlyphManager', () => {
         expect(drawSpy).toHaveBeenCalledTimes(1);
     });
 
+    test('GlyphManager draws a glyph once for requests made while it waits for its slice (Scenic Roads)', async () => {
+        const manager = createGlyphManager(true, 'sans-serif');
+        const drawSpy = vi.spyOn(TinySDF.prototype, 'draw').mockReturnValue({data: new Uint8ClampedArray(60 * 60)} as any);
+
+        // Katakana letter te, asked for twice at once
+        const [a, b] = await Promise.all([
+            manager.getGlyphs({'Arial Unicode MS': {default: [char(0x30c6)]}}),
+            manager.getGlyphs({'Arial Unicode MS': {default: [char(0x30c6)]}}),
+        ]);
+        expect(a['Arial Unicode MS'].default[char(0x30c6)].metrics.advance).toBe(24);
+        expect(b['Arial Unicode MS'].default[char(0x30c6)].metrics.advance).toBe(24);
+        expect(drawSpy).toHaveBeenCalledTimes(1);
+    });
+
     test('GlyphManager passes no language to TinySDF by default', async () => {
         const createRasterizer = fakeRasterizer();
         const manager = createGlyphManager(true, 'sans-serif', undefined, createRasterizer);

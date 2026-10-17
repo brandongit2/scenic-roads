@@ -285,14 +285,20 @@ export class Terrain {
         };
     }
 
-    /** Scenic Roads: the cover's finest zoom, kept while the camera (its matrix, made anew whenever it
-     * moves), the DEM tiles loaded and the exaggeration stay the same: the app's single lookups (the
-     * camera's ground, labels' and rails' ground) each made a cover where no rendered tile held the point. */
-    _coverZoomCache: {transform: IReadonlyTransform; matrix: mat4; dem: number; exaggeration: number; zoom: number} | null = null;
+    /** Scenic Roads: the cover's finest zoom, kept while the camera, the DEM tiles loaded, the
+     * exaggeration and the terrain source's zoom range stay the same: the app's single lookups (the
+     * camera's ground, labels' and rails' ground) each made a cover where no rendered tile held the
+     * point. The camera is known by its transform and that transform's view-projection matrix: the
+     * transforms make a new matrix object whenever they recompute it (`_calcMatrices`, on any change
+     * of centre, zoom, pitch, bearing, roll, size, field of view, elevation or projection) and never
+     * write into one in place, so a moved camera never matches a kept zoom. */
+    _coverZoomCache: {transform: IReadonlyTransform; matrix: mat4; dem: number; exaggeration: number; minzoom: number; maxzoom: number; worldCopies: boolean; zoom: number} | null = null;
     private _coverZoom(transform: IReadonlyTransform): number {
         const c = this._coverZoomCache;
         const matrix = transform.modelViewProjectionMatrix, dem = this.demVersion;
-        if (c && c.transform === transform && c.matrix === matrix && c.dem === dem && c.exaggeration === this.exaggeration) return c.zoom;
+        const {minzoom, maxzoom} = this.tileManager, worldCopies = transform.renderWorldCopies;
+        if (c && c.transform === transform && c.matrix === matrix && c.dem === dem && c.exaggeration === this.exaggeration &&
+            c.minzoom === minzoom && c.maxzoom === maxzoom && c.worldCopies === worldCopies) return c.zoom;
         let zoom = 0;
         const terrainCoveringTiles = coveringTiles(transform, {maxzoom: this.tileManager.maxzoom, minzoom: this.tileManager.minzoom, tileSize: 512, terrain: this});
         for (const tile of terrainCoveringTiles) {
@@ -300,7 +306,7 @@ export class Terrain {
                 zoom = Math.min(tile.canonical.z, this.tileManager.maxzoom);
             }
         }
-        this._coverZoomCache = {transform, matrix, dem, exaggeration: this.exaggeration, zoom};
+        this._coverZoomCache = {transform, matrix, dem, exaggeration: this.exaggeration, minzoom, maxzoom, worldCopies, zoom};
         return zoom;
     }
 
