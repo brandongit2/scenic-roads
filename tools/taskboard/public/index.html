@@ -202,6 +202,8 @@
   .box::after { content: ""; width: 6px; height: 6px; border-radius: 50%; }
   .box.s-working { border-color: var(--st-work-fg); }
   .box.s-working::after { background: var(--st-work-fg); }
+  .box.s-backgrounded { border-color: var(--st-work-fg); border-style: dashed; }
+  .box.s-backgrounded::after { background: var(--st-work-fg); opacity: .5; }
   .box.s-integrating { border-color: var(--st-int-fg); }
   .box.s-integrating::after { background: var(--st-int-fg); }
   .box.s-review { border-color: var(--st-rev-fg); }
@@ -240,6 +242,7 @@
   .row.ctx > .main, .row.ctx > .tail { opacity: 0.7; }
   .st { flex: none; height: 18px; max-width: 15rem; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; font: 500 11px/18px var(--sans); }
   .st.s-working { color: var(--st-work-fg); background: var(--st-work-bg); }
+  .st.s-backgrounded { color: var(--st-work-fg); background: transparent; box-shadow: inset 0 0 0 1px var(--st-work-bg); }
   .st.s-integrating { color: var(--st-int-fg); background: var(--st-int-bg); }
   .st.s-review { color: var(--st-rev-fg); background: var(--st-rev-bg); }
   .st.s-waiting { color: var(--st-wait-fg); background: var(--st-wait-bg); }
@@ -572,12 +575,13 @@
 
   // ---------------------------------------------------------------------------------------------
   // Stages, filters, the model.
-  const STAGES = { "": "Queued", working: "Under way", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done" };
+  const STAGES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done" };
   const stageOf = (t) => (typeof t.stage === "string" && t.stage in STAGES ? t.stage : "");
   const shortWhere = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
   function stageText(t) {
     switch (stageOf(t)) {
       case "working": return `under way · ${shortWhere(t.where) || "Subagent"}`;
+      case "backgrounded": return "backgrounded";
       case "integrating": return "integrating";
       case "review": return "in review";
       case "waiting": return "waiting on you";
@@ -589,6 +593,7 @@
   const TASK_FIELDS = ["priority", "slot", "where", "stage", "discuss", "started", "finished", "reply"];
   const FILTERS = [
     { key: "working", label: "Under way", sw: "var(--st-work-fg)", test: (t) => stageOf(t) === "working" },
+    { key: "backgrounded", label: "Backgrounded", sw: "var(--st-work-fg)", test: (t) => stageOf(t) === "backgrounded" },
     { key: "intrev", label: "Integrating or in review", sw: "var(--st-rev-fg)", test: (t) => stageOf(t) === "integrating" || stageOf(t) === "review" },
     { key: "waiting", label: "Waiting on you", sw: "var(--st-wait-fg)", test: (t) => stageOf(t) === "waiting" },
     { key: "discuss", label: "Needs discussion", sw: "var(--disc)", test: (t) => !!t.discuss },
@@ -1695,7 +1700,7 @@
   const edItem = () => (ED.id && M ? M.byId.get(ED.id) : null);
   function emptyEditor() {
     const legend = h("dl", { class: "legend" });
-    for (const [st, what] of [["working", "Claude or a subagent is on it"], ["integrating", "finished; Claude is merging it"], ["review", "finished; a subagent is reviewing it"], ["waiting", "it needs you: an answer, a decision, something only you can do"], ["done", "finished"]]) {
+    for (const [st, what] of [["working", "Claude or a subagent is on it"], ["backgrounded", "waiting on a long process (a download, a build); its slot is free for another task"], ["integrating", "finished; Claude is merging it"], ["review", "finished; a subagent is reviewing it"], ["waiting", "it needs you: an answer, a decision, something only you can do"], ["done", "finished"]]) {
       legend.append(h("dt", null, stChip({ stage: st, where: "Subagent" })), h("dd", null, what));
     }
     legend.append(h("dt", null, h("span", { class: "ic disc on", "aria-hidden": "true" }, icon("bubble"))), h("dd", null, "needs discussion first"));

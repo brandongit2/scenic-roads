@@ -31,7 +31,7 @@ db.exec(`
     parent TEXT,
     "order" REAL,
     num INTEGER,               -- a task's number, #57
-    stage TEXT,                -- '' (queued) | working | integrating | review | waiting | done
+    stage TEXT,                -- '' (queued) | working | backgrounded | integrating | review | waiting | done
     "where" TEXT,              -- who or what it runs on
     note TEXT,
     reply TEXT,
