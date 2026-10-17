@@ -32,7 +32,7 @@ export class DrivesPane {
   query: () => { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[]; approx: boolean } = () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [], approx: false });
 
   constructor(readonly root: HTMLElement) {
-    this.list = h('div', { class: 'climbs' });
+    this.list = h('div', { class: 'picks' });
     this.count = h('span', { class: 'faint' });
     this.spin = h('span', { class: 'spin', hidden: true });
     const seg = h('div', { class: 'seg small' });
@@ -50,7 +50,7 @@ export class DrivesPane {
     });
     root.append(
       seg,
-      h('div', { class: 'climbs-meta' }, this.count, this.spin,
+      h('div', { class: 'picks-meta' }, this.count, this.spin,
         h('label', { class: 'show-map', title: 'Highlight the listed stretches on the map all the time (hovering a row always highlights it)' }, show, 'On map')),
       this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
@@ -118,7 +118,7 @@ export class DrivesPane {
           .filter(Boolean);
         const bar = h('i', { class: 'sbar' });
         bar.style.width = `${Math.max(4, c.score)}%`;
-        const row = h('a', { class: 'climb', onclick: () => this.onSelect(c) },
+        const row = h('a', { class: 'pick', onclick: () => this.onSelect(c) },
           h('span', { class: 'rank' }, String(i + 1)),
           h('div', { class: 'cbody' },
             h('div', { class: 'cl1' }, title, h('b', {}, c.score.toFixed(0))),

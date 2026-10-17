@@ -29,10 +29,10 @@ export class SightsPane {
   constructor(readonly root: HTMLElement) {
     this.chips = h('div', { class: 'sight-chips' });
     this.count = h('span', { class: 'faint' });
-    this.list = h('div', { class: 'climbs' });
+    this.list = h('div', { class: 'picks' });
     root.append(
       this.chips,
-      h('div', { class: 'climbs-meta' }, this.count),
+      h('div', { class: 'picks-meta' }, this.count),
       this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
         'Landmarks in view by prominence: how well known they are (Wikipedia pageviews) and how rare nearby, as set in Layers → Stops & sights. Hover to mark (M: Google Maps, O: OpenStreetMap), click for details.'),
@@ -82,7 +82,7 @@ export class SightsPane {
       dot.style.background = colour.get(s.k) ?? '#888';
       const bar = h('i', { class: 'sbar' });
       bar.style.width = `${Math.max(4, s.score * 100)}%`;
-      const row = h('a', { class: 'climb', onclick: () => this.onSelect(s) },
+      const row = h('a', { class: 'pick', onclick: () => this.onSelect(s) },
         h('span', { class: 'rank' }, String(i + 1)),
         h('div', { class: 'cbody' },
           h('div', { class: 'cl1' }, h('span', { class: 'ct' }, dot, cap(displayOf(p)) || `Unnamed ${String(label.get(s.k) ?? '').toLowerCase()}`), h('b', {}, String(Math.round(s.score * 100)))),

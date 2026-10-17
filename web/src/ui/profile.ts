@@ -37,7 +37,7 @@ export class ProfilePanel {
   private hoverX: number | null = null;
   /** The point hovered on the chart: where, the road's heading there, and whether it's rail. */
   private hovered: { lngLat: [number, number]; heading: number; rail: boolean } | null = null;
-  /** A stretch to emphasise (e.g. a climb picked from the list), matched to the profile by position. */
+  /** A stretch to emphasise (e.g. a scenic drive picked from a list), matched to the profile by position. */
   private hl: { start: [number, number]; end: [number, number]; label: string } | null = null;
   private hlIdx: [number, number] | null = null;
   onHover: (lngLat: [number, number] | null, label?: string) => void = () => {};

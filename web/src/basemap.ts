@@ -299,7 +299,7 @@ const LINE_WIDTHS: [string, LineKind | 'global'][] = [
   ['waterway', 'rivers'],
   ['park-line', 'outlines'], ['indigenous-line', 'outlines'], ['special-line', 'outlines'], ['heritage-area-line', 'outlines'], ['whs-line', 'outlines'],
   // The highlights along roads stay wider than the road they mark.
-  ['sel-halo', 'roads'], ['drives-line', 'roads'], ['drive-hl', 'roads'], ['climb-casing', 'roads'], ['climb-line', 'roads'],
+  ['sel-halo', 'roads'], ['drives-line', 'roads'], ['drive-hl', 'roads'],
 ];
 const baseWidth = new Map<string, unknown>();
 /** Widths (and blurs) of those layers present: each its own × the weights. */
@@ -473,7 +473,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         ...dem, minzoom: 4, tiles: [tiles[`trees-${v}`]], attribution: '',
       }])),
       selection: empty,
-      climb: empty,
       drives: empty,
       'drive-hl': empty,
       marks: empty,
@@ -742,25 +741,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'line-width': ['interpolate', ['linear'], ['zoom'], 5, 7, 14, 16],
           'line-blur': ['interpolate', ['linear'], ['zoom'], 5, 3, 14, 6],
         },
-      },
-      {
-        id: 'climb-casing',
-        type: 'line',
-        source: 'climb',
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: {
-          'line-color': '#ffffff',
-          'line-opacity': 0.25,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 8, 14, 16],
-          'line-blur': ['interpolate', ['linear'], ['zoom'], 5, 3, 14, 6],
-        },
-      },
-      {
-        id: 'climb-line',
-        type: 'line',
-        source: 'climb',
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#ffffff', 'line-opacity': 0.9, 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 3.2, 14, 7] },
       },
       // (custom road layer is inserted here, below 'water-name-line')
       {

@@ -860,7 +860,7 @@ async function main() {
     const b = map.getBounds();
     return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((x) => x.toFixed(5)).join(',');
   };
-  /** Outline of the ground in view, for the lists "in view" (scenic drives, climbs): the screen
+  /** Outline of the ground in view, for the lists "in view" (scenic drives, rides): the screen
    * unprojected, up to where the ground gets too foreshortened to see (a pixel covering more than
    * 4× the ground it covers at the centre). A tilted view is a trapezoid whose bounding box takes in
    * far more (Portugal from Québec), and near the horizon a sliver of another continent can show. */
@@ -929,7 +929,7 @@ async function main() {
   overlays.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
   ferries.viewOutline = overlays.viewOutline;
 
-  // A climb or scenic drive picked from a list is a stretch of the selected road (store.s.stretch,
+  // A scenic drive or ride picked from a list is a stretch of the selected road (store.s.stretch,
   // so links carry it). Its line on the map: the list's geometry, or, when it came from a link,
   // the stretch cut out of the road's profile once loaded.
   let pinned: [number, number][] | null = null;
@@ -947,13 +947,11 @@ async function main() {
     const [i, j] = [near(a), near(b)].sort((x, y) => x - y);
     return coords.slice(i, j + 1);
   };
-  const setClimb = (g: [number, number][] | null) => map.getSource<GeoJSONSource>('climb')?.setData(line(g));
   const setDriveHl = (g: [number, number][] | null) => map.getSource<GeoJSONSource>('drive-hl')?.setData(line(g));
   const drawStretch = () => {
     const st = store.s.selected !== null ? store.s.stretch : null;
     if (st && !pinned && profileCoords) pinned = cut(profileCoords, st.a, st.b);
-    setClimb(st?.kind === 'climb' ? pinned : null);
-    setDriveHl(st?.kind === 'drive' ? pinned : null);
+    setDriveHl(st ? pinned : null);
   };
   const applyStretch = () => {
     const st = store.s.selected !== null ? store.s.stretch : null;
@@ -962,7 +960,7 @@ async function main() {
     drawStretch();
   };
   const driveStretch = (d: Drive): Stretch => ({
-    kind: 'drive', a: d.geom[0], b: d.geom[d.geom.length - 1], label: `Scenic ${d.score.toFixed(0)} · ${fmt.dist(d.length_m)}`,
+    a: d.geom[0], b: d.geom[d.geom.length - 1], label: `Scenic ${d.score.toFixed(0)} · ${fmt.dist(d.length_m)}`,
   });
   const boundsOf = (g: [number, number][]) => {
     const b = new maplibregl.LngLatBounds();
@@ -997,7 +995,7 @@ async function main() {
   rides.query = railQuery;
   lines.query = railQuery;
   const rideStretch = (r: Ride): Stretch => ({
-    kind: 'drive', a: r.geom[0], b: r.geom[r.geom.length - 1], label: `Scenic ride ${r.score.toFixed(0)} · ${fmt.dist(r.length_m)}`,
+    a: r.geom[0], b: r.geom[r.geom.length - 1], label: `Scenic ride ${r.score.toFixed(0)} · ${fmt.dist(r.length_m)}`,
   });
   rides.onResults = (rs) => drives.onResults(rs.map((r) => ({ score: r.score, geom: r.geom }) as unknown as Drive));
   rides.onHover = (r) => {

@@ -24,10 +24,10 @@ interface ManagerLike {
 }
 
 /** Sources not counted: the regions panel's own (downloads); the viewshed's image (its search is a
- * task of its own); the app's own GeoJSON it fills itself (the selection, the climb, the drives and
+ * task of its own); the app's own GeoJSON it fills itself (the selection, the drives and
  * their highlight, the marks); the shoreline check's (evalmode.ts, eval-…). Any other id shows by
  * itself: a loader new since. */
-const SKIP = new Set(['coverage', 'region-hover', 'regions', 'viewshed', 'selection', 'climb', 'drives', 'drive-hl', 'marks']);
+const SKIP = new Set(['coverage', 'region-hover', 'regions', 'viewshed', 'selection', 'drives', 'drive-hl', 'marks']);
 
 function labelOf(id: string): string | null {
   if (SKIP.has(id) || id.startsWith('eval-')) return null;

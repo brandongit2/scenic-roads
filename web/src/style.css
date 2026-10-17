@@ -312,7 +312,7 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 .weights .note { font-size: 10px; line-height: 1.4; margin-top: 6px; }
 
 /* stats card --------------------------------------------------------------- */
-/* The In view pane scrolls as a whole; the drive and climb lists scroll under their controls. */
+/* The In view pane scrolls as a whole; the lists scroll under their controls. */
 #stats .bd { display: flex; flex-direction: column; }
 #stats .bd > :not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #stats .bd > .pane-stats:not([hidden]) { display: block; overflow-y: auto; scrollbar-width: thin; margin: 0 -12px; padding: 0 12px; }
@@ -339,16 +339,16 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 .tab:hover { color: var(--text); }
 .tab.on { color: var(--text); border-bottom-color: var(--accent); }
 .seg.small button { padding: 3px 6px; font-size: 11px; }
-.climbs-meta { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px; font-size: 10.5px; min-height: 14px; }
-.climbs { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -12px; padding: 0 6px; scrollbar-width: thin; }
-.climb { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; padding: 5px 6px; border-radius: 6px; cursor: pointer; color: inherit; text-decoration: none; }
-.climb:hover { background: var(--hover); }
-.climb .rank { color: var(--faint); text-align: right; padding-top: 1px; }
-.climb .cl1 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.climb .ct { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--text); }
-.climb .ct .ref { display: inline-block; padding: 0 4px; margin-right: 5px; border: 1px solid var(--line-strong); border-radius: 3px; font-size: 10px; font-weight: 600; }
-.climb .cl1 b { color: #fff; font-weight: 600; white-space: nowrap; }
-.climb .cl2 { color: var(--faint); font-size: 10.5px; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picks-meta { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px; font-size: 10.5px; min-height: 14px; }
+.picks { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -12px; padding: 0 6px; scrollbar-width: thin; }
+.pick { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; padding: 5px 6px; border-radius: 6px; cursor: pointer; color: inherit; text-decoration: none; }
+.pick:hover { background: var(--hover); }
+.pick .rank { color: var(--faint); text-align: right; padding-top: 1px; }
+.pick .cl1 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.pick .ct { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--text); }
+.pick .ct .ref { display: inline-block; padding: 0 4px; margin-right: 5px; border: 1px solid var(--line-strong); border-radius: 3px; font-size: 10px; font-weight: 600; }
+.pick .cl1 b { color: #fff; font-weight: 600; white-space: nowrap; }
+.pick .cl2 { color: var(--faint); font-size: 10.5px; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #stats dd.ext { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; min-width: 0; }
 #stats .xname { color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 /* A value after a name stays on one line; the name gives way. */
@@ -521,7 +521,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .tree-note { padding: 2px 0 4px 22px; font-size: 10.5px; line-height: 1.4; }
 #layers .bld-chips { flex-wrap: wrap; gap: 3px 10px; }
 #layers [hidden] { display: none !important; }
-.climbs-meta .show-map { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); cursor: pointer; }
+.picks-meta .show-map { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); cursor: pointer; }
 
 /* In view summary: section heads and the landmark list. */
 .iv-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); margin: 2px 0 4px; }
@@ -534,7 +534,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .iv-lm .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
 .sight-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .sight-chips .pill { display: inline-flex; align-items: center; gap: 4px; }
-.sight-chips .dot, .climb .ct .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.sight-chips .dot, .pick .ct .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .sight-chips .pill .dot { margin-right: 0; }
 
 /* Regions (Layers → Regions, ui/regions.ts): the regions, the areas found, a new region. */
@@ -742,7 +742,7 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
   #layers .rg { padding: 8px 6px; }
   #layers .rg-act { opacity: 1; width: 30px; height: 30px; font-size: 15px; }
   #layers .rg-dl { height: 30px; padding: 0 10px; font-size: 12px; }
-  .climb { padding: 11px 6px; }
+  .pick { padding: 11px 6px; }
   #stats dd a, #stats dt { padding: 3px 0; }
   .resizer { width: 22px; }
   .resizer.left { left: calc(var(--left-w) - 11px); }

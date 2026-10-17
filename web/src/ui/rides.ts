@@ -20,7 +20,7 @@ const trains = (t: number) => (t >= 10 ? fmt.n(Math.round(t)) : t > 0 ? t.toFixe
 
 /** Shared list machinery: debounced loads keyed on the query, a spinner and a count line. */
 abstract class RailPane<T> {
-  protected list = h('div', { class: 'climbs' });
+  protected list = h('div', { class: 'picks' });
   protected count = h('span', { class: 'faint' });
   protected spin = h('span', { class: 'spin', hidden: true });
   private abort: AbortController | null = null;
@@ -64,7 +64,7 @@ abstract class RailPane<T> {
   protected row(i: number, title: Node, score: number, sub: string, x: T) {
     const bar = h('i', { class: 'sbar' });
     bar.style.width = `${Math.max(4, score)}%`;
-    const r = h('a', { class: 'climb', onclick: () => this.onSelect(x) },
+    const r = h('a', { class: 'pick', onclick: () => this.onSelect(x) },
       h('span', { class: 'rank' }, String(i + 1)),
       h('div', { class: 'cbody' },
         h('div', { class: 'cl1' }, title, h('b', {}, score.toFixed(0))),
@@ -91,7 +91,7 @@ export class RidesPane extends RailPane<Ride> {
       this.seg.push(b);
       seg.append(b);
     }
-    root.append(seg, h('div', { class: 'climbs-meta' }, this.count, this.spin), this.list,
+    root.append(seg, h('div', { class: 'picks-meta' }, this.count, this.spin), this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
         'Best stretch of each passenger line in view, ranked by the mean ride score with your ride-factor weights (Passenger rail → Metric). Hover to highlight (M: Google Maps, O: OpenStreetMap), click to select.'));
     this.setLen(LENGTHS.includes(this.len) ? this.len : 25);
@@ -142,7 +142,7 @@ export class LinesPane extends RailPane<RailLine> {
       this.sortBtns.push(b);
       seg.append(b);
     }
-    root.append(seg, h('div', { class: 'climbs-meta' }, this.count, this.spin), this.list,
+    root.append(seg, h('div', { class: 'picks-meta' }, this.count, this.spin), this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
         'Passenger lines in view: length in view, mean ride score with your ride-factor weights, and trains a day each way on the busiest part (published timetables). Hover to highlight (M: Google Maps, O: OpenStreetMap), click to select.'));
     this.setSort(this.sort);

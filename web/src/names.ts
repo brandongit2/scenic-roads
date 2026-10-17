@@ -2,7 +2,7 @@
 // server works out (the user's translation files for the name's area, else the thing's own
 // English) and attaches to what it serves: `main` and `sub` properties on the features of the
 // basemap, label and layer files (main only where it differs from the name), and `main` and `sub`
-// fields on way info, drives, rides, rail lines and climbs. Map labels show main with sub as a
+// fields on way info, drives, rides and rail lines. Map labels show main with sub as a
 // smaller second line (basemap.ts); the app's text shows "main (sub)": "浅草寺 (Senso-ji Temple)",
 // "Church" for "Église". Nothing is worked out here: a thing without them shows its name.
 
