@@ -12,8 +12,9 @@
 //!   `no_proxy` of its own) but what `BYPASS` lists, with why;
 //! - dem/budget.py's hosts are crate::budget's.
 //!
-//! A step asking a declared source (docs/inputs.md §6.9: dem/whsshapes.py, dem/pageviews.py ask theirs
-//! by role, dem/declared.py) names no host to scan: the proxy holds it at egress all the same.
+//! A step asking a declared source (docs/inputs.md §6.9) by role (`import declared`,
+//! `declared.url(`: dem/declared.py) names no host to scan, so it counts as asking one: it's listed
+//! too, whichever host its declaration names (the proxy holds a metered one at egress all the same).
 //! A new file naming a metered host, or a new way around the proxy, fails here until it's listed;
 //! an entry matching nothing fails too, so the lists can't go stale.
 
@@ -32,6 +33,11 @@ const ASKS: &[(&str, &str)] = &[
     ("dem/budget.py", "the steps' side of the budget: its lists of the metered hosts, and the hold it tells the proxy"),
     ("dem/heritagewd.py", "curl (honours HTTPS_PROXY); a 429 told (budget.seen)"),
     ("dem/items.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
+    ("dem/whsshapes.py", "urllib (honours HTTPS_PROXY), a query its cache lacks, of the declared wikidata-live source; a 429 told (budget.seen)"),
+    ("dem/pageviews.py", "curl and urllib (both honour HTTPS_PROXY): a month's dump of the declared pageviews source a connection; a 429 fails the month (curl --fail), tried again by the step's next run, not told"),
+    ("dem/bldfetch.py", "the declared buildings and building-heights sources (Overture's bucket, GHSL's tiles), not metered"),
+    ("dem/buildings.py", "the declared buildings source's bucket (DuckDB), not metered"),
+    ("dem/bldprep.py", "the declared building-heights source's version alone (its folder): asks nothing"),
     ("dem/areadetails.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
 ];
 
@@ -61,6 +67,11 @@ fn names_metered(text: &str) -> bool {
     })
 }
 
+/// Whether `text` asks a declared source by role (dem/declared.py): a host no scan can see.
+fn asks_declared(text: &str) -> bool {
+    text.contains("import declared") || text.contains("declared.url(")
+}
+
 fn jobs_code() -> Vec<(String, String)> {
     let root = root();
     let mut fs = Vec::new();
@@ -80,7 +91,7 @@ fn every_file_naming_wikimedia_is_listed_with_how_it_asks() {
     let mut used = std::collections::BTreeSet::new();
     for (rel, text) in jobs_code() {
         // (This lint's own file names them: it isn't in `files`' walk, which skips tests/.)
-        if !names_metered(&text) {
+        if !names_metered(&text) && !asks_declared(&text) {
             continue;
         }
         match ASKS.iter().position(|(f, _)| *f == rel) {
