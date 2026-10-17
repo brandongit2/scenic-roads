@@ -40,6 +40,7 @@ pub mod outlines;
 pub mod rawpack;
 pub mod peaks;
 pub mod pool;
+pub mod pubtimes;
 pub mod rail;
 pub mod reach;
 pub mod ovconv;

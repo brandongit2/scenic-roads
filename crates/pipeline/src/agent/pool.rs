@@ -1480,6 +1480,13 @@ impl Run {
         }
         for e in &out.events {
             eprintln!("pool: {}", said(e));
+            // (The hand-offs merged, by their entries' keys, in the build's history: publishing's
+            // times, crate::pubtimes.)
+            if let (Event::Merged { applied, .. }, Some(co)) = (e, &self.cx.coord) {
+                if !applied.is_empty() {
+                    co.note(crate::coord::history::Event { targets: applied.clone(), ..crate::coord::history::Event::new("merged") });
+                }
+            }
         }
         out
     }

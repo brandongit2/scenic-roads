@@ -1002,6 +1002,17 @@ from the first (`edit_held`).
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).
+- **Publishing's times** (`pipeline::pubtimes`, task #250): each stage from a unit's job to its
+  tiles on every Mac's map leaves an event. In the history: the unit's job ending, its hand-off
+  merged (`merged`: the journal entries' keys), the map update's map tiles first planned
+  (`planned`: each z6 tile with the units whose ways reach it), leased and done, and catalog n
+  written (`catalog`: its `n`, its job's time, delta or whole, the files listed and stat'ed, its
+  phases, from the catalog's own `catalog-stats:` log line). On the NAS, each Mac's map server
+  appends to `state/publish/<host>.jsonl` its adoption of each catalog and its mirror's sync of it
+  (begun, and through everything wanted). `scenic timings publish [--last N]` joins them: per
+  catalog and per unit, the hand-off, planned, leased, packed, catalog, servers and mirrors, the
+  map tiles each unit made stale, which of ferries, stations, roadunits, marks and names-todo ran,
+  and the medians (the catalogs' phases split delta and whole).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/workers.md`),
 always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at

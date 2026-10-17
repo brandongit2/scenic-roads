@@ -1359,6 +1359,10 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
             anyhow::ensure!(size == known[n.as_str()], "{l}: {n} is {size} bytes on the NAS, {} in the last catalog", known[n.as_str()]);
         }
     }
+    // (What it did, for publishing's times: pipeline::pubtimes, read from this line by the agent.)
+    let rechecked = if as_delta.is_none() { all.iter().filter(|(_, n)| known.contains_key(n.as_str())).count() as u64 } else { 0 };
+    let phases = pipeline::timings::snapshot(true).map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect()).unwrap_or_default();
+    let stats = pipeline::pubtimes::CatalogStats { n, delta: as_delta.is_some(), files: all.len() as u64, stated: total + rechecked, phases };
     let path = match as_delta {
         Some((base, d, size)) => {
             eprintln!("catalog: {n} as a delta over {} ({size} bytes; changed: {})", base.n, store::catalog::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", "));
@@ -1367,6 +1371,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
         None => store::catalog::write(&dir, &catalog)?,
     };
     eprintln!("published {}", path.display());
+    eprintln!("{}", stats.line());
     Ok(())
 }
 

@@ -26,7 +26,9 @@ pub struct Event {
     pub t: u64,
     /// What: "start" and "end" (a lead's job), "lease", "done", "fail" and "lapse" (a worker's
     /// job), "task" and "task-fail", "map-update" (a map update began: its regions; "round" before task #209, still read by forecast::update_secs while the week's history holds one) and
-    /// "catalog", "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
+    /// "catalog" (a catalog written: its `n`, its job's time and its crate::pubtimes::CatalogStats),
+    /// "merged" (journal entries merged: their keys), "planned" (a map update's map tiles first
+    /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
     /// "conditions" (the lead's changed), "caches" (a Mac's build caches trimmed after the
     /// build, or cleared on its owner's ask: what was freed, in the note).
@@ -51,6 +53,13 @@ pub struct Event {
     /// In words: how it ended, why it failed, what changed, who paused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// The catalog it's about (a "catalog": the one written).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u64>,
+    /// What else it says, for publishing's times (crate::pubtimes): a "catalog"'s
+    /// crate::pubtimes::CatalogStats, a "planned"'s units reaching each map tile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 impl Event {

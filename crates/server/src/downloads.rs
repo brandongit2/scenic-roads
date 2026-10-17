@@ -507,6 +507,9 @@ pub fn spawn_mirror(s: S) {
     }
 }
 
+/// The mirror's syncs said in publishing's log, per process.
+static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> = std::sync::Mutex::new(pipeline::pubtimes::MirrorMarks::new());
+
 /// One round of the mirror; whether to go again at once (the catalog or the downloads changed
 /// meanwhile).
 fn once(s: &crate::AppState, m: &Mirror) -> bool {
@@ -528,8 +531,17 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
             let slow = || s.data.agent_busy();
+            // (Each catalog's sync begun and through, once, in publishing's log: pipeline::pubtimes.)
+            let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
+                crate::data::publish_event(&root, "mirror-start", cat.n, None);
+            }
             match m.sync(&cat, &plan.wanted, &root, &pool, &Control { stop: &changed, slow: &slow, hold: &hold }) {
                 Ok(st) => {
+                    let through = st.end == store::mirror::SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
+                    if let Some(secs) = MIRROR_MARKS.lock().unwrap().end(cat.n, now(), through) {
+                        crate::data::publish_event(&root, "mirror-end", cat.n, Some(secs));
+                    }
                     if st.copied > 0 || st.removed > 0 || st.waiting > 0 || st.failed > 0 {
                         eprintln!("mirror: {st:?}");
                     }

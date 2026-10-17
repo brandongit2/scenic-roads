@@ -86,6 +86,9 @@ fn ago(t: u64) -> String {
 /// `scenic timings`: the jobs' phases, summed by kind (pipeline::timings::summary).
 fn timings(args: &[String]) -> Result<()> {
     use pipeline::timings::{read_log, summary, summary_text, RunRec};
+    if args.get(2).map(String::as_str) == Some("publish") {
+        return timings_publish(args);
+    }
     let kind = args.get(2).filter(|a| !a.starts_with("--")).map(String::as_str);
     let last: usize = opt(args, "--last").map(|n| n.parse()).transpose()?.unwrap_or(20);
     let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
@@ -124,6 +127,35 @@ fn timings(args: &[String]) -> Result<()> {
     }
     println!("Timings of {from}, the last {last} runs of each kind (CPU/wall marked ~: approximate, the phase overlapped another thread's work)\n");
     print!("{}", summary_text(&sums));
+    Ok(())
+}
+
+/// `scenic timings publish [--last N]`: publishing end to end (pipeline::pubtimes), from the
+/// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file) and the map
+/// servers' log on the NAS: each catalog of the last N (10) and its units, then the medians.
+fn timings_publish(args: &[String]) -> Result<()> {
+    use pipeline::pubtimes;
+    let last: usize = opt(args, "--last").map(|n| n.parse()).transpose()?.unwrap_or(10);
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let root = root(args, false).ok();
+    let days = 8;
+    let events = match opt(args, "--file") {
+        Some(f) => pubtimes::load_history(None, Some(Path::new(&f)), days),
+        None => pubtimes::load_history(root.as_deref(), Some(&home.join("coord/history.jsonl")), days),
+    };
+    let servers = root.as_deref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
+    let (cats, units) = pubtimes::chains(&events, &servers);
+    if flag(args, "--json") {
+        let from = cats.len().saturating_sub(last);
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "catalogs": &cats[from..], "units": units }))?);
+        return Ok(());
+    }
+    if cats.is_empty() {
+        println!("no catalogs in the build's history yet ({} events read)", events.len());
+        return Ok(());
+    }
+    println!("Publishing, the last {last} catalogs: each unit's hand-off, its map tiles planned, leased and packed, the catalog, each Mac's server and mirror\n");
+    print!("{}", pubtimes::text(&cats, &units, last));
     Ok(())
 }
 

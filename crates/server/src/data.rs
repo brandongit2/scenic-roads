@@ -237,8 +237,10 @@ impl Data {
                     if let Err(e) = kept {
                         eprintln!("catalog: can't keep a local copy: {e:#}");
                     }
+                    let n = c.n;
                     *self.cat.write().unwrap() = Arc::new(c);
                     self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    publish_event(&root, "adopt", n, None);
                 }
                 true
             }
@@ -666,6 +668,24 @@ impl Data {
             })
             .ok();
     }
+}
+
+/// This Mac's name, for the map servers' log (pipeline::pubtimes).
+pub fn host() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(pipeline::agent::cond::host_name)
+}
+
+/// Notes in the map servers' log on the NAS (`root`; pipeline::pubtimes::SERVERS, an append to
+/// this Mac's file) this server's adoption of catalog `n` or its mirror's sync of it (`kind`): on a
+/// thread of its own, as the share may be slow, best effort.
+pub fn publish_event(root: &std::path::Path, kind: &str, n: u64, secs: Option<f64>) {
+    let (root, e) = (root.to_path_buf(), pipeline::pubtimes::ServerEvent { t: 0, host: host().to_string(), kind: kind.into(), n, secs });
+    let _ = std::thread::Builder::new().name("publog".into()).spawn(move || {
+        if let Err(err) = pipeline::pubtimes::append_server(&root, e) {
+            eprintln!("publishing's log on the NAS: {err}");
+        }
+    });
 }
 
 /// `~/Library/Application Support/scenic`.

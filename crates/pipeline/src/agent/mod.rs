@@ -952,6 +952,9 @@ pub struct Agent {
     /// time (forecast::update_secs, as the last forecast read the history): a map update per region's gap.
     publishing: std::cell::Cell<publish::Switches>,
     update_measured: std::cell::Cell<Option<f64>>,
+    /// The map update under way's map tiles noted planned in the history (crate::pubtimes), by its
+    /// beginning.
+    planned_tiles: std::cell::RefCell<(u64, BTreeSet<String>)>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
     /// process; it starts nothing then, and restarts into the pool once it can), and why this
@@ -1117,7 +1120,7 @@ impl Agent {
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), slots_on: false, proxy: None, resume: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), planned: None, queued: Default::default(), coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), timetables: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, restart_for: None, inputs: Gate::default(), start_soon: Default::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), slots_on: false, proxy: None, resume: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), planned: None, queued: Default::default(), coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), timetables: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), planned_tiles: Default::default(), member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, restart_for: None, inputs: Gate::default(), start_soon: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2454,6 +2457,8 @@ impl Agent {
                 format!("{st}{}\n{}", if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) }, jobs::tail(&r.log, 20))
             };
             let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
+            // (A catalog's own line of what it did: crate::pubtimes::CatalogStats.)
+            let cat_stats = if ok && step == "catalog" { crate::pubtimes::CatalogStats::from_log(&jobs::tail(&r.log, 60)) } else { None };
             self.progress_ended(&id, ok);
             eprintln!("agent: {id} {} after {} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" }, if wall < 10.0 { format!("{wall:.1}") } else { secs.to_string() });
             let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
@@ -2467,7 +2472,8 @@ impl Agent {
             }
             if ok && step == "catalog" {
                 let ready = self.ready.borrow().clone();
-                self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, ..crate::coord::history::Event::new("catalog") });
+                let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
+                self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, secs: Some(wall), n, data, ..crate::coord::history::Event::new("catalog") });
             }
             let outcome = if ok { Outcome::Done } else if paused { Outcome::Paused } else { Outcome::Failed };
             // (The coordinator's record of what's done.)
@@ -4638,6 +4644,21 @@ impl Agent {
             None => id.clone(),
         }).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
+        // (The map update's map tiles as first planned, for publishing's times: crate::pubtimes.)
+        let began = self.map_update.borrow().as_ref().filter(|r| !r.over).map(|r| r.began);
+        if let Some(b) = began.filter(|_| self.keeps_map_updates()) {
+            let mut noted = self.planned_tiles.borrow_mut();
+            if noted.0 != b {
+                *noted = (b, BTreeSet::new());
+            }
+            let new: BTreeSet<String> = plan.iter().chain(update_left.iter()).filter(|w| w.step == "pack").flat_map(|w| w.targets.iter().map(|t| t.0.clone())).filter(|t| !noted.1.contains(t)).collect();
+            if !new.is_empty() {
+                let new: Vec<String> = new.into_iter().collect();
+                noted.1.extend(new.iter().cloned());
+                let reaching = crate::pubtimes::reaching(&manifest, reach.as_deref(), &new);
+                self.note(crate::pubtimes::planned_event(new, reaching));
+            }
+        }
         if let Some(why) = credits_unread.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("the inputs' descriptions (their credits) can't be read now: {why}") });
             plan.retain(|w| w.step != "catalog");
