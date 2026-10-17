@@ -23,6 +23,7 @@ import { Dist } from './roads/stats';
 import { fadeAlpha, scaleU } from './ui/scale';
 import { HERITAGE_GROUPS } from './basemap';
 import type { DrawnTalls } from './camera3d';
+import { PLAIN } from './basecolours';
 
 export type BuildingColour = 'plain' | 'height' | 'source';
 
@@ -74,9 +75,7 @@ export const SOURCES: [string, string, string][] = [
 /** `c`, the kind (from Overture's subtype). */
 export const KINDS = ['', 'residential', 'outbuilding', 'commercial', 'industrial', 'religious', 'civic', 'agricultural', 'transportation', 'other'];
 
-/** The plain colour by default. */
-export const PLAIN = '#566173';
-const PLAIN_RGB = [0x56 / 255, 0x61 / 255, 0x73 / 255];
+export { PLAIN };
 /** A #rrggbb colour as 0–1 floats. */
 export const rgb01 = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];
 /** By height: the scale's domain (m). */
@@ -132,7 +131,7 @@ export function heightColourFn(b: BuildingState, look: HeightLook): { key: strin
     }
     return stops[stops.length - 1][1];
   };
-  const key = JSON.stringify([stops, t.on, t.dir, t.value]);
+  const key = JSON.stringify([stops, t.on, t.dir, t.value, b.plain]);
   return { key, colour };
 }
 
@@ -276,7 +275,7 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   map.setLayoutProperty(FLAT, 'visibility', vis(b.on && flat));
   map.setLayoutProperty(PICK, 'visibility', vis(b.on && !flat));
   const c = colourOf(b, look);
-  map.setPaintProperty(LAYER, 'fill-extrusion-color', highlighted(c));
+  map.setPaintProperty(LAYER, 'fill-extrusion-color', highlighted(c, b.plain));
   map.setPaintProperty(FLAT, 'fill-color', c);
   map.setPaintProperty(LAYER, 'fill-extrusion-opacity', b.opacity);
   map.setPaintProperty(FLAT, 'fill-opacity', 0.65 * b.opacity);
@@ -533,22 +532,23 @@ function heightsInView(map: MLMap): Dist | null {
 /** How far a heritage building's colour goes from the plain one toward its group's. */
 const HERITAGE_TINT = 0.6;
 
-/** A heritage group's tint (sRGB 0–1): its colour (#rrggbb) part way from the default plain colour. */
-export function heritageTint(g: number): [number, number, number] {
-  const hex = HERITAGE_GROUPS[g].colour;
-  return [1, 3, 5].map((i, k) => PLAIN_RGB[k] + (parseInt(hex.slice(i, i + 2), 16) / 255 - PLAIN_RGB[k]) * HERITAGE_TINT) as [number, number, number];
+/** A heritage group's tint (sRGB 0–1): its colour (#rrggbb) part way from a plain colour (the
+ * meshes: the user's; the far field's tint textures: the default). */
+export function heritageTint(g: number, plain = PLAIN): [number, number, number] {
+  const p = rgb01(plain), c = rgb01(HERITAGE_GROUPS[g].colour);
+  return p.map((x, k) => x + (c[k] - x) * HERITAGE_TINT) as [number, number, number];
 }
 const rgb = (c: number[]) => `rgb(${c.map((x) => Math.round(x * 255)).join(',')})`;
 
 /** The hovered building's colour: amber over the plain colour (as the old highlight at 0.7 over it). */
-const HOVER_COLOUR = rgb([0xff, 0xd2, 0x7a].map((x, i) => PLAIN_RGB[i] * 0.3 + (x / 255) * 0.7));
+const hoverColour = (plain: string) => rgb(rgb01(plain).map((x, i) => x * 0.3 + ([0xff, 0xd2, 0x7a][i] / 255) * 0.7));
 
 /** A colour expression with the highlights: the hovered building amber, a heritage building in its
  * group's tint (feature state `hover`, `her`), the rest `c`. */
-function highlighted(c: ExpressionSpecification | string): ExpressionSpecification {
+function highlighted(c: ExpressionSpecification | string, plain: string): ExpressionSpecification {
   return ['case',
-    ['boolean', ['feature-state', 'hover'], false], HOVER_COLOUR,
-    ['match', ['coalesce', ['feature-state', 'her'], -1], ...HERITAGE_GROUPS.flatMap((_, g) => [g, rgb(heritageTint(g))]), c],
+    ['boolean', ['feature-state', 'hover'], false], hoverColour(plain),
+    ['match', ['coalesce', ['feature-state', 'her'], -1], ...HERITAGE_GROUPS.flatMap((_, g) => [g, rgb(heritageTint(g, plain))]), c],
   ] as unknown as ExpressionSpecification;
 }
 

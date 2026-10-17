@@ -1,4 +1,5 @@
 import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from 'maplibre-gl';
+import { LAND_COLOUR } from './basecolours';
 import { ver } from './api';
 import { hostFor } from './hosts';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
@@ -181,8 +182,7 @@ export const STATION_LAYER = 's';
  * Natural Earth's below z6). */
 let WATER_TILES = false;
 export const waterTilesOn = () => WATER_TILES;
-/** The land's colour (the map's background). */
-export const LAND_COLOUR = '#0b0e13';
+export { LAND_COLOUR };
 /** The water's colours in its tiles: the sea's, the lakes' and the land's under them (coast.ts
  * applyWater sets them): the server mixes water and land as light mixes for that land
  * (crates/server/src/water.rs alpha_for). No land (''): alpha the share itself (the shoreline
@@ -191,6 +191,7 @@ let landColour = LAND_COLOUR;
 /** The land's colour now (the user's: Layers → Map → Land colour); the style's background and the
  * water tiles' land take it (main.ts applyLand). */
 export const setLandColour = (c: string) => (landColour = c);
+export const landColourNow = () => landColour;
 let waterColours = ['#0c1622', '#0f1a27', LAND_COLOUR];
 export const setWaterColours = (sea: string, lake: string, land = landColour) => (waterColours = [sea, lake, land].filter(Boolean));
 /** The lakes' colour for a water colour: a shade lighter. */

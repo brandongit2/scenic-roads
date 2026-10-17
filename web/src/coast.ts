@@ -144,14 +144,19 @@ let rampKey = '';
  * that changes by 5 % or more), sea only or every shore. `input`: the water the shading is
  * measured from.
  */
+let tilesSoon: ReturnType<typeof setTimeout> | undefined;
 export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, waterShown: boolean) {
   const c = rgb(w.colour);
   const lake = lakeColour(w.colour), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
   if (waterTilesOn()) {
     // The water's tiles carry their colours: asked for again in the new ones.
+    // (Asked for once a colour picker rests: not a tile set for every step of a drag.)
     setWaterColours(w.colour, lake);
-    const src = map.getSource('water') as maplibregl.RasterTileSource | undefined;
-    if (src && src.tiles?.[0] !== waterTiles()) src.setTiles([waterTiles()]);
+    clearTimeout(tilesSoon);
+    tilesSoon = setTimeout(() => {
+      const src = map.getSource('water') as maplibregl.RasterTileSource | undefined;
+      if (src && src.tiles?.[0] !== waterTiles()) src.setTiles([waterTiles()]);
+    }, 250);
   } else if (map.getLayer('water')) {
     map.setPaintProperty('water', 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
   }

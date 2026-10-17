@@ -25,7 +25,7 @@
 import type { Map as MLMap, LayerSpecification } from 'maplibre-gl';
 import type { AppState, WaterLook } from './state';
 import { addCoastSource, centreMpp, coastRamp, switchCoast } from './coast';
-import { lakeColour, setWaterColours, waterTiles, waterTilesOn } from './basemap';
+import { lakeColour, landColourNow, setWaterColours, waterTiles, waterTilesOn } from './basemap';
 
 const q = new URLSearchParams(location.search);
 /** The eval mode's settings, or null outside it. */
@@ -41,7 +41,6 @@ export const EVAL = q.has('eval')
 /** The water's look in eval mode (evalState), for the app's own colours. */
 let waterLook: WaterLook | null = null;
 /** The map's own land colour (its background's, as the style has it). */
-let appLand = '';
 /** While the reference is drawn for the screen: the layers alone shown, and the land's colour. */
 let only: Set<string> | null = null;
 let onlyLand = '#ffffff';
@@ -83,7 +82,8 @@ export function enforce(map: MLMap) {
   }
   if (!style) return;
   let changed = false;
-  if (!appLand) appLand = String(map.getPaintProperty('bg', 'background-color') ?? '#000000');
+  // (The app's land colour as the user has it now: the background shows another here.)
+  const appLand = landColourNow();
   // (The reference or a trial raster, when there is one, alone over the land.)
   const first = style.layers.find((l) => l.id.startsWith('eval-'))?.id;
   for (const l of style.layers) {
@@ -366,7 +366,7 @@ export function installEval(map: MLMap) {
       };
       const [s, k, a] = [red(sea.px), red(inland.px), red(shade.px)];
       const bw = compose(w, h, ss, s, k, a, { land: '#ffffff', sea: '#000000', lake: '#000000', shade: '#ffffff' });
-      const appColours = { land: appLand, sea: look.colour, lake: lakeColour(look.colour), shade: look.shadeColour };
+      const appColours = { land: landColourNow(), sea: look.colour, lake: lakeColour(look.colour), shade: look.shadeColour };
       const app = compose(w, h, ss, s, k, a, appColours);
       // The same averaged as the stored values rather than as light: what linear light changes.
       const bwS = compose(w, h, ss, s, k, a, { land: '#ffffff', sea: '#000000', lake: '#000000', shade: '#ffffff' }, false);

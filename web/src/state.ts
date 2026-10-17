@@ -6,6 +6,7 @@ import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
 import type { BuildingColour, BuildingState } from './buildings';
+import { LAND_COLOUR, PLAIN } from './basecolours';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 import {
@@ -635,7 +636,7 @@ export const defaults: AppState = {
   // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
   // By height: auto-fit to the buildings in view, the low ones faded toward the plain colour.
   buildings: {
-    on: true, flat: false, colour: 'plain', plain: '#566173', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
+    on: true, flat: false, colour: 'plain', plain: PLAIN, opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
     height: scaleOfLook({ ...freshLook([0, 100], 0.6), fit: [5, 99.5], lowSpan: 0.4, thrValue: 50 }), heritage: true,
   },
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
@@ -652,7 +653,7 @@ export const defaults: AppState = {
   lowSpan: 0.6,
   labelOpacity: 0.5,
   labelSize: 1,
-  land: '#0b0e13',
+  land: LAND_COLOUR,
   water: {
     colour: '#0c1622', shade: true, width: 28, strength: 0.22, falloff: 1.8, shadeColour: '#4f7fa8',
     shore: 0.25, ripples: 0, rippleStrength: 0.35, lakes: false,
