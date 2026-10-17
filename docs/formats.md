@@ -117,8 +117,6 @@ lower id; a cycle starts at its lowest way id, in that way's direction.
 | `parts` | `Part` (32 B) | one road's consecutive samples inside T, ended at gaps over 300 m |
 | `psamples` | `PSample` (24 B) | the parts' samples, part by part |
 | `pch` | `[u8; 13]` | per part sample |
-| `climbs` | `Climb` (64 B) | climbs starting in T |
-| `climbgeom` | `[i32; 2]` | their polylines |
 | `railinfo` | `RailInfo` (32 B) | rail ways' lines, sorted by `here` (without it the server reads base packs) |
 | `railstr` | newline-separated | their names and routes (0 is "") |
 | `lparts`, `lrparts` | `LPart` (24 B) | zoomed-out summaries (meta `"lsum": 1`; docs/phase5.md): roads of 2 km or more, and rail |
@@ -139,10 +137,6 @@ LBin    { u64 way (road bin: its middle sample's way; rail: its own); f32 off0; 
           railinfo row, else u32::MAX); u16 n (samples); u8 class; u8 flags (as Part's; rail 0);
           [u8; 12] comp (component means × 255: drive components, or ride components but trains
           a day); [u8; 4] pad }                                                   // 64 bytes
-Climb   { u64 way (OSM id at the start); u64 label (OSM id at the middle); f32 gain_m;
-          f32 length_m; f32 start_elev; f32 top_elev; f32 max_grade; f32 road_len (of the
-          middle way's road); [i32; 2] mid; u32 geom_start; u32 geom_count; u8 class;
-          u8 unpaved; u8 flags (middle way: bit 0 toll, bit 1 unnamed); [u8; 5] pad } // 64 bytes
 RailInfo { u32 here; u32 colour; i64 rel (primary route relation, 0 none); u32 name; u32 route
           (railstr indexes); u8 rail (service bits); u8 class; [u8; 6] pad }      // 32 bytes
 ```

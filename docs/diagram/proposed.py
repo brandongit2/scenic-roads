@@ -189,7 +189,7 @@ def build(check=False):
                     [(['elevations · grade'], 'in the base pack')], kept='cache/dem-units/', scope='area', shared=True, task=True)
     n_scen = d.card('scen', 'd3', cy, 'scenic', 'Rust', ['samples every 100 m: horizons', 'to 300 m past trees, views to', '15 km, buildings, designations'],
                     [(['13 channels a point'], 'in the base pack')], kept='cache/scenic-units/', scope='area', shared=True, task=True)
-    n_tile = d.card('net', 'd4', cy, 'roads & rails', 'Rust', ['per z6 tile: the areas within', '110 km and their road values;', 'climbs, tiles, query parts'],
+    n_tile = d.card('net', 'd4', cy, 'roads & rails', 'Rust', ['per z6 tile: the areas whose', 'ways come in, their road values;', 'tiles, query parts'],
                     [(['layers/roads/ · rails/'], 'packs · RT v7 z4–14'), (['hidata/<z6>'], 'query parts · summaries')], scope='area')
     s_osm4 = d.src('osm', cy, 'OSM pieces', ['roads · rail lines'])
     s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.) ·', 'GSI (Japan) · FABDEM 30 m;', 'read by range, road blocks only'],

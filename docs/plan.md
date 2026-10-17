@@ -78,12 +78,12 @@ which the NAS does itself. The jobs (§8 has their order and keys):
    (a way belongs to the unit of its first node) that touch the coverage, with per-vertex
    elevations, grade and scenic channels.
 6. **Then chains** that don't wait for each other: **roads** (road → units index, pack(T) per z6
-   tile from the base data of every unit within 100 km, lo packs, rail stops and ferries, roots,
+   tile from the base data of the units whose ways come into it, lo packs, rail stops and ferries, roots,
    then a catalog), **rail service** (§6), **landmarks** (`docs/phase5.md`) and **3D buildings**
    (`docs/buildings3d.md`).
 
 Because road values come from the whole planet, adding a region changes nothing outside its own
-units and the packs their ways come within 100 km of.
+units and the packs of the tiles their ways come into.
 
 ## 3. Storage
 
@@ -101,7 +101,7 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/, terrain-z8-v3,
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
 base/          base packs, one per unit
-hidata/        per z6 tile: ways-here index, query parts, climbs, rail lines, zoomed-out summaries
+hidata/        per z6 tile: ways-here index, query parts, rail lines, zoomed-out summaries
 markdata/      per z6 tile: landmark points
 ovdata/        per z3 tile: area and park details
 global/        worldwide files: road values per unit, road → units, rail frequencies, landmark
@@ -363,7 +363,7 @@ build uses them. Overlaps are harmless; nothing checks for gaps.
   units' ways).
 
 **No seams:** no step knows region borders; per-vertex values are computed once, by the owning unit;
-road values come from the planet; climbs come from the 100 km halo; queries join road parts by
+road values come from the planet; queries join road parts by
 offset. Where coverage ends, roads end.
 
 **IDs:** OSM type and id. Way ids fit u32 until the 2040s; points use u64.
@@ -637,11 +637,11 @@ index, so a new release rebuilds every unit.
 
 ### Per z6 pack: pack(T)
 
-- **Reads:** the base packs and road values of every unit whose ways come within 100 km of T (its
+- **Reads:** the base packs and road values of T's owners, every unit whose ways come into T (its
   owned extent from the pass's reach; without one, its tile + 20 km).
 - **Writes:** road and rail hi tiles (z9–14) and T's hidata: the ways-here index; query parts (each
-  road's 100 m samples and channels with offsets, for drives and rides); climbs starting in T; rail
-  lines; the zoomed-out summaries (`docs/phase5.md`).
+  road's 100 m samples and channels with offsets, for drives and rides); rail lines; the zoomed-out
+  summaries (`docs/phase5.md`).
 - **Lo packs** per z3 tile hold roads and rail z4–8, made from the base packs.
 - Landmarks, stations, ferries and overlays come from their own jobs, so no road pack depends on
   worldwide rankings.
@@ -740,8 +740,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   tile's XXH3 from its pack's index): what it stages, every z11 tile, and at its ways' points the
   z12 tile or the finest staged above it. A unit whose terrain indexes can't be read has no key and
   isn't built; the status says so.
-- **pack(T):** the base packs and road values within its 100 km halo and, after a dot, those of its
-  owners alone, so a map update tells a tile whose owners changed from one whose halo did.
+- **pack(T):** the base packs and road values of its owners, the units whose ways come into T.
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile.
 - **rail-feeds:** the declarations' accepted index, the catalogue's copy, the coverage, the pass's
   outlines, and which keys `inputs/keys.env` holds by name (never values). Not what it writes.
@@ -1076,7 +1075,7 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      the units as they were, which its jobs read through `SCENIC_UNITS_AS_OF`. It's over once its
      catalog is made. Its work: its regions' slope and tree cover, a prune (§5, Shrinking), the
      roads' chain, and a catalog. A map update before the last draws only the map tiles meeting its
-     regions, those no unbuilt unit is near, and those whose owners changed.
+     regions, those no unbuilt unit's ways come into, and those drawn before whose owners changed.
    - **Why a map update begins, or doesn't:** the plan and the forecast decide by one test,
      `build::map_update_due`; the lead records its decision and reasons (`build::UpdateDecision`),
      shown in the build status (`map_update`), the worker page and `scenic status`, and logged when
@@ -1233,7 +1232,7 @@ the jobs' wall time, and where a run's time went):
 | bldtiles | 22 % | 14 min | 4.0 | the areas' tiles made (compute) 88 % |
 | terrain | 10 % | 5 min | 1.5 | tiles prepared 58 %, uploaded 15 % |
 | names-todo | 6 % | 11 min | 0.1 | every base pack's names read from the NAS, after each catalog |
-| pack | 6 % | 12 min | 0.1 | the halo's base packs copied here 91 % (18 GB a run) |
+| pack | 6 % | 12 min | 0.1 | the base packs copied here 91 % (18 GB a run) |
 | slope | 5 % | 2 min | 0.4 | its terrain pack copied 29 %, uploaded 45 % |
 | heritage | 4 % | 81 min | 1.0 | the filtered planet clipped (osmium, once a pass) 86 % |
 | peaks | 3 % | 3 min | 1.1 | z12 tiles read one by one from the packs on the NAS (25,000 files a run) 75 % |
@@ -1333,7 +1332,7 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
   Planned: a rate limit on the pass's uploads, and remounting a hung mount.
 - **The Macs' availability:** work progresses only while a Mac of the pool is awake and reaches the
   NAS; the lead's duties wait for a lead (another member takes over: §8, The pool).
-- **Dense units** (Kanto, a 3 GB base pack): if a unit or its 110 km halo doesn't fit in 48 GB,
+- **Dense units** (Kanto, a 3 GB base pack): if a unit doesn't fit in 48 GB,
   units split into z7 or z8 tiles.
 - **Remote DEM servers** may be slow or change; the units' samples are kept on the NAS.
 - **Version bumps at globe scale** would take days.
