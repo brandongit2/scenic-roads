@@ -1950,7 +1950,8 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     println!("re-keyed: {} z3 tiles as their pieces and assemblies; dropped: {}; unknown now: {}; a second pass: {} ({:.1} s)", r.trees_moved.len(), r.trees_dropped.len(), r.trees_unknown.len(), if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" }, t0.elapsed().as_secs_f64());
     // Each z3 tile recorded: what it was, whose its packs are, what the switch does.
     let old: BTreeMap<String, String> = rekey::v1::trees_targets(&cov, &m).into_iter().collect();
-    let tt = pipeline::treepacks::targets(&cov, &m);
+    let trees_extra = pipeline::inputs::sources::open(root, &m)?.map(|s| pipeline::inputs::sources::trees_extra(&s)).transpose()?.flatten();
+    let tt = pipeline::treepacks::targets_with(&cov, &m, trees_extra.as_deref());
     let mtime = |c: &str| std::fs::metadata(root.join(c)).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
     let size = |c: &str| std::fs::metadata(root.join(c)).map(|md| md.len()).unwrap_or(0);
     let packs_of = |q: Unit| -> Vec<&String> {

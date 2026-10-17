@@ -59,10 +59,20 @@ pub struct TerrainTiles {
     /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
     /// elevation index's content name, and their pin or why they can't be read.
     terrain: Option<(String, Result<TerrainPin, String>)>,
-    /// The declared buildings source's release (crate::inputs::sources), which the units' keys name
-    /// the roadside buildings' index by: the accepted sources' index content name, and the release
-    /// (None: not declared, or not to be read now).
-    buildings: Option<(String, Option<String>)>,
+    /// The declared sources as the units' and tree cover's keys name them (crate::inputs::sources):
+    /// the accepted sources' index content name, and what they read of it (None: not declared, or
+    /// not to be read now).
+    buildings: Option<(String, Option<KeyedSources>)>,
+}
+
+/// What the units' and tree cover's keys name of the declared sources: the buildings source's
+/// release (the roadside buildings' index), and the land-cover, canopy and leaf-type declarations
+/// where they aren't as staged (crate::inputs::sources::unit_extra, trees_extra).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyedSources {
+    pub release: String,
+    pub unit: Option<String>,
+    pub trees: Option<String>,
 }
 
 /// The terrain's sources in tests holding none (`terrain_sources`).
@@ -194,23 +204,41 @@ impl TerrainTiles {
         if self.buildings.as_ref().is_some_and(|(c, r)| c == want && r.is_some()) {
             return;
         }
-        let r = crate::buildtiles::release_of(root, m).map_err(|e| eprintln!("agent: the units wait: the declared buildings source in {want} can't be read ({e:#})")).ok();
+        let r = (|| -> anyhow::Result<KeyedSources> {
+            let s = crate::inputs::sources::read(root, m)?;
+            Ok(KeyedSources { release: crate::buildtiles::release_of(root, m)?, unit: crate::inputs::sources::unit_extra(&s)?, trees: crate::inputs::sources::trees_extra(&s)? })
+        })()
+        .map_err(|e| eprintln!("agent: the units and tree cover wait: the declared sources in {want} can't be read ({e:#})"))
+        .ok();
         self.buildings = Some((want.clone(), r));
     }
 
     /// The declared buildings source's release, of the accepted sources `m` names; None while
     /// there's none, or it can't be read now (the units' keys wait).
     pub fn buildings_release(&self, m: &BTreeMap<String, String>) -> Option<&str> {
-        // (Tests holding none: the staged declaration's.)
+        self.keyed(m).map(|k| k.release.as_str())
+    }
+
+    /// What the keys name of the declared sources, of the accepted sources `m` names; None while
+    /// there's none, or they can't be read now (the units' and tree cover's keys wait). Tests holding
+    /// none: the staged declarations' (nothing beside the release).
+    pub fn keyed(&self, m: &BTreeMap<String, String>) -> Option<&KeyedSources> {
         #[cfg(test)]
         if self.buildings.is_none() {
-            return Some(crate::buildtiles::TEST_RELEASE);
+            static TEST: std::sync::OnceLock<KeyedSources> = std::sync::OnceLock::new();
+            return Some(TEST.get_or_init(|| KeyedSources { release: crate::buildtiles::TEST_RELEASE.into(), unit: None, trees: None }));
         }
         let want = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT))?;
         match &self.buildings {
-            Some((c, Some(r))) if c == want => Some(r),
+            Some((c, Some(k))) if c == want => Some(k),
             _ => None,
         }
+    }
+
+    /// Holds `k` as the keys' declared sources of accepted sources index `content` (tests).
+    #[cfg(test)]
+    pub fn hold_keyed(&mut self, content: &str, k: KeyedSources) {
+        self.buildings = Some((content.to_string(), Some(k)));
     }
 
     /// The terrain's declared sources as its keys name them, of the accepted elevation version `m`

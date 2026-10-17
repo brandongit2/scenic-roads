@@ -503,6 +503,28 @@ pub fn read(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Sources>
     open(root, manifest)?.context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
 }
 
+/// What the units' keys name of the declared sources they read (the land cover, the canopy): each
+/// one's id and `keyed` digest where it isn't as staged (`Source::key_extra` against
+/// agent::rekey::declared_before), together; None while all are, so the keys are as they were.
+pub fn unit_extra(s: &Sources) -> Result<Option<String>> {
+    use crate::agent::rekey::declared_before as b;
+    extras(s, &[(LAND_COVER, b::LAND_COVER), (CANOPY, b::CANOPY)])
+}
+
+/// The same of tree cover's (the canopy, the leaf types).
+pub fn trees_extra(s: &Sources) -> Result<Option<String>> {
+    use crate::agent::rekey::declared_before as b;
+    extras(s, &[(CANOPY, b::CANOPY), (LEAF_EUROPE, b::LEAF_EUROPE), (LEAF_NORTH_AMERICA, b::LEAF_NORTH_AMERICA)])
+}
+
+fn extras(s: &Sources, roles: &[(&str, &str)]) -> Result<Option<String>> {
+    let mut v = Vec::new();
+    for (role, before) in roles {
+        v.extend(s.role(role)?.key_extra(before));
+    }
+    Ok((!v.is_empty()).then(|| v.join(" ")))
+}
+
 /// The environment variable naming the file a Python step reads the sources from (dem/declared.py).
 pub const PYTHON_ENV: &str = "SCENIC_SOURCES";
 
@@ -648,6 +670,27 @@ mod tests {
         assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
         assert_eq!(v[WIKIDATA_LIVE]["url"], "https://query.wikidata.org/sparql");
         assert_eq!(v[PAGEVIEWS]["url"], "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2");
+    }
+
+    /// The units' and tree cover's keys name the land-cover, canopy and leaf-type declarations only
+    /// once they aren't as staged: nothing as they are, the changed one's id and `keyed` otherwise.
+    #[test]
+    fn the_units_and_trees_keys_name_their_sources_once_changed() {
+        use crate::agent::rekey::declared_before as b;
+        let s = staged();
+        for (role, before) in [(LAND_COVER, b::LAND_COVER), (CANOPY, b::CANOPY), (LEAF_EUROPE, b::LEAF_EUROPE), (LEAF_NORTH_AMERICA, b::LEAF_NORTH_AMERICA)] {
+            assert_eq!(s.role(role).unwrap().digest(), before, "{role}");
+        }
+        assert_eq!((unit_extra(&s).unwrap(), trees_extra(&s).unwrap()), (None, None));
+        let mut changed = s.clone();
+        let lc = changed.by_role.get_mut(LAND_COVER).unwrap();
+        lc.data.params.insert("legend".into(), serde_json::json!({ "trees": [10] }));
+        let want = format!("source esa-worldcover {}", lc.keyed);
+        assert_eq!((unit_extra(&changed).unwrap(), trees_extra(&changed).unwrap()), (Some(want), None));
+        let leaf = changed.by_role.get_mut(LEAF_EUROPE).unwrap();
+        leaf.data.url = Some("https://example.org/other".into());
+        let want = format!("source eea-leaf-type {}", leaf.keyed);
+        assert_eq!(trees_extra(&changed).unwrap(), Some(want));
     }
 
     #[test]

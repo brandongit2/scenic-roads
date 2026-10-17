@@ -74,6 +74,13 @@ pub fn area_of(piece: &str) -> Option<String> {
 
 /// The tree cover's targets (`Targets`) for the coverage and the build manifest `m`.
 pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
+    targets_with(cov, m, None)
+}
+
+/// `targets`, a piece's key naming the declared canopy and leaf-type sources where they aren't as
+/// staged (`sources`: crate::inputs::sources::trees_extra; None while they are, the keys as they
+/// were).
+pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Option<&str>) -> Targets {
     let key = |parts: &[&str]| store::naming::hash16(parts.join("|").as_bytes());
     // The z6 tiles the coverage meets, by z3 tile (none in a z3 tile it doesn't meet).
     let mut met: BTreeSet<(u32, u32, u32, u32)> = BTreeSet::new();
@@ -107,7 +114,11 @@ pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
     for &(qx, qy, x, y) in met.union(&had) {
         let t = format!("6/{x}/{y}");
         let none = !met.contains(&(qx, qy, x, y));
-        let k = if none { key(&[&format!("trees {TREES_V}"), &t, "none"]) } else { key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y))]) };
+        let k = match (none, sources) {
+            (true, _) => key(&[&format!("trees {TREES_V}"), &t, "none"]),
+            (false, None) => key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y))]),
+            (false, Some(s)) => key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y)), &format!("sources {s}")]),
+        };
         out.pieces.push((t, k, none));
     }
     let areas: BTreeSet<(u32, u32)> = met.iter().map(|&(qx, qy, _, _)| (qx, qy)).collect();

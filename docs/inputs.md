@@ -1075,9 +1075,13 @@ bldprep) keys name the declared release, and the declarations only once they nam
 code had (`bld::sources::declared`: `Source::key_part` against `declared_before::BUILDINGS`, and
 `key_extra` against `BUILDING_HEIGHTS`), so while they're as staged every key is the one it was, and
 the stores keep their names (`sources/buildings/<release>/`, `sources/overture/<release>/`,
-`sources/ghsl/<version>/`, its version `R2023A`). The land cover, canopy and leaf types never entered a key (the units' grids are "from fixed
-datasets", §6 of plan.md); the Wikimedia sources are asked live. So nothing is built again for the
-move. Proofs: `landcover::tests::the_declared_source_is_what_the_code_read` (the same URLs and class
+`sources/ghsl/<version>/`, its version `R2023A`). The land cover, canopy and leaf types entered no
+key in code; a unit's key names the land-cover and canopy declarations, a tree cover piece's the
+canopy and leaf-type ones, only once they aren't as staged (`inputs::sources::unit_extra`,
+`trees_extra`, against `declared_before::LAND_COVER`, `CANOPY`, `LEAF_EUROPE`,
+`LEAF_NORTH_AMERICA`), so a changed legend or index builds them again rather than leaving them mixed
+(`agent::build::tests::a_changed_land_cover_canopy_or_leaf_declaration_is_a_new_key`). The
+Wikimedia sources are asked live. So nothing is built again for the move. Proofs: `landcover::tests::the_declared_source_is_what_the_code_read` (the same URLs and class
 table), `trees::tests::the_declared_squares_are_where_the_code_read_them` (every indexed canopy
 URL one the code asked for; the leaf sources, boxes and zip member the same),
 `inputs::sources::tests::the_python_steps_sources` (the Python steps' URLs the same),

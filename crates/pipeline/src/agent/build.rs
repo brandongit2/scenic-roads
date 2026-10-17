@@ -487,8 +487,8 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
         // (Without the declared elevation datasets, before the switch or while they can't be read,
         // no key: the unit waits.)
         // (Nor without the declared buildings source's release.)
-        let elevation = tiles.elevation(m).ok().flatten().zip(tiles.buildings_release(m));
-        units.push((u, unit_terrain(u, r, m, tiles).ok().zip(elevation).map(|(t, (e, b))| unit_key(cov, date, m, u, c, r, &t, &e, b))));
+        let elevation = tiles.elevation(m).ok().flatten().zip(tiles.keyed(m));
+        units.push((u, unit_terrain(u, r, m, tiles).ok().zip(elevation).map(|(t, (e, k))| unit_key(cov, date, m, u, c, r, &t, &e, &k.release, k.unit.as_deref()))));
     }
     units
 }
@@ -497,27 +497,31 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
 /// coverage as its ways meet it (`Reach::coverage_key`), the location rules where they go
 /// (`crate::rules`) and the `keyed` digests of the declared elevation datasets meeting its ways
 /// (`elevation`: crate::inputs::elevation), the roadside buildings' index (of the declared release
-/// `buildings`: crate::buildtiles), the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
+/// `buildings`: crate::buildtiles), the land-cover and canopy declarations where they aren't as
+/// staged (`sources`: crate::inputs::sources::unit_extra), the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
 /// digest), and the heritage sites' and areas' slices near it, as the manifest has them, which is
 /// what the unit step stages from.
 #[allow(clippy::too_many_arguments)]
-pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)], buildings: &str) -> String {
+pub fn unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)], buildings: &str, sources: Option<&str>) -> String {
     let ext = r.extent(u);
     let deg = |v: i32| v as f64 * 1e-7;
     let e = format!("elevation {}", crate::dem::declared::meeting(elevation, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(","));
-    unit_key_with(cov, date, m, u, piece, r, terrain, crate::rules::versions_meeting(ext), Some(e), buildings)
+    unit_key_with(cov, date, m, u, piece, r, terrain, crate::rules::versions_meeting(ext), Some(e), buildings, sources)
 }
 
 /// `unit_key` of the location rules' versions `rules` and the elevations' line `elevation` (None:
 /// before the declared datasets, when the DEM rules were among the rules: agent::rekey), the
-/// roadside buildings of release `buildings`.
+/// roadside buildings of release `buildings`, and the declared sources' line `sources` (None: as
+/// staged, or before them).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn unit_key_with(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, rules: String, elevation: Option<String>, buildings: &str) -> String {
+pub(crate) fn unit_key_with(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, rules: String, elevation: Option<String>, buildings: &str, sources: Option<&str>) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut inputs = vec![format!("unit {UNIT_V}"), piece.to_string(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), r.coverage_key(cov, u), rules];
     inputs.extend(elevation);
     // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
     inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
+    // (The land cover and canopy it reads, once their declarations aren't as staged.)
+    inputs.extend(sources.map(|s| format!("sources {s}")));
     // The terrain it reads. Not the analysis grids' packs (grid-class, -canopy, -cover): the units
     // write those where they're missing, so each built unit would change its own key and its
     // neighbours' (built again, over and over); a grid read from its pack or made afresh is the
@@ -1675,7 +1679,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // published.
     let tw = terrain_work(&terrain_slope_targets(cov, m, tiles), m, done);
     let TerrainWork { terrain, terrain_lo, slope, slope_lo, terrain_left, slope_left, .. } = tw.clone();
-    let tt = crate::treepacks::targets(cov, m);
+    let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
     let TreeWork { pieces: trees, lo: trees_lo, backfill: tree_backfill, stale_pieces: trees_left, stale_lo: trees_lo_left } = tree_work(&tt, m, done);
     let mut backfill: Vec<Work> = Vec::new();
     if !tree_backfill.is_empty() {
@@ -2921,7 +2925,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     slope.total = Some(ts.slope.len() + ts.slope_lo.len());
     out.push(slope);
     // (Tree cover's pieces and assemblies together, as the map tiles' line counts its two steps.)
-    let tt = crate::treepacks::targets(cov, m);
+    let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
     let pieces: Vec<(String, String)> = tt.pieces.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
     let assemblies: Vec<(String, String)> = tt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect();
     let mut trees = per(TREES, &["trees", "trees-lo"], &pieces, &done.trees, "tiles", true);
@@ -4131,6 +4135,31 @@ pub(crate) mod tests {
         let declaration = crate::dem::declared::Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 1, terrain: false, data: crate::dem::declared::Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
         let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
         (crate::dem::declared::Accepted { id: id.into(), path: format!("{id}.toml"), declaration, measured, keyed: keyed.into() }, crate::dem::declared::Cover::of(cover.as_deref()))
+    }
+
+    /// A unit's and a tree cover piece's keys are as they were while the land-cover, canopy and
+    /// leaf-type declarations are as staged, and new once one isn't (the units then built again with
+    /// it, never mixed); none while the declared sources can't be read (they wait).
+    #[test]
+    fn a_changed_land_cover_canopy_or_leaf_declaration_is_a_new_key() {
+        use crate::agent::tiles::KeyedSources;
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        elevation_inputs(&mut m);
+        m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "sources/inputs/sources/@index.1212121212121212.json".into());
+        let key = |k: KeyedSources| {
+            let mut t = tiles_for(&m);
+            t.hold_keyed(&m[&crate::inputs::logical(crate::inputs::sources::UNIT)], k);
+            let tt = crate::treepacks::targets_with(&c, &m, t.keyed(&m).and_then(|k| k.trees.as_deref()));
+            (super::unit_keys(&c, "d", &m, Some(&reach()), &t)[0].1.clone(), tt.pieces[0].1.clone())
+        };
+        let staged = KeyedSources { release: crate::buildtiles::TEST_RELEASE.into(), unit: None, trees: None };
+        let (u0, t0) = key(staged.clone());
+        assert_eq!(u0, super::unit_keys(&c, "d", &m, Some(&reach()), &tiles_for(&m))[0].1, "as staged: the key as it was");
+        assert_eq!(t0, crate::treepacks::targets(&c, &m).pieces[0].1);
+        let (u1, t1) = key(KeyedSources { unit: Some("source esa-worldcover k".into()), trees: Some("source meta-canopy k".into()), ..staged });
+        assert!(u1.is_some() && u1 != u0 && t1 != t0);
     }
 
     #[test]

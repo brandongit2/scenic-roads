@@ -294,12 +294,13 @@ impl<'a> FileTimes<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, tiles: &TerrainTiles, times: &dyn Times) -> Rekeyed {
     let mut out = Rekeyed::default();
-    rekey_trees(keys, cov, m, times, &mut out);
+    // (What the keys name of the declared sources: none, and the units and tree cover wait.)
+    let Some(keyed) = tiles.keyed(m) else { return out };
+    let (buildings, sources) = (keyed.release.as_str(), keyed.unit.as_deref());
+    rekey_trees(keys, cov, m, times, keyed.trees.as_deref(), &mut out);
     let older = |x: u32, y: u32| times.hi_older(m, x, y);
     let Some(reach) = reach else { return out };
-    // (The roadside buildings' release, the declared one: none, and the units wait.)
-    let Some(buildings) = tiles.buildings_release(m) else { return out };
-    rekey_elevation(keys, cov, date, m, reach, tiles, buildings, &mut out);
+    rekey_elevation(keys, cov, date, m, reach, tiles, buildings, sources, &mut out);
     // (The units recorded, not all the pass's: whether the coverage builds a unit is a test of its
     // ways, seconds for all a pass's reaches.)
     let mut current: Vec<Unit> = Vec::new();
@@ -342,7 +343,7 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
             continue;
         };
         if why.is_empty() {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), &elevation, buildings));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &build::terrain_digest(&read), &elevation, buildings, sources));
             if !outputs {
                 out.empty.push(t.clone());
             }
@@ -383,7 +384,7 @@ fn meets_taiwan(b: [i32; 4]) -> bool {
 /// versions where the datasets' digests are now.
 #[allow(clippy::too_many_arguments)]
 pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, u: Unit, piece: &str, r: &Reach, terrain: &str, buildings: &str) -> String {
-    build::unit_key_with(cov, date, m, u, piece, r, terrain, dem_rules_meeting(r.extent(u)), None, buildings)
+    build::unit_key_with(cov, date, m, u, piece, r, terrain, dem_rules_meeting(r.extent(u)), None, buildings, None)
 }
 
 /// Re-keys the units' records once the build reads the declared elevation datasets
@@ -392,7 +393,7 @@ pub fn pre_elevation_unit_key(cov: &Coverage, date: &str, m: &BTreeMap<String, S
 /// they were: where one dataset alone has data there's nothing to blend, and that dataset is the
 /// one the DEM rules fell through to (the declared coverages hold every file's footprint). The others are built again.
 #[allow(clippy::too_many_arguments)]
-fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: &Reaches, tiles: &TerrainTiles, buildings: &str, out: &mut Rekeyed) {
+fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: &Reaches, tiles: &TerrainTiles, buildings: &str, sources: Option<&str>, out: &mut Rekeyed) {
     let Ok(Some(ds)) = tiles.elevation(m) else { return };
     let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
     for (t, k) in units {
@@ -405,7 +406,7 @@ fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<Str
         let e = r.extent(u);
         let deg = |v: i32| v as f64 * 1e-7;
         if crate::dem::declared::meeting(&ds, [deg(e[0]), deg(e[1]), deg(e[2]), deg(e[3])]).len() == 1 {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings));
+            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources));
             out.elevation_moved.push(t);
         }
     }
@@ -419,13 +420,13 @@ fn rekey_elevation(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<Str
 /// trees.py's packs, or "none"), and with it the records of the z3 tile's pieces and assembly (its
 /// whole run, merged after the switch, wrote over their packs); one whose packs' times can't be
 /// read now is kept for the next pass.
-fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, times: &dyn Times, out: &mut Rekeyed) {
+fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, times: &dyn Times, sources: Option<&str>, out: &mut Rekeyed) {
     let z3: Vec<(String, String)> = keys.trees.iter().filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3)).map(|(t, k)| (t.clone(), k.clone())).collect();
     if z3.is_empty() {
         return;
     }
     let old: BTreeMap<String, String> = v1::trees_targets(cov, m).into_iter().collect();
-    let tt = crate::treepacks::targets(cov, m);
+    let tt = crate::treepacks::targets_with(cov, m, sources);
     let has_mid = |t: &str| Unit::parse(t).is_some_and(|p| m.contains_key(&crate::treepacks::mid_logical(p.x, p.y)));
     for (q, k) in z3 {
         let Some(u) = Unit::parse(&q) else { continue };
@@ -566,6 +567,13 @@ pub mod declared_before {
     /// The lake fill's (canvec-lakes.toml): its key named the zips (their pin, `run::source_pin`),
     /// not the layer and values the fill keeps.
     pub const LAKE_FILL: &str = "25eb06ca157bccd7";
+    /// The land cover's (esa-worldcover.toml), the canopy's (meta-canopy.toml, with its index) and
+    /// the leaf types' (eea-leaf-type.toml, nalcms.toml): no key named them in code (the units' grids
+    /// and tree cover from fixed datasets); a key names them once they're other than staged.
+    pub const LAND_COVER: &str = "8f325c73404dbb3e";
+    pub const CANOPY: &str = "1b78cff281da155d";
+    pub const LEAF_EUROPE: &str = "fc5221f05e2c6ff7";
+    pub const LEAF_NORTH_AMERICA: &str = "79b40a5faa30a391";
     /// The buildings' (overture-buildings.toml): the roadside buildings' and the 3D buildings' keys
     /// named the release alone (2026-09-23.1, then in code).
     pub const BUILDINGS: &str = "c3a4a3fb72797382";
