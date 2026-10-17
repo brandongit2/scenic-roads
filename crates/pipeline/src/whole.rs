@@ -37,8 +37,62 @@ pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Renames `from` over `to` (`rename_over`); when that stays busy, `to` is renamed aside first
+/// (`aside_name`), `from` renamed into its free name, then the aside removed. On the NAS's SMB
+/// share a rename over a file another session holds open fails as busy for as long as it's held,
+/// and the server may hold one for hours after the process that opened it is gone (task #226); a
+/// rename of the held file away, and a rename into its free name, still go through. Readers may
+/// find no `to` between the two renames, never a torn one. An aside that can't be removed yet (its
+/// handle still held) is tried again at each later fallback, and has a temporary name meanwhile
+/// (`is_tmp`: listings skip it). Some(the aside) when the fallback was used.
+pub fn rename_or_aside(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
+    static STUCK: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    aside_with(from, to, &rename_over, &|a, b| std::fs::rename(a, b), &|p| std::fs::remove_file(p), &STUCK)
+}
+
+/// A name to rename `path` aside to: its own, this Mac's and process's, a count, `.aside.tmp`.
+fn aside_name(path: &Path) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!("{name}.{}.{}.{n}.aside.tmp", crate::agent::cond::host(), store::sys::pid()))
+}
+
+type Rename<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+/// `rename_or_aside` with its renames (`over`: the one tried again; `raw`: once) and removal given.
+fn aside_with(from: &Path, to: &Path, over: Rename, raw: Rename, remove: &dyn Fn(&Path) -> std::io::Result<()>, stuck: &std::sync::Mutex<Vec<PathBuf>>) -> std::io::Result<Option<PathBuf>> {
+    match over(from, to) {
+        Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {}
+        r => return r.map(|()| None),
+    }
+    let aside = aside_name(to);
+    raw(to, &aside)?;
+    if let Err(e) = over(from, to) {
+        // (Its old bytes put back while the name is still free.)
+        raw(&aside, to).ok();
+        return Err(e);
+    }
+    let mut st = stuck.lock().unwrap();
+    st.push(aside.clone());
+    st.retain(|p| remove(p).is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound));
+    eprintln!("whole: rename over {} busy: the old file renamed aside, the new one put in its place ({} aside still held)", to.display(), st.len());
+    Ok(Some(aside))
+}
+
 /// Writes `b` as `path`, whole.
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
+    write_by(path, b, &rename_over)
+}
+
+/// Writes `b` as `path`, whole, its rename over `path` falling back to renaming `path` aside when
+/// that stays busy (`rename_or_aside`): for a file only one writer replaces, whose readers take a
+/// moment without it in their stride.
+pub fn write_aside(path: &Path, b: &[u8]) -> Result<()> {
+    write_by(path, b, &|f, t| rename_or_aside(f, t).map(drop))
+}
+
+fn write_by(path: &Path, b: &[u8], rename: Rename) -> Result<()> {
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
@@ -47,7 +101,7 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
         drop(f);
         let n = std::fs::metadata(&tmp)?.len();
         ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());
-        rename_over(&tmp, path)?;
+        rename(&tmp, path)?;
         Ok(())
     })();
     if r.is_err() {
@@ -245,6 +299,61 @@ mod tests {
         let p = dir.join(if tiled { "t.tif" } else { "s.tif" });
         std::fs::write(&p, super::testfiles::tiff(tiled)).unwrap();
         p
+    }
+
+    /// A rename over a file held busy for good (as the NAS holds one another session left open)
+    /// renames the held file aside and puts the new one in its place; the aside is removed, once
+    /// it's no longer held, at a later fallback.
+    #[test]
+    fn a_rename_over_a_held_file_renames_it_aside() {
+        use std::cell::RefCell;
+        let d = tempfile::tempdir().unwrap();
+        let to = d.path().join("m-1.json");
+        std::fs::write(&to, b"old").unwrap();
+        let held: RefCell<Vec<PathBuf>> = RefCell::new(vec![to.clone()]);
+        let busy = || std::io::Error::from(std::io::ErrorKind::ResourceBusy);
+        let over = |f: &Path, t: &Path| if held.borrow().iter().any(|p| p == t) { Err(busy()) } else { std::fs::rename(f, t) };
+        let raw = |f: &Path, t: &Path| {
+            let mut h = held.borrow_mut();
+            if let Some(i) = h.iter().position(|p| p == f) {
+                h[i] = t.to_path_buf(); // (the handle follows the file)
+            }
+            std::fs::rename(f, t)
+        };
+        let remove = |p: &Path| if held.borrow().iter().any(|h| h == p) { Err(busy()) } else { std::fs::remove_file(p) };
+        let stuck = std::sync::Mutex::new(Vec::new());
+        let tmp = d.path().join("a.tmp");
+        std::fs::write(&tmp, b"new").unwrap();
+        let aside = aside_with(&tmp, &to, &over, &raw, &remove, &stuck).unwrap().unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"new");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"old", "held, not removed");
+        assert!(is_tmp(&aside));
+        assert_eq!(*stuck.lock().unwrap(), [aside.clone()]);
+        // The next write isn't busy: a plain rename, the aside left for the next fallback.
+        std::fs::write(&tmp, b"newer").unwrap();
+        assert_eq!(aside_with(&tmp, &to, &over, &raw, &remove, &stuck).unwrap(), None);
+        assert_eq!(std::fs::read(&to).unwrap(), b"newer");
+        // Held again, the first aside let go: the fallback removes it.
+        *held.borrow_mut() = vec![to.clone()];
+        std::fs::write(&tmp, b"third").unwrap();
+        let aside2 = aside_with(&tmp, &to, &over, &raw, &remove, &stuck).unwrap().unwrap();
+        assert!(!aside.exists(), "freed aside removed");
+        assert_eq!(*stuck.lock().unwrap(), [aside2]);
+        assert_eq!(std::fs::read(&to).unwrap(), b"third");
+        // Another error isn't busy: no fallback.
+        let gone = d.path().join("nope.tmp");
+        assert!(aside_with(&gone, &d.path().join("x.json"), &|f, t| std::fs::rename(f, t), &raw, &remove, &stuck).is_err());
+        assert!(!d.path().join("x.json").exists());
+    }
+
+    #[test]
+    fn write_aside_writes_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.json");
+        write_aside(&p, b"a").unwrap();
+        write_aside(&p, b"bb").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"bb");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "no temporary file left");
     }
 
     #[test]

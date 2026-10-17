@@ -34,6 +34,15 @@ pub trait Nas {
     /// meanwhile; and it may have landed when the call says it failed (its answer lost).
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()>;
 
+    /// Writes `path` whole as `write_whole` does, but when the rename over it stays busy (the
+    /// server holding the old file open for another session, maybe for hours), the old file is
+    /// renamed aside first (crate::whole::rename_or_aside): readers may find no file for a moment.
+    /// For a file only its writer replaces whose readers take a missing one in their stride: a
+    /// member's heartbeat.
+    fn write_aside(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        self.write_whole(path, bytes)
+    }
+
     /// The bytes of `path`; None when there's no such file. Possibly an older version than another
     /// Mac wrote last (macOS caches what it read), or a file being made: empty or short.
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>>;
@@ -94,6 +103,23 @@ impl Share {
         }
     }
 
+    /// Writes `path` whole by `write`, its folder made (again, when it went).
+    fn write_by(&self, path: &str, bytes: &[u8], write: fn(&Path, &[u8]) -> Result<()>) -> Result<()> {
+        let p = self.at(path);
+        self.parent_made(&p)?;
+        let mut r = write(&p, bytes);
+        // (Its folder gone since it was made, an outside reset: made again, and written once more.)
+        if r.as_ref().is_err_and(not_found) {
+            self.forget(&p);
+            self.parent_made(&p)?;
+            r = write(&p, bytes);
+        }
+        if r.is_err() {
+            self.forget(&p);
+        }
+        r
+    }
+
     /// A write into `p`'s folder failed: it's made again next time (it may have gone).
     fn forget(&self, p: &Path) {
         if let Some(d) = p.parent() {
@@ -138,19 +164,11 @@ impl Nas for Share {
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let p = self.at(path);
-        self.parent_made(&p)?;
-        let mut r = crate::whole::write(&p, bytes);
-        // (Its folder gone since it was made, an outside reset: made again, and written once more.)
-        if r.as_ref().is_err_and(not_found) {
-            self.forget(&p);
-            self.parent_made(&p)?;
-            r = crate::whole::write(&p, bytes);
-        }
-        if r.is_err() {
-            self.forget(&p);
-        }
-        r
+        self.write_by(path, bytes, crate::whole::write)
+    }
+
+    fn write_aside(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        self.write_by(path, bytes, crate::whole::write_aside)
     }
 
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {

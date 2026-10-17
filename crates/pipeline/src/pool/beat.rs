@@ -99,7 +99,7 @@ impl Beat {
     /// Writes it whole as its member's heartbeat (the agent's own heartbeat embeds these fields
     /// and writes itself instead).
     pub fn write(&self, nas: &dyn Nas) -> Result<()> {
-        nas.write_whole(&path(&self.member), &serde_json::to_vec(self)?)
+        nas.write_aside(&path(&self.member), &serde_json::to_vec(self)?)
     }
 
     /// Its member.

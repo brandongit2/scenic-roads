@@ -6683,8 +6683,9 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     }
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    // (A rename over a file another Mac has open, its server reading the heartbeat: tried again.)
-    crate::whole::rename_over(&tmp, p).with_context(|| format!("rename to {}", p.display()))
+    // (A rename over a file another Mac has open, its server reading the heartbeat: tried again,
+    // then the old file renamed aside: crate::whole::rename_or_aside.)
+    crate::whole::rename_or_aside(&tmp, p).map(drop).with_context(|| format!("rename to {}", p.display()))
 }
 
 /// The status a `scenic status` shows: the NAS's heartbeat, else this Mac's copy.
