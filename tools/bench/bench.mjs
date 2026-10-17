@@ -95,6 +95,24 @@ try {
     await send('Profiler.setSamplingInterval', { interval: 500 });
     await send('Profiler.start');
   }
+  // --cold: the browser's HTTP cache emptied first, so every tile comes from the server (a
+  // first visit to the view: what the owner sees while tiles load).
+  if (args.cold) {
+    await send('Network.enable');
+    await send('Network.clearBrowserCache');
+  }
+  // Long tasks and long animation frames (over 50 ms, with the scripts that ran in them: what the
+  // long tasks were) observed from the page's first script on, so the load's own count too.
+  const EARLY = `window.__early = { lt: [], loaf: [], frames: [] };
+    { const tick = (now) => { __early.frames.push(now); requestAnimationFrame(tick); }; requestAnimationFrame(tick); }
+    new PerformanceObserver((l) => { for (const e of l.getEntries()) __early.lt.push([e.startTime, e.duration]); }).observe({ type: 'longtask', buffered: true });
+    try {
+      new PerformanceObserver((l) => { for (const e of l.getEntries()) __early.loaf.push([e.startTime, e.duration, e.blockingDuration,
+        (e.scripts ?? []).filter((s) => s.duration >= 5).sort((a, b) => b.duration - a.duration).slice(0, 4)
+          .map((s) => \`\${Math.round(s.duration)} \${s.invokerType}:\${s.invoker} \${s.sourceFunctionName || ''}@\${(s.sourceURL || '').split('/').pop()}:\${s.sourceCharPosition}\`)]); })
+        .observe({ type: 'long-animation-frame', buffered: true });
+    } catch {}`;
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: EARLY });
   const tLoad = Date.now();
   await send('Page.navigate', { url: URL });
   for (let i = 0; i < 240; i++) {
@@ -107,7 +125,9 @@ try {
   const load = await evaluate(`
     const app = window.__app, map = app.map;
     const B = window.__bench = { lt: [], renders: [], gpu: [], gpuMoved: [], frames: [], custom: {}, lastCam: '' };
-    new PerformanceObserver((l) => { for (const e of l.getEntries()) B.lt.push([e.startTime, e.duration]); }).observe({ type: 'longtask', buffered: true });
+    // (the observers installed before the page's own scripts ran: EARLY below)
+    B.lt = window.__early.lt;
+    B.loaf = window.__early.loaf;
     const gl = map.painter.context.gl;
     const tq = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     const queries = [];
@@ -144,8 +164,7 @@ try {
       B.custom[k] = [];
       layer.render = function (...a) { const t = performance.now(); const r = f(...a); B.custom[k].push(performance.now() - t); return r; };
     }
-    const tick = (now) => { B.frames.push(now); requestAnimationFrame(tick); };
-    requestAnimationFrame(tick);
+    B.frames = window.__early.frames;
     // Settled: idle, and the road tiles in view loaded.
     const t0 = performance.now();
     await new Promise((res) => {
@@ -157,13 +176,21 @@ try {
     const byType = {};
     for (const e of res) { const k = e.name.includes('/api/layer/') ? 'layer:' + e.name.split('/api/layer/')[1].split('?')[0] : e.name.match(/\\/(tiles|api\\/[a-z]+|assets)/)?.[1] ?? 'other'; byType[k] = (byType[k] ?? 0) + (e.transferSize || e.encodedBodySize || 0); }
     const lt = B.lt.filter(([s]) => s < performance.now());
+    // Frame intervals from the page's scripts run (DOMContentLoaded) to idle: the view loading.
+    const f0 = performance.getEntriesByType('navigation')[0]?.domContentLoadedEventEnd ?? 0, fl = B.frames.filter((t) => t >= f0);
+    const fdt = fl.slice(1).map((t, i) => t - fl[i]).sort((a, b) => a - b);
+    const qq = (a, p) => (a.length ? +a[Math.min(a.length - 1, Math.floor(p * a.length))].toFixed(1) : null);
     return {
       settleMs: Math.round(performance.now() - t0), navToIdleMs: Math.round(performance.now()),
+      frameMs: { p50: qq(fdt, 0.5), p95: qq(fdt, 0.95), max: qq(fdt, 1), n: fdt.length },
       longTasks: lt.length, longTaskMs: Math.round(lt.reduce((a, [, d]) => a + d, 0)), longestTaskMs: Math.round(Math.max(0, ...lt.map(([, d]) => d))),
+      topTasks: lt.map(([, d]) => Math.round(d)).sort((a, b) => b - a).slice(0, 6),
+      topFrames: [...B.loaf].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([, d, , sc]) => [Math.round(d), ...sc]),
       heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : null,
       transferMB: Object.fromEntries(Object.entries(byType).map(([k, v]) => [k, +(v / 1e6).toFixed(2)]).sort((a, b) => b[1] - a[1]).slice(0, 12)),
       layers: map.getStyle().layers.length, visibleLayers: map.getStyle().layers.filter((l) => (l.layout?.visibility ?? 'visible') !== 'none').length,
       sources: Object.keys(map.getStyle().sources).length,
+      viewport: \`\${innerWidth}x\${innerHeight}@\${devicePixelRatio}\`,
     };
   `, 300);
   if (args['profile-load']) {
@@ -174,7 +201,7 @@ try {
   const heap = await send('Runtime.getHeapUsage').catch(() => null);
   load.wallMs = Date.now() - tLoad;
   if (heap) load.heapMB = Math.round(heap.usedSize / 1e6);
-  const out = { label: args.label ?? '', url: URL.slice(0, 120), viewport: `${W}x${H}@${DPR}`, load, runs: {} };
+  const out = { label: args.label ?? '', url: URL.slice(0, 120), viewport: load.viewport, load, runs: {} };
   // --shot file.png: the map's canvas (device pixels) once the loaded view is idle (after --set).
   if (args.shot) {
     await evaluate(`const map = window.__app.map; await new Promise((r) => { map.once('idle', r); map.triggerRepaint(); setTimeout(r, 20000); }); await new Promise((r) => setTimeout(r, 500));`);
@@ -231,7 +258,7 @@ try {
     // A digit suffix repeats a run (pan2: the pan again, e.g. with its tiles and shaders warm).
     const g = gestures[name.replace(/\d+$/, '')];
     if (!(name.replace(/\d+$/, '') in gestures)) continue;
-    await evaluate(`const B = window.__bench; B.lt.length = 0; B.renders.length = 0; B.gpu.length = 0; B.gpuMoved.length = 0; B.frames.length = 0; for (const k in B.custom) B.custom[k].length = 0; B.t0 = performance.now();`);
+    await evaluate(`const B = window.__bench; B.lt.length = 0; B.loaf.length = 0; B.renders.length = 0; B.gpu.length = 0; B.gpuMoved.length = 0; B.frames.length = 0; for (const k in B.custom) B.custom[k].length = 0; B.t0 = performance.now();`);
     if (args.profile) {
       await send('Profiler.enable');
       await send('Profiler.setSamplingInterval', { interval: 200 });
@@ -278,7 +305,10 @@ try {
         // Frames that moved the camera: what every frame of a gesture costs on a display.
         moved: { cpu: { p50: q(rdMoved, 0.5), p95: q(rdMoved, 0.95), n: rdMoved.length }, gpu: { p50: q(gpuMoved, 0.5), p95: q(gpuMoved, 0.95), n: gpuMoved.length } },
         customMs: custom,
-        longTasks: { during: during.length, duringMs: Math.round(during.reduce((a, [, d]) => a + d, 0)), after: after.length, afterMs: Math.round(after.reduce((a, [, d]) => a + d, 0)), longest: Math.round(Math.max(0, ...B.lt.map(([, d]) => d))) },
+        longTasks: { during: during.length, duringMs: Math.round(during.reduce((a, [, d]) => a + d, 0)), after: after.length, afterMs: Math.round(after.reduce((a, [, d]) => a + d, 0)), longest: Math.round(Math.max(0, ...during.map(([, d]) => d))),
+          top: during.map(([, d]) => Math.round(d)).sort((a, b) => b - a).slice(0, 6) },
+        // The longest animation frames during the run, each with its longest scripts.
+        topFrames: B.loaf.filter(([s]) => s >= B.t0 && s <= tEnd).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([, d, , sc]) => [Math.round(d), ...sc]),
         settleMs: Math.round(settleMs),
       };
     `, 120);
