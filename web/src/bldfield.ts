@@ -399,6 +399,7 @@ void main() {
 // over the ground here instead; ?fdbg=32 each roof over the ground under its own texel)
 #define SETC(c, smp) { vec4 sm = (smp).bgra; float f_ = clamp(sm.r, 0.0, 0.999); if (f_ >= 1e-5) { float H0_ = max(sm.b / sm.r, 0.5) * u_hk; float dg_ = textureLod(u_dg, vec3(uv, float(L_[c])), lod).r / max(sm.r, 1e-5); float Hs_ = u_dbg == 32 ? H0_ : clamp(H0_ + dg_, 0.5, max(topc - 0.25, 0.5)); Fc[c] = f_; Hc[c] = Hs_; Kc[c] = H0_; Rc[c] = max(sm.g, 0.0) * u_hk / H0_ / 3.14159265 * (u_dbg == 8 ? 2.0 : u_dbg == 16 ? 0.78 : u_dbg == 17 ? 0.6 : 1.0); float hm_ = 0.5 * (clamp(ac, 0.0, Hs_) + clamp(ae, 0.0, Hs_)); Gc[c] = u_dbg == 35 ? mix(gmin, clamp(sqrt(Hs_ / 150.0), gmin, 1.0), clamp(hm_ / Hs_, 0.0, 1.0)) : mix(gmin, clamp(sqrt(H0_ / 150.0), gmin, 1.0), clamp((hm_ - Hs_ + H0_) / H0_, 0.0, 1.0)); } }
       float openK = 1.0;   // (the walls' rate over the open ground ÷ over all of it: below)
+      float fUp = 0.0;     // (the share under footprints standing taller than the ray here)
       float herA = 0.0;
       vec3 herC = vec3(0.0);
       if (inBox && u_dbg != 20) {
@@ -425,7 +426,7 @@ void main() {
         // than a texel let 70 % of the rays crossing its edge texel through and none stopped inside
         // it: the towers seen through near the hand-over. (?fdbg=36: over all the ground)
         if (u_dbg != 36) {
-          float hm = 0.5 * (ac + ae), fUp = 0.0;
+          float hm = 0.5 * (ac + ae);
           for (int c = 0; c < 5; c++) if (Hc[c] > hm) fUp += Fc[c];
           openK = 1.0 / max(1.0 - fUp, 0.02);
           for (int c = 0; c < 5; c++) Rc[c] *= openK;
@@ -507,6 +508,28 @@ void main() {
 #ifndef OPT_PMEAN
           pLin += T * a * toLin(u_opacity * hc + (1.0 - u_opacity) * u_bg);
 #endif
+          T *= 1.0 - a;
+        }
+      }
+      // Inside the footprints: where those standing taller than the ray cover (nearly) all of the
+      // texel, the ray is in a building, so it met a wall getting there. The walls are only in the
+      // texels their lines cross; a step (two texels or more) sampled past a facade's texel into the
+      // building's inside (its f ~1, its w ~0) met none, and the facade's own texel, its walls spread
+      // over its area, stops only part of the rays crossing it: the rest went on through the tower
+      // and out of its far side, a different share each pixel column as its ray crosses the texels,
+      // the thin vertical streaks of the walls just beyond the meshes (task #212). (?fdbg=37: without)
+      if (u_dbg != 37 && fUp > 0.75) {
+        float a = smoothstep(0.75, 0.97, fUp) * sg, fs = 0.0;
+        vec3 wc = vec3(0.0);
+        float hm = 0.5 * (ac + ae);
+        for (int c = 0; c < 5; c++) if (Fc[c] > 0.0 && Hc[c] > hm) { wc += Fc[c] * WALLC(c); fs += Fc[c]; }
+        if (fs > 0.0 && a > 0.0) {
+          wc /= fs;
+          cLin += T * a * toLin(wc);
+#ifndef OPT_PMEAN
+          pLin += T * a * toLin(u_opacity * wc + (1.0 - u_opacity) * u_bg);
+#endif
+          dWallA += T * a;
           T *= 1.0 - a;
         }
       }
@@ -640,6 +663,21 @@ export class FieldLayer implements CustomLayerInterface {
   dbg = urlNum('fdbg', 0);
   /** Colour by height: the colour of each height 0 … LUT_MAX_M m (RGB, LUT_N entries), or null (plain). */
   heightLut: Uint8Array | null = null;
+  private heightKey = '';
+  /** Colour by height as the meshes are coloured: `colour(h)` the meshes' colour (sRGB 0–255) of a
+   * building h m tall, the lookup made again only when `key` (what it depends on) changes; null: plain. */
+  setHeightColour(key: string, colour: ((h: number) => [number, number, number]) | null) {
+    if (!colour) {
+      this.heightLut = null;
+      this.heightKey = '';
+      return;
+    }
+    if (key === this.heightKey && this.heightLut) return;
+    const a = new Uint8Array(LUT_N * 3);
+    for (let i = 0; i < LUT_N; i++) a.set(colour((LUT_MAX_M * i) / (LUT_N - 1)), i * 3);
+    this.heightLut = a;
+    this.heightKey = key;
+  }
   private lutTex: WebGLTexture | null = null;
   private lutFor: Uint8Array | null = null;
   /** The tiles drawn in the last frame, and GPU time (ms) of the last timed frames. */

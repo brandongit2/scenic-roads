@@ -307,9 +307,9 @@ the centroid's elevation), tiles and data-driven paint. An opacity under 1 draws
   azimuth, intensity 0.35.
 - **By height:** the shared colour-scale controls (`ui/scale.ts`): a histogram of the heights of the
   buildings in view (read when idle), auto-fit to percentiles, Lock / Full / Equalise, the
-  colour-map picker, low-end fade and highlight.
+  colour-map picker, low-end fade and highlight. The far field takes the same colours (§4.8).
 - **By where the height comes from:** measured green, floors blue, Microsoft violet, neighbours
-  amber, GHSL red-orange, size grey.
+  amber, GHSL red-orange, size grey. The far field stays plain.
 - **Heritage tint:** loaded buildings holding a heritage site's point the overlay shows
   (`dots.points`), recoloured by feature state 60 % toward their group's colour (the highest group
   where sites share a building). On by default while Heritage sites show (`bd=`'s sixth field);
@@ -399,6 +399,16 @@ equator).
   meets them, the nearest surface winning; steps of at least 2 texels (`?fstx=`), only the classes a
   texel's mask holds; empty space skipped by per-cell tops. The scene's depth (the fork's
   `sceneDepth`) stops the march at meshes or terrain on the flat map.
+- A ray below the roofs where the footprints taller than it cover nearly all of a texel (over
+  75 %, fully from 97 %) is inside a building, so it met a wall: it stops there, wall-coloured. The
+  walls are only in the texels their lines cross, and a facade's texel stops only part of the rays
+  crossing it; without this the rest went on through the building's inside (no walls there), a
+  different share each pixel column: thin vertical streaks down the walls just beyond the meshes,
+  most in tilted views of dense cities (`?fdbg=37` draws without it).
+- Coloured as the meshes are: plain, or by height on the shared colour scale, each class at its
+  mean top (v ÷ f) through a lookup of the meshes' own colours (their 33 stops, the low-end fade and
+  the threshold), so field and meshes match at the hand-over. Coloured by source, the field stays
+  plain (it holds no source).
 - Lit with fill-extrusion's formula (light, ambient, wall gradient, opacity); colours summed in
   linear light, the alpha set so the hardware's stored-value blend over the land colour gives the
   linear-light mix. Fogged as the meshes are. Lighting computed once a tile a frame on the CPU.
@@ -423,7 +433,7 @@ spike to z9; ~0.6–1.7 ms of GPU a frame on the M4 at 2880 × 1626 (budget 2 ms
   wall model against streets of buildings in rows).
 - Over high ground the map's zoom (measured from a sea-level pivot) understates how close the view
   is, so mesh tiles and the field are coarser than they should be in mountain towns.
-- Not done: colour by height and the source colouring in the field; a measured forecast cost for
+- Not done: the source colouring in the field (the owner's choice: a fourth channel, or plain); a measured forecast cost for
   `bldfield-lo`; measurements on the iPad (`__bld.frames(120)` in the console).
 
 #### 4.8.1 The model's choices
