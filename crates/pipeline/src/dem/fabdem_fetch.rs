@@ -254,10 +254,13 @@ fn sha256_of(p: &Path) -> Result<String> {
 /// The work folder held by this process alone (an exclusive `flock` on `<work>/.lock`, let go
 /// when the file is dropped): a second fetcher on it stops, saying so.
 pub fn lock_work(work: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
     std::fs::create_dir_all(work)?;
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(work.join(".lock"))?;
-    // SAFETY: flock on a descriptor we own.
+    // SAFETY: flock on a descriptor we own. (The fetcher runs on a Mac; the web build has no flock
+    // and never fetches.)
+    #[cfg(unix)]
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         bail!("another fabdem-fetch is using the work folder {} (one fetcher a folder)", work.display());
     }
