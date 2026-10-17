@@ -8,7 +8,7 @@ import './style.css';
 import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
@@ -31,7 +31,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -120,6 +120,7 @@ async function main() {
   // (Eval mode: the map fills the window, the panels under it.)
   if (EVAL || CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
   // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
+  setLandColour(store.s.land);
   setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   const map = new maplibregl.Map({
     container: 'map',
@@ -1892,6 +1893,12 @@ async function main() {
     const range: [number, number] = !sc.auto ? [...sc.range] : bldDist && bldDist.total > 0 ? spread(bldDist.quantile(sc.fit[0] / 100), bldDist.quantile(sc.fit[1] / 100), 4) : bldLook.range;
     return { range, cdf: sc.equalize ? cdfOf(bldDist, range) : null };
   };
+  /** The land's colour: the background (the far buildings' field mixes over it too); the water's
+   * tiles, mixed over the land, follow in applyWater. */
+  const applyLand = (c: string) => {
+    setLandColour(c);
+    if (map.getLayer('bg')) map.setPaintProperty('bg', 'background-color', c);
+  };
   /** The buildings' settings applied (the terrain's exaggeration and light are theirs too). */
   const applyBuildingsNow = (s: AppState) => {
     // Bridges and elevated rail drawn after the buildings while they stand in 3D (roads/layer.ts
@@ -1911,9 +1918,10 @@ async function main() {
       field.opacity = b.opacity;
       field.hk = b.scale > 0 ? b.scale : Math.max(1, s.terrain.on ? s.terrain.exaggeration : 0);
       field.on = b.on && !b.flat && s.terrain.on;
-      if (CMP) field.colour = [1, 3, 5].map((i) => parseInt(CMP!.colour.slice(i, i + 2), 16) / 255) as [number, number, number];
-      // By height: the meshes' colours (the field plain when coloured by source: the owner's call).
-      else {
+      // The plain colour (the comparison's own); by height, the meshes' colours (the field plain when
+      // coloured by source: the owner's call).
+      field.colour = rgb01(CMP ? CMP.colour : b.plain);
+      if (!CMP) {
         const hc = heightColourFn(b, bldLook);
         field.setHeightColour(hc?.key ?? '', hc?.colour ?? null);
       }
@@ -1987,7 +1995,8 @@ async function main() {
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
       if (ch.has('labelSize') || ch.has('terrain')) labelSizeSoon();
-      if (ch.has('water') || ch.has('layers')) applyWater(map, s.water, coastInput, s.layers.water);
+      if (ch.has('land')) applyLand(s.land);
+      if (ch.has('water') || ch.has('layers') || ch.has('land')) applyWater(map, s.water, coastInput, s.layers.water);
       // (after the terrain: contour lines are added when first shown)
       if (ch.has('lineWeights') || ch.has('terrain')) applyLineWidths(map, s.lineWeights);
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) {
@@ -2173,6 +2182,7 @@ async function main() {
     applyLayers();
     applyTerrain(map, store.s.terrain);
     applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
+    applyLand(store.s.land);
     applyWater(map, store.s.water, coastInput, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);

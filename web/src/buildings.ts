@@ -31,6 +31,9 @@ export interface BuildingState {
   /** Footprints only (also what a map without 3D terrain shows). */
   flat: boolean;
   colour: BuildingColour;
+  /** The plain colour (#rrggbb): every building's when plain, the misses' and the low end's by
+   * height, the unknown source's by source; the far field's too. */
+  plain: string;
   opacity: number;
   /** Heights × this (1–3), or 0: × the terrain's exaggeration. */
   scale: number;
@@ -71,8 +74,11 @@ export const SOURCES: [string, string, string][] = [
 /** `c`, the kind (from Overture's subtype). */
 export const KINDS = ['', 'residential', 'outbuilding', 'commercial', 'industrial', 'religious', 'civic', 'agricultural', 'transportation', 'other'];
 
-const PLAIN = '#566173';
+/** The plain colour by default. */
+export const PLAIN = '#566173';
 const PLAIN_RGB = [0x56 / 255, 0x61 / 255, 0x73 / 255];
+/** A #rrggbb colour as 0–1 floats. */
+export const rgb01 = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];
 /** By height: the scale's domain (m). */
 export const HEIGHT_DOMAIN: [number, number] = [0, 400];
 
@@ -87,14 +93,14 @@ export const buildingTiles = (): string => {
 
 /** By height: the colour at height v (m) on the scale, faded toward the plain colour at its low
  * end (the low-end fade: extrusions have no per-building opacity), as an rgb() string. */
-export function heightColour(v: number, sc: ScaleFields, look: HeightLook): string {
-  return `rgb(${heightRgb(v, sc, look).join(',')})`;
+export function heightColour(v: number, sc: ScaleFields, look: HeightLook, plain = PLAIN): string {
+  return `rgb(${heightRgb(v, sc, look, rgb01(plain)).join(',')})`;
 }
-function heightRgb(v: number, sc: ScaleFields, look: HeightLook): [number, number, number] {
+function heightRgb(v: number, sc: ScaleFields, look: HeightLook, base: [number, number, number]): [number, number, number] {
   const u = scaleU(v, look.range, look.cdf);
   const a = fadeAlpha(u, sc.lowFade, sc.lowSpan);
   const c = paletteFn(sc.palette)(u);
-  return c.map((x, i) => Math.round(Math.max(0, Math.min(1, PLAIN_RGB[i] + (x - PLAIN_RGB[i]) * a)) * 255)) as [number, number, number];
+  return c.map((x, i) => Math.round(Math.max(0, Math.min(1, base[i] + (x - base[i]) * a)) * 255)) as [number, number, number];
 }
 
 /** By height, for the far field (bldfield.ts): the colour the meshes give a building h m tall (sRGB
@@ -105,13 +111,14 @@ export function heightColourFn(b: BuildingState, look: HeightLook): { key: strin
   if (b.colour !== 'height') return null;
   const sc = b.height;
   const [lo, hi] = look.range;
+  const base = rgb01(b.plain);
   const stops: [number, [number, number, number]][] = [];
   for (let i = 0; i <= 32; i++) {
     const v = lo + ((hi - lo) * i) / 32;
-    stops.push([v, heightRgb(v, sc, look)]);
+    stops.push([v, heightRgb(v, sc, look, base)]);
   }
   const t = sc.threshold;
-  const plain = PLAIN_RGB.map((x) => Math.round(x * 255)) as [number, number, number];
+  const plain = base.map((x) => Math.round(x * 255)) as [number, number, number];
   const colour = (h: number): [number, number, number] => {
     if (t.on && !(t.dir === 'below' ? h <= t.value : h >= (t.dir === 'low' ? lo : t.value))) return plain;
     if (!(h > stops[0][0])) return stops[0][1];
@@ -132,23 +139,24 @@ export function heightColourFn(b: BuildingState, look: HeightLook): { key: strin
 /** The colour expression of a mode. By height: the scale's colours at 33 heights across its
  * range (equalised or not), the highlight's misses plain. */
 function colourOf(b: BuildingState, look: HeightLook): ExpressionSpecification | string {
-  if (b.colour === 'source') return ['match', ['get', 's'], ...SOURCES.flatMap(([, c], i) => [i, c]), PLAIN] as unknown as ExpressionSpecification;
+  const plain = b.plain;
+  if (b.colour === 'source') return ['match', ['get', 's'], ...SOURCES.flatMap(([, c], i) => [i, c]), plain] as unknown as ExpressionSpecification;
   if (b.colour === 'height') {
     const sc = b.height;
     const [lo, hi] = look.range;
     const stops: (number | string)[] = [];
     for (let i = 0; i <= 32; i++) {
       const v = lo + ((hi - lo) * i) / 32;
-      stops.push(v, heightColour(v, sc, look));
+      stops.push(v, heightColour(v, sc, look, plain));
     }
     const m: ExpressionSpecification = ['/', ['coalesce', ['get', 'h'], 0], 10];
     const ramp = ['interpolate', ['linear'], m, ...stops] as unknown as ExpressionSpecification;
     const t = sc.threshold;
     if (!t.on) return ramp;
     const pass = t.dir === 'below' ? ['<=', m, t.value] : ['>=', m, t.dir === 'low' ? lo : t.value];
-    return ['case', pass, ramp, PLAIN] as unknown as ExpressionSpecification;
+    return ['case', pass, ramp, plain] as unknown as ExpressionSpecification;
   }
-  return PLAIN;
+  return plain;
 }
 
 /** Heights × the scale (`s`: the state's, or the terrain's exaggeration). */
@@ -525,7 +533,7 @@ function heightsInView(map: MLMap): Dist | null {
 /** How far a heritage building's colour goes from the plain one toward its group's. */
 const HERITAGE_TINT = 0.6;
 
-/** A heritage group's tint (sRGB 0–1): its colour (#rrggbb) part way from the plain colour. */
+/** A heritage group's tint (sRGB 0–1): its colour (#rrggbb) part way from the default plain colour. */
 export function heritageTint(g: number): [number, number, number] {
   const hex = HERITAGE_GROUPS[g].colour;
   return [1, 3, 5].map((i, k) => PLAIN_RGB[k] + (parseInt(hex.slice(i, i + 2), 16) / 255 - PLAIN_RGB[k]) * HERITAGE_TINT) as [number, number, number];

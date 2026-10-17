@@ -50,6 +50,26 @@ export class Slider {
   }
 }
 
+/** A labelled colour row: the picker, and a button back to the default (shown while it differs). */
+export class ColourPick {
+  readonly el: HTMLDivElement;
+  readonly input: HTMLInputElement;
+  private reset: HTMLButtonElement;
+
+  constructor(private o: { label: string; get: () => string; set: (v: string) => void; reset: string; title?: string; cls?: string }) {
+    this.input = h('input', { type: 'color', title: o.title ?? o.label });
+    this.input.addEventListener('input', () => o.set(this.input.value));
+    this.reset = h('button', { class: 'colour-reset', title: `Back to the default (${o.reset})`, onclick: () => o.set(o.reset) }, '\u21ba');
+    this.el = h('div', { class: `row colour-row ${o.cls ?? ''}`.trim(), title: o.title }, h('span', { class: 'muted' }, o.label), this.input, this.reset);
+  }
+
+  sync() {
+    const v = this.o.get();
+    this.input.value = v;
+    this.reset.style.visibility = v.toLowerCase() === this.o.reset.toLowerCase() ? 'hidden' : 'visible';
+  }
+}
+
 /** Percent, for opacity sliders. */
 export const pct = (v: number) => `${Math.round(v * 100)} %`;
 

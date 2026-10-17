@@ -34,8 +34,9 @@ Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md` (bytes), `
 - **Look:** a muted blue-grey lit from the hill-shading's light direction, walls darker toward the
   ground. Colour modes (§4.4): plain, by height, by where the height comes from; buildings holding a
   heritage site tinted in its group's colour while Heritage sites show.
-- **Settings → Buildings** (on by default): 3D or flat footprints, colour mode, heritage tint,
-  opacity, height scale. Link fields `bd=` and `bh=`; **B** toggles the layer. All hidden until the
+- **Settings → Buildings** (on by default): 3D or flat footprints, colour mode, plain colour (with
+  a reset), heritage tint, opacity, height scale. Link fields `bd=` (its seventh field the plain
+  colour) and `bh=`; **B** toggles the layer. All hidden until the
   catalog has the layer.
 - **Hover:** the bottom bar gives height, where it comes from ("measured", "from 6 floors",
   "estimated by Microsoft", "estimated from neighbours", "estimated, GHSL", "estimated from its
@@ -303,7 +304,8 @@ the centroid's elevation), tiles and data-driven paint. An opacity under 1 draws
 
 ### 4.4 Styling
 
-- **Plain** (default): #566173, lighter roofs, lit by `map.setLight` from the hill-shading's
+- **Plain** (default): the plain colour (#566173 by default, Settings → Buildings → Plain colour;
+  also the by-height low end's and misses' colour and the unknown source's), lighter roofs, lit by `map.setLight` from the hill-shading's
   azimuth, intensity 0.35.
 - **By height:** the shared colour-scale controls (`ui/scale.ts`): a histogram of the heights of the
   buildings in view (read when idle), auto-fit to percentiles, Lock / Full / Equalise, the
@@ -406,7 +408,7 @@ equator).
   crossing it; without this the rest went on through the building's inside (no walls there), a
   different share each pixel column: thin vertical streaks down the walls just beyond the meshes,
   most in tilted views of dense cities (`?fdbg=37` draws without it).
-- Coloured as the meshes are: plain, or by height on the shared colour scale, each class at its
+- Coloured as the meshes are: plain (the plain colour), or by height on the shared colour scale, each class at its
   mean top (v ÷ f) through a lookup of the meshes' own colours (their 33 stops, the low-end fade and
   the threshold), so field and meshes match at the hand-over. Coloured by source, the field stays
   plain (it holds no source).

@@ -1,10 +1,10 @@
 // The settings panel's Buildings section (ui/layers.ts): the 3D buildings and how they're drawn
 // (buildings.ts): 3D or flat, colour (plain, by height on the shared colour scale, by where the
-// height comes from), the heritage tint, opacity, height scale.
+// height comes from) and the plain colour, the heritage tint, opacity, height scale.
 import { HEIGHT_DOMAIN, SOURCES, heightColour, type BuildingColour, type BuildingState, type HeightLook } from '../buildings';
 import type { Dist } from '../roads/stats';
-import type { ScaleFields, Store } from '../state';
-import { Slider, pct } from './controls';
+import { defaults, type ScaleFields, type Store } from '../state';
+import { ColourPick, Slider, pct } from './controls';
 import { h } from './dom';
 import { ScaleControls } from './scale';
 
@@ -14,6 +14,7 @@ export class BuildingSection {
   readonly on: HTMLInputElement;
   private showBtns: HTMLButtonElement[] = [];
   private colourBtns: HTMLButtonElement[] = [];
+  private plain: ColourPick;
   private op: Slider;
   private scale: Slider;
   private withTerrain: HTMLInputElement;
@@ -47,6 +48,10 @@ export class BuildingSection {
       ['height', 'Height', 'Coloured by height'],
       ['source', 'Source', 'Coloured by where the height comes from: measured, from floors, or estimated (and how)'],
     ], (k) => B({ colour: k as BuildingColour }), this.colourBtns);
+    this.plain = new ColourPick({
+      label: 'Plain colour', reset: defaults.buildings.plain, get: () => store.s.buildings.plain, set: (plain) => B({ plain }),
+      title: 'The buildings’ colour when plain, near and far; by height, the low end fades toward it and the highlight’s misses take it',
+    });
     this.op = new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: 0.85, get: () => store.s.buildings.opacity, set: (opacity) => B({ opacity }), fmt: pct, title: 'Under 100 %, roads behind a building show through it faintly (and the buildings take two passes to draw)' });
     this.scale = new Slider({
       label: 'Height', min: 1, max: 3, step: 0.1, reset: 1, get: () => store.s.buildings.scale || 1, set: (scale) => B({ scale }),
@@ -67,7 +72,7 @@ export class BuildingSection {
       measure: 'buildings',
       fadeDefault: 0.6,
       spanDefault: 0.4,
-      colourAt: (v) => [heightColour(v, H(), this.look), 1],
+      colourAt: (v) => [heightColour(v, H(), this.look, store.s.buildings.plain), 1],
       onPreview: (k) => this.onPalettePreview(k),
     });
     this.scaleBox = h('div', { class: 'tint-scale' }, this.scaleCtl.legend, this.scaleCtl.palRow, this.scaleCtl.fadeRow, this.scaleCtl.thrRow);
@@ -75,6 +80,7 @@ export class BuildingSection {
     this.body = h('div', { class: 'tree-body' },
       row('Show', show),
       row('Colour', colour),
+      this.plain.el,
       h('div', { class: 'tint-legend' }, this.legend, this.ticks),
       this.scaleBox,
       h('label', { class: 'tog sub', title: 'Buildings holding a heritage site drawn in its colour (World Heritage, national, provincial, municipal) while Heritage sites show' }, this.heritage, h('span', {}, 'Heritage sites in their colour')),
@@ -93,6 +99,7 @@ export class BuildingSection {
     this.body.classList.toggle('off', !b.on);
     this.showBtns.forEach((x, i) => x.classList.toggle('on', i === (b.flat ? 1 : 0)));
     this.colourBtns.forEach((x, i) => x.classList.toggle('on', ['plain', 'height', 'source'][i] === b.colour));
+    this.plain.sync();
     this.op.sync();
     this.scale.sync();
     this.withTerrain.checked = b.scale === 0;

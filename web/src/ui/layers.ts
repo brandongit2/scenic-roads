@@ -9,7 +9,7 @@ import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
 import { ScaleControls } from './scale';
-import { RangeFilter, Slider, pct, type SliderOpts } from './controls';
+import { ColourPick, RangeFilter, Slider, pct, type SliderOpts } from './controls';
 import { TreeSection } from './trees';
 import { BuildingSection } from './buildings';
 import { toggleAllStops } from './stops';
@@ -72,6 +72,7 @@ export class LayersCard {
   private ferryKm: HTMLSpanElement[] = [];
   private other: Record<'water' | 'boundaries' | 'places', HTMLInputElement>;
   /** Water colour and coastal shading (Map). */
+  private land!: ColourPick;
   private water!: { box: HTMLDivElement; col: HTMLInputElement; shade: HTMLInputElement; shadeBox: HTMLDivElement; shadeCol: HTMLInputElement; lakes: HTMLInputElement };
   private labelBoxes: HTMLInputElement[] = [];
   /** Stops & sights filters: must-haves (a checkbox each) and ranges (a histogram each). */
@@ -448,6 +449,10 @@ export class LayersCard {
       e.addEventListener('input', () => set(e.value));
       return e;
     };
+    this.land = new ColourPick({
+      label: 'Land colour', reset: defaults.land, get: () => S().land, set: (land) => this.store.set({ land }),
+      title: 'The base map’s land: its background, and the land the water’s edges blend into',
+    });
     this.water = {
       box: h('div', { class: 'tint-box' }),
       col: colour('Colour of the sea (lakes and rivers a shade lighter)', (c) => setW({ colour: c })),
@@ -724,6 +729,7 @@ export class LayersCard {
       (this.buildingsSection = this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes)),
       this.section('map', 'Map', null,
         tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
+        this.land.el,
         tog(this.other.water, 'Water'),
         this.water.box,
         tog(this.other.boundaries, 'Boundaries'),
@@ -944,6 +950,7 @@ export class LayersCard {
     this.t.fogHorCol.value = t.fog.horizonColour;
     this.other.water.checked = s.layers.water;
     this.water.box.hidden = !s.layers.water;
+    this.land.sync();
     this.water.col.value = s.water.colour;
     this.water.shade.checked = s.water.shade;
     this.water.shadeBox.hidden = !s.water.shade;

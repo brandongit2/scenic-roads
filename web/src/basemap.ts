@@ -187,8 +187,12 @@ export const LAND_COLOUR = '#0b0e13';
  * applyWater sets them): the server mixes water and land as light mixes for that land
  * (crates/server/src/water.rs alpha_for). No land (''): alpha the share itself (the shoreline
  * check's coverage, evalmode.ts). */
+let landColour = LAND_COLOUR;
+/** The land's colour now (the user's: Layers → Map → Land colour); the style's background and the
+ * water tiles' land take it (main.ts applyLand). */
+export const setLandColour = (c: string) => (landColour = c);
 let waterColours = ['#0c1622', '#0f1a27', LAND_COLOUR];
-export const setWaterColours = (sea: string, lake: string, land = LAND_COLOUR) => (waterColours = [sea, lake, land].filter(Boolean));
+export const setWaterColours = (sea: string, lake: string, land = landColour) => (waterColours = [sea, lake, land].filter(Boolean));
 /** The lakes' colour for a water colour: a shade lighter. */
 export const lakeColour = (sea: string): string =>
   `#${[1, 3, 5].map((i, k) => Math.min(255, parseInt(sea.slice(i, i + 2), 16) + [3, 4, 5][k]).toString(16).padStart(2, '0')).join('')}`;
@@ -487,7 +491,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       whs: { type: 'vector' as const, tiles: [tiles.whs], maxzoom: 12, attribution: '' },
     },
     layers: [
-      { id: 'bg', type: 'background', paint: { 'background-color': LAND_COLOUR } },
+      { id: 'bg', type: 'background', paint: { 'background-color': landColour } },
       {
         id: 'tint',
         type: 'color-relief',

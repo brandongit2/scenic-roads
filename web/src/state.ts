@@ -533,6 +533,8 @@ export interface AppState {
   labelSize: number;
   /** Water colour and the shading along coasts (Layers → Map → Water). */
   water: WaterLook;
+  /** The land's colour (Layers → Map → Land colour): the background, and the land the water's tiles mix over. */
+  land: string;
   /** How densely labels show (Layers → Map labels → Density). */
   labelDensity: LabelDensity;
   /** Opacity of the Stops & sights layers (dots, areas and, with labelOpacity, their labels). */
@@ -633,7 +635,7 @@ export const defaults: AppState = {
   // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
   // By height: auto-fit to the buildings in view, the low ones faded toward the plain colour.
   buildings: {
-    on: true, flat: false, colour: 'plain', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
+    on: true, flat: false, colour: 'plain', plain: '#566173', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
     height: scaleOfLook({ ...freshLook([0, 100], 0.6), fit: [5, 99.5], lowSpan: 0.4, thrValue: 50 }), heritage: true,
   },
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
@@ -650,6 +652,7 @@ export const defaults: AppState = {
   lowSpan: 0.6,
   labelOpacity: 0.5,
   labelSize: 1,
+  land: '#0b0e13',
   water: {
     colour: '#0c1622', shade: true, width: 28, strength: 0.22, falloff: 1.8, shadeColour: '#4f7fa8',
     shore: 0.25, ripples: 0, rippleStrength: 0.35, lakes: false,
@@ -886,7 +889,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
-  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0].join(',');
+  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0, b.plain.slice(1)].join(',');
   if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
   if (buildings && scaleStr(s.buildings.height) !== scaleStr(defaults.buildings.height)) p.set('bh', scaleStr(s.buildings.height));
   if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
@@ -929,6 +932,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   const wa = (w: WaterLook) => [w.colour.slice(1), w.shade ? 1 : 0, w.width, +w.strength.toFixed(2), +w.falloff.toFixed(2), w.shadeColour.slice(1),
     +w.shore.toFixed(2), w.ripples, +w.rippleStrength.toFixed(2), w.lakes ? 1 : 0].join(',');
   if (wa(s.water) !== wa(defaults.water)) p.set('wa', wa(s.water));
+  if (s.land !== defaults.land) p.set('ln', s.land.slice(1));
   const ldv = (d: LabelDensity) => [d.px, ...DENSITY_KINDS.map(([k]) => +d.kinds[k].toFixed(3)), +d.horizon.toFixed(2)].join(',');
   if (ldv(s.labelDensity) !== ldv(defaults.labelDensity)) p.set('ld', ldv(s.labelDensity));
   if (s.poiOpacity !== defaults.poiOpacity) p.set('po', s.poiOpacity.toFixed(2));
@@ -1112,6 +1116,8 @@ export function fromHash(hash: string, buildings = true): AppState {
       scale: bdv[4] !== '' && scale >= 0 ? n(bdv[4], b.scale, 0, 3) : b.scale,
       // (Links from before the heritage tint have five fields: it on.)
       heritage: bdv[5] !== '0',
+      // (Links from before the plain colour: the default.)
+      plain: /^[0-9a-f]{6}$/i.test(bdv[6] ?? '') ? `#${bdv[6].toLowerCase()}` : b.plain,
     };
   }
   const bhv = buildings ? p.get('bh')?.split(',') : undefined;
@@ -1219,6 +1225,8 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (p.get('lo') && lo >= 0 && lo <= 1) s.labelOpacity = lo;
   const lz = Number(p.get('lz'));
   if (p.get('lz') && Number.isFinite(lz)) s.labelSize = Math.min(2, Math.max(0.5, lz));
+  const ln = p.get('ln');
+  if (ln && HEX.test(`#${ln}`)) s.land = `#${ln.toLowerCase()}`;
   const wa = p.get('wa')?.split(',');
   if (wa && wa.length >= 10) {
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
@@ -1271,6 +1279,9 @@ export function fromHash(hash: string, buildings = true): AppState {
 }
 
 export { ob as overlayIndex };
+
+/** A #rrggbb colour. */
+const HEX = /^#[0-9a-f]{6}$/i;
 
 /**
  * State saved in localStorage, merged onto the defaults key by key (unknown or mistyped
@@ -1365,6 +1376,8 @@ export function fromSaved(o: unknown): AppState {
   if (!bh || typeof bh.palette !== 'string' || !pair(bh.range) || !pair(bh.fit) || typeof bh.auto !== 'boolean' || !num(bh.lowFade) || !num(bh.lowSpan) || typeof bh.threshold !== 'object') {
     s.buildings.height = { ...defaults.buildings.height };
   }
+  if (!HEX.test(s.buildings.plain)) s.buildings.plain = defaults.buildings.plain;
+  if (!HEX.test(s.land)) s.land = defaults.land;
   if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = defaults.buildings.heritage;
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = defaults.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the defaults have).
