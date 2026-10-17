@@ -591,7 +591,6 @@ mod net {
             for &(a, b) in &runs {
                 let (s, e) = (a * BLOCK, ((b + 1) * BLOCK).min(size));
                 let bytes = self.net.range(url, s, e).map_err(|e| IoError::Io(std::io::Error::other(format!("{e:#}"))))?;
-                fetched(bytes.len());
                 if let Some(r) = &self.record {
                     if let Err(e) = r.range(s, &bytes) {
                         eprintln!("fetch: {url}: not recorded: {e:#}");
@@ -772,28 +771,75 @@ mod net {
             })
         }
 
-        /// Bytes `s..e` of the file.
-        fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
-            self.retrying(url, || {
-                crate::fetch::online(url)?;
-                let mut r = match self.agent.get(url).header("Range", format!("bytes={s}-{}", e - 1)).call() {
-                    Ok(r) => r,
-                    Err(err) => return Ok(Err(err.to_string())),
-                };
-                match r.status().as_u16() {
-                    206 => {
-                        let cr = header(&r, "content-range").as_deref().and_then(content_range);
-                        ensure!(matches!(cr, Some((Some((a, b)), _)) if a == s && b == e - 1), "{url}: asked for bytes {s}-{}, answered {cr:?}", e - 1);
-                        match r.body_mut().with_config().limit(e - s + 1).read_to_vec() {
-                            Ok(b) if b.len() as u64 == e - s => Ok(Ok(b)),
-                            Ok(b) => Ok(Err(format!("{} of {} bytes", b.len(), e - s))),
-                            Err(err) => Ok(Err(err.to_string())),
-                        }
-                    }
-                    c if transient(c) => Ok(Err(format!("status {c}"))),
-                    c => bail!("{url}: bytes {s}-{}: status {c}", e - 1),
+        /// Bytes `s..e` of the file, streamed: a transfer that breaks off (the server closing the
+        /// connection, a stall) goes on from the bytes received, with a new range request, after
+        /// 2 s; only a request that moves nothing counts against the retries (as `retrying`: 10
+        /// more, waiting 2 s, then twice as long each time, at most a minute), and a hundred
+        /// requests in all end it. So a zip's member of tens of MB from a server that drops
+        /// connections is never fetched again from its start.
+        pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
+            const CHUNK: usize = 1 << 20;
+            let want = (e - s) as usize;
+            let mut out: Vec<u8> = Vec::with_capacity(want);
+            let (mut idle, mut requests) = (0u32, 0u32);
+            let mut last = String::new();
+            loop {
+                if requests > 0 {
+                    std::thread::sleep(Duration::from_secs(if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) }));
                 }
-            })
+                crate::fetch::online(url)?;
+                requests += 1;
+                let from = s + out.len() as u64;
+                let before = out.len();
+                let r = (|| -> Result<std::result::Result<(), String>> {
+                    let mut r = match self.agent.get(url).header("Range", format!("bytes={from}-{}", e - 1)).call() {
+                        Ok(r) => r,
+                        Err(err) => return Ok(Err(err.to_string())),
+                    };
+                    match r.status().as_u16() {
+                        206 => {
+                            let cr = header(&r, "content-range").as_deref().and_then(content_range);
+                            ensure!(matches!(cr, Some((Some((a, b)), _)) if a == from && b == e - 1), "{url}: asked for bytes {from}-{}, answered {cr:?}", e - 1);
+                            let mut rd = r.body_mut().with_config().limit(e - from + 1).reader();
+                            let mut buf = vec![0u8; CHUNK.min(want - out.len())];
+                            loop {
+                                match std::io::Read::read(&mut rd, &mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        ensure!(out.len() + n <= want, "{url}: more than the {want} bytes asked for");
+                                        out.extend_from_slice(&buf[..n]);
+                                        fetched(n);
+                                    }
+                                    Err(err) => return Ok(Err(err.to_string())),
+                                }
+                            }
+                            if out.len() == want {
+                                Ok(Ok(()))
+                            } else {
+                                Ok(Err(format!("{} of {} bytes", out.len(), want)))
+                            }
+                        }
+                        c if transient(c) => Ok(Err(format!("status {c}"))),
+                        c => bail!("{url}: bytes {from}-{}: status {c}", e - 1),
+                    }
+                })()?;
+                match r {
+                    Ok(()) => return Ok(out),
+                    Err(why) => last = why,
+                }
+                if out.len() > before {
+                    // (It moved: on from here, after a breath.)
+                    idle = 0;
+                } else {
+                    idle += 1;
+                    if idle > 10 {
+                        bail!("{url}: no answer ({last}); tried 11 times");
+                    }
+                }
+                if requests >= 100 {
+                    bail!("{url}: {} of {want} bytes after {requests} requests ({last})", out.len());
+                }
+            }
         }
 
         /// The whole (small) file; None for 404. Other answers are asked again: 8 tries, waiting 2,
@@ -923,6 +969,65 @@ mod tests {
         }
         assert_eq!(r.0, vec![(1, 4), (5, 9)]);
         assert!(r.covers(5, 9) && r.covers(1, 2) && !r.covers(3, 6));
+    }
+
+    /// A server that answers range requests from `data` but closes the connection after `cut`
+    /// bytes of each of its first `drops` answers (as a server dropping a long transfer does).
+    fn dropping_server(data: Arc<Vec<u8>>, cut: usize, drops: usize) -> String {
+        use std::io::{Read, Write};
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/z.zip", l.local_addr().unwrap());
+        let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::spawn(move || loop {
+            let (mut s, _) = match store::spawn::accept(&l) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            s.set_nonblocking(false).ok();
+            let mut req = Vec::new();
+            let mut b = [0u8; 1];
+            while s.read(&mut b).is_ok_and(|n| n == 1) {
+                req.push(b[0]);
+                if req.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&req);
+            let range = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string)).map(|r| {
+                let (a, b) = r.trim().split_once('-').unwrap();
+                (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap())
+            });
+            let (a, b) = range.unwrap_or((0, data.as_slice().len() - 1));
+            let body = &data[a..=b];
+            let n = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let send = if n < drops { body.len().min(cut) } else { body.len() };
+            let head = format!("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.as_slice().len(), body.len());
+            s.write_all(head.as_bytes()).ok();
+            s.write_all(&body[..send]).ok();
+            s.flush().ok();
+            drop(s);
+        });
+        url
+    }
+
+    #[test]
+    fn a_dropped_transfer_goes_on_from_where_it_stopped() {
+        let data: Arc<Vec<u8>> = Arc::new((0..300_000u32).map(|i| (i % 251) as u8).collect());
+        // Dropped twice after 100 KB: three requests, the bytes never fetched twice.
+        let url = dropping_server(data.clone(), 100_000, 2);
+        let before = fetched_bytes();
+        let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
+        assert_eq!(got, data[1000..251_000]);
+        assert_eq!(fetched_bytes() - before, 250_000, "every byte fetched once");
+        // A whole-file read through the fetcher's own path (the same server, dropping once).
+        let url = dropping_server(data.clone(), 50_000, 1);
+        let r = net::Net::new().open(&url, None, None).unwrap().unwrap();
+        assert_eq!(r.read_at(200_000, 100_000).unwrap(), data[200_000..300_000]);
     }
 
     #[test]

@@ -16,6 +16,9 @@ pub enum Kept {
     InPlace(Arc<dyn RangeRead>),
 }
 
+/// Held while a file is read from its source into the store: one at a time in a process.
+static DOWNLOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Whether `e` says the store can't be written here.
 fn unwritable(e: &std::io::Error) -> bool {
     matches!(e.kind(), std::io::ErrorKind::ReadOnlyFilesystem | std::io::ErrorKind::PermissionDenied)
@@ -63,6 +66,9 @@ pub fn kept(dir: &Path, name: &str, remote: &dyn Fn() -> Result<Option<Arc<dyn R
         r => r?,
     };
     let r = (|| -> Result<()> {
+        // (One file read from its source at a time in this process: a zip's members come from one
+        // server, asked politely.)
+        let _one = DOWNLOADING.lock().unwrap_or_else(|e| e.into_inner());
         let len = src.len()?;
         let mut bytes = Vec::with_capacity(len as usize);
         while (bytes.len() as u64) < len {

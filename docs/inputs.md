@@ -302,8 +302,12 @@ A declaration adds, under `[data]`:
 | `[data.fetch]` | `method`: `get` (default), `get-key-header` (`header`, `key` naming a key in `inputs/keys.env`), `get-key-json-link` (also `link`, the JSON path of the download link) |
 
 Fetch methods are protocols, generic code used by any declaration, through `pipeline::fetch`, which
-asks before any internet request. Fetched data is content-named and pinned in the records by the
-job that fetched it; a refresh is a new pin. Planned: an `s3-list` method; `range` sources (cloud
+asks before any internet request. A range read (a GeoTIFF's tiles, a zip's member) is streamed,
+and one that breaks off goes on from the bytes received with a new range request (`fetch::net`:
+only a request that moves nothing counts against the retries), so a member of tens of MB from a
+server that drops connections is never fetched again from its start. A process puts one file at a
+time into a store (`dem::kept`). Fetched data is content-named
+and pinned in the records by the job that fetched it; a refresh is a new pin. Planned: an `s3-list` method; `range` sources (cloud
 GeoTIFFs read in place, never whole) pinned by the server's ETag (else Last-Modified and length),
 checked with `If-Match` on every read so a file changed mid-build fails rather than mixing versions;
 the worker pages' proxy allow-list (`coord::WEB_HOSTS`) derived from the declarations' hosts.
