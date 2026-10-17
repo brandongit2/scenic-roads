@@ -815,8 +815,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   `pois`, `peaks`, `pack`, `lo` (z3 tiles, worldwide steps by name, input check jobs as
   `inputs/<unit>`), `trees`, `trees_lo`, the 3D buildings', `catalog`, `catalog_held`).
 - **The input check** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of
-  `[a-z0-9_-]`; its records start with `@`): drop boxes under `inputs/` (today the test unit's
-  `inputs/_gate-test/`, `{"k", "v"}` lines, checked while `state/inputs/gate-test` exists); checked
+  `[a-z0-9_-]`; its records start with `@`): drop boxes under `inputs/` (docs/inputs.md §3: `regions`,
+  `languages`, `translations`, `descriptions`, `heritage`, `heritage-matches`, `timetables/feeds`,
+  `timetables/gtfs`, `elevation`, `sources`; and the test unit's `inputs/_gate-test/`, `{"k", "v"}`
+  lines, checked while `state/inputs/gate-test` exists), each box's top-level `todo/` (the app's)
+  and `how/` (the owner's notes on how it's made, Markdown and briefs) never listed, and
+  `inputs/README.md` describing them (none read by the app); checked
   copies, content-named under `sources/inputs/<unit>/`; the accepted index
   `sources/inputs/<unit>/@index.<hash16>.json` (manifest name `…/@index`: `{fmt: 1, unit, checks,
   files: {<path>: {file, size, keyed, facts}}, accepted: {<warning id>: [files]}}`); the last

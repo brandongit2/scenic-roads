@@ -1276,15 +1276,23 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
 ## 8. How each input is made
 
 - **Producers live in the repository** under `producers/<input>/` (`heritage/`, `timetables/`,
-  `elevation/`, `languages/`): per-source code kept out of the app, with its history and review.
-  They're outside what `publish.sh` ships and outside the guards' scans; the app never runs them.
-  Each runs on its own (`uv run python producers/heritage/registers.py --data <folder> --out
-  <folder>`), writing the drop box's shape, checked when dropped. Their environment is their own
-  (`producers/pyproject.toml`).
+  `elevation/`, `languages/`, `sources/`, `depth/`): per-source code and staged declarations kept
+  out of the app, with their history and review. They're outside what `publish.sh` ships and
+  outside the guards' scans; the app never runs them. Each runs on its own (`uv run --project
+  producers python producers/heritage/registers.py --data <folder> --out <folder>`), writing the
+  drop box's shape, checked when dropped. Their environment is their own (`producers/pyproject.toml`).
 - **Each drop box's `how/`** on the NAS says how its input is made and points to its producers; it
-  holds what isn't code: the briefs and models of agent-made inputs (translations: Haiku;
-  descriptions: Sonnet; the ferry researchers' `PROMPT.md`) and what was done by hand.
-- Planned: `inputs/README.md` on the NAS describing the drop boxes, kinds and input check.
+  holds what isn't code: the briefs and models of agent-made inputs (translations: Haiku, the
+  earlier work's brief and launch prompt; descriptions: Sonnet, the September rounds' briefs; the
+  ferry researchers' `PROMPT.md` and batches; the ferry feeds' search) and what was done by hand.
+  Its README is kept in the repository, `producers/how/<box>/README.md`, and copied there with any
+  briefs; the input check never reads `how/` (§3), so a copy changes no accepted version.
+- **`inputs/README.md`** on the NAS describes the drop boxes, the kinds and the input check
+  (`producers/how/inputs-README.md`).
+- **What can't be remade exactly:** the regions and heritage matches (they are the owner's
+  decisions); the converted translations (the earlier work's rules and later brief are in its own
+  repository, not here); the descriptions written so far (their targets' rule wasn't kept); the
+  ferry and MTR lookups (the sources must be read again; the researchers' model wasn't recorded).
 
 ## 9. What still names a source in code
 

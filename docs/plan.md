@@ -91,8 +91,9 @@ NAS root: `personal/projects/scenic-roads/`, on the `personal` share. Deletions 
 Recycle Bin.
 
 ```
-inputs/        the drop boxes (docs/inputs.md): regions/, translations/, descriptions/, heritage/,
-               timetables/, languages/, …; keys.env (API keys, KEY=value); hold-catalog;
+inputs/        the drop boxes (docs/inputs.md): regions/, languages/, translations/, descriptions/,
+               heritage/, heritage-matches/, timetables/{feeds,gtfs}/, elevation/, sources/, each
+               with how/ (how it's made); README.md; keys.env (API keys, KEY=value); hold-catalog;
                _gate-test/ (the input check's test unit)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass),
                basemap/ (Planetiler's jar and data), items/<date>/ (facts, pageviews, answers),
@@ -702,6 +703,9 @@ What no job makes, kept on the NAS with how it was made. Scripts run in `dem/` (
   `producers/timetables/mtr.py --mtr mtr.json --stations hk-stations.geojsonseq --out mtr.zip`).
 - **Translations' and descriptions' methods** (§7): `inputs/translations/how/`,
   `inputs/descriptions/how/`.
+- **Every drop box's `how/`** says how its input is made, pointing to `producers/<input>/`
+  (docs/inputs.md §8); its README is kept in the repository as `producers/how/<box>/README.md`, and
+  `inputs/README.md` as `producers/how/inputs-README.md`.
 - **Fonts** (`app/fonts/` on the NAS, `data/fonts` in a checkout): three Noto Sans styles' glyph
   ranges, `scripts/fonts.sh <folder>`.
 

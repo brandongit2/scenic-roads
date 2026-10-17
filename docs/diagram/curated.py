@@ -1,7 +1,8 @@
 """The curated inputs: what a person or an AI agent made by hand (research, curation, agents' writing, hand downloads,
 hand-run steps), not a deterministic job or configuration in the code. For each: what it feeds, who or what makes it, where
 it lives, where its method is written down, and what making it again would take today. The owner's starting point for
-standardising them (9 Oct 2026). Kept to what's true on main; plan.md §6 "Hand-made inputs" says how each is made."""
+standardising them (9 Oct 2026). Kept to what's true on main; each drop box's how/ (docs/inputs.md §8) and plan.md §6
+"Hand-made inputs" say how each is made."""
 from html import escape as E
 
 import diag
@@ -13,25 +14,25 @@ GROUPS = [
          'English everywhere: labels, basemap names, roads, rail, popups (the servers, names::table)',
          'the earlier translation work (its own repository): word rules, romanisation, Claude agents (lines tagged agent:sonnet); converted once (log in translations/how/conversion-log.txt)',
          'NAS translations/0-converted/ (2.78 M lines); the area tables it came from in translations/<area>/',
-         'plan.md §7 (the conversion, its log); the rules and the agents’ brief only in the other repository',
+         'its how/: the conversion’s log, the first Haiku brief and launch prompt; the later session’s rules and brief only in the other repository',
          'that repository’s rules and brief, or translating again from the to-do lists'),
         ('doc', None, 'base', 'New translations',
          'as above, within a minute or two of a drop',
          'Claude agents on request (Haiku, per plan.md §7), from the names-todo job’s lists; a pilot, then checks',
          'NAS translations/ (any folder but todo/)',
-         'tools/names/translations-todo.md (the brief, as translations/todo/README.md) and check.py; not the model, batch sizes or the pilot',
+         'tools/names/translations-todo.md (the brief, as translations/todo/README.md) and check.py; the model, batch sizes and pilot in its how/',
          'agents on translations/todo/*.jsonl with the brief, then check.py'),
         ('part', None, 'base', 'Descriptions written so far',
          'popups of landmarks, heritage sites and areas',
          'Sonnet agents in four rounds (a pilot, fixes, a second voice, researched), on targets chosen by fame',
          'NAS descriptions/heritage/',
-         'each line credits its sources (title, URL); the briefs (WRITERS, FIXERS, RESEARCH) in inputs/descriptions/briefs-2026-09/ (plan.md §6); not the targets’ rule or the checks',
+         'each line credits its sources (title, URL); the briefs (WRITERS, FIXERS, RESEARCH) in its how/briefs-2026-09/; not the targets’ rule or the checks',
          'the new brief on the to-do list; the same set again: the old briefs, and the Wikipedia extracts in the heritage chain’s answers (desc/)'),
         ('doc', None, 'base', 'New descriptions',
          'as above',
          'Claude agents on request (Sonnet, per plan.md §7), from descriptions/todo/',
          'NAS descriptions/',
-         'tools/names/descriptions-todo.md (the brief: 55 words, sources credited); the model only in plan.md',
+         'tools/names/descriptions-todo.md (the brief: 55 words, sources credited); the model in its how/',
          'agents on descriptions/todo/*.jsonl with the brief'),
         ('part', None, 'net', 'Ferry timetables looked up',
          'the ferries job: sailings a day where no feed has them',
@@ -49,7 +50,7 @@ GROUPS = [
          'trains a day in Hong Kong (the rail job counts its count rows)',
          'Claude research on mtr.com.hk; producers/timetables/mtr.py, by hand; the input check',
          'NAS inputs/timetables/gtfs/mtr.zip (the research in its how/mtr.json)',
-         'plan.md §6 (the commands); each line’s source and month; no research brief',
+         'its how/ and plan.md §6 (the commands); each line’s source and month; no research brief',
          'the research again, then mtr.py (it needs a Hong Kong stations extract) and drop the zip'),
     ]),
     ('Chosen, researched or downloaded by hand', [
@@ -57,13 +58,13 @@ GROUPS = [
          'the coverage: what every step builds',
          'you, as files in the drop box: OSM boundaries and shapes each',
          'NAS inputs/regions/ (88; backed up daily)',
-         'plan.md §5',
+         'plan.md §5; its how/',
          'nothing: they are the definition'),
         ('part', None, 'place', 'Heritage registers',
          'heritage sites and chain: heritage landmarks, the area overlays, the areas’ flags',
          'producers/heritage/registers.py from the registers’ downloads (Canada’s federal list located by federal.py, the CRHP read by crhp.py, each country’s and province’s open data), a GeoJSON file and a description per register',
          'NAS inputs/heritage/ (40 registers, through the input check), the owner’s matches in inputs/heritage-matches/',
-         'inputs.md §6.5: each register’s credit, licence, source, download date and territory in its description; the producers in the repository; no download URL per file of a register',
+         'inputs.md §6.5: each register’s credit, licence, source, download date and territory in its description; its how/ (the commands, the downloads’ cache); no download URL per file of a register',
          'the producers on the downloads (their data folder), dropped into the drop box'),
         ('part', None, 'base', 'The basemap’s pinned versions',
          'the basemap, and from it the water, the terrain’s water and labels',
@@ -75,19 +76,19 @@ GROUPS = [
          'roads’ elevations (elev): HRDEM, 3DEP, MRDEM in North America, GSI in Japan, FABDEM elsewhere',
          'declared in inputs/elevation/ (one .toml per dataset; the order by rank and resolution read from the data), checked by the input check',
          'the declarations; indexes by producers/elevation/indexes.py from the sources’ listings',
-         'docs/inputs.md §6.8',
+         'docs/inputs.md §6.8; its how/ (the indexes’ commands)',
          'the indexes made again from the listings'),
         ('doc', None, 'base', 'Languages by territory',
          'the spoken job: which languages a name is looked up in, and which to-do list it goes on',
          'producers/languages/cldr-languages.py from CLDR 47, refinements folded in; the input check',
          'inputs/languages/ (territories.tsv, about.toml)',
-         'plan.md §7 (not CLDR’s download URL)',
+         'its how/ (the commands; CLDR 47’s package, not its download URL)',
          'the script on CLDR 47’s territoryInfo.json'),
         ('doc', None, 'net', 'Rail feeds’ declarations',
          'rail-feeds: national operators the catalogue lacks, feeds behind a key, the catalogue’s corrections and own codes',
          'chosen by hand, as declarations; the input check',
          'NAS inputs/timetables/feeds/*.toml',
-         'docs/inputs.md §6.7.1, each declaration with its URL, licence and credit',
+         'docs/inputs.md §6.7.1, each declaration with its URL, licence and credit; its how/',
          'rail-feeds reads the accepted version'),
         ('doc', None, 'net', 'The rail feeds’ catalogue',
          'rail-feeds: which feeds there are (1,545 checked)',
@@ -151,5 +152,5 @@ def html():
     return ('<section class="cur-list" aria-label="Curated inputs"><h3>Curated inputs · made by hand</h3>'
             '<p>Everything a person or an AI agent made by hand rather than a job: what it feeds, who makes it, where it lives, '
             'where its method is written down and what making it again would take today. ' + E(summary) +
-            ' “Being documented”: the makers kept from the old pipeline are being made runnable by hand and written up in '
-            'plan.md’s hand-made inputs section.</p>' + ''.join(rows) + '</section>')
+            ' Each drop box’s how/ on the NAS says how its input is made, pointing to its producers in the repository '
+            '(producers/).</p>' + ''.join(rows) + '</section>')
