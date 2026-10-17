@@ -399,6 +399,24 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   (landmarks; `source` the heritage register's id, docs/inputs.md §6.5) and `{"qid", "id", "name",
   "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by fame; with `README.md`.
 
+## Depth (`layers/depth/`, `layers/depth-class/`; pipeline::depth)
+
+Two layers of 256-px PNG tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
+only where a source is finer than z8). A tile is stored where one of its water pixels has data of
+its zoom (every water tile up to z8); a missing one is its nearest stored ancestor scaled up (bilinear
+for depth, with that ancestor's neighbours' edges; nearest for classes).
+
+- **`depth`** (encoding `terrarium-png`): metres below the water's surface (the sea's mean level, a
+  lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
+  none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The terrain's water
+  (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
+  of 3 pixels of the nearest water's value (≥ 0) so a finer shoreline never meets a gap.
+- **`depth-class`** (encoding `class-png`, 8-bit grey): bits 0–2 the class (0 none or land, 1
+  measured, 2 interpolated, 3 estimated, 4 filled to the shore), bit 3 dries at low tide, bits 4–7 the
+  source's `code` (docs/inputs.md §6.10).
+- **The catalog's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
+  the accepted depth declarations (the map's attribution and readout).
+
 ## Catalog (`catalog/<n>.json.zst`)
 
 zstd with its content checksum; written as `.tmp`, then renamed. Readers take the highest `<n>`
@@ -567,7 +585,7 @@ Where they're kept:
 
 ## Server API
 
-- **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field}/{z}/{x}/{y}`,
+- **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class}/{z}/{x}/{y}`,
   `/tiles/trees/{var}/{z}/{x}/{y}`. Strong `ETag`: the stored blob's hash, plus for named tiles the
   versions of the languages spoken within them and of the spoken-languages raster (plan §7);
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
@@ -591,8 +609,13 @@ Where they're kept:
   answer says `approx`.
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zooms, version), `coverage`
   (without outlines), `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`, `spoken`,
-  `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals). The map's meta:
-  `/api/meta`.
+  `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the
+  catalog meta's: its sources, Depth below). The map's meta: `/api/meta`.
+- **Depth:** `/tiles/depth/…` and `/tiles/depth-class/…`: the stored tile, else made from its nearest
+  stored ancestor (`pipeline::depth::fall`), 404 outside the layer; versions `depth.tiles`,
+  `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the terrain less the depth where the
+  class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
+  depth in the catalog.
 - `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=`, `k=road|settlement|other`,
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this

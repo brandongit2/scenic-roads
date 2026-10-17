@@ -478,6 +478,48 @@ offset. Where coverage ends, roads end.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
+### Depth (per area and tile, from the depth sources)
+
+Depth under the seas and lakes (`pipeline::depth`; its sources docs/inputs.md §6.10; its files
+docs/formats.md, Depth), split by tile like the terrain, so downloads and the mirror take it as it is.
+- **Targets:** every z3 tile within 200 nautical miles (`REACH_KM`, a region's EEZ's reach) of the
+  coverage that a source meets (`depth-lo`), and every z6 tile within it that a source finer than z8
+  meets (`depth`, any Mac). The 15″ grid covers the rest of an area's water.
+- **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
+- **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
+  capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs
+  of its z3 tile and its neighbours (its neighbours' fine tiles are another job's: within a block's
+  32-pixel margin across the tile's edge, their lo levels stand in).
+- **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on the terrain's water
+  (`terrain_water`, the basemap's z6–14, its z14 scaled at z15–16): sources sampled (coarser grids
+  interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine;
+  past its own zoom a pixel shows the stored level of its zoom scaled up as the map's fallback makes
+  it (`depth::fall`, the server's too), detail fading in over three capped pixels; a source ending in
+  the water feathered over its `band_m` (a source off the others' datum fills gaps only); the shore:
+  positive values kept as drying heights only from intertidal sources, water without data filled
+  linearly to 0 at the shore within 600 m from data of the same water body (a lake without data of
+  its own stays empty), the land a 3-pixel band; dries where above the chart's low water.
+- **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
+  less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
+  stored. The map's toggle (the 3D terrain from it, the water's surface drawn at its level, what's
+  draped on the water kept at the surface) is planned (§10).
+- **The map:** two layers, each switched on its own (Layers → Depth): the depth's colour with the
+  floor's shading (nautical blues on a log scale to 300 m by default; the panel's ramp picker; linear,
+  log or fitted to the view), and contours with labels (on demand). Masked by the basemap's water at
+  the display's resolution, over the water fill and under the coast shading, draped on the 3D
+  terrain. The cursor's readout says the depth, its class and source; the map names the sources in
+  view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
+  maker), which the credits carry too.
+- **The rollout:**
+  1. Both Macs run the app with the depth (until a depth declaration is accepted the chain has no
+     targets).
+  2. The producers make the grids on the M4 (`producers/depth/`, `uv run --project producers`) into a
+     local folder, each source then copied whole to `sources/fetched/<id>/` with `tar` over SSH (the
+     NAS's small-file limits; plan §3).
+  3. The declarations (`producers/depth/declarations/`) and the indexes are dropped into
+     `inputs/sources/`. Once accepted, the terrain-water job works out the depth targets' water
+     digests (once a basemap), then the assemblies run, then the pieces.
+
 ### Water (per pass, worldwide)
 
 The basemap's water drops small polygons at each zoom and its vector fills' anti-aliasing pushes
@@ -704,6 +746,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **bld-fetch** (network): its version, the release and the coverage.
 - **bldprep (per z6 tile):** `BLDPREP_V`, the release, and each downloaded file's row groups and GHSL
   tile meeting it (`crate::bld::sources`).
+- **depth-lo (a z3 tile):** `DEPTH_V`, `DEPTH_LO_V`, the tile, the depth sources meeting it (id and
+  digest of declaration and index), the digest of its z6–8 water (the terrain assembly's).
+- **depth (a z6 tile):** the same versions, the tile, the sources meeting it (2 km round), the content
+  names of the depth lo packs of its z3 tile and its neighbours, and the digest of its z6–12 water
+  ("depth 6/x/y", worked out by the terrain-water job).
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,
   and the coverage's shapes over it with their countries (`Coverage::shapes_key`).
 
@@ -1166,6 +1213,7 @@ pieces ~58 GB; basemap 28.6 GB (Planetiler needs ~6× its 16.3 GB input while it
 | sources kept per pass | ~200 GB | the same |
 | roadside buildings (once per release) | ~40 GB | the same |
 | 3D buildings (`docs/buildings3d.md` §2.5): sources, normalized files, packs | 62 + 17–22 + 4.6–6.9 GB | not planned |
+| depth (§6, Depth): its sources' grids; its packs | a sample's: 15″ grid 6 MB over 9.5° × 6°; 56 US coastal tiles 0.6 GB of grids → a z6 tile's packs 168 MB (4,173 tiles); the depth lab's estimate, quantised: ~25 GB seas, 5–20 GB surveyed lakes | — |
 | an app Mac's mirror | the World ~10.5 GB; a region tens of MB to ~20 GB | as downloaded |
 
 The NAS holds about two passes' sources at most (a retired pass's go 14 days after the next
@@ -1264,6 +1312,15 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     water; the z8's version (`terrain_z8::V`) isn't tied to `TERRAIN_V`, guarded by
     `terrain_z8::tests::the_raw_path_is_versioned`. A lake across two z6 tiles may take levels a
     metre or two apart.
+
+13. **Depth** (§6, Depth): the map's 3D floor toggle isn't built (the server's `?floor=1` is); the
+    lakes' estimated depths (GLOBathy's and the small-lake estimate's bowls, the depth lab's lakes
+    chain) have no producer, so only surveyed lakes have depth; GtTM is read from windows made by
+    hand, SHOM's from its archives unpacked by hand (no range reads of the HDF5 grid or the 7z yet);
+    a piece's key names its water's z6–12 tiles, so a change the basemap shows only at z13–14
+    doesn't remake it; MSL sources aren't drawn in lakes (the Great Lakes wait for a lake source);
+    rivers the basemap draws as rivers get none; targets the coverage leaves keep their packs (no
+    prune yet); the map's click popup for depth isn't built (the readout is).
 
 ## 11. Risks and checks
 

@@ -59,7 +59,7 @@ inputs/
     feeds/            source declarations: <feed>.toml (§6.7.1)
     gtfs/             declare: <name>.zip [+ <name>.toml]; todo/ (§6.7.2, §6.7.3)
   elevation/          source declarations: <dataset>.toml, indexes, <dataset>/ (§6.8)
-  sources/            source declarations: <id>.toml, indexes (§6.9)
+  sources/            source declarations: <id>.toml, indexes (§6.9, the depth's §6.10)
   keys.env, hold-catalog   not inputs
 ```
 
@@ -1052,8 +1052,8 @@ their indexes.
 
 | Field | Meaning |
 |---|---|
-| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights` |
-| `format` | one of its role's: `geotiff`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet` |
+| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`; and `depth`, which any number of sources take (§6.10) |
+| `format` | one of its role's: `geotiff`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid` |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
 | `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
@@ -1063,7 +1063,7 @@ their indexes.
 a declaration's fields wrong: an unknown role, a format not its role's, not exactly one way of
 naming where it is, a placeholder its role doesn't fill, an unknown `refresh` (`src-decl`); an
 unparsable index (`src-index`); an index named that isn't there (`src-missing`); two declarations
-of one role (`src-role`). Warning: an index no declaration names (`src-orphan`). Derived: each
+of one role (`src-role`; for `depth`, two of one `code`). Warning: an index no declaration names (`src-orphan`). Derived: each
 description's extent for the credits (§4.8), the world or its territory's polygons' boxes in the
 newest pass's outlines.
 
@@ -1112,8 +1112,9 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | Geoid grids | none yet: no step reads them (§6.8 step 3) | `geoid-grid`, pinned |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
-Also kept: fonts (`scripts/fonts.sh`, the app's own assets). GEBCO and NCEI's bathymetry on the NAS
-get declarations once a step reads them.
+Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's. NCEI's
+grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) have no declaration: no producer
+reads them yet.
 
 **The rollout:**
 1. Both Macs run the app that reads the declarations. Until a version is accepted, the units, tree
@@ -1129,6 +1130,63 @@ get declarations once a step reads them.
    the keys it had.
 4. `sources/canvec/50k/` is deleted only after both Macs run the new app (an older app still reads
    it).
+
+### 6.10 Depth
+
+**Kind:** source declarations of the `depth` role, any number (crate::inputs::sources `MANY`), in
+`inputs/sources/` beside the others, each with its index of depth grids. Code: crate::depth::grids
+(the build's reading), crate::depth (the steps, docs/plan.md §6, Depth). The declarations are staged in
+`producers/depth/declarations/`; the producers that make their grids in `producers/depth/`.
+
+**The standard: depth grids** (`format = "depth-grid"`). A source is a set of GeoTIFFs, each on the
+global Web Mercator pixel grid of one zoom (EPSG:3857; its pixels 40,075,016.686 / 256 / 2^zoom m,
+their edges on that grid, its own edges on its zoom's tile edges where its data allows), so the build
+reads them by pixel arithmetic, never reprojecting:
+- `file`: float32 depth below the water's surface in metres, negative (the sea's mean level; a lake's
+  mean surface), drying heights positive, NaN where there's none; tiled, Deflate with the
+  floating-point predictor, overviews by averaging;
+- `zoom_file` (optional): uint8, the zoom each cell's data supports: its own where measured, coarser
+  where the source's flags say interpolated or predicted; overviews nearest;
+- `low_file` (optional): float32, the chart's low water (MLLW, LAT, chart datum) below MSL, m ≥ 0, for
+  the "dries at low tide" flag.
+
+Its index (`<name>.geojson`, a feature per grid): its footprint, `url` (where the data came from),
+`file`, `zoom`, `zoom_file`, `low_file`, `hash`. The files are kept in `sources/fetched/<id>/` (the
+producer writes them; the owner copies them there).
+
+**`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
+(`sea` or `lake`: where it's drawn: a sea source stays off the lakes, a lake source in them),
+`label` (the map's name for it), `datum` (what its depths are below, in words), optionally `band_m`
+(ground metres it's feathered in over where it ends in the water), `intertidal` (its positive values
+are drying heights), `datum_exact` (false: not corrected to the others' datum, so it fills gaps only,
+hard-edged) and `notice` (a notice its licence asks every map showing its data to carry: shown on the
+map while its depths are in view, and in the credits).
+
+**Checks** (§6.9's, and): a depth declaration's params (`src-decl`); its index's features each naming
+a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`).
+
+**The sources** (`producers/depth/declarations/`; the owner's decisions of 6 and 17 October 2026):
+
+| id | what | code | water | producer | detail |
+|---|---|---|---|---|---|
+| `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` (CEDA's robots.txt bars programs) | z8; cells the TID calls interpolated or estimated (40–48, 71, 72) at z7 |
+| `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`, from the public bucket by its tile scheme (checksums checked); NAVD88 → MSL and MLLW by NOAA's stations (`stations.py noaa`) | z15 (4 m) to z13 (16 m); interpolated contributors at z12 |
+| `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service; chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
+| `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `raster.py` over its tiles; its interpolation flag at z9 | gaps only (`datum_exact = false`) |
+| `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
+| `gttm` | NIED's 2″ grid of Japan | 8 | sea | `raster.py` over windows of it | z11; coarse meshes at z9 |
+| `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
+
+Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)" and asks the host's
+robots.txt first, in a request of its own (`grid.robots_allow`); a path it bars stops the producer,
+which says to download the file by hand. The lakes' estimated depths (GLOBathy's and the small-lake
+estimate's bowls, research/LAKES-REPORT.md in the depth lab) have no producer yet (plan §10).
+
+**Keys** (docs/plan.md §6, Job keys): a depth target names each source meeting it by its id and
+`Source::digest` (its `[data]` and its index's features, their hashes among them), so a new grid
+re-keys the tiles it meets.
+
+**The rollout:** docs/plan.md §6, Depth.
 
 ## 7. The guards
 

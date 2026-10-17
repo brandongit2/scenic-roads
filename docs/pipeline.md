@@ -29,7 +29,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalog), `keep` (checks, lists, removals, backups) |
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), `area` (a z3 tile), `tile` (a z6 tile), `input` (a drop box); a task's `task` |
-| `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
+| `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
 | resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), the second slot's rank (`beside`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), targets per job of the lead's own (`batch`), its write-set (`writes`) | pool.md §7.2, §7.7 |
 
@@ -82,6 +82,8 @@ the lead.
 | Tree cover | Tree cover | `trees` | pack | a tile | ⇄ |
 | | Tree cover, zoomed out | `trees-lo` | pack | an area | ⇄ |
 | | Tree cover's blocks (task) | `treeblock` | | a task of Tree cover | ⇄ |
+| Water depth | Depth, zoomed out | `depth-lo` | pack | an area | lead |
+| | Depth | `depth` | pack | a tile | ⇄ |
 | Roads | Roads | `unit` | pack | a tile | ⇄ |
 | | Roads' last steps (task) | `tail` | | a task of Roads | ⇄ |
 | Map tiles | Map tiles | `pack` | pack | a tile | ⇄ |
