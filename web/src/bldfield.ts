@@ -898,6 +898,8 @@ export class FieldLayer implements CustomLayerInterface {
    * view moves the field is drawn straight into the frame, as without it.
    */
   cacheOn = urlNum('fcache', 1) !== 0;
+  /** The cache's programs failed to link (logged once). */
+  private cacheFailed = false;
   /** (the cache's frames by kind, for tests) */
   cacheStats = { direct: 0, fill: 0, update: 0 };
   private cache: {
@@ -1678,7 +1680,16 @@ export class FieldLayer implements CustomLayerInterface {
       this.lastKey = key;
       const c = still ? this.cacheFor(vp[2], vp[3]) : null;
       // (straight into the frame while the cache's programs link, glprog.ts)
-      const same = c?.same(), over = c?.over();
+      let same: Prog | null | undefined = null, over: Prog | null | undefined = null;
+      try {
+        same = c?.same();
+        over = c?.over();
+      } catch (e) {
+        // (logged once: the field still draws, straight into the frame)
+        if (!this.cacheFailed) console.error('bldfield: cache shader failed, the still view\'s cache is off', e);
+        this.cacheFailed = true;
+        this.cacheOn = false;
+      }
       if (c && same && over) {
         cache = c;
         if (cache.readTex !== scene.texture) {

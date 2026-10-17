@@ -152,13 +152,17 @@ export class Program<Us extends UniformBindings> {
                     this.failedToCreate = true;
                     return;
                 }
+                let error: Error;
                 if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
-                    throw new Error(`Could not compile fragment shader: ${gl.getShaderInfoLog(fragmentShader)}`);
+                    error = new Error(`Could not compile fragment shader: ${gl.getShaderInfoLog(fragmentShader)}`);
+                } else if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                    error = new Error(`Could not compile vertex shader: ${gl.getShaderInfoLog(vertexShader)}`);
+                } else {
+                    error = new Error(`Program failed to link: ${gl.getProgramInfoLog(this.program)}`);
                 }
-                if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
-                    throw new Error(`Could not compile vertex shader: ${gl.getShaderInfoLog(vertexShader)}`);
-                }
-                throw new Error(`Program failed to link: ${gl.getProgramInfoLog(this.program)}`);
+                // (thrown again at each draw, as upstream's useProgram throws at each one)
+                this._finish = () => { throw error; };
+                throw error;
             }
 
             applyUBOBindings(gl, this.program);

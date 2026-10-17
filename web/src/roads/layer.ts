@@ -1041,6 +1041,8 @@ export class RoadLayer implements CustomLayerInterface {
   private progQA!: Prog;
   /** The sums' resolve (glprog.ts: null while linking). */
   private resolve: Later<Prog> | null = null;
+  /** A program failed to link (logged once). */
+  private linkFailed = false;
   private accum: { fb: WebGLFramebuffer; acc: WebGLTexture; w: number; h: number } | null | false = null;
   /** The projection pass's current program. */
   private prep!: Prog;
@@ -1129,7 +1131,15 @@ export class RoadLayer implements CustomLayerInterface {
       this.progs.set(sd.variantName, L);
     }
     // (each asked, so all are waited for at once)
-    const prep = L.prep(), q = L.q(), s = L.s(), a = L.a(), qa = L.qa();
+    let prep: Prog | null, q: Prog | null, s: Prog | null, a: Prog | null, qa: Prog | null;
+    try {
+      [prep, q, s, a, qa] = [L.prep(), L.q(), L.s(), L.a(), L.qa()];
+    } catch (err) {
+      // (logged once: the rest of the map still draws)
+      if (!this.linkFailed) console.error('roads: shader failed, the roads are off', err);
+      this.linkFailed = true;
+      return false;
+    }
     if (!prep || !q || !s || !a || !qa) return false;
     this.progQ = q;
     this.progS = s;
@@ -2389,7 +2399,13 @@ export class RoadLayer implements CustomLayerInterface {
     }
     /** The sums onto the map (RESOLVE_FS). */
     const resolveSums = (a: NonNullable<typeof acc>) => {
-      const R = this.resolve?.();
+      let R: Prog | null = null;
+      try {
+        R = this.resolve?.() ?? null;
+      } catch (err) {
+        if (!this.linkFailed) console.error('roads: shader failed, the summed roads are off', err);
+        this.linkFailed = true;
+      }
       if (!R) return;
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.DEPTH_TEST);

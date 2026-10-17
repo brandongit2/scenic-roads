@@ -34,11 +34,6 @@ function check(gl: WebGL2RenderingContext, { p, shaders }: ReturnType<typeof sta
   return p;
 }
 
-/** A program, linked now. */
-export function link(gl: WebGL2RenderingContext, vs: string, fs: string, feedback?: string[]): WebGLProgram {
-  return check(gl, start(gl, vs, fs, feedback));
-}
-
 /** A program being linked: `finish` of it once the link is complete, else null; `program` for deleting it. */
 export type Later<T> = (() => T | null) & { program: WebGLProgram };
 
@@ -48,13 +43,20 @@ export function linkLater<T>(map: MLMap, gl: WebGL2RenderingContext, vs: string,
   const ctx = ctxOf(map);
   let linking: ReturnType<typeof start> | null = start(gl, vs, fs, feedback);
   let done: T | null = null;
+  let error: unknown = null;
   const made = ctx.programFrame;
   const get = (): T | null => {
+    if (error) throw error;
     if (!linking) return done;
     if (!ctx.linkComplete(linking.p, made)) return null;
     const l = linking;
     linking = null;
-    done = finish(check(gl, l));
+    try {
+      done = finish(check(gl, l));
+    } catch (e) {
+      error = e;
+      throw e;
+    }
     return done;
   };
   const program = linking.p;

@@ -1,7 +1,7 @@
 import {describe, test, expect, vi} from 'vitest';
 import {Program} from './program.ts';
 import {shaders} from '../shaders/shaders.ts';
-import {Context} from './context.ts';
+import {Context, LINK_WAIT_FRAMES} from './context.ts';
 
 const COMPLETION_STATUS_KHR = 0x91B1;
 
@@ -28,7 +28,12 @@ function fakeContext(async: boolean) {
         getShaderParameter: () => true,
     };
     const gl = new Proxy(known, {get: (t, k) => (k in t ? t[k] : vi.fn(() => 0))});
-    const context = Object.assign(Object.create(Context.prototype), {gl, asyncPrograms: async ? {COMPLETION_STATUS_KHR} : null, pendingPrograms: 0, programFrame: 0, _linkingSeenFrame: -1}) as Context;
+    const context = Object.create(Context.prototype) as Context;
+    context.gl = gl as unknown as WebGL2RenderingContext;
+    context.asyncPrograms = async ? {COMPLETION_STATUS_KHR} : null;
+    context.pendingPrograms = 0;
+    context.programFrame = 0;
+    context._linkingSeenFrame = -1;
     return {context, state};
 }
 
@@ -92,5 +97,17 @@ describe('Program in the background (asyncPrograms)', () => {
         state.complete = true;
         state.linked = false;
         expect(() => p.ready(context)).toThrow('Program failed to link: link failed');
+        // (and again at each later draw, never drawing without its uniforms)
+        expect(() => p.ready(context)).toThrow('Program failed to link: link failed');
+    });
+
+    test('a link still not complete after LINK_WAIT_FRAMES frames is waited for', () => {
+        const {context, state} = fakeContext(true);
+        const p = make(context);
+        context.programFrame += LINK_WAIT_FRAMES - 1;
+        expect(p.ready(context)).toBe(false);
+        context.programFrame++;
+        expect(p.ready(context)).toBe(true);
+        expect(state.statusAsked).toBe(1);
     });
 });

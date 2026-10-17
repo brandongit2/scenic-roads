@@ -150,7 +150,12 @@ async function main() {
   // Shaders linked in the background (our MapLibre's Context.asyncPrograms, glprog.ts): by default
   // in Safari; `?ashader=1` or `0` sets it in any browser (for comparing).
   const ashader = new URLSearchParams(location.search).get('ashader');
-  if (ashader === '0' || ashader === '1') (map as unknown as { painter: { context: { setAsyncPrograms(on: boolean): void } } }).painter.context.setAsyncPrograms(ashader === '1');
+  const setAshader = () => {
+    if (ashader === '0' || ashader === '1') (map as unknown as { painter: { context: { setAsyncPrograms(on: boolean): void } } }).painter.context.setAsyncPrograms(ashader === '1');
+  };
+  setAshader();
+  // (a restored context is a new painter's: set again)
+  map.on('webglcontextrestored', setAshader);
   if (EVAL) installEval(map);
   // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
   // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from

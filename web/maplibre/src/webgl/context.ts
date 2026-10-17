@@ -29,6 +29,9 @@ type ClearArgs = {
  * @internal
  * A webgl wrapper class to allow injection, mocking and abstraction
  */
+/** Scenic Roads: the frames a program is linked in the background before it's waited for (Context#linkComplete). */
+export const LINK_WAIT_FRAMES = 120;
+
 export class Context {
     gl: WebGL2RenderingContext;
 
@@ -135,7 +138,7 @@ export class Context {
         this.pendingPrograms = 0;
         this.programFrame = 0;
         this._linkingSeenFrame = -1;
-        this.setAsyncPrograms(typeof navigator !== 'undefined' && /Apple/.test(navigator.vendor ?? ''));
+        this.setAsyncPrograms(typeof navigator !== 'undefined' && (navigator.vendor ?? '').includes('Apple'));
 
         this.boundUniformBuffers = [];
         this.projectionUniformBuffer = createProjectionUniformBuffer(this);
@@ -158,11 +161,13 @@ export class Context {
      * counted in pendingPrograms. Each question waits for the GPU process to take the calls queued
      * before it (Safari), so none is asked in the frame the program was made, and none after one
      * that found a link not complete in this frame (links complete about in the order they were
-     * started): those count as not complete.
+     * started): those count as not complete. A link not complete after LINK_WAIT_FRAMES frames is
+     * waited for (the map can't go on drawing frames for ever).
      */
     linkComplete(program: WebGLProgram, madeInFrame: number): boolean {
         const ext = this.asyncPrograms;
         if (!ext) return true;
+        if (this.programFrame - madeInFrame >= LINK_WAIT_FRAMES) return true;
         if (madeInFrame !== this.programFrame && this._linkingSeenFrame !== this.programFrame) {
             if (this.gl.getProgramParameter(program, ext.COMPLETION_STATUS_KHR)) return true;
             this._linkingSeenFrame = this.programFrame;

@@ -80,7 +80,8 @@ The app compiles this source with its own code; there is no separate build or `d
   map draws another frame, and a draped texture missing a draw is drawn again next frame. A layer
   can so appear a frame or two late the first time its shader is needed. The completion isn't asked
   in the frame a program was made, nor again in a frame after one link was found incomplete (each
-  question waits for Safari's GPU process). The tiles' clipping masks, the depth pass, the
+  question waits for Safari's GPU process); a link still not complete after 120 frames
+  (`LINK_WAIT_FRAMES`) is waited for. A failed link throws at each draw, as upstream. The tiles' clipping masks, the depth pass, the
   hill-shading's prepare pass and the terrain's depth are always waited for. On by default where
   `navigator.vendor` is Apple's; elsewhere (Chrome showed no gain) as upstream. The app's custom
   layers do the same (`web/src/glprog.ts`); `?ashader=0|1` sets it in any browser.

@@ -332,6 +332,8 @@ export class LandmarkDots implements CustomLayerInterface {
   private progs = new Map<string, Later<{ prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> }>>();
   /** The heights' program was still linking this frame (prerender): the dots wait. */
   private heightsLinking = false;
+  /** A program failed to link (logged once). */
+  private linkFailed = false;
   private hprog: Later<{ prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> }> | null = null;
   private tf: WebGLTransformFeedback | null = null;
   private maxPt = 64;
@@ -658,7 +660,14 @@ export class LandmarkDots implements CustomLayerInterface {
         const [k0, k1] = tileRun(s.morton, z, x, y);
         if (k1 <= k0) continue;
         if (!P) {
-          P = this.heightProgram();
+          try {
+            P = this.heightProgram();
+          } catch (err) {
+            if (!this.linkFailed) console.error('dots: heights shader failed, the dots are off', err);
+            this.linkFailed = true;
+            this.heightsLinking = true;
+            return;
+          }
           if (!P) {
             // (its program still linking: the heights next frame, and no dots till then)
             this.heightsLinking = true;
@@ -756,7 +765,13 @@ export class LandmarkDots implements CustomLayerInterface {
       return;
     }
     if (!three) this.inViewFromBounds(zoom);
-    const P = this.program(opts.shaderData);
+    let P: ReturnType<LandmarkDots['program']> = null;
+    try {
+      P = this.program(opts.shaderData);
+    } catch (err) {
+      if (!this.linkFailed) console.error('dots: shader failed, the dots are off', err);
+      this.linkFailed = true;
+    }
     if (!P) return;
     const { prog, u } = P;
     gl.useProgram(prog);
