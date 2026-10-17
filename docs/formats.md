@@ -620,9 +620,7 @@ Where they're kept:
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this
   member's `helper.json` when that is ten minutes stale), `pool`, `lead_asked`, and `offline:
-  {world, areas, bytes, here, nas}` (null without a mirror). `POST /api/build/inputs` `{unit,
-  accept: [finding id]}` or `{unit, all: true}`; `/api/build/pause`; `POST /api/build/lead {to} |
-  {take: true}`.
+  {world, areas, bytes, here, nas}` (null without a mirror).
 - **Remote access** (plan §4, Devices): no key. A request from anywhere but this Mac, its LAN and
   the tailnet (`tailscale serve` too; never Funnel) is 403 ("not from here"), as is one whose `Host`
   isn't the map's or whose `Origin` is another page's. CORS answers only this Mac's own origins.
@@ -749,19 +747,18 @@ class, id) within a tile. The client sends the id with the clicked point.
     `spec.json`, `task.json` (`scenic run-task`'s result), `result.json` (`{ok, done: [step,
     [[target, key], …]] | null, failed, interrupted, task, error}`), until the coordinator has them.
   - **Pausing** (`pipeline::control`), in each agent's folder: `pause-request.json` (`{pause, at}`,
-    from the menu, `scenic pause` or `/api/build/pause`), `pause.json`, `control` (`run` or `drain`,
+    from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`,
     `SCENIC_CONTROL`), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
     `POST /work/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
     `state/build/pause.json` mirrors the lead's.
   - **Input check asks** (`pipeline::inputs::Ask`, docs/inputs.md §4.5): `inputs-asks/<at, 20
     digits>-<pid or "menu">-….json`, `{unit, accept, all, unaccept, check, full, forget, by, at}`,
-    from the menu, `POST /api/build/inputs` and `scenic inputs check`; taken up at the agent's next
+    from the menu and `scenic inputs check`; taken up at the agent's next
     loop. A member's agent tells the lead's coordinator (`POST /work/inputs`); the build page posts
     there directly (never `forget`).
   - **Lead asks** (`pipeline::control::LeadRequest`, docs/pool.md §6.3): `lead-request.json`, `{ask:
-    {kind: "give", to} | {kind: "take", force, downgrade}, by, at}`, from the menu, `scenic lead` or
-    `POST /api/build/lead`; the build page's via `POST /work/lead` (never forced).
+    {kind: "give", to} | {kind: "take", force, downgrade}, by, at}`, from the menu or `scenic lead`; the build page's via `POST /work/lead` (never forced).
   - A hand-off (`pipeline::handoff`): `{changes: {logical: content name | null}, pending: {content
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[area,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last

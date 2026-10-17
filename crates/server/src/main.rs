@@ -543,10 +543,7 @@ async fn main() -> Result<()> {
         .route("/api/downloads/views/{id}", axum::routing::put(downloads::put_view).delete(downloads::delete_view))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
-        .route("/api/build/pause", axum::routing::post(build_pause_h))
         .route("/api/bench", axum::routing::post(bench_h))
-        .route("/api/build/lead", axum::routing::post(build_lead_h))
-        .route("/api/build/inputs", axum::routing::post(build_inputs_h))
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
@@ -861,71 +858,6 @@ fn save_bench(dir: &std::path::Path, name: &str, body: &[u8]) -> std::result::Re
     std::fs::write(dir.join(file), body).map_err(BenchSave::Io)
 }
 
-/// The whole build paused (`{"mode": "drain"}`: every Mac's job at its next safe point; `"freeze"`:
-/// frozen at once) or going on (`{"mode": null}`), from the map: an ask to this Mac's agent, which
-/// passes it on to the lead (pipeline::control).
-async fn build_pause_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
-    use pipeline::control::{Mode, Pause};
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
-    let mode = match v.get("mode") {
-        Some(serde_json::Value::String(m)) if m == "drain" => Some(Mode::Drain),
-        Some(serde_json::Value::String(m)) if m == "freeze" => Some(Mode::Freeze),
-        Some(serde_json::Value::Null) => None,
-        _ => return (StatusCode::BAD_REQUEST, "{\"mode\": \"drain\" | \"freeze\" | null}").into_response(),
-    };
-    let pause = mode.map(|m| Pause::new(m, &format!("the map on {}", pipeline::agent::cond::host_name())));
-    let home = s.home.join("agent");
-    match tokio::task::spawn_blocking(move || pipeline::control::request(&home, pause)).await {
-        Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-/// An ask of the pool's lead from the map (docs/pool.md §11): hand it to a member (`{"to": <member
-/// id or host name>}`: "Make this Mac lead" names this Mac's), or have this Mac take it over
-/// (`{"take": true}`) when the lead is out of touch. Never forced: the owner's force and downgrade
-/// come from this Mac's menu or `scenic lead` alone. An ask to this Mac's agent (pipeline::control).
-async fn build_lead_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
-    use pipeline::control::LeadAsk;
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
-    if v.get("force").is_some() || v.get("downgrade").is_some() {
-        return (StatusCode::FORBIDDEN, "forcing a takeover is for this Mac's menu or `scenic lead take` alone").into_response();
-    }
-    let ask = match (v.get("to").and_then(|t| t.as_str()), v.get("take").and_then(|t| t.as_bool())) {
-        (Some(to), None) if !to.is_empty() && to.len() <= 100 => LeadAsk::Give { to: to.to_string() },
-        (None, Some(true)) => LeadAsk::Take { force: false, downgrade: false },
-        _ => return (StatusCode::BAD_REQUEST, "{\"to\": <member>} or {\"take\": true}").into_response(),
-    };
-    let home = s.home.join("agent");
-    let by = format!("the map on {}", pipeline::agent::cond::host_name());
-    match tokio::task::spawn_blocking(move || pipeline::control::request_lead(&home, ask, &by)).await {
-        Ok(Ok(_)) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-/// An acceptance of the gate's held warnings from the map's build panel (docs/inputs.md §4.5):
-/// `{"unit": <unit>, "accept": [<finding id>…]}` or `{"unit": <unit>, "all": true}`, an ask to this
-/// Mac's agent, which writes it (errors have no Accept).
-async fn build_inputs_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
-    let unit = v.get("unit").and_then(|u| u.as_str()).filter(|u| u.len() <= 64 && pipeline::inputs::valid_unit(u));
-    let accept: Vec<String> = v.get("accept").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| pipeline::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
-    let all = v.get("all").and_then(|a| a.as_bool()) == Some(true);
-    let Some(unit) = unit.filter(|_| all || !accept.is_empty()) else {
-        return (StatusCode::BAD_REQUEST, "{\"unit\": <unit>, \"accept\": [<finding id>…]} or {\"unit\": <unit>, \"all\": true}").into_response();
-    };
-    let ask = pipeline::inputs::Ask { unit: unit.to_string(), accept, all, by: format!("the map on {}", pipeline::agent::cond::host_name()), at: pipeline::agent::jobs::now_s(), ..Default::default() };
-    let home = s.home.join("agent");
-    match tokio::task::spawn_blocking(move || pipeline::inputs::ask(&home, &ask)).await {
-        Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
 async fn catalog_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
@@ -1126,28 +1058,6 @@ mod tests {
         assert!(check_root_mirror(true, true, Some(&d.join(".")), d).is_err(), "the same folder, written otherwise");
         assert!(check_root_mirror(true, true, Some(other.path()), d).is_ok());
         assert!(check_root_mirror(false, true, None, d).is_ok() && check_root_mirror(true, false, None, d).is_ok());
-    }
-
-    #[tokio::test]
-    async fn the_maps_lead_asks_reach_the_agent_never_forced() {
-        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let s = test_state(home.path(), nas.path());
-        let ask = |v: serde_json::Value| {
-            let s = s.clone();
-            async move { build_lead_h(State(s), axum::body::Bytes::from(v.to_string())).await.status() }
-        };
-        let agent = home.path().join("agent");
-        assert_eq!(ask(serde_json::json!({ "to": "m-0123456789abcdef" })).await, StatusCode::OK);
-        assert_eq!(pipeline::control::take_lead(&agent).map(|r| r.ask), Some(pipeline::control::LeadAsk::Give { to: "m-0123456789abcdef".into() }));
-        assert_eq!(ask(serde_json::json!({ "take": true })).await, StatusCode::OK);
-        let r = pipeline::control::take_lead(&agent).unwrap();
-        assert!(r.ask == pipeline::control::LeadAsk::Take { force: false, downgrade: false } && r.by.starts_with("the map on"));
-        // Forced or downgraded: this Mac's menu or `scenic lead` alone.
-        assert_eq!(ask(serde_json::json!({ "take": true, "force": true })).await, StatusCode::FORBIDDEN);
-        assert_eq!(ask(serde_json::json!({ "take": true, "downgrade": true })).await, StatusCode::FORBIDDEN);
-        assert_eq!(ask(serde_json::json!({ "to": "" })).await, StatusCode::BAD_REQUEST);
-        assert_eq!(ask(serde_json::json!({ "take": false })).await, StatusCode::BAD_REQUEST);
-        assert!(pipeline::control::take_lead(&agent).is_none());
     }
 
     #[test]

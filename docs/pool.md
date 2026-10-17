@@ -453,7 +453,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced).
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
   [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
-- **Forcing stays on the Mac:** `/api/build/lead` and `/work/lead` refuse forced takeovers.
+- **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.
 - Every control asks the driver (`Driver::hand_to`, `Driver::takeover`) rather than re-checking.
 
 ## 12. Getting there from today
