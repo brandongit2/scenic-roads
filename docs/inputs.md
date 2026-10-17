@@ -17,7 +17,8 @@ a **unit** of the input check. (In the code the mechanism keeps the older word "
 
 Built: the input check and its units for regions, languages, translations, descriptions, heritage
 registers and matches, timetable feeds and static GTFS, elevation datasets (the roads' and the 3D
-terrain's); the accessor guard (§7.1). Planned: the remaining sources (§6.9), the source-name guard
+terrain's), the remaining sources but the buildings' (§6.9); the accessor guard (§7.1). Planned:
+the buildings' sources (§6.9), the source-name guard
 (§7.2). Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md`
 (files), `docs/pool.md` (lead, jobs, journal), `docs/phase5.md` (the heritage chain).
 
@@ -60,7 +61,7 @@ inputs/
     feeds/            source declarations: <feed>.toml (§6.7.1)
     gtfs/             declare: <name>.zip [+ <name>.toml]; todo/ (§6.7.2, §6.7.3)
   elevation/          source declarations: <dataset>.toml, indexes, <dataset>/ (§6.8)
-  sources/            planned: source declarations for everything else (§6.9)
+  sources/            source declarations: <id>.toml, indexes (§6.9)
   keys.env, hold-catalog   not inputs
 ```
 
@@ -1029,28 +1030,76 @@ source) are the terrain's code. The declarations themselves are kept in
   the dataset's position in that list.
 - `[data] valid` (a GeoJSON of where a dataset is trusted) and ETag pins for `range` sources (§5.2).
 
-### 6.9 The remaining sources (planned)
+### 6.9 The remaining sources
 
-**Kind:** source declarations. **Drop box:** `inputs/sources/`, `<id>.toml` each (§5.2). Each source
-the build still names in code becomes a declaration, its proof the consuming step's outputs
-unchanged:
+**Kind:** source declarations. **Drop box:** `inputs/sources/`: `<id>.toml` each, and a source's
+index (`<name>.geojson`) beside it. Code: crate::inputs::sources (the check, and `Sources`, the
+accepted declarations by role, which the steps read). Built for the sources in the table marked
+built (#145); the declarations themselves are kept in `producers/sources/`, with the producers of
+their indexes.
 
-| Source | In code today | Declaration |
+**Shape:** a description (§5.1) and `[data]`:
+
+| Field | Meaning |
+|---|---|
+| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill` (and `buildings`, `building-heights`, planned) |
+| `format` | one of its role's: `geotiff`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet` |
+| `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
+| `version` | the pinned release |
+| `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
+| `[data.params]` | the format's own fields (a legend, a box, a layer and the values kept) |
+
+**Checks.** Errors: a file not of the shape (`src-shape`); a description field wrong (`src-desc`);
+a declaration's fields wrong: an unknown role, a format not its role's, not exactly one way of
+naming where it is, a placeholder its role doesn't fill, an unknown `refresh` (`src-decl`); an
+unparsable index (`src-index`); an index named that isn't there (`src-missing`); two declarations
+of one role (`src-role`). Warning: an index no declaration names (`src-orphan`). Derived: each
+description's extent for the credits (§4.8), the world or its territory's polygons' boxes in the
+newest pass's outlines.
+
+**How the steps read them.** Rust steps through `inputs::sources::open`/`read` (one read per
+accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
+land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
+(`trees::RunSources`, passed to the trees program, `trees.py` and `leaftype.py` as `--sources`);
+Python steps by role from the file `SCENIC_SOURCES` names (`dem/declared.py`, written by
+`inputs::sources::write_for_python`). The jobs that read them (the units, tree cover, items, the
+heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
+and the water, terrain and catalog that read it, wait too (`lakefill::run::planned_source`).
+
+**Keys.** A key names a declared source only where it named the source in code before: the lake
+fill's key names its zips' pin, and the declaration only once it names other than the code had
+(`Source::key_extra` against `agent::rekey::declared_before::LAKE_FILL`, the staged declaration's
+digest). The land cover, canopy and leaf types never entered a key (the units' grids are "from fixed
+datasets", §6 of plan.md); the Wikimedia sources are asked live. So nothing is built again for the
+move. Proofs: `landcover::tests::the_declared_source_is_what_the_code_read` (the same URLs and class
+table), `trees::tests::the_declared_squares_are_where_the_code_read_them` (every indexed canopy
+URL one the code asked for; the leaf sources, boxes and zip member the same),
+`inputs::sources::tests::the_python_steps_sources` (the Python steps' URLs the same),
+`lakefill::run::tests::the_declared_source_fills_as_the_code_did`.
+
+| Source | Outcome | Declaration |
 |---|---|---|
-| OSM planet | `tools/nas/fetch-planet.sh` (mirrors) | `format = "planet-pbf"`, mirrors as `urls` |
-| Planetiler and its data | `sources/basemap/`, `water::PLANETILER_VERSION` | `jar`, Natural Earth, water polygons, lake centrelines, pinned |
-| ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role (crate::inputs::sources) | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
-| Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator's `lat=-0.0` read there) | `geotiff` with an index: a file's `url`, `kind` and 10° square |
-| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`dem/leaftype.py`, given the sources) | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
-| Overture buildings | `buildtiles::RELEASE`, `dem/buildings.py`, `dem/bldfetch.py` | `geoparquet`, version, bucket prefix; `estimated_sources` replacing `bld/fill.rs`'s `ESTIMATES` |
-| GHSL building heights | `bld/sources.rs`, `dem/bldfetch.py` | `geotiff`, its grid as an index |
-| Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikidata-query-service.toml`, `wikipedia-api.toml`, the `wikidata`, `wikidata-live` and `wikipedia` roles, read by the Python steps by role (`dem/declared.py`) | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
+| OSM planet | kept in code: `tools/nas/fetch-planet.sh` runs on the NAS under DSM's Task Scheduler, outside the app, and can't read the accepted version through the accessor (§7.1) | — |
+| Planetiler and its data | kept in code: `water::PLANETILER_VERSION` is a code contract (the water layer's simplification was checked against that version's z14 water, `osmpass::check_planetiler`), and Natural Earth, the water polygons and lake centrelines are the jar's own downloads (`--download`), named by it, not by the app | — |
+| ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
+| Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator row's `lat=-0.0` read there); a file the index doesn't list is none there | `geotiff` with an index: a file's `url`, `kind` and 10° square |
+| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`dem/leaftype.py`, given the sources), since the coverage decides which | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
+| Overture buildings | planned: still `buildtiles::RELEASE`, `dem/buildings.py`, `dem/bldfetch.py`; its release names the records' logical names and stores (`sources/buildings/<release>/`, `sources/overture/<release>/`), so every key path (the units', the plan's, the old schemes') takes the declared release | `geoparquet`, version, bucket; `bld/fill.rs`'s `ESTIMATES` stays the fill's rule (its tables were fitted with it) |
+| GHSL building heights | planned with Overture: still `bld/sources.rs`'s `GHSL_DIR`, `dem/bldfetch.py`, `dem/bldprep.py` | `zip-geotiff` by an index of its tiles from the folder's listing |
+| Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikidata-query-service.toml`, `wikipedia-api.toml`, the `wikidata`, `wikidata-live` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
-| Geoid grids | none yet | `geoid-grid`, pinned (§6.8 step 3) |
+| Geoid grids | none yet: no step reads them (§6.8 step 3) | `geoid-grid`, pinned |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
-Kept in code: fonts (`scripts/fonts.sh`, the app's own assets). GEBCO and NCEI's bathymetry on the
-NAS get declarations once a step reads them.
+Also kept: fonts (`scripts/fonts.sh`, the app's own assets). GEBCO and NCEI's bathymetry on the NAS
+get declarations once a step reads them.
+
+**The rollout:** first both Macs run the app that reads the declarations (until a version is
+accepted, the units, tree cover, items, heritage chain and lake fill wait, and say so); then CanVec's
+zips are copied with their times kept (`cp -p`, so the fill's pin and key are unchanged) from
+`sources/canvec/50k/` to `sources/fetched/canvec-lakes/`, the old folder deleted later; then the
+files of `producers/sources/` (the `.toml` declarations and `canopy-squares.geojson`) are dropped
+into `inputs/sources/`. Once accepted, everything goes on under the keys it had.
 
 ## 7. The guards
 
@@ -1113,13 +1162,11 @@ agent) stay.
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
   credit in `rules::CREDITS` the base's declaration takes over once accepted; the densification
   boxes in `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).
-- **Trees and land cover:** `landcover.rs`'s URL and tile naming (D); `trees/mod.rs`'s `CHM10_URL`,
-  its naming (the `lat=-0.0` quirk) and resolutions (D, read from data); `dem/leaftype.py`'s sources
-  (P and D); `dem/trees.py`'s Python fallback (D, or deleted with it).
+- **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data);
+  `coord::WEB_HOSTS`' land-cover host (derived from the declarations, §5.2).
 - **Buildings:** `buildtiles::RELEASE` and stores, `bld/sources.rs`'s `GHSL_DIR`, `bld/fill.rs`'s
   `ESTIMATES`, `bld/prep.rs`'s `ghsl` meta, `dem/buildings.py`, `dem/bldfetch.py` (D);
   `dem/bldmeasure.py` (P).
-- **Basemap and others:** `tools/nas/fetch-planet.sh`, `water::PLANETILER_VERSION` and the jar's
-  path, `dem/pageviews.py`'s `DUMP`, `dem/heritagewd.py`'s `WDQS` and Wikipedia API (D).
+- **Others:** `dem/budget.py`'s and `budget`'s metered hosts (the polite-use budget, by host).
 - **Kept by design:** `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not
   change, docs/phase5.md, Ids); `pipeline::legacy` (a name for live code).
