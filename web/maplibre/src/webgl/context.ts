@@ -55,6 +55,17 @@ export class Context {
     cullFaceSide: CullFaceSide;
     frontFace: FrontFace;
     program: ProgramValue;
+    /**
+     * Scenic Roads: KHR_parallel_shader_compile while programs are linked in the background
+     * (Program.ready; by default in Safari, where it has the extension: setAsyncPrograms), else null.
+     */
+    asyncPrograms: KHR_parallel_shader_compile | null;
+    /** Scenic Roads: the draws skipped this frame for programs still linking (Program.ready). */
+    pendingPrograms: number;
+    /** Scenic Roads: the frame's number (Painter#render), for linkComplete. */
+    programFrame: number;
+    /** Scenic Roads: the last frame a link was found not complete (linkComplete). */
+    _linkingSeenFrame: number;
     activeTexture: ActiveTextureUnit;
     viewport: Viewport;
     bindFramebuffer: BindFramebuffer;
@@ -121,12 +132,43 @@ export class Context {
         gl.getExtension('EXT_color_buffer_half_float');
         gl.getExtension('EXT_color_buffer_float');
 
+        this.pendingPrograms = 0;
+        this.programFrame = 0;
+        this._linkingSeenFrame = -1;
+        this.setAsyncPrograms(typeof navigator !== 'undefined' && /Apple/.test(navigator.vendor ?? ''));
+
         this.boundUniformBuffers = [];
         this.projectionUniformBuffer = createProjectionUniformBuffer(this);
         this.keyedProjectionUniformBuffers = new Map();
         this.freeProjectionUniformBuffers = [];
         this.terrainUniformBuffer = createTerrainUniformBuffer(this);
         this.frameUniformBuffer = createFrameUniformBuffer(this);
+    }
+
+    /**
+     * Scenic Roads: programs made from now on are linked in the background (when the browser has
+     * KHR_parallel_shader_compile) or, off, waited for as they're made.
+     */
+    setAsyncPrograms(on: boolean): void {
+        this.asyncPrograms = on ? this.gl.getExtension('KHR_parallel_shader_compile') : null;
+    }
+
+    /**
+     * Scenic Roads: whether a program's link is complete (always, without asyncPrograms); if not,
+     * counted in pendingPrograms. Each question waits for the GPU process to take the calls queued
+     * before it (Safari), so none is asked in the frame the program was made, and none after one
+     * that found a link not complete in this frame (links complete about in the order they were
+     * started): those count as not complete.
+     */
+    linkComplete(program: WebGLProgram, madeInFrame: number): boolean {
+        const ext = this.asyncPrograms;
+        if (!ext) return true;
+        if (madeInFrame !== this.programFrame && this._linkingSeenFrame !== this.programFrame) {
+            if (this.gl.getProgramParameter(program, ext.COMPLETION_STATUS_KHR)) return true;
+            this._linkingSeenFrame = this.programFrame;
+        }
+        this.pendingPrograms++;
+        return false;
     }
 
     setDefault(): void {

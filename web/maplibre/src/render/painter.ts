@@ -80,6 +80,13 @@ export type RTTObject = {
 };
 
 /**
+ * Scenic Roads: the programs always waited for as they're made, never linked in the background
+ * (Context.asyncPrograms): what they draw outlives the frame (the tiles' stencil masks, the
+ * hill-shading prepared once per tile) or the frame's other draws depend on it (the depth pass).
+ */
+const BLOCKING_PROGRAMS = new Set(['clippingMask', 'depth', 'hillshadePrepare', 'terrainDepth']);
+
+/**
  * @internal
  * Initialize a new painter object.
  */
@@ -525,6 +532,8 @@ export class Painter {
         this.glyphManager = style.glyphManager;
 
         this.symbolFadeChange = style.placement.symbolFadeChange(now());
+        this.context.pendingPrograms = 0;
+        this.context.programFrame++;
         updateFrameUniformBuffer(this.context.frameUniformBuffer, this);
         this._prepareSceneTarget(style);
 
@@ -917,7 +926,8 @@ export class Painter {
             useTerrain,
             projectionPrelude,
             projectionDefine,
-            defines
+            defines,
+            BLOCKING_PROGRAMS.has(name)
         );
         return this.cache[key];
     }

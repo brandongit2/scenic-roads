@@ -286,6 +286,7 @@ export class RenderToTexture {
                 // Cache hit: this tile already has a RTT object for this stack from a previous frame.
                 if (tile.getRTT(stack)) continue;
                 const obj = tile.acquireRTT(painter, stack, tile.rttTargetSize ?? this.rttSize);
+                const pendingBefore = painter.context.pendingPrograms;
                 painter.bindRTT(obj);
                 painter.context.clear({color: Color.transparent, stencil: 0});
                 painter.currentStencilSource = undefined;
@@ -300,6 +301,12 @@ export class RenderToTexture {
                     else if (isCustomStyleLayer(layer)) tile.rttFingerprint[customDrapeKey(layer)] = this._rttFingerprints[customDrapeKey(layer)][tile.tileID.key];
                 }
                 obj.texture.generateMipmap();
+                // Scenic Roads: a texture missing a draw whose program was still linking is drawn
+                // again (Program.ready).
+                if (painter.context.pendingPrograms > pendingBefore) {
+                    this.terrain.tileManager._dirtyRTT.add(tile.tileID.key);
+                    this.needsFollowUpFrame = true;
+                }
             }
             painter.nextStencilID = mainStencilID;
             painter.currentStencilSource = undefined;

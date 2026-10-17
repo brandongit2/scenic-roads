@@ -238,6 +238,31 @@ describe('render to texture', () => {
         expect(layersDrawn).toBe(1);
     });
 
+    test('a texture missing a draw whose program was still linking is drawn again next frame', () => {
+        style._order = ['maine-fill', 'maine-symbol'];
+        rtt.prepareForRender(style, 0);
+        const renderContext = createRenderContext(painter.transform, undefined, terrain);
+        const spy = vi.spyOn(painter, 'renderLayer').mockImplementationOnce(() => { painter.context.pendingPrograms++; });
+        painter.context.pendingPrograms = 0;
+        terrain.tileManager._tiles = {[tile.tileID.key]: tile};
+        rtt.renderLayer(fillLayer, renderContext);
+        rtt.renderLayer(symbolLayer, renderContext);
+        expect(terrain.tileManager._dirtyRTT.has(tile.tileID.key)).toBe(true);
+        expect(rtt.needsFollowUpFrame).toBe(true);
+
+        // (the next frame: dropped, drawn again with the program linked, kept)
+        rtt.prepareForRender(style, 0);
+        expect(tile.getRTT(0)).toBeUndefined();
+        rtt.renderLayer(fillLayer, renderContext);
+        rtt.renderLayer(symbolLayer, renderContext);
+        expect(terrain.tileManager._dirtyRTT.size).toBe(0);
+        expect(rtt.needsFollowUpFrame).toBe(false);
+        expect(tile.getRTT(0)).toBeDefined();
+        spy.mockRestore();
+        painter.context.pendingPrograms = 0;
+        terrain.tileManager._tiles = {};
+    });
+
     test('render symbol between rtt layers', () => {
         style._order = ['maine-background', 'maine-fill', 'maine-raster', 'maine-hillshade', 'maine-symbol', 'maine-line', 'maine-symbol'];
         rtt.prepareForRender(style, 0);
