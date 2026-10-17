@@ -1,4 +1,7 @@
-import {ensureError, extend, pick} from '../util/util.ts';
+import {arrayBufferToImageBitmap, ensureError, extend, isSafari, pick} from '../util/util.ts';
+import {getArrayBuffer, type GetResourceResponse} from '../util/ajax.ts';
+import {throwIfAborted} from '../util/abort_error.ts';
+import {pngToRGBA} from '../util/png_rgba.ts';
 import {ImageRequest} from '../util/image_request.ts';
 import {ResourceType} from '../util/request_manager.ts';
 import {ErrorEvent, Evented} from '../util/evented.ts';
@@ -202,20 +205,36 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
         return !this.tileBounds || this.tileBounds.contains(tileID.canonical);
     }
 
+    /** Scenic Roads: a tile's image as bytes (png_rgba.ts), else as the browser decodes it. */
+    async _loadBytes(url: string, abortController: AbortController, premultiply: boolean, imageBitmapOptions?: ImageBitmapOptions): Promise<GetResourceResponse<RGBAImage | ImageBitmap | HTMLImageElement | null>> {
+        const params = await this.map._requestManager.transformRequest(url, ResourceType.Tile);
+        throwIfAborted(abortController.signal);
+        params.headers ||= {};
+        params.headers.accept = 'image/webp,*/*';
+        const r = await getArrayBuffer(params, abortController);
+        if (!r.data || r.data.byteLength === 0) return {data: null, cacheControl: r.cacheControl, expires: r.expires};
+        const img = await pngToRGBA(r.data, premultiply) ?? await arrayBufferToImageBitmap(r.data, imageBitmapOptions);
+        return {data: img, cacheControl: r.cacheControl, expires: r.expires};
+    }
+
     async loadTile(tile: Tile): Promise<void> {
         const url = tile.tileID.canonical.url(this.tiles, this.map.getPixelRatio(), this.scheme);
         const premultiply = this._premultiplyAlpha;
         const imageBitmapOptions = premultiply ? undefined : {premultiplyAlpha: 'none'} as const;
         tile.abortController = new AbortController();
         try {
-            const response = await ImageRequest.transformAndGetImage(
-                this.map._requestManager,
-                url,
-                ResourceType.Tile,
-                tile.abortController,
-                this.map._refreshExpiredTiles,
-                imageBitmapOptions
-            );
+            // Scenic Roads: in Safari the tile's bytes, decoded on a worker when it's a plain PNG
+            // (png_rgba.ts), the bitmap only otherwise.
+            const response = isSafari(globalThis) && this.type === 'raster' ?
+                await this._loadBytes(url, tile.abortController, premultiply, imageBitmapOptions) :
+                await ImageRequest.transformAndGetImage(
+                    this.map._requestManager,
+                    url,
+                    ResourceType.Tile,
+                    tile.abortController,
+                    this.map._refreshExpiredTiles,
+                    imageBitmapOptions
+                );
             delete tile.abortController;
             if (tile.aborted) {
                 tile.state = 'unloaded';
@@ -231,11 +250,13 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
                 // it is drawn as fully transparent, which keeps it distinct from a missing
                 // tile (404), where the parent tile shows through instead.
                 const img = response.data ?? new RGBAImage({width: 1, height: 1}, new Uint8Array(4));
+                // (bytes from png_rgba.ts are premultiplied already when asked)
+                const pre = premultiply && !(img instanceof RGBAImage && response.data);
                 tile.texture = this.map.painter.getTileTexture(img.width);
                 if (tile.texture) {
-                    tile.texture.update(img, {useMipmap: true, premultiply});
+                    tile.texture.update(img, {useMipmap: true, premultiply: pre});
                 } else {
-                    tile.texture = new Texture(context, img, gl.RGBA, {useMipmap: true, premultiply});
+                    tile.texture = new Texture(context, img, gl.RGBA, {useMipmap: true, premultiply: pre});
                     tile.texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_NEAREST);
                 }
                 tile.state = 'loaded';
