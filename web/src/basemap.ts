@@ -398,8 +398,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
     encoding: 'terrarium' as const,
     tileSize: 256,
     maxzoom: 12,
-    // (North of 60°N the terrain is Copernicus DEM GLO-30's: its licence asks for this notice.)
-    attribution: 'Terrain: Mapzen/AWS Terrain Tiles · produced using Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA',
   };
   const empty = { type: 'geojson' as const, data: { type: 'FeatureCollection' as const, features: [] } };
   // Point overlays (heritage sites, stops & sights): vector tiles the landmarks worker makes from
@@ -458,7 +456,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         type: 'vector',
         tiles: [tiles.base],
         maxzoom: BASEMAP_MAXZOOM,
-        attribution: '© OpenStreetMap contributors · OpenMapTiles · NRCan HRDEM/MRDEM · USGS 3DEP',
       },
       ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [tiles.lbl], maxzoom: 12, attribution: '' } } : {}),
       dem,
