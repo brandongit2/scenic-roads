@@ -4383,11 +4383,11 @@ impl Agent {
             // a new app), the jobs that read the fill wait (`hold_for_lakefill`: the water, the
             // terrain's water digests, the catalog), so the pass's water, terrain and map all have
             // the new fill, or after that many failures all go without it. While the source's folder
-            // can't be read, they wait too.)
-            match crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)) {
+            // can't be read, or while its source isn't declared, they wait too.)
+            match crate::lakefill::run::planned_source(root, &manifest) {
                 Err(e) => {
                     held.lakefill = true;
-                    waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: format!("its source's folder can't be read now ({e})") });
+                    waiting.push(Waiting { step: Some("lakefill".into()), what: "Filling in Canada's lakes missing from OpenStreetMap".into(), why: e });
                 }
                 Ok(source) => {
                     let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
@@ -5044,7 +5044,7 @@ impl Agent {
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
-            crate::lakefill::run::source_pin(&root.join(crate::lakefill::run::SOURCE_DIR)).map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
+            crate::lakefill::run::planned_source(root, &manifest).map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
             build::water_work(&date, &manifest, &keys).is_some(),
         ]
         .iter()

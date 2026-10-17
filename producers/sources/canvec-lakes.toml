@@ -1,0 +1,26 @@
+name = "CanVec 1:50,000 Hydro features, 2018 (the provinces' and territories' shapefile zips)"
+what = "Lakes missing from OpenStreetMap in parts of Canada"
+credit = "Natural Resources Canada, CanVec 1:50,000 Hydro features (waterbody_2), 2018"
+licence = "OGL-Canada-2.0"
+licence_url = "https://open.canada.ca/en/open-government-licence-canada"
+source = "https://open.canada.ca/data/en/dataset/8ba2aa2a-7bb9-4448-b4d7-f164409fe056"
+territory = ["CA"]
+notes = "Downloaded by hand (the server's robots.txt bars /pub to programs) from the CanVec series' shapefiles, the 50K Hydro zips, and kept in sources/fetched/canvec-lakes/; the lake fill reads them where they lie (crate::lakefill)."
+
+[data]
+role = "lake-fill"
+format = "zip-shapefile"
+url = "https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/canvec/shp/"
+version = "2018"
+refresh = "pinned"
+
+[data.params]
+layer = "waterbody_2"
+# The water bodies kept, by `definit`: 83 Lake, 87 Reservoir, 86 Pond, 20 Not Identified (most
+# small lakes and ponds).
+field = "definit"
+keep = ["20", "83", "86", "87"]
+# Those water only some of the time: drawn as water, not flattened.
+intermittent = ["perm_en", "Intermittent"]
+# A sheet is filled only where under this share of the source's lakes in it touch OSM's water.
+confirm = 0.5

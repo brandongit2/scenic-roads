@@ -7,14 +7,15 @@
 //!
 //! `lakefill gaps <sheets.csv> <out.csv>`: the survey's gap sheets (`run::gaps`).
 //!
-//! `lakefill fill --basemap <pmtiles> --sheets <gap-sheets.csv> --source <dir|zip>… [--band w,e]
+//! `lakefill fill --basemap <pmtiles> --sheets <gap-sheets.csv> --source <dir|zip>… --declaration <toml> [--band w,e]
 //! --out <dir>`: the fill of those sheets from CanVec's shapefiles (`run::fill`, as
-//! `run::FillOpts::canvec`; `--no-complete-halves`, `--tol <m>`, `--confirm <share>` change its
+//! `run::FillOpts::declared`, from the lake-fill source's declaration, producers/sources/canvec-lakes.toml;
+//! `--no-complete-halves`, `--tol <m>`, `--confirm <share>` change its
 //! rules), written to `<dir>` content-named with `report.json`.
 //!
 //! `lakefill merge --out <dir> <run dir>…`: bands' fills as one (`run::merge`).
 //!
-//! `lakefill all --basemap <pmtiles> --outlines <sect> --source <dir> --work <dir>`: all of it, as
+//! `lakefill all --basemap <pmtiles> --outlines <sect> --source <dir> --declaration <toml> --work <dir>`: all of it, as
 //! the step runs it (`run::all`).
 //!
 //! `lakefill catalog-add --root <test root> --fill <lakefill.<hash>.sect>`: a test root's newest
@@ -54,7 +55,7 @@ fn main() -> Result<()> {
         }
         Some("all") => {
             let p = |k: &str| opt(&a, k).map(std::path::PathBuf::from).with_context(|| k.to_string());
-            let f = run::all(&p("--basemap")?, &p("--outlines")?, &p("--source")?, &p("--work")?, &|k| eprintln!("lakefill: part {k}"), &|_, _| {})?;
+            let f = run::all(&p("--basemap")?, &p("--outlines")?, &p("--source")?, &declaration(&a)?, &p("--work")?, &|k| eprintln!("lakefill: part {k}"), &|_, _| {})?;
             eprintln!("lakefill: {}", f.display());
             Ok(())
         }
@@ -139,12 +140,21 @@ fn opts(a: &[String], k: &str) -> Vec<String> {
     a.windows(2).filter(|w| w[0] == k).map(|w| w[1].clone()).collect()
 }
 
+/// The lake-fill source's declaration (`--declaration <file.toml>`: one as dropped into
+/// inputs/sources/, producers/sources/canvec-lakes.toml), as the step reads it accepted.
+fn declaration(a: &[String]) -> Result<pipeline::inputs::sources::Source> {
+    let p = std::path::PathBuf::from(opt(a, "--declaration").context("--declaration <file.toml>: the lake-fill source's declaration")?);
+    let d = pipeline::inputs::sources::parse(&std::fs::read(&p).with_context(|| p.display().to_string())?).map_err(|why| anyhow::anyhow!("{}: {}", p.display(), why.join("; ")))?;
+    let id = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(pipeline::inputs::sources::Source { id, data: d.data, keyed: String::new(), index: Vec::new() })
+}
+
 fn fill(a: &[String]) -> Result<()> {
     let base = std::path::PathBuf::from(opt(a, "--basemap").context("--basemap")?);
     let gaps = run::read_gaps_csv(&std::fs::read_to_string(opt(a, "--sheets").context("--sheets")?)?)?;
     let srcs = opts(a, "--source");
     anyhow::ensure!(!srcs.is_empty(), "--source");
-    let mut o = run::FillOpts::canvec(&base, Path::new(&srcs[0]));
+    let mut o = run::FillOpts::declared(&base, Path::new(&srcs[0]), &declaration(a)?)?;
     o.sources = srcs.iter().map(std::path::PathBuf::from).collect();
     if let Some(t) = opt(a, "--tol") {
         o.rules.tol_m = t.parse()?;

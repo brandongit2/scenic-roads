@@ -265,26 +265,56 @@ pub struct FillOpts {
 }
 
 impl FillOpts {
-    /// CanVec 1:50,000 Hydro's (the provinces' shapefile zips): `waterbody_2`, its `definit` 83 Lake,
-    /// 87 Reservoir, 86 Pond and 20 Not Identified (most small lakes and ponds), `perm_en`
-    /// Intermittent ones drawn as water but not flattened, sheets confirmed at a half.
-    pub fn canvec(basemap: &Path, sources: &Path) -> FillOpts {
-        FillOpts {
+    /// The declared lake-fill source's (crate::inputs::sources, the `lake-fill` role: CanVec
+    /// 1:50,000 Hydro, the provinces' shapefile zips): its layer, the field and its values kept
+    /// (`params.layer`, `field`, `keep`), the field and value of those water only some of the time
+    /// (`params.intermittent`: drawn as water, not flattened), and the share a sheet is confirmed at
+    /// (`params.confirm`); its zips under `sources`.
+    pub fn declared(basemap: &Path, sources: &Path, s: &crate::inputs::sources::Source) -> Result<FillOpts> {
+        let intermittent = match s.data.params.get("intermittent") {
+            None => None,
+            Some(_) => {
+                let v = s.param_strs("intermittent")?;
+                anyhow::ensure!(v.len() == 2, "{}: `params.intermittent` is a field and its value", s.id);
+                Some((v[0].clone(), v[1].clone()))
+            }
+        };
+        let confirm = match s.data.params.get("confirm") {
+            None => None,
+            Some(c) => Some(c.as_f64().with_context(|| format!("{}: `params.confirm` isn't a number", s.id))?),
+        };
+        Ok(FillOpts {
             basemap: basemap.to_path_buf(),
             sources: vec![sources.to_path_buf()],
-            field: "definit".into(),
-            keep: ["20", "83", "86", "87"].map(String::from).to_vec(),
-            layer: "waterbody_2".into(),
-            intermittent: Some(("perm_en".into(), "Intermittent".into())),
+            field: s.param_str("field")?.into(),
+            keep: s.param_strs("keep")?,
+            layer: s.param_str("layer")?.into(),
+            intermittent,
             rules: super::Rules::default(),
-            confirm: Some(0.5),
-        }
+            confirm,
+        })
     }
 }
 
-/// Where the source's zips are under the project root (CanVec 1:50,000 Hydro, the provinces' and
-/// territories' shapefile zips, downloaded by hand: docs/plan.md §6 Water).
-pub const SOURCE_DIR: &str = "sources/canvec/50k";
+/// The lake fill's source as its key names it, under the project root `root` and records `m`: its
+/// zips' pin (`source_pin` of `source_dir`), and the declaration (`Source::key_extra`: nothing while
+/// it names what the code read, agent::rekey::declared_before::LAKE_FILL). Ok(None): no zips (no
+/// fill made); Err: not declared, or not to be read now (the step and what reads its fill wait).
+pub fn planned_source(root: &Path, m: &std::collections::BTreeMap<String, String>) -> std::result::Result<Option<String>, String> {
+    let s = crate::inputs::sources::open(root, m).map_err(|e| format!("the declared sources can't be read now ({e:#})"))?.ok_or("the source declarations have no accepted version yet")?;
+    let src = s.role(crate::inputs::sources::LAKE_FILL).map_err(|e| format!("{e:#}"))?;
+    let pin = source_pin(&root.join(source_dir(src))).map_err(|e| format!("its source's folder can't be read now ({e})"))?;
+    Ok(pin.map(|p| match src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL) {
+        Some(x) => format!("{p}\n{x}"),
+        None => p,
+    }))
+}
+
+/// Where the declared source's zips are kept under the project root: `sources/fetched/<id>/` (by
+/// hand: they're downloaded from its `url`, docs/inputs.md §6.9).
+pub fn source_dir(s: &crate::inputs::sources::Source) -> String {
+    format!("sources/fetched/{}", s.id)
+}
 
 /// The source's files under `dir` as the step's key names them: each zip's name, size and time
 /// (a zip replaced by one of the same size is a new source), in order; None when there's no such
@@ -315,11 +345,11 @@ pub fn source_pin(dir: &Path) -> std::io::Result<Option<String>> {
 pub const BANDS: [(f64, f64); 6] = [(-142.0, -125.0), (-125.0, -110.0), (-110.0, -100.0), (-100.0, -85.0), (-85.0, -70.0), (-70.0, -50.0)];
 
 /// The whole fill, as the `lakefill` step makes it: the survey of the basemap `basemap` over the
-/// outlines `outlines`, its gap sheets, and the fill of them from CanVec's zips under `sources`
-/// (`FillOpts::canvec`) band by band (`BANDS`), merged; in `work` (a local folder: the survey, each
-/// band's run and the merged fill with its report). `part` is told each part as it starts (0 the
+/// outlines `outlines`, its gap sheets, and the fill of them from the declared lake-fill source
+/// `decl`'s zips under `sources` (`FillOpts::declared`) band by band (`BANDS`), merged; in `work` (a
+/// local folder: the survey, each band's run and the merged fill with its report). `part` is told each part as it starts (0 the
 /// survey, then each band, then the merge); `said`, the survey's progress. Returns the fill's file.
-pub fn all(basemap: &Path, outlines: &Path, sources: &Path, work: &Path, part: &dyn Fn(usize), said: &(dyn Fn(u64, u64) + Sync)) -> Result<PathBuf> {
+pub fn all(basemap: &Path, outlines: &Path, sources: &Path, decl: &crate::inputs::sources::Source, work: &Path, part: &dyn Fn(usize), said: &(dyn Fn(u64, u64) + Sync)) -> Result<PathBuf> {
     std::fs::create_dir_all(work)?;
     part(0);
     let rows = survey(basemap, outlines, said)?;
@@ -328,7 +358,7 @@ pub fn all(basemap: &Path, outlines: &Path, sources: &Path, work: &Path, part: &
     std::fs::write(work.join("gap-sheets.csv"), gaps_csv(&g))?;
     let keys: HashSet<nts::Key> = g.iter().map(|v| v.row.key()).collect();
     eprintln!("lakefill: {} of {} sheets are gaps", keys.len(), rows.len());
-    let o = FillOpts::canvec(basemap, sources);
+    let o = FillOpts::declared(basemap, sources, decl)?;
     let mut runs = Vec::new();
     for (k, &b) in BANDS.iter().enumerate() {
         part(1 + k);
@@ -839,6 +869,40 @@ pub fn merge(runs: &[PathBuf], out: &Path) -> Result<(PathBuf, serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The declared lake-fill source (producers/sources/canvec-lakes.toml) fills by what the code
+    /// had before it was declared (CanVec's `waterbody_2`, `definit` 20, 83, 86 and 87, `perm_en`
+    /// Intermittent, sheets confirmed at a half), so the fill is the same; and while it's accepted
+    /// as staged, the step's key is as it was (its zips' pin alone).
+    #[test]
+    fn the_declared_source_fills_as_the_code_did() {
+        let s = crate::inputs::sources::staged();
+        let src = s.role(crate::inputs::sources::LAKE_FILL).unwrap();
+        let o = FillOpts::declared(Path::new("b.pmtiles"), Path::new("zips"), src).unwrap();
+        assert_eq!((o.layer.as_str(), o.field.as_str(), o.keep.clone(), o.intermittent.clone(), o.confirm), ("waterbody_2", "definit", ["20", "83", "86", "87"].map(String::from).to_vec(), Some(("perm_en".to_string(), "Intermittent".to_string())), Some(0.5)));
+        assert_eq!(serde_json::to_value(o.rules).unwrap(), serde_json::to_value(super::super::Rules::default()).unwrap());
+        assert_eq!(source_dir(src), "sources/fetched/canvec-lakes");
+        assert_eq!(src.digest(), crate::agent::rekey::declared_before::LAKE_FILL);
+        assert_eq!(src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL), None);
+        let mut other = src.clone();
+        other.data.params.insert("keep".into(), serde_json::json!(["83"]));
+        assert_eq!(other.key_extra(crate::agent::rekey::declared_before::LAKE_FILL), Some(format!("source canvec-lakes {}", src.keyed)));
+    }
+
+    /// The step's key names the declared source's zips by their pin alone, as it did before the
+    /// source was declared (agent::build::lakefill_work), and its folder is the declared one.
+    #[test]
+    fn the_lake_fills_source_as_planned() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = std::collections::BTreeMap::new();
+        assert!(planned_source(d.path(), &m).unwrap_err().contains("no accepted version"));
+        crate::inputs::sources::accept_fixture(d.path(), &mut m);
+        assert_eq!(planned_source(d.path(), &m), Ok(None), "no zips: no fill");
+        let z = d.path().join("sources/fetched/canvec-lakes");
+        std::fs::create_dir_all(&z).unwrap();
+        std::fs::write(z.join("canvec_50K_AB_Hydro_shp.zip"), b"zip").unwrap();
+        assert_eq!(planned_source(d.path(), &m).unwrap(), source_pin(&z).unwrap());
+    }
 
     /// A survey row for the 0.5° × 0.25° sheet at column `c`, row `r` (south-west at 60°W + c/2,
     /// 50°N + r/4), all land, with `lakes`.

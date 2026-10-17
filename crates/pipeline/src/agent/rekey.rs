@@ -554,6 +554,17 @@ const NORTH_CELLS_BEFORE: &str = "bc9f2dd40c4e2736";
 #[cfg(test)]
 const NORTH_CELLS_BEFORE: &str = "a1b550d6992e52bc";
 
+/// What the steps' keys named of the sources declared in `inputs/sources/` (#145) while they were in
+/// code: the digest (`Source::digest`) of each source's declaration as staged for the switch
+/// (producers/sources/), whose fields are what the code had (each consumer's tests). While the
+/// accepted declaration has that digest a key is what it was (`Source::key_part`, `key_extra`), so
+/// nothing is made again for the move; a declaration that names anything else is a new key.
+pub mod declared_before {
+    /// The lake fill's (canvec-lakes.toml): its key named the zips (their pin, `run::source_pin`),
+    /// not the layer and values the fill keeps.
+    pub const LAKE_FILL: &str = "25eb06ca157bccd7";
+}
+
 /// The digest of a set of 1° cells (south-west corners): "lat lon" a line, sorted.
 pub fn cells_digest<'a>(cells: impl Iterator<Item = &'a (i32, i32)>) -> String {
     let mut v: Vec<&(i32, i32)> = cells.collect();

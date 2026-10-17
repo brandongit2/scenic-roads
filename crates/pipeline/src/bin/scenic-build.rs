@@ -4378,9 +4378,9 @@ impl Drop for WorkDir {
 }
 
 /// The lakes filled from Canada's own data (pipeline::lakefill::run::all): the pass's basemap
-/// surveyed for the NTS sheets whose small lakes OSM lacks, those filled from CanVec's zips (the
-/// NAS's `sources/canvec/50k/`, read in place) band by band in this Mac's scratch, the fill put in
-/// the build as `work/lakefill/<date>` (one file), the other passes' removed. `--pass <date>`.
+/// surveyed for the NTS sheets whose small lakes OSM lacks, those filled from the declared lake-fill
+/// source's zips (`sources/fetched/<id>/`, read in place) band by band in this Mac's scratch, the
+/// fill put in the build as `work/lakefill/<date>` (one file), the other passes' removed. `--pass <date>`.
 fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let t = std::time::Instant::now();
     let date = match opt(args, "--pass") {
@@ -4389,7 +4389,9 @@ fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     };
     let basemap = out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?);
     let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
-    let source = out.root().join(pipeline::lakefill::run::SOURCE_DIR);
+    let decl = pipeline::inputs::sources::read(out.root(), &out.manifest)?;
+    let decl = decl.role(pipeline::inputs::sources::LAKE_FILL)?;
+    let source = out.root().join(pipeline::lakefill::run::source_dir(decl));
     let work = WorkDir::new(scratch.join("lakefill"))?;
     let mut names = vec!["Finding the map sheets OpenStreetMap's small lakes are missing from".to_string()];
     names.extend(pipeline::lakefill::run::BANDS.iter().map(|(w, e)| format!("Filling the sheets from {}° to {}° W", -w, -e)));
@@ -4397,7 +4399,7 @@ fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     names.push("Uploading".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let p = phase("the lakes filled from CanVec's zips", Class::NasRead);
-    let f = pipeline::lakefill::run::all(&basemap, &outlines, &source, &work.0, &|k| pipeline::agent::jobs::part(k, &names), &|d, n| pipeline::agent::jobs::report(d, n, "z5 tiles surveyed"))?;
+    let f = pipeline::lakefill::run::all(&basemap, &outlines, &source, decl, &work.0, &|k| pipeline::agent::jobs::part(k, &names), &|d, n| pipeline::agent::jobs::report(d, n, "z5 tiles surveyed"))?;
     drop(p);
     pipeline::agent::jobs::part(names.len() - 1, &names);
     let p = phase("uploaded", Class::NasWrite);

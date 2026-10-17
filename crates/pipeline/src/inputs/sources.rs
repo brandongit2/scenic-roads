@@ -431,6 +431,12 @@ impl Source {
             format!("source {} {}", self.id, self.keyed)
         }
     }
+
+    /// `key_part` for a key that named nothing of it in code (`before`: the digest of what the code
+    /// read): None while it names the same, so the key is as it was; else its id and `keyed`.
+    pub fn key_extra(&self, before: &str) -> Option<String> {
+        Some(self.key_part(("", before))).filter(|p| !p.is_empty())
+    }
 }
 
 /// The accepted sources, by role.
@@ -467,12 +473,22 @@ pub fn of(a: &super::Accepted) -> Result<Sources> {
     Ok(Sources { by_role })
 }
 
+/// The last accepted version read, by its index's content name (which names its content: the agent
+/// plans with it every pass of its loop).
+static READ: std::sync::Mutex<Option<(String, Sources)>> = std::sync::Mutex::new(None);
+
 /// The accepted sources the records `manifest` name; None before any version is accepted.
 pub fn open(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Sources>> {
-    match super::open(root, manifest, UNIT)? {
-        None => Ok(None),
-        Some(a) => of(&a).map(Some),
+    let Some(name) = manifest.get(&super::logical(UNIT)) else { return Ok(None) };
+    if let Some((n, s)) = READ.lock().unwrap().as_ref() {
+        if n == name {
+            return Ok(Some(s.clone()));
+        }
     }
+    let Some(a) = super::open(root, manifest, UNIT)? else { return Ok(None) };
+    let s = of(&a)?;
+    *READ.lock().unwrap() = Some((name.clone(), s.clone()));
+    Ok(Some(s))
 }
 
 /// The accepted sources, or why the step can't read them (none accepted yet: it waits for them).
@@ -503,7 +519,8 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 9] = [
+pub const STAGED: [(&str, &[u8]); 10] = [
+    ("canvec-lakes.toml", include_bytes!("../../../../producers/sources/canvec-lakes.toml")),
     ("wikidata-qlever.toml", include_bytes!("../../../../producers/sources/wikidata-qlever.toml")),
     ("wikidata-query-service.toml", include_bytes!("../../../../producers/sources/wikidata-query-service.toml")),
     ("wikipedia-api.toml", include_bytes!("../../../../producers/sources/wikipedia-api.toml")),

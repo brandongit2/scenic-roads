@@ -419,8 +419,9 @@ pub fn timetables_todo_work(cov: &Coverage, m: &BTreeMap<String, String>, done: 
 pub const LAKEFILL_V: u32 = 1;
 
 /// The lakes filled from Canada's own data (crate::lakefill), once per pass (or step version, or
-/// source): from the pass's basemap and outlines and the source's zips (`source`, their pin:
-/// crate::lakefill::run::source_pin; None without them, and no fill made).
+/// source): from the pass's basemap and outlines and the declared source's zips (`source`, their pin
+/// and what the key names of the declaration: crate::lakefill::run::planned_source; None without
+/// zips, and no fill made).
 pub fn lakefill_work(date: &str, m: &BTreeMap<String, String>, done: &Keys, source: Option<&str>) -> Option<Work> {
     let source = source?;
     let basemap = m.get(&format!("layers/basemap/world-{date}"))?;

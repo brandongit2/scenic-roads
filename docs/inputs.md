@@ -1047,7 +1047,7 @@ unchanged:
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikidata-query-service.toml`, `wikipedia-api.toml`, the `wikidata`, `wikidata-live` and `wikipedia` roles, read by the Python steps by role (`dem/declared.py`) | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
 | Geoid grids | none yet | `geoid-grid`, pinned (§6.8 step 3) |
-| Canada's lake fill (CanVec) | `lakefill::run::SOURCE_DIR`, `FillOpts::canvec` | `zip` of shapefiles, its layer and values in the declaration |
+| Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
 Kept in code: fonts (`scripts/fonts.sh`, the app's own assets). GEBCO and NCEI's bathymetry on the
 NAS get declarations once a step reads them.
