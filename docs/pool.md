@@ -303,6 +303,9 @@ no longer fit.
 
 - A thread samples each job's processes' footprint every 5 s, per target under way (from
   `started` lines in `SCENIC_COSTS`, else `SCENIC_DONE`), and writes `memory.json` for the status.
+- Every child is started without macOS malloc's cache of freed large blocks (`MallocLargeCache=0`,
+  `store::spawn::NO_LARGE_CACHE`; their children inherit it): with it, freed blocks stay in a
+  process's footprint, and a dense unit's scenic-build held 6–7 GB of them while its programs ran.
 - **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the job beside the largest
   stops at its next safe point; the largest alone past the limit stops at once only while the Mac
   is short of memory (pressure warning, or swap growing a GB), else at a safe point. A drain that

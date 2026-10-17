@@ -65,10 +65,20 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     command_in(program, &std::env::var_os("PATH").unwrap_or_default())
 }
 
-/// `command`, the name looked up in `path` (a PATH): for a child given that PATH.
+/// `command`, the name looked up in `path` (a PATH): for a child given that PATH. Every child is
+/// started without macOS malloc's cache of freed large blocks (`NO_LARGE_CACHE`).
 pub fn command_in(program: impl AsRef<OsStr>, path: &OsStr) -> Command {
-    Command::new(find(program.as_ref(), path))
+    let mut c = Command::new(find(program.as_ref(), path));
+    c.env(NO_LARGE_CACHE.0, NO_LARGE_CACHE.1);
+    c
 }
+
+/// The environment setting that turns off macOS malloc's cache of freed large blocks: with it on, a
+/// process's memory never comes down from its most (freed blocks stay in its footprint, which the
+/// memory guard, the jobs' measured peaks and macOS's own pressure count), so a unit job's
+/// scenic-build, after its DEM cache slice and staging, held 6–7 GB of freed blocks while its
+/// programs ran (measured on 6/17/24, task #262). Its children inherit it.
+pub const NO_LARGE_CACHE: (&str, &str) = ("MallocLargeCache", "0");
 
 /// `program`'s path: a name without a folder, the first executable file of that name in `path`'s
 /// absolute folders; else as given. (An empty or relative entry is passed over, never taken as
@@ -215,6 +225,14 @@ mod tests {
     }
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    /// A child started from `command` runs without malloc's large cache, and a program it starts
+    /// inherits that.
+    #[test]
+    fn children_run_without_the_large_cache() {
+        let o = output(command("/bin/sh").args(["-c", "/usr/bin/printenv MallocLargeCache"])).unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), NO_LARGE_CACHE.1);
+    }
 
     /// Whether a child started by `spawn` holds descriptor `fd` (its `/dev/fd`).
     fn child_holds(fd: i32) -> bool {
