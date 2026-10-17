@@ -400,7 +400,8 @@ equator).
   texel's mask holds; empty space skipped by per-cell tops. The scene's depth (the fork's
   `sceneDepth`) stops the march at meshes or terrain on the flat map.
 - A ray below the roofs where the footprints taller than it cover nearly all of a texel (over
-  75 %, fully from 97 %) is inside a building, so it met a wall: it stops there, wall-coloured. The
+  75 %, fully from 97 %) is inside a building, so it met a wall: those classes' walls come at up to
+  2 more a metre there, opaque within a few metres. The
   walls are only in the texels their lines cross, and a facade's texel stops only part of the rays
   crossing it; without this the rest went on through the building's inside (no walls there), a
   different share each pixel column: thin vertical streaks down the walls just beyond the meshes,
