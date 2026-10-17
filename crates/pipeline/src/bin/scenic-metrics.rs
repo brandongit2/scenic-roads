@@ -11,7 +11,7 @@
 //!         Cached (pipeline::scache): grid tiles and samples done before are copied, and only
 //!         10° canopy tiles with something new are read.
 //! view    far-field viewshed and landscape metrics → per-sample and per-vertex channels
-//! buildings  roadside buildings per sample from Overture footprints (the folder given)
+//! buildings  roadside buildings per sample from the footprints (the folder given)
 //! flags   the flag channels again (heritage, areas, buildings) on the view's metrics
 
 use det::Det;

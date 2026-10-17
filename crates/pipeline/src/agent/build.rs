@@ -2772,7 +2772,7 @@ pub fn label(step: &str) -> &'static str {
         "trailends" => "Finding the ends of the world's hiking routes",
         "reach" => "Working out how far each area's roads reach, worldwide",
         "terrain-z8" => "Building coarse terrain for the whole world",
-        "buildings" => "Collecting the world's roadside buildings (Overture)",
+        "buildings" => "Collecting the world's roadside buildings",
         "summits" => "Finding the world's summits",
         "labels" => "Ranking the world's place labels",
         "spoken" => "Mapping the languages spoken where, for names",

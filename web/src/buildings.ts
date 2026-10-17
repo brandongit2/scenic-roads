@@ -908,9 +908,18 @@ export function summarise(f: MapGeoJSONFeature): FeatureSummary {
     kind: s === 1 && p.f ? `from ${p.f} floor${p.f === 1 ? '' : 's'}` : how,
     colour,
     facts,
-    source: 'Overture Maps (OpenStreetMap, Microsoft, Esri, USGS and others)',
+    source: buildingsCredit,
     area: false,
   };
+}
+
+/** The 3D buildings' credit, from the catalog's credits (the declared source's, docs/inputs.md
+ * §4.8): what a building's details name as its source; empty until the catalog says. */
+let buildingsCredit = '';
+
+/** The catalog's credits, for the 3D buildings' (as the catalog is polled). */
+export function setBuildingsCredit(credits: { what: string; source: string }[] | undefined): void {
+  buildingsCredit = (credits ?? []).find((c) => c.what === '3D buildings')?.source ?? '';
 }
 
 const fmtM = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)} m`;

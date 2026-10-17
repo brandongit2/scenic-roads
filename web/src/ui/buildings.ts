@@ -87,7 +87,7 @@ export class BuildingSection {
       this.op.el,
       this.scale.el,
       h('label', { class: 'tog sub', title: 'Heights × the terrain’s exaggeration, so buildings keep their proportion to the hills' }, this.withTerrain, h('span', {}, 'With the terrain’s exaggeration')),
-      h('div', { class: 'faint note tree-note' }, 'Overture Maps’ buildings (OpenStreetMap, Microsoft, Esri, USGS and others). Where no height is known it is estimated: colour by source to see how. B: on and off.'),
+      h('div', { class: 'faint note tree-note' }, 'Buildings from the source the credits name. Where no height is known it is estimated: colour by source to see how. B: on and off.'),
     );
     this.nodes = [this.body];
     this.sync();

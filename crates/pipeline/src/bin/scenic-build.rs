@@ -43,7 +43,7 @@
 //!                                "lo Q" (road and rail lo packs), "bldprep T" (its normalized
 //!                                buildings), "bldtiles T" (its 3D buildings' hi pack)
 //!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
-//!                                Overture's release, in z8 tiles, onto the NAS with their index
+//!                                the declared release, in z8 tiles, onto the NAS with their index
 //!   bld-fetch [--pass d] [--dem dir]  the 3D buildings' sources onto the NAS (dem/bldfetch.py):
 //!                                the pinned Overture release's files and GHSL's tiles meeting the
 //!                                coverage grown by 20 km; what's there already skipped

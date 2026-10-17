@@ -24,7 +24,7 @@ export interface TreeVarDef {
 export const TREE_VARS: TreeVarDef[] = [
   { key: 'cover', label: 'Cover', unit: '%', max: 100, range: [0, 95], step: 1, help: 'Share of the ground under trees taller than 5 m (Meta / WRI canopy height, from 1.2 m imagery; ~25 m pixels).' },
   { key: 'height', label: 'Height', unit: 'm', max: 40, range: [0, 40], step: 1, help: 'Canopy height (95th percentile of the trees in each ~25 m pixel), where cover is at least 5 %.' },
-  { key: 'leaf', label: 'Leaf type', unit: '', max: 3, range: [0, 0], step: 1, help: 'Dominant leaf type of forests: Copernicus HRL 2018 (Europe, broadleaf / coniferous), NALCMS 2020 (North America, with mixed forest). None for Hong Kong.' },
+  { key: 'leaf', label: 'Leaf type', unit: '', max: 3, range: [0, 0], step: 1, help: 'Dominant leaf type of forests: broadleaf or coniferous in Europe, with mixed forest in North America (the sources in the credits). None for Hong Kong.' },
 ];
 export const treeVarDef = (k: TreeVar) => TREE_VARS.find((v) => v.key === k) ?? TREE_VARS[0];
 

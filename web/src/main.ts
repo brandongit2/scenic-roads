@@ -31,7 +31,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
+import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -2214,6 +2214,7 @@ async function main() {
     w.on(() => strip.setCredits(w.status?.credits));
     // (The heritage registers' among them: what the heritage popups name as their source.)
     w.on(() => setRegisterCredits(w.status?.credits));
+    w.on(() => setBuildingsCredit(w.status?.credits));
     // Landmarks by view, when the catalog has them.
     w.on(() => {
       if (w.status) overlays.setMarks(w.status.marks ?? null);

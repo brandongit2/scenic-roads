@@ -86,7 +86,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("slope-root", "", "the slope's z0–2 root packs", &[], &[], 0),
         c("raw-pack", "[--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]", "AWS's raw tiles packed into the NAS's archives: a tar of them on stdin, else those waiting in the cache", &["--order", "--check"], &["--from-tar", "--expect", "--cache", "--every"], 0),
         c("prune", "<target …>", "drops from the manifest what the coverage no longer builds (\"unit U\", \"pois U\", \"pack T\", \"lo Q\", \"bldprep T\", \"bldtiles T\")", &[], &[], ANY),
-        c("buildings", "[--dem dir] [--workers n]", "the world's roadside buildings: Overture's release, in z8 tiles, onto the NAS with their index", &[], &["--dem", "--workers"], 0),
+        c("buildings", "[--dem dir] [--workers n]", "the world's roadside buildings: the declared release, in z8 tiles, onto the NAS with their index", &[], &["--dem", "--workers"], 0),
         c("bld-fetch", "[--pass d] [--regions dir] [--dem dir]", "the 3D buildings' sources onto the NAS (dem/bldfetch.py)", &[], &["--pass", "--regions", "--dem"], 0),
         c("bldprep", "<T …> [--dem dir]", "the 3D buildings' normalized files of z6 tiles T", &[], &["--dem"], ANY),
         c("bldtiles", "<T …> [--pass d] [--regions dir]", "the 3D buildings' tiles of z6 tiles T", &[], PASS_REGIONS, ANY),
@@ -131,7 +131,7 @@ pub const SCENIC_METRICS: Table = Table {
         c("prep", "<unit_dir>", "road sample points with observer eye heights; per-vertex drape heights", &[], &[], 1),
         c("canopy", "<unit_dir>", "canopy heights: grid layers, near-field horizons, roadside trees", &[], &[], 1),
         c("view", "<unit_dir>", "far-field viewshed and landscape metrics", &[], &[], 1),
-        c("buildings", "<unit_dir> <dir>", "roadside buildings per sample from Overture footprints (the folder given)", &[], &[], 2),
+        c("buildings", "<unit_dir> <dir>", "roadside buildings per sample from the footprints (the folder given)", &[], &[], 2),
         c("flags", "<unit_dir>", "the flag channels again on the view's metrics", &[], &[], 1),
     ],
 };
@@ -145,7 +145,7 @@ pub const LAKEFILL: Table = Table {
     cmds: &[
         c("survey", "<basemap.pmtiles> <outlines.sect> <out.csv>", "every NTS 1:50,000 sheet across the Canadian regions, with the basemap's z12 water in it", &[], &[], 3),
         c("gaps", "<sheets.csv> <out.csv>", "the survey's gap sheets", &[], &[], 2),
-        c("fill", "--basemap <pmtiles> --sheets <gap-sheets.csv> --source <dir|zip>… [--band w,e] [--no-complete-halves] [--tol <m>] [--confirm <share>] --out <dir>", "the fill of those sheets from CanVec's shapefiles", &["--no-complete-halves"], &["--basemap", "--sheets", "--source", "--band", "--tol", "--confirm", "--out"], 0),
+        c("fill", "--basemap <pmtiles> --sheets <gap-sheets.csv> --source <dir|zip>… [--band w,e] [--no-complete-halves] [--tol <m>] [--confirm <share>] --out <dir>", "the fill of those sheets from the lake-fill source's shapefiles", &["--no-complete-halves"], &["--basemap", "--sheets", "--source", "--band", "--tol", "--confirm", "--out"], 0),
         c("merge", "--out <dir> <run dir>…", "bands' fills as one", &[], &["--out"], ANY),
         c("all", "--basemap <pmtiles> --outlines <sect> --source <dir> --work <dir>", "all of it, as the step runs it", &[], &["--basemap", "--outlines", "--source", "--work"], 0),
         c("view", "<basemap.pmtiles> <w,s,e,n> <z> <out.png>", "a box of the basemap's water with the sheets' edges", &[], &[], 4),

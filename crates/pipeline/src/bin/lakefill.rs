@@ -8,7 +8,7 @@
 //! `lakefill gaps <sheets.csv> <out.csv>`: the survey's gap sheets (`run::gaps`).
 //!
 //! `lakefill fill --basemap <pmtiles> --sheets <gap-sheets.csv> --source <dir|zip>… --declaration <toml> [--band w,e]
-//! --out <dir>`: the fill of those sheets from CanVec's shapefiles (`run::fill`, as
+//! --out <dir>`: the fill of those sheets from the lake-fill source's shapefiles (`run::fill`, as
 //! `run::FillOpts::declared`, from the lake-fill source's declaration, producers/sources/canvec-lakes.toml;
 //! `--no-complete-halves`, `--tol <m>`, `--confirm <share>` change its
 //! rules), written to `<dir>` content-named with `report.json`.
