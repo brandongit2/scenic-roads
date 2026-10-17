@@ -20,6 +20,7 @@
 //   camera, which the draw passes (up to eight: bridges and roads, casing and fill, core and
 //   fringe, and behind the terrain) read instead of projecting every corner again.
 
+import { boundTarget } from '../glstate';
 import { hostFor } from '../hosts';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
@@ -1650,7 +1651,7 @@ export class RoadLayer implements CustomLayerInterface {
       this.accum = false;
       return null;
     }
-    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const prevFb = boundTarget(this.map, gl).fb;
     if (this.accum) {
       gl.deleteFramebuffer(this.accum.fb);
       gl.deleteTexture(this.accum.acc);
@@ -2329,8 +2330,7 @@ export class RoadLayer implements CustomLayerInterface {
      * is left for the passes after. */
     const fill = (a: NonNullable<typeof acc>) => {
       const A = this.progA, u = A.u;
-      const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-      const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
+      const { fb: prevFb, vp } = boundTarget(this.map, gl);
       gl.bindFramebuffer(gl.FRAMEBUFFER, a.fb);
       gl.viewport(0, 0, a.w, a.h);
       gl.disable(gl.STENCIL_TEST);

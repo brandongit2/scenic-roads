@@ -46,6 +46,7 @@
 // globe and the flat map alike, by the depth of the face the ray came in by (a column of the
 // tile's hull, within a cell of what it hits), on the colour before its coverage blends it in.
 
+import { boundTarget } from './glstate';
 import { meshKey } from './bldfield.offsets';
 import { MercatorCoordinate, LngLat, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MLMap } from 'maplibre-gl';
 import { link } from './roads/layer';
@@ -995,7 +996,7 @@ export class FieldLayer implements CustomLayerInterface {
   }
 
   /** What the field drawn this frame depends on but the frame's depth (the still view's cache). */
-  private frameKey(opts: CustomRenderMethodInput, vp: Int32Array, draw: { t: FTile; clip: [number, number, number, number] | null; her: WebGLTexture | null }[]): string {
+  private frameKey(opts: CustomRenderMethodInput, vp: readonly number[], draw: { t: FTile; clip: [number, number, number, number] | null; her: WebGLTexture | null }[]): string {
     const map = this.map;
     const style = (map as unknown as { style: { light: { getCartesianPosition(): number[]; properties: { get(k: string): unknown } } } }).style;
     const bgl = (map as unknown as { style: { getLayer(id: string): { paint?: { get(k: string): unknown } } | undefined } }).style.getLayer('bg');
@@ -1650,7 +1651,7 @@ export class FieldLayer implements CustomLayerInterface {
       q = gl.createQuery()!;
       gl.beginQuery(this.timer.ext!.TIME_ELAPSED_EXT, q);
     }
-    const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
+    const { vp } = boundTarget(this.map, gl);
     // (each tile's heritage tint before anything is drawn: what the frame draws is then known)
     const tiles2 = draw.map(({ t, clip }) => ({ t, clip, her: this.herTexFor(t) }));
     // The still view's cache: the same inputs as the last frame's, the view is still; the field then
