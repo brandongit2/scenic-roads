@@ -431,6 +431,19 @@ pub fn zip_member(src: Arc<dyn RangeRead>, name: &str) -> Result<Option<Arc<dyn 
     Ok(None)
 }
 
+/// The bytes this process has fetched over the network so far (none in WebAssembly, where a page
+/// reads through the coordinator): a phase counts the difference across it.
+pub fn fetched_bytes() -> u64 {
+    #[cfg(not(target_os = "wasi"))]
+    {
+        net::FETCHED.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        0
+    }
+}
+
 #[cfg(not(target_os = "wasi"))]
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,
@@ -527,6 +540,14 @@ mod net {
         }
     }
 
+    /// The bytes this process has fetched over the network (ranges and whole files), for a phase's
+    /// count (`super::fetched_bytes`).
+    pub(super) static FETCHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn fetched(n: usize) {
+        FETCHED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// A file's network side: the connection pool, the blocks fetched, where they're recorded.
     pub struct Online {
         net: Net,
@@ -570,6 +591,7 @@ mod net {
             for &(a, b) in &runs {
                 let (s, e) = (a * BLOCK, ((b + 1) * BLOCK).min(size));
                 let bytes = self.net.range(url, s, e).map_err(|e| IoError::Io(std::io::Error::other(format!("{e:#}"))))?;
+                fetched(bytes.len());
                 if let Some(r) = &self.record {
                     if let Err(e) = r.range(s, &bytes) {
                         eprintln!("fetch: {url}: not recorded: {e:#}");
@@ -724,7 +746,10 @@ mod net {
                             bail!("{url}: a range answer without its length");
                         };
                         match r.body_mut().with_config().limit(READ_AHEAD + 1).read_to_vec() {
-                            Ok(b) if b.len() as u64 == READ_AHEAD.min(total) => Ok(Ok(Some((total, b)))),
+                            Ok(b) if b.len() as u64 == READ_AHEAD.min(total) => {
+                                fetched(b.len());
+                                Ok(Ok(Some((total, b))))
+                            }
                             Ok(b) => Ok(Err(format!("{} of {} bytes", b.len(), READ_AHEAD.min(total)))),
                             Err(e) => Ok(Err(e.to_string())),
                         }
@@ -780,7 +805,10 @@ mod net {
                 match self.agent.get(url).call() {
                     Ok(mut r) => match r.status().as_u16() {
                         200 => match r.body_mut().with_config().limit(64 << 20).read_to_vec() {
-                            Ok(b) => return Ok(Some(b)),
+                            Ok(b) => {
+                                fetched(b.len());
+                                return Ok(Some(b));
+                            }
                             Err(e) => last = e.to_string(),
                         },
                         404 => return Ok(None),

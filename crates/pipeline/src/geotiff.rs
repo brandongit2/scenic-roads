@@ -231,16 +231,29 @@ impl Block {
     }
 }
 
-/// Decoded blocks kept for reuse, least recently used out first.
-struct Lru {
-    map: HashMap<(usize, u64), (Arc<Block>, u64)>,
+/// Decoded blocks kept for reuse, least recently used out first: a file's own (`Tiff::with_cache`),
+/// or one shared by many files under one budget (`Tiff::with_shared_cache`: a reader with many
+/// files open holds what the budget allows, not a cache's worth per file). Keyed by the file's id,
+/// the image and the block.
+pub struct BlockCache {
+    map: HashMap<(u64, usize, u64), (Arc<Block>, u64)>,
     tick: u64,
     bytes: usize,
     cap: usize,
 }
 
-impl Lru {
-    fn get(&mut self, k: (usize, u64)) -> Option<Arc<Block>> {
+impl BlockCache {
+    /// A cache holding up to `bytes` of decoded blocks.
+    pub fn new(bytes: usize) -> BlockCache {
+        BlockCache { map: HashMap::new(), tick: 0, bytes: 0, cap: bytes }
+    }
+
+    /// What it holds now (bytes).
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn get(&mut self, k: (u64, usize, u64)) -> Option<Arc<Block>> {
         self.tick += 1;
         let t = self.tick;
         self.map.get_mut(&k).map(|e| {
@@ -249,7 +262,7 @@ impl Lru {
         })
     }
 
-    fn put(&mut self, k: (usize, u64), b: Arc<Block>) {
+    fn put(&mut self, k: (u64, usize, u64), b: Arc<Block>) {
         self.tick += 1;
         self.bytes += b.bytes();
         if let Some(old) = self.map.insert(k, (b, self.tick)) {
@@ -274,7 +287,8 @@ pub struct Tiff {
     keys: GeoKeys,
     /// GDAL's metadata items for the dataset (its default domain): name, value.
     metadata: Vec<(String, String)>,
-    cache: Option<Mutex<Lru>>,
+    /// This file's id in the cache, and the cache (its own, or one shared).
+    cache: Option<(u64, Arc<Mutex<BlockCache>>)>,
 }
 
 impl std::fmt::Debug for Tiff {
@@ -371,7 +385,14 @@ impl Tiff {
 
     /// Keeps up to `bytes` of decoded tiles for reuse (for readers that come back to tiles).
     pub fn with_cache(mut self, bytes: usize) -> Self {
-        self.cache = Some(Mutex::new(Lru { map: HashMap::new(), tick: 0, bytes: 0, cap: bytes }));
+        self.cache = Some((0, Arc::new(Mutex::new(BlockCache::new(bytes)))));
+        self
+    }
+
+    /// Keeps decoded tiles in `cache`, shared with other files under its one budget, this file's
+    /// known there as `id` (each file its own).
+    pub fn with_shared_cache(mut self, id: u64, cache: Arc<Mutex<BlockCache>>) -> Self {
+        self.cache = Some((id, cache));
         self
     }
 
@@ -567,14 +588,14 @@ impl Tiff {
     pub fn block(&self, level: usize, bx: u32, by: u32) -> Result<Arc<Block>> {
         let img = self.level(level)?;
         let index = by as u64 * img.blocks_across() as u64 + bx as u64;
-        if let Some(c) = &self.cache {
-            if let Some(b) = c.lock().unwrap().get((level, index)) {
+        if let Some((id, c)) = &self.cache {
+            if let Some(b) = c.lock().unwrap().get((*id, level, index)) {
                 return Ok(b);
             }
         }
         let b = Arc::new(self.decode(img, index, by).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?);
-        if let Some(c) = &self.cache {
-            c.lock().unwrap().put((level, index), b.clone());
+        if let Some((id, c)) = &self.cache {
+            c.lock().unwrap().put((*id, level, index), b.clone());
         }
         Ok(b)
     }

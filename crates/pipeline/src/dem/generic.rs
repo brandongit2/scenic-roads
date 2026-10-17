@@ -13,12 +13,17 @@
 //!   range at a time: crate::dem::sample) at the overview `read_resolution` picks; a tile pyramid's
 //!   tiles are fetched and decoded by their encoding (crate::dem::encoding), each sampled on its own
 //!   (its edges clamping).
+//! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found:
+//!   each block (or tile) read for sampling is noted as clean when every pixel of it holds data
+//!   (crate::dem::sample::Clean), and a point whose band lies inside clean blocks of its file is at
+//!   the band's full distance, no pixel read again. The files' decoded blocks share one cache
+//!   (`CACHE_BYTES`), whatever their number.
 
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, Atlas};
-use super::sample::{bilinear, sample_raster, within, NODATA_BELOW};
+use super::sample::{bilinear, sample_raster_noting, window_clean, within, Clean, NODATA_BELOW};
 use crate::fetch::{zip_member, Fetch};
-use crate::geotiff::Tiff;
+use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -50,6 +55,13 @@ pub struct Sampled {
 
 /// Metres per degree, as the resolutions and distances of geographic files are reckoned.
 pub const M_PER_DEG: f64 = 111_320.0;
+
+/// The decoded blocks kept across every open file of a run (one cache for all: a unit opens
+/// tens of files a dataset, and sampling reads each block once).
+pub const CACHE_BYTES: usize = 512 << 20;
+
+/// Each open file's id in the shared cache.
+static FILE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Pixel size in metres of a geotransform in CRS `crs`, at latitude `lat`: (x, y).
 fn pixel_m(crs: u16, gt: &[f64; 6], lat: f64) -> (f64, f64) {
@@ -125,6 +137,10 @@ struct GeoSet<'a> {
     o: &'a Opts<'a>,
     /// By file: the open file and the level read (None: the server has none).
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
+    /// By file: which of its blocks are known to hold data in every pixel.
+    clean: Vec<Clean>,
+    /// The decoded blocks of every file, under one budget.
+    cache: Arc<Mutex<BlockCache>>,
 }
 
 /// A point in a footprint (min x ≤ x < max x, min y < y ≤ max y).
@@ -154,7 +170,8 @@ impl GeoSet<'_> {
         let t = match src {
             None => bail!("{}: {url}, which its index lists, isn't on the server (the index is out of date?)", self.id),
             Some(s) => {
-                let t = Tiff::open(s).with_context(|| url.clone())?.with_cache(64 << 20);
+                let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let t = Tiff::open(s).with_context(|| url.clone())?.with_shared_cache(id, self.cache.clone());
                 let level = level_for(&t, self.crs, self.read_resolution)?;
                 Some((Arc::new(t), level))
             }
@@ -185,12 +202,12 @@ impl GeoSet<'_> {
             }
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
             let Some((t, level)) = self.open(k, false)? else { continue };
-            let v = match sample_raster(&t, level, &xs, &ys, self.o.pool) {
+            let v = match sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k])) {
                 Ok(v) => v,
                 // A stored copy that won't read: taken again (once).
                 Err(_) if self.store.is_some() => {
                     let (t, level) = self.open(k, true)?.context("gone from the server")?;
-                    sample_raster(&t, level, &xs, &ys, self.o.pool).with_context(|| self.files[k].0.clone())?
+                    sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k])).with_context(|| self.files[k].0.clone())?
                 }
                 Err(e) => return Err(e.context(self.files[k].0.clone())),
             };
@@ -241,6 +258,11 @@ impl GeoSet<'_> {
             let ry = (radius[j] / my).ceil() as i64 + 1;
             let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
             let (cs, ce, rs, re) = (c0 - rx, c0 + 1 + rx, r0 - ry, r0 + 1 + ry);
+            // (A window inside the image, in blocks holding data in every pixel: nothing in it is
+            // invalid, so the distance is the radius, as the scan below would find.)
+            if cs >= 0 && rs >= 0 && ce < w && re < h && window_clean(&t, level, &self.clean[k], cs, ce, rs, re)? {
+                return Ok(radius[j]);
+            }
             let (ics, ice, irs, ire) = (cs.max(0), ce.min(w - 1), rs.max(0), re.min(h - 1));
             let inside = if ics <= ice && irs <= ire { Some(t.read_window(level, ics as u32, irs as u32, (ice - ics + 1) as u32, (ire - irs + 1) as u32)?) } else { None };
             let iw = (ice - ics + 1).max(0) as usize;
@@ -291,6 +313,8 @@ struct TileSet<'a> {
     zoom: u32,
     encoding: &'a str,
     o: &'a Opts<'a>,
+    /// By tile: whether every pixel holds data (false too for a tile the server hasn't).
+    clean: Mutex<HashMap<(i64, i64), bool>>,
 }
 
 impl TileSet<'_> {
@@ -307,6 +331,14 @@ impl TileSet<'_> {
             bail!("{u}: a {w} × {h} tile; tile pyramids are read as {TILE_PX} × {TILE_PX}");
         }
         Ok(Some((w, h, a)))
+    }
+
+    /// `tile`, noted in `clean`: whether every pixel of it holds data.
+    fn tile_noted(&self, tx: i64, ty: i64) -> Result<Option<(usize, usize, Vec<f32>)>> {
+        let t = self.tile(tx, ty)?;
+        let clean = t.as_ref().is_some_and(|(_, _, a)| a.iter().all(|&v| valid(v, None)));
+        self.clean.lock().unwrap().insert((tx, ty), clean);
+        Ok(t)
     }
 
     /// Points `sel` grouped by tile: (tile key, the points' positions in `sel`, fx, fy).
@@ -333,7 +365,7 @@ impl TileSet<'_> {
                 .par_iter()
                 .map(|g| -> Result<Vec<(usize, f32)>> {
                     let (tx, ty) = (g[0].0.div_euclid(n), g[0].0.rem_euclid(n));
-                    let Some((w, h, a)) = self.tile(tx, ty)? else { return Ok(Vec::new()) };
+                    let Some((w, h, a)) = self.tile_noted(tx, ty)? else { return Ok(Vec::new()) };
                     Ok(g.iter().map(|&(_, j, fx, fy)| (j, bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5))).collect())
                 })
                 .collect::<Result<_>>()
@@ -363,8 +395,17 @@ impl TileSet<'_> {
                         let rp = (radius[j] / pm).ceil() as i64 + 1;
                         let (c0, r0) = (gx.floor() as i64, gy.floor() as i64);
                         let mut best = radius[j];
-                        for r in r0 - rp..=r0 + 1 + rp {
-                            for c in c0 - rp..=c0 + 1 + rp {
+                        // (The band's tiles: one known clean has no invalid pixel, so none of its
+                        // pixels is looked at, nor is it fetched again.)
+                        let (cs, ce, rs, re) = (c0 - rp, c0 + 1 + rp, r0 - rp, r0 + 1 + rp);
+                        let clean_tile = |tx: i64, ty: i64| self.clean.lock().unwrap().get(&(tx, ty)).copied();
+                        let all_clean = (rs.div_euclid(256)..=re.div_euclid(256)).all(|ty| (cs.div_euclid(256)..=ce.div_euclid(256)).all(|tx| tx >= 0 && ty >= 0 && tx < n && ty < n && clean_tile(tx, ty) == Some(true)));
+                        if all_clean {
+                            out.push((j, best));
+                            continue;
+                        }
+                        for r in rs..=re {
+                            for c in cs..=ce {
                                 let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(((r as f64 - gy).abs() - 0.5).max(0.0)) * pm;
                                 if d >= best {
                                     continue;
@@ -372,9 +413,11 @@ impl TileSet<'_> {
                                 let (tx, ty) = (c.div_euclid(256), r.div_euclid(256));
                                 let ok = if tx < 0 || ty < 0 || tx >= n || ty >= n {
                                     false
+                                } else if clean_tile(tx, ty) == Some(true) {
+                                    true
                                 } else {
                                     if !tiles.contains_key(&(tx, ty)) {
-                                        let t = self.tile(tx, ty)?.map(Arc::new);
+                                        let t = self.tile_noted(tx, ty)?.map(Arc::new);
                                         tiles.insert((tx, ty), t);
                                     }
                                     match &tiles[&(tx, ty)] {
@@ -412,11 +455,11 @@ enum Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn new(ds: &'a Dataset, o: &'a Opts<'a>, lon: &[f64], lat: &[f64], cover: &Cover) -> Result<Reader<'a>> {
+    fn new(ds: &'a Dataset, o: &'a Opts<'a>, lon: &[f64], lat: &[f64], cover: &Cover, cache: &Arc<Mutex<BlockCache>>) -> Result<Reader<'a>> {
         Ok(match &ds.source {
-            Source::Tiles { url, zoom, encoding } => Reader::Tiles(TileSet { url, zoom: *zoom, encoding, o }),
+            Source::Tiles { url, zoom, encoding } => Reader::Tiles(TileSet { url, zoom: *zoom, encoding, o, clean: Mutex::new(HashMap::new()) }),
             Source::Geotiff { crs, read_resolution, store, files } => {
-                let set = GeoSet { id: &ds.id, crs: *crs, files, read_resolution: *read_resolution, store: if *store { o.store.as_ref().map(|s| s.join(&ds.id)) } else { None }, o, opened: Mutex::new(HashMap::new()) };
+                let set = GeoSet { id: &ds.id, crs: *crs, files, read_resolution: *read_resolution, store: if *store { o.store.as_ref().map(|s| s.join(&ds.id)) } else { None }, o, opened: Mutex::new(HashMap::new()), clean: (0..files.len()).map(|_| Clean::default()).collect(), cache: cache.clone() };
                 // (Native coordinates of the points it covers; NaN for the others.)
                 let (x, y) = match crs {
                     4326 | 4269 => (lon.to_vec(), lat.to_vec()),
@@ -473,9 +516,13 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
     let mut file = vec![u32::MAX; n];
     let mut readers = Vec::new();
     let mut got = 0;
+    let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
+    // (What each phase fetches over the network: its count.)
+    let fetched = |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
     for (k, ds) in plan.datasets.iter().enumerate() {
-        let _p = phase(&format!("{} sampled", ds.id), Class::Net);
-        let r = Reader::new(ds, o, lon, lat, &covers[k])?;
+        let p = phase(&format!("{} sampled", ds.id), Class::Net);
+        let since = crate::fetch::fetched_bytes();
+        let r = Reader::new(ds, o, lon, lat, &covers[k], &cache)?;
         let sel: Vec<u32> = (0..n as u32).filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize])).collect();
         if !sel.is_empty() {
             let v = r.sample(&sel, lon, lat)?;
@@ -491,11 +538,13 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
             println!("  {}: {here} of {} vertices", ds.id, sel.len());
         }
         readers.push(r);
+        fetched(&p, since);
     }
     // The blends: each point's distance to its first dataset's invalid area, up to the widest band
     // it could have (four of the coarsest pixels of the datasets after it there); then the next
     // dataset with data, for those within it.
-    let _p = phase("the edges blended", Class::Net);
+    let p = phase("the edges blended", Class::Net);
+    let since = crate::fetch::fetched_bytes();
     let res: Vec<f64> = plan.datasets.iter().map(|d| d.resolution).collect();
     let mut dist = vec![f64::INFINITY; n];
     for k in 0..plan.datasets.len() {
@@ -535,6 +584,8 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
             }
         }
     }
+    fetched(&p, since);
+    drop(p);
     let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n] };
     for i in 0..n {
         if first[i] == u16::MAX {

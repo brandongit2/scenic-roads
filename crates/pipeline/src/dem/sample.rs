@@ -5,6 +5,8 @@
 use crate::geotiff::Tiff;
 use anyhow::Result;
 use rayon::prelude::*;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Values below this are nodata (all the sources use large negative nodata values).
 pub const NODATA_BELOW: f32 = -1000.0;
@@ -47,9 +49,42 @@ pub fn within<R: Send>(pool: Option<&rayon::ThreadPool>, f: impl FnOnce() -> R +
     }
 }
 
+/// Which of an image's blocks (`BLOCK` square, keyed as `block_key`) hold data in every pixel
+/// (`super::generic::valid`), learnt as blocks are read: a point whose band lies in such blocks
+/// is at no distance from an invalid pixel, so no pixel of it need be looked at.
+#[derive(Default)]
+pub struct Clean {
+    map: Mutex<HashMap<(usize, i64), bool>>,
+}
+
+impl Clean {
+    /// Whether block `key` of image `level` is known clean (Some), or hasn't been read (None).
+    pub fn get(&self, level: usize, key: i64) -> Option<bool> {
+        self.map.lock().unwrap().get(&(level, key)).copied()
+    }
+
+    /// Block `key` of image `level` read as `a`, with the file's nodata `nodata`: whether every
+    /// pixel holds data, remembered.
+    pub fn note(&self, level: usize, key: i64, a: &[f32], nodata: Option<f64>) -> bool {
+        let clean = a.iter().all(|&v| super::generic::valid(v, nodata));
+        self.map.lock().unwrap().insert((level, key), clean);
+        clean
+    }
+}
+
+/// The key of the block holding pixel (`c`, `r`) of an image `w` pixels wide.
+pub fn block_key(w: i64, c: i64, r: i64) -> i64 {
+    (r / BLOCK) * ((w + BLOCK - 1) / BLOCK) + c / BLOCK
+}
+
 /// Image `level` of `t` sampled at points (`px`, `py`, in the raster's CRS): each point's value,
 /// NaN where it's outside the raster or there's no data.
 pub fn sample_raster(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool: Option<&rayon::ThreadPool>) -> Result<Vec<f32>> {
+    sample_raster_noting(t, level, px, py, pool, None)
+}
+
+/// `sample_raster`, each block read noted in `clean` (whether every pixel of it holds data).
+pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool: Option<&rayon::ThreadPool>, clean: Option<&Clean>) -> Result<Vec<f32>> {
     let img = t.level(level)?;
     let gt = t.transform(level)?;
     let (w, h) = (img.width as i64, img.height as i64);
@@ -84,6 +119,9 @@ pub fn sample_raster(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool: Optio
                 let (x0, y0) = ((k % nbx) * BLOCK, (k / nbx) * BLOCK);
                 let (bw, bh) = (BLOCK.min(w - x0), BLOCK.min(h - y0));
                 let mut a = t.read_window(level, x0 as u32, y0 as u32, bw as u32, bh as u32)?;
+                if let Some(c) = clean {
+                    c.note(level, k, &a, t.nodata());
+                }
                 if let Some(nd) = nodata {
                     for v in a.iter_mut().filter(|v| **v == nd) {
                         *v = -1e9;
@@ -98,6 +136,31 @@ pub fn sample_raster(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool: Optio
         out[i as usize] = v;
     }
     Ok(out)
+}
+
+/// Whether every block of image `level` of `t` that the pixel window `cs..=ce` by `rs..=re` (inside
+/// the image) touches is clean (`Clean`): a block not read yet is read now and noted.
+pub fn window_clean(t: &Tiff, level: usize, clean: &Clean, cs: i64, ce: i64, rs: i64, re: i64) -> Result<bool> {
+    let img = t.level(level)?;
+    let (w, h) = (img.width as i64, img.height as i64);
+    for by in rs / BLOCK..=re / BLOCK {
+        for bx in cs / BLOCK..=ce / BLOCK {
+            let key = by * ((w + BLOCK - 1) / BLOCK) + bx;
+            let known = match clean.get(level, key) {
+                Some(c) => c,
+                None => {
+                    let (x0, y0) = (bx * BLOCK, by * BLOCK);
+                    let (bw, bh) = (BLOCK.min(w - x0), BLOCK.min(h - y0));
+                    let a = t.read_window(level, x0 as u32, y0 as u32, bw as u32, bh as u32)?;
+                    clean.note(level, key, &a, t.nodata())
+                }
+            };
+            if !known {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -118,5 +181,18 @@ mod tests {
         assert_eq!(bilinear(&b, 3, 2, 0.4, 0.4), 1.0);
         assert_eq!(bilinear(&b, 3, 2, 1.5, 0.5), 4.0, "row 0, column 2");
         assert!(bilinear(&b, 3, 2, 1.2, 0.2).is_nan());
+    }
+
+    #[test]
+    fn blocks_are_keyed_as_sampling_groups_them() {
+        // A 1000-wide image has two blocks across: pixel (600, 700) is in block (1, 1), key 3.
+        assert_eq!(block_key(1000, 600, 700), 3);
+        assert_eq!(block_key(1000, 0, 0), 0);
+        assert_eq!(block_key(512, 511, 1023), 1);
+        let c = Clean::default();
+        assert_eq!(c.get(0, 3), None);
+        assert!(!c.note(0, 3, &[1.0, -9999.0], Some(-9999.0)));
+        assert!(c.note(0, 4, &[1.0, 2.0], Some(-9999.0)));
+        assert_eq!((c.get(0, 3), c.get(0, 4), c.get(1, 4)), (Some(false), Some(true), None));
     }
 }
