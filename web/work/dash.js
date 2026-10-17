@@ -1,11 +1,17 @@
 // The whole build at a glance (docs/workers.md, The page): the page at /work/, for anyone it answers.
-// From the coordinator: /work/swarm every 10 s (the lead's heartbeat with its checklist,
+// From the coordinator: /work/steps once (the steps table: every step's title, noun, stage and
+// place, docs/pipeline.md), /work/swarm every 10 s (the lead's heartbeat with its checklist,
 // forecast and resources, its helpers', every worker and lease, the hours' work), and
-// /work/history after the last event this page has (what happened). Five parts, each answering
-// many questions at once: the verdict (going or not, done when, next on the map, what needs a look,
-// the pause), the overview (how far, how long), the machines (what each does now and next, why
-// one waits, its power, disk, memory and pace), the road to done (each machine's schedule, the
-// steps, the regions and when each reaches the map) and the activity (the hours, what happened).
+// /work/history after the last event this page has (what happened).
+//
+// One shape for everything: a step is named by its title, its targets counted in its noun ("8 of
+// 480 tiles"), coloured by its stage; a stage is a card of its steps' rows, each row the same
+// cells; a machine is a card of its jobs, each job the same lines; an event is one templated
+// sentence. The parts: the verdict (going or not, done when, next on the map, what needs a look,
+// the pause), the overview (how far, how long), the stages (each step to the end), the machines
+// (what each does now and next, why one waits, its power, disk, memory and pace), the road to
+// done (each machine's schedule, the map updates), the regions, and the activity (the hours, what
+// happened).
 
 import { poolSection, termText } from "./pool.js";
 
@@ -37,28 +43,37 @@ function clock(t) {
 const ago = (now, t) => (t ? `${dur(now - t)} ago` : "never");
 const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 
-// A step's name, short (lanes, legends) and its colour.
-const STEP = {
-  "osm-pass": ["OpenStreetMap pass", "#8fa2b5"], "pass-sets": ["The pass's sets", "#8fa2b5"], outlines: ["Outlines", "#8fa2b5"], trailends: ["Route ends", "#8fa2b5"], reach: ["Roads' reach", "#8fa2b5"],
-  "terrain-z8": ["World terrain", "#c98b4a"], buildings: ["Roadside buildings", "#8fa2b5"], summits: ["Summits", "#8fa2b5"], labels: ["Place labels", "#8fa2b5"],
-  "heritage-sites": ["Heritage sites", "#c47fb5"], terrain: ["Terrain", "#c98b4a"], "terrain-lo": ["Zoomed-out terrain", "#c98b4a"], slope: ["Slope", "#d9c35a"], "slope-lo": ["Zoomed-out slope", "#d9c35a"], trees: ["Tree cover", "#5fae6b"], "trees-lo": ["Zoomed-out tree cover", "#5fae6b"],
-  unit: ["Areas", "#5b8fd8"], tail: ["Areas' last steps", "#6cc28a"], pack: ["Map tiles", "#4fb3c6"], lo: ["Zoomed-out tiles", "#4fb3c6"], prune: ["Pruning", "#8fa2b5"],
-  roadunits: ["Road index", "#4fb3c6"], stations: ["Rail stops", "#4fb3c6"], ferries: ["Ferries", "#4fb3c6"], "terrain-root": ["World terrain", "#c98b4a"], "slope-root": ["World slope", "#d9c35a"],
-  "rail-feeds": ["Rail timetables", "#8fa2b5"], rail: ["Trains a day", "#8fa2b5"], pois: ["Landmark candidates", "#9b7be0"], peaks: ["Peaks", "#b48ae8"],
-  items: ["Wikidata facts", "#c47fb5"], heritage: ["Heritage details", "#c47fb5"], marks: ["Landmarks", "#c47fb5"], overlays: ["Area overlays", "#c47fb5"],
-  "bld-fetch": ["3D buildings' sources", "#8fa2b5"], bldprep: ["Buildings read", "#a39a8c"], bldtiles: ["3D buildings", "#a39a8c"], bldtile: ["3D buildings' areas", "#b8ad9c"], treeblock: ["Tree cover's blocks", "#7fa37a"], terrainsub: ["Terrain's subtrees", "#9c8f7a"],
-  inputs: ["Checking the inputs", "#8fa2b5"],
-  catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], "map-update": ["Map update", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
-};
-const stepName = (s) => (STEP[s] || [s])[0];
+// ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /work/steps) ---------------
+// Every word about a step comes from its row: its title, the noun its targets are counted in, its
+// stage (its colour) and where it runs. Before the table has loaded (or from a lead without it) a
+// step goes by its id.
+const STAGE_COLOURS = { pass: "#8fa2b5", sites: "#c47fb5", terrain: "#c98b4a", slope: "#d9c35a", trees: "#5fae6b", roads: "#5b8fd8", tiles: "#4fb3c6", finish: "#7fb3a8", trains: "#a9a0d6", landmarks: "#9b7be0", buildings: "#a39a8c", publish: "var(--mark)", upkeep: "#7b8590" };
 const UPDATE = "map-update";
-const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
-// The noun a step's targets are counted in.
-const NOUN = { unit: "area", terrain: "tile", "terrain-lo": "area", slope: "tile", "slope-lo": "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task", treeblock: "task", terrainsub: "task" };
-const targets = (step, k) => plural(k, NOUN[step] || "job");
-// What was finished, in words: "3 areas", "1 terrain area", "5 map tiles".
-const DID = { unit: ["area", "areas"], terrain: ["terrain tile", "terrain tiles"], "terrain-lo": ["zoomed-out terrain area", "zoomed-out terrain areas"], slope: ["slope tile", "slope tiles"], "slope-lo": ["zoomed-out slope area", "zoomed-out slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], bldtile: ["3D buildings area", "3D buildings areas"], treeblock: ["row of tree-cover blocks", "rows of tree-cover blocks"], terrainsub: ["group of terrain subtrees", "groups of terrain subtrees"], catalog: ["map update", "map updates"] };
-const did = (step, k) => (DID[step] ? plural(k, ...DID[step]) : `${stepName(step)}${k > 1 ? ` ×${k}` : ""}`);
+const table = { steps: {}, stages: [] };
+const S = {
+  row: (id) => table.steps[id],
+  title: (id) => table.steps[id]?.title || (id === UPDATE ? "Map update" : id || ""),
+  noun: (id) => table.steps[id]?.noun || "target",
+  world: (id) => table.steps[id]?.scope === "world",
+  stage: (id) => table.steps[id]?.stage || (id === UPDATE ? "publish" : ""),
+  stageTitle: (id) => table.stages.find((g) => g.id === id)?.title || id,
+  colour: (id) => STAGE_COLOURS[S.stage(id)] || "#7b8590",
+  any: (id) => table.steps[id]?.place === "any",
+  // "8 tiles"; a worldwide step's runs: "1 run".
+  counted: (id, k) => plural(k, S.noun(id)),
+  // "Terrain: 8 tiles", "Terrain: 8 of 480 tiles", "Outlines" (a worldwide step's one run).
+  said: (id, k, of) => (S.world(id) || !k ? S.title(id) : `${S.title(id)}: ${of != null && of !== k ? `${n(k)} of ${n(of)} ${S.noun(id)}s` : S.counted(id, k)}`),
+};
+// A step's line of the checklist (build::Item) or a stage's (build::Line) in words: "12 of 480
+// tiles", "3 runs left", "done", "to come".
+function countOf(x, noun) {
+  if (x.total != null && x.total > 0) return `${n(x.done)} of ${n(x.total)} ${noun}`;
+  if (x.left === 0) return "done";
+  if (x.left != null) return `${plural(x.left, noun.replace(/s$/, ""))} left`;
+  return "to come";
+}
+const finished = (x) => (x.left != null ? x.left === 0 : x.total != null && x.done >= x.total && x.total > 0);
+const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
 // Machines' colours, the lead first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
 
@@ -76,8 +91,13 @@ function h(tag, attrs, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return e;
 }
-const pbar = (frac, cls = "") => { const i = h("i"); i.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`; return h("div", `pbar ${cls}`, i); };
+const pbar = (frac, cls = "", colour) => { const i = h("i"); i.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`; if (colour) i.style.background = colour; return h("div", `pbar ${cls}`, i); };
 const chip = (text, cls = "", title) => h("span", { class: `chip ${cls}`, title }, text);
+const swatch = (colour) => h("i", { class: "sw", style: { background: colour } });
+// A step's mark: done, under way, to come.
+const mark = (done, running) => h("span", `mark ${done ? "ok" : running ? "run" : ""}`, done ? "✓" : running ? "▸" : "○");
+// A key, a value and a line under it: the overview's numbers, each the same.
+const kpi = (k, v, s) => h("div", "kpi", h("div", "k", k), h("div", "v", v), s ? h("div", "s", s) : null);
 
 // ---- The data's shape, older coordinators' too --------------------------------------------------
 // (The gate's units, `a.inputs`: docs/inputs.md §4.7; none from an agent before it.)
@@ -100,14 +120,17 @@ function model(sw) {
   // (A helper Mac that's stopped reporting (its status ten minutes old): the coordinator's word of
   // it, when it last asked.)
   const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
-  return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, steps: a.checklist || [] };
+  // The steps under way, on any machine: the lead's jobs, its helpers', the leases.
+  const running = new Set([...macs.flatMap((x) => [x.status.job, x.status.beside]).filter(Boolean).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
+  return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
 }
 
-// A checklist line's state.
-const finished = (st) => (st.left != null ? st.left === 0 : st.total != null && st.done >= st.total && st.total > 0);
 const stepOf = (id) => String(id || "").split(" ")[0];
 // The lead's second job as a worker (crate::agent::second_worker): its lane, history and pace.
 const secondOf = (host) => `${host} (second job)`;
+// The checklist's line (a stage's) that counts `step`, and its item for it.
+const lineOf = (m, step) => m.lines.find((l) => (l.steps || []).includes(step) || (l.items || []).some((i) => i.step === step));
+const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step);
 
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
@@ -210,31 +233,29 @@ function verdictText(m) {
 }
 
 // ---- The overview -------------------------------------------------------------------------------
+// How far (the roads' tiles: the bulk of the work, a share that means the same at any moment), how
+// long, and the numbers that aren't a step's: the regions, the map, the machines.
 function overview(m) {
-  const { a, fc, now, steps } = m;
-  // (The areas: the bulk of the work, and a share that means the same at any moment.)
-  const unitsLine = steps.find((st) => (st.steps || []).includes("unit"));
-  const big = unitsLine?.total ? `${Math.floor((unitsLine.done / unitsLine.total) * 100)}%` : "–";
+  const { a, fc, now, lines } = m;
+  const roads = itemOf(m, "unit") || lineOf(m, "unit");
+  const big = roads?.total ? `${Math.floor((roads.done / roads.total) * 100)}%` : "–";
   const workLeft = fc ? fc.steps.reduce((t, s) => t + s.work_s, 0) : 0;
   const left = h("div", null,
-    h("div", "big", big, h("small", null, unitsLine?.total ? ` of the areas built (${n(unitsLine.done)} of ${n(unitsLine.total)})` : "")),
+    h("div", "big", big, h("small", null, roads?.total ? ` of the roads' tiles built (${n(roads.done)} of ${n(roads.total)})` : "")),
     h("div", "small dim", !fc ? "No forecast yet (the lead makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
     fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
   );
-  // The steps as a strip, the one under way outlined.
-  const nowStep = stepOf(a.job?.id);
-  const strip = h("div", "strip", steps.map((st) => {
-    const done = finished(st);
-    const i = h("i", { class: `${done ? "done" : ""} ${(st.steps || []).includes(nowStep) ? "now" : ""}`, title: `${st.what}: ${st.total != null ? `${n(st.done)} of ${n(st.total)}` : st.left != null ? (st.left ? `${st.left} left` : "done") : "to come"}` });
-    if (!done && st.total) { const b = h("b"); b.style.width = `${Math.round((st.done / st.total) * 100)}%`; i.append(b); }
+  // The stages as a strip, each its colour, the one under way outlined.
+  const strip = h("div", "strip", lines.map((l) => {
+    const done = finished(l), running = (l.steps || []).some((s) => m.running.has(s));
+    const i = h("i", { class: `${done ? "done" : ""} ${running ? "now" : ""}`, title: `${l.what}: ${countOf(l, l.unit || "targets")}` });
+    i.style.background = done ? S.colour(l.steps?.[0]) : "";
+    if (!done && l.total) { const b = h("b"); b.style.width = `${Math.round((l.done / l.total) * 100)}%`; b.style.background = S.colour(l.steps?.[0]); i.append(b); }
     return i;
   }));
-  const fin = steps.filter(finished).length;
-  const stepsLine = h("div", "small dim", steps.length ? `${fin} of ${steps.length} steps done${nowStep ? ` · now: ${steps.find((st) => (st.steps || []).includes(nowStep))?.what || stepName(nowStep)}` : ""}` : "");
-  // The numbers that matter most.
-  const kpi = (k, v, s) => h("div", "kpi", h("div", "k", k), h("div", "v", v), s ? h("div", "s", s) : null);
-  const line = (step) => steps.find((st) => (st.steps || []).includes(step));
-  const frac = (st) => (st && st.total != null ? `${n(st.done)} of ${n(st.total)}` : st && st.left != null ? (st.left ? `${st.left} left` : "done") : "–");
+  const fin = lines.filter(finished).length;
+  const nowLines = lines.filter((l) => !finished(l) && (l.steps || []).some((s) => m.running.has(s))).map((l) => l.what);
+  const stagesLine = h("div", "small dim", lines.length ? `${fin} of ${lines.length} stages done${nowLines.length ? ` · now: ${nowLines.join(", ")}` : ""}` : "");
   const regs = fc?.regions || [];
   const onMap = regs.filter((r) => r.on_map === true && !Object.keys(r.left).length).length;
   const asWas = regs.filter((r) => r.on_map === false || (r.on_map === true && Object.keys(r.left).length)).length;
@@ -243,37 +264,73 @@ function overview(m) {
   const nextUpdate = fc?.updates?.[0];
   const busy = m.macs.filter((x) => x.fresh && x.status.job).length;
   const kpis = h("div", "kpis",
-    kpi("Areas built", frac(line("unit")), fc ? `${n(fc.steps.find((s) => s.step === "unit")?.left || 0)} to build` : null),
     kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, out with the next map update` : ""].filter(Boolean).join(" · ") || null),
-    kpi("Terrain · slope", `${frac(line("terrain"))} · ${frac(line("slope"))}`),
-    kpi("Tree cover", frac(line("trees"))),
-    kpi("Map tiles", frac(line("pack"))),
     kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
-  return h("div", "overview", h("div", "box", left, strip, stepsLine), kpis);
+  return h("div", "overview", h("div", "box", left, strip, stagesLine), kpis);
+}
+
+// ---- The stages ---------------------------------------------------------------------------------
+// A card per stage of the checklist, each the same: its mark, title, count and bar; under it a row
+// per step, each the same cells: mark, swatch, title, where it runs, count, bar, when it's done,
+// why it waits; then its jobs to come. (crates/pipeline/src/agent/build.rs Line and Item.)
+function stageCard(m, l) {
+  const { fc } = m;
+  const done = finished(l);
+  const running = (l.steps || []).some((s) => m.running.has(s));
+  const fcOf = (step) => fc?.steps.find((s) => s.step === step);
+  const colour = S.colour(l.steps?.[0]);
+  const card = h("div", { class: `stage ${done ? "done" : ""} ${running ? "now" : ""}`, style: { borderLeft: `3px solid ${colour}` } });
+  card.append(h("div", "row head", mark(done, running), h("span", "title", l.what), h("span", "n", countOf(l, l.unit || "targets"))));
+  if (!done && l.total) card.append(pbar(l.done / l.total, running ? "" : "dimbar", colour));
+  for (const it of l.items || []) {
+    const itDone = finished(it), itRun = m.running.has(it.step);
+    const f = fcOf(it.step);
+    const bits = [];
+    if (!itDone && f?.work_s) bits.push(`${dur(f.work_s)} of work`);
+    if (!itDone && f?.done_at) bits.push(`done ≈ ${clock(f.done_at)}`);
+    card.append(h("div", { class: `row item ${itDone ? "done" : ""}`, title: S.row(it.step)?.does || "" },
+      mark(itDone, itRun), h("span", "title", S.title(it.step), S.any(it.step) ? h("span", { class: "dim", title: "Any Mac of the pool may take it" }, " ⇄") : null),
+      h("span", "n", countOf(it, `${S.noun(it.step)}s`))));
+    if (!itDone && it.total > 0) card.append(pbar(it.done / it.total, itRun ? "" : "dimbar", colour));
+    if (bits.length) card.append(h("div", "when", bits.join(" · ")));
+  }
+  const note = [];
+  if (!done && l.note) note.push(l.note);
+  if (!done && l.next?.length) note.push(`${running ? "now" : "next"}: ${l.next.slice(0, 3).join("; then ")}${l.next.length > 3 ? `; and ${l.next.length - 3} more` : ""}`);
+  if (note.length) card.append(h("div", "note", note.join(" · ")));
+  return card;
+}
+
+function stages(m) {
+  if (!m.lines.length) return h("div", "small dim", "No word from the lead yet.");
+  return h("div", "stages", m.lines.map((l) => stageCard(m, l)));
 }
 
 // ---- Machines -----------------------------------------------------------------------------------
-// A job's progress in words: "40% · 2.4 of 6 areas · about 12 min left" (one item alone, its share).
+// A job's progress in words: "40% · 2.4 of 6 tiles · about 12 min left" (one item alone, its share).
 function progressText(p, j, now) {
   const pct = Math.floor((p.done / p.total) * 100);
-  // (One item whose share is said: "the planet filtered"; else "0.4 of 1 area", its noun singular.)
+  // (One item whose share is said: "the planet filtered"; else "0.4 of 1 tile", its noun singular.)
   const unit = p.total === 1 ? p.unit.replace(/^(\w+?)s\b/, "$1") : p.unit;
   const amount = p.total === 1 && /^the /.test(p.unit) ? p.unit : `${Number.isInteger(p.done) || p.total > 100 ? n(Math.floor(p.done)) : (Math.floor(p.done * 10) / 10).toFixed(1)} of ${n(p.total)} ${unit}`;
   const eta = p.eta_s != null && !j.paused ? ` · about ${dur(p.eta_s)} left (≈ ${clock(now + p.eta_s)})` : "";
   return `${pct}% · ${amount}${eta}`;
 }
 
+// A job, as every machine's is shown: its name (its step's title and targets), its parts, its
+// progress, how long it's run and what it holds, and why it's stopped or stuck.
 function jobBlock(j, now) {
   const p = j.progress;
-  const box = h("div", "job", h("div", "what", j.what));
+  const step = stepOf(j.id);
+  const box = h("div", "job", h("div", "what", swatch(S.colour(step)), j.what));
   if (j.parts?.length && j.part != null) {
     box.append(h("div", "parts", j.parts.map((_, i) => h("i", { class: i < j.part ? "done" : i === j.part ? "now" : "", title: j.parts[i] }))));
     box.append(h("div", "sub", `Part ${j.part + 1} of ${j.parts.length}: ${j.parts[j.part]}`));
   }
   if (p && p.total > 0) {
-    box.append(pbar(p.done / p.total, j.paused ? "warn" : ""));
+    box.append(pbar(p.done / p.total, j.paused ? "warn" : "", S.colour(step)));
     box.append(h("div", "sub", progressText(p, j, now)));
   }
   const bits = [`running ${dur(now - j.started)} (since ${clock(j.started)})`];
@@ -289,7 +346,7 @@ function jobBlock(j, now) {
 function nextBlock(m, name) {
   const next = (m.fc?.next?.[name] || []).filter((x) => x.until > m.now);
   if (!next.length) return null;
-  const say = (x) => `${stepName(x.step)}: ${targets(x.step, x.targets.length)} (${clock(x.from)}–${clock(x.until)})`;
+  const say = (x) => `${S.said(x.step, x.targets.length)} (${clock(x.from)}–${clock(x.until)})`;
   return h("div", "next", h("b", null, "Next: "), next.slice(0, 3).map(say).join(" · then "));
 }
 
@@ -309,7 +366,7 @@ function facts(st, x, m) {
 }
 
 // The last day by the hour: how busy it was (a bar an hour; several, the pages, together, up to the
-// hour), paused hours shaded.
+// hour), paused hours shaded; and what it finished, each step counted in its noun.
 function spark(m, name) {
   const rows = m.sw.rates?.rows;
   if (!rows?.length) return null;
@@ -321,14 +378,14 @@ function spark(m, name) {
     return i;
   });
   const today = rows.reduce((t, r) => { for (const nm of names) for (const [s, k] of Object.entries(r.done?.[nm] || {})) t[s] = (t[s] || 0) + k; return t; }, {});
-  const said = Object.entries(today).sort((x, y) => y[1] - x[1]).map(([s, k]) => did(s, k)).join(", ");
+  const said = Object.entries(today).sort((x, y) => y[1] - x[1]).map(([s, k]) => S.said(s, k)).join(" · ");
   return [h("div", "spark", bars), h("div", "sub", `Last 24 h: ${said || "nothing finished"}`)];
 }
 
 function fitText(w) {
   if (!w?.fit?.length) return null;
   const parts = w.fit.filter((f) => f.offered).map((f) => {
-    const bits = [`${n(f.fits)} of ${n(f.offered)} ${stepName(f.step).toLowerCase()} it can take`];
+    const bits = [`${S.title(f.step)}: ${n(f.fits)} of ${n(f.offered)} ${S.noun(f.step)}s it can take`];
     if (f.held) bits.push(`${n(f.held)} with others`);
     if (f.too_big) bits.push(`${n(f.too_big)} too big for its ${n(Math.round(w.mem_mb / 102.4) / 10)} GB`);
     if (f.too_long) bits.push(`${n(f.too_long)} too long to start while its owner is away`);
@@ -338,6 +395,8 @@ function fitText(w) {
   return parts.length ? h("div", "sub", `Offered: ${parts.join("; ")}`) : null;
 }
 
+// A machine's card, each the same: who and how it is; its job (or why none); beside it, its
+// second; what's next; its facts; its day.
 function machineCard(m, x) {
   const st = x.status, now = m.now;
   const [state, cls] = machineState(st, x.fresh, m.sw.pause);
@@ -375,17 +434,17 @@ function goneCard(w) {
 function pagesCard(m) {
   if (!m.pages.length) return null;
   const card = h("div", { class: "mc pages", style: { borderLeft: "3px solid #6cc28a" } },
-    h("div", "top", h("span", "name", "Pages"), h("span", "role", "browsers doing areas' last steps"), chip(`${m.pages.length}`, "ok")));
+    h("div", "top", h("span", "name", "Pages"), h("span", "role", "browsers doing tasks"), chip(`${m.pages.length}`, "ok")));
   for (const p of m.pages) {
     const leases = m.leasesOf(p.name);
     const st = p.bad ? chip("stopped", "bad") : p.seen_s > 120 ? chip("away", "") : leases.length ? chip(`${leases.length} running`, "run") : chip("waiting", "");
     const left = h("div", null, h("div", null, p.label, " ", st, p.visible === false ? chip("in the background", "warn") : null),
-      h("div", "sub", leases.length ? leases.map((l) => `${l.progress || "task"}${l.frac != null ? ` (${Math.round(l.frac * 100)}%)` : ""}`).join(" · ") : p.what));
+      h("div", "sub", leases.length ? leases.map((l) => `${l.progress || S.title(l.step)}${l.frac != null ? ` (${Math.round(l.frac * 100)}%)` : ""}`).join(" · ") : p.what));
     const right = h("div", "sub", `${n(p.done)} done${p.checked ? ` (${n(p.checked)} checked against the lead's)` : ""}${p.failed ? ` · ${p.failed} failed` : ""}${p.mem_mb ? ` · ${n(p.mem_mb)} MB` : ""} · ${dur(p.seen_s)} ago`);
     card.append(h("div", "pg", left, right));
   }
   const t = m.tasks;
-  if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — the lead offers them only while it builds areas, a few at a time" : ""}`));
+  if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — a job offers them as it runs, a few at a time" : ""}`));
   for (const e of spark(m, m.pages.map((p) => p.name)) || []) card.append(e);
   return card;
 }
@@ -402,6 +461,8 @@ function showTip(ev, text) {
 }
 const hideTip = () => tip && (tip.style.display = "none");
 
+// Each machine's lane: a run of a step's targets is a segment in its stage's colour; a map update
+// hatched; the map updates out as marks across the lanes.
 function schedule(m) {
   const fc = m.fc;
   if (!fc?.lanes || !Object.keys(fc.lanes).length) return h("div", "small dim", "No schedule yet (the forecast comes with the lead's next plan).");
@@ -413,41 +474,33 @@ function schedule(m) {
   const ordered = m.macs.flatMap((mm) => [mm.name, secondOf(mm.name)]);
   const names = ordered.filter((nm) => fc.lanes[nm]).concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
   const lanes = h("div", "lanes");
-  const steps = new Set();
+  const stagesSeen = new Set();
+  const segment = (track, l, say) => {
+    const seg = h("i", { class: l.step === UPDATE ? "update" : "", onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
+    Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: S.colour(l.step) });
+    track.append(seg);
+    if (l.step !== UPDATE) stagesSeen.add(S.stage(l.step));
+  };
   for (const nm of names) {
     const track = h("div", "track");
     for (const l of fc.lanes[nm]) {
       if (l.until < t0) continue;
-      steps.add(l.step);
-      const say = l.step === UPDATE ? `Map update (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${stepName(l.step)}: ${targets(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
-      const seg = h("i", { class: l.step === UPDATE ? "update" : "", onmousemove: (e) => showTip(e, `${nm}: ${say}`), onmouseleave: hideTip, onclick: (e) => showTip(e, `${nm}: ${say}`) });
-      Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: stepColour(l.step) });
-      track.append(seg);
+      const say = l.step === UPDATE ? `${nm}: Map update (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${nm}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
+      segment(track, l, say);
     }
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
   }
-  // The pages: their work is an area's last steps, which the lead hands out as it builds its
-  // areas (a few at a time, one to each worker around that spares what one takes; its second job's
-  // too), and rows of a tree cover piece's blocks and groups of a terrain piece's z8 subtrees, as it
-  // builds the piece; it waits for any of them only
-  // from a worker measured faster than itself at that kind (its time a quarter more still under the
-  // lead's, crate::offload): while its own areas or pieces run, so then, if such a page spares
-  // what one takes typically.
+  // The pages: a job's tasks (crate::agent::steps::TASKS) as the lead runs the job, when a page is
+  // measured faster than the lead at that kind (crate::offload) and spares what one takes.
   const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
   const pace = (p, kind) => (p.paces ? p.paces[kind] : kind === "tail" ? p.tail_pace : null);
   const fast = (kind) => m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.[kind] || 0) && pace(p, kind) != null && pace(p, kind) * 1.25 < 1);
-  const helps = [["unit", "tail", "the last steps of the lead's areas as it builds them"], ["trees", "treeblock", "rows of the lead's tree cover blocks as it builds them"], ["terrain", "terrainsub", "z8 subtrees of the lead's terrain tiles as it builds them"]].filter(([step, kind]) => fast(kind) && own.some((l) => l.step === step && l.until > t0));
+  const helps = Object.values(table.steps).filter((t) => t.of && fast(t.id) && own.some((l) => l.step === t.of && l.until > t0));
   if (helps.length) {
     const track = h("div", "track");
     const who = m.pages.map((p) => p.label).join(", ");
-    for (const [step, kind, what] of helps) {
-      for (const l of own.filter((l) => l.step === step && l.until > t0)) {
-        const say = `${who}: ${what} (${targets(step, l.n)}), ${clock(l.from)}–${clock(l.until)}`;
-        const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
-        Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: stepColour(kind) });
-        track.append(seg);
-      }
-      steps.add(kind);
+    for (const t of helps) {
+      for (const l of own.filter((l) => l.step === t.of && l.until > t0)) segment(track, { ...l, step: t.id }, `${who}: ${t.title} as the lead runs ${S.said(t.of, l.n)}, ${clock(l.from)}–${clock(l.until)}`);
     }
     lanes.append(h("div", { class: "ln", title: who }, m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label), track);
   }
@@ -469,38 +522,10 @@ function schedule(m) {
     const say = `${r.last ? "Last map update" : "Map update"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
     marks.append(h("i", { style: { left: x(r.at) }, onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) }));
   }
-  // (A map update being made, hatched: the map drawn for its regions, its catalog last;
-  // its mark, when it's out on the map. Two map updates one after the other: two hatched runs, a mark
-  // between.)
-  const legend = h("div", "legend", [...steps].filter((s) => s !== UPDATE).map((s) => h("span", null, h("i", { style: { background: stepColour(s) } }), stepName(s))), steps.has(UPDATE) && h("span", null, h("i", { class: "rhatch" }), "a map update being made"), h("span", null, h("i", { class: "rmark" }), "a map update out on the map"));
+  // The legend: the stages seen, in the build's order; a map update being made (hatched), out (a mark).
+  const order = table.stages.map((g) => g.id);
+  const legend = h("div", "legend", [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))), h("span", null, h("i", { class: "rhatch" }), "a map update being made"), h("span", null, h("i", { class: "rmark" }), "a map update out on the map"));
   return h("div", "sched", h("div", "lanewrap", lanes, marks), legend);
-}
-
-function stepsTable(m) {
-  const { steps, fc, a } = m;
-  if (!steps.length) return h("div", "small dim", "No word from the lead yet.");
-  const nowStep = stepOf(a.job?.id);
-  const grid = h("div", "steps2");
-  for (const st of steps) {
-    const done = finished(st);
-    const here = !done && (st.steps || []).includes(nowStep);
-    const busy = !done && m.helpers.some((x) => (st.steps || []).includes(stepOf(x.job?.id)));
-    const f = fc ? fc.steps.filter((s) => (st.steps || []).includes(s.step)) : [];
-    const doneAt = f.length && f.every((s) => s.done_at) ? Math.max(...f.map((s) => s.done_at)) : null;
-    const work = f.reduce((t, s) => t + s.work_s, 0);
-    const count = st.total != null ? `${n(st.done)} of ${n(st.total)} ${st.unit || ""}` : st.left != null ? (st.left ? `${st.left} left` : "done") : "to come";
-    grid.append(h("span", `mark ${done ? "ok" : here || busy ? "run" : ""}`, done ? "✓" : here || busy ? "▸" : "○"),
-      h("span", null, st.what, st.shared ? h("span", { class: "dim", title: `Helpers may take part: ${st.shared}` }, " ⇄") : null),
-      h("span", "n", count));
-    if (!done && st.total) grid.append(pbar(st.done / st.total, here || busy ? "" : "dimbar"));
-    const bits = [];
-    if (!done && work) bits.push(`${dur(work)} of work`);
-    if (!done && doneAt) bits.push(`done ≈ ${clock(doneAt)}`);
-    if (!done && st.note) bits.push(st.note);
-    if (!done && st.next?.length > 1) bits.push(`then ${st.next.slice(1, 3).join("; ")}`);
-    if (bits.length) grid.append(h("span", "note", bits.join(" · ")));
-  }
-  return grid;
 }
 
 // The regions: their order to the map with the map updates between, or by name, or by what's left; each
@@ -521,10 +546,10 @@ function regionRows(m, rerender) {
   const fc = m.fc, built = m.a.built || {};
   const regs = (fc?.regions || []).map((r) => ({ ...r, name: m.regionName[r.id] || r.id, built: built[r.id] }));
   if (!regs.length) {
-    // (An older lead: its areas built alone.)
+    // (An older lead: its roads' tiles built alone.)
     const ids = Object.keys(built);
     if (!ids.length) return [h("div", "small dim", "No regions yet.")];
-    return [h("div", "regs", ids.map((id) => h("div", "rg", h("span", "nm", m.regionName[id] || id), h("span", "when", `${built[id].built} of ${built[id].total} areas built`))))];
+    return [h("div", "regs", ids.map((id) => h("div", "rg", h("span", "nm", m.regionName[id] || id), h("span", "when", `${built[id].built} of ${built[id].total} tiles built`))))];
   }
   const q = ui.filter.trim().toLowerCase();
   const leftOf = (r) => Object.values(r.left).reduce((t, k) => t + k, 0);
@@ -554,9 +579,9 @@ function regionRows(m, rerender) {
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
     const when = lft ? `done ≈ ${clock(r.ready_at)} · on the map ≈ ${clock(r.map_at)}` : r.map_at ? `on the map ≈ ${clock(r.map_at)}` : "";
-    const order = ["unit", "terrain", "terrain-lo", "slope", "slope-lo", "trees", "trees-lo"];
-    const words = { unit: ["area", "areas"], terrain: ["terrain tile", "terrain tiles"], "terrain-lo": ["zoomed-out terrain area", "zoomed-out terrain areas"], slope: ["slope tile", "slope tiles"], "slope-lo": ["zoomed-out slope area", "zoomed-out slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"] };
-    const leftWords = order.filter((s) => r.left[s]).map((s) => plural(r.left[s], ...words[s])).join(", ");
+    // What's left, a step at a time in the table's order, each counted in its noun.
+    const order = Object.keys(table.steps);
+    const leftWords = Object.entries(r.left).filter(([, k]) => k).sort(([p], [q]) => order.indexOf(p) - order.indexOf(q)).map(([s, k]) => S.said(s, k)).join(" · ");
     const tot = r.built?.total || 0;
     const stack = h("div", "stack");
     if (tot) {
@@ -565,7 +590,7 @@ function regionRows(m, rerender) {
     }
     out.append(h("div", { class: `rg ${!lft && r.on_map === true ? "done" : ""}` },
       h("span", "nm", r.name, " ", chip(state, cls)), h("span", "when", when),
-      h("div", "left", tot ? stack : null, [tot ? `${r.built.built} of ${tot} areas built` : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
+      h("div", "left", tot ? stack : null, [tot ? `${r.built.built} of ${tot} tiles built` : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
   }
   const more = !q && total > list.length ? h("button", { class: "quiet more", onclick: () => { ui.all = true; rerender(); } }, `Show all ${total}`) : null;
   return [out, more].filter(Boolean);
@@ -592,10 +617,10 @@ function publishing(m) {
     lines.push(h("div", null, h("b", null, u.due ? "A map update is due" : "No map update due"), `: ${u.why}`));
     const left = u.left_s > 0 ? `, ${Math.ceil(u.left_s / 60)} min left` : ", passed";
     lines.push(h("div", "small dim", `Gap ${Math.ceil(u.gap_s / 60)} min (${u.gap_basis})${u.since_last_s != null ? left : ""}`));
-    if (u.regions?.length) lines.push(h("div", "small", `New work: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
+    if (u.regions?.length) lines.push(h("div", "small", `New work: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.map((k) => S.title(k)).join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
     if (u.buildings) lines.push(h("div", "small dim", "3D building packs being raised: they go out with the next map update (at most once a gap once all else is built)."));
   } else {
-    lines.push(h("div", "small dim", "A map update goes out when a region is done, at most hourly while areas are left; after the last, at once."));
+    lines.push(h("div", "small dim", "A map update goes out when a region is done, at most hourly while roads' tiles are left; after the last, at once."));
   }
   if (fc?.updates?.length > 1) lines.push(h("div", "small dim", `${plural(fc.updates.length, "map update")} to come; the last ≈ ${clock(fc.updates[fc.updates.length - 1].at)}`));
   return h("div", null, lines);
@@ -609,7 +634,7 @@ function hours(m) {
   const val = (r, w) => (ui.metric === "busy" ? (r.busy_s?.[w] || 0) / 60 : r.done?.[w]?.unit || 0);
   const max = Math.max(1, ...rows.map((r) => who.reduce((t, w) => t + val(r, w), 0)));
   const chart = h("div", "hours", rows.map((r) => {
-    const col = h("div", { class: r.paused_s > 1800 ? "paused" : "", title: `${clock(r.t)}–${clock(r.t + 3600)}: ${who.map((w) => `${w} ${ui.metric === "busy" ? `${Math.round(val(r, w))} min busy` : `${val(r, w)} areas`}`).join(", ")}` });
+    const col = h("div", { class: r.paused_s > 1800 ? "paused" : "", title: `${clock(r.t)}–${clock(r.t + 3600)}: ${who.map((w) => `${w} ${ui.metric === "busy" ? `${Math.round(val(r, w))} min busy` : S.counted("unit", val(r, w))}`).join(", ")}` });
     for (const w of who) {
       const v = val(r, w);
       if (!v) continue;
@@ -620,35 +645,36 @@ function hours(m) {
     return col;
   }));
   const axis = h("div", "hoursx", rows.map((r, i) => h("span", null, i % 6 === 0 ? String(new Date(r.t * 1000).getHours()).padStart(2, "0") : "")));
-  // The day's totals by machine.
+  // The day's totals by machine, each step counted in its noun.
   const sum = {};
   for (const r of rows) for (const [w, s] of Object.entries(r.done || {})) for (const [st, k] of Object.entries(s)) { sum[w] ??= {}; sum[w][st] = (sum[w][st] || 0) + k; }
-  const totals = Object.entries(sum).map(([w, s]) => `${w}: ${Object.entries(s).sort((x, y) => y[1] - x[1]).map(([st, k]) => did(st, k)).join(", ")}`);
+  const totals = Object.entries(sum).map(([w, s]) => `${w}: ${Object.entries(s).sort((x, y) => y[1] - x[1]).map(([st, k]) => S.said(st, k)).join(", ")}`);
   const lastHour = rows.slice(-3).reduce((t, r) => t + Object.values(r.done || {}).reduce((u, s) => u + (s.unit || 0), 0), 0) / 3;
   return h("div", null,
-    h("div", "seg", [["areas", "Areas an hour"], ["busy", "Busy minutes"]].map(([k, t]) => h("button", { class: (ui.metric || "areas") === k ? "on" : "", onclick: () => { ui.metric = k; render(); } }, t))),
+    h("div", "seg", [["tiles", `${S.title("unit")}: tiles an hour`], ["busy", "Busy minutes"]].map(([k, t]) => h("button", { class: (ui.metric || "tiles") === k ? "on" : "", onclick: () => { ui.metric = k; render(); } }, t))),
     h("div", { style: { marginTop: "8px" } }, chart, axis),
-    h("div", "small dim", `${lastHour.toFixed(1)} areas an hour lately · last 24 h: ${totals.join(" · ") || "nothing finished"}`),
+    h("div", "small dim", `${lastHour.toFixed(1)} roads' tiles an hour lately · last 24 h: ${totals.join(" · ") || "nothing finished"}`),
     h("div", "legend", who.map((w) => h("span", null, h("i", { style: { background: m.colourOf(w) } }), w))));
 }
 
-// What happened, in words: an event (or a run of like ones, together).
+// What happened, in words: an event (or a run of like ones, together), one sentence each, the
+// step said as everywhere ("Terrain: 8 tiles").
 function eventText(m, e, k = 1) {
   const who = e.worker || "";
   const nm = (id) => m.regionName[id] || id;
   const t = e.targets || [];
-  const what = e.step ? `${stepName(e.step)}${t.length ? ` (${t.length === 1 ? t[0] : targets(e.step, t.length)})` : ""}` : "";
+  const what = e.step ? (t.length === 1 && !S.world(e.step) ? `${S.title(e.step)}: ${t[0]}` : S.said(e.step, t.length)) : "";
   switch (e.kind) {
     case "start": return [`${who} began ${e.what || e.note || what}`, ""];
     case "end": {
-      const job = e.what ? `${e.what}${t.length > 1 && !/\(/.test(e.what) ? ` (${targets(e.step, t.length)})` : ""}` : what;
-      return e.ok ? [`${who} finished ${job} in ${dur(e.secs || 0)}`, ""] : [`${who}'s ${job} ${e.note || "stopped"}${t.length ? ` (${t.length} done and kept)` : ""}`, /fail/.test(e.note) ? "bad" : "warn"];
+      const job = e.what || what;
+      return e.ok ? [`${who} finished ${job} in ${dur(e.secs || 0)}`, ""] : [`${who}'s ${job} ${e.note || "stopped"}${t.length ? ` (${S.counted(e.step, t.length)} done and kept)` : ""}`, /fail/.test(e.note) ? "bad" : "warn"];
     }
     case "lease": return [`${who} took ${what}`, "dim"];
     case "done": return [`${who} handed back ${what}, ${dur(e.secs || 0)} after taking it`, ""];
     case "fail": return [`${who}'s ${what} ${/^stopped/.test(e.note) ? e.note : `failed: ${e.note}`}`, /^stopped/.test(e.note) ? "warn" : "bad"];
     case "lapse": return [`${who} went quiet: its lease on ${e.note || what} lapsed and the work is offered again`, "warn"];
-    case "task": return [k > 1 ? `${who} did ${k} areas' last steps` : `${who} did an area's last steps (${t[0] || ""}) in ${dur(e.secs || 0)}`, "dim"];
+    case "task": return [k > 1 ? `${who} did ${plural(k, "task")}` : `${who} did a task${t[0] ? ` (${t[0]})` : ""} in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-fail": return /^stopped:/.test(e.note || "") ? [`${who}: a task given back (${e.note.replace(/^stopped:\s*/, "")})`, "warn"] : [`${who}: a task failed: ${e.note}`, "bad"];
     case "map-update": return [`A map update began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
@@ -687,7 +713,7 @@ function feed(m, events, seen) {
     const d = new Date(r.e.t * 1000).toDateString();
     if (d !== day) { out.append(h("div", "day", d === new Date().toDateString() ? "Today" : d)); day = d; }
     const [text, cls] = eventText(m, r.e, r.k);
-    out.append(h("div", { class: seen != null && r.e.seq > seen ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, text)));
+    out.append(h("div", { class: seen != null && r.e.seq > seen ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text)));
   }
   if (!rows.length) out.append(h("div", "dim", events.length ? "Nothing of that kind lately." : "Nothing yet."));
   return out;
@@ -698,17 +724,17 @@ function sinceLine(m, events, seen) {
   if (seen == null) return null;
   const fresh = events.filter((e) => e.seq > seen);
   if (!fresh.length) return h("div", "since dim", "Nothing new since you last looked.");
-  const areas = {};
+  const tiles = {};
   let failures = 0, updates = [];
   for (const e of fresh) {
-    if ((e.kind === "end" || e.kind === "done") && e.step === "unit" && e.ok !== false) areas[e.worker] = (areas[e.worker] || 0) + (e.targets || []).length;
+    if ((e.kind === "end" || e.kind === "done") && e.step === "unit" && e.ok !== false) tiles[e.worker] = (tiles[e.worker] || 0) + (e.targets || []).length;
     // (Stops aren't failures: the build pausing, the Mac sleeping, a lease lapsing, an agent stopping.)
     if (e.ok === false && !/^(stopped|paused|its lease lapsed|the agent stopped|another Mac took)/.test(e.note || "")) failures++;
     if (e.kind === "catalog") updates.push(e);
   }
-  const total = Object.values(areas).reduce((t, k) => t + k, 0);
+  const total = Object.values(tiles).reduce((t, k) => t + k, 0);
   const bits = [];
-  if (total) bits.push(`${plural(total, "area")} built (${Object.entries(areas).map(([w, k]) => `${k} by ${w}`).join(", ")})`);
+  if (total) bits.push(`${S.said("unit", total)} built (${Object.entries(tiles).map(([w, k]) => `${k} by ${w}`).join(", ")})`);
   if (updates.length) bits.push(`${plural(updates.length, "map update")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
   if (failures) bits.push(h("span", "bad", plural(failures, "failure")));
   const first = fresh[0];
@@ -720,25 +746,28 @@ function details(m) {
   const { sw, a, now } = m;
   const box = h("div", "box");
   // (Each in a box that scrolls sideways on a phone.)
-  const table = (head, rows) => h("div", "twrap", h("table", "t", h("tr", null, head.map((c) => h("th", null, c))), rows.map((r) => h("tr", null, r.map((c) => h("td", null, c))))));
+  const tbl = (head, rows) => h("div", "twrap", h("table", "t", h("tr", null, head.map((c) => h("th", null, c))), rows.map((r) => h("tr", null, r.map((c) => h("td", null, c))))));
   const leases = sw.leases || [];
   box.append(h("h3", null, "Leases", h("span", null, "who holds what; a worker that stops beating gives its work back")),
-    leases.length ? table(["Worker", "Work", "For", "Last beat", "Lapses in", "Says"], leases.map((l) => [l.worker, l.what.length > 60 ? `${l.what.slice(0, 60)}…` : l.what, dur(l.for_s), l.beat_s != null ? `${dur(l.beat_s)} ago` : "–", l.lapses_in_s != null ? dur(l.lapses_in_s) : "–", l.progress || ""])) : h("div", "small dim", "None."));
+    leases.length ? tbl(["Worker", "Work", "For", "Last beat", "Lapses in", "Says"], leases.map((l) => [l.worker, S.said(l.step, l.n), dur(l.for_s), l.beat_s != null ? `${dur(l.beat_s)} ago` : "–", l.lapses_in_s != null ? dur(l.lapses_in_s) : "–", l.progress || ""])) : h("div", "small dim", "None."));
   const waits = a.waiting || [];
-  box.append(h("h3", null, "Waiting", h("span", null, "what can't run yet, and why")), waits.length ? table(["What", "Why"], waits.map((w) => [w.what, w.why])) : h("div", "small dim", "Nothing."));
+  box.append(h("h3", null, "Waiting", h("span", null, "what can't run yet, and why")), waits.length ? tbl(["What", "Why"], waits.map((w) => [w.what, w.why])) : h("div", "small dim", "Nothing."));
   // The timetables' to-do list and the routes matching nothing on the map (docs/inputs.md §6.7.3).
   const tt = a.timetables;
   if (tt) {
     box.append(h("h3", null, "Timetables", h("span", null, `${n(tt.to_do)} lines with no timetable (${n(tt.rail)} rail, ${n(tt.ferry)} ferry, ${n(Math.round(tt.to_do_km))} km): ${tt.file}`)),
-      tt.unmatched_total ? table(["Mode", "Timetable", "Route", "OSM pin", "Matches nothing because"], tt.unmatched.map((u) => [u.mode, u.source, u.name ? `${u.route} (${u.name})` : u.route, u.osm || "", u.why])) : h("div", "small dim", "Every timetable route matches a line on the map."));
+      tt.unmatched_total ? tbl(["Mode", "Timetable", "Route", "OSM pin", "Matches nothing because"], tt.unmatched.map((u) => [u.mode, u.source, u.name ? `${u.route} (${u.name})` : u.route, u.osm || "", u.why])) : h("div", "small dim", "Every timetable route matches a line on the map."));
     if (tt.unmatched_total > tt.unmatched.length) box.append(h("div", "small dim", `… and ${n(tt.unmatched_total - tt.unmatched.length)} more (work/timetables/report)`));
   }
   const recent = a.recent || [];
-  box.append(h("h3", null, "The lead's last jobs"), recent.length ? table(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
-  if ((a.bad_recipes || []).length) box.append(h("h3", null, "Region recipes that don't read"), table(["File", "Problem"], a.bad_recipes));
+  box.append(h("h3", null, "The lead's last jobs"), recent.length ? tbl(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
+  if ((a.bad_recipes || []).length) box.append(h("h3", null, "Region recipes that don't read"), tbl(["File", "Problem"], a.bad_recipes));
   if (a.job?.tail) box.append(h("h3", null, "The lead's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, a.job.tail));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
-  if (workers.length) box.append(h("h3", null, "Workers heard from"), table(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
+  if (workers.length) box.append(h("h3", null, "Workers heard from"), tbl(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
+  // The steps table itself: every step the same row (docs/pipeline.md).
+  const rows = Object.values(table.steps);
+  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.batch ? `${s.batch} ${s.noun}s` : s.of ? "" : "all"])));
   box.append(h("div", "fresh", `Updated ${clock(now)} · the lead's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
   return h("details", { class: "more-box", open: ui.detailsOpen || null, ontoggle: (e) => (ui.detailsOpen = e.target.open) }, h("summary", null, "Details"), box);
 }
@@ -766,16 +795,17 @@ function render() {
   const verdict = section("d-verdict", "verdict", null, null,
     h("div", "verdict", h("div", "say", verdictText(m)), ctl),
     h("div", "alerts", al.map((x) => h("span", { class: `alert ${x.cls}`, onclick: () => document.getElementById(x.to)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, x.text))));
+  const fin = m.lines.filter(finished).length;
+  const stagesSec = section("d-stages", "stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", stages(m));
   const machines = section("d-machines", "machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
     h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)));
   const road = section("d-road", "road", "Road to done", m.fc?.done_at ? `done ≈ ${clock(m.fc.done_at)}` : "",
     h("div", "road",
       h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m)),
-      h("div", "box", h("h3", null, "Map updates"), publishing(m)),
-      h("div", "box", h("h3", null, "Steps", h("span", null, "⇄ helpers may take part")), stepsTable(m))));
+      h("div", "box", h("h3", null, "Map updates"), publishing(m))));
   // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
   const regions = section("d-regions", "regions", null, null,
-    h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest areas left" : "")), regionsList(m, render)));
+    h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest tiles left" : "")), regionsList(m, render)));
   const activity = section("d-activity", "activity", "Activity", "the last day",
     h("div", "box", hours(m),
       h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Map updates"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
@@ -786,7 +816,7 @@ function render() {
   const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
   root.classList.toggle("gated", banners.length > 0);
   const gate = h("section", { class: "d-inputs", id: "inputs" }, banners);
-  const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), machines, pool, road, regions, activity, section("d-details", "details", null, null, details(m))];
+  const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), stagesSec, machines, pool, road, regions, activity, section("d-details", "details", null, null, details(m))];
   // (A section where the user is typing or has text selected stays as it was until they're done:
   // a refresh would take their keyboard or selection away.)
   const sel = window.getSelection();
@@ -807,9 +837,24 @@ function poll() {
   return polling;
 }
 
+// The steps table, once (again on a poll until a lead answers it; a lead without it: ids).
+let tableAsked = false;
+async function loadTable() {
+  if (tableAsked) return;
+  try {
+    const [code, t] = await ctx.call("/work/steps", {});
+    if (code === 200 && t?.steps) {
+      table.steps = Object.fromEntries(t.steps.map((s) => [s.id, s]));
+      table.stages = t.stages || [];
+      tableAsked = true;
+    } else if (code === 404) tableAsked = true;
+  } catch { /* (Asked again with the next poll.) */ }
+}
+
 async function pollOnce() {
   if (!ctx) return;
   try {
+    await loadTable();
     const [code, sw] = await ctx.call("/work/swarm", {});
     if (code !== 200 || !sw) return;
     last = sw;

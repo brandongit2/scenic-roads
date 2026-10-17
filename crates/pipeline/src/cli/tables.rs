@@ -19,7 +19,8 @@ pub const SCENIC: Table = Table {
     default: Some("status"),
     common: &[],
     cmds: &[
-        c("status", "[--root <dir>] [--home <dir>]", "what the lead is doing, what waits and why, regions", &[], HR, 0),
+        c("status", "[--root <dir>] [--home <dir>]", "what the lead is doing, what waits and why, the build to the end by stage and step, regions", &[], HR, 0),
+        c("steps", "[--json]", "the steps table (docs/pipeline.md): every step's title, what it does, its kind, scope, stage and where it runs; --json as the build page reads it", &["--json"], &[], 0),
         c("agent", "[--once] [--dry-run] [--home <dir>] [--root <dir>]", "the build agent (every Mac's login item, a member of the pool)", &["--once", "--dry-run", "--helper"], HR, 0),
         c("pool", "[--root <dir>]", "how the pool stands (docs/pool.md)", &[], R, 0),
         c("pool status", "[--root <dir>]", "how the pool stands", &[], R, 0),

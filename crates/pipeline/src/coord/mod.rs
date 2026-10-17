@@ -2285,6 +2285,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let s = shared.lock().unwrap();
             Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
         }
+        "/work/steps" => {
+            // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
+            // and the stages, for the page's words and colours (read once a load).
+            Ok((200, serde_json::json!({ "steps": crate::agent::steps::table(), "stages": crate::agent::steps::STAGES })))
+        }
         "/work/floors" => {
             // The targets' floors (crate::agent::memguard), cleared (`{"clear": true}`, of a `step`,
             // of its `target`) first when asked: `scenic pool floors`.
@@ -2548,6 +2553,7 @@ mod http {
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
+            .route("/work/steps", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
@@ -2737,7 +2743,7 @@ mod http {
         let job = key.as_deref().is_some_and(|k| crate::net::same(k, &c.job_token));
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
         let is_page = req.method() == Method::GET && (matches!(path.as_str(), "/work" | "/work/watch" | "/work/watch/") || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
-        let is_view = req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history");
+        let is_view = req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps");
         if is_page || is_view {
             return next.run(req).await;
         }
@@ -4198,6 +4204,10 @@ mod tests {
         assert_eq!(ask("GET", "/work/", None).0, 200);
         assert_eq!(ask("POST", "/work/swarm", None).0, 200);
         assert_eq!(ask("POST", "/work/history", None).0, 200);
+        let (code, _, steps) = send(&addr, "POST", "/work/steps", None, &[], &serde_json::json!({}));
+        assert_eq!(code, 200);
+        assert_eq!(steps["steps"][0]["id"], "osm-pass");
+        assert_eq!(steps["stages"][0]["id"], "pass");
         // The old watching-only address leads to it.
         assert_eq!(ask("GET", "/work/watch/", None), (302, "/work/".to_string()));
         // Pausing: no key; the agents' own requests: the build's key.

@@ -6501,7 +6501,7 @@ fn room_past(target: u64, goal: u64) -> String {
 }
 
 /// A job's step: its id's first word ("unit 6/31/20": "unit").
-fn step_of(id: &str) -> Option<String> {
+pub fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
 }
 

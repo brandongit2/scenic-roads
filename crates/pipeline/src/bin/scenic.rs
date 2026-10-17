@@ -439,6 +439,31 @@ fn status(args: &[String]) -> Result<()> {
             println!("{l}");
         }
     }
+    // The build to the end (the status's checklist, as the build page and the menu bar have it): a
+    // line per stage, done, under way or to come, and under it a line per step, each the same:
+    // its title, its targets done of all (or left) in its noun, and where it runs.
+    if !st.checklist.is_empty() {
+        let now: Vec<String> = [&st.job, &st.beside].iter().filter_map(|j| j.as_ref().and_then(|j| agent::step_of(&j.id))).collect();
+        let finished = st.checklist.iter().filter(|l| l.finished()).count();
+        println!("To the end: {finished} of {} stages done (⇄: any Mac may take it)", st.checklist.len());
+        for l in &st.checklist {
+            let running = now.iter().any(|n| l.steps.contains(n));
+            let mark = if l.finished() { "✓" } else if running { "▸" } else { "○" };
+            println!("  {mark} {}: {}{}", l.what, count_line(l.done, l.total, l.left, &l.unit), l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default());
+            if l.finished() {
+                continue;
+            }
+            for i in &l.items {
+                let noun = format!("{}s", agent::steps::noun(&i.step));
+                let here = now.iter().any(|n| n == &i.step);
+                let place = if agent::steps::place(&i.step) == agent::steps::Place::Any { " ⇄" } else { "" };
+                println!("      {} {}: {}{place}", if i.finished() { "✓" } else if here { "▸" } else { "○" }, agent::steps::title(&i.step), count_line(i.done, i.total, i.left, &noun));
+            }
+            for (k, j) in l.next.iter().take(4).enumerate() {
+                println!("      {}: {j}", if k > 0 { "then" } else if running { "now" } else { "next" });
+            }
+        }
+    }
     for d in st.recent.iter().take(5) {
         println!("{} {} ({}, {} s)", if d.ok { "Done:" } else { "Failed:" }, d.what, ago(d.ended), d.secs);
         if !d.ok {
@@ -497,6 +522,46 @@ fn status(args: &[String]) -> Result<()> {
         println!("Map on a device: {m} (open it once on an iPhone or an iPad on the tailnet)");
     }
     Ok(())
+}
+
+/// `scenic steps [--json]`: the steps table (crate::agent::steps, docs/pipeline.md), a stage at a
+/// time, each step one line of the same columns; `--json` as `/work/steps` serves it.
+fn steps(args: &[String]) -> Result<()> {
+    use agent::steps::{self, Kind, Place, Scope};
+    let rows = steps::table();
+    if flag(args, "--json") {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "steps": rows, "stages": steps::STAGES }))?);
+        return Ok(());
+    }
+    let kind = |k: Kind| match k {
+        Kind::Fetch => "fetch",
+        Kind::Derive => "derive",
+        Kind::Pack => "pack",
+        Kind::Publish => "publish",
+        Kind::Keep => "keep",
+    };
+    let each = |r: &steps::Info| match (&r.of, r.scope) {
+        (Some(of), _) => format!("a task of {}", steps::title(of)),
+        (None, Scope::World) => "the world".to_string(),
+        (None, s) => format!("{} {}", if s == Scope::Area || s == Scope::Input { "an" } else { "a" }, s.noun()),
+    };
+    for st in steps::STAGES {
+        println!("{}: {}", st.title, st.does);
+        for r in rows.iter().filter(|r| r.stage == st.id) {
+            println!("  {:<26} {:<8} {:<22} {:<8} {:<16} {}", r.title, kind(r.kind), each(r), if r.place == Place::Any { "any Mac" } else { "the lead" }, format!("id {}", r.id), r.does);
+        }
+    }
+    Ok(())
+}
+
+/// A checklist line's count: "12 of 480 tiles", "3 runs left", "done", or "to come" (not sized yet).
+fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str) -> String {
+    match (total, left) {
+        (Some(t), _) if t > 0 => format!("{done} of {t} {noun}").trim_end().to_string(),
+        (_, Some(0)) => "done".into(),
+        (_, Some(l)) => format!("{l} {} left", if l == 1 { noun.trim_end_matches('s') } else { noun }).replace("  ", " "),
+        _ => "to come".into(),
+    }
 }
 
 /// A Mac's build caches in a line: what a clear would free (`scenic clean` there) or why not now,
@@ -766,6 +831,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "timings" => timings(&args),
+        "steps" => steps(&args),
         "inputs" => inputs(&args),
         c => bail!("{c}: in the table (pipeline::cli::tables::SCENIC) but not run here"),
     }

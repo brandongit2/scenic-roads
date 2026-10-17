@@ -1,11 +1,11 @@
 /* The build at a glance (dash.js), the page at /work/. The page's own tokens
    (index.html's :root) are used throughout. */
 
-#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "machines" "pool" "road" "regions" "activity" "details"; }
-#dash.gated { grid-template-areas: "verdict" "inputs" "overview" "machines" "pool" "road" "regions" "activity" "details"; }
+#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "stages" "machines" "pool" "road" "regions" "activity" "details"; }
+#dash.gated { grid-template-areas: "verdict" "inputs" "overview" "stages" "machines" "pool" "road" "regions" "activity" "details"; }
 @media (min-width: 1100px) {
-  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "machines road" "pool road" "activity road" "activity regions" "details details"; align-items: start; }
-  #dash.gated { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "machines road" "pool road" "activity road" "activity regions" "details details"; }
+  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "stages stages" "machines road" "pool road" "activity road" "activity regions" "details details"; align-items: start; }
+  #dash.gated { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "stages stages" "machines road" "pool road" "activity road" "activity regions" "details details"; }
 }
 #dash > section { min-width: 0; }
 .d-verdict { grid-area: verdict; }
@@ -13,6 +13,7 @@
 /* (Its row only while a unit is held or checking: #dash.gated.) */
 .d-inputs:empty { display: none; }
 .d-overview { grid-area: overview; }
+.d-stages { grid-area: stages; }
 .d-machines { grid-area: machines; }
 .d-pool { grid-area: pool; }
 .d-road { grid-area: road; }
@@ -48,7 +49,7 @@ button.quiet { color: var(--dim); }
 button:disabled { opacity: .5; }
 
 /* The overview: how far, how long, the steps as a strip, the numbers that matter. */
-.overview { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+.overview { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); align-items: start; }
 @media (min-width: 720px) { .overview { grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); } }
 .big { font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; }
 .big small { font-size: 13px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
@@ -120,12 +121,24 @@ button:disabled { opacity: .5; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 .tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 11.5px; max-width: 280px; box-shadow: 0 4px 14px var(--shadow); }
 
-.steps2 { display: grid; grid-template-columns: 16px minmax(0, 1fr) max-content; gap: 2px 8px; align-items: baseline; }
-.steps2 .mark { color: var(--dim); text-align: center; } .steps2 .mark.ok { color: var(--ok); } .steps2 .mark.run { color: var(--accent); }
-.steps2 .n { color: var(--dim); font-size: 11.5px; text-align: right; }
-.steps2 .full { grid-column: 2 / 4; }
-.steps2 .note { grid-column: 2 / 4; color: var(--dim); font-size: 11px; margin: -1px 0 3px; }
-.steps2 .pbar { grid-column: 2 / 4; margin: 1px 0 4px; }
+/* The stages: a card per stage, a row per step, every row the same cells (mark, title, count,
+   when); the stage's colour on its edge, its bars and its swatches. */
+.stages { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.stage { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px 7px 9px; }
+.stage.done { opacity: .6; }
+.stage .row { display: grid; grid-template-columns: 14px minmax(0, 1fr) max-content; gap: 1px 7px; align-items: baseline; }
+.stage .row.head { font-weight: 600; }
+.stage .row.head .n { font-weight: 400; }
+.stage .row.item { padding-left: 12px; font-size: 12px; }
+.stage .row.item.done { color: var(--dim); }
+.stage .row .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage .row .n { color: var(--dim); font-size: 11.5px; text-align: right; white-space: nowrap; }
+.stage .when { color: var(--dim); font-size: 11px; margin: -1px 0 2px 33px; }
+.stage .pbar { margin: 2px 0 3px 21px; }
+.stage .row.item + .pbar { margin-left: 33px; height: 3px; }
+.stage .note { color: var(--dim); font-size: 11px; margin: 3px 0 0 21px; }
+.mark { color: var(--dim); text-align: center; } .mark.ok { color: var(--ok); } .mark.run { color: var(--accent); }
+.sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
 
 .regbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .regbar input { flex: 1 1 160px; width: auto; margin: 0; }
