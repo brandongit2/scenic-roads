@@ -857,7 +857,7 @@ pub fn said(e: &Event) -> String {
         Event::TookUp { term, how, handed } => format!("took up term {term} ({how}){}", if handed.is_some() { ", the coordinator's state handed over" } else { "" }),
         Event::SteppedDown { term, why } => format!("no longer leads term {term}: {why}"),
         Event::Handover { term, to, what } => format!("its handover of term {term} to {to}: {what}"),
-        Event::Merged { applied, overtaken, refused, listed } => format!("merged {} entr{} ({overtaken} passed over, {refused} refused){}", applied.len(), if applied.len() == 1 { "y" } else { "ies" }, if *listed { ", a listing's" } else { "" }),
+        Event::Merged { applied, overtaken, refused, listed, .. } => format!("merged {} entr{} ({overtaken} passed over, {refused} refused){}", applied.len(), if applied.len() == 1 { "y" } else { "ies" }, if *listed { ", a listing's" } else { "" }),
         Event::Waits { what, why } => format!("waits to {what}: {why}"),
         Event::Failed { what, why } => format!("couldn't {what}: {why}"),
     }
@@ -1482,9 +1482,9 @@ impl Run {
             eprintln!("pool: {}", said(e));
             // (The hand-offs merged, by their entries' keys, in the build's history: publishing's
             // times, crate::pubtimes.)
-            if let (Event::Merged { applied, .. }, Some(co)) = (e, &self.cx.coord) {
-                if !applied.is_empty() {
-                    co.note(crate::coord::history::Event { targets: applied.clone(), ..crate::coord::history::Event::new("merged") });
+            if let (Event::Merged { done, .. }, Some(co)) = (e, &self.cx.coord) {
+                if !done.is_empty() {
+                    co.note(crate::pubtimes::merged_event(done));
                 }
             }
         }

@@ -808,8 +808,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`).
   - `state/publish/<host>.jsonl` (pipeline::pubtimes): each Mac's map server's lines, appended,
     `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalog n served), `mirror-start` and
-    `mirror-end` (its mirror's first sync of catalog n, and the first through everything wanted,
-    `secs` from the start).
+    `mirror-end` (its mirror's sync of catalog n begun, and through everything wanted, `secs` from
+    the start: each once per server process, so a restarted server says them again). Past 512 KB a
+    file is written again with its newer half.
   - Leases carry `term` and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.
 - **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,

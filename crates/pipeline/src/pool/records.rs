@@ -291,8 +291,13 @@ pub struct Merged {
     /// merge later.
     pub failed: Vec<String>,
     /// Read, and held by the check (`HOLD`), with why: neither applied nor refused; to merge later.
-    pub held: Vec<(String, String)>,
+    pub held: Vec<(String, String)>,    /// Of those applied, each one's job done (its key, member, step and targets), for publishing's
+    /// times (crate::pubtimes).
+    pub done: Vec<MergedJob>,
 }
+
+/// A merged entry's job done: its key, member, step and targets.
+pub type MergedJob = (String, String, String, Vec<String>);
 
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
 /// or refused, in (term, lease) order: this lead's check decides, whatever another lead's refusal
@@ -338,6 +343,9 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
         match check(&e, r) {
             Ok(()) => {
                 if r.apply(&k, &e) {
+                    if let Some((step, targets)) = &e.handoff.done {
+                        out.done.push((k.clone(), e.member.clone(), step.clone(), targets.iter().map(|t| t.0.clone()).collect()));
+                    }
                     out.applied.push(k);
                 } else {
                     out.overtaken.push(k);

@@ -2063,6 +2063,17 @@ fn rail_next(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Ke
     Some((done.lo.get("rail").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] }))
 }
 
+/// Where unit `u`'s ways lie (E7): its owned extent (`Reach::owned_extent`), without a reach its
+/// tile + 20 km (`reach::near_box`). A map tile it meets (`owns`) is one of its owners'.
+pub fn unit_ways(reach: Option<&Reaches>, u: Unit) -> [i32; 4] {
+    reach.and_then(|r| r.get(u)).map(|r| r.owned_extent(u)).unwrap_or_else(|| crate::reach::near_box(u))
+}
+
+/// Whether a unit whose ways lie in `ways` owns the tile of box `tile` (both E7): they meet.
+pub fn owns(ways: [i32; 4], tile: [i32; 4]) -> bool {
+    ways[0] <= tile[2] && ways[2] >= tile[0] && ways[1] <= tile[3] && ways[3] >= tile[1]
+}
+
 /// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
 /// its key, done or not. Both are keyed on what they read, the base packs and road values of the
 /// units whose ways come into the tile (its owners: pack(T)'s `here` index points into their base
@@ -2076,8 +2087,7 @@ fn pack_lo_targets(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> (Ve
         .iter()
         .filter_map(|(l, c)| l.strip_prefix("base/").and_then(Unit::parse).map(|u| (u, format!("{c}+{}", get(&format!("global/roads/{}", u.dash()))))))
         .map(|(u, c)| {
-            let ext = reach.and_then(|r| r.get(u)).map(|r| r.owned_extent(u)).unwrap_or_else(|| crate::reach::near_box(u));
-            (u, c, ext)
+            (u, c, unit_ways(reach, u))
         })
         .collect();
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
@@ -2088,7 +2098,7 @@ fn pack_lo_targets(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> (Ve
     // The units whose extent meets a tile's box.
     let owners = |z: u8, x: u32, y: u32| -> Vec<String> {
         let gb = crate::hipack::tile_bounds(z, x, y);
-        base_units.iter().filter(|(_, _, e)| e[0] <= gb[2] && e[2] >= gb[0] && e[1] <= gb[3] && e[3] >= gb[1]).map(|(_, c, _)| c.clone()).collect()
+        base_units.iter().filter(|(_, _, e)| owns(*e, gb)).map(|(_, c, _)| c.clone()).collect()
     };
     let key = |head: String, ins: Vec<String>| {
         let mut all = vec![head];

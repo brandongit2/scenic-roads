@@ -1,15 +1,16 @@
-//! Publishing timed end to end (task #250; docs/pipeline.md, Publishing's times): from a build
+//! Publishing timed end to end (task #250; docs/plan.md §8, Publishing's times): from a build
 //! unit done to its map tiles on every Mac's map, by the events each stage leaves.
 //!
 //! - **In the build's history** (crate::coord::history, the lead's): a unit's job ended ("end",
-//!   "done"); its hand-off merged ("merged": the journal entries' keys, `<day>/<lease>`); the map
-//!   tiles (pack) planned ("planned": the stale z6 tiles a map update first plans, with the units
-//!   whose ways reach each, `reaching`), leased ("lease") and done ("end", "done"); and catalog n
-//!   written ("catalog": its `n`, its time, and `CatalogStats`: delta or whole, the files it
-//!   stat'ed, its phases).
+//!   "done"); its hand-off merged ("merged": `merged_event`, each entry's key, member, step and
+//!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles a map update
+//!   first plans at their keys, and the units whose change made each stale, `restaled_by`), leased
+//!   ("lease", "start") and done ("end", "done"); and catalog n written ("catalog": its `n`, its
+//!   job's time, and `CatalogStats`: delta or whole, the files it stat'ed, its phases).
 //! - **The Macs' map servers' own log on the NAS** (`SERVERS`, a file per Mac appended to: a few
-//!   lines a catalog, never a file per event): each server's adoption of catalog n ("adopt") and its
-//!   mirror's sync of it, begun ("mirror-start") and through everything wanted ("mirror-end").
+//!   lines a catalog, never a file per event; cut to its newer half past `SERVERS_MAX`): each
+//!   server's adoption of catalog n ("adopt") and its mirror's sync of it, begun ("mirror-start")
+//!   and through everything wanted ("mirror-end"), each once per catalog and server process.
 //!
 //! `chains` joins them, per catalog and per unit; `scenic timings publish` prints them.
 
@@ -21,6 +22,9 @@ use std::path::Path;
 
 /// The map servers' log: `<host>.jsonl` in it, one writer each.
 pub const SERVERS: &str = "state/publish";
+/// A Mac's log past this many bytes is cut to its newer half as it's next appended to (a few
+/// hundred bytes a catalog: months of them).
+pub const SERVERS_MAX: u64 = 512 * 1024;
 
 /// The steps whose runs are counted per catalog (besides the map tiles').
 pub const COUNTED: [&str; 5] = ["ferries", "stations", "roadunits", "marks", "names-todo"];
@@ -43,7 +47,8 @@ fn now_s() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Appends `e` (now, unless it says when) to its Mac's log under the project folder `root`.
+/// Appends `e` (now, unless it says when) to its Mac's log under the project folder `root`; a log
+/// past `SERVERS_MAX` is written again with its newer half first.
 pub fn append_server(root: &Path, mut e: ServerEvent) -> std::io::Result<()> {
     if e.t == 0 {
         e.t = now_s();
@@ -52,7 +57,14 @@ pub fn append_server(root: &Path, mut e: ServerEvent) -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let name: String = e.host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let line = serde_json::to_string(&e).map_err(std::io::Error::other)?;
-    std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{name}.jsonl")))?.write_all(format!("{line}\n").as_bytes())
+    let p = dir.join(format!("{name}.jsonl"));
+    if std::fs::metadata(&p).is_ok_and(|m| m.len() > SERVERS_MAX) {
+        let text = std::fs::read_to_string(&p)?;
+        let lines: Vec<&str> = text.lines().collect();
+        let kept = lines[lines.len() / 2..].join("\n");
+        return crate::whole::write(&p, format!("{kept}\n{line}\n").as_bytes()).map_err(std::io::Error::other);
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(&p)?.write_all(format!("{line}\n").as_bytes())
 }
 
 /// Every Mac's map server's events since `since` (unix seconds), in time order.
@@ -71,7 +83,8 @@ pub fn read_servers(root: &Path, since: u64) -> Vec<ServerEvent> {
 }
 
 /// What a map server's mirror said of its syncs, per process: each catalog's start once, its end
-/// once (a sync through everything wanted, nothing waiting or failed).
+/// once (a sync through everything wanted, nothing waiting or failed). A server started again says
+/// the catalog's start again (`chains` takes the first).
 #[derive(Debug, Default)]
 pub struct MirrorMarks {
     started: Option<(u64, u64)>,
@@ -83,7 +96,7 @@ impl MirrorMarks {
         MirrorMarks { started: None, ended: None }
     }
 
-    /// A sync of catalog `n` begins at `t`: whether it's the first of it (to say).
+    /// A sync of catalog `n` begins at `t`: whether it's this process's first of it (to say).
     pub fn start(&mut self, n: u64, t: u64) -> bool {
         if self.started.is_some_and(|(m, _)| m == n) {
             return false;
@@ -123,6 +136,12 @@ pub struct CatalogStats {
 pub const CATALOG_LINE: &str = "catalog-stats: ";
 
 impl CatalogStats {
+    /// Catalog `n`'s, with the job's phases as timed so far (crate::timings; none untimed).
+    pub fn now(n: u64, delta: bool, files: u64, stated: u64) -> CatalogStats {
+        let phases = crate::timings::snapshot(true).map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect()).unwrap_or_default();
+        CatalogStats { n, delta, files, stated, phases }
+    }
+
     pub fn line(&self) -> String {
         format!("{CATALOG_LINE}{}", serde_json::to_string(self).unwrap_or_default())
     }
@@ -133,32 +152,78 @@ impl CatalogStats {
     }
 }
 
-/// The units whose ways reach each z6 tile ("6/x/y"; the units' base packs in the manifest `m`,
-/// "6/x/y" too): a unit's owned extent (crate::reach::Reach::owned_extent), without a reach its
-/// tile + `reach::LONG_KM`, meeting the tile. (What a "planned" event says, for the units' restale
-/// counts.)
-pub fn reaching(m: &BTreeMap<String, String>, reach: Option<&crate::reach::Reaches>, tiles: &[String]) -> BTreeMap<String, Vec<String>> {
+/// The units whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
+/// it: crate::agent::build::{unit_ways, owns}, as its key reads them), those whose base pack or
+/// road values in the manifest `m` aren't what `served` (the served catalog's, by logical name)
+/// has: by unit ("6/x/y"), its tiles. A unit rebuilt the same (the same content names) made none
+/// stale.
+pub fn restaled_by(m: &BTreeMap<String, String>, reach: Option<&crate::reach::Reaches>, served: &BTreeMap<String, String>, tiles: &[String]) -> BTreeMap<String, Vec<String>> {
+    use crate::agent::build::{owns, unit_ways};
     use crate::legacy::Unit;
-    let units: Vec<(Unit, [i32; 4])> = m
+    let changed: Vec<(Unit, [i32; 4])> = m
         .keys()
         .filter_map(|l| l.strip_prefix("base/").and_then(Unit::parse))
-        .map(|u| (u, reach.and_then(|r| r.get(u)).map(|r| r.owned_extent(u)).unwrap_or_else(|| crate::reach::near_box(u))))
+        .filter(|u| [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())].iter().any(|l| m.get(l) != served.get(l)))
+        .map(|u| (u, unit_ways(reach, u)))
         .collect();
-    tiles
-        .iter()
-        .filter_map(|t| {
-            let p: Vec<u32> = t.split('/').filter_map(|s| s.parse().ok()).collect();
-            let [z, x, y] = p[..] else { return None };
-            let b = crate::hipack::tile_bounds(z as u8, x, y);
-            let near = units.iter().filter(|(_, e)| e[0] <= b[2] && e[2] >= b[0] && e[1] <= b[3] && e[3] >= b[1]).map(|(u, _)| u.slash()).collect();
-            Some((t.clone(), near))
-        })
-        .collect()
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for t in tiles {
+        let p: Vec<u32> = t.split('/').filter_map(|s| s.parse().ok()).collect();
+        let [z, x, y] = p[..] else { continue };
+        let b = crate::hipack::tile_bounds(z as u8, x, y);
+        for (u, _) in changed.iter().filter(|(_, e)| owns(*e, b)) {
+            out.entry(u.slash()).or_default().push(t.clone());
+        }
+    }
+    out
 }
 
-/// A "planned" event: the map tiles `tiles` first planned in a map update, with the units reaching each.
-pub fn planned_event(tiles: Vec<String>, reach: BTreeMap<String, Vec<String>>) -> Event {
-    Event { step: Some("pack".into()), targets: tiles, data: Some(serde_json::json!({ "reach": reach })), ..Event::new("planned") }
+/// The served catalog's base packs' and road values' content names, by logical name (what
+/// `restaled_by` compares with): the latest in `dir`, with its number.
+pub fn served_units(dir: &Path) -> anyhow::Result<Option<(u64, BTreeMap<String, String>)>> {
+    Ok(store::catalog::latest(dir)?.map(|c| (c.n, c.files.into_iter().filter(|(l, _)| l.starts_with("base/") || l.starts_with("global/roads/")).map(|(l, f)| (l, f.file)).collect())))
+}
+
+/// How much of a planned tile's key a "planned" event keeps: enough to tell its keys apart.
+const KEY_KEPT: usize = 12;
+
+fn cut(k: &str) -> String {
+    k.chars().take(KEY_KEPT).collect()
+}
+
+/// A "planned" event: map tiles first planned at their keys (`tiles`: (tile, key)), and the units
+/// whose change made them stale (`restaled_by`). Small: the keys cut short, each unit its own tiles.
+pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<String>>) -> Event {
+    let keys: Vec<String> = tiles.iter().map(|(_, k)| cut(k)).collect();
+    Event { step: Some("pack".into()), targets: tiles.iter().map(|t| t.0.clone()).collect(), data: Some(serde_json::json!({ "k": keys, "units": by_unit })), ..Event::new("planned") }
+}
+
+/// The (tile, key) pairs `events` say were planned since `since` (keys as `planned_event` keeps
+/// them): what a lead, restarted or new, noted already in the map update under way.
+pub fn planned_since<'a>(events: impl IntoIterator<Item = &'a Event>, since: u64) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for e in events.into_iter().filter(|e| e.kind == "planned" && e.t >= since) {
+        let keys: Vec<String> = e.data.as_ref().and_then(|d| serde_json::from_value(d["k"].clone()).ok()).unwrap_or_default();
+        out.extend(e.targets.iter().cloned().zip(keys));
+    }
+    out
+}
+
+/// Of `tiles` (tile, key), those `noted` doesn't hold at that key, once each: a tile stale again at
+/// a new key is noted again.
+pub fn not_noted(tiles: &[(String, String)], noted: &BTreeSet<(String, String)>) -> Vec<(String, String)> {
+    let mut seen = BTreeSet::new();
+    tiles.iter().filter(|(t, k)| !noted.contains(&(t.clone(), cut(k))) && seen.insert(t.clone())).cloned().collect()
+}
+
+/// Notes `new` in `noted` (keys cut as `planned_event` keeps them).
+pub fn note_planned(noted: &mut BTreeSet<(String, String)>, new: &[(String, String)]) {
+    noted.extend(new.iter().map(|(t, k)| (t.clone(), cut(k))));
+}
+
+/// A "merged" event: the hand-offs merged's jobs (crate::pool::records::Merged::done).
+pub fn merged_event(done: &[crate::pool::records::MergedJob]) -> Event {
+    Event { targets: done.iter().map(|d| d.0.clone()).collect(), data: Some(serde_json::json!({ "done": done })), ..Event::new("merged") }
 }
 
 /// A unit's way to the map: when each stage was reached (unix seconds).
@@ -170,17 +235,17 @@ pub struct UnitChain {
     pub done: u64,
     /// Its hand-off merged (a member's job; the lead's own have none).
     pub merged: Option<u64>,
-    /// Its map tiles: first planned, first leased, last done.
+    /// The map tiles its change made stale: first planned, first leased, last done.
     pub planned: Option<u64>,
     pub leased: Option<u64>,
     pub packed: Option<u64>,
-    /// The catalog it's in.
+    /// The catalog it's in: the first begun once it was merged and packed.
     pub catalog: Option<u64>,
     pub catalog_t: Option<u64>,
     /// Each Mac's server adopting it (that catalog or a later one), and its mirror through it.
     pub adopted: BTreeMap<String, u64>,
     pub mirrored: BTreeMap<String, u64>,
-    /// The map tiles it made stale (planned since the catalog before, reached by its ways).
+    /// The map tiles its change made stale (`restaled_by`), as planned after its hand-off.
     pub restaled: usize,
 }
 
@@ -196,10 +261,10 @@ pub struct CatalogChain {
     /// catalog to its start, and its length).
     pub adopted: BTreeMap<String, f64>,
     pub mirrored: BTreeMap<String, (f64, Option<f64>)>,
-    /// The units in it, and the map tiles planned for it.
+    /// The units in it, and the map tiles planned between the catalog before's beginning and its own.
     pub units: usize,
     pub tiles: usize,
-    /// Of `COUNTED`, the steps that ran for it (names-todo: after it).
+    /// Of `COUNTED`, the steps that ran for it (between the same beginnings; names-todo after it).
     pub ran: Vec<String>,
 }
 
@@ -207,57 +272,100 @@ fn ok_job(e: &Event, step: &str) -> bool {
     matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true) && e.step.as_deref() == Some(step)
 }
 
+/// When a catalog's job began (it read the manifest then): its end less its time.
+fn began(c: &Event) -> u64 {
+    c.t.saturating_sub(c.secs.unwrap_or(0.0).ceil() as u64)
+}
+
 /// The chains of the catalogs in `events` (any order) and their units, joined with the servers'
-/// events; oldest first.
+/// events; oldest first. A unit is in the first catalog begun once its hand-off was merged (a
+/// member's job; the lead's own, at its end) and the map tiles its change made stale were packed;
+/// a catalog's map tiles and steps are those between the catalog before's beginning and its own.
 pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, Vec<UnitChain>) {
     let mut ev: Vec<&Event> = events.iter().collect();
     ev.sort_by_key(|e| (e.t, e.seq));
     let cats: Vec<&Event> = ev.iter().copied().filter(|e| e.kind == "catalog").collect();
-    // (A lease's merges: an entry's key is `<day>/<term>-<n>`, the coordinator's lease its `n`;
-    // the first after the job's end is its.)
-    let mut merged: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    // The merges' jobs: (time, lease number, step, targets).
+    let mut merges: Vec<(u64, Option<u64>, String, Vec<String>)> = Vec::new();
     for e in ev.iter().filter(|e| e.kind == "merged") {
-        for k in &e.targets {
-            if let Some(l) = k.rsplit(['/', '-']).next().and_then(|l| l.parse().ok()) {
-                merged.entry(l).or_default().push(e.t);
-            }
+        let done: Vec<crate::pool::records::MergedJob> = e.data.as_ref().and_then(|d| serde_json::from_value(d["done"].clone()).ok()).unwrap_or_default();
+        for (key, _, step, targets) in done {
+            // (`<day>/<term>-<n>`: the coordinator's lease is its `n`, which repeats across terms.)
+            let n = key.rsplit(['/', '-']).next().and_then(|l| l.parse().ok());
+            merges.push((e.t, n, step, targets));
         }
     }
-    // Each server's events by host.
     let mut by_host: BTreeMap<&str, Vec<&ServerEvent>> = BTreeMap::new();
     for s in servers {
         by_host.entry(s.host.as_str()).or_default().push(s);
     }
     let first_at = |host: &[&ServerEvent], kind: &str, n: u64, after: u64| host.iter().filter(|s| s.kind == kind && s.n >= n && s.t >= after).map(|s| s.t).min();
-    let (mut out_c, mut out_u) = (Vec::new(), Vec::new());
-    for (i, c) in cats.iter().enumerate() {
-        let from = if i == 0 { 0 } else { cats[i - 1].t };
-        let next = cats.get(i + 1).map_or(u64::MAX, |n| n.t);
-        let window = |e: &Event| e.t > from && e.t <= c.t;
-        let stats: Option<CatalogStats> = c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok());
-        let n = c.n.or(stats.as_ref().map(|s| s.n));
-        // The map tiles planned for it, with the units reaching each; leased and done.
-        let mut reach: BTreeMap<String, (u64, Vec<String>)> = BTreeMap::new();
-        let (mut leased, mut packed): (BTreeMap<String, u64>, BTreeMap<String, u64>) = Default::default();
-        for e in ev.iter().filter(|e| window(e)) {
-            if e.kind == "planned" && e.step.as_deref() == Some("pack") {
-                let r: BTreeMap<String, Vec<String>> = e.data.as_ref().and_then(|d| serde_json::from_value(d["reach"].clone()).ok()).unwrap_or_default();
-                for t in &e.targets {
-                    reach.entry(t.clone()).or_insert((e.t, r.get(t).cloned().unwrap_or_default()));
-                }
-            } else if e.step.as_deref() == Some("pack") && matches!(e.kind.as_str(), "lease" | "start") {
-                for t in &e.targets {
-                    leased.entry(t.clone()).or_insert(e.t);
-                }
-            } else if ok_job(e, "pack") {
-                for t in &e.targets {
-                    packed.insert(t.clone(), e.t);
+    let stats_of = |c: &Event| -> Option<CatalogStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
+    let n_of = |c: &Event| c.n.or(stats_of(c).map(|s| s.n));
+    // Each planned tile: when, which, and the units whose change made it stale.
+    let planned: Vec<(u64, String, Vec<String>)> = ev
+        .iter()
+        .filter(|e| e.kind == "planned")
+        .flat_map(|e| {
+            let units: BTreeMap<String, Vec<String>> = e.data.as_ref().and_then(|d| serde_json::from_value(d["units"].clone()).ok()).unwrap_or_default();
+            e.targets.iter().map(move |t| (e.t, t.clone(), units.iter().filter(|(_, ts)| ts.contains(t)).map(|(u, _)| u.clone()).collect())).collect::<Vec<_>>()
+        })
+        .collect();
+    let pack_at = |tile: &str, after: u64, kinds: &[&str]| ev.iter().filter(|e| e.t >= after && e.step.as_deref() == Some("pack") && kinds.contains(&e.kind.as_str()) && e.ok != Some(false) && e.targets.iter().any(|t| t == tile)).map(|e| e.t).min();
+    let mut units: Vec<UnitChain> = Vec::new();
+    let unit_ends: Vec<&Event> = ev.iter().copied().filter(|e| ok_job(e, "unit")).collect();
+    for (i, e) in unit_ends.iter().enumerate() {
+        for u in &e.targets {
+            // (Its next build's are that one's.)
+            let until = unit_ends[i + 1..].iter().find(|f| f.targets.contains(u)).map_or(u64::MAX, |f| f.t);
+            let merged = merges.iter().find(|(t, n, step, targets)| *t >= e.t && *t < until && step == "unit" && targets.contains(u) && (e.lease.is_none() || *n == e.lease)).map(|m| m.0);
+            let hand = merged.unwrap_or(e.t);
+            let mut mine: BTreeMap<&str, u64> = BTreeMap::new();
+            for (t, tile, _) in planned.iter().filter(|(t, _, us)| *t >= hand && *t < until && us.contains(u)) {
+                mine.entry(tile.as_str()).or_insert(*t);
+            }
+            let leased = mine.iter().filter_map(|(tile, t)| pack_at(tile, *t, &["lease", "start"])).min();
+            let packs: Vec<Option<u64>> = mine.iter().map(|(tile, t)| pack_at(tile, *t, &["end", "done"])).collect();
+            let all_packed: Option<Vec<u64>> = packs.iter().copied().collect();
+            let packed = all_packed.as_ref().and_then(|v| v.iter().max().copied());
+            // (Its catalog: the first begun once it was merged and packed; a tile not packed yet, none.)
+            let cat = all_packed.map(|_| packed.unwrap_or(hand).max(hand)).and_then(|r| cats.iter().find(|c| began(c) >= r));
+            let mut uc = UnitChain {
+                unit: u.clone(),
+                worker: e.worker.clone(),
+                done: e.t,
+                merged,
+                planned: mine.values().min().copied(),
+                leased,
+                packed,
+                catalog: cat.and_then(|c| n_of(c)),
+                catalog_t: cat.map(|c| c.t),
+                restaled: mine.len(),
+                ..Default::default()
+            };
+            if let Some(n) = uc.catalog {
+                let after = uc.catalog_t.unwrap_or(0).saturating_sub(120);
+                for (host, hs) in &by_host {
+                    if let Some(a) = first_at(hs, "adopt", n, after) {
+                        uc.adopted.insert(host.to_string(), a);
+                    }
+                    if let Some(m) = first_at(hs, "mirror-end", n, after) {
+                        uc.mirrored.insert(host.to_string(), m);
+                    }
                 }
             }
+            units.push(uc);
         }
-        let mut cc = CatalogChain { n, t: c.t, secs: c.secs, stats, tiles: reach.len(), ..Default::default() };
-        for (host, hs) in &by_host {
-            if let Some(n) = n {
+    }
+    let mut out = Vec::new();
+    for (i, c) in cats.iter().enumerate() {
+        let (from, to) = (if i == 0 { 0 } else { began(cats[i - 1]) }, began(c));
+        let next = cats.get(i + 1).map_or(u64::MAX, |n| n.t);
+        let n = n_of(c);
+        let tiles: BTreeSet<&str> = planned.iter().filter(|(t, _, _)| *t > from && *t <= to).map(|p| p.1.as_str()).collect();
+        let mut cc = CatalogChain { n, t: c.t, secs: c.secs, stats: stats_of(c), tiles: tiles.len(), units: units.iter().filter(|u| u.catalog_t == Some(c.t)).count(), ..Default::default() };
+        if let Some(n) = n {
+            for (host, hs) in &by_host {
                 if let Some(a) = first_at(hs, "adopt", n, c.t.saturating_sub(120)) {
                     cc.adopted.insert(host.to_string(), a.saturating_sub(c.t) as f64);
                 }
@@ -270,48 +378,13 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
         let ran: BTreeSet<&str> = ev
             .iter()
             .filter(|e| COUNTED.iter().any(|s| ok_job(e, s)))
-            .filter(|e| if e.step.as_deref() == Some("names-todo") { e.t > c.t && e.t <= next } else { window(e) })
+            .filter(|e| if e.step.as_deref() == Some("names-todo") { e.t > c.t && e.t <= next } else { e.t > from && e.t <= to })
             .filter_map(|e| e.step.as_deref())
             .collect();
         cc.ran = COUNTED.iter().filter(|s| ran.contains(*s)).map(|s| s.to_string()).collect();
-        // Its units: those whose job ended since the catalog before.
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        for e in ev.iter().filter(|e| window(e)).filter(|e| ok_job(e, "unit")) {
-            for u in &e.targets {
-                if !seen.insert(u.clone()) {
-                    continue;
-                }
-                let mine: Vec<&String> = reach.iter().filter(|(_, (_, us))| us.contains(u)).map(|(t, _)| t).collect();
-                let mut uc = UnitChain {
-                    unit: u.clone(),
-                    worker: e.worker.clone(),
-                    done: e.t,
-                    merged: e.lease.and_then(|l| merged.get(&l)?.iter().copied().find(|t| *t >= e.t)),
-                    planned: mine.iter().map(|t| reach[*t].0).min(),
-                    leased: mine.iter().filter_map(|t| leased.get(*t).copied()).min(),
-                    packed: if mine.is_empty() { None } else { mine.iter().map(|t| packed.get(*t).copied()).collect::<Option<Vec<u64>>>().and_then(|v| v.into_iter().max()) },
-                    catalog: n,
-                    catalog_t: Some(c.t),
-                    restaled: mine.len(),
-                    ..Default::default()
-                };
-                for (host, hs) in &by_host {
-                    if let Some(n) = n {
-                        if let Some(a) = first_at(hs, "adopt", n, c.t.saturating_sub(120)) {
-                            uc.adopted.insert(host.to_string(), a);
-                        }
-                        if let Some(m) = first_at(hs, "mirror-end", n, c.t.saturating_sub(120)) {
-                            uc.mirrored.insert(host.to_string(), m);
-                        }
-                    }
-                }
-                out_u.push(uc);
-            }
-        }
-        cc.units = seen.len();
-        out_c.push(cc);
+        out.push(cc);
     }
-    (out_c, out_u)
+    (out, units)
 }
 
 /// The middle of `v` (the mean of the two middles); None when empty.
@@ -333,7 +406,7 @@ fn s(x: Option<f64>) -> String {
     x.map_or_else(|| "-".into(), crate::timings::secs)
 }
 
-/// The stages a unit goes through, as (name, from, to).
+/// The stages a unit goes through, each's time.
 fn unit_stages(u: &UnitChain) -> Vec<(&'static str, Option<f64>)> {
     let last = |m: &BTreeMap<String, u64>| m.values().max().copied();
     let hand = u.merged.or(Some(u.done));
@@ -383,21 +456,22 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
     }
     o += &format!("  restaled per unit: {}\n", median(units.iter().map(|u| u.restaled as f64).collect()).map_or("-".into(), |m| format!("{m:.1}")));
     for delta in [true, false] {
-        let of: Vec<&CatalogChain> = cats.iter().filter(|c| c.stats.as_ref().is_some_and(|s| s.delta == delta)).collect();
+        let of: Vec<&CatalogStats> = cats.iter().filter_map(|c| c.stats.as_ref()).filter(|s| s.delta == delta).collect();
         if of.is_empty() {
             continue;
         }
-        o += &format!("  {} catalogs ({}): {} in the job, {} files stat'ed\n", if delta { "delta" } else { "whole" }, of.len(), s(median(of.iter().filter_map(|c| c.secs).collect())), median(of.iter().filter_map(|c| c.stats.as_ref().map(|s| s.stated as f64)).collect()).map_or("-".into(), |m| format!("{m:.0}")));
-        let mut phases: Vec<String> = Vec::new();
-        for c in &of {
-            for (p, _) in &c.stats.as_ref().unwrap().phases {
-                if !phases.contains(p) {
-                    phases.push(p.clone());
+        let secs: Vec<f64> = cats.iter().filter(|c| c.stats.as_ref().is_some_and(|s| s.delta == delta)).filter_map(|c| c.secs).collect();
+        o += &format!("  {} catalogs ({}): {} in the job, {} files stat'ed\n", if delta { "delta" } else { "whole" }, of.len(), s(median(secs)), median(of.iter().map(|s| s.stated as f64).collect()).map_or("-".into(), |m| format!("{m:.0}")));
+        let mut phases: Vec<&String> = Vec::new();
+        for st in &of {
+            for (p, _) in &st.phases {
+                if !phases.contains(&p) {
+                    phases.push(p);
                 }
             }
         }
         for p in phases {
-            let v: Vec<f64> = of.iter().filter_map(|c| c.stats.as_ref().unwrap().phases.iter().find(|(q, _)| *q == p).map(|x| x.1)).collect();
+            let v: Vec<f64> = of.iter().filter_map(|st| st.phases.iter().find(|(q, _)| q == p).map(|x| x.1)).collect();
             o += &format!("    {p}: {}\n", s(median(v)));
         }
     }
@@ -417,7 +491,7 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
 }
 
 /// The build's history: the NAS's (`state/coord/history/<day>/*.jsonl`, the last `days` days',
-/// every writer's), else the lead's own (`history`, its coordinator's file); duplicates once.
+/// every writer's), else the lead's own (`local`, its coordinator's file); duplicates once.
 pub fn load_history(root: Option<&Path>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
     let since = now_s().saturating_sub(days * 86400);
@@ -454,34 +528,43 @@ mod tests {
         Event { step: Some(step.into()), targets: targets.iter().map(|s| s.to_string()).collect(), ok: Some(true), lease, worker: Some("m1".into()), secs: Some(10.0), ..ev(kind, t) }
     }
 
-    fn catalog(t: u64, n: u64, delta: bool) -> Event {
+    /// Catalog `n` written at `t`, its job `secs` long.
+    fn catalog(t: u64, secs: f64, n: u64, delta: bool) -> Event {
         let st = CatalogStats { n, delta, files: 1000, stated: if delta { 12 } else { 1000 }, phases: vec![("every file checked on the NAS".into(), if delta { 1.0 } else { 9.0 }), ("the catalog written".into(), 2.0)] };
-        Event { n: Some(n), secs: Some(if delta { 20.0 } else { 60.0 }), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }
+        Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }
+    }
+
+    fn merged(t: u64, key: &str, step: &str, targets: &[&str]) -> Event {
+        Event { t, ..merged_event(&[(key.into(), "m-b".into(), step.into(), targets.iter().map(|s| s.to_string()).collect())]) }
+    }
+
+    fn planned(t: u64, tiles: &[&str], units: &[(&str, &[&str])]) -> Event {
+        let tiles: Vec<(String, String)> = tiles.iter().map(|t| (t.to_string(), format!("key-of-{t}"))).collect();
+        let by: BTreeMap<String, Vec<String>> = units.iter().map(|(u, ts)| (u.to_string(), ts.iter().map(|s| s.to_string()).collect())).collect();
+        Event { t, ..planned_event(&tiles, by) }
     }
 
     /// A unit from its job to every Mac's map: each stage's time, its restale count, the catalog's
     /// kind, its files stat'ed, the counted steps, and the servers' adoptions and mirrors.
     #[test]
     fn a_units_chain_from_its_job_to_every_macs_map() {
-        let reach: BTreeMap<String, Vec<String>> = [("6/1/1".to_string(), vec!["6/1/1".to_string()]), ("6/1/2".into(), vec!["6/1/1".into(), "6/9/9".into()]), ("6/5/5".into(), vec!["6/5/5".into()])].into();
         let events = vec![
-            catalog(1000, 7, false),
+            catalog(1000, 60.0, 7, false),
             job("done", 1100, "unit", &["6/1/1"], Some(42)),
             job("end", 1110, "unit", &["6/5/5"], None),
-            Event { targets: vec!["2026-10-17/3-42".into()], ..ev("merged", 1130) },
-            planned_event(vec!["6/1/1".into(), "6/1/2".into(), "6/5/5".into()], reach),
+            merged(1130, "2026-10-17/3-42", "unit", &["6/1/1"]),
+            // (6/1/2 owned by 6/1/1 and 6/9/9, but only 6/1/1 changed.)
+            planned(1150, &["6/1/1", "6/1/2", "6/5/5"], &[("6/1/1", &["6/1/1", "6/1/2"]), ("6/5/5", &["6/5/5"])]),
             job("lease", 1200, "pack", &["6/1/1", "6/1/2"], Some(43)),
             job("start", 1205, "pack", &["6/5/5"], None),
-            job("done", 1300, "pack", &["6/1/1", "6/1/2"], Some(43)),
             job("end", 1250, "pack", &["6/5/5"], None),
+            job("done", 1300, "pack", &["6/1/1", "6/1/2"], Some(43)),
             job("end", 1310, "ferries", &["ferries"], None),
             job("end", 1320, "stations", &["stations"], None),
             Event { ok: Some(false), ..job("end", 1320, "marks", &["marks"], None) },
-            catalog(1400, 8, true),
+            catalog(1400, 20.0, 8, true),
             job("end", 1500, "names-todo", &["names-todo"], None),
         ];
-        let mut events = events;
-        events[4].t = 1150;
         let servers = vec![
             ServerEvent { t: 1430, host: "m1".into(), kind: "adopt".into(), n: 8, secs: None },
             ServerEvent { t: 1440, host: "m1".into(), kind: "mirror-start".into(), n: 8, secs: None },
@@ -521,8 +604,98 @@ mod tests {
         assert!(t.contains("delta catalogs (1)") && t.contains("whole catalogs (1)"), "{t}");
         assert!(t.contains("ferries: ran for 1 of 2"), "{t}");
         assert!(t.contains("m4: adopts after"), "{t}");
-        // (--last 1: the last catalog alone.)
         assert!(!text(&cats, &units, 1).contains("catalog 7"));
+    }
+
+    /// A catalog reads the manifest as it begins: a unit merged, or its tiles packed, while one
+    /// runs is in the next; the map tiles and steps are counted by the catalogs' beginnings.
+    #[test]
+    fn a_unit_done_while_a_catalog_runs_is_in_the_next() {
+        let events = vec![
+            catalog(1000, 10.0, 7, true),
+            // Catalog 8 runs from 1500 to 1600.
+            job("done", 1100, "unit", &["6/1/1"], Some(1)),
+            merged(1550, "2026-10-17/1-1", "unit", &["6/1/1"]),
+            job("end", 1120, "unit", &["6/2/2"], None),
+            planned(1130, &["6/2/2"], &[("6/2/2", &["6/2/2"])]),
+            job("end", 1560, "pack", &["6/2/2"], None),
+            // (A unit with no map tile stale: in the first begun after its end.)
+            job("end", 1200, "unit", &["6/3/3"], None),
+            job("end", 1540, "ferries", &["ferries"], None),
+            catalog(1600, 100.0, 8, true),
+            catalog(1800, 50.0, 9, true),
+        ];
+        let (cats, units) = chains(&events, &[]);
+        let cat_of = |u: &str| units.iter().find(|x| x.unit == u).unwrap().catalog;
+        assert_eq!(cat_of("6/1/1"), Some(9));
+        assert_eq!(cat_of("6/2/2"), Some(9));
+        assert_eq!(cat_of("6/3/3"), Some(8));
+        assert_eq!((cats[1].units, cats[2].units), (1, 2));
+        // (Planned at 1130: before 8 began. Ferries at 1540: after it began, so 9's.)
+        assert_eq!((cats[1].tiles, cats[2].tiles), (1, 0));
+        assert_eq!(cats[1].ran, Vec::<String>::new());
+        assert_eq!(cats[2].ran, ["ferries"]);
+        // (A tile never packed: no catalog yet.)
+        let (_, units) = chains(&[job("end", 10, "unit", &["6/4/4"], None), planned(20, &["6/4/4"], &[("6/4/4", &["6/4/4"])]), catalog(100, 5.0, 3, true)], &[]);
+        assert_eq!(units[0].catalog, None);
+    }
+
+    /// Lease numbers repeat across leads (terms): a hand-off's merge is the one of its unit, after
+    /// its job ended, at its lease's number.
+    #[test]
+    fn a_hand_off_is_matched_by_its_unit_and_lease_across_terms() {
+        let events = vec![
+            job("done", 100, "unit", &["6/1/1"], Some(5)),
+            merged(110, "2026-10-17/2-5", "unit", &["6/1/1"]),
+            // (A new lead's lease 5: another unit.)
+            job("done", 200, "unit", &["6/2/2"], Some(5)),
+            merged(205, "2026-10-17/3-5", "unit", &["6/9/9"]),
+            merged(230, "2026-10-17/3-5", "unit", &["6/2/2"]),
+            // (The same unit again, lease 7: its own merge, not the first's.)
+            job("done", 300, "unit", &["6/1/1"], Some(7)),
+            merged(320, "2026-10-17/3-6", "unit", &["6/1/1"]),
+            merged(340, "2026-10-17/3-7", "unit", &["6/1/1"]),
+            catalog(500, 10.0, 4, true),
+        ];
+        let (_, units) = chains(&events, &[]);
+        let m: Vec<(String, u64, Option<u64>)> = units.iter().map(|u| (u.unit.clone(), u.done, u.merged)).collect();
+        assert_eq!(m, [("6/1/1".to_string(), 100, Some(110)), ("6/2/2".into(), 200, Some(230)), ("6/1/1".into(), 300, Some(340))]);
+    }
+
+    /// The units whose change made a tile stale: its owners whose base pack or road values aren't
+    /// the served catalog's; one rebuilt the same made none.
+    #[test]
+    fn a_tile_is_restaled_by_its_owners_that_changed() {
+        let m: BTreeMap<String, String> = [("base/6-28-16", "b1"), ("global/roads/6-28-16", "r1"), ("base/6-40-20", "b2"), ("global/roads/6-40-20", "r2"), ("base/6-28-17", "b3")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        // (6-40-20 as served; 6-28-16's roads new; 6-28-17 not served yet.)
+        let served: BTreeMap<String, String> = [("base/6-28-16", "b1"), ("global/roads/6-28-16", "r0"), ("base/6-40-20", "b2"), ("global/roads/6-40-20", "r2")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let r = restaled_by(&m, None, &served, &["6/28/16".into(), "6/40/20".into(), "6/28/17".into(), "6/0/0".into()]);
+        assert_eq!(r.get("6/28/16").unwrap(), &["6/28/16", "6/28/17"]);
+        assert_eq!(r.get("6/28/17").unwrap(), &["6/28/16", "6/28/17"]);
+        assert!(!r.contains_key("6/40/20"));
+        // The same as served: none.
+        let same: BTreeMap<String, String> = m.clone();
+        assert!(restaled_by(&m, None, &same, &["6/28/16".into()]).is_empty());
+    }
+
+    /// The tiles noted planned are known again from the history (a lead restarted or new), by tile
+    /// and key: one stale again at a new key is noted again, once.
+    #[test]
+    fn planned_tiles_are_noted_once_per_key_across_restarts() {
+        let tiles = |ks: &[(&str, &str)]| -> Vec<(String, String)> { ks.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect() };
+        let first = tiles(&[("6/1/1", "aaaaaaaaaaaaaaaa1"), ("6/1/2", "bbbbbbbbbbbbbbbb")]);
+        let e = Event { t: 500, ..planned_event(&first, BTreeMap::new()) };
+        // (Before the map update began: not its.)
+        let old = Event { t: 100, ..planned_event(&tiles(&[("6/9/9", "cccccccccccccccc")]), BTreeMap::new()) };
+        let mut noted = planned_since([&e, &old], 400);
+        assert_eq!(noted.len(), 2);
+        let now = tiles(&[("6/1/1", "aaaaaaaaaaaaaaaa1"), ("6/1/2", "dddddddddddddddd"), ("6/9/9", "cccccccccccccccc"), ("6/9/9", "cccccccccccccccc")]);
+        let new = not_noted(&now, &noted);
+        assert_eq!(new, tiles(&[("6/1/2", "dddddddddddddddd"), ("6/9/9", "cccccccccccccccc")]));
+        note_planned(&mut noted, &new);
+        assert!(not_noted(&now, &noted).is_empty());
+        // (The event stays small: keys cut short.)
+        assert_eq!(e.data.as_ref().unwrap()["k"][0], "aaaaaaaaaaaa");
     }
 
     #[test]
@@ -550,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn the_servers_log_is_appended_per_mac_and_read_in_order() {
+    fn the_servers_log_is_appended_per_mac_read_in_order_and_cut() {
         let d = tempfile::tempdir().unwrap();
         append_server(d.path(), ServerEvent { t: 20, host: "Brandon's M4".into(), kind: "adopt".into(), n: 2, secs: None }).unwrap();
         append_server(d.path(), ServerEvent { t: 10, host: "m1".into(), kind: "adopt".into(), n: 1, secs: None }).unwrap();
@@ -560,15 +733,15 @@ mod tests {
         let all = read_servers(d.path(), 0);
         assert_eq!(all.iter().map(|e| e.t).collect::<Vec<_>>(), [10, 20, 30]);
         assert_eq!(read_servers(d.path(), 15).len(), 2);
-    }
-
-    #[test]
-    fn the_units_reaching_a_map_tile() {
-        let m: BTreeMap<String, String> = [("base/6-28-16".to_string(), "c".to_string()), ("base/6-40-20".into(), "d".into())].into();
-        let r = reaching(&m, None, &["6/28/16".into(), "6/40/20".into(), "6/0/0".into()]);
-        assert_eq!(r["6/28/16"], ["6/28/16"]);
-        assert_eq!(r["6/40/20"], ["6/40/20"]);
-        assert!(r["6/0/0"].is_empty());
+        // Past SERVERS_MAX: its newer half kept, the new line after it.
+        let p = d.path().join(SERVERS).join("m1.jsonl");
+        let line = serde_json::to_string(&ServerEvent { t: 40, host: "m1".into(), kind: "adopt".into(), n: 3, secs: None }).unwrap();
+        std::fs::write(&p, format!("{line}\n").repeat((SERVERS_MAX as usize / line.len()) + 10)).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap().lines().count();
+        append_server(d.path(), ServerEvent { t: 50, host: "m1".into(), kind: "adopt".into(), n: 4, secs: None }).unwrap();
+        let after: Vec<String> = std::fs::read_to_string(&p).unwrap().lines().map(str::to_string).collect();
+        assert_eq!(after.len(), before - before / 2 + 1);
+        assert!(after.last().unwrap().contains("\"n\":4"));
     }
 
     #[test]

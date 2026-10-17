@@ -315,7 +315,8 @@ pub enum Event {
     Handover { term: u64, to: String, what: &'static str },
     /// Journal entries merged: applied, passed over (an older lease's), refused; and whether they
     /// came from a listing.
-    Merged { applied: Vec<String>, overtaken: usize, refused: usize, listed: bool },
+    /// (`done`: the applied entries' jobs done, crate::pool::records::Merged::done.)
+    Merged { applied: Vec<String>, overtaken: usize, refused: usize, listed: bool, done: Vec<crate::pool::records::MergedJob> },
     /// Something it couldn't do this step, to try again: what, and why.
     Waits { what: &'static str, why: String },
     /// A duty met an error and stopped there; the step went on.
@@ -1015,7 +1016,7 @@ impl Driver {
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
             l.refused.extend(m.refused.iter().cloned());
-            out.events.push(Event::Merged { applied: m.applied.clone(), overtaken: m.overtaken.len(), refused: m.refused.len(), listed: from_listing });
+            out.events.push(Event::Merged { applied: m.applied.clone(), overtaken: m.overtaken.len(), refused: m.refused.len(), listed: from_listing, done: m.done.clone() });
         }
         // What its check holds is merged again next step (said once as it's first held); what it
         // read this step and didn't hold is no longer held.
@@ -1071,7 +1072,7 @@ impl Driver {
                 l.refused.push((k.clone(), why.clone()));
             }
             l.dirty = true;
-            out.events.push(Event::Merged { applied: Vec::new(), overtaken: 0, refused: never.len(), listed: false });
+            out.events.push(Event::Merged { applied: Vec::new(), overtaken: 0, refused: never.len(), listed: false, done: Vec::new() });
         }
         if l.dirty {
             match l.records.save(io) {

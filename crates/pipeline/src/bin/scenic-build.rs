@@ -354,7 +354,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 }).collect()
             });
             let has = |f: &str| args.iter().any(|a| a == f);
-            catalog(&mut out, has("--held"), ready.as_ref(), CatalogWay { delta: has("--delta"), whole: has("--whole") }, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())?
+            catalog(&mut out, has("--held"), ready.as_ref(), CatalogWay { delta: has("--delta"), whole: has("--whole") }, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs())
+                .map(|st| eprintln!("{}", st.line()))?
         }
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "unit-snap" => unit_snap(&out, &args)?,
@@ -1151,7 +1152,7 @@ struct CatalogWay {
 }
 
 /// `now`: the catalog's moment (seconds since the epoch), its `created` and its meta's `built`.
-fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>, way: CatalogWay, now: u64) -> Result<()> {
+fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>, way: CatalogWay, now: u64) -> Result<pipeline::pubtimes::CatalogStats> {
     let delta = way.delta && !held;
     let p = phase("the manifest's files sorted into the catalog's", Class::Compute);
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
@@ -1359,10 +1360,8 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
             anyhow::ensure!(size == known[n.as_str()], "{l}: {n} is {size} bytes on the NAS, {} in the last catalog", known[n.as_str()]);
         }
     }
-    // (What it did, for publishing's times: pipeline::pubtimes, read from this line by the agent.)
     let rechecked = if as_delta.is_none() { all.iter().filter(|(_, n)| known.contains_key(n.as_str())).count() as u64 } else { 0 };
-    let phases = pipeline::timings::snapshot(true).map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect()).unwrap_or_default();
-    let stats = pipeline::pubtimes::CatalogStats { n, delta: as_delta.is_some(), files: all.len() as u64, stated: total + rechecked, phases };
+    let delta_written = as_delta.is_some();
     let path = match as_delta {
         Some((base, d, size)) => {
             eprintln!("catalog: {n} as a delta over {} ({size} bytes; changed: {})", base.n, store::catalog::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", "));
@@ -1371,8 +1370,10 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
         None => store::catalog::write(&dir, &catalog)?,
     };
     eprintln!("published {}", path.display());
-    eprintln!("{}", stats.line());
-    Ok(())
+    // (What it did, for publishing's times (pipeline::pubtimes): its phases once written, the
+    // write's whole.)
+    drop(_p);
+    Ok(pipeline::pubtimes::CatalogStats::now(n, delta_written, all.len() as u64, total + rechecked))
 }
 
 /// The coverage a catalog records: the regions built as their recipes are now (`ready`; without it
@@ -4803,6 +4804,43 @@ mod tests {
         let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
         let e = super::catalog(&mut out, false, None, delta, NOW).unwrap_err();
         assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
+    }
+
+    /// What a catalog says of itself (pipeline::pubtimes::CatalogStats): whole, then a delta that
+    /// stat'ed only the new files, its phases taken once written (the write's phase among them).
+    #[test]
+    fn a_catalog_says_what_it_did_once_written() {
+        pipeline::timings::start("catalog");
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
+        let mut m = std::collections::BTreeMap::new();
+        pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+        let mut put = |logical: &str, bytes: &[u8]| {
+            let name = store::naming::content_name(logical, &format!("{:016x}", bytes.len() * 7 + logical.len()), "pack");
+            std::fs::create_dir_all(root.join(&name).parent().unwrap()).unwrap();
+            std::fs::write(root.join(&name), bytes).unwrap();
+            m.insert(logical.to_string(), name);
+            std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        };
+        for i in 0..40 {
+            put(&format!("layers/roads/hi/6-2-{i}"), format!("tile {i}").as_bytes());
+        }
+        let run = |way| {
+            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            super::catalog(&mut out, false, None, way, NOW).unwrap()
+        };
+        let first = run(super::CatalogWay::default());
+        assert_eq!((first.n, first.delta), (1, false));
+        assert_eq!(first.stated, first.files);
+        put("layers/roads/hi/6-1-3", b"three");
+        let second = run(super::CatalogWay { delta: true, whole: false });
+        assert_eq!((second.n, second.delta, second.stated, second.files), (2, true, 1, first.files + 1));
+        let written = second.phases.iter().find(|(p, _)| p == "the catalog written").expect("the write's phase");
+        assert!(written.1 > 0.0, "{:?}", second.phases);
+        let line = second.line();
+        assert_eq!(pipeline::pubtimes::CatalogStats::from_log(&line), Some(second));
     }
 
     #[test]

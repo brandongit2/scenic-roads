@@ -1020,7 +1020,7 @@ mod tests {
             Event::Handover { term: 3, to: "m-air".into(), what: "settling" },
             Event::Handover { term: 3, to: "m-air".into(), what: "over" },
             Event::SteppedDown { term: 3, why: "handed over to m-air".into() },
-            Event::Merged { applied: vec![], overtaken: 0, refused: 0, listed: false },
+            Event::Merged { applied: vec![], overtaken: 0, refused: 0, listed: false, done: vec![] },
         ];
         let n = notes(&events, "mini", |id| id.trim_start_matches("m-").to_string(), 5);
         let said: Vec<&str> = n.iter().map(|e| e.note.as_str()).collect();
