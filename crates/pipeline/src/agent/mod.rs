@@ -4724,7 +4724,7 @@ impl Agent {
             };
             let mut before = before;
             before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))));
-            let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref());
+            let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest));
             // (A fault in it costs the status its forecast, never the agent.)
             let under_way = self.map_update.borrow().as_ref().filter(|r| !r.over).map(|r| (r.regions.clone(), r.last, update_left.clone()));
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, since_last, under_way, blind, &peak)));
@@ -4817,7 +4817,7 @@ impl Agent {
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[build::Work], chains: [Vec<build::Work>; 4], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[build::Work], chains: [Vec<build::Work>; 5], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -4880,7 +4880,7 @@ impl Agent {
         // times; the last map update, the roads' chain as it stands now, if more (none when it's done),
         // less what the map update under way still does (the roads' chain counts its work too, which
         // goes out with it).
-        let [roads, rail, landmarks, buildings] = chains;
+        let [roads, rail, landmarks, buildings, depth] = chains;
         let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if steps::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
         self.update_measured.set(forecast::update_secs(&events));
         let update_s = forecast::update_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
@@ -4890,7 +4890,7 @@ impl Agent {
         // built: forecast::chain_deps), but the overlays (they read the built units) after the last
         // map update; and a catalog after it with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
-        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()) {
+        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()) {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
@@ -4898,7 +4898,7 @@ impl Agent {
             };
             if w.step == "overlays" { after.extend(jobs) } else { chain_jobs.extend(jobs) }
         }
-        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() {
+        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() {
             after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
@@ -7102,7 +7102,7 @@ mod tests {
         let gb = |n: u64| n << 30;
         // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
         // pieces, terrain's and slope's, and the 3D buildings' among them) and tasks.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail", "bldtile", "treeblock", "terrainsub"]);
+        assert_eq!(helper_steps(gb(20), gb(10), 0), ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth", "tail", "bldtile", "treeblock", "terrainsub"]);
         assert_eq!(helper_steps(gb(70), 0, 0), [steps::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock", "terrainsub"]].concat());
         assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail", "bldtile", "treeblock", "terrainsub"]);
         // (Tree cover's rows and terrain's subtrees need 1 GB.)

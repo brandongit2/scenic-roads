@@ -109,12 +109,13 @@ pub struct Stage {
 }
 
 /// The stages, in the build's order (docs/pipeline.md §2).
-pub const STAGES: [Stage; 13] = [
+pub const STAGES: [Stage; 14] = [
     Stage { id: "pass", title: "OpenStreetMap pass", does: "The newest planet read once for the whole world: its sets, outlines, pieces and road values, the basemap, the water, and what the regions' steps read." },
     Stage { id: "sites", title: "Heritage sites", does: "The heritage sites and designated areas the regions' tiles read." },
     Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by area." },
     Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by area." },
     Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by area." },
+    Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by area, then a tile at a time where a source has finer detail." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by area." },
     Stage { id: "finish", title: "Map finishing", does: "What each map update adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
@@ -170,7 +171,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Area, Input, Tile, World};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 49] = [
+pub const TABLE: [Step; 51] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values; then its worldwide steps.
     Step { alone: true, ..step("pass", Derive, World, "osm-pass", "Planet", "Filters the newest planet, cuts its sets and z6 pieces, makes the basemap and the road values.", w_osm_pass) },
     Step { alone: true, ..step("pass", Derive, World, "pass-sets", "Pass sets", "Cuts the sets a finished pass lacks in their current filters.", w_pass_sets) },
@@ -209,6 +210,11 @@ pub const TABLE: [Step; 49] = [
     // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed.)
     Step { mem_mb: 1000, shared: Some(2), batch: 4, ..step("trees", Pack, Tile, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees) },
     Step { mem_mb: 500, batch: 4, ..step("trees", Pack, Area, "trees-lo", "Tree cover, zoomed out", "Assembles an area's zoomed-out tree cover from its tiles.", w_trees_lo) },
+    // (Depth: a block's arrays and distance fields, ~0.3 GB; the sources' blocks read, 0.5 GB at
+    // most; the tiles made, kept as PNG; the water of a level's tiles, 0.13 GB at most. Until a
+    // target's own run says.)
+    Step { mem_mb: 2000, batch: 4, ..step("depth", Pack, Area, "depth-lo", "Depth, zoomed out", "Composes an area's zoomed-out depth from the depth sources on the basemap's water.", w_depth_lo) },
+    Step { mem_mb: 2500, shared: Some(8), batch: 4, ..step("depth", Pack, Tile, "depth", "Depth", "Composes a tile's depth where a source has detail finer than the zoomed-out levels.", w_depth) },
     // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
     Step { mem_mb: 8600, shared: Some(3), beside: Some(10), batch: 6, ..step("roads", Pack, Tile, "unit", "Roads", "Builds a tile's roads, their elevations and scenery: its base pack and road values.", w_unit) },
     Step { batch: 16, ..step("tiles", Pack, Tile, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack) },
@@ -483,7 +489,7 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 
 /// The shared steps: other members take their jobs (crate::coord leases them), in this order of
 /// preference: what later steps wait on first.
-pub const SHARED: [&str; 8] = set_of(Set::Shared);
+pub const SHARED: [&str; 9] = set_of(Set::Shared);
 /// The steps a Mac's second job takes in the forecast, in its order of preference.
 pub const SECOND: [&str; 14] = set_of(Set::Beside);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
@@ -532,6 +538,9 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "bldprep" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::work_logical(t.x, t.y)),
         "bldtiles" => tile.is_some_and(|t| t.z == 6 && (l == crate::bld::pack_logical(t.x, t.y) || l == crate::bld::field::hi_logical(t.x, t.y) || l == crate::bld::field::mid_logical(t.x, t.y))),
         "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == crate::bld::field::lo_logical(t.x, t.y)),
+        // (A z6 tile's depth hi packs, a z3 tile's lo packs.)
+        "depth" => tile.is_some_and(|t| t.z == 6 && [crate::depth::LAYER, crate::depth::CLASS_LAYER].iter().any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))),
+        "depth-lo" => tile.is_some_and(|t| t.z == 3 && [crate::depth::LAYER, crate::depth::CLASS_LAYER].iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
         "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
         "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")),
@@ -696,6 +705,16 @@ fn w_terrain_lo(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["lo"])
 }
 
+/// A z6 tile's depth and class hi packs (removed where it makes none).
+fn w_depth(l: &str, _: bool) -> bool {
+    pack_of(l, &|ly| ly == crate::depth::LAYER || ly == crate::depth::CLASS_LAYER, &["hi"])
+}
+
+/// A z3 tile's depth and class lo packs.
+fn w_depth_lo(l: &str, _: bool) -> bool {
+    pack_of(l, &|ly| ly == crate::depth::LAYER || ly == crate::depth::CLASS_LAYER, &["lo"])
+}
+
 /// The water's index for the terrain's repairs, by the content it's made of.
 fn w_terrain_water(l: &str, _: bool) -> bool {
     l.strip_prefix(crate::terrain_water::IDX_PREFIX).is_some_and(|k| !k.is_empty() && !k.contains('/'))
@@ -831,7 +850,7 @@ mod tests {
     #[test]
     fn the_sets_are_todays() {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
-        assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"]);
+        assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth"]);
         assert_eq!(SECOND, ["inputs", "heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
@@ -964,7 +983,7 @@ mod tests {
         // §3): a change here would call every target stale, so none is made. The table's, in its
         // order, and the tasks'.
         let ids: Vec<&str> = TABLE.iter().map(|s| s.name).collect();
-        assert_eq!(ids, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "spoken", "regions-extract", "heritage-sites", "terrain-water", "terrain", "terrain-lo", "slope", "slope-lo", "trees", "trees-lo", "unit", "pack", "lo", "prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "rail-feeds", "rail", "pois", "peaks", "items", "heritage", "marks", "overlays", "bld-fetch", "bldprep", "bldtiles", "bldfield-lo", "catalog", "catalog-held", "inputs", "names-todo", "timetables-todo", "gc", "backup"]);
+        assert_eq!(ids, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "spoken", "regions-extract", "heritage-sites", "terrain-water", "terrain", "terrain-lo", "slope", "slope-lo", "trees", "trees-lo", "depth-lo", "depth", "unit", "pack", "lo", "prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "rail-feeds", "rail", "pois", "peaks", "items", "heritage", "marks", "overlays", "bld-fetch", "bldprep", "bldtiles", "bldfield-lo", "catalog", "catalog-held", "inputs", "names-todo", "timetables-todo", "gc", "backup"]);
         assert_eq!(TASKS.map(|t| t.name), ["tail", "terrainsub", "treeblock", "bldtile"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&'static str>>();
         assert_eq!(set(&TASKS.map(|t| t.name)), set(&crate::coord::PAGE_TASKS), "the page's tasks are the tasks");

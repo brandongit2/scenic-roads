@@ -63,6 +63,9 @@ pub struct TerrainTiles {
     /// the accepted sources' index content name, and what they read of it (None: not declared, or
     /// not to be read now).
     buildings: Option<(String, Option<KeyedSources>)>,
+    /// The declared depth sources (crate::depth::grids): the accepted sources' index content name,
+    /// and them (None: they can't be read now; the depth's work waits).
+    depth: Option<(String, Option<std::sync::Arc<Vec<crate::depth::grids::Source>>>)>,
 }
 
 /// What the units' and tree cover's keys name of the declared sources: the buildings source's
@@ -110,6 +113,7 @@ impl TerrainTiles {
         self.load_elevation(root, m);
         self.load_terrain(root, m);
         self.load_buildings(root, m);
+        self.load_depth(root, m);
         let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         self.held.retain(|c, _| want.contains(c.as_str()));
         self.unread.retain(|c, _| want.contains(c.as_str()));
@@ -211,6 +215,36 @@ impl TerrainTiles {
         .map_err(|e| eprintln!("agent: the units and tree cover wait: the declared sources in {want} can't be read ({e:#})"))
         .ok();
         self.buildings = Some((want.clone(), r));
+    }
+
+    fn load_depth(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
+            self.depth = None;
+            return;
+        };
+        if self.depth.as_ref().is_some_and(|(c, r)| c == want && r.is_some()) {
+            return;
+        }
+        let r = crate::depth::grids::declared(root, m).map_err(|e| eprintln!("agent: the depth waits: the declared depth sources in {want} can't be read ({e:#})")).ok().map(std::sync::Arc::new);
+        self.depth = Some((want.clone(), r));
+    }
+
+    /// The declared depth sources of the accepted sources `m` names: none declared, an empty list;
+    /// None while they can't be read now (the depth's work waits).
+    pub fn depth(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<crate::depth::grids::Source>>> {
+        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else { return Some(Default::default()) };
+        match &self.depth {
+            Some((c, Some(d))) if c == want => Some(d.clone()),
+            #[cfg(test)]
+            None => Some(Default::default()),
+            _ => None,
+        }
+    }
+
+    /// Holds `d` as the depth sources of accepted sources index `content` (tests).
+    #[cfg(test)]
+    pub fn hold_depth(&mut self, content: &str, d: Vec<crate::depth::grids::Source>) {
+        self.depth = Some((content.to_string(), Some(std::sync::Arc::new(d))));
     }
 
     /// The declared buildings source's release, of the accepted sources `m` names; None while

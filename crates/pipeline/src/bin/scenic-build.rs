@@ -537,6 +537,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
+        "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (pieces: their hi packs and mids; pipeline::treepacks::build_piece), or a
@@ -1082,6 +1083,9 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "buildings" => (pipeline::bld::ZOOM, pipeline::bld::ZOOM),
         // Their field: levels 9–14 in the hi packs, 4–8 in the lo (pipeline::bld::field).
         "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
+        // Depth: z3–8 in the lo packs, z9–16 in the hi where a source has that detail; the server
+        // makes the others from their ancestors (pipeline::depth).
+        pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER => pipeline::depth::ZOOMS,
         _ => return None,
     })
 }
@@ -1156,6 +1160,8 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
                     l if l.starts_with("ov-") || l == "stations" || l == "buildings" => "mvt",
                     "ferries" => "geojson-gz",
                     "buildings-field" => pipeline::bld::field::ENCODING,
+                    pipeline::depth::LAYER => pipeline::depth::ENCODING,
+                    pipeline::depth::CLASS_LAYER => pipeline::depth::CLASS_ENCODING,
                     _ => "unknown",
                 };
                 let zs = match *scope {
@@ -1195,7 +1201,16 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
     global.extend(worldwide_globals(&out.manifest));
     drop(p);
     let p = phase("the units' summaries read", Class::NasRead);
-    let meta = units_meta(out, &base, now)?;
+    let mut meta = units_meta(out, &base, now)?;
+    // (The depth's sources as the map says them: each by the code its class tiles carry, with its
+    // label, datum and the notice its licence asks for.)
+    if layers.contains_key(pipeline::depth::CLASS_LAYER) {
+        let d = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
+        let list: Vec<serde_json::Value> = d.iter().map(|s| serde_json::json!({"code": s.code, "id": s.id, "label": s.label, "datum": s.datum, "water": if s.lake { "lake" } else { "sea" }, "notice": s.notice})).collect();
+        if let Some(o) = meta.as_object_mut() {
+            o.insert("depth".into(), serde_json::json!({"sources": list}));
+        }
+    }
     drop(p);
     let p = phase("the coverage drawn and the credits found", Class::NasRead);
     let units: Vec<String> = base.keys().cloned().collect();
@@ -3639,6 +3654,32 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// depth-lo <Q …> | depth <T …>: the depth's assemblies of z3 tiles Q (their lo packs, z3–8) or
+/// pieces of z6 tiles T (their hi packs, z9–16), from the declared depth sources on the latest
+/// pass's water (pipeline::depth::build).
+fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
+    let z = if step == "depth-lo" { 3 } else { 6 };
+    let ts: Vec<Unit> = positional(args).iter().map(|t| Unit::parse(t).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {t}"))).collect::<Result<_>>()?;
+    anyhow::ensure!(!ts.is_empty(), "{step} <{z}/x/y …>");
+    let p = phase("the depth sources and the basemap's water opened", Class::NasRead);
+    let sources = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
+    anyhow::ensure!(!sources.is_empty(), "no depth source is declared (inputs/sources/, docs/inputs.md §6.10)");
+    let water = pipeline::terrain_pack::open_water(out)?;
+    drop(p);
+    let names: Vec<String> = ts.iter().map(|t| format!("Composing the depth of {}", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, &t) in ts.iter().enumerate() {
+        pipeline::control::safe_point(step);
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start(step, &t.slash());
+        let n = if z == 3 { pipeline::depth::build::build_lo(out, &sources, &water, (t.x, t.y))? } else { pipeline::depth::build::build_hi(out, &sources, &water, (t.x, t.y))? };
+        eprintln!("{step} {}: {n} tiles", t.slash());
+        pipeline::control::done(step, &t.slash());
+        note_cost(step, &t.slash(), c);
+    }
+    Ok(())
+}
+
 /// treeblock-task's work: row `row`'s task folder in `dir/task` (cut from its piece's coverage as
 /// the piece's run cuts it), `dir/task.json` (its blocks and the canopy squares the NAS's store
 /// has whole there), and `dir/packs/8-x-y/` its blocks' tiles from the manifest's hi packs (zoom
@@ -3893,7 +3934,15 @@ fn water_idx_of(out: &Out, cov: &pipeline::coverage::Coverage, src: &dyn pipelin
         Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&std::fs::read(out.path(c))?)?),
         None => None,
     };
-    pipeline::terrain_water::make_idx(src, prior.as_ref(), &pipeline::agent::build::water_reads(cov), progress)
+    // (The depth's targets' too, once its sources are declared: pipeline::depth.)
+    let mut reads = pipeline::agent::build::water_reads(cov);
+    let depth = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
+    for r in pipeline::agent::build::depth_water_reads(cov, &depth) {
+        if !reads.iter().any(|x| x.0 == r.0 && x.1 == r.1) {
+            reads.push(r);
+        }
+    }
+    pipeline::terrain_water::make_idx(src, prior.as_ref(), &reads, progress)
 }
 
 

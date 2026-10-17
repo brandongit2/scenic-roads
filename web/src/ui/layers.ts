@@ -11,6 +11,7 @@ import { fmt, h } from './dom';
 import { ScaleControls } from './scale';
 import { ColourPick, RangeFilter, Slider, pct, type SliderOpts } from './controls';
 import { TreeSection } from './trees';
+import { DepthSection } from './depth';
 import { BuildingSection } from './buildings';
 import { toggleAllStops } from './stops';
 import { presets, railPresets } from '../presets';
@@ -57,6 +58,10 @@ export class LayersCard {
   readonly trees: TreeSection;
   /** 3D buildings controls. */
   readonly buildings: BuildingSection;
+  /** Depth under the water (ui/depth.ts); its section hidden until the catalog has the layers
+   * (showDepth). */
+  readonly depth: DepthSection;
+  private depthSection!: HTMLElement;
   /** Their section: hidden until the catalog has the layer (showBuildings). */
   private buildingsSection: HTMLElement;
   private railSection: Node[];
@@ -189,6 +194,7 @@ export class LayersCard {
     });
     this.trees = new TreeSection(this.store);
     this.buildings = new BuildingSection(this.store);
+    this.depth = new DepthSection(this.store);
     // Passenger rail: the layer and its service groups (styling: top-left panel).
     this.rail = cb((v) => this.store.set({ rail: { ...this.store.s.rail, on: v } }));
     const railGroups = h('div', { class: 'grp' });
@@ -726,6 +732,7 @@ export class LayersCard {
         this.t.fogBox,
       ),
       this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
+      (this.depthSection = this.section('depth', 'Depth', this.depth.on, ...this.depth.nodes)),
       (this.buildingsSection = this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes)),
       this.section('map', 'Map', null,
         tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
@@ -752,7 +759,13 @@ export class LayersCard {
       h('div', { class: 'faint note' }, 'Tunnels faded · bridges cased · zoomed out, brightness = road density'),
     );
     this.showBuildings(false);
+    this.showDepth(false);
     this.sync(store.s);
+  }
+
+  /** The Depth section shown, or not: only once the catalog has the layers. */
+  showDepth(on: boolean) {
+    this.depthSection.hidden = !on;
   }
 
   /** The Buildings section shown, or not: only once the catalog has the layer. */
@@ -884,6 +897,7 @@ export class LayersCard {
 
   sync(s: AppState) {
     this.trees.sync();
+    this.depth.sync();
     this.buildings.sync();
     queueMicrotask(() => {
       for (const t of this.root.querySelectorAll<HTMLInputElement & { syncOff?: () => void }>('input.switch')) t.syncOff?.();

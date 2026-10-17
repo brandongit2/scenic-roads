@@ -31,6 +31,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, fadeAlpha, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
+import { Depth } from './depth';
 import { addBuildings, applyBuildings, rgb01, buildingAt, heightColourFn, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
@@ -1668,6 +1669,11 @@ async function main() {
   };
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
+  // Depth under the water (depth.ts): its layers once the catalog has them.
+  const depth = new Depth(map);
+  layers.depth.onPreview = (palette) => depth.preview(palette);
+  layers.depth.domain = () => depth.domain(store.s.depth);
+  depth.onFit = () => layers.depth.sync();
   viewshed.onActive = (on) => layers.setViewshedActive(on);
   viewshed.onMark = (ll) => {
     marks.viewshed = ll ? point(ll, 'viewshed') : null;
@@ -1977,6 +1983,7 @@ async function main() {
     }
     if (ch.has('ferry')) ferryCard.sync();
     if (ch.has('trees') && styleReady) applyTrees(map, s.trees);
+    if (ch.has('depth') && styleReady) depth.apply(s.depth);
     if ((ch.has('buildings') || ch.has('terrain')) && styleReady) {
       applyBuildingsNow(s);
       if (!s.buildings.on) hoverBuilding(null);
@@ -2188,6 +2195,7 @@ async function main() {
     applyWater(map, store.s.water, coastInput, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);
+    depth.apply(store.s.depth);
     applyBuildingsNow(store.s);
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
     applyOverlayOpacity(map, store.s.poiOpacity);
@@ -2215,6 +2223,13 @@ async function main() {
     // (The heritage registers' among them: what the heritage popups name as their source.)
     w.on(() => setRegisterCredits(w.status?.credits));
     w.on(() => setBuildingsCredit(w.status?.credits));
+    // The depth's layers and sources, and the notices their licences ask for in the credits.
+    w.on(() => {
+      if (!w.status) return;
+      depth.setCatalog(w.status.layers, w.status.depth);
+      layers.showDepth(depth.available);
+      strip.setNotices((w.status.depth?.sources ?? []).map((x) => x.notice).filter((n): n is string => !!n));
+    });
     // Landmarks by view, when the catalog has them.
     w.on(() => {
       if (w.status) overlays.setMarks(w.status.marks ?? null);

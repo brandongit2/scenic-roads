@@ -237,6 +237,7 @@ fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], 
         "rail" => (&[], &["rail-feeds"], false),
         "bldtiles" => (&[], &["bldprep"], false),
         "bldfield-lo" => (&[], &["bldtiles"], false),
+        "depth" => (&[], &["depth-lo"], false),
         _ => (&[], &[], false),
     }
 }

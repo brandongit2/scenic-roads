@@ -250,3 +250,90 @@ function readGeometry(buf: ArrayBuffer, layer: string, geomType: number): { exte
   }
   return null;
 }
+
+/** A line feature in tile units: its runs (x and y in turn) and flat properties. */
+export interface TileLineOut {
+  runs: number[][];
+  props: Record<string, string | number | boolean>;
+}
+
+/** A tile of one layer of lines (the depth contours, depth.worker.ts). */
+export function encodeLines(layer: string, lines: TileLineOut[], extent = 4096): Uint8Array {
+  const keys = new Map<string, number>();
+  const values = new Map<string, number>();
+  const valueMsgs: Uint8Array[] = [];
+  const keyOf = (k: string) => {
+    let i = keys.get(k);
+    if (i === undefined) keys.set(k, (i = keys.size));
+    return i;
+  };
+  const valueOf = (v: string | number | boolean): number => {
+    const key = `${typeof v}:${String(v)}`;
+    let i = values.get(key);
+    if (i !== undefined) return i;
+    const w = new Writer();
+    if (typeof v === 'number') {
+      if (Number.isInteger(v) && Math.abs(v) < 2 ** 52) {
+        w.tag(6, 0);
+        w.varint(zigzag(v));
+      } else w.double(3, v);
+    } else if (typeof v === 'boolean') {
+      w.tag(7, 0);
+      w.varint(v ? 1 : 0);
+    } else w.bytes(1, utf8.encode(v));
+    i = valueMsgs.length;
+    values.set(key, i);
+    valueMsgs.push(w.done().slice());
+    return i;
+  };
+  const lw = new Writer();
+  lw.tag(15, 0);
+  lw.varint(2);
+  lw.bytes(1, utf8.encode(layer));
+  let n = 0;
+  for (const l of lines) {
+    const gw = new Writer();
+    let cx = 0, cy = 0, parts = 0;
+    for (const run of l.runs) {
+      const pts = run.length / 2;
+      if (pts < 2) continue;
+      gw.varint((1 << 3) | 1); // MoveTo ×1
+      let x = Math.round(run[0]), y = Math.round(run[1]);
+      gw.varint(zigzag(x - cx));
+      gw.varint(zigzag(y - cy));
+      cx = x;
+      cy = y;
+      gw.varint(((pts - 1) << 3) | 2); // LineTo ×(pts − 1)
+      for (let i = 1; i < pts; i++) {
+        x = Math.round(run[2 * i]);
+        y = Math.round(run[2 * i + 1]);
+        gw.varint(zigzag(x - cx));
+        gw.varint(zigzag(y - cy));
+        cx = x;
+        cy = y;
+      }
+      parts++;
+    }
+    if (!parts) continue;
+    const fw = new Writer();
+    fw.tag(1, 0);
+    fw.varint(++n);
+    const tw = new Writer();
+    for (const [k, v] of Object.entries(l.props)) {
+      tw.varint(keyOf(k));
+      tw.varint(valueOf(v));
+    }
+    fw.bytes(2, tw.done());
+    fw.tag(3, 0);
+    fw.varint(2); // LINESTRING
+    fw.bytes(4, gw.done());
+    lw.bytes(2, fw.done());
+  }
+  for (const k of keys.keys()) lw.bytes(3, utf8.encode(k));
+  for (const v of valueMsgs) lw.bytes(4, v);
+  lw.tag(5, 0);
+  lw.varint(extent);
+  const out = new Writer();
+  if (n) out.bytes(3, lw.done());
+  return out.done().slice();
+}

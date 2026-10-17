@@ -86,7 +86,7 @@ export class Strip {
   private scale: HTMLSpanElement;
   private loading: HTMLSpanElement;
   private build: HTMLSpanElement;
-  private credits: { d: HTMLDialogElement; set: (data: Credit[]) => void };
+  private credits: { d: HTMLDialogElement; set: (data: Credit[]) => void; notices: (n: string[]) => void };
   /** The data's credits shown, as a key (they come again with every catalog poll). */
   private creditsKey = '';
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
@@ -177,6 +177,11 @@ export class Strip {
     if (key === this.creditsKey) return;
     this.creditsKey = key;
     this.credits.set(data ?? []);
+  }
+
+  /** The notices sources' licences ask every map showing their data to carry (the depth's). */
+  setNotices(n: string[]) {
+    this.credits.notices(n);
   }
 
   /** A marker or highlighted area (no road under the cursor), with the other areas it lies in. */
@@ -338,8 +343,10 @@ const APP_CREDITS: Credit[] = [
 ];
 
 /** Data sources and licences in a modal dialog: the catalog's credits (`set`), then the app's. */
-function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void } {
+function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void; notices: (n: string[]) => void } {
   const body = h('tbody');
+  const noticeBox = h('div', { class: 'notices' });
+  const notices = (n: string[]) => noticeBox.replaceChildren(...n.map((x) => h('p', { class: 'notice' }, x)));
   const set = (data: Credit[]) =>
     body.replaceChildren(...[...data, ...APP_CREDITS].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
   set([]);
@@ -349,11 +356,12 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void 
       h('thead', {}, h('tr', {}, h('th', {}, 'What'), h('th', {}, 'Source'), h('th', {}, 'Licence / terms'))),
       body,
     ),
+    noticeBox,
     h('p', { class: 'faint' }, 'For personal use: do not publish or redistribute the built data or a hosted copy of this map.'),
   );
   // Click on the backdrop closes it.
   d.addEventListener('click', (e) => {
     if (e.target === d) d.close();
   });
-  return { d, set };
+  return { d, set, notices };
 }

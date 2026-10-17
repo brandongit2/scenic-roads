@@ -28,6 +28,7 @@ mod regions;
 mod remote;
 mod reserve;
 mod terrain;
+mod depth;
 mod tiles;
 mod updater;
 mod views;
@@ -506,6 +507,8 @@ async fn main() -> Result<()> {
         .route("/tiles/buildings-field/{z}/{x}/{y}", get(tiles::building_field_tile))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
+        .route("/tiles/depth/{z}/{x}/{y}", get(depth::depth_tile))
+        .route("/tiles/depth-class/{z}/{x}/{y}", get(depth::class_tile))
         .route("/api/railfreq", get(rail_freq_h))
         .route("/api/park", get(details::park))
         .route("/api/marks/view", axum::routing::post(marks::view))
@@ -724,7 +727,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         }
     }
     // Tile archives by their old names.
-    for (old, layer) in [("roads.tiles", "roads"), ("rails.tiles", "rails"), ("terrain.tiles", "terrain"), ("slope.tiles", "slope"), ("labels.tiles", "labels"), ("trees-cover.tiles", "trees-cover"), ("trees-height.tiles", "trees-height"), ("trees-leaf.tiles", "trees-leaf"), ("buildings.tiles", "buildings")] {
+    for (old, layer) in [("roads.tiles", "roads"), ("rails.tiles", "rails"), ("terrain.tiles", "terrain"), ("slope.tiles", "slope"), ("labels.tiles", "labels"), ("trees-cover.tiles", "trees-cover"), ("trees-height.tiles", "trees-height"), ("trees-leaf.tiles", "trees-leaf"), ("buildings.tiles", "buildings"), ("depth.tiles", "depth"), ("depth-class.tiles", "depth-class")] {
         if cat.layers.contains_key(layer) {
             let v = s.data.layer_version(layer);
             versions.insert(old.into(), if layer == "labels" { named(v) } else { serde_json::Value::from(v) });
@@ -962,6 +965,9 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "names": s.names.versions(),
         "v": fingerprint,
         "marks": marks,
+        // The depth's sources, by the code its class tiles carry (pipeline::depth): their labels,
+        // datums and the notices their licences ask the map to show.
+        "depth": cat.meta.get("depth"),
     });
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }

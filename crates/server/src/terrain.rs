@@ -23,6 +23,7 @@ static SYNTH: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock:
 static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 static FLAT_SLOPE: OnceLock<Vec<u8>> = OnceLock::new();
 static SLOPE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
+static FLOOR: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 
 fn png(b: Vec<u8>, versioned: bool, etag: Option<String>) -> Response {
     let mut r = (
@@ -76,7 +77,7 @@ pub fn terrain_f32(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result
 }
 
 /// What a tile request comes to.
-enum Got {
+pub(crate) enum Got {
     /// As stored, with its ETag.
     Stored(Vec<u8>, String),
     /// The browser has it (its ETag).
@@ -85,6 +86,10 @@ enum Got {
     Made(Vec<u8>),
     /// A read failed: 503, so nothing is cached.
     Failed,
+}
+
+pub(crate) fn respond_png(got: Got, v: bool) -> Response {
+    respond(got, v)
 }
 
 fn respond(got: Got, v: bool) -> Response {
@@ -97,7 +102,7 @@ fn respond(got: Got, v: bool) -> Response {
 }
 
 /// The stored tile of `layer`, or the browser's copy when current; None when the layer lacks it.
-fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, headers: &HeaderMap) -> Option<Got> {
+pub(crate) fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, headers: &HeaderMap) -> Option<Got> {
     let h = match s.data.tile_hash(layer, z, x, y) {
         Ok(Some(h)) => h,
         Ok(None) => return None,
@@ -142,9 +147,15 @@ fn made(cache: &'static OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>>, 
     }
 }
 
+/// A terrain tile; `?floor=1`: with the floor under the water (crate::depth::terrain_floor_png),
+/// where the catalog has depth (else the terrain as it is).
 pub async fn terrain_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     let v = versioned(q.as_deref());
+    let floor = q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == "floor=1"));
     let got = tokio::task::spawn_blocking(move || {
+        if floor && s.data.catalog().layers.contains_key(pipeline::depth::LAYER) {
+            return made(&FLOOR, gen(&s), z, x, y, || Ok(crate::depth::terrain_floor_png(&s, z, x, y)?.unwrap_or_else(flat)));
+        }
         if let Some(g) = stored(&s, "terrain", z, x, y, &headers) {
             return g;
         }

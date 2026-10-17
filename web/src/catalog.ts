@@ -141,6 +141,10 @@ export interface CatalogStatus {
   v?: string;
   /** Landmark points by view (docs/phase5.md); null or absent: none. */
   marks?: import('./marksview').MarksCfg | null;
+  /** The catalog's layers by name (their encodings and zooms). */
+  layers?: Record<string, unknown>;
+  /** The depth's sources (pipeline::depth): absent without depth. */
+  depth?: { sources?: import('./depth').DepthSource[] } | null;
 }
 
 const POLL_MS = 60_000;

@@ -5,6 +5,7 @@ import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetr
 import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
+import { DEPTH_DEFAULTS, DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
 import { LAND_COLOUR, PLAIN } from './basecolours';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
@@ -514,6 +515,8 @@ export interface AppState {
   ferry: FerryState;
   /** Tree cover layer (Layers → Trees). */
   trees: TreeState;
+  /** Depth under the water: its colour and its contours (Layers → Depth). */
+  depth: DepthState;
   /** 3D buildings (Layers → Buildings). */
   buildings: BuildingState;
   surface: { paved: boolean; unpaved: boolean };
@@ -633,6 +636,7 @@ export const defaults: AppState = {
     on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
     cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
   },
+  depth: { ...DEPTH_DEFAULTS },
   // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
   // By height: auto-fit to the buildings in view, the low ones faded toward the plain colour.
   buildings: {
@@ -890,6 +894,9 @@ export function toHash(s: AppState, buildings: boolean): string {
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
+  const dp = (d: DepthState) => [d.on ? 1 : 0, d.palette, d.scale, Math.round(d.max), +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
+    d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2)].join(',');
+  if (dp(s.depth) !== dp(defaults.depth)) p.set('dp', dp(s.depth));
   const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0, b.plain.slice(1)].join(',');
   if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
   if (buildings && scaleStr(s.buildings.height) !== scaleStr(defaults.buildings.height)) p.set('bh', scaleStr(s.buildings.height));
@@ -1100,6 +1107,31 @@ export function fromHash(hash: string, buildings = true): AppState {
       maskCover: n(tcv[7], t.maskCover, 1, 100),
       maskHeight: n(tcv[8], t.maskHeight, 1, 40),
       maskColour: /^[0-9a-f]{6}$/i.test(tcv[9]) ? `#${tcv[9]}` : t.maskColour,
+    };
+  }
+  const dpv = p.get('dp')?.split(',');
+  if (dpv && dpv.length >= 17) {
+    const d = s.depth;
+    const n = (v: string, dflt: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : dflt);
+    const col = (v: string, dflt: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v}` : dflt);
+    s.depth = {
+      on: dpv[0] === '1',
+      palette: DEPTH_PALETTES.some((pp) => pp.key === baseKey(dpv[1])) ? dpv[1] : d.palette,
+      scale: (['linear', 'log', 'fit'] as const).find((k) => k === dpv[2]) ?? d.scale,
+      max: n(dpv[3], d.max, 5, 6000),
+      opacity: n(dpv[4], d.opacity, 0.1, 1),
+      shade: n(dpv[5], d.shade, 0, 1),
+      light: n(dpv[6], d.light, 0, 359),
+      dry: dpv[7] === '1',
+      dryColour: col(dpv[8], d.dryColour),
+      contours: dpv[9] === '1',
+      interval: dpv[10] === 'fixed' ? 'fixed' : 'zoom',
+      fixed: n(dpv[11], d.fixed, 1, 500),
+      index: n(dpv[12], d.index, 2, 10),
+      labels: dpv[13] === '1',
+      colour: col(dpv[14], d.colour),
+      weight: n(dpv[15], d.weight, 0.4, 3),
+      lineOpacity: n(dpv[16], d.lineOpacity, 0.1, 1),
     };
   }
   const bdv = buildings ? p.get('bd')?.split(',') : undefined;
