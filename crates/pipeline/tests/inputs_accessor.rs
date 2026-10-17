@@ -77,13 +77,15 @@ const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// Each gate unit's name as code would write it in a path. (The regions', the heritage
-/// registers' and matches' and the elevation datasets' aside: "regions", "heritage" and
-/// "elevation" are words every reader of the coverage, the catalog, the heritage chain and the
-/// roads' heights says, and their drop boxes are only ever named `inputs/regions`,
-/// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, which `MARKERS` catches.)
+/// registers' and matches', the elevation datasets' and the source declarations' aside: "regions",
+/// "heritage", "elevation" and "sources" are words every reader of the coverage, the catalog, the
+/// heritage chain, the roads' heights and the NAS's stores (`sources/…`) says, and their drop boxes
+/// are only ever named `inputs/regions`,
+/// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, `inputs/sources`, which
+/// `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    use pipeline::inputs::{elevation, heritage, heritage_matches, regions};
-    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT].contains(*u)).map(|u| format!("\"{u}")).collect()
+    use pipeline::inputs::{elevation, heritage, heritage_matches, regions, sources};
+    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT].contains(*u)).map(|u| format!("\"{u}")).collect()
 }
 
 /// The lines naming a drop box outside the accessor, and the exemptions that matched none.

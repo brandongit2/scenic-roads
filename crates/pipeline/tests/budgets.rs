@@ -28,6 +28,7 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/pipeline/src/budget/proxy.rs", "the proxy's tests, a metered host answered here"),
     ("crates/pipeline/src/budget/tests.rs", "the budget's tests"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
+    ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
     ("dem/budget.py", "the steps' side of the budget: its lists of the metered hosts, and the hold it tells the proxy"),
     ("dem/heritagewd.py", "curl (honours HTTPS_PROXY); a 429 told (budget.seen)"),
     ("dem/items.py", "names Wikidata's entities in its queries, asked through heritagewd.sparql"),
