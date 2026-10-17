@@ -179,7 +179,7 @@ pub const TABLE: [Step; 49] = [
     Step { alone: true, ..step("pass", Derive, World, "trailends", "Route ends", "Finds the ends of the world's hiking routes.", w_trailends) },
     Step { alone: true, ..step("pass", Derive, World, "reach", "Road reach", "Works out how far each tile's roads reach.", w_reach) },
     Step { alone: true, ..step("pass", Derive, World, "terrain-z8", "World terrain, z8", "Repairs every z8 terrain tile of the world, once.", w_terrain_z8) },
-    Step { alone: true, ..step("pass", Fetch, World, "buildings", "Roadside buildings", "Collects the world's roadside building boxes from the Overture release.", w_buildings) },
+    Step { alone: true, ..step("pass", Fetch, World, "buildings", "Roadside buildings", "Collects the world's roadside building boxes from the declared buildings release.", w_buildings) },
     Step { alone: true, ..step("pass", Derive, World, "summits", "Summits", "Finds the world's summits.", w_summits) },
     Step { alone: true, ..step("pass", Pack, World, "labels", "Place labels", "Ranks the world's place labels and packs them.", w_labels) },
     // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
