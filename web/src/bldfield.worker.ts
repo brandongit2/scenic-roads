@@ -10,31 +10,37 @@
 // ground (bldfield.offsets.ts).
 
 import { roofGround } from './bldfield.offsets';
+import { packHalf, packR11G11B10 } from './packfloat';
 
 export type FieldIn =
   | { type: 'load'; key: string; url: string }
   | { type: 'cancel'; key: string }
   /** A level-8 tile's heritage list alone (the tile fetched, its WebP not decoded). */
   | { type: 'her'; key: string; url: string }
+  /** A tile's heritage tint drawn (512 × 512): each building's ring (pixels, x y x y …) filled in its colour. */
+  | { type: 'herTex'; key: string; ver: string; fills: string[]; rings: Float64Array[] }
   /** Each texel's roof ground for the elevations `ver` (the grid GE × GE, M cells beyond the tile). */
   | { type: 'dg'; key: string; ver: string; texels: Uint8Array; n: number; ee: Float32Array; GE: number; M: number };
 
 export type FieldOut =
   /** A level-8 tile's heritage list (null: none, or the tile not had). */
   | { type: 'her'; key: string; list: Uint8Array | null }
+  /** The heritage tint's pixels (RGBA, premultiplied: the mipmaps mix the tint by the share each texel has). */
+  | { type: 'herTex'; key: string; ver: string; px: Uint8Array }
   | { type: 'done'; key: string; empty: true }
   | { type: 'failed'; key: string; error: string }
-  /** Share × each texel's roof ground (R16F's, a layer a class held), each cell's largest (32 × 32);
-   * the texels handed back. */
-  | { type: 'dg'; key: string; ver: string; dg: Float32Array; dgc: Float32Array; texels: Uint8Array }
+  /** Share × each texel's roof ground (R16F's half floats, a layer a class held), each cell's
+   * largest (32 × 32); the texels handed back. */
+  | { type: 'dg'; key: string; ver: string; dg: Uint16Array; dgc: Float32Array; texels: Uint8Array }
   /** The roof ground not made: the texels handed back all the same. */
   | { type: 'dgfailed'; key: string; ver: string; texels: Uint8Array; error: string }
   | {
       type: 'done';
       key: string;
       empty: false;
-      /** Each class present: v, w, f (Float32, 512 × 512 × 3); null where absent. */
-      classes: (Float32Array | null)[];
+      /** Each class present: v, w, f (512 × 512 R11F_G11F_B10F texels, packed here: uploaded as
+       * floats, the GPU process's conversion held up the page); null where absent. */
+      classes: (Uint32Array | null)[];
       mask: number;
       /** The tallest mean top (m). */
       top: number;
@@ -94,7 +100,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
         texels[(l * N + i) * 3 + 2] = px[ob + i * 4 + 1];
       }
     }
-    const classes: (Float32Array | null)[] = [];
+    const classes: (Uint32Array | null)[] = [];
     const hmax = new Float32Array(N);
     const m = new Uint8Array(N);
     let top = 0;
@@ -123,7 +129,7 @@ async function load(key: string, url: string): Promise<FieldOut> {
           if (h > top) top = h;
         }
       }
-      classes.push(o);
+      classes.push(packR11G11B10(o));
       row++;
     }
     const pool = (cells: number) => {
@@ -200,9 +206,31 @@ self.onmessage = (e: MessageEvent<FieldIn>) => {
       .then((list) => (self as unknown as Worker).postMessage({ type: 'her', key: msg.key, list } satisfies FieldOut));
     return;
   }
+  if (msg.type === 'herTex') {
+    const cv = new OffscreenCanvas(T, T);
+    const cx = cv.getContext('2d', { willReadFrequently: true })!;
+    msg.rings.forEach((r, k) => {
+      cx.fillStyle = msg.fills[k];
+      cx.beginPath();
+      for (let i = 0; i < r.length; i += 2) (i ? cx.lineTo : cx.moveTo).call(cx, r[i], r[i + 1]);
+      cx.closePath();
+      cx.fill();
+    });
+    const px = cx.getImageData(0, 0, T, T).data;
+    for (let i = 0; i < px.length; i += 4) {
+      const a = px[i + 3] / 255;
+      px[i] = Math.round(px[i] * a);
+      px[i + 1] = Math.round(px[i + 1] * a);
+      px[i + 2] = Math.round(px[i + 2] * a);
+    }
+    const out = new Uint8Array(px.buffer);
+    (self as unknown as Worker).postMessage({ type: 'herTex', key: msg.key, ver: msg.ver, px: out } satisfies FieldOut, [out.buffer]);
+    return;
+  }
   if (msg.type === 'dg') {
     try {
-      const { dg, dgc } = roofGround(msg.texels, msg.n, T, msg.ee, msg.GE, msg.M);
+      const { dg: d32, dgc } = roofGround(msg.texels, msg.n, T, msg.ee, msg.GE, msg.M);
+      const dg = packHalf(d32);
       (self as unknown as Worker).postMessage({ type: 'dg', key: msg.key, ver: msg.ver, dg, dgc, texels: msg.texels } satisfies FieldOut, [dg.buffer, dgc.buffer, msg.texels.buffer]);
     } catch (err) {
       (self as unknown as Worker).postMessage({ type: 'dgfailed', key: msg.key, ver: msg.ver, texels: msg.texels, error: String(err) } satisfies FieldOut, [msg.texels.buffer]);

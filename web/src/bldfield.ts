@@ -72,6 +72,8 @@ const LEVEL_MIN = 4;
 const STANDIN_DEPTH = 3;
 /** The level fetched ahead under the meshes (a z12 tile holds 16 of their z14 tiles). */
 const PREFETCH_LEVEL = 12;
+/** Elevations sampled again a frame for this long at most (ms; tiles without any have them at once). */
+const ELEV_BUDGET_MS = 3;
 /** Fetches in flight at most. */
 const FETCHES = 6;
 /** The off-screen cache's target (MB): the tiles not wanted in the frame are freed, least recently
@@ -256,6 +258,25 @@ void main() {
     }
   }
   float t0 = 0.0;
+  // The box (a stand-in's clip, the comparison's box: u_box, tile units): the march reads the field
+  // only at points in it, so a ray that never comes into it shows nothing (discarded at once: a
+  // loading tile's ancestor is drawn whole for each square it stands in for), and the cells after it
+  // leaves it add nothing (the march stops there). (A margin of a tile unit: no step in it is lost.)
+  float tBoxOut = 1e30;
+  {
+    vec2 b0 = u_box.xy - 1.0, b1 = u_box.zw + 1.0;
+    float ta = 0.0, tb = tmax;
+    for (int ax = 0; ax < 2; ax++) {
+      float o = v_p[ax], dv = d[ax] / mpu;
+      if (abs(dv) > 1e-12) {
+        float u0 = (b0[ax] - o) / dv, u1 = (b1[ax] - o) / dv;
+        ta = max(ta, min(u0, u1));
+        tb = min(tb, max(u0, u1));
+      } else if (o < b0[ax] || o > b1[ax]) tb = -1.0;
+    }
+    if (ta > tb) discard;
+    tBoxOut = tb;
+  }
   if (u_dbg == 2) { fragColor = vec4(0.0, 0.0, 0.0, 0.01); return; }
   float texel = mpu * ${EXTENT / 512}.0;
   float dist0 = length(E - C);
@@ -303,7 +324,7 @@ void main() {
   vec3 cLin = vec3(0.0), pLin = vec3(0.0);
   float prevBound = 1e9;
   for (int k = 0; k < 96; k++) {
-    if (done || t >= tmax) break;
+    if (done || t >= tmax || t > tBoxOut) break;
     vec2 p = (E.xy + d.xy * t) / mpu;
     // (the cell a little ahead: a point on an edge takes the cell it's going into)
     vec2 ps = p + (length(dT) > 1e-12 ? normalize(dT) * 0.05 : vec2(0.0));
@@ -603,6 +624,13 @@ interface FTile {
    * texel around), the elevations they were made for and the ones asked for. */
   dgTex: WebGLTexture | null;
   dgc: Float32Array | null;
+  /** The grid elevations last sampled (null: none yet), and their version: it changes only when
+   * they do, so the roof ground asked for them stays good while the terrain's tiles change elsewhere. */
+  ee: Float32Array | null;
+  eeVer: number;
+  /** The height scale and blocks the hull was made for ('': to be made again, e.g. with the roof
+   * ground's lift once it comes). */
+  hullKey: string;
   dgFor: string;
   dgAsked: string;
   elev: WebGLBuffer | null;
@@ -620,6 +648,8 @@ interface FTile {
   /** The heritage tint (RGBA8, premultiplied, mipmapped; null: none here) and what it was made for. */
   herTex: WebGLTexture | null;
   herFor: string;
+  /** The heritage tint asked of the worker (its version; drawn there, uploaded when it comes). */
+  herAsked: string;
   /** Only fetched ahead, under the meshes (not wanted for drawing this frame): after the wanted. */
   pre: boolean;
 }
@@ -745,51 +775,52 @@ export class FieldLayer implements CustomLayerInterface {
     }
     if (!list || list === 'loading') return null;
     const want = `${h.ver}`;
-    if (t.herFor === want) return t.herTex;
+    if (t.herFor === want || t.herAsked === want) return t.herTex;
     let it = this.herItems.get(k8);
     if (!it || it.ver !== h.ver) {
       it = { ver: h.ver, items: heritageItems(list, Number(k8.split('/')[1]), Number(k8.split('/')[2]), h.points) };
       this.herItems.set(k8, it);
     }
+    const n = 2 ** t.z;
+    const box: [number, number, number, number] = [t.x / n, t.y / n, (t.x + 1) / n, (t.y + 1) / n];
+    const mine = it.items.filter((b) => b.box[2] >= box[0] && b.box[0] <= box[2] && b.box[3] >= box[1] && b.box[1] <= box[3]);
+    if (!mine.length) {
+      this.setHerTex(t, want, null);
+      return null;
+    }
+    // Drawn by the worker (the canvas's fill, read back and premultiplied, took the page ~10 ms a
+    // tile): the tint shows once it comes, the last one meanwhile.
+    t.herAsked = want;
+    this.worker?.postMessage({
+      type: 'herTex', key: t.key, ver: want,
+      fills: mine.map((b) => `rgb(${heritageTint(b.g).map((v) => Math.round(v * 255)).join(',')})`),
+      rings: mine.map((b) => Float64Array.from(b.ring.flatMap(([wx, wy]) => [(wx * n - t.x) * 512, (wy * n - t.y) * 512]))),
+    } satisfies FieldIn);
+    return t.herTex;
+  }
+
+  /** Tile t's heritage tint for version `ver`: the worker's pixels (premultiplied), or none. */
+  private setHerTex(t: FTile, ver: string, px: Uint8Array | null) {
     const gl = this.gl;
     if (t.herTex) {
       gl.deleteTexture(t.herTex);
       t.herTex = null;
       t.gpu -= (512 * 512 * 4 * 4) / 3;
     }
-    t.herFor = want;
-    const n = 2 ** t.z;
-    const box: [number, number, number, number] = [t.x / n, t.y / n, (t.x + 1) / n, (t.y + 1) / n];
-    const mine = it.items.filter((b) => b.box[2] >= box[0] && b.box[0] <= box[2] && b.box[3] >= box[1] && b.box[1] <= box[3]);
-    if (!mine.length) return null;
-    const cv = new OffscreenCanvas(512, 512);
-    const cx = cv.getContext('2d', { willReadFrequently: true })!;
-    for (const b of mine) {
-      cx.fillStyle = `rgb(${heritageTint(b.g).map((v) => Math.round(v * 255)).join(',')})`;
-      cx.beginPath();
-      b.ring.forEach(([wx, wy], i) => (i ? cx.lineTo : cx.moveTo).call(cx, (wx * n - t.x) * 512, (wy * n - t.y) * 512));
-      cx.closePath();
-      cx.fill();
-    }
-    const px = cx.getImageData(0, 0, 512, 512).data;
-    // (premultiplied: the mipmaps mix the tint by the share each texel has)
-    for (let i = 0; i < px.length; i += 4) {
-      const a = px[i + 3] / 255;
-      px[i] = Math.round(px[i] * a);
-      px[i + 1] = Math.round(px[i + 1] * a);
-      px[i + 2] = Math.round(px[i + 2] * a);
-    }
+    t.herFor = ver;
+    if (!px) return;
     const tx = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, tx);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(px.buffer));
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
     t.gpu += (512 * 512 * 4 * 4) / 3;
-    return (t.herTex = tx);
+    t.herTex = tx;
   }
   private elevKey = '';
   private failed = false;
@@ -849,10 +880,11 @@ export class FieldLayer implements CustomLayerInterface {
     for (const x of t.tex ?? []) if (x) gl.deleteTexture(x);
     for (const x of [t.top32, t.cmask, t.tbTex, t.top128, t.elevTex, t.dgTex, t.herTex]) if (x) gl.deleteTexture(x);
     t.herTex = null;
-    t.herFor = '';
+    t.herFor = t.herAsked = '';
     t.dgTex = null;
     t.dgc = null;
     t.dgFor = t.dgAsked = '';
+    t.ee = null;
     if (t.elev) gl.deleteBuffer(t.elev);
     if (t.ibuf) gl.deleteBuffer(t.ibuf);
     if (t.vao) gl.deleteVertexArray(t.vao);
@@ -993,7 +1025,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', pre };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, tbTex: null, top128: null, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -1041,6 +1073,14 @@ export class FieldLayer implements CustomLayerInterface {
     }
     if (m.type === 'dg') {
       this.roofGround(m);
+      return;
+    }
+    if (m.type === 'herTex') {
+      const t = this.tiles.get(m.key);
+      if (t && t.state === 'ready' && t.herAsked === m.ver) {
+        this.setHerTex(t, m.ver, m.px);
+        this.map.triggerRepaint();
+      }
       return;
     }
     if (m.type === 'dgfailed') {
@@ -1093,7 +1133,7 @@ export class FieldLayer implements CustomLayerInterface {
       t.gpu += (512 * 512 * 2 * t.layers * 4) / 3;
     }
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, t.dgTex);
-    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.R16F, 512, 512, t.layers, 0, gl.RED, gl.FLOAT, m.dg);
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.R16F, 512, 512, t.layers, 0, gl.RED, gl.HALF_FLOAT, m.dg);
     gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -1102,8 +1142,10 @@ export class FieldLayer implements CustomLayerInterface {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     t.dgc = m.dgc;
     t.dgFor = m.ver;
-    // (the cells' starts and the hull again, with the roof ground's lift)
+    // (the cells' starts and the hull again, with the roof ground's lift: the same elevations, so
+    // the same version, and the roof ground isn't asked for again)
     t.elevFor = '';
+    t.hullKey = '';
     this.map.triggerRepaint();
   }
 
@@ -1134,8 +1176,9 @@ export class FieldLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, tx);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
       // (R11F_G11F_B10F: 4 bytes a texel, half RGBA16F's, filterable; v, w and f to 1.6, 1.6 and 3 %
-      // of their value. v in the 6-bit channel: in B's 5 bits Tokyo came out 0.4 L* darker.)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R11F_G11F_B10F, 512, 512, 0, gl.RGB, gl.FLOAT, c);
+      // of their value. v in the 6-bit channel: in B's 5 bits Tokyo came out 0.4 L* darker. Packed by
+      // the worker.)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R11F_G11F_B10F, 512, 512, 0, gl.RGB, gl.UNSIGNED_INT_10F_11F_11F_REV, c);
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -1211,31 +1254,40 @@ export class FieldLayer implements CustomLayerInterface {
 
   /** The tile's grid elevations, from the terrain as drawn (m, exaggerated): the box's vertices
    * and the march's ground. */
-  private elevations(t: FTile) {
+  private elevations(t: FTile, elevAt: ((ll: LngLat) => number) | null) {
     const gl = this.gl;
-    const terrain = (this.map as unknown as { terrain?: { getElevationForLngLat(ll: LngLat, tr: unknown): number } | null }).terrain;
-    const tr = trOf(this.map);
+    const key = this.elevKey + '|' + this.hk + '|' + this.blockCells;
     // The grid M cells beyond each edge too (a roof's ground at its building's centroid), and the
     // tile's own (33 × 33) within it.
     const GE = G + 1 + 2 * M;
     const ee = new Float32Array(GE * GE);
-    if (terrain) {
+    if (elevAt) {
       const n = 2 ** t.z;
       for (let j = 0; j < GE; j++) {
         const my = Math.min(1, Math.max(0, (t.y + (j - M) / G) / n));
         for (let i = 0; i < GE; i++) {
           const ll = new MercatorCoordinate((t.x + (i - M) / G) / n, my, 0).toLngLat();
-          ee[j * GE + i] = terrain.getElevationForLngLat(ll, tr) || 0;
+          ee[j * GE + i] = elevAt(ll) || 0;
         }
       }
     }
+    // The same elevations as last time (the terrain's tiles changed elsewhere), the same height scale
+    // and blocks: the hull, its textures and the roof ground stand as they are.
+    const hullKey = this.hk + '|' + this.blockCells;
+    if (t.ee && t.hullKey === hullKey && t.vao && ee.every((x, i) => x === t.ee![i])) {
+      t.elevFor = key;
+      return;
+    }
+    if (!t.ee || !ee.every((x, i) => x === t.ee![i])) t.eeVer++;
+    t.ee = ee;
+    t.hullKey = hullKey;
     const e = new Float32Array((G + 1) * (G + 1));
     for (let j = 0; j <= G; j++) for (let i = 0; i <= G; i++) e[j * (G + 1) + i] = ee[(j + M) * GE + i + M];
     t.gmin = e.reduce((m, x) => Math.min(m, x), Infinity);
     // Each texel's roof ground for these elevations, asked of the worker (its answer makes the
     // cells' starts and the hull again); meanwhile none (the roofs over the ground under each texel,
     // dg 0, clamped there).
-    const ver = this.elevKey + '|' + this.hk;
+    const ver = t.eeVer + '|' + this.hk;
     if (t.texels && t.dgAsked !== ver && this.worker) {
       t.dgAsked = ver;
       const texels = t.texels;
@@ -1338,7 +1390,7 @@ export class FieldLayer implements CustomLayerInterface {
     t.nb = NB;
     t.orderKey = '';
     t.gmax = e.reduce((m, x) => Math.max(m, x), -Infinity);
-    t.elevFor = this.elevKey + '|' + this.hk + '|' + this.blockCells;
+    t.elevFor = key;
   }
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
@@ -1511,8 +1563,21 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1i(u.u_top32, 10);
     gl.uniform1f(u.u_tmin, this.tmin);
     gl.uniform1i(u.u_elev, 1);
+    // Elevations sampled again (the terrain's tiles changed) within a few milliseconds a frame, the
+    // rest kept as they were till the next frames: after a pan every tile in view is due at once, and
+    // all of them in one frame took a quarter of a second. A tile without any yet has them at once.
+    const terrain = (map as unknown as { terrain?: { elevationForLngLatFn(tr: unknown): (ll: LngLat) => number } | null }).terrain;
+    let elevAt: ((ll: LngLat) => number) | null | undefined;
+    const elevKey = this.elevKey + '|' + this.hk + '|' + this.blockCells;
+    const elevStart = performance.now();
+    let elevLeft = false;
     for (const { t, clip } of draw) {
-      if (t.elevFor !== this.elevKey + '|' + this.hk + '|' + this.blockCells) this.elevations(t);
+      if (t.elevFor !== elevKey) {
+        if (!t.vao || performance.now() - elevStart < ELEV_BUDGET_MS) {
+          if (elevAt === undefined) elevAt = terrain ? terrain.elevationForLngLatFn(tr) : null;
+          this.elevations(t, elevAt);
+        } else elevLeft = true;
+      }
       const pd = opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } } as never, applyGlobeMatrix: true });
       gl.uniformMatrix4fv(u.u_projection_matrix, false, pd.mainMatrix as Float32List);
       const mc = pd.tileMercatorCoords as ArrayLike<number>;
@@ -1622,6 +1687,7 @@ export class FieldLayer implements CustomLayerInterface {
       this.drawn.push(t.key);
     }
     gl.bindVertexArray(null);
+    if (elevLeft) map.triggerRepaint();
     gl.disable(gl.POLYGON_OFFSET_FILL);
     for (const k of [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
       gl.activeTexture(gl.TEXTURE0 + k);
@@ -1687,6 +1753,24 @@ export function heritageItems(list: Uint8Array, ax: number, ay: number, points: 
   const out: { ring: [number, number][]; box: [number, number, number, number]; g: number }[] = [];
   if (list.length < 4) return out;
   const count = dv.getUint32(0, true);
+  const ll = (x: number, y: number): [number, number] => [x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI];
+  // The sites in the whole level-8 tile, asked for once (a query scans every site: once a building,
+  // a city's tile took seconds), a little beyond its edges, by a 16 × 16 grid of it; each building
+  // then tests the sites in its box exactly as a query of its own box would have found them.
+  const [tw, tn] = ll(ax / 256, ay / 256), [te, ts] = ll((ax + 1) / 256, (ay + 1) / 256);
+  const pad = 1e-6;
+  const sites = points([tw - pad, ts - pad, te + pad, tn + pad]);
+  if (!sites.length) return out;
+  const GN = 16;
+  const gcol = (lng: number) => Math.max(0, Math.min(GN - 1, Math.floor(((lng - tw) / (te - tw)) * GN)));
+  const grow = (lat: number) => Math.max(0, Math.min(GN - 1, Math.floor(((tn - lat) / (tn - ts)) * GN)));
+  const grid: { lng: number; lat: number; cls: number }[][] = Array.from({ length: GN * GN }, () => []);
+  for (const p of sites) grid[grow(p.lat) * GN + gcol(p.lng)].push(p);
+  const inBox = (w: number, s: number, e: number, nn: number) => {
+    const r: { lng: number; lat: number; cls: number }[] = [];
+    for (let gy = grow(nn); gy <= grow(s); gy++) for (let gx = gcol(w); gx <= gcol(e); gx++) for (const p of grid[gy * GN + gx]) r.push(p);
+    return r;
+  };
   let at = 4;
   for (let i = 0; i < count && at + 5 <= list.length; i++) {
     const np = list[at + 4];
@@ -1703,11 +1787,12 @@ export function heritageItems(list: Uint8Array, ax: number, ay: number, points: 
       box[2] = Math.max(box[2], x);
       box[3] = Math.max(box[3], y);
     }
-    const ll = (x: number, y: number): [number, number] => [x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI];
     const [w, nn] = ll(box[0], box[1]), [e, s] = ll(box[2], box[3]);
+    const cand = inBox(w, s, e, nn);
+    if (!cand.length) continue;
     const rll = [ring.map(([x, y]) => ll(x, y))];
     let g = -1;
-    for (const p of points([w, s, e, nn])) {
+    for (const p of cand) {
       const pg = Math.min(3, Math.floor(p.cls / 3));
       if ((g < 0 || pg < g) && p.lng >= w && p.lng <= e && p.lat >= s && p.lat <= nn && insideRings(rll, [p.lng, p.lat])) g = pg;
     }

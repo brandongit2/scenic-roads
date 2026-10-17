@@ -416,14 +416,21 @@ equator).
   linear light, the alpha set so the hardware's stored-value blend over the land colour gives the
   linear-light mix. Fogged as the meshes are. Lighting computed once a tile a frame on the CPU.
 - Heritage: a field tile from level 8 on takes its level-8 tile's list and fills a 512² tint texture
-  with the listed buildings the overlay shows (`buildings.heritageFor`); a hit's colour is mixed
-  toward the tint by its share. Coarser than level 8 nothing is tinted. No hover on the field.
+  with the listed buildings the overlay shows (`buildings.heritageFor`; the sites asked for once a
+  level-8 tile, the fill drawn in the worker); a hit's colour is mixed toward the tint by its share.
+  Coarser than level 8 nothing is tinted. No hover on the field.
 - GPU memory: class textures R11F_G11F_B10F with mipmaps, roof ground R16F; off-screen tiles kept
   under a soft target (`GPU_CACHE_TARGET_MB`: 1,024 MB, 512 on a `pointer: coarse` device), least
   recently wanted freed first; rebuilt after a lost context.
 - Loading: at most six fetches in flight, coarsest first, abandoned ones cancelled; a loading
-  tile's ancestor drawn over its area only; failures retried after 2, 4 … 60 s; a 204 means nothing
-  there or below.
+  tile's ancestor drawn over its area only (a ray that never enters that area discarded at once);
+  failures retried after 2, 4 … 60 s; a 204 means nothing there or below. The worker packs the
+  class textures and the roof ground into their GPU formats (`packfloat.ts`, as the browser would
+  convert them: `tools/bench/packcheck.mjs`), so an upload is a copy.
+- Elevations: each tile's grid sampled from the terrain as drawn (the fork's
+  `elevationForLngLatFn`), again when the terrain's tiles in view change, within 3 ms a frame
+  (`ELEV_BUDGET_MS`; a tile without any at once); a tile whose grid comes out the same keeps its
+  hull and roof ground.
 - Debug and tuning switches: `?fdbg=`, `?fsub=1` (the sub-cell walk), `?fstx=`, `?fopt=` (default 3).
 
 **Quality and cost** (`tools/bldcheck`, against full detail shrunk in linear light, σ 8 px blur):
