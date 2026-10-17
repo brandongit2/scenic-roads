@@ -2223,7 +2223,7 @@ async function main() {
     stations.apply(store.s);
     applyDrivesShown();
     regions.start();
-    // The catalog and the lead from now on (a new catalog finds the style's sources there).
+    // The catalog from now on (a new catalog finds the style's sources there).
     watch = new CatalogWatch(meta.catalog);
     watch.onSwitch = newCatalog;
     // Newer points on the server than the page has (a 409): the catalog now, not in a minute.

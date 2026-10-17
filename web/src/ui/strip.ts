@@ -3,7 +3,7 @@
 // line shows its services and the ride factors in the same slots; a marker or highlighted area
 // (with no road under the cursor) gets one descriptive line.
 // Row 2: yes/no flags as chips, road tags and elevation sources on the left; loading status,
-// cursor position, zoom, scale, the lead and the NAS (buildstatus.ts), links and the credits
+// cursor position, zoom, scale, the server and NAS connection and reload prompt (mapstatus.ts), links and the credits
 // dialog on the right. Every slot has a fixed width and its elements persist, so nothing moves as
 // the values change.
 import type { Map as MLMap } from 'maplibre-gl';
@@ -165,7 +165,7 @@ export class Strip {
     return this.loading;
   }
 
-  /** The lead's and the NAS's element (ui/buildstatus.ts keeps it up to date). */
+  /** The connection and reload prompt's element (ui/mapstatus.ts keeps it up to date). */
   get buildStatus(): HTMLElement {
     return this.build;
   }
