@@ -447,8 +447,10 @@ equator).
 **Quality and cost** (`tools/bldcheck`, against full detail shrunk in linear light, σ 8 px blur):
 within about 1 L* of full detail in a district's tone from z13 to z7, the CN Tower standing as a
 spike to z9; ~0.6–1.7 ms of GPU a frame on the M4 at 2880 × 1626 (budget 2 ms). On the M1 Pro at the
-same size, Tokyo at zoom 14 and 60°: ~44 ms (the frame's GPU time 52 ms, 8 ms with `?bldfield=off`;
-task #222), so there the field holds the frame rate near 30 fps.
+same size, Tokyo at zoom 14 and 60° (`tools/bench/views.mjs --native`, the frame's GPU time, task
+#222): 53 ms before the march's changes, 40 ms after (Manhattan 55 → 41, Hong Kong 28 → 22; orbiting
+Tokyo 56 → 36), ~8 ms with `?bldfield=off`; a still view repainted, with the cache, 7.7 ms (Manhattan
+9.1, Hong Kong 7.5). Moving, the field still holds the frame rate near 30 fps there.
 
 **Known:**
 - Slightly softer than full detail at the device pixel; up to ~1–2 L* darker in dense tilted views
