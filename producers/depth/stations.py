@@ -19,9 +19,8 @@ import argparse
 import csv
 import json
 import time
-import urllib.request
 
-from grid import UA, log, robots_allow
+from grid import log, robots_allow, urlopen
 
 NOAA = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi"
 CHS = "https://api-iwls.dfo-mpo.gc.ca/api/v1"
@@ -30,7 +29,7 @@ CHS = "https://api-iwls.dfo-mpo.gc.ca/api/v1"
 def get(url: str):
     if not robots_allow(url):
         raise SystemExit(f"robots.txt disallows {url}")
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=120) as r:
+    with urlopen(url, 120) as r:
         data = json.loads(r.read())
     time.sleep(0.5)
     return data

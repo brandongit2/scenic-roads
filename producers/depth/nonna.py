@@ -24,7 +24,8 @@ from datums import from_table
 from raster import Spec, produce
 
 WCS = "https://nonna-geoserver.data.chs-shc.ca/geoserver/wcs"
-COVERAGE = {"10": "nonna__NONNA_10_Coverage", "100": "nonna__NONNA_100_Coverage"}
+# (The coverages' ids hold spaces, sent encoded.)
+COVERAGE = {"10": "nonna__NONNA%2010%20Coverage", "100": "nonna__NONNA%20100%20Coverage"}
 ZOOM = {"10": 13, "100": 10}
 
 
@@ -33,6 +34,12 @@ def block_url(cov: str, w: float, s: float, e: float, n: float) -> str:
     x1, y1 = lonlat_to_merc(e, n)
     return (f"{WCS}?service=WCS&version=2.0.1&request=GetCoverage&coverageId={cov}&format=image/tiff"
             f"&subset=X({float(x0):.2f},{float(x1):.2f})&subset=Y({float(y0):.2f},{float(y1):.2f})&subsettingCrs=http://www.opengis.net/def/crs/EPSG/0/3857")
+
+
+def spec(which: str, surf) -> Spec:
+    """How a block becomes grids, `surf` the stations' mean water level above chart datum. (Nodata:
+    the files' own, float32's max.)"""
+    return Spec(zoom=ZOOM[which], piece_zoom=None if which == "100" else 8, offset=surf, low=surf)
 
 
 def main():
@@ -71,10 +78,9 @@ def main():
             lat += bh
     # (The datum surface once, over the water of every block: chart datum below MSL is both what's
     # subtracted and the low water.)
-    surf = from_table(table, [p for p, _ in files])
-    spec = Spec(zoom=ZOOM[a.which], piece_zoom=None if a.which == "100" else 8, offset=surf, low=surf, nodata=3.4e38)
+    s = spec(a.which, from_table(table, [p for p, _ in files]))
     for p, u in files:
-        produce(p, spec, w, u, f"nonna{a.which}-{p.stem}")
+        produce(p, s, w, u, f"nonna{a.which}-{p.stem}")
     w.write_index(a.index)
 
 

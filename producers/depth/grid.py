@@ -26,6 +26,9 @@ import hashlib
 import json
 import math
 import os
+import ssl
+import subprocess
+import sys
 import time
 import urllib.request
 import urllib.robotparser
@@ -232,6 +235,24 @@ def tiles_of(win: Window, piece_z: int):
 # ---- polite fetching ------------------------------------------------------------------------------
 
 _robots: dict[str, urllib.robotparser.RobotFileParser] = {}
+_tls: ssl.SSLContext | None = None
+
+
+def urlopen(url: str, timeout: float):
+    """A GET with the User-Agent. On macOS the system's root certificates are trusted too (read from
+    its keychain): uv's Python carries OpenSSL's own store, which lacks some roots the hosts use (CHS's
+    station service's chain ends at Sectigo Public Server Authentication Root R46). `SSL_CERT_FILE` set: that alone."""
+    global _tls
+    if _tls is None:
+        _tls = ssl.create_default_context()
+        if sys.platform == "darwin" and not os.environ.get("SSL_CERT_FILE"):
+            try:
+                pem = subprocess.run(["security", "find-certificate", "-a", "-p", "/System/Library/Keychains/SystemRootCertificates.keychain"],
+                                     capture_output=True, text=True, check=True).stdout
+                _tls.load_verify_locations(cadata=pem)
+            except (OSError, subprocess.CalledProcessError, ssl.SSLError) as e:
+                log(f"the system's root certificates not read ({e}): OpenSSL's alone")
+    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=timeout, context=_tls)
 
 
 def robots_allow(url: str) -> bool:
@@ -243,7 +264,7 @@ def robots_allow(url: str) -> bool:
     if host not in _robots:
         rp = urllib.robotparser.RobotFileParser()
         try:
-            with urllib.request.urlopen(urllib.request.Request(host + "/robots.txt", headers={"User-Agent": UA}), timeout=60) as r:
+            with urlopen(host + "/robots.txt", 60) as r:
                 rp.parse(r.read().decode("utf-8", "replace").splitlines())
             how = "read"
         except (urllib.error.HTTPError, OSError) as e:
@@ -263,7 +284,7 @@ def fetch(url: str, dest: Path, pause: float = 1.0) -> Path:
         raise SystemExit(f"robots.txt disallows {url}: download it by hand (a 'You / waiting' task), then pass --from")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=300) as r, open(tmp, "wb") as f:
+    with urlopen(url, 300) as r, open(tmp, "wb") as f:
         while b := r.read(1 << 20):
             f.write(b)
     os.replace(tmp, dest)
