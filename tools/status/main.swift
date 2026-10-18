@@ -1043,6 +1043,10 @@ final class Flipped: NSView {
 final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     static let pageWidth: CGFloat = 780
     static let footerHeight: CGFloat = 30
+    /// How long an opening waits for the build page before the native fallback shows in its place
+    /// (until then the last page, or nothing, stays): long enough for a lead's page answering
+    /// normally over the LAN, short enough that a hung agent's status still shows promptly.
+    static let answerTimeout: TimeInterval = 4
     let popover = NSPopover()
     let menu: () -> NSMenu
     var web: WKWebView?
@@ -1062,6 +1066,8 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     var all: [Line] = []
     /// Why the page isn't shown (nil: it is, or it's being looked for).
     var why: String?
+    /// Whether this opening's page has loaded (the timeout's fallback isn't needed).
+    var answered = false
     /// The content: clear, so the popover's own translucent material shows through, the same
     /// under the body and the arrow.
     let root = NSView(frame: NSRect(x: 0, y: 0, width: Panel.pageWidth, height: 400))
@@ -1120,7 +1126,8 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // (A click in another app closes it too: the cooperative `activate()` can be declined for
         // a menu bar app, and then the transient popover never sees that click.)
         outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.close() }
-        popover.contentSize = NSSize(width: Panel.pageWidth, height: 400)
+        // (The page kept from the last opening keeps its size; nothing yet, a blank of 400.)
+        if web == nil { popover.contentSize = NSSize(width: Panel.pageWidth, height: 400) }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         applyAppearance()
         popover.contentViewController?.view.window?.makeKey()
@@ -1163,17 +1170,24 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         min(900, ((anchor?.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 40)
     }
 
-    /// Asks each address in turn, briefly, and shows the first that answers.
+    /// Asks each address in turn, briefly, and shows the first that answers. Meanwhile the page
+    /// from the last opening stays (or nothing, in the popover's material): the native fallback
+    /// shows only on a real failure (every address refused, a load error, or no page within
+    /// `answerTimeout`), and gives way to the page if it answers later.
     func find() {
         opening += 1
         let n = opening
         why = nil
-        dropWeb()
+        answered = false
         guard !pages.isEmpty else {
             showFallback("No address for the build page: this Mac's server knows none (the NAS out of reach, or no lead running)")
             return
         }
-        showFallback(nil)
+        after(Panel.answerTimeout) {
+            if n == self.opening, self.popover.isShown, !self.answered, self.fallback == nil {
+                self.showFallback("The build page isn't answering yet (\(self.pages.compactMap { URL(string: $0)?.host }.joined(separator: ", ")))", keepWeb: true)
+            }
+        }
         func attempt(_ i: Int) {
             guard i < pages.count, let u = URL(string: pages[i]) else {
                 DispatchQueue.main.async {
@@ -1203,10 +1217,14 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // (A viewer only: index.html's `?view`.)
         c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "view", value: nil)]
         guard let url = c.url else { return }
-        fallback?.removeFromSuperview()
-        fallback = nil
+        if let w = web, shown == page {
+            // The page kept from the last opening: loaded again in place, still shown meanwhile.
+            w.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+            return
+        }
+        dropWeb()
         let conf = WKWebViewConfiguration()
-        // Nothing kept from one opening to the next, nor shared with Safari: no "helping" kept.
+        // Not shared with Safari, nor kept on disk: no "helping" kept beyond the app's run.
         conf.websiteDataStore = .nonPersistent()
         // The page's height, as it changes, for the panel's.
         let measure = "new ResizeObserver(() => webkit.messageHandlers.size.postMessage(Math.ceil(document.body.getBoundingClientRect().height))).observe(document.body);"
@@ -1242,6 +1260,20 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     var checkWidth = false
 
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+        if w === web {
+            answered = true
+            if fallback != nil {
+                // It answered after the fallback showed: the page back in its place, at its size.
+                fallback?.removeFromSuperview()
+                fallback = nil
+                why = nil
+                reload.title = "Reload"
+                w.isHidden = false
+                w.evaluateJavaScript("Math.ceil(document.body.getBoundingClientRect().height)") { r, _ in
+                    if let h = (r as? NSNumber).map({ CGFloat($0.doubleValue) }) { self.fit(h) }
+                }
+            }
+        }
         guard checkWidth else { return }
         after(3) {
             w.evaluateJavaScript("[document.documentElement.scrollWidth, document.documentElement.clientWidth, document.getElementById('device')?.hidden, !!document.getElementById('help')]") { r, _ in
@@ -1264,13 +1296,13 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         loaded = nil
     }
 
-    /// The native lines in place of the page: why it isn't shown (nil: it's being looked for), then
-    /// the status's first lines.
-    func showFallback(_ why: String?) {
-        dropWeb()
+    /// The native lines in place of the page: why it isn't shown, then the status's first lines.
+    /// `keepWeb`: the page only hidden, still loading, so it can take its place again if it answers.
+    func showFallback(_ why: String?, keepWeb: Bool = false) {
+        if keepWeb { web?.isHidden = true } else { dropWeb() }
         self.why = why
         fallback?.removeFromSuperview()
-        let lines = [Line(text: why ?? "Looking for the build page…", style: .small)] + shortLines(all)
+        let lines = [Line(text: why ?? "The build page isn't shown", style: .small)] + shortLines(all)
         let doc = Flipped(frame: .zero)
         var y: CGFloat = 8
         for (i, l) in lines.enumerated() {
@@ -1304,7 +1336,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
             return
         }
         if let p = reply?.pages { pages = p }
-        if popover.isShown, fallback != nil, web == nil, why != nil { showFallback(why) }
+        if popover.isShown, fallback != nil, why != nil { showFallback(why, keepWeb: web != nil) }
     }
 
     @objc func reloadPage() {
@@ -1321,7 +1353,9 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         if let m = outside { NSEvent.removeMonitor(m) }
         outside = nil
         opening += 1
-        dropWeb()
+        // The page kept (not dropped) for the next opening, which shows it while it loads again;
+        // a page that had failed goes, so the next opening starts blank rather than stale.
+        if fallback != nil { dropWeb() }
         fallback?.removeFromSuperview()
         fallback = nil
         why = nil
@@ -1331,7 +1365,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     // MARK: the page
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-        guard m.name == "size", let h = (m.body as? NSNumber).map({ CGFloat($0.doubleValue) }), web != nil else { return }
+        guard m.name == "size", let h = (m.body as? NSNumber).map({ CGFloat($0.doubleValue) }), web != nil, fallback == nil else { return }
+        fit(h)
+    }
+
+    /// The popover sized to the page's height, within maxHeight.
+    func fit(_ h: CGFloat) {
         let height = min(max(h, 160), maxHeight - Panel.footerHeight) + Panel.footerHeight
         if abs(popover.contentSize.height - height) >= 1 || popover.contentSize.width != Panel.pageWidth {
             popover.contentSize = NSSize(width: Panel.pageWidth, height: height)
