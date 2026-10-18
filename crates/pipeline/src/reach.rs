@@ -105,6 +105,10 @@ pub struct Reaches {
     pub fmt: u32,
     pub date: String,
     pub units: BTreeMap<String, Reach>,
+    /// The base packs' extents kept with them (crate::extents), read as the reaches are: what
+    /// their headers say, by content name. Not part of the reaches' file.
+    #[serde(skip)]
+    pub extents: crate::extents::Extents,
 }
 
 /// The logical name of a pass's reaches.
@@ -132,7 +136,9 @@ impl Reaches {
         let Some(c) = m.get(&logical(date)) else { return Ok(None) };
         let raw = std::fs::read(root.join(c)).map_err(LoadError::Io)?;
         let b = zstd::decode_all(&raw[..]).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
-        serde_json::from_slice(&b).map(Some).map_err(|e| LoadError::Bad(format!("{c}: {e}")))
+        let mut r: Reaches = serde_json::from_slice(&b).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
+        r.extents = crate::extents::load(root);
+        Ok(Some(r))
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {

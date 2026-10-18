@@ -785,14 +785,16 @@ fn keep_for_packs(cache: &Path, logical: &str, local: &Path) {
 /// copied from the NAS when missing. Cached files no unit uses any more go first, so the cache
 /// holds at most one copy of what the mirror lacks.
 /// The units of the manifest owning tiles `only` (z`z`: `build::owners_of`, the owners their keys
-/// read), with the reaches of pass `pass` (else the latest) they were found by: None (every unit)
-/// when no tiles are named, the reaches can't be read, or a unit isn't in them (said).
-fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<(BTreeSet<Unit>, pipeline::reach::Reaches)> {
+/// read), by the reaches of pass `pass` (else the latest) and every base pack's extent
+/// (crate::extents: read from the headers of those not kept yet, then kept): None (every unit)
+/// when no tiles are named, the reaches or extents can't be read, or a unit isn't in the reaches
+/// (said).
+fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<BTreeSet<Unit>> {
     if only.is_empty() {
         return None;
     }
     let date = pass.or_else(|| pipeline::osmpass::latest_pass(out.root()))?;
-    let reach = match pipeline::reach::Reaches::load(out.root(), &out.manifest, &date) {
+    let mut reach = match pipeline::reach::Reaches::load(out.root(), &out.manifest, &date) {
         Ok(Some(r)) => r,
         Ok(None) => {
             eprintln!("no reaches for the pass of {date}: every unit's base pack opened");
@@ -803,54 +805,54 @@ fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<
             return None;
         }
     };
-    let units: Vec<Unit> = out.manifest.keys().filter_map(|k| k.strip_prefix("base/").and_then(Unit::parse)).collect();
     // (A unit the reaches don't know: where its ways lie isn't known, so neither are the owners.)
-    if let Some(u) = units.iter().find(|&&u| reach.get(u).is_none()) {
+    if let Some(u) = out.manifest.keys().filter_map(|k| k.strip_prefix("base/").and_then(Unit::parse)).find(|&u| reach.get(u).is_none()) {
         eprintln!("unit {} isn't in the reaches of the pass of {date}: every unit's base pack opened", u.slash());
         return None;
     }
+    let p = phase("the base packs' extents", Class::NasRead);
+    reach.extents = match pipeline::extents::ensure(out.root(), &out.manifest) {
+        Ok((e, read)) => {
+            if read > 0 {
+                eprintln!("extents: {read} base packs' headers read and kept");
+            }
+            e
+        }
+        Err(e) => {
+            eprintln!("the base packs' extents ({e:#}): every unit's base pack opened");
+            return None;
+        }
+    };
+    drop(p);
+    let bad = outside_their_ways(&out.manifest, &reach);
+    if !bad.is_empty() {
+        eprintln!(
+            "WARNING: base packs of {} lie outside where the reaches put their ways (built by other reaches?): their own extents taken in, as the tiles' keys take them in",
+            bad.iter().map(|u| u.slash()).collect::<Vec<_>>().join(", ")
+        );
+    }
     let tiles: Vec<(u8, u32, u32)> = only.iter().map(|t| (z, t.x, t.y)).collect();
     debug_assert!(only.iter().all(|t| t.z == z));
-    Some((pipeline::agent::build::owners_of(Some(&reach), units, &tiles), reach))
+    Some(pipeline::agent::build::owners_of(Some(&reach), &out.manifest, &tiles))
 }
 
-/// The opened packs whose ways (their header's extent) aren't all inside where `owners_of` takes
-/// their unit's ways to lie (`build::unit_ways`): a unit built by other reaches than these.
-fn outside_their_ways(packs: &[BasePack], reach: Option<&pipeline::reach::Reaches>) -> Vec<Unit> {
-    packs
-        .iter()
-        .filter(|bp| {
-            let w = pipeline::agent::build::unit_ways(reach, bp.unit);
-            let e = bp.extent;
+/// The manifest's units whose base pack's extent (kept with `reach`) isn't all inside where
+/// `reach` puts their ways (`build::unit_ways`): units built by other reaches.
+fn outside_their_ways(m: &BTreeMap<String, String>, reach: &pipeline::reach::Reaches) -> Vec<Unit> {
+    m.iter()
+        .filter_map(|(l, c)| Some((l.strip_prefix("base/").and_then(Unit::parse)?, reach.extents.get(c)?)))
+        .filter(|(u, e)| {
+            let w = pipeline::agent::build::unit_ways(Some(reach), *u);
             !(e[0] >= w[0] && e[1] >= w[1] && e[2] <= w[2] && e[3] <= w[3])
         })
-        .map(|bp| bp.unit)
+        .map(|(u, _)| u)
         .collect()
 }
 
 /// The base packs a pack or lo job of tiles `only` (z`z`) reads: its tiles' owners
-/// (`owners_here`), every unit when they can't be told, or when an owner's pack breaks the rule
-/// they were told by (`outside_their_ways`: then a unit that isn't one may reach in too; said).
+/// (`owners_here`), every unit when they can't be told.
 fn open_for_tiles(out: &Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, z: u8, only: &[Unit]) -> Result<Vec<BasePack>> {
-    let Some((owners, reach)) = owners_here(out, pass, z, only) else {
-        return open_units(out, cache, mirror, None);
-    };
-    open_checked(out, cache, mirror, &owners, Some(&reach))
-}
-
-/// `open_units` of `owners`, or of every unit when one of their packs lies outside its ways.
-fn open_checked(out: &Out, cache: &Path, mirror: Option<&Path>, owners: &BTreeSet<Unit>, reach: Option<&pipeline::reach::Reaches>) -> Result<Vec<BasePack>> {
-    let packs = open_units(out, cache, mirror, Some(owners))?;
-    let bad = outside_their_ways(&packs, reach);
-    if bad.is_empty() {
-        return Ok(packs);
-    }
-    eprintln!(
-        "WARNING: base packs of {} lie outside where their reaches put their ways (built by other reaches?): the owners can't be trusted, every unit's base pack opened",
-        bad.iter().map(|u| u.slash()).collect::<Vec<_>>().join(", ")
-    );
-    drop(packs);
-    open_units(out, cache, mirror, None)
+    open_units(out, cache, mirror, owners_here(out, pass, z, only).as_ref())
 }
 
 /// The base packs (with their road values) of the manifest's units, of only those in `owning`
@@ -4738,9 +4740,11 @@ mod tests {
         let mut names = std::collections::BTreeMap::new();
         for (i, u) in units.iter().enumerate() {
             let mut tb = pipeline::hipack::tile_bounds(u.z, u.x, u.y);
-            // (6-31-22's pack built by other reaches: its ways go 10° further east than these put them.)
-            if u.dash() == "6-31-22" {
-                tb[2] += 100_000_000;
+            // (6-40-30's pack built by other reaches: its ways go west into 6/32/21, far past where
+            // these put them.)
+            if u.dash() == "6-40-30" {
+                let t = pipeline::hipack::tile_bounds(6, 32, 21);
+                (tb[0], tb[3]) = (t[0] + 1, t[3]);
             }
             for (logical, sect, rec) in [(format!("base/{}", u.dash()), "ways", std::mem::size_of::<roadcore::WayRec>()), (format!("global/roads/{}", u.dash()), "roads", std::mem::size_of::<roadcore::packs::RoadRec>())] {
                 let tmp = d.path().join("tmp.sect");
@@ -4761,8 +4765,10 @@ mod tests {
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
         let out = pipeline::out::Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let tile = [(6u8, 32u32, 21u32)];
-        let owners = pipeline::agent::build::owners_of(None, units.iter().copied(), &tile);
-        assert_eq!(owners.iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-31-22", "6-32-21", "6-33-21"], "its neighbours' ways reach into it, a far unit's don't");
+        // (No reaches here: each unit's ways taken to lie within its tile + 20 km.)
+        let mut reach = pipeline::reach::Reaches::default();
+        let owners = pipeline::agent::build::owners_of(Some(&reach), &m, &tile);
+        assert_eq!(owners.iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-31-22", "6-32-21", "6-33-21"], "its neighbours' ways reach into it, a far unit's don't (its extent not kept yet)");
         let packs = super::open_units(&out, &cache, Some(&mirror), Some(&owners)).unwrap();
         let opened: std::collections::BTreeSet<Unit> = packs.iter().map(|bp| bp.unit).collect();
         assert_eq!(opened, owners);
@@ -4773,12 +4779,21 @@ mod tests {
         // The mirror's files it opened are held: the mirror's delete leaves them.
         let held = mirror.join(&m["base/6-32-21"]);
         assert_eq!(store::cachefile::try_remove(&held), store::cachefile::Removed::InUse);
-        // An owner's pack outside where its ways were taken to lie: the owners aren't trusted, every
-        // unit is opened (a unit that isn't an owner may reach in too).
-        assert_eq!(super::outside_their_ways(&packs, None).iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-31-22"]);
-        assert_eq!(super::open_checked(&out, &cache, Some(&mirror), &owners, None).unwrap().len(), units.len());
-        let fine: std::collections::BTreeSet<Unit> = owners.iter().copied().filter(|u| u.dash() != "6-31-22").collect();
-        assert_eq!(super::open_checked(&out, &cache, Some(&mirror), &fine, None).unwrap().len(), 2, "all inside: only those");
+        // The packs' extents, read from their headers once and kept (crate::extents): the far unit
+        // whose pack spills into the tile is caught, and is an owner.
+        let (e, read) = pipeline::extents::ensure(&root, &m).unwrap();
+        assert_eq!(read, units.len());
+        assert_eq!(pipeline::extents::ensure(&root, &m).unwrap(), (e.clone(), 0), "kept: no header read again");
+        assert_eq!(pipeline::extents::load(&root), e);
+        reach.extents = e;
+        assert_eq!(super::outside_their_ways(&m, &reach).iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-40-30"]);
+        let owners = pipeline::agent::build::owners_of(Some(&reach), &m, &tile);
+        assert_eq!(owners.iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-31-22", "6-32-21", "6-33-21", "6-40-30"]);
+        assert_eq!(super::open_units(&out, &cache, Some(&mirror), Some(&owners)).unwrap().len(), 4);
+        // A pack no longer listed: its extent goes from the file.
+        let mut fewer = m.clone();
+        fewer.remove("base/6-33-21");
+        assert_eq!(pipeline::extents::ensure(&root, &fewer).unwrap().0.len(), 3);
         // No tiles named: every unit.
         assert_eq!(super::open_units(&out, &cache, Some(&mirror), None).unwrap().len(), units.len());
         for name in names.keys() {

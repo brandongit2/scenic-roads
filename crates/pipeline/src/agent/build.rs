@@ -2074,11 +2074,24 @@ pub fn owns(ways: [i32; 4], tile: [i32; 4]) -> bool {
     ways[0] <= tile[2] && ways[2] >= tile[0] && ways[1] <= tile[3] && ways[3] >= tile[1]
 }
 
-/// Of `units`, those owning any of `tiles` ((z, x, y)): whose ways (`unit_ways`) meet its box
-/// (`owns`), the units a tile's key in `pack_lo_targets` reads. What a pack or lo job opens.
-pub fn owners_of(reach: Option<&Reaches>, units: impl IntoIterator<Item = Unit>, tiles: &[(u8, u32, u32)]) -> BTreeSet<Unit> {
+/// Where unit `u`'s ways lie, its base pack in manifest `m` taken in: `unit_ways`, grown by the
+/// pack's own extent when the reaches keep it (crate::extents) and it lies further (a pack built by
+/// other reaches). A pack whose extent isn't kept yet is taken to lie inside (the pack and lo jobs
+/// keep it: then its tiles are keyed again).
+pub fn unit_reach(reach: Option<&Reaches>, m: &BTreeMap<String, String>, u: Unit) -> [i32; 4] {
+    let w = unit_ways(reach, u);
+    match reach.zip(m.get(&format!("base/{}", u.dash()))).and_then(|(r, c)| r.extents.get(c)) {
+        Some(e) => [w[0].min(e[0]), w[1].min(e[1]), w[2].max(e[2]), w[3].max(e[3])],
+        None => w,
+    }
+}
+
+/// Of the units of manifest `m`, those owning any of `tiles` ((z, x, y)): whose ways
+/// (`unit_reach`) meet its box (`owns`), the units a tile's key in `pack_lo_targets` reads. What a
+/// pack or lo job opens.
+pub fn owners_of(reach: Option<&Reaches>, m: &BTreeMap<String, String>, tiles: &[(u8, u32, u32)]) -> BTreeSet<Unit> {
     let boxes: Vec<[i32; 4]> = tiles.iter().map(|&(z, x, y)| crate::hipack::tile_bounds(z, x, y)).collect();
-    units.into_iter().filter(|&u| boxes.iter().any(|b| owns(unit_ways(reach, u), *b))).collect()
+    m.keys().filter_map(|l| l.strip_prefix("base/").and_then(Unit::parse)).filter(|&u| boxes.iter().any(|b| owns(unit_reach(reach, m, u), *b))).collect()
 }
 
 /// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
@@ -2094,7 +2107,7 @@ fn pack_lo_targets(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> (Ve
         .iter()
         .filter_map(|(l, c)| l.strip_prefix("base/").and_then(Unit::parse).map(|u| (u, format!("{c}+{}", get(&format!("global/roads/{}", u.dash()))))))
         .map(|(u, c)| {
-            (u, c, unit_ways(reach, u))
+            (u, c, unit_reach(reach, m, u))
         })
         .collect();
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
@@ -4783,6 +4796,26 @@ pub(crate) mod tests {
         put(&mut m, "6-28-16", "3333333333333333");
         assert_ne!(lo_of(&m, "3/3/2"), near);
         assert_eq!(lo_of(&m, "3/6/2"), far);
+    }
+
+    /// A base pack whose extent (kept: crate::extents) lies past where the reaches put its ways (a
+    /// pack built by other reaches): the tiles it spills into are targets, keyed on it too.
+    #[test]
+    fn a_pack_spilling_past_its_reach_keys_the_tiles_it_reaches() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("base/6-28-16".into(), "base/6-28-16.1111111111111111.sect".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
+        let mut r = reach();
+        r.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] });
+        let far = crate::legacy::Unit::of_point(6, [50_000_000, 600_000_000]).slash();
+        assert!(!pack_lo_targets(&m, Some(&r)).0.iter().any(|(t, _)| *t == far));
+        r.extents.insert("base/6-28-16.1111111111111111.sect".into(), [-219_000_000, 600_000_000, 50_000_000, 641_000_000]);
+        let (packs, _) = pack_lo_targets(&m, Some(&r));
+        assert!(packs.iter().any(|(t, _)| *t == far), "the tile it spills into is drawn");
+        // A pack's extent kept for another content (an older build): not this one's.
+        r.extents.clear();
+        r.extents.insert("base/6-28-16.2222222222222222.sect".into(), [-219_000_000, 600_000_000, 50_000_000, 641_000_000]);
+        assert!(!pack_lo_targets(&m, Some(&r)).0.iter().any(|(t, _)| *t == far));
     }
 
     #[test]

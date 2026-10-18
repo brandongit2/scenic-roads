@@ -153,18 +153,18 @@ impl CatalogStats {
 }
 
 /// The units whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
-/// it: crate::agent::build::{unit_ways, owns}, as its key reads them), those whose base pack or
+/// it: crate::agent::build::{unit_reach, owns}, as its key reads them), those whose base pack or
 /// road values in the manifest `m` aren't what `served` (the served catalog's, by logical name)
 /// has: by unit ("6/x/y"), its tiles. A unit rebuilt the same (the same content names) made none
 /// stale.
 pub fn restaled_by(m: &BTreeMap<String, String>, reach: Option<&crate::reach::Reaches>, served: &BTreeMap<String, String>, tiles: &[String]) -> BTreeMap<String, Vec<String>> {
-    use crate::agent::build::{owns, unit_ways};
+    use crate::agent::build::{owns, unit_reach};
     use crate::legacy::Unit;
     let changed: Vec<(Unit, [i32; 4])> = m
         .keys()
         .filter_map(|l| l.strip_prefix("base/").and_then(Unit::parse))
         .filter(|u| [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())].iter().any(|l| m.get(l) != served.get(l)))
-        .map(|u| (u, unit_ways(reach, u)))
+        .map(|u| (u, unit_reach(reach, m, u)))
         .collect();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for t in tiles {

@@ -5251,6 +5251,8 @@ impl Agent {
             return Ok(None);
         }
         let Some(c) = manifest.get(&crate::reach::logical(date)) else { return Ok(None) };
+        // (Read again when the base packs' extents kept with them change too: crate::extents.)
+        let c = &format!("{c} {}", crate::extents::stamp(root));
         let mut cached = self.reach.borrow_mut();
         if let Some((have, r)) = cached.as_ref() {
             if have == c {

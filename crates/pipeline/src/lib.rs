@@ -43,6 +43,7 @@ pub mod peaks;
 pub mod pool;
 pub mod pubtimes;
 pub mod rail;
+pub mod extents;
 pub mod reach;
 pub mod ovconv;
 pub mod out;
