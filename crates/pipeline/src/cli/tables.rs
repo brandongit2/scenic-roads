@@ -80,7 +80,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("trailends", "[--pass d]", "the pass's hiking routes' ends", &[], PASS, 0),
         c("unit", "[U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]", "base(U) from the pass's pieces: default every unit whose piece meets the coverage", &[], &["--pass", "--layers-root", "--regions", "--dem", "--cache-dir", "--buildings"], ANY),
         c("unit-snap", "U --out d --cache c [--carry] [--pass d] [--regions dir] [--dem dir]", "unit U's folder built from the records into d, nothing written to the NAS, snapshotted around each step's program", &["--carry"], &["--out", "--cache", "--pass", "--regions", "--dem"], 1),
-        c("tail-spec", "U", "unit U's tail as a task gives it a worker (tools/check/tail.mjs); the accepted declarations read for its data servers, nothing written", &[], &[], 1),
+        c("tail-spec", "U --root <nas project folder>", "unit U's tail as a task gives it a worker (tools/check/tail.mjs); the accepted declarations read for its data servers, nothing written", &[], &[], 1),
         c("pois", "[U …] [--pass d] [--regions dir]", "the units' landmark candidates", &[], PASS_REGIONS, ANY),
         c("summits", "[--pass d] [--cache dir]", "the world's summits", &[], &["--pass", "--cache"], 0),
         c("peaks", "[U …] [--pass d] [--cache dir] [--raw dir] [--coarse-threads n]", "the units' peaks", &[], &["--pass", "--cache", "--raw", "--coarse-threads"], ANY),

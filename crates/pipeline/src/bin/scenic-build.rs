@@ -17,7 +17,7 @@
 //!   unit-snap U --out d --cache c [--carry]  unit U's folder built from the records into d, nothing
 //!                                written to the NAS, snapshotted around each step's program (for
 //!                                tools/check/same.py and tail.mjs)
-//!   tail-spec U                  unit U's tail as a task gives it a worker, its data servers by --root's declarations (tools/check/tail.mjs)
+//!   tail-spec U --root R         unit U's tail as a task gives it a worker, its data servers by --root's declarations (tools/check/tail.mjs)
 //!   roadunits                    the road → units index from the units' road ids
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from AWS's
 //!                                raw tiles (cached in --raw), GLO-30 and the basemap's water: of z6
