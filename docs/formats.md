@@ -435,7 +435,8 @@ that decodes and parses, else the next.
   "credits": [{"what": "Road elevation, Japan", "source": "…", "terms": "…", "areas": [[122.5, 20.0, 154.0, 46.5]]}],
   "dem_labels": {"5": "GSI lidar (5 m)"},
   "coverage": {"recorded": true, "regions": [{"id": "monaco", "name": "Monaco", "outline": ["geofabrik:europe/monaco"],
-               "shapes": {"geofabrik:europe/monaco": [[[[7.4, 43.72], …]]]}}]}
+               "shapes": {"geofabrik:europe/monaco": [[[[7.4, 43.72], …]]]}},
+              {"id": "kanto", "name": "Kantō", "outline": ["osm:…"], "shapes": {…}, "tiles": {"built": 12, "total": 40}}]}
 }
 ```
 
@@ -451,7 +452,12 @@ that decodes and parses, else the next.
   it gets "source <n>".
 - `coverage`: the regions built for: those done at publish time as their recipes then were
   (`--ready <id>=<outline digest>,…`), and those not done yet as the last catalog had them, in the
-  recipes' order. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
+  recipes' order. A region still building (the agent's `--building <id>=<built>/<total>,…`: every
+  region its plan doesn't record built, with its units built of those it builds, by the records)
+  that the last catalog didn't have built is recorded as its recipe is now with `tiles`
+  (`coverage::DrawnRegion::tiles`): its units are on the map, and downloadable, as they come. A
+  built region has no `tiles`; an app made before them reads such a region as built, and this app
+  reads a catalog without them as before. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
   closed: `osm:` entries from the pass's simplified outlines, others simplified by size (60 m–1 km);
   an unreadable entry has no shape. A catalog with `"credits": []` and no `recorded`: the server
   gives every credit and builds the coverage from the recipes.
@@ -644,9 +650,10 @@ Where they're kept:
 - **Downloads** (`downloads.rs`): `GET /api/downloads` → `{mirror, online, slow, rate, free,
   reserve, reserve_min, disk, here, world: {bytes, here, unknown, on, at, state}, wanted: {bytes,
   here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:
-  {name, bytes, here, unknown, on, state}}, views: [{id, name, outline, at, bytes, here, unknown,
+  {name, bytes, here, unknown, on, state, tiles?}}, views: [{id, name, outline, at, bytes, here, unknown,
   state}]}` (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
-  missing). `PUT /api/downloads/world {on}` (off refused while a region or view is downloaded);
+  missing; `tiles`: a region still building, as its catalog has it, its files those of the catalog
+  served, more with each catalog). `PUT /api/downloads/world {on}` (off refused while a region or view is downloaded);
   `PUT /api/downloads/regions/{id} {on}` (on downloads the World too); `POST
   /api/downloads/views/size {outline}` → `{bytes, here, with_world, need, room, fits}`; `POST
   /api/downloads/views {outline, name?}` → `{id, name}`; `PUT /api/downloads/views/{id} {name}`;

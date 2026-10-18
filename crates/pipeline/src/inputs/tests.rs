@@ -759,6 +759,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
             name: "r".into(),
             outline: vec!["osm:1".into()],
             shapes: [("osm:1".to_string(), vec![vec![ring]])].into(),
+            tiles: None,
         }
     };
     let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[mk("Ministere", Some(qc.clone()))]);

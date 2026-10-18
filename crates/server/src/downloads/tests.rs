@@ -351,3 +351,67 @@ async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
     tokio::task::block_in_place(|| set_reserve(&s, 200, disk)).unwrap();
     assert_eq!(m.reserve(), 200_000_000_000);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_region_still_building_downloads_as_its_tiles_come() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    // A region over 31/21 and 32/21 (London to Kent), still building: catalog 1 has 31/21's files
+    // alone, catalog 2 32/21's too.
+    let full = catalog(nas.path());
+    let dir = nas.path().join("catalog");
+    std::fs::remove_dir_all(&dir).unwrap();
+    let se = rect(-0.3, 51.4, 0.3, 51.6);
+    let coverage = |built: u32| {
+        json!({"recorded": true, "regions": [
+            {"id": "se", "name": "South East", "outline": ["osm:1"], "shapes": {"osm:1": [[se.clone()]]},
+             "tiles": {"built": built, "total": 2}},
+        ]})
+    };
+    let mut first = full.clone();
+    first.files.retain(|l, _| !l.contains("6-32-21"));
+    for l in first.layers.values_mut() {
+        l.hi.remove("6/32/21");
+    }
+    for m in [&mut first.base, &mut first.roads, &mut first.hidata] {
+        m.remove("6/32/21");
+    }
+    first.coverage = coverage(1);
+    first.validate().unwrap();
+    store::catalog::write(&dir, &first).unwrap();
+    let s = crate::test_state_with(home.path(), nas.path(), true);
+    assert_eq!(s.data.catalog().n, 1);
+
+    // Downloaded while building: listed with its tiles, catalog 1's files copied.
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["se"]["tiles"], json!({"built": 1, "total": 2}));
+    assert_eq!(region(&s, "se", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let m = s.data.mirror.clone().unwrap();
+    let one = area_part(&first, std::slice::from_ref(&se));
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["se"]["state"].as_str(), Some("done"), "{v}");
+    assert!(logicals(&one.files).iter().all(|l| !l.contains("6-32-21")));
+
+    // Catalog 2: the region's other tile built. The wanted set grows by its files, and only those
+    // are copied: nothing here already is fetched again.
+    let mut second = full.clone();
+    second.n = 2;
+    second.coverage = coverage(2);
+    store::catalog::write(&dir, &second).unwrap();
+    assert!(tokio::task::block_in_place(|| s.data.refresh_catalog()));
+    assert_eq!(s.data.catalog().n, 2);
+    let two = area_part(&second, std::slice::from_ref(&se));
+    let added: Vec<(String, u64)> = two.files.names.iter().filter(|(n, _)| !one.files.contains(n)).cloned().collect();
+    assert!(!added.is_empty() && one.files.names.iter().all(|(n, _)| two.files.contains(n)), "the wanted set grows");
+    tokio::task::block_in_place(|| settle(&s));
+    let (st, _) = m.last().unwrap();
+    assert_eq!(
+        (st.copied as usize, st.copied_bytes),
+        (added.len(), added.iter().map(|(_, b)| b).sum::<u64>()),
+        "only the new tile's files copied: {st:?}"
+    );
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["se"]["state"].as_str(), Some("done"), "{v}");
+    assert_eq!(v["regions"]["se"]["tiles"], json!({"built": 2, "total": 2}));
+    assert_eq!(v["regions"]["se"]["here"], v["regions"]["se"]["bytes"]);
+}

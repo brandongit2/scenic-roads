@@ -870,6 +870,12 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         let done = built.values.filter { $0.total > 0 && $0.built >= $0.total }.count
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
+        // Those still building, as the Regions panel says them: on the map as their tiles come.
+        for r in s.regions ?? [] {
+            if let b = built[r.id], b.built < b.total {
+                out.append(Line(text: "\(r.name): \(b.built) of \(b.total) tiles, on the map as they come", style: .small))
+            }
+        }
     }
     return out
 }

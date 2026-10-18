@@ -37,7 +37,19 @@ export interface Region {
    * last accepted outline stays in use). */
   state?: 'accepted' | 'checking' | 'held';
   held?: { id: string; message: string }[];
+  /** In the catalog's coverage, a region still building: its units (z6 tiles) built of those it
+   * builds when the catalog was made. Its tiles are on the map, and downloadable, as they come. */
+  tiles?: Tiles;
 }
+
+/** A region's tiles built of its total. */
+export interface Tiles {
+  built: number;
+  total: number;
+}
+
+/** A region still building, in words. */
+export const tilesText = (t: Tiles) => `${t.built} of ${t.total} tiles, on the map as they come`;
 
 const NAS_AWAY = 'The NAS isn’t reachable: try again at home';
 

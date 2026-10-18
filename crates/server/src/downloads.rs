@@ -2,9 +2,11 @@
 //! downloaded to this Mac for when it's away from the NAS. Nothing else is copied here, and nothing
 //! downloaded goes until the owner removes it (store::mirror).
 //!
-//!   GET    /api/downloads                 this Mac's room, the World download, every built
-//!                                         region's size, how much of it is here and whether it's
-//!                                         downloaded, the downloaded views, the copy under way
+//!   GET    /api/downloads                 this Mac's room, the World download, every region the
+//!                                         catalog has (a region still building with its `tiles`
+//!                                         built of total) with its size, how much of it is here
+//!                                         and whether it's downloaded, the downloaded views, the
+//!                                         copy under way
 //!   PUT    /api/downloads/world           {on}: download the World, zoomed out, or remove it
 //!   PUT    /api/downloads/regions/{id}    {on}: download a region (with the World), or remove it
 //!   POST   /api/downloads/views/size      {outline}: what downloading that view would take
@@ -673,15 +675,20 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     };
     let state = |p: &Part| part_state(p, m, cname, room.more, online);
     let on: HashSet<&str> = plan.asked.regions.iter().map(|r| r.id.as_str()).collect();
-    let names: BTreeMap<String, String> = crate::regions::recorded_list(&s.data.catalog())
-        .iter()
-        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["name"].as_str().unwrap_or_default().to_string())))
+    let listed: BTreeMap<String, Value> = crate::regions::recorded_list(&s.data.catalog())
+        .into_iter()
+        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r)))
         .collect();
     let mut regions = serde_json::Map::new();
     for (id, p) in plan.regions.iter() {
         let mut v = tally(p);
         let downloaded = on.contains(id.as_str());
-        v["name"] = json!(names.get(id).cloned().unwrap_or_default());
+        let r = listed.get(id);
+        v["name"] = json!(r.and_then(|r| r["name"].as_str()).unwrap_or_default());
+        // (Still building: its tiles built of total; its files grow with each catalog.)
+        if let Some(t) = r.and_then(|r| r.get("tiles")) {
+            v["tiles"] = t.clone();
+        }
         v["on"] = json!(downloaded);
         v["state"] = json!(downloaded.then(|| state(p)));
         regions.insert(id.clone(), v);
@@ -904,7 +911,9 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
 }
 
 /// Downloads a region (and the World with it), or removes it. A region the catalog doesn't have yet
-/// can be downloaded: its files come once it's built.
+/// can be downloaded: its files come once a catalog has it. One still building (its `tiles`) is
+/// downloaded as its tiles come: its files are those of the catalog served, more with each catalog
+/// (what's here already never fetched again), copied at the slow rate while the build runs.
 pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
         ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");

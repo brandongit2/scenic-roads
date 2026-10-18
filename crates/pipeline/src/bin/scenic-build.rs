@@ -441,7 +441,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // catalog [--held] [--ready <ids>] [--delta] [--whole]: held, it goes to catalog-held/, which
         // no server reads (a build to compare before it's switched to: inputs/hold-catalog);
         // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
-        // the others as the last catalog had them (without it: every region as its recipe is now).
+        // the others as the last catalog had them (without it: every region as its recipe is now);
+        // `--building`, the regions still building with their units built of their total (the
+        // plan's), recorded as their recipes are now with that count, unless the last catalog had
+        // them built (with an older outline, or units rebuilt: on the map as they were).
         // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalog written as
         // what changed over the last (docs/formats.md, Delta catalogs), each file's size as the
         // records or the last catalog have it, not looked at on the NAS; `--whole` (the agent's in
@@ -457,11 +460,26 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     })
                     .collect()
             });
+            // (`<id>=<built>/<total>` each: a region still building, its units built of its total.)
+            let building: BTreeMap<String, pipeline::coverage::Tiles> = opt(&args, "--building")
+                .map(|v| {
+                    v.split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(|e| {
+                            let (id, bt) = e.split_once('=').with_context(|| format!("--building {e:?}"))?;
+                            let (b, t) = bt.split_once('/').with_context(|| format!("--building {e:?}"))?;
+                            Ok((id.to_string(), pipeline::coverage::Tiles { built: b.parse()?, total: t.parse()? }))
+                        })
+                        .collect::<Result<_>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
             let has = |f: &str| args.iter().any(|a| a == f);
             catalog(
                 &mut out,
                 has("--held"),
                 ready.as_ref(),
+                &building,
                 CatalogWay { delta: has("--delta"), whole: has("--whole") },
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
             )
@@ -1544,6 +1562,7 @@ fn catalog(
     out: &mut Out,
     held: bool,
     ready: Option<&BTreeMap<String, Option<String>>>,
+    building: &BTreeMap<String, pipeline::coverage::Tiles>,
     way: CatalogWay,
     now: u64,
 ) -> Result<pipeline::pubtimes::CatalogStats> {
@@ -1645,7 +1664,7 @@ fn catalog(
     if last.is_none() && held {
         last = store::catalog::latest(&out.root().join("catalog")).context("the last catalog")?;
     }
-    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, last.as_ref())?;
+    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, building, last.as_ref())?;
     // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits;
     // one that can't be read now fails the catalog, as the agent's plan waits then, rather than
     // publish credits without it.)
@@ -1819,14 +1838,18 @@ fn catalog(
 /// every recipe), each outline entry simplified for drawing (pipeline::coverage::drawn), `osm:`
 /// ones from `outlines` (the catalog's own); and a region not built yet as the last catalog in
 /// `catalogs` had it, if it had it (on the map as it was: its old outline, its units not yet rebuilt),
-/// in the recipes' order. So the regions are those the catalog's data is built for; the Regions
-/// panel shows a recipe it lacks, or has with another outline, as still to come.
+/// in the recipes' order; a region still building (`building`, the plan's) the last catalog didn't
+/// have built, as its recipe is now with its tiles built of its total (`DrawnRegion::tiles`): its
+/// units are on the map, and downloadable, as they come. So the regions are those the catalog's
+/// data is built for or being built for; the Regions panel shows a recipe it lacks, or has with
+/// another outline, as still to come.
 /// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
 /// without its outline or leave a region out.
 fn catalog_coverage(
     out: &Out,
     outlines: Option<&str>,
     ready: Option<&BTreeMap<String, Option<String>>>,
+    building: &BTreeMap<String, pipeline::coverage::Tiles>,
     last: Option<&store::catalog::Catalog>,
 ) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
     use pipeline::inputs::regions::read;
@@ -1840,9 +1863,6 @@ fn catalog_coverage(
             .get(&r.id)
             .is_some_and(|d| d.as_ref().is_none_or(|d| *d == pipeline::agent::recipes::outline_digest(&r.outline)))
     };
-    let built: Vec<_> = recipes.iter().filter(|r| is_ready(r)).cloned().collect();
-    let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> =
-        read::drawn(out.root(), &src, &built)?.into_iter().map(|d| (d.id.clone(), d)).collect();
     // (The first held catalog keeps the regions as the served one has them: `last`, the caller's.)
     let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
         .and_then(|c| {
@@ -1854,8 +1874,24 @@ fn catalog_coverage(
         .into_iter()
         .map(|d| (d.id.clone(), d))
         .collect();
-    let kept = recipes.iter().filter(|r| !is_ready(r) && had.contains_key(&r.id)).count();
-    eprintln!("catalog: {} regions built as they are now, {kept} as the last catalog had them", drawn.len());
+    // (Still building, and not on the map built as it was: its units as they come.)
+    let progress = |r: &pipeline::agent::recipes::Recipe| {
+        building.get(&r.id).copied().filter(|_| !is_ready(r) && had.get(&r.id).is_none_or(|h| h.tiles.is_some()))
+    };
+    let now: Vec<_> = recipes.iter().filter(|r| is_ready(r) || progress(r).is_some()).cloned().collect();
+    let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> = read::drawn(out.root(), &src, &now)?
+        .into_iter()
+        .map(|mut d| {
+            d.tiles = recipes.iter().find(|r| r.id == d.id).and_then(progress);
+            (d.id.clone(), d)
+        })
+        .collect();
+    let building_n = drawn.values().filter(|d| d.tiles.is_some()).count();
+    let kept = recipes.iter().filter(|r| !drawn.contains_key(&r.id) && had.contains_key(&r.id)).count();
+    eprintln!(
+        "catalog: {} regions built as they are now, {building_n} still building, {kept} as the last catalog had them",
+        drawn.len() - building_n
+    );
     Ok(recipes.iter().filter_map(|r| drawn.remove(&r.id).or_else(|| had.get(&r.id).cloned())).collect())
 }
 
@@ -6106,7 +6142,7 @@ mod tests {
         };
         let run = |root: &std::path::Path, way: super::CatalogWay| {
             let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
-            super::catalog(&mut out, false, None, way, NOW).unwrap();
+            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap();
         };
         let delta = super::CatalogWay { delta: true, whole: false };
         let mut gone = String::new();
@@ -6154,7 +6190,7 @@ mod tests {
         put(&roots[0], "layers/roads/hi/6-1-5", b"five");
         for way in [super::CatalogWay { delta: true, whole: true }, super::CatalogWay::default()] {
             let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
-            let e = super::catalog(&mut out, false, None, way, NOW).unwrap_err();
+            let e = super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap_err();
             assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
         }
         // So much new that the delta is as big as the whole one: a delta still (the whole one comes
@@ -6188,7 +6224,7 @@ mod tests {
         };
         let run = |way| {
             let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
-            super::catalog(&mut out, false, None, way, NOW).unwrap()
+            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
         let delta = super::CatalogWay { delta: true, whole: false };
         write(&(0..40).map(|i| (format!("layers/roads/hi/6-2-{i}"), vec![b'x'; 10 + i])).collect::<Vec<_>>());
@@ -6233,7 +6269,8 @@ mod tests {
         // A recorded size the NAS disagrees with stops a whole one.
         std::fs::write(root.join(&kept[0].0), b"another size altogether").unwrap();
         let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
-        let e = super::catalog(&mut out, false, None, super::CatalogWay::default(), NOW).unwrap_err();
+        let e =
+            super::catalog(&mut out, false, None, &Default::default(), super::CatalogWay::default(), NOW).unwrap_err();
         assert!(format!("{e:#}").contains("as recorded"), "{e:#}");
     }
 
@@ -6261,7 +6298,7 @@ mod tests {
         }
         let run = |way| {
             let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
-            super::catalog(&mut out, false, None, way, NOW).unwrap()
+            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
         let first = run(super::CatalogWay::default());
         assert_eq!((first.n, first.delta), (1, false));

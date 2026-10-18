@@ -581,6 +581,11 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
     out
 }
 
+/// A region still building, as the Regions panel and the menu bar say it.
+fn building_line(built: usize, total: usize) -> String {
+    format!("{built} of {total} tiles, on the map as they come")
+}
+
 fn plural(n: usize, one: &str) -> String {
     format!("{n} {one}{}", if n == 1 { "" } else { "s" })
 }
@@ -743,6 +748,12 @@ fn status(args: &[String]) -> Result<()> {
             st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
         }
     );
+    // (Those still building: their units built of their total, on the map as they come.)
+    for r in &st.regions {
+        if let Some(b) = st.built.get(&r.id).filter(|b| b.built < b.total) {
+            println!("  {}: {}", r.name, building_line(b.built, b.total));
+        }
+    }
     for (f, e) in &st.bad_recipes {
         println!("  {f} isn't a valid region: {e}");
     }
@@ -1376,6 +1387,12 @@ mod tests {
         assert!(capacity_line(&c).contains("disk 12.0 GB free (8.0 GB reserved)"), "{}", capacity_line(&c));
         let c = pipeline::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
         assert!(!capacity_line(&c).contains("reserved"));
+    }
+
+    /// A region still building in words, as the Regions panel and the menu bar have it (task #258).
+    #[test]
+    fn a_region_still_building_says_its_tiles() {
+        assert_eq!(building_line(3, 8), "3 of 8 tiles, on the map as they come");
     }
 
     /// `scenic status` shows each Mac as the build page does (task #246): the lead marked

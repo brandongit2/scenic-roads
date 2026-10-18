@@ -21,6 +21,8 @@ export interface RegionDl extends Tally {
   name: string;
   on: boolean;
   state: DlState | null;
+  /** Still building: its tiles built of total; its files grow with each catalog. */
+  tiles?: { built: number; total: number };
 }
 
 export interface WorldDl extends Tally {

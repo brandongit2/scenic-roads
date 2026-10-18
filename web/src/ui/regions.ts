@@ -10,7 +10,7 @@
 import { dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type RegionDl, type ViewDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
-  RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions,
+  RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions, tilesText,
   type Area, type Coverage, type Folder, type Region, type RegionsLayer,
 } from '../regions';
 import { fmt, h } from './dom';
@@ -293,8 +293,8 @@ export class RegionsPanel {
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
   }
 
-  /** A region's state in words: pending while the map's catalog doesn't have it, built when the
-   * catalog says so. */
+  /** A region's state in words: pending while the map's catalog doesn't have it, its tiles built of
+   * total while it's building, built when the catalog says so. */
   private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
     // The check comes first: a region not accepted yet isn't what's built.
     if (r.state === 'checking') return { text: 'checking…', cls: 'wait', title: 'Its file changed: being checked before it’s used' };
@@ -303,6 +303,8 @@ export class RegionsPanel {
       return { text: `held: ${fs[0]?.message ?? 'a finding holds it'}${fs.length > 1 ? ` (+${fs.length - 1})` : ''}`, cls: 'held', title: `Its last accepted outline stays in use until these are fixed:\n${fs.map((f) => `${f.id}: ${f.message}`).join('\n')}` };
     }
     if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
+    const building = this.coverage?.regions?.find((b) => b.id === r.id)?.tiles;
+    if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalog brings them, and a download of it grows with them' };
     if (this.coverage?.regions) return { text: 'built', cls: 'ok' };
     return null;
   }
@@ -416,6 +418,8 @@ export class RegionsPanel {
     els.size.className = cls;
     els.size.textContent = text;
     els.size.title = title || (rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '');
+    // (Still building: so far; a download of it grows with each catalog, copied slowly meanwhile.)
+    if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it grows with each catalog, copied slowly while the build runs`;
     const on = !!rk?.on;
     if (els.on !== on || !els.btn) {
       const name = r?.name ?? rk?.name ?? id;

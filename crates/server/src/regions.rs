@@ -506,15 +506,22 @@ pub fn recorded(cat: &store::catalog::Catalog) -> Vec<DrawnRegion> {
     cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
 }
 
-/// The regions a catalog records, without their outlines (id, name and outline entries), read
-/// straight from its coverage: /api/catalog asks for them every minute.
+/// The regions a catalog records, without their outlines (id, name and outline entries, and a region
+/// still building's `tiles`: built of total), read straight from its coverage: /api/catalog asks
+/// for them every minute.
 pub fn recorded_list(cat: &store::catalog::Catalog) -> Vec<Value> {
     let regions = cat.coverage.get("regions").and_then(Value::as_array);
     regions
         .map(|rs| {
             rs.iter()
                 .filter(|r| r.is_object())
-                .map(|r| json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] }))
+                .map(|r| {
+                    let mut v = json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] });
+                    if r.get("tiles").is_some_and(Value::is_object) {
+                        v["tiles"] = r["tiles"].clone();
+                    }
+                    v
+                })
                 .collect()
         })
         .unwrap_or_default()

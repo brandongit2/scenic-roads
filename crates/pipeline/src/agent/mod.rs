@@ -6525,6 +6525,10 @@ impl Agent {
             })
             .collect::<Vec<_>>()
             .join(",");
+        // (The catalog's `--building`: the regions still building, each with its units built of
+        // those it builds.)
+        let building_arg: String =
+            planned.building.iter().map(|(id, b, t)| format!("{id}={b}/{t}")).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
         // (The map tiles as first planned at their keys, for publishing's times:
         // crate::pubtimes::PlannedNotes, since the last catalog, what was noted known again after a
@@ -6788,7 +6792,13 @@ impl Agent {
                 let mut j = job(
                     "catalog-held".into(),
                     "catalog",
-                    vec!["--held".into(), "--ready".into(), ready_arg.clone()],
+                    vec![
+                        "--held".into(),
+                        "--ready".into(),
+                        ready_arg.clone(),
+                        "--building".into(),
+                        building_arg.clone(),
+                    ],
                     Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }),
                 );
                 j.needs = Needs { nas: true };
@@ -6834,7 +6844,12 @@ impl Agent {
             }
             // (The regions a catalog records as built: the plan's.)
             if w.step == "catalog" {
-                extra.extend(["--ready".to_string(), ready_arg.clone()]);
+                extra.extend([
+                    "--ready".to_string(),
+                    ready_arg.clone(),
+                    "--building".to_string(),
+                    building_arg.clone(),
+                ]);
                 // (Delta catalogs: crate::agent::publish; the whole one in idle time.)
                 if whole {
                     extra.push("--whole".into());

@@ -264,6 +264,7 @@ mod tests {
             name: id.into(),
             outline: vec![entry.clone()],
             shapes: [(entry, vec![vec![ring]])].into(),
+            tiles: None,
         }
     }
 

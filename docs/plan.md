@@ -61,7 +61,10 @@ coverage, or once for the whole world, so region size, count and borders never s
   - **World, zoomed out**: its own row, Download or Remove. Without it the map needs the NAS.
   - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
     waiting for room, away). A region brings the World; the World can't be removed while a region
-    or view is downloaded.
+    or view is downloaded. A region still building says "x of y tiles, on the map as they come"
+    (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
+    status) and can be downloaded: its download grows with each catalog, what's here never fetched
+    again, copied at the build's slow rate.
   - **Download this view**: the ground on screen, named after the most important place in it.
   - Remove confirms with the size. A download that wouldn't fit above the reserve is refused.
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies

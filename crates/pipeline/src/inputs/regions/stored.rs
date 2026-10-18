@@ -189,6 +189,7 @@ impl Drawn {
             name: self.name.clone(),
             outline: self.outline.clone(),
             shapes: self.shapes.clone(),
+            tiles: None,
         }
     }
 }

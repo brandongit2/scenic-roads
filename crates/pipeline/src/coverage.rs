@@ -748,6 +748,18 @@ pub struct DrawnRegion {
     /// By outline entry; an entry that couldn't be read then has none.
     #[serde(default)]
     pub shapes: BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>,
+    /// A region still building (not recorded built yet): its units (z6 tiles) built of those it
+    /// builds, by the records when the catalog was made; on the map, and downloadable, as they come.
+    /// None for a built region, and in catalogs made before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiles: Option<Tiles>,
+}
+
+/// A region's tiles built of its total (`DrawnRegion::tiles`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tiles {
+    pub built: u32,
+    pub total: u32,
 }
 
 impl DrawnRegion {
@@ -887,13 +899,29 @@ mod tests {
             "shape:box.geojson".to_string(),
             vec![vec![ring(&[[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]])]],
         );
-        let r = DrawnRegion { id: "a".into(), name: "A".into(), outline: vec!["shape:box.geojson".into()], shapes };
+        let r = DrawnRegion {
+            id: "a".into(),
+            name: "A".into(),
+            outline: vec!["shape:box.geojson".into()],
+            shapes,
+            tiles: None,
+        };
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         assert!(r.meets_rect(b(10.9, 10.4, 11.2, 10.6)));
         assert!(r.meets_rect(b(10.4, 10.4, 10.6, 10.6)), "wholly inside");
         assert!(!r.meets_rect(b(11.1, 10.4, 11.2, 10.6)));
         let back: DrawnRegion = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+        // A built region is written without `tiles` (as before it was recorded); one still building
+        // with them; either read by this app, an unknown field left alone.
+        assert!(serde_json::to_value(&r).unwrap().get("tiles").is_none());
+        let building = DrawnRegion { tiles: Some(Tiles { built: 3, total: 8 }), ..r.clone() };
+        let v = serde_json::to_value(&building).unwrap();
+        assert_eq!(v["tiles"], serde_json::json!({"built": 3, "total": 8}));
+        assert_eq!(serde_json::from_value::<DrawnRegion>(v).unwrap(), building);
+        let mut later = serde_json::to_value(&r).unwrap();
+        later["later"] = serde_json::json!(1);
+        assert_eq!(serde_json::from_value::<DrawnRegion>(later).unwrap(), r);
         // Simplified by size: a country's outline by up to a kilometre, a town's by 60 m.
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(30.0, 40.0), e7(30.0, 60.0)]]), 1000.0);
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(0.01, 40.0), e7(0.01, 40.01)]]), 60.0);

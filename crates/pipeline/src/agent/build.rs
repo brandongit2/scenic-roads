@@ -1923,6 +1923,10 @@ pub struct Publish<'a> {
 pub struct Plan {
     pub work: Vec<Work>,
     pub ready: Vec<String>,
+    /// The regions not `ready`, each with its units built of those it builds (by the records: a
+    /// unit current under its key), in the regions' order: what a catalog records of a region still
+    /// building (its `--building`; docs/formats.md, Catalog `coverage`).
+    pub building: Vec<(String, usize, usize)>,
     /// Every region's work left, in the order they're built (those with none last), whether or not
     /// it can start now: what the forecast schedules (crate::agent::forecast).
     pub regions: Vec<RegionLeft>,
@@ -2233,6 +2237,11 @@ pub fn plan(
         .filter(|r| r.stale.is_empty() && r.terrain.is_empty() && held(r).is_none())
         .map(|r| r.id.to_string())
         .collect();
+    let building: Vec<(String, usize, usize)> = regions
+        .iter()
+        .filter(|r| !ready.iter().any(|id| id == r.id))
+        .map(|r| (r.id.to_string(), r.all.len() - r.stale.len(), r.all.len()))
+        .collect();
 
     // A region at a time: those the map hasn't at all first, then those it has (redrawn, or their
     // units' keys changed: on the map as they were meanwhile); of each, the one with the fewest units
@@ -2514,6 +2523,7 @@ pub fn plan(
     Plan {
         work,
         ready,
+        building,
         regions: lefts,
         low: plan_low,
         catalog_held,
@@ -5115,6 +5125,9 @@ pub(crate) mod tests {
         let p = hplan(&c, &reach, &m, &done, None, Some(CATALOG_CAP_S));
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
         assert!(p.ready.is_empty());
+        // Every region still building, each with its units built (by the records) of its total.
+        assert!(!p.building.is_empty() && p.building.iter().all(|(_, b, t)| b <= t), "{:?}", p.building);
+        assert!(p.building.iter().any(|(_, b, _)| *b > 0), "a unit built: {:?}", p.building);
     }
 
     #[test]
