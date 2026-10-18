@@ -100,6 +100,9 @@ struct Status: Decodable {
     let waiting: [Waiting]
     let recent: [Done]
     let built: [String: Built]?
+    /// Publishing as planned (crates/pipeline/src/agent/build.rs PublishLine): its regions done but
+    /// not yet recorded built, each with why.
+    let publishing: PublishingInfo?
     /// The build to the end (agents from 2026-10-03 on).
     let checklist: [Step]?
     /// Other Macs helping, building tiles (agents from 2026-10-04 on).
@@ -585,6 +588,15 @@ struct Done: Decodable {
     let note: String?
 }
 
+struct PublishingInfo: Decodable {
+    let regions: [PublishRegion]?
+}
+
+struct PublishRegion: Decodable {
+    let id: String
+    let kinds: [String]
+}
+
 struct Built: Decodable {
     let built: Int
     let total: Int
@@ -871,9 +883,13 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
         // Those still building, as the Regions panel says them: on the map as their tiles come.
+        // Every unit built but not yet recorded built (publishing's held regions): finishing.
+        let held = Set((s.publishing?.regions ?? []).filter { r in r.kinds.contains { k in k != "new region" && k != "rebuilt" } }.map(\.id))
         for r in s.regions ?? [] {
             if let b = built[r.id], b.built < b.total {
                 out.append(Line(text: "\(r.name): \(b.built) of \(b.total) tiles, on the map as they come", style: .small))
+            } else if let b = built[r.id], held.contains(r.id) {
+                out.append(Line(text: "\(r.name): finishing: \(b.built) of \(b.total) tiles, the last map tiles and layers being made", style: .small))
             }
         }
     }

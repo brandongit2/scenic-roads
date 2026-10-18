@@ -62,6 +62,8 @@ coverage, or once for the whole world, so region size, count and borders never s
   - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
     waiting for room, away). A region brings the World; the World can't be removed while a region
     or view is downloaded. A region still building says "x of y tiles, on the map as they come"
+    (every unit built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
+    layers being made")
     (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
     status) and can be downloaded: its download grows with each catalog, what's here never fetched
     again, copied at the build's slow rate.

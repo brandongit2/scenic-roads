@@ -581,9 +581,14 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
     out
 }
 
-/// A region still building, as the Regions panel and the menu bar say it.
+/// A region still building, as the Regions panel and the menu bar say it: every unit built but not
+/// yet recorded built, finishing.
 fn building_line(built: usize, total: usize) -> String {
-    format!("{built} of {total} tiles, on the map as they come")
+    if built >= total {
+        format!("finishing: {built} of {total} tiles, the last map tiles and layers being made")
+    } else {
+        format!("{built} of {total} tiles, on the map as they come")
+    }
 }
 
 fn plural(n: usize, one: &str) -> String {
@@ -748,9 +753,15 @@ fn status(args: &[String]) -> Result<()> {
             st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
         }
     );
-    // (Those still building: their units built of their total, on the map as they come.)
+    // (Those still building: their units built of their total, on the map as they come; and those
+    // with every unit built but not yet recorded built (publishing's held regions): finishing.)
+    let held = |id: &str| {
+        st.publishing.as_ref().is_some_and(|p| {
+            p.regions.iter().any(|r| r.id == id && r.kinds.iter().any(|k| k != "new region" && k != "rebuilt"))
+        })
+    };
     for r in &st.regions {
-        if let Some(b) = st.built.get(&r.id).filter(|b| b.built < b.total) {
+        if let Some(b) = st.built.get(&r.id).filter(|b| b.built < b.total || held(&r.id)) {
             println!("  {}: {}", r.name, building_line(b.built, b.total));
         }
     }
@@ -1393,6 +1404,7 @@ mod tests {
     #[test]
     fn a_region_still_building_says_its_tiles() {
         assert_eq!(building_line(3, 8), "3 of 8 tiles, on the map as they come");
+        assert_eq!(building_line(8, 8), "finishing: 8 of 8 tiles, the last map tiles and layers being made");
     }
 
     /// `scenic status` shows each Mac as the build page does (task #246): the lead marked

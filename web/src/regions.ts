@@ -49,7 +49,8 @@ export interface Tiles {
 }
 
 /** A region still building, in words. */
-export const tilesText = (t: Tiles) => `${t.built} of ${t.total} tiles, on the map as they come`;
+export const tilesText = (t: Tiles) =>
+  t.built >= t.total ? `finishing: ${t.built} of ${t.total} tiles, the last map tiles and layers being made` : `${t.built} of ${t.total} tiles, on the map as they come`;
 
 const NAS_AWAY = 'The NAS isn’t reachable: try again at home';
 
