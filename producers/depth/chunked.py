@@ -57,6 +57,12 @@ def _timed_out(e: BaseException) -> bool:
         isinstance(e, urllib.error.URLError) and isinstance(e.reason, (socket.timeout, TimeoutError)))
 
 
+def is_tiff(p: Path) -> bool:
+    """Whether `p` starts with a TIFF or BigTIFF header (II*\\0, MM\\0*, II+\\0, MM\\0+)."""
+    with open(p, "rb") as f:
+        return f.read(4) in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
+
+
 def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
     """grid.fetch, again (30 s, 60 s, …, none after the last try) after a dropped or refused
     connection, a timeout, a body cut short (http.client's IncompleteRead), 429 or a 5xx; any other HTTP
@@ -66,7 +72,16 @@ def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
     slow = 0
     for k in range(tries):
         try:
-            return fetch(url, dest, pause=pause)
+            got = fetch(url, dest, pause=pause)
+            if not is_tiff(got):
+                # (The WCS answers some server failures 200 with an OWS exception report, not a TIFF:
+                # "Failed to read the coverage … Connection reset". Retried as a 5xx.)
+                why = got.read_bytes()[:400].decode("utf-8", "replace").replace("\n", " ")
+                got.unlink(missing_ok=True)
+                log(f"{url}: not a TIFF ({why[:200]}) (try {k + 1})")
+                slow = 0
+            else:
+                return got
         except urllib.error.HTTPError as e:
             if e.code != 429 and e.code < 500:
                 raise SystemExit(f"{url}: HTTP {e.code}")

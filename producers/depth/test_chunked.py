@@ -3,6 +3,7 @@ uv run --project .. python -m unittest test_chunked"""
 from __future__ import annotations
 
 import io
+import shutil
 import tempfile
 import unittest
 import urllib.error
@@ -22,8 +23,16 @@ class FetchRetry(unittest.TestCase):
         self.sleep = mock.patch.object(chunked.time, "sleep").start()
         self.addCleanup(mock.patch.stopall)
 
+    def tiff(self, body=b"II*\x00rest"):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        p = d / "b.tif"
+        p.write_bytes(body)
+        return p
+
     def test_a_transient_failure_is_tried_again(self):
-        answers = [http(503), http(429), ConnectionResetError(), Path("/ok")]
+        ok = self.tiff()
+        answers = [http(503), http(429), ConnectionResetError(), ok]
 
         def fetch(url, dest, pause):
             a = answers.pop(0)
@@ -32,8 +41,17 @@ class FetchRetry(unittest.TestCase):
             return a
 
         with mock.patch.object(chunked, "fetch", fetch):
-            self.assertEqual(chunked.fetch_retry("u", Path("d"), 0), Path("/ok"))
+            self.assertEqual(chunked.fetch_retry("u", Path("d"), 0), ok)
         self.assertEqual(self.sleep.call_count, 3)
+
+    def test_an_exception_report_in_place_of_a_tiff_is_tried_again(self):
+        bad = self.tiff(b'<?xml version="1.0"?><ows:ExceptionReport>Connection reset</ows:ExceptionReport>')
+        ok = self.tiff()
+        answers = [bad, ok]
+        with mock.patch.object(chunked, "fetch", lambda url, dest, pause: answers.pop(0)):
+            self.assertEqual(chunked.fetch_retry("u", Path("d"), 0), ok)
+        self.assertFalse(bad.exists())
+        self.assertEqual(self.sleep.call_count, 1)
 
     def test_another_http_answer_stops_the_run(self):
         with mock.patch.object(chunked, "fetch", side_effect=http(404)), self.assertRaises(SystemExit):
