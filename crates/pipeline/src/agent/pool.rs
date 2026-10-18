@@ -244,6 +244,40 @@ impl Conds {
     }
 }
 
+/// `Run::scores`, given this Mac, the members' heartbeats, the capacities by worker and the time.
+fn scores_of(me: &Member, beats: &[Beat], caps: Vec<(String, crate::coord::Capacity)>, now: u64) -> Vec<(String, u64)> {
+    // (A worker's host: its slot's number, or an earlier agent's second job, taken off.)
+    let host_of = |w: &str| {
+        let w = crate::agent::worker_now(w);
+        match w.rsplit_once(" #") {
+            Some((h, n)) if n.parse::<usize>().is_ok() => h.to_string(),
+            _ => w,
+        }
+    };
+    let mut newest: BTreeMap<String, crate::coord::Capacity> = BTreeMap::new();
+    for (w, cap) in caps {
+        let h = host_of(&w).to_lowercase();
+        if newest.get(&h).is_none_or(|c| c.at < cap.at) {
+            newest.insert(h, cap);
+        }
+    }
+    newest
+        .into_iter()
+        .filter_map(|(h, cap)| {
+            let id = if h.eq_ignore_ascii_case(&me.host) {
+                me.id.clone()
+            } else {
+                let b = beats.iter().filter(|b| b.host.eq_ignore_ascii_case(&h)).max_by_key(|b| b.beat)?;
+                if b.out_of_touch(now) {
+                    return None;
+                }
+                b.member.clone()
+            };
+            Some((id, crate::pool::handover::score(&cap)))
+        })
+        .collect()
+}
+
 /// A listing made off the loop: its kind, and the thread making it.
 struct Making {
     what: Kind,
@@ -1636,22 +1670,14 @@ impl Run {
         (r, out)
     }
 
-    /// Each Mac's score as a lead (crate::pool::handover::score), by member id, from the
-    /// capacities this process's coordinator (the lead's) has fresh, keyed by host: this Mac's, and
-    /// each member's whose heartbeat names that host. None without a coordinator.
+    /// Each Mac's score as a lead (crate::pool::handover::score), by member id: from the last
+    /// capacity this process's coordinator (the lead's) has of each of its slots' workers, whatever
+    /// its age (`Coordinator::last_capacities`: a busy member asks nothing for long), the newest
+    /// per host; a member's (its host's newest heartbeat's) left out once that heartbeat is out of
+    /// touch. None without a coordinator.
     fn scores(&self) -> Vec<(String, u64)> {
         let Some(c) = &self.cx.coord else { return Vec::new() };
-        let me = self.side.member();
-        let id_of = |host: &str| {
-            if host.eq_ignore_ascii_case(&me.host) {
-                return Some(me.id.clone());
-            }
-            self.side.beats.iter().find(|b| b.host.eq_ignore_ascii_case(host)).map(|b| b.member.clone())
-        };
-        c.capacities()
-            .into_iter()
-            .filter_map(|(host, cap)| Some((id_of(&host)?, crate::pool::handover::score(&cap))))
-            .collect()
+        scores_of(self.side.member(), &self.side.beats, c.last_capacities(), self.side.now())
     }
 
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
@@ -2104,6 +2130,41 @@ pub fn status(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scores_count_a_busy_members_last_capacity_until_its_heartbeat_is_out_of_touch() {
+        let me = Member { id: "m-a".into(), host: "MacBook-Air".into(), app: String::new() };
+        let cap = |at: u64, gb: u64| crate::coord::Capacity {
+            at,
+            limit_mb: gb << 10,
+            cores: 8,
+            disk_mb: 100 << 10,
+            ac: true,
+            home: true,
+            nas: true,
+            ..Default::default()
+        };
+        let now = 100_000;
+        let beat = |host: &str, id: &str, at: u64| Beat {
+            member: id.into(),
+            host: host.into(),
+            beat: at,
+            ..Default::default()
+        };
+        // The mini asked an hour ago (busy since), its slot #2 two hours ago; its heartbeat fresh.
+        let caps = vec![
+            ("MacBook-Air".to_string(), cap(now, 8)),
+            ("Mac-mini".to_string(), cap(now - 3600, 24)),
+            ("Mac-mini #2".to_string(), cap(now - 7200, 2)),
+        ];
+        let old = beat("Mac-mini", "m-old", now - 90_000);
+        let mut got = scores_of(&me, &[old.clone(), beat("Mac-mini", "m-b", now - 30)], caps.clone(), now);
+        got.sort();
+        let s = |gb: u64| crate::pool::handover::score(&cap(0, gb));
+        assert_eq!(got, vec![("m-a".to_string(), s(8)), ("m-b".to_string(), s(24))]);
+        // Its heartbeat out of touch: left out.
+        assert_eq!(scores_of(&me, &[old], caps, now), vec![("m-a".to_string(), s(8))]);
+    }
     use crate::pool::driver::Ask;
     use crate::pool::journal::LeaseId;
 

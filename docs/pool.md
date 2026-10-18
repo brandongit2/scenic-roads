@@ -170,7 +170,9 @@ handover (to be asked again).
 
 **The strongest Mac leads.** Besides the owner's asks, the lead asks itself to hand over, through
 the same stages, to the member with the highest capacity score (`handover::score`, from #237's
-`crate::coord::Capacity`: its own measured each loop, a member's carried by its asks, fresh within
+`crate::coord::Capacity`: its own measured each loop, a member's the last its asks carried,
+whatever its age (`Coordinator::last_capacities`; a busy member asks nothing for long), the newest
+of a host's slots, left out once the member's heartbeat is out of touch; placement keeps to
 `CAP_FRESH_S`). The score is the memory guard's limit (4 points a GB) plus its cores (8 each), scaled
 down by free disk below 50 GB (none: 0), halved while its owner uses it, and on battery scaled by
 half its charge; away from home or without the NAS, 0. No Mac is named: a member is offered the

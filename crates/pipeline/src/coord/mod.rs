@@ -1736,6 +1736,17 @@ impl Coordinator {
         own.into_iter().chain(others).collect()
     }
 
+    /// Each worker's last capacity, whatever its age (this Mac's own first): the lead's choice of
+    /// the strongest Mac (crate::pool::handover::score), which counts a member stale only when
+    /// its heartbeat is out of touch, a busy member asking nothing for long all the same. Placement
+    /// keeps to `capacities`.
+    pub fn last_capacities(&self) -> Vec<(String, Capacity)> {
+        let s = self.shared.lock().unwrap();
+        let own = s.own_cap.clone().map(|c| (self.me.clone(), c));
+        let others = s.workers.iter().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
+        own.into_iter().chain(others).collect()
+    }
+
     /// Placement by how crucial a job is on (`Some`: the forecast's slack and measured speeds) or
     /// off (docs/pool.md §12, phase 4's eleventh batch; crate::agent::placement). Its draws' windows
     /// run from when it was first turned on.

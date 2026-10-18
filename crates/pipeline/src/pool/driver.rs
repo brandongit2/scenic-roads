@@ -1993,6 +1993,51 @@ mod tests {
     }
 
     #[test]
+    fn a_stronger_member_gets_the_lead_by_capacity() {
+        // A (weak) leads; B, stronger, runs a long job and asks nothing: its last capacity, however
+        // old, scores it (agent::pool's `scores_of`). After five minutes A offers it the lead, and
+        // hands over; B, leading, offers A nothing back.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "MacBook-Air", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        let scores = || Heard { scores: vec![(A.into(), 40), (B.into(), 176)], ..able() };
+        let held = step(&mut a, &ia, Heard { lead_only: true, ..scores() });
+        assert!(!held.events.iter().any(|e| matches!(e, Event::Prefers { .. })));
+        let mut offered = false;
+        for _ in 0..20 {
+            ia.pass(30);
+            ib.pass(30);
+            step(&mut b, &ib, able());
+            let o = step(&mut a, &ia, scores());
+            offered |= o.events.iter().any(|e| matches!(e, Event::Prefers { to, .. } if to == B));
+            if offered {
+                break;
+            }
+        }
+        assert!(offered, "B offered the lead within minutes");
+        ib.pass(5);
+        step(&mut b, &ib, able());
+        ia.pass(5);
+        assert!(step(&mut a, &ia, scores()).settle);
+        ia.pass(5);
+        let o = step(&mut a, &ia, Heard { settled: Some(serde_json::json!({"leases": []})), ..scores() });
+        assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })), "{:?}", o.events);
+        ib.pass(5);
+        assert_eq!(step(&mut b, &ib, scores()).leads, Some(2));
+        for _ in 0..20 {
+            ib.pass(30);
+            ia.pass(30);
+            step(&mut a, &ia, able());
+            let o = step(&mut b, &ib, scores());
+            assert!(!o.events.iter().any(|e| matches!(e, Event::Prefers { .. })), "{:?}", o.events);
+        }
+    }
+
+    #[test]
     fn a_lead_restarted_into_a_development_build_stands_down() {
         // Another member takes over unforced; the owner's downgrade gives the development build the
         // lead again. (Review 2's first scenario.)
